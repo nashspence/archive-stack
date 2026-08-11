@@ -4,7 +4,7 @@ import contextlib
 import hashlib
 import io
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from unittest.mock import patch
 
 import httpx
@@ -796,6 +796,56 @@ def test_upload_progress_polls_bounded_compact_job_status() -> None:
 
     assert client._job_status(request)["state"] == "uploading"
     assert calls == [("submission-1", True)]
+
+
+def test_upload_progress_observation_does_not_block_other_transfer_workers() -> None:
+    observation_started = Event()
+    release_observation = Event()
+    second_worker_updated = Event()
+    first = SubmissionInputFile(
+        source=Path("one.bin"),
+        rel_path="one.bin",
+        bytes=1,
+        sha256="0" * 64,
+    )
+    second = SubmissionInputFile(
+        source=Path("two.bin"),
+        rel_path="two.bin",
+        bytes=1,
+        sha256="1" * 64,
+    )
+
+    def status() -> dict[str, object]:
+        observation_started.set()
+        assert release_observation.wait(timeout=2)
+        return {"state": "uploading"}
+
+    class Renderer:
+        def update(self, _job: dict[str, object], *, force: bool = False) -> None:
+            _ = force
+
+    progress = UploadProgress(
+        total_files=2,
+        total_bytes=2,
+        renderer=Renderer(),  # type: ignore[arg-type]
+        job_status_provider=status,
+    )
+    observing_worker = Thread(target=progress.mark_uploaded, args=(first, 1))
+    observing_worker.start()
+    assert observation_started.wait(timeout=2)
+
+    def update_second_worker() -> None:
+        progress.mark_uploaded(second, 1)
+        second_worker_updated.set()
+
+    second_worker = Thread(target=update_second_worker)
+    second_worker.start()
+    assert second_worker_updated.wait(timeout=2)
+    release_observation.set()
+    observing_worker.join(timeout=2)
+    second_worker.join(timeout=2)
+
+    assert progress.current_uploaded_bytes() == 2
 
 
 def test_wait_for_job_continues_until_handoff_is_safe_to_delete() -> None:

@@ -1287,6 +1287,7 @@ class UploadProgress:
         self.started_at = time.monotonic()
         self.last_printed_at = self.started_at
         self.lock = Lock()
+        self.render_lock = Lock()
         self.job_status_provider = job_status_provider
         self.renderer = renderer or ProgressRenderer.plain(include_job=False)
         self.last_remote_uploaded_files: int | None = None
@@ -1380,7 +1381,7 @@ class UploadProgress:
                 self.inflight_uploaded_bytes[item.rel_path] = clamped
             else:
                 self.inflight_uploaded_bytes.pop(item.rel_path, None)
-            self._maybe_render(now=time.monotonic(), force=False)
+        self._maybe_render(now=time.monotonic(), force=False)
 
     def mark_complete(self, item: SubmissionInputFile) -> None:
         with self.lock:
@@ -1388,7 +1389,8 @@ class UploadProgress:
             self.completed_files += 1
             self.completed_bytes += item.bytes
             now = time.monotonic()
-            self._maybe_render(now=now, force=self.completed_files == self.total_files)
+            force = self.completed_files == self.total_files
+        self._maybe_render(now=now, force=force)
 
     def _render_interval_seconds(self) -> float:
         if getattr(self.renderer, "is_live", False):
@@ -1396,55 +1398,66 @@ class UploadProgress:
         return UPLOAD_PROGRESS_TEXT_RENDER_INTERVAL_SECONDS
 
     def _maybe_render(self, *, now: float, force: bool) -> None:
-        should_print = (
-            force
-            or not self.rendered_any
-            or now - self.last_printed_at >= self._render_interval_seconds()
-        )
-        job_status_provider = self.job_status_provider
-        should_check_job = job_status_provider is not None and (
-            force or now - self.last_job_checked_at >= UPLOAD_JOB_STATUS_INTERVAL_SECONDS
-        )
-        remote_job: dict[str, Any] | None = None
-        if should_check_job:
-            assert job_status_provider is not None
-            self.last_job_checked_at = now
-            try:
-                maybe_job = job_status_provider()
-            except Exception:
-                maybe_job = None
-            if isinstance(maybe_job, dict):
-                remote_job = maybe_job
-                if job_should_stop_upload(remote_job):
-                    if self.stop_event is not None:
-                        self.stop_event.set()
-                    self.renderer.update(remote_job, force=True)
-                    raise JobTerminalDuringUpload(remote_job)
-        if not should_print:
+        if not self.render_lock.acquire(blocking=force):
             return
-        upload_progress = self.local_upload_progress(now=now)
-        job: dict[str, Any] = {"upload_progress": upload_progress}
-        if remote_job is not None:
-            remote_upload_progress = job_upload_progress(remote_job)
-            if remote_upload_progress is not None:
-                job["upload_progress"] = self.remote_upload_progress_with_rate(
-                    remote_upload_progress,
-                    now=now,
+        try:
+            with self.lock:
+                should_print = (
+                    force
+                    or not self.rendered_any
+                    or now - self.last_printed_at >= self._render_interval_seconds()
                 )
-            encode_progress = remote_job.get("encode_progress")
-            if isinstance(encode_progress, dict):
-                job["encode_progress"] = encode_progress
-            handoff_progress = remote_job.get("handoff_progress")
-            if isinstance(handoff_progress, dict):
-                job["handoff_progress"] = handoff_progress
-        else:
-            job["upload_progress"] = self.remote_upload_progress_with_rate(
-                upload_progress,
-                now=now,
-            )
-        self.renderer.update(job, force=force)
-        self.last_printed_at = now
-        self.rendered_any = True
+                job_status_provider = self.job_status_provider
+                should_check_job = job_status_provider is not None and (
+                    force or now - self.last_job_checked_at >= UPLOAD_JOB_STATUS_INTERVAL_SECONDS
+                )
+                if should_check_job:
+                    self.last_job_checked_at = now
+
+            remote_job: dict[str, Any] | None = None
+            if should_check_job:
+                assert job_status_provider is not None
+                try:
+                    maybe_job = job_status_provider()
+                except Exception:
+                    maybe_job = None
+                if isinstance(maybe_job, dict):
+                    remote_job = maybe_job
+                    if job_should_stop_upload(remote_job):
+                        if self.stop_event is not None:
+                            self.stop_event.set()
+                        self.renderer.update(remote_job, force=True)
+                        raise JobTerminalDuringUpload(remote_job)
+            if not should_print:
+                return
+
+            with self.lock:
+                upload_progress = self.local_upload_progress(now=now)
+                job: dict[str, Any] = {"upload_progress": upload_progress}
+                if remote_job is not None:
+                    remote_upload_progress = job_upload_progress(remote_job)
+                    if remote_upload_progress is not None:
+                        job["upload_progress"] = self.remote_upload_progress_with_rate(
+                            remote_upload_progress,
+                            now=now,
+                        )
+                    encode_progress = remote_job.get("encode_progress")
+                    if isinstance(encode_progress, dict):
+                        job["encode_progress"] = encode_progress
+                    handoff_progress = remote_job.get("handoff_progress")
+                    if isinstance(handoff_progress, dict):
+                        job["handoff_progress"] = handoff_progress
+                else:
+                    job["upload_progress"] = self.remote_upload_progress_with_rate(
+                        upload_progress,
+                        now=now,
+                    )
+            self.renderer.update(job, force=force)
+            with self.lock:
+                self.last_printed_at = now
+                self.rendered_any = True
+        finally:
+            self.render_lock.release()
 
 
 class MunchyClient:

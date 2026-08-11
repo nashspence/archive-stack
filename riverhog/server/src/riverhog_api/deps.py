@@ -92,7 +92,17 @@ def default_container() -> ServiceContainer:
     validate_db(config.database_url)
     ensure_bucket_exists(config)
     session_factory = make_session_factory(config.database_url)
-    retrieval_cache = S3RetrievalCache(config) if config.retrieval_cache is not None else None
+    throughput_tuning = ArchiveThroughputTuning.from_env(os.environ)
+    transfer_resources = ArchiveTransferResources.from_tuning(throughput_tuning)
+    retrieval_cache = (
+        S3RetrievalCache(
+            config,
+            throughput_tuning=throughput_tuning,
+            transfer_resources=transfer_resources,
+        )
+        if config.retrieval_cache is not None
+        else None
+    )
     download_allowance = SqlAlchemyDownloadAllowance(
         config,
         session_factory=session_factory,
@@ -121,8 +131,6 @@ def default_container() -> ServiceContainer:
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
     proof_upgrader = CommandProofUpgrader(config.ots_upgrade_command)
-    throughput_tuning = ArchiveThroughputTuning.from_env(os.environ)
-    transfer_resources = ArchiveTransferResources.from_tuning(throughput_tuning)
     return ServiceContainer(
         app_keys=SqlAlchemyAppKeyService(config, session_factory=session_factory),
         collection_access=SqlAlchemyCollectionAccessService(
