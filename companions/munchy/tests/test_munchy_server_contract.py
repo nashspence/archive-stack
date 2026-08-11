@@ -6826,6 +6826,110 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     assert result["metrics"]["session_complete_elapsed_seconds"] >= 0
 
 
+def test_riverhog_handoff_resumes_archive_units_after_session_completion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_RIVERHOG_HANDOFF_ENABLED", "1")
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    server.persistence.initialize_persistence()
+    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    source = archive_dir / "camera" / "a.webm"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+    job = {
+        "job_id": "job-1",
+        "state": "running",
+        "phase": "handoff_retrying",
+        "handoff": {"destination": "riverhog", "options": {}},
+        "handoff_adapter_state": {
+            "collection_id": 42,
+            "files": {
+                "camera/a.webm": {
+                    "path": "camera/a.webm",
+                    "bytes": 5,
+                    "sha256": hashlib.sha256(b"video").hexdigest(),
+                    "uploaded_bytes": 0,
+                    "state": "registered",
+                }
+            },
+        },
+    }
+    server.state_store.save_job(job)
+    calls: list[str] = []
+
+    class ResumableRiverhogApi:
+        finalized = False
+
+        def close(self) -> None:
+            calls.append("close")
+
+        def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
+            calls.append("status")
+            return {
+                "collection_id": 42,
+                "state": "finalized" if self.finalized else "uploading",
+                "archive_phase": "complete" if self.finalized else "uploading",
+            }
+
+        def list_collection_upload_session_volumes(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
+            calls.append("volumes")
+            return {
+                "collection_id": 42,
+                "volumes": [
+                    {
+                        "volume_id": "pack-000000000000",
+                        "plan_sha256": "a" * 64,
+                        "units": [
+                            {
+                                "unit": 0,
+                                "payload_bytes": 5,
+                                "sources": [{"path": "camera/a.webm", "offset": 0, "bytes": 5}],
+                                "state": "committed" if self.finalized else "pending",
+                            }
+                        ],
+                    }
+                ],
+            }
+
+        def put_collection_upload_session_unit(
+            self,
+            collection_id: int,
+            volume_id: str,
+            unit: int,
+            *,
+            plan_sha256: str,
+            content: bytes,
+        ) -> dict[str, object]:
+            assert (collection_id, volume_id, unit) == (42, "pack-000000000000", 0)
+            assert plan_sha256 == "a" * 64
+            assert content == b"video"
+            calls.append("unit")
+            self.finalized = True
+            return {"state": "committed"}
+
+    fake = ResumableRiverhogApi()
+    monkeypatch.setattr(server.riverhog, "ApiClient", lambda: fake)
+    monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server.handoff_service,
+        "retry_handoff_until_success",
+        lambda _job, **kwargs: kwargs["operation"](),
+    )
+
+    result = server.riverhog.upload_to_riverhog(job, archive_dir)
+
+    assert result["destination"] == "riverhog"
+    assert result["external_id"] == 42
+    assert result["metrics"]["remote_state_before"] == "uploading"
+    assert result["metrics"]["post_registration_resume_state"] == "uploading"
+    assert calls == ["status", "volumes", "unit", "volumes", "status", "status", "close"]
+    assert not source.exists()
+
+
 def test_expected_riverhog_primary_files_total_counts_archive_outputs(
     tmp_path: Path,
     monkeypatch,

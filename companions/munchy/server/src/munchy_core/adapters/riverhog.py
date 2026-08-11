@@ -1406,32 +1406,48 @@ def upload_to_riverhog(job: dict[str, Any], archive_dir: Path) -> dict[str, Any]
         job["handoff_metrics"] = metrics
         state_store.save_job(job)
         try:
-            metrics["registration_started_at"] = utc_timestamp_now()
-            metrics["registration_before"] = compact_riverhog_progress_metrics(
-                riverhog_handoff_progress(job)
-            )
-            registration = register_riverhog_artifacts(job, api, archive_dir)
-            metrics["registration_finished_at"] = utc_timestamp_now()
-            metrics["registration_elapsed_seconds"] = registration["elapsed_seconds"]
-            metrics["registration_processed_files"] = registration["processed_files"]
-            metrics["registered_files"] = registration["registered_files"]
-            metrics["registered_bytes"] = registration["registered_bytes"]
-            sync_riverhog_session_from_remote(job, api)
-            metrics["registration_after"] = compact_riverhog_progress_metrics(
-                riverhog_handoff_progress(job)
-            )
-            state_store.save_job(job)
-            if not all_riverhog_session_files_registered(job):
-                raise RuntimeError("riverhog handoff did not register every source file")
-            complete_started = time.monotonic()
-            metrics["session_complete_started_at"] = utc_timestamp_now()
-            state_store.save_job(job)
-            payload = complete_riverhog_session(job, api, archive_dir)
-            metrics["session_complete_finished_at"] = utc_timestamp_now()
-            metrics["session_complete_elapsed_seconds"] = round(
-                max(0.0, time.monotonic() - complete_started),
-                6,
-            )
+            payload = sync_riverhog_session_from_remote(job, api)
+            remote_state = str(payload.get("state") or "") if payload is not None else ""
+            metrics["remote_state_before"] = remote_state or "not_started"
+            if remote_state in {"uploading", "finalizing", "finalized"}:
+                metrics["post_registration_resume_started_at"] = utc_timestamp_now()
+                metrics["post_registration_resume_state"] = remote_state
+                payload = _upload_riverhog_units(job, api, archive_dir, payload)
+            elif remote_state == "failed":
+                metrics["post_registration_resume_started_at"] = utc_timestamp_now()
+                metrics["post_registration_resume_state"] = remote_state
+                payload = complete_riverhog_session(job, api, archive_dir)
+            elif remote_state not in {"", "open"}:
+                raise domain_errors.HandoffFailed(
+                    f"riverhog upload session cannot resume from state {remote_state}"
+                )
+            else:
+                metrics["registration_started_at"] = utc_timestamp_now()
+                metrics["registration_before"] = compact_riverhog_progress_metrics(
+                    riverhog_handoff_progress(job)
+                )
+                registration = register_riverhog_artifacts(job, api, archive_dir)
+                metrics["registration_finished_at"] = utc_timestamp_now()
+                metrics["registration_elapsed_seconds"] = registration["elapsed_seconds"]
+                metrics["registration_processed_files"] = registration["processed_files"]
+                metrics["registered_files"] = registration["registered_files"]
+                metrics["registered_bytes"] = registration["registered_bytes"]
+                sync_riverhog_session_from_remote(job, api)
+                metrics["registration_after"] = compact_riverhog_progress_metrics(
+                    riverhog_handoff_progress(job)
+                )
+                state_store.save_job(job)
+                if not all_riverhog_session_files_registered(job):
+                    raise RuntimeError("riverhog handoff did not register every source file")
+                complete_started = time.monotonic()
+                metrics["session_complete_started_at"] = utc_timestamp_now()
+                state_store.save_job(job)
+                payload = complete_riverhog_session(job, api, archive_dir)
+                metrics["session_complete_finished_at"] = utc_timestamp_now()
+                metrics["session_complete_elapsed_seconds"] = round(
+                    max(0.0, time.monotonic() - complete_started),
+                    6,
+                )
             raw_collection_id = payload.get("collection_id")
             collection_id = int(raw_collection_id) if raw_collection_id is not None else None
             if collection_id is not None:
