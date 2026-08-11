@@ -84,7 +84,7 @@ def _configure_logging(level_name: str) -> None:
         level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    for logger_name in ("riverhog_api", "riverhog_core"):
+    for logger_name in ("riverhog.transfer", "riverhog_api", "riverhog_core"):
         logging.getLogger(logger_name).setLevel(level)
     for logger_name in ("httpx", "httpcore"):
         logging.getLogger(logger_name).setLevel(logging.WARNING)
