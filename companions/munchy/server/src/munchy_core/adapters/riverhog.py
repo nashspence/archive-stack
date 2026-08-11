@@ -23,7 +23,11 @@ from munchy_api_client.routing import (
 from pydantic import BaseModel, ConfigDict, field_validator
 from riverhog_api_client import Conflict, NotFound
 from riverhog_api_client.client import ApiClient
-from riverhog_api_client.uploads import configured_upload_concurrency, upload_collection_units
+from riverhog_api_client.uploads import (
+    configured_upload_concurrency,
+    configured_upload_window,
+    upload_collection_units,
+)
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.raw_ingress import hash_raw_source
 from riverhog_provenance import (
@@ -1374,11 +1378,13 @@ def _upload_riverhog_units(
 ) -> dict[str, Any]:
     collection_id = int(payload["collection_id"])
     if str(payload.get("state") or "") not in {"finalizing", "finalized"}:
+        concurrency = configured_upload_concurrency()
         upload_collection_units(
             api,
             collection_id,
             content_for_unit=lambda unit: _riverhog_unit_content(archive_dir, unit),
-            concurrency=configured_upload_concurrency(),
+            concurrency=concurrency,
+            window=configured_upload_window(concurrency=concurrency),
             cancel_check=lambda: state_store.raise_if_job_canceled(str(job["job_id"])),
             retry_notice=log.warning,
         )

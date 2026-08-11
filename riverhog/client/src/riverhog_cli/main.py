@@ -20,6 +20,7 @@ import typer
 from riverhog_api_client.client import ApiClient
 from riverhog_api_client.uploads import (
     configured_upload_concurrency,
+    configured_upload_window,
     put_collection_upload_unit,
     upload_collection_units,
 )
@@ -1279,6 +1280,7 @@ def _upload_planned_units(
         collection_id,
         content_for_unit=lambda unit: _upload_unit_content(root, unit),
         concurrency=concurrency,
+        window=configured_upload_window(concurrency=concurrency),
         client_factory=api_factory,
         on_committed=progress.uploaded,
         on_resumed=progress.resumed,

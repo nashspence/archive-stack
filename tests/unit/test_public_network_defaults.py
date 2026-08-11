@@ -75,5 +75,6 @@ def test_public_munchy_uses_the_shared_direct_ingress_transfer_defaults() -> Non
     environment = compose["services"]["munchy-server"]["environment"]
 
     assert _defaults(environment["RIVERHOG_UPLOAD_FILE_CONCURRENCY"]) == "8"
+    assert _defaults(environment["RIVERHOG_UPLOAD_FILE_WINDOW"]) == "16"
     assert _defaults(environment["RIVERHOG_UPLOAD_TIMEOUT_SECONDS"]) == "1800"
     assert _defaults(environment["RIVERHOG_ALLOW_INSECURE_HTTP"]) == "false"
