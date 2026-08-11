@@ -1440,10 +1440,11 @@ def submit(
             submission = client.create_submission(request)
             if not json_mode:
                 emit(_submission_summary(request, submission), json_mode=False)
-            client.upload_files(request)
+            upload = client.upload_files(request)
+            submission["upload"] = upload
             if wait:
-                submission = client.wait_for_submission(request.submission_id, interval=interval)
-                job = _mapping(submission.get("job"), label="job")
+                job = client.wait_for_job(request.submission_id, interval=interval)
+                submission["job"] = job
                 if not job_finished_cleanly(job):
                     terminal_failure = True
                     if not json_mode:

@@ -22,6 +22,7 @@ from jeb_core.domain.models import (
 from jeb_core.domain.sources import SourceRegistryError
 from jeb_core.persistence.schema import upgrade_state
 from lifecycle_events import cloud_event
+from munchy_api_client.client import SubmissionUploadRequest
 
 TEST_TEMPLATE = "camera-archive"
 
@@ -141,6 +142,64 @@ def test_parse_helpers_support_human_units() -> None:
     assert parse_duration("10m") == 600
     assert parse_duration("2h") == 7200
     assert parse_size("2GiB") == 2 * 1024**3
+
+
+def test_munchy_target_waits_on_bounded_job_status(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[tuple[str, bool]] = []
+
+    class FakeMunchyClient:
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            del args, kwargs
+
+        def wait_for_job(
+            self,
+            job_id: str,
+            *,
+            wait_for_safe_delete: bool = True,
+        ) -> dict[str, object]:
+            calls.append((job_id, wait_for_safe_delete))
+            return {
+                "job_id": job_id,
+                "state": "succeeded",
+                "handoff": {"state": "complete", "safe_to_delete": True},
+            }
+
+        def close(self) -> None:
+            pass
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.state = "target_uploaded"
+
+        def load_attempt(self, attempt_id: str) -> dict[str, object]:
+            assert attempt_id == "attempt-1"
+            return {"state": self.state, "target_name": "munchy"}
+
+        def target_by_name(self, name: str) -> domain_models.TargetConfig:
+            assert name == "munchy"
+            return domain_models.TargetConfig(name=name, url="https://munchy.test")
+
+        def set_attempt_state(self, attempt_id: str, state: str) -> None:
+            assert attempt_id == "attempt-1"
+            self.state = state
+
+    adapter = MunchyTargetAdapter()
+    monkeypatch.setattr(munchy_adapter_module, "MunchyClient", FakeMunchyClient)
+    monkeypatch.setattr(
+        adapter,
+        "submission_request",
+        lambda context, attempt_id, target: SubmissionUploadRequest(
+            submission_id="submission-1",
+            template_id="camera-archive",
+            files=(),
+        ),
+    )
+    context = FakeContext()
+
+    adapter.advance(context, "attempt-1")  # type: ignore[arg-type]
+
+    assert context.state == "target_complete"
+    assert calls == [("submission-1", True)]
 
 
 def test_runtime_config_and_source_registry_have_distinct_authority(tmp_path: Path) -> None:

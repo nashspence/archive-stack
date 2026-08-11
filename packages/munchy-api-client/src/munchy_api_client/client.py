@@ -2092,54 +2092,6 @@ class MunchyClient:
                     return job
                 time.sleep(interval)
 
-    def wait_for_submission(
-        self,
-        submission_id: str,
-        *,
-        interval: float = 10.0,
-        wait_for_safe_delete: bool = True,
-    ) -> dict[str, Any]:
-        retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
-        retry_reporter = UploadRetryReporter(label="submission status")
-        renderer = make_progress_renderer(
-            include_job=True,
-            title=f"Munchy Submission {short_path(submission_id, max_len=48)}",
-        )
-        retry_reporter.bind_renderer(renderer)
-        with keep_system_awake("munchy submission wait"), renderer:
-            while True:
-                try:
-                    submission = self.get_submission(submission_id)
-                    job = submission.get("job")
-                    if not isinstance(job, dict):
-                        raise RuntimeError(f"submission returned invalid job state: {submission}")
-                    retry_delay = UPLOAD_RETRY_INITIAL_DELAY_SECONDS
-                    retry_reporter.finish()
-                except Exception as exc:
-                    if not is_transient_upload_error(exc):
-                        raise
-                    retry_reporter.mark_retry(
-                        rel_path=submission_id,
-                        retry_count=retry_reporter.total_retries + 1,
-                        retry_delay=retry_delay,
-                        exc=exc,
-                    )
-                    time.sleep(retry_delay)
-                    retry_delay = next_upload_retry_delay(retry_delay)
-                    continue
-                state = str(job.get("state") or "")
-                terminal = state in {"succeeded", "failed", "canceled"}
-                handoff_pending = (
-                    wait_for_safe_delete
-                    and state == "succeeded"
-                    and not handoff_safe_to_delete(job)
-                )
-                renderer.update(job, force=terminal and not handoff_pending)
-                if handoff_failed(job) or (terminal and not handoff_pending):
-                    retry_reporter.finish()
-                    return submission
-                time.sleep(interval)
-
 
 class MunchyAdminClient(MunchyClient):
     def __init__(

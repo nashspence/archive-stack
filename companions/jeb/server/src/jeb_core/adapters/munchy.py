@@ -186,15 +186,10 @@ class MunchyTargetAdapter:
                 context.set_attempt_state(attempt_id, "target_uploaded")
                 state = "target_uploaded"
             if state == "target_uploaded":
-                submission = client.wait_for_submission(
+                job = client.wait_for_job(
                     request.submission_id,
                     wait_for_safe_delete=target.wait_for_safe_delete,
                 )
-                job = submission.get("job")
-                if not isinstance(job, dict):
-                    raise UnrecoverableJebError(
-                        f"Munchy submission returned invalid job state: {submission}"
-                    )
                 if not job_finished_cleanly(job):
                     raise UnrecoverableJebError(compact_job_failure(job))
                 context.set_attempt_state(attempt_id, "target_complete")

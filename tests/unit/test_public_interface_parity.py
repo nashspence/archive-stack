@@ -40,7 +40,6 @@ SUPPORTED_CLIENT_HELPERS = {
         "upload_file",
         "upload_files",
         "wait_for_job",
-        "wait_for_submission",
     },
     "jeb": {"close", "wait_for_attempt", "wait_for_operation"},
 }

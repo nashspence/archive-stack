@@ -942,17 +942,14 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
             seen["uploaded"] = request.submission_id
             return {"state": "uploaded"}
 
-        def wait_for_submission(self, submission_id: str, *, interval: float = 10.0):
+        def wait_for_job(self, job_id: str, *, interval: float = 10.0):
             assert interval == 0.5
+            seen["waited_job"] = job_id
             return {
-                "submission_id": submission_id,
-                "upload": {"state": "uploaded"},
-                "job": {
-                    "job_id": submission_id,
-                    "state": "succeeded",
-                    "phase": "done",
-                    "handoff": {"state": "complete", "safe_to_delete": True},
-                },
+                "job_id": job_id,
+                "state": "succeeded",
+                "phase": "done",
+                "handoff": {"state": "complete", "safe_to_delete": True},
             }
 
     monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
@@ -986,9 +983,11 @@ def test_munchy_submit_uses_server_template(monkeypatch, tmp_path) -> None:  # t
     assert preflight_request.run_id == "20260621T120000.123456Z"
     assert [item.rel_path for item in preflight_request.files] == ["clip.mp4"]
     assert seen["uploaded"] == upload_request.submission_id
+    assert seen["waited_job"] == upload_request.submission_id
     assert awake_reasons == ["munchy submit"]
     payload = json.loads(result.stdout)
     assert payload["submission_id"] == upload_request.submission_id
+    assert payload["upload"]["state"] == "uploaded"
     assert payload["job"]["state"] == "succeeded"
 
 
