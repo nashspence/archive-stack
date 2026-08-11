@@ -856,8 +856,29 @@ def test_input_file_upload_response_signs_the_nginx_normalized_uri(
 
     assert response["upload_url"] == (
         "http://server.test/files/.munchy-server%2Fuploads%2Fabc"
-        "?md5=fYqOQxDZCG96TbcwLCKLnw&expires=1700000900"
+        "?token=ofCP_XAs6BMUKVDUtcm2LlxBBhif1jj-Q45irmXZDzM&expires=1700000900"
     )
+
+
+def test_tusd_authorizer_accepts_the_exact_hmac_url_contract(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_TUSD_PUBLIC_SIGNING_SECRET", "test-secret")
+    server = load_server(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.upload_service, "current_unix_timestamp", lambda: 1_700_000_000)
+    signed_uri = (
+        "/files/.munchy-server%2Fuploads%2Fabc"
+        "?token=ofCP_XAs6BMUKVDUtcm2LlxBBhif1jj-Q45irmXZDzM&expires=1700000900"
+    )
+
+    with TestClient(server.app) as client:
+        accepted = client.get(
+            "/internal/tusd/authorize",
+            headers={"X-Munchy-Tusd-Original-Uri": signed_uri},
+        )
+
+    assert accepted.status_code == 204
 
 
 def test_resumed_input_upload_refreshes_signature_while_storing_unsigned_url(
@@ -905,8 +926,12 @@ def test_resumed_input_upload_refreshes_signature_while_storing_unsigned_url(
     second = server.job_service._create_or_resume_input_file_upload(upload_id, rel_path)
     stored = server.state_store.read_state("input-upload", upload_id)
 
-    assert first["upload_url"] == (f"{upload_url}?md5=fYqOQxDZCG96TbcwLCKLnw&expires=1700000900")
-    assert second["upload_url"] == (f"{upload_url}?md5=uBarAK-MbmMqSCQazDS3Mw&expires=1700001000")
+    assert first["upload_url"] == (
+        f"{upload_url}?token=ofCP_XAs6BMUKVDUtcm2LlxBBhif1jj-Q45irmXZDzM&expires=1700000900"
+    )
+    assert second["upload_url"] == (
+        f"{upload_url}?token=k-9hp06rzzpGzxjttBfH6sRka9Pb_GR4l6IH1KGWkxU&expires=1700001000"
+    )
     assert stored is not None
     assert stored["files"][0]["upload_url"] == upload_url
 

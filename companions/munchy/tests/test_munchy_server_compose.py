@@ -47,12 +47,11 @@ def test_server_compose_upgrades_state_before_startup() -> None:
     }
 
 
-def test_server_and_lan_gateway_share_the_tusd_signing_contract() -> None:
+def test_server_signs_tusd_urls_and_gateway_uses_the_server_authorizer() -> None:
     compose = yaml.safe_load(
         (REPO_ROOT / "companions/munchy/server/compose.yaml").read_text(encoding="utf-8")
     )
     server_environment = compose["services"]["munchy-server"]["environment"]
-    gateway_environment = compose["services"]["munchy-server-lan-gateway"]["environment"]
     nginx = (REPO_ROOT / "companions/munchy/server/config/nginx-lan-gateway.conf").read_text(
         encoding="utf-8"
     )
@@ -61,17 +60,12 @@ def test_server_and_lan_gateway_share_the_tusd_signing_contract() -> None:
         "${MUNCHY_TUSD_PUBLIC_SIGNING_SECRET:?MUNCHY_TUSD_PUBLIC_SIGNING_SECRET is required}"
     )
     assert server_environment["MUNCHY_TUSD_PUBLIC_SIGNING_SECRET"] == signing_setting
-    assert gateway_environment["MUNCHY_TUSD_PUBLIC_SIGNING_SECRET"] == signing_setting
     assert server_environment["MUNCHY_TUSD_PUBLIC_URL_TTL_SECONDS"] == (
         "${MUNCHY_TUSD_PUBLIC_URL_TTL_SECONDS:-86400}"
     )
-    assert nginx.count("secure_link $arg_md5,$arg_expires;") == 1
-    assert (
-        nginx.count(
-            'secure_link_md5 "$secure_link_expires$uri ${MUNCHY_TUSD_PUBLIC_SIGNING_SECRET}";'
-        )
-        == 1
-    )
+    assert nginx.count("auth_request /_munchy_tusd_authorize;") == 1
+    assert nginx.count("proxy_pass http://munchy_server_api/internal/tusd/authorize;") == 1
+    assert nginx.count("proxy_set_header X-Munchy-Tusd-Original-Uri $request_uri;") == 1
 
 
 def test_lan_gateway_keeps_parallel_transfers_observable_and_unbuffered() -> None:
@@ -105,6 +99,7 @@ def test_lan_gateway_keeps_parallel_transfers_observable_and_unbuffered() -> Non
     assert "rl=$request_length rt=$request_time urt=$upstream_response_time" in nginx
     assert "proxy_request_buffering off;" in nginx
     assert "proxy_buffering off;" in nginx
+    assert "proxy_pass_request_body off;" in nginx
     assert "server ${MUNCHY_GATEWAY_API_UPSTREAM_ADDR};" in nginx
     assert "server ${MUNCHY_GATEWAY_TUSD_UPSTREAM_ADDR};" in nginx
     assert "listen ${MUNCHY_GATEWAY_BIND_ADDR}:${MUNCHY_GATEWAY_API_PORT};" in nginx

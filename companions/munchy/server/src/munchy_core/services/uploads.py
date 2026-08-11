@@ -4,6 +4,7 @@ import base64
 import copy
 import errno
 import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -568,17 +569,18 @@ def public_tusd_upload_url(upload_url: str) -> str:
     parsed = urlsplit(upload_url)
     expires = current_unix_timestamp() + runtime_config.TUSD_PUBLIC_URL_TTL_SECONDS
     nginx_uri = unquote(parsed.path)
-    digest = hashlib.md5(  # noqa: S324 - nginx secure_link requires MD5.
-        f"{expires}{nginx_uri} {secret}".encode(),
-        usedforsecurity=False,
-    ).digest()
+    digest = hmac.digest(
+        secret.encode(),
+        f"{expires}\n{nginx_uri}".encode(),
+        "sha256",
+    )
     signature = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
     query = [
         (key, value)
         for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key not in {"expires", "md5"}
+        if key not in {"expires", "token"}
     ]
-    query.extend((("md5", signature), ("expires", str(expires))))
+    query.extend((("token", signature), ("expires", str(expires))))
     return urlunsplit(
         (
             parsed.scheme,
@@ -588,6 +590,34 @@ def public_tusd_upload_url(upload_url: str) -> str:
             parsed.fragment,
         )
     )
+
+
+def public_tusd_request_is_authorized(original_uri: str) -> bool:
+    secret = runtime_config.TUSD_PUBLIC_SIGNING_SECRET
+    if not secret:
+        return False
+    parsed = urlsplit(original_uri)
+    tokens = [
+        value for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key == "token"
+    ]
+    expirations = [
+        value for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key == "expires"
+    ]
+    if len(tokens) != 1 or len(expirations) != 1 or not expirations[0].isdigit():
+        return False
+    expires = int(expirations[0])
+    if expires < current_unix_timestamp():
+        return False
+    expected = hmac.digest(
+        secret.encode(),
+        f"{expires}\n{unquote(parsed.path)}".encode(),
+        "sha256",
+    )
+    try:
+        supplied = base64.urlsafe_b64decode(tokens[0] + "=" * (-len(tokens[0]) % 4))
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(supplied, expected)
 
 
 def tus_headers(**headers: str) -> dict[str, str]:

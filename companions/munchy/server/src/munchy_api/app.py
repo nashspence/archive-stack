@@ -36,7 +36,7 @@ import munchy_core.services.uploads as upload_service
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.routing import APIRoute
 from http_api_contracts import (
     ErrorResponse,
@@ -702,6 +702,13 @@ async def tusd_hooks(request: Request) -> JSONResponse:
     return JSONResponse(
         {"ChangeFileInfo": {"ID": upload_service.tusd_upload_id_for_target_path(target_path)}}
     )
+
+
+@app.get("/internal/tusd/authorize", include_in_schema=False)
+def authorize_tusd_upload(request: Request) -> Response:
+    original_uri = request.headers.get("X-Munchy-Tusd-Original-Uri", "")
+    status = 204 if upload_service.public_tusd_request_is_authorized(original_uri) else 403
+    return Response(status_code=status)
 
 
 @app.get("/v1/jobs", response_model=JobPageResponse)
