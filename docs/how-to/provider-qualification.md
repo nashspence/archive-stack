@@ -84,7 +84,7 @@ S3 list/read/write/delete operations plus `listBuckets`, `readBucketEncryption`,
 region, privacy, CORS, encryption, and lifecycle before any disposable deployment starts.
 
 GitHub uses two protected environments. Both permit deployments from the exact `main`
-branch only and prohibit administrator bypass. `provider-qualification-aws-provisioning`
+branch only and prohibit administrator bypass. `provider-qualification-provisioning`
 requires explicit maintainer approval and exposes only AWS infrastructure-reconciliation
 authority. It has these environment variables:
 

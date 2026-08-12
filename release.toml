@@ -66,7 +66,7 @@ provider_qualification = "The Riverhog release maintainer approves AWS infrastru
 [governance.environments]
 release = "release-publication"
 pages = "github-pages"
-provider_qualification_provisioning = "provider-qualification-aws-provisioning"
+provider_qualification_provisioning = "provider-qualification-provisioning"
 provider_qualification_runtime = "provider-qualification"
 
 [compatibility]

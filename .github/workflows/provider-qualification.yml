@@ -165,7 +165,7 @@ jobs:
     if: needs.resolve.outputs.action == 'start'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    environment: provider-qualification-aws-provisioning
+    environment: provider-qualification-provisioning
     permissions:
       contents: read
       id-token: write
