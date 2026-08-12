@@ -26,8 +26,10 @@ B2 provisioning is intentionally manual because the archive and retrieval-cache 
 keys must be created after their dedicated buckets and scoped to those exact buckets.
 `make provider-qualification args="b2-check <config>"` is the read-only conformance check.
 Runs use a UUID-qualified object prefix, and the AWS bucket must never have had versioning
-enabled. The runner retires its B2 archive copies and retains the small Deep Archive canary
-until its 185-day lifecycle expiration to avoid premature-deletion charges.
+enabled. At a terminal pass or provider-declared failure, the version-aware runner deletes
+every B2 object version, delete marker, and incomplete multipart upload in its run prefix and
+verifies the prefix is empty. It retains the small Deep Archive canary until its 185-day
+lifecycle expiration to avoid premature-deletion charges.
 
 One `operate` invocation advances all immediately available work and returns while a Deep
 Archive restore is pending. The next invocation reconstructs a disposable Riverhog service
@@ -73,15 +75,16 @@ bucket. GitHub Actions obtains AWS credentials through two OIDC roles:
   the marked CloudFront configuration.
 
 Create both B2 buckets manually as private, S3-compatible, dedicated buckets with Object
-Lock disabled, no CORS rules, default SSE-B2 encryption, and this exact lifecycle for the
-`qualification/` prefix: hide current objects after seven days, delete hidden versions after
-one day, and cancel unfinished large files after three days. Object Lock is the one manual
-assertion because ordinary bucket-scoped runtime keys cannot inspect retention settings.
+Lock disabled, no CORS rules, and the provider-console policy “Keep prior versions for this
+many days: 1.” Riverhog archive objects are already authenticated ciphertext, so B2-managed
+server-side encryption is optional and is not a qualification invariant. Object Lock is the
+one manual assertion because ordinary bucket-scoped runtime keys cannot inspect retention
+settings.
 For each bucket, create a distinct application key restricted to that exact bucket. A key
 may additionally be restricted to `qualification/`. It needs the B2 capabilities that back
-S3 list/read/write/delete operations plus `listBuckets`, `readBucketEncryption`, and
+S3 list/read/write/delete and multipart-cleanup operations plus `listBuckets` and
 `readBucketLifecycleRules`. The read-only `b2-check` verifies the key scope, endpoint,
-region, privacy, CORS, encryption, and lifecycle before any disposable deployment starts.
+region, privacy, CORS, and prior-version lifecycle before any disposable deployment starts.
 
 GitHub uses two protected environments. Both permit deployments from the exact `main`
 branch only and prohibit administrator bypass. `provider-qualification-provisioning`
