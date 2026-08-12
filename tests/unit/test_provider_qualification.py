@@ -148,50 +148,10 @@ def test_provider_bucket_ownership_refuses_versioned_or_shared_state() -> None:
 
     assert versioned.action == "blocked" and "versioning" in versioned.changes
     assert shared.action == "blocked" and shared.changes == ("unmanaged-tags",)
-    assert (
-        module.B2BucketManager._owned(
-            {
-                "bucketInfo": {
-                    "riverhog-purpose": module.QUALIFICATION_MARKER,
-                    "riverhog-logical-name": "b2-archive",
-                    "shared": "true",
-                }
-            },
-            module.ResolvedBucket(
-                logical_name="b2-archive",
-                provider="b2",
-                role="archive",
-                bucket_name="qualification-b2",
-                region="us-west-004",
-            ),
-        )
-        is False
-    )
 
 
-def test_b2_provisioning_requires_visible_object_lock_state() -> None:
+def test_b2_manual_check_uses_v4_scope_and_never_mutates() -> None:
     module = load_script()
-    client = module.B2NativeClient(key_id="key-id", application_key="application-key")
-    capabilities = {
-        "listBuckets",
-        "writeBuckets",
-        "readBucketEncryption",
-        "writeBucketEncryption",
-    }
-    client._request = lambda *_args, **_kwargs: {  # type: ignore[method-assign]
-        "accountId": "account-id",
-        "authorizationToken": "authorization-token",
-        "apiInfo": {
-            "storageApi": {
-                "apiUrl": "https://api.example.test",
-                "allowed": {"capabilities": sorted(capabilities)},
-            }
-        },
-    }
-
-    with pytest.raises(module.QualificationError, match="readBucketRetentions"):
-        client.authorize()
-
     config = module.load_config(CONFIG)
     bucket = module.ResolvedBucket(
         logical_name="b2-archive",
@@ -200,38 +160,129 @@ def test_b2_provisioning_requires_visible_object_lock_state() -> None:
         bucket_name="qualification-b2",
         region="us-west-004",
     )
+    client = module.B2NativeClient(key_id="key-id", application_key="application-key")
+    capabilities = sorted(
+        {
+            "deleteFiles",
+            "listBuckets",
+            "listFiles",
+            "readBucketEncryption",
+            "readBucketLifecycleRules",
+            "readFiles",
+            "writeFiles",
+        }
+    )
+    operations: list[str] = []
 
-    class _Client:
-        account_id = "account-id"
-
-        def call(self, _operation: str, _payload: object) -> dict[str, object]:
+    def request(url: str, **kwargs: object) -> dict[str, object]:
+        payload = kwargs.get("payload")
+        if payload is None:
             return {
-                "buckets": [
-                    {
-                        "bucketId": "bucket-id",
-                        "bucketInfo": {
-                            "riverhog-purpose": module.QUALIFICATION_MARKER,
-                            "riverhog-logical-name": bucket.logical_name,
-                        },
-                        "bucketType": "allPrivate",
-                        "corsRules": [],
-                        "lifecycleRules": module._b2_lifecycle(config),
-                        "defaultServerSideEncryption": {
-                            "isClientAuthorizedToRead": True,
-                            "value": {"algorithm": "AES256", "mode": "SSE-B2"},
-                        },
-                        "fileLockConfiguration": {
-                            "isClientAuthorizedToRead": False,
-                            "value": None,
+                "accountId": "account-id",
+                "authorizationToken": "authorization-token",
+                "apiInfo": {
+                    "storageApi": {
+                        "apiUrl": "https://api.example.test",
+                        "s3ApiUrl": "https://s3.us-west-004.backblazeb2.com",
+                        "allowed": {
+                            "buckets": [{"id": "bucket-id", "name": bucket.bucket_name}],
+                            "capabilities": capabilities,
+                            "namePrefix": "qualification/",
                         },
                     }
-                ]
+                },
             }
+        operations.append(url.rsplit("/", maxsplit=1)[-1])
+        return {
+            "buckets": [
+                {
+                    "bucketId": "bucket-id",
+                    "bucketType": "allPrivate",
+                    "corsRules": [],
+                    "lifecycleRules": module._b2_lifecycle(config),
+                    "defaultServerSideEncryption": {
+                        "isClientAuthorizedToRead": True,
+                        "value": {"algorithm": "AES256", "mode": "SSE-B2"},
+                    },
+                    "fileLockConfiguration": {
+                        "isClientAuthorizedToRead": False,
+                        "value": None,
+                    },
+                }
+            ]
+        }
 
-    plan = module.B2BucketManager(_Client()).plan(bucket, config)
+    client._request = request  # type: ignore[method-assign]
+    checker = module.B2ManualBucketChecker(
+        client,
+        endpoint_url="https://s3.us-west-004.backblazeb2.com",
+    )
+
+    plan = checker.plan(bucket, config)
+
+    assert plan.action == "ready"
+    assert plan.changes == ()
+    assert operations == ["b2_list_buckets"]
+
+
+def test_b2_manual_check_blocks_drift_instead_of_reconciling() -> None:
+    module = load_script()
+    config = module.load_config(CONFIG)
+    bucket = module.ResolvedBucket(
+        logical_name="b2-archive",
+        provider="b2",
+        role="archive",
+        bucket_name="qualification-b2",
+        region="us-west-004",
+    )
+    client = module.B2NativeClient(key_id="key-id", application_key="application-key")
+    client.account_id = "account-id"
+    client.allowed_buckets = (("other-id", "other-bucket"),)
+    client.capabilities = frozenset(
+        {
+            "deleteFiles",
+            "listBuckets",
+            "listFiles",
+            "readBucketEncryption",
+            "readBucketLifecycleRules",
+            "readFiles",
+            "writeFiles",
+        }
+    )
+    client.name_prefix = None
+    client.s3_api_url = "https://s3.us-west-004.backblazeb2.com"
+    client.authorize = lambda: None  # type: ignore[method-assign]
+    client.call = lambda *_args, **_kwargs: {  # type: ignore[method-assign]
+        "buckets": [
+            {
+                "bucketType": "allPublic",
+                "corsRules": [{"corsRuleName": "unexpected"}],
+                "lifecycleRules": [],
+                "defaultServerSideEncryption": {
+                    "isClientAuthorizedToRead": True,
+                    "value": {"algorithm": None, "mode": None},
+                },
+                "fileLockConfiguration": {
+                    "isClientAuthorizedToRead": True,
+                    "value": {"isFileLockEnabled": True},
+                },
+            }
+        ]
+    }
+    checker = module.B2ManualBucketChecker(client, endpoint_url="s3.us-west-004.backblazeb2.com")
+
+    plan = checker.plan(bucket, config)
 
     assert plan.action == "blocked"
-    assert plan.changes == ("object-lock-visibility",)
+    assert set(plan.changes) == {
+        "bucket-scoped-key",
+        "cors",
+        "default-encryption",
+        "endpoint-url",
+        "lifecycle",
+        "object-lock",
+        "private-access",
+    }
 
 
 def test_corpus_is_deterministic_and_manifest_is_not_an_uploaded_member(

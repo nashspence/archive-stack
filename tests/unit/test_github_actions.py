@@ -285,9 +285,9 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
         "group": "provider-qualification",
         "cancel-in-progress": "false",
     }
-    assert set(workflow["jobs"]) == {"resolve", "provision", "qualify"}
+    assert set(workflow["jobs"]) == {"resolve", "provision_aws", "qualify"}
     resolve_job = workflow["jobs"]["resolve"]
-    provision_job = workflow["jobs"]["provision"]
+    provision_job = workflow["jobs"]["provision_aws"]
     job = workflow["jobs"]["qualify"]
     assert "environment" not in resolve_job and "permissions" not in resolve_job
     assert resolve_job["outputs"] == {
@@ -301,25 +301,20 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
 
     assert provision_job["needs"] == "resolve"
     assert provision_job["if"] == "needs.resolve.outputs.action == 'start'"
-    assert provision_job["environment"] == "provider-qualification-provisioning"
+    assert provision_job["environment"] == "provider-qualification-aws-provisioning"
     assert provision_job["permissions"] == {"contents": "read", "id-token": "write"}
     assert references(provision_job, "vars") == {
         "RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET",
         "RIVERHOG_QUALIFICATION_AWS_PROVISION_ROLE_ARN",
         "RIVERHOG_QUALIFICATION_AWS_REGION",
-        "RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET",
-        "RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID",
-        "RIVERHOG_QUALIFICATION_B2_REGION",
-        "RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_BUCKET",
         "RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY",
     }
-    assert references(provision_job, "secrets") == {
-        "RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY"
-    }
+    assert references(provision_job, "secrets") == set()
+    assert "RIVERHOG_QUALIFICATION_B2_" not in json.dumps(provision_job)
 
-    assert job["needs"] == ["resolve", "provision"]
+    assert job["needs"] == ["resolve", "provision_aws"]
     assert "needs.resolve.outputs.action != 'skip'" in job["if"]
-    assert "needs.provision.result == 'skipped'" in job["if"]
+    assert "needs.provision_aws.result == 'skipped'" in job["if"]
     assert job["environment"] == "provider-qualification"
     assert job["permissions"] == {
         "actions": "read",
@@ -388,16 +383,22 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     reconcile = next(
         step
         for step in provision_job["steps"]
-        if step["name"] == "Reconcile dedicated provider infrastructure"
+        if step["name"] == "Reconcile dedicated AWS infrastructure"
+    )
+    b2_check = next(
+        step for step in steps if step["name"] == "Verify manually provisioned B2 infrastructure"
     )
     assert "AWS_PROVISION_ROLE_ARN" in provision["with"]["role-to-assume"]
     assert "AWS_RUNTIME_ROLE_ARN" in runtime["with"]["role-to-assume"]
     assert runtime["with"]["unset-current-credentials"] == "true"
-    assert set(reconcile["env"]) == {
-        "RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY",
-        "RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID",
+    assert "env" not in reconcile
+    assert set(b2_check["env"]) == {
+        "RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID",
+        "RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY",
+        "RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID",
+        "RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY",
     }
-    assert "B2_PROVISION_APPLICATION_KEY" not in json.dumps(job)
+    assert b2_check["run"] == 'make provider-qualification args="b2-check $CONFIG_PATH"'
 
     state = next(step for step in steps if step["name"] == "Create and verify deterministic state")
     deployment_env = next(
