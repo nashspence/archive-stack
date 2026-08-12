@@ -784,7 +784,13 @@ class B2NativeClient:
         storage = payload.get("apiInfo", {}).get("storageApi", {})
         allowed = storage.get("allowed", {}) if isinstance(storage, dict) else {}
         capabilities = set(allowed.get("capabilities", [])) if isinstance(allowed, dict) else set()
-        required = {"listBuckets", "writeBuckets", "readBucketEncryption", "writeBucketEncryption"}
+        required = {
+            "listBuckets",
+            "writeBuckets",
+            "readBucketEncryption",
+            "writeBucketEncryption",
+            "readBucketRetentions",
+        }
         missing = sorted(required - capabilities)
         if missing:
             raise QualificationError(
@@ -852,8 +858,11 @@ class B2BucketManager:
         if value != {"algorithm": "AES256", "mode": "SSE-B2"}:
             changes.append("default-encryption")
         lock = current.get("fileLockConfiguration")
-        lock_value = lock.get("value") if isinstance(lock, dict) else None
-        if isinstance(lock_value, dict) and lock_value.get("isFileLockEnabled") is True:
+        if not isinstance(lock, dict) or lock.get("isClientAuthorizedToRead") is not True:
+            changes.append("object-lock-visibility")
+        elif not isinstance(lock.get("value"), dict):
+            changes.append("object-lock-visibility")
+        elif cast(dict[str, object], lock["value"]).get("isFileLockEnabled") is True:
             changes.append("object-lock")
         return tuple(changes)
 
@@ -862,7 +871,10 @@ class B2BucketManager:
         if current is None:
             return InfrastructureAction(bucket.logical_name, "b2", "create", ("bucket",))
         changes = self._changes(current, bucket, config)
-        if "ownership-marker" in changes or "object-lock" in changes:
+        if any(
+            change in changes
+            for change in ("ownership-marker", "object-lock", "object-lock-visibility")
+        ):
             return InfrastructureAction(bucket.logical_name, "b2", "blocked", changes)
         return InfrastructureAction(
             bucket.logical_name,

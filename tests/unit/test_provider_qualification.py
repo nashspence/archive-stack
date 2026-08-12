@@ -169,6 +169,71 @@ def test_provider_bucket_ownership_refuses_versioned_or_shared_state() -> None:
     )
 
 
+def test_b2_provisioning_requires_visible_object_lock_state() -> None:
+    module = load_script()
+    client = module.B2NativeClient(key_id="key-id", application_key="application-key")
+    capabilities = {
+        "listBuckets",
+        "writeBuckets",
+        "readBucketEncryption",
+        "writeBucketEncryption",
+    }
+    client._request = lambda *_args, **_kwargs: {  # type: ignore[method-assign]
+        "accountId": "account-id",
+        "authorizationToken": "authorization-token",
+        "apiInfo": {
+            "storageApi": {
+                "apiUrl": "https://api.example.test",
+                "allowed": {"capabilities": sorted(capabilities)},
+            }
+        },
+    }
+
+    with pytest.raises(module.QualificationError, match="readBucketRetentions"):
+        client.authorize()
+
+    config = module.load_config(CONFIG)
+    bucket = module.ResolvedBucket(
+        logical_name="b2-archive",
+        provider="b2",
+        role="archive",
+        bucket_name="qualification-b2",
+        region="us-west-004",
+    )
+
+    class _Client:
+        account_id = "account-id"
+
+        def call(self, _operation: str, _payload: object) -> dict[str, object]:
+            return {
+                "buckets": [
+                    {
+                        "bucketId": "bucket-id",
+                        "bucketInfo": {
+                            "riverhog-purpose": module.QUALIFICATION_MARKER,
+                            "riverhog-logical-name": bucket.logical_name,
+                        },
+                        "bucketType": "allPrivate",
+                        "corsRules": [],
+                        "lifecycleRules": module._b2_lifecycle(config),
+                        "defaultServerSideEncryption": {
+                            "isClientAuthorizedToRead": True,
+                            "value": {"algorithm": "AES256", "mode": "SSE-B2"},
+                        },
+                        "fileLockConfiguration": {
+                            "isClientAuthorizedToRead": False,
+                            "value": None,
+                        },
+                    }
+                ]
+            }
+
+    plan = module.B2BucketManager(_Client()).plan(bucket, config)
+
+    assert plan.action == "blocked"
+    assert plan.changes == ("object-lock-visibility",)
+
+
 def test_corpus_is_deterministic_and_manifest_is_not_an_uploaded_member(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
