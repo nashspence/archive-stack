@@ -131,6 +131,8 @@ def _check_environment(
     name: str,
     maintainer: str,
     expected_policies: set[tuple[str, str]],
+    *,
+    reviewer_required: bool = True,
 ) -> None:
     environment = _gh(f"repos/{repository}/environments/{name}")
     if environment.get("deployment_branch_policy") != {
@@ -140,22 +142,30 @@ def _check_environment(
         raise GovernanceError(f"{name} must use explicit deployment branch policies")
     if environment.get("can_admins_bypass") is not False:
         raise GovernanceError(f"{name} must not permit administrator bypass")
+    protection_types = {rule.get("type") for rule in environment.get("protection_rules", [])}
+    expected_protection_types = {"branch_policy"}
+    if reviewer_required:
+        expected_protection_types.add("required_reviewers")
+    if protection_types != expected_protection_types:
+        raise GovernanceError(f"{name} protection rules differ from release.toml")
     reviewer_rules = [
         rule
         for rule in environment.get("protection_rules", [])
         if rule.get("type") == "required_reviewers"
     ]
-    if len(reviewer_rules) != 1:
-        raise GovernanceError(f"{name} must require one reviewer rule")
-    reviewer_rule = reviewer_rules[0]
-    reviewers = reviewer_rule.get("reviewers", [])
-    actual_reviewers = {
-        reviewer.get("reviewer", {}).get("login")
-        for reviewer in reviewers
-        if reviewer.get("type") == "User"
-    }
-    if actual_reviewers != {maintainer} or reviewer_rule.get("prevent_self_review") is not False:
-        raise GovernanceError(f"{name} must require explicit maintainer approval")
+    if reviewer_required:
+        reviewer_rule = reviewer_rules[0]
+        reviewers = reviewer_rule.get("reviewers", [])
+        actual_reviewers = {
+            reviewer.get("reviewer", {}).get("login")
+            for reviewer in reviewers
+            if reviewer.get("type") == "User"
+        }
+        if (
+            actual_reviewers != {maintainer}
+            or reviewer_rule.get("prevent_self_review") is not False
+        ):
+            raise GovernanceError(f"{name} must require explicit maintainer approval")
     policies = _gh(f"repos/{repository}/environments/{name}/deployment-branch-policies")
     actual_policies = {
         (policy.get("name"), policy.get("type")) for policy in policies.get("branch_policies", [])
@@ -198,6 +208,19 @@ def check() -> dict[str, Any]:
         str(environments["pages"]),
         maintainer,
         {("release/v1", "branch"), ("gh-pages", "branch")},
+    )
+    _check_environment(
+        repository,
+        str(environments["provider_qualification_provisioning"]),
+        maintainer,
+        {("main", "branch")},
+    )
+    _check_environment(
+        repository,
+        str(environments["provider_qualification_runtime"]),
+        maintainer,
+        {("main", "branch")},
+        reviewer_required=False,
     )
     return {
         "schema": SCHEMA,
