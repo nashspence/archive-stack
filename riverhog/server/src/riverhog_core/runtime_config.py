@@ -122,6 +122,7 @@ class ArchiveStoreConfig:
     backend: str
     storage_class: str
     read_mode: str = "immediate"
+    session_token: str | None = None
     cloudfront_base_url: str | None = None
     cloudfront_public_key_id: str | None = None
     cloudfront_private_key_path: Path | None = None
@@ -148,6 +149,7 @@ class RetrievalCacheConfig:
     secret_access_key: str
     force_path_style: bool = False
     prefix: str = ""
+    session_token: str | None = None
 
 
 def _is_development_archive_store(store: ArchiveStoreConfig) -> bool:
@@ -488,6 +490,7 @@ def _parse_archive_stores(
                 name=f"{prefix}READ_MODE",
                 allowed={"immediate", "restore_required"},
             ),
+            session_token=values.get(f"{prefix}SESSION_TOKEN", "").strip() or None,
             cloudfront_base_url=cloudfront_base_url,
             cloudfront_public_key_id=cloudfront_public_key_id,
             cloudfront_private_key_path=(
@@ -568,8 +571,11 @@ def load_runtime_config() -> RuntimeConfig:
         "access_key_id": os.getenv("RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID", "").strip(),
         "secret_access_key": os.getenv("RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY", "").strip(),
     }
+    cache_session_token = os.getenv("RIVERHOG_RETRIEVAL_CACHE_SESSION_TOKEN", "").strip() or None
     configured_cache_fields = [name for name, value in cache_values.items() if value]
-    if configured_cache_fields and len(configured_cache_fields) != len(cache_values):
+    if (configured_cache_fields or cache_session_token is not None) and len(
+        configured_cache_fields
+    ) != len(cache_values):
         raise ValueError("RIVERHOG_RETRIEVAL_CACHE_* configuration is incomplete")
     retrieval_cache = (
         RetrievalCacheConfig(
@@ -578,6 +584,7 @@ def load_runtime_config() -> RuntimeConfig:
                 os.getenv("RIVERHOG_RETRIEVAL_CACHE_FORCE_PATH_STYLE", "false")
             ),
             prefix=os.getenv("RIVERHOG_RETRIEVAL_CACHE_PREFIX", "").strip(),
+            session_token=cache_session_token,
         )
         if configured_cache_fields
         else None

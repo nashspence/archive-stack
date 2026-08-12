@@ -39,6 +39,8 @@ defaults.
   repository layout.
 - [Operator responsibilities](docs/operator-responsibilities.md) covers the human checks
   around durable storage, recovery, and deletion.
+- [Provider qualification](docs/how-to/provider-qualification.md) defines the disposable B2,
+  Deep Archive, and CloudFront release test and its operator configuration.
 - [Licensing](LICENSE.md) defines the repository's release terms.
 
 Release-level reference documentation belongs to tagged releases. The documentation on

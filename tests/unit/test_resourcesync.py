@@ -6,9 +6,11 @@ from xml.etree import ElementTree
 import httpx
 from riverhog_api.routers.resourcesync import (
     get_portable_collection_manifest,
+    resourcesync_capability_list,
     resourcesync_change_list,
     resourcesync_resource_list,
     resourcesync_resource_list_page,
+    well_known_resourcesync,
 )
 from riverhog_api_client.client import ApiClient
 from starlette.requests import Request
@@ -141,6 +143,61 @@ def test_cli_parses_resourcesync_cursor_and_collection_change() -> None:
             }
         ],
     }
+
+
+def test_api_client_parses_resourcesync_discovery_capabilities_and_resources() -> None:
+    container = SimpleNamespace(retrieval=RetrievalStub())
+    responses = {
+        "/.well-known/resourcesync": well_known_resourcesync(
+            _request("/.well-known/resourcesync"), "app"
+        ),
+        "/resourcesync/capabilitylist.xml": resourcesync_capability_list(
+            _request("/resourcesync/capabilitylist.xml"), "app"
+        ),
+        "/resourcesync/resourcelist.xml": resourcesync_resource_list(
+            _request("/resourcesync/resourcelist.xml"), "app", container
+        ),
+        "/resourcesync/resourcelist/1.xml": resourcesync_resource_list_page(
+            1,
+            _request("/resourcesync/resourcelist/1.xml"),
+            "app",
+            container,
+        ),
+    }
+
+    class Client(ApiClient):
+        def _request(self, method: str, path: str, **kwargs: object) -> httpx.Response:
+            assert method == "GET"
+            assert kwargs == {}
+            response = responses[path]
+            return httpx.Response(
+                200,
+                content=response.body,
+                request=httpx.Request(method, path),
+            )
+
+    client = Client(base_url="https://riverhog.example.test")
+
+    assert client.resourcesync_discovery()["capabilities"] == [
+        {
+            "capability": "capabilitylist",
+            "location": "https://riverhog.example.test/resourcesync/capabilitylist.xml",
+        }
+    ]
+    assert {item["capability"] for item in client.resourcesync_capabilities()["capabilities"]} == {
+        "resourcelist",
+        "changelist",
+    }
+    assert client.resourcesync_resource_pages()["pages"] == [
+        "https://riverhog.example.test/resourcesync/resourcelist/1.xml"
+    ]
+    assert client.resourcesync_resources(page=1)["resources"] == [
+        {
+            "collection_id": COLLECTION_ID,
+            "etag": ETAG,
+            "location": ("https://riverhog.example.test/v1/catalog/collections/42/manifest"),
+        }
+    ]
 
 
 def test_portable_manifest_response_has_a_content_etag() -> None:

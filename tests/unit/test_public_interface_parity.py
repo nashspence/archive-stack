@@ -38,7 +38,15 @@ OPERATION_ERROR_STATUSES = {
     },
 }
 SUPPORTED_CLIENT_HELPERS = {
-    "riverhog": {"catalog_changes", "close", "spawn"},
+    "riverhog": {
+        "catalog_changes",
+        "close",
+        "resourcesync_capabilities",
+        "resourcesync_discovery",
+        "resourcesync_resource_pages",
+        "resourcesync_resources",
+        "spawn",
+    },
     "munchy": {
         "close",
         "json",

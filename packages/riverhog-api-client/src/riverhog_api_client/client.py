@@ -290,6 +290,79 @@ class ApiClient(_HttpApiClient):
         )
         return EventPage.model_validate(payload)
 
+    def resourcesync_discovery(self) -> dict[str, object]:
+        response = self._request("GET", "/.well-known/resourcesync")
+        root = ElementTree.fromstring(response.content)
+        capabilities: list[dict[str, str]] = []
+        for url in root:
+            location = next((child.text for child in url if child.tag.endswith("loc")), None)
+            metadata = next((child for child in url if child.tag.endswith("md")), None)
+            if location and metadata is not None:
+                capabilities.append(
+                    {
+                        "capability": str(metadata.attrib.get("capability", "")),
+                        "location": location,
+                    }
+                )
+        return {"capabilities": capabilities}
+
+    def resourcesync_capabilities(self) -> dict[str, object]:
+        response = self._request("GET", "/resourcesync/capabilitylist.xml")
+        root = ElementTree.fromstring(response.content)
+        capabilities: list[dict[str, str]] = []
+        for url in root:
+            location = next((child.text for child in url if child.tag.endswith("loc")), None)
+            metadata = next((child for child in url if child.tag.endswith("md")), None)
+            if location and metadata is not None:
+                capabilities.append(
+                    {
+                        "capability": str(metadata.attrib.get("capability", "")),
+                        "location": location,
+                    }
+                )
+        return {"capabilities": capabilities}
+
+    def resourcesync_resource_pages(self) -> dict[str, object]:
+        response = self._request("GET", "/resourcesync/resourcelist.xml")
+        root = ElementTree.fromstring(response.content)
+        pages = [
+            location
+            for sitemap in root
+            if sitemap.tag.endswith("sitemap")
+            if (
+                location := next(
+                    (child.text for child in sitemap if child.tag.endswith("loc")),
+                    None,
+                )
+            )
+        ]
+        return {"pages": pages}
+
+    def resourcesync_resources(self, *, page: int = 1) -> dict[str, object]:
+        if page < 1:
+            raise ValueError("ResourceSync resource-list page must be positive")
+        response = self._request("GET", f"/resourcesync/resourcelist/{page}.xml")
+        root = ElementTree.fromstring(response.content)
+        resources: list[dict[str, object]] = []
+        for url in root:
+            if not url.tag.endswith("url"):
+                continue
+            location = next((child.text for child in url if child.tag.endswith("loc")), None)
+            metadata = next((child for child in url if child.tag.endswith("md")), None)
+            if location is None or metadata is None:
+                continue
+            collection_id = int(
+                location.split("/v1/catalog/collections/", 1)[-1].rsplit("/manifest", 1)[0]
+            )
+            resources.append(
+                {
+                    "collection_id": collection_id,
+                    "etag": metadata.attrib.get("hash", "").removeprefix("sha-256:"),
+                    "location": location,
+                }
+            )
+        return {"page": page, "resources": resources}
+
     def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
         response = self._request(
             "GET",
