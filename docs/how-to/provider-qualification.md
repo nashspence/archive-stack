@@ -40,6 +40,9 @@ corpus. While a restore remains active, a bounded PostgreSQL custom-format dump 
 checkpoint are retained as a 14-day Actions artifact. The dump contains dummy qualification
 state, never credentials or live data. Terminal artifacts omit the dump.
 
+The multipart profile terminates the official upload client after observing a committed
+upload unit, then restarts it with the same idempotency key and requires finalization.
+
 ## Configuration
 
 Start with [`config/provider-qualification.example.toml`](../../config/provider-qualification.example.toml).
