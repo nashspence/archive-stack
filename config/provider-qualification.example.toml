@@ -12,10 +12,6 @@ tier = "bulk"
 copy_days = 3
 deadline_hours = 96
 
-[b2_provisioning]
-key_id_env = "RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID"
-application_key_env = "RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY"
-
 [cloudfront]
 enabled = true
 public_key_path_env = "RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY_PATH"

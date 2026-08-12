@@ -61,12 +61,12 @@ tags = "The Riverhog release maintainer alone creates release-candidate and fina
 github_releases = "The Riverhog release maintainer approves the protected release-publication environment."
 registries = "The Riverhog release maintainer approves the protected release-publication environment."
 pages = "The Riverhog release maintainer approves the protected github-pages environment."
-provider_qualification = "The Riverhog release maintainer approves provider infrastructure reconciliation; restartable runtime polling is unattended."
+provider_qualification = "The Riverhog release maintainer approves AWS infrastructure reconciliation; B2 provisioning is manual and read-only conformance checks plus restartable runtime polling are unattended."
 
 [governance.environments]
 release = "release-publication"
 pages = "github-pages"
-provider_qualification_provisioning = "provider-qualification-provisioning"
+provider_qualification_provisioning = "provider-qualification-aws-provisioning"
 provider_qualification_runtime = "provider-qualification"
 
 [compatibility]
