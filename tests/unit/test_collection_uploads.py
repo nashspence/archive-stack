@@ -15,7 +15,6 @@ from riverhog_core.app_permissions import (
     ApplicationAccess,
     ApplicationPrincipal,
 )
-from riverhog_core.archive_ingress_registry import ArchiveIngressStore, ArchiveIngressStoreRegistry
 from riverhog_core.archive_manifest import parse_collection_archive_manifest
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
@@ -51,7 +50,7 @@ from riverhog_provenance import (
 )
 
 from tests.fixtures.crypto import FixtureProofStamper
-from tests.unit.archive_object_fixtures import MemoryArchiveStore, as_archive_store
+from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
 from tests.unit.test_archive_root import MemoryImmutableStore
 from tests.unit.test_pack_upload import MemoryMultipartStore
@@ -65,7 +64,7 @@ _CREATOR = ApplicationPrincipal(
 
 class _UnusedRangeStore:
     def iter_object_range(self, **_: object):
-        raise AssertionError("ingress does not read archive ranges")
+        raise AssertionError("collection upload does not read archive ranges")
 
 
 class _FailOnceProofStamper:
@@ -84,14 +83,14 @@ def _service(
     *,
     proof_stamper: ProofStamper | None = None,
 ) -> tuple[SqlAlchemyCollectionUploadService, RuntimeConfig]:
-    service, config, _multipart, _root = _service_with_ingress(
+    service, config, _multipart, _root = _service_with_archive_objects(
         tmp_path,
         proof_stamper=proof_stamper,
     )
     return service, config
 
 
-def _service_with_ingress(
+def _service_with_archive_objects(
     tmp_path: Path,
     *,
     proof_stamper: ProofStamper | None = None,
@@ -117,16 +116,16 @@ def _service_with_ingress(
     archive_store = MemoryArchiveStore()
     multipart = MemoryMultipartStore()
     root = MemoryImmutableStore()
-    ingress = ArchiveIngressStore(
-        multipart=multipart,
-        root=root,
-        ranges=_UnusedRangeStore(),
+    binding = replace(
+        archive_store_binding(archive_store),
+        multipart_objects=multipart,
+        immutable_objects=root,
+        object_ranges=_UnusedRangeStore(),
     )
     return (
         SqlAlchemyCollectionUploadService(
             config,
-            ArchiveStoreRegistry({"archive": as_archive_store(archive_store)}),
-            ArchiveIngressStoreRegistry({"archive": ingress}),
+            ArchiveStoreRegistry({"archive": binding}),
             proof_stamper=proof_stamper or FixtureProofStamper(),
             policy=policy,
             throughput_tuning=throughput_tuning,
@@ -141,7 +140,7 @@ def test_collection_ingress_uses_the_configured_source_read_chunk(
     tmp_path: Path,
 ) -> None:
     tuning = ArchiveThroughputTuning(source_read_chunk_bytes=256 * 1024)
-    service, _config, multipart, _root = _service_with_ingress(
+    service, _config, multipart, _root = _service_with_archive_objects(
         tmp_path,
         throughput_tuning=tuning,
     )
@@ -157,7 +156,7 @@ def test_collection_ingress_uses_the_configured_source_read_chunk(
 def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     tmp_path: Path,
 ) -> None:
-    service, config, _multipart, root = _service_with_ingress(tmp_path)
+    service, config, _multipart, root = _service_with_archive_objects(tmp_path)
     contents = {
         "captured.bin": b"captured payload\n",
         "operator-note.txt": b"explicitly omitted provenance\n",
@@ -573,7 +572,7 @@ def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) 
         raw_volume_plaintext_bytes=part_bytes,
         raw_part_plaintext_bytes=part_bytes,
     )
-    service, _config, _multipart, _root = _service_with_ingress(tmp_path, policy=policy)
+    service, _config, _multipart, _root = _service_with_archive_objects(tmp_path, policy=policy)
     content = b"raw payload"
     sha256 = hashlib.sha256(content).hexdigest()
     opened = service.create_or_resume(

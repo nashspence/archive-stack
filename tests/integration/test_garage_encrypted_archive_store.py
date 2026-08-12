@@ -14,14 +14,14 @@ from riverhog_core.archive_formats import (
 )
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.runtime_config import load_runtime_config
-from riverhog_core.stores.s3_archive_ingress_store import S3ArchiveMultipartObjectStore
-from riverhog_core.stores.s3_archive_manifest_store import S3ImmutableArchiveObjectStore
-from riverhog_core.stores.s3_archive_range_store import S3ArchiveObjectRangeStore
+from riverhog_core.stores.s3_archive_multipart_object_store import S3ArchiveMultipartObjectStore
+from riverhog_core.stores.s3_archive_object_range_store import S3ArchiveObjectRangeStore
 from riverhog_core.stores.s3_archive_store import (
     PLAINTEXT_BYTES_METADATA,
     S3ArchiveStore,
 )
 from riverhog_core.stores.s3_client import create_archive_s3_client
+from riverhog_core.stores.s3_immutable_archive_object_store import S3ImmutableArchiveObjectStore
 
 pytestmark = pytest.mark.integration
 

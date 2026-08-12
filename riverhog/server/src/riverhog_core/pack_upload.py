@@ -25,13 +25,13 @@ from riverhog_core.domain.archive import (
     StoredPartReceipt,
 )
 from riverhog_core.pack_volume import iter_render_pack_upload_unit_payload
-from riverhog_core.ports.archive_ingress_store import (
+from riverhog_core.ports.archive_objects import (
     ArchiveMultipartObjectStore,
     CompletedObjectReceipt,
     MultipartPartReceipt,
     MultipartUpload,
-    PackUploadCheckpointStore,
 )
+from riverhog_core.ports.archive_upload_checkpoints import PackUploadCheckpointStore
 from riverhog_core.streaming_age import (
     PreparedAgePart,
     ResumableAgeSessionCache,

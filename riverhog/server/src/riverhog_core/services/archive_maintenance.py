@@ -151,7 +151,7 @@ class SqlAlchemyArchiveMaintenanceService:
                 )
                 prefix = copy.archive_storage_prefix
 
-            receipt = self._archive_stores.require(store).publish_collection_metadata(
+            receipt = self._archive_stores.require(store).store.publish_collection_metadata(
                 collection_id=collection_id,
                 archive_storage_prefix=prefix,
                 manifest=manifest,
@@ -197,9 +197,9 @@ class SqlAlchemyArchiveMaintenanceService:
 
     def abort_incomplete_multipart_uploads(self, *, initiated_before: datetime) -> int:
         aborted = 0
-        for store_name, archive_store in self._archive_stores.items():
+        for store_name, binding in self._archive_stores.items():
             try:
-                count = archive_store.abort_incomplete_multipart_uploads(
+                count = binding.store.abort_incomplete_multipart_uploads(
                     initiated_before=initiated_before
                 )
             except Exception:

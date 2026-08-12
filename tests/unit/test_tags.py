@@ -33,7 +33,7 @@ from riverhog_protocol.errors import Conflict
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
     MemoryArchiveStore,
-    as_archive_store,
+    archive_store_binding,
     seed_archive_copy,
 )
 from tests.unit.db_helpers import sqlite_url
@@ -162,7 +162,7 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
     archive_store = MemoryArchiveStore()
     publisher = SqlAlchemyArchiveMaintenanceService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}),
+        ArchiveStoreRegistry({"deep": archive_store_binding(archive_store)}),
     )
     assert publisher.process_due_metadata_publications(limit=10) == 1
 
@@ -313,7 +313,7 @@ def test_startup_resumes_a_claimed_metadata_publication(tmp_path: Path) -> None:
 
     restarted = SqlAlchemyArchiveMaintenanceService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore())}),
+        ArchiveStoreRegistry({"deep": archive_store_binding(MemoryArchiveStore())}),
     )
 
     assert restarted.requeue_interrupted_metadata_publications_for_startup() == 1

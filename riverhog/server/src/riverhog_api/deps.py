@@ -6,8 +6,7 @@ from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
-from riverhog_core.archive_ingress_registry import ArchiveIngressStore, ArchiveIngressStoreRegistry
-from riverhog_core.archive_store_registry import ArchiveStoreRegistry
+from riverhog_core.archive_store_registry import ArchiveStoreBinding, ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
     SessionFactory,
     dispose_session_factory,
@@ -17,7 +16,7 @@ from riverhog_core.catalog_db import (
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.proofs import CommandProofStamper, CommandProofUpgrader, CommandProofVerifier
-from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.runtime_config import RuntimeConfig, load_runtime_config
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_attestations import SqlAlchemyArchiveAttestationService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
@@ -52,10 +51,10 @@ from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
-from riverhog_core.stores.s3_archive_ingress_store import S3ArchiveMultipartObjectStore
-from riverhog_core.stores.s3_archive_manifest_store import S3ImmutableArchiveObjectStore
-from riverhog_core.stores.s3_archive_range_store import S3ArchiveObjectRangeStore
+from riverhog_core.stores.s3_archive_multipart_object_store import S3ArchiveMultipartObjectStore
+from riverhog_core.stores.s3_archive_object_range_store import S3ArchiveObjectRangeStore
 from riverhog_core.stores.s3_archive_store import S3ArchiveStore
+from riverhog_core.stores.s3_immutable_archive_object_store import S3ImmutableArchiveObjectStore
 from riverhog_core.stores.s3_retrieval_cache import S3RetrievalCache
 from riverhog_core.stores.s3_support import ensure_bucket_exists
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
@@ -86,6 +85,30 @@ class ServiceContainer:
         dispose_session_factory(self.session_factory)
 
 
+def _archive_store_registry(
+    config: RuntimeConfig,
+    *,
+    retrieval_cache: S3RetrievalCache | None,
+    download_allowance: DownloadAllowance,
+) -> ArchiveStoreRegistry:
+    return ArchiveStoreRegistry(
+        {
+            name: ArchiveStoreBinding(
+                store=S3ArchiveStore(
+                    config,
+                    store,
+                    retrieval_cache=retrieval_cache,
+                    download_allowance=download_allowance,
+                ),
+                multipart_objects=S3ArchiveMultipartObjectStore(config, store),
+                immutable_objects=S3ImmutableArchiveObjectStore(config, store),
+                object_ranges=S3ArchiveObjectRangeStore(config, store),
+            )
+            for name, store in config.archive_stores.items()
+        }
+    )
+
+
 @lru_cache(maxsize=1)
 def default_container() -> ServiceContainer:
     config = load_runtime_config()
@@ -107,26 +130,10 @@ def default_container() -> ServiceContainer:
         config,
         session_factory=session_factory,
     )
-    archive_stores = ArchiveStoreRegistry(
-        {
-            name: S3ArchiveStore(
-                config,
-                store,
-                retrieval_cache=retrieval_cache,
-                download_allowance=download_allowance,
-            )
-            for name, store in config.archive_stores.items()
-        }
-    )
-    archive_ingress_stores = ArchiveIngressStoreRegistry(
-        {
-            name: ArchiveIngressStore(
-                multipart=S3ArchiveMultipartObjectStore(config, store),
-                root=S3ImmutableArchiveObjectStore(config, store),
-                ranges=S3ArchiveObjectRangeStore(config, store),
-            )
-            for name, store in config.archive_stores.items()
-        }
+    archive_stores = _archive_store_registry(
+        config,
+        retrieval_cache=retrieval_cache,
+        download_allowance=download_allowance,
     )
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
     proof_verifier = CommandProofVerifier(config.ots_verify_command)
@@ -142,7 +149,6 @@ def default_container() -> ServiceContainer:
         collection_uploads=SqlAlchemyCollectionUploadService(
             config,
             archive_stores,
-            archive_ingress_stores,
             proof_stamper=proof_stamper,
             session_factory=session_factory,
             throughput_tuning=throughput_tuning,
@@ -164,7 +170,6 @@ def default_container() -> ServiceContainer:
         archive_copies=SqlAlchemyArchiveCopyService(
             config,
             archive_stores,
-            archive_ingress_stores,
             session_factory=session_factory,
             throughput_tuning=throughput_tuning,
             transfer_resources=transfer_resources,
@@ -197,7 +202,6 @@ def default_container() -> ServiceContainer:
         retrieval=SqlAlchemyRetrievalService(
             config,
             archive_stores,
-            archive_ingress_stores,
             retrieval_cache,
             download_allowance=download_allowance,
             session_factory=session_factory,

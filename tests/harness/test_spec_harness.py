@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 from riverhog_api.routers.resourcesync import resourcesync_resource_list
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationAccess, ApplicationPrincipal
-from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import CatalogEventRecord, CollectionRecord
@@ -21,8 +20,7 @@ from starlette.requests import Request
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
     MemoryArchiveStore,
-    as_archive_store,
-    as_ingress_store,
+    archive_store_binding,
     seed_archive_copy,
 )
 
@@ -55,8 +53,7 @@ def harness(tmp_path: Path) -> Harness:
             )
         )
     memory_store = MemoryArchiveStore(archive)
-    archive_stores = ArchiveStoreRegistry({"deep": as_archive_store(memory_store)})
-    archive_ingress_stores = ArchiveIngressStoreRegistry({"deep": as_ingress_store(memory_store)})
+    archive_stores = ArchiveStoreRegistry({"deep": archive_store_binding(memory_store)})
     return Harness(
         collections=SqlAlchemyCollectionService(config),
         search=SqlAlchemySearchService(config),
@@ -64,7 +61,6 @@ def harness(tmp_path: Path) -> Harness:
         retrieval=SqlAlchemyRetrievalService(
             config,
             archive_stores,
-            archive_ingress_stores,
             None,
         ),
     )

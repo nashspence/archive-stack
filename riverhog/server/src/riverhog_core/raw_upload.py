@@ -17,13 +17,13 @@ from riverhog_core.domain.archive import (
     SealedRawVolume,
     StoredPartReceipt,
 )
-from riverhog_core.ports.archive_ingress_store import (
+from riverhog_core.ports.archive_objects import (
     ArchiveMultipartObjectStore,
     CompletedObjectReceipt,
     MultipartPartReceipt,
     MultipartUpload,
-    RawUploadCheckpointStore,
 )
+from riverhog_core.ports.archive_upload_checkpoints import RawUploadCheckpointStore
 from riverhog_core.raw_volume import raw_s3_part_plans
 from riverhog_core.streaming_age import (
     PreparedAgePart,

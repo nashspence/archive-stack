@@ -11,7 +11,7 @@ from riverhog_core.archive_formats import (
     PROVENANCE_INDEX_STORAGE_FORMAT,
 )
 from riverhog_core.domain.archive import SealedProvenanceObject
-from riverhog_core.ports.archive_manifest_store import ImmutableArchiveObjectStore
+from riverhog_core.ports.archive_objects import ImmutableArchiveObjectStore
 
 
 @dataclass(frozen=True, slots=True)

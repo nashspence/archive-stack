@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -68,21 +69,35 @@ class ArchiveMultipartObjectStore(Protocol):
     def abort_multipart_upload(self, *, upload: MultipartUpload) -> None: ...
 
 
-class PackUploadCheckpointStore(Protocol):
-    def load_pack_upload_checkpoint(self, *, collection_id: int, volume_id: str) -> str | None: ...
+@dataclass(frozen=True, slots=True)
+class ImmutableObjectReceipt:
+    object_path: str
+    version_id: str | None
+    etag: str | None
+    stored_bytes: int
+    stored_sha256: str
+    completed_at: str
 
-    def merge_pack_upload_checkpoint(
-        self, *, collection_id: int, volume_id: str, checkpoint_json: str
-    ) -> str: ...
 
-    def delete_pack_upload_checkpoint(self, *, collection_id: int, volume_id: str) -> None: ...
+class ImmutableArchiveObjectStore(Protocol):
+    def put_immutable_object(
+        self,
+        *,
+        object_path: str,
+        content: bytes,
+        content_type: str,
+        identity_metadata: dict[str, str],
+    ) -> ImmutableObjectReceipt: ...
 
 
-class RawUploadCheckpointStore(Protocol):
-    def load_raw_upload_checkpoint(self, *, collection_id: int, volume_id: str) -> str | None: ...
+class ArchiveObjectRangeStore(Protocol):
+    """Read exact byte intervals from immutable archive objects."""
 
-    def merge_raw_upload_checkpoint(
-        self, *, collection_id: int, volume_id: str, checkpoint_json: str
-    ) -> str: ...
-
-    def delete_raw_upload_checkpoint(self, *, collection_id: int, volume_id: str) -> None: ...
+    def iter_object_range(
+        self,
+        *,
+        object_path: str,
+        version_id: str | None,
+        offset: int,
+        size: int,
+    ) -> Iterator[bytes]: ...

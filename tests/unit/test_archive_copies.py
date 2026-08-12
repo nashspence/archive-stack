@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 from riverhog_core.app_permissions import ApplicationPrincipal
-from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -19,7 +18,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionProofMaturationRecord,
 )
-from riverhog_core.ports.archive_ingress_store import MultipartPartReceipt, MultipartUpload
+from riverhog_core.ports.archive_objects import MultipartPartReceipt, MultipartUpload
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveReadStatus
 from riverhog_core.runtime_config import RetrievalCacheConfig, RuntimeConfig
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
@@ -30,8 +29,7 @@ from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
     FixtureArchive,
     MemoryArchiveStore,
-    as_archive_store,
-    as_ingress_store,
+    archive_store_binding,
     make_archive,
     make_captured_provenance_archive,
     seed_archive_copy,
@@ -112,15 +110,9 @@ def _service(
         config,
         ArchiveStoreRegistry(
             {
-                "deep": as_archive_store(source),
-                "b2": as_archive_store(destination),
+                "deep": archive_store_binding(source),
+                "b2": archive_store_binding(destination),
             },
-        ),
-        ArchiveIngressStoreRegistry(
-            {
-                "deep": as_ingress_store(source),
-                "b2": as_ingress_store(destination),
-            }
         ),
     )
     return config, archive, source, destination, service
@@ -333,14 +325,8 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         config,
         ArchiveStoreRegistry(
             {
-                "b2": as_archive_store(source),
-                "deep": as_archive_store(destination),
-            }
-        ),
-        ArchiveIngressStoreRegistry(
-            {
-                "b2": as_ingress_store(source),
-                "deep": as_ingress_store(destination),
+                "b2": archive_store_binding(source),
+                "deep": archive_store_binding(destination),
             }
         ),
     )

@@ -13,7 +13,7 @@ from riverhog_core.raw_upload import RawUploadCheckpoint, merge_raw_upload_check
 from riverhog_core.runtime_config import RuntimeConfig
 
 
-class _IngressCheckpoint(Protocol):
+class _ArchiveUploadCheckpoint(Protocol):
     @property
     def parts(self) -> Sequence[StoredPartReceipt]: ...
 
@@ -23,10 +23,10 @@ class _IngressCheckpoint(Protocol):
     def to_json(self) -> str: ...
 
 
-_CheckpointT = TypeVar("_CheckpointT", bound=_IngressCheckpoint)
+_CheckpointT = TypeVar("_CheckpointT", bound=_ArchiveUploadCheckpoint)
 
 
-class SqlAlchemyArchiveIngressCheckpointStore:
+class SqlAlchemyArchiveUploadCheckpointStore:
     """Persist multipart progress in the upload row that owns an immutable volume plan."""
 
     def __init__(

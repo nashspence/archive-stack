@@ -21,7 +21,7 @@ from riverhog_core.domain.archive import (
     SealedRawVolume,
     VerifiedRawFile,
 )
-from riverhog_core.ports.archive_manifest_store import ImmutableArchiveObjectStore
+from riverhog_core.ports.archive_objects import ImmutableArchiveObjectStore
 
 ROOT_MANIFEST_RELATIVE_PATH = "manifest.json.age"
 ROOT_MANIFEST_CONTENT_TYPE = "application/vnd.riverhog.collection-manifest+age"

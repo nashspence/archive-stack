@@ -35,7 +35,6 @@ from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
 from riverhog_core.app_permissions import COLLECTIONS_CREATE, ApplicationPrincipal
 from riverhog_core.archive_catalog import build_archive_catalog_projection
 from riverhog_core.archive_formats import ROOT_PROOF_STORAGE_FORMAT
-from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_manifest import validate_collection_archive_plan
 from riverhog_core.archive_provenance import (
     ArchiveProvenancePublisher,
@@ -101,8 +100,8 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
-from riverhog_core.stores.sqlalchemy_archive_ingress import (
-    SqlAlchemyArchiveIngressCheckpointStore,
+from riverhog_core.stores.sqlalchemy_archive_upload_checkpoints import (
+    SqlAlchemyArchiveUploadCheckpointStore,
 )
 from riverhog_core.streaming_age import ResumableAgeSessionCache
 from riverhog_core.throughput import (
@@ -135,7 +134,6 @@ class SqlAlchemyCollectionUploadService:
         self,
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
-        ingress_stores: ArchiveIngressStoreRegistry,
         *,
         proof_stamper: ProofStamper,
         policy: CollectionVolumePolicy | None = None,
@@ -145,11 +143,10 @@ class SqlAlchemyCollectionUploadService:
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
-        self._ingress_stores = ingress_stores
         self._proof_stamper = proof_stamper
         self._policy = policy or CollectionVolumePolicy.from_env(os.environ)
         self._session_factory = session_factory or make_session_factory(config.database_url)
-        self._checkpoints = SqlAlchemyArchiveIngressCheckpointStore(
+        self._checkpoints = SqlAlchemyArchiveUploadCheckpointStore(
             config,
             session_factory=self._session_factory,
         )
@@ -182,8 +179,7 @@ class SqlAlchemyCollectionUploadService:
         normalized_tags = _normalize_tags(tags)
         store_name = archive_store or self._config.archive_write_store
         try:
-            archive_store_adapter = self._archive_stores.require(store_name)
-            self._ingress_stores.require(store_name)
+            archive_binding = self._archive_stores.require(store_name)
         except ValueError as exc:
             raise BadRequest(str(exc)) from exc
         require_collection_create_access(initiator, COLLECTIONS_CREATE, normalized_tags)
@@ -251,7 +247,7 @@ class SqlAlchemyCollectionUploadService:
                 last_activity_at=now,
                 archive_phase="planning",
                 archive_phase_updated_at=now,
-                archive_storage_prefix=archive_store_adapter.new_collection_archive_storage_prefix(),
+                archive_storage_prefix=archive_binding.store.new_collection_archive_storage_prefix(),
                 planner_checkpoint_json=(
                     incremental_volume_planner_checkpoint_bytes(checkpoint).decode("utf-8")
                 ),
@@ -640,7 +636,7 @@ class SqlAlchemyCollectionUploadService:
             plan_json = record.plan_json
             unit_plaintext_bytes = record.unit_plaintext_bytes
 
-        store = self._ingress_stores.require(store_name)
+        store = self._archive_stores.require(store_name)
         receipt: SealedPackVolume | SealedRawVolume | None
         try:
             if kind == "pack":
@@ -648,7 +644,7 @@ class SqlAlchemyCollectionUploadService:
                 descriptor = pack_unit_descriptors(pack_plan)[unit]
                 if len(content) != descriptor.payload_bytes:
                     raise ValueError("pack upload unit payload length mismatch")
-                pack_uploader = self._pack_uploader(store.multipart)
+                pack_uploader = self._pack_uploader(store.multipart_objects)
                 pack_checkpoint = pack_uploader.open(
                     collection_id=normalized_id,
                     plan=pack_plan,
@@ -680,7 +676,7 @@ class SqlAlchemyCollectionUploadService:
                 )
                 if len(content) != expected_bytes:
                     raise ValueError("raw upload unit payload length mismatch")
-                raw_uploader = self._raw_uploader(store.multipart)
+                raw_uploader = self._raw_uploader(store.multipart_objects)
                 raw_checkpoint = raw_uploader.open(
                     collection_id=normalized_id,
                     plan=raw_plan,
@@ -862,24 +858,24 @@ class SqlAlchemyCollectionUploadService:
                 for current in upload.archive_objects
                 if current.checkpoint_json
             ]
-        store = self._ingress_stores.require(store_name)
+        store = self._archive_stores.require(store_name)
         for kind, checkpoint_json in checkpoints:
             if checkpoint_json is None:
                 continue
             if kind == "pack":
                 pack_checkpoint = PackUploadCheckpoint.from_json(checkpoint_json)
                 if pack_checkpoint.completed is None:
-                    self._pack_uploader(store.multipart).abort(pack_checkpoint)
+                    self._pack_uploader(store.multipart_objects).abort(pack_checkpoint)
             else:
                 raw_checkpoint = RawUploadCheckpoint.from_json(checkpoint_json)
                 if raw_checkpoint.completed is None:
-                    self._raw_uploader(store.multipart).abort(raw_checkpoint)
+                    self._raw_uploader(store.multipart_objects).abort(raw_checkpoint)
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, normalized_id)
             if upload is not None:
                 session.delete(upload)
         if prefix:
-            self._archive_stores.require(store_name).discard_collection_archive_upload(
+            self._archive_stores.require(store_name).store.discard_collection_archive_upload(
                 archive_storage_prefix=prefix
             )
         return payload
@@ -1089,7 +1085,7 @@ class SqlAlchemyCollectionUploadService:
                 for current in upload.archive_objects
                 if current.state == "sealed" and current.sealed_receipt_json is None
             ]
-        store = self._ingress_stores.require(store_name)
+        store = self._archive_stores.require(store_name)
         for volume_id, kind, plan_json, checkpoint_json in pending:
             if checkpoint_json is None:
                 raise RuntimeError(f"sealed archive volume has no checkpoint: {volume_id}")
@@ -1098,7 +1094,7 @@ class SqlAlchemyCollectionUploadService:
                 if checkpoint.completed is None:
                     raise RuntimeError(f"sealed pack volume is incomplete: {volume_id}")
                 receipt: SealedPackVolume | SealedRawVolume = self._pack_uploader(
-                    store.multipart
+                    store.multipart_objects
                 ).sealed_receipt(
                     plan=parse_pack_volume_plan(plan_json),
                     checkpoint=checkpoint,
@@ -1107,7 +1103,7 @@ class SqlAlchemyCollectionUploadService:
                 raw_checkpoint = RawUploadCheckpoint.from_json(checkpoint_json)
                 if not raw_checkpoint.completed:
                     raise RuntimeError(f"sealed raw volume is incomplete: {volume_id}")
-                receipt = self._raw_uploader(store.multipart).sealed_receipt(raw_checkpoint)
+                receipt = self._raw_uploader(store.multipart_objects).sealed_receipt(raw_checkpoint)
             else:
                 raise RuntimeError(f"unsupported archive volume kind: {kind}")
             self._record_sealed_volume(collection_id, receipt)
@@ -1175,10 +1171,10 @@ class SqlAlchemyCollectionUploadService:
                 raise RuntimeError("collection archive storage prefix is missing")
             provenance = _upload_provenance_archive(upload)
 
-        ingress_store = self._ingress_stores.require(store_name)
+        archive_store = self._archive_stores.require(store_name)
         sealed_provenance = (
             ArchiveProvenancePublisher(
-                object_store=ingress_store.root,
+                object_store=archive_store.immutable_objects,
                 passphrase=self._config.archive_passphrase,
                 scrypt_log_n=self._config.archive_scrypt_work_factor,
             ).publish(
@@ -1189,7 +1185,7 @@ class SqlAlchemyCollectionUploadService:
             else None
         )
         root = ArchiveRootPublisher(
-            object_store=ingress_store.root,
+            object_store=archive_store.immutable_objects,
             passphrase=self._config.archive_passphrase,
             scrypt_log_n=self._config.archive_scrypt_work_factor,
         ).publish(
@@ -1213,7 +1209,7 @@ class SqlAlchemyCollectionUploadService:
             self._config.archive_passphrase,
             log_n=self._config.archive_scrypt_work_factor,
         )
-        proof_receipt = ingress_store.root.put_immutable_object(
+        proof_receipt = archive_store.immutable_objects.put_immutable_object(
             object_path=f"{prefix}/{_PROOF_RELATIVE_PATH}",
             content=proof_ciphertext,
             content_type=_PROOF_CONTENT_TYPE,
@@ -1285,7 +1281,7 @@ class SqlAlchemyCollectionUploadService:
         sealed_provenance: SealedArchiveProvenance | None,
     ) -> None:
         from riverhog_core.archive_catalog import ArchiveCatalogProjection
-        from riverhog_core.ports.archive_manifest_store import ImmutableObjectReceipt
+        from riverhog_core.ports.archive_objects import ImmutableObjectReceipt
 
         if not isinstance(projection, ArchiveCatalogProjection) or not isinstance(
             proof_receipt, ImmutableObjectReceipt

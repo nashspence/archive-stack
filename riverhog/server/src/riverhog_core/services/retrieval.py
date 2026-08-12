@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import CATALOG_READ, RETRIEVAL_MANAGE, ApplicationPrincipal
-from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import catalog_event_projection
@@ -45,7 +44,7 @@ from riverhog_core.pack_retrieval import (
     PackVolumeRetrievalSource,
     plan_pack_range_retrieval,
 )
-from riverhog_core.ports.archive_range_store import ArchiveObjectRangeStore
+from riverhog_core.ports.archive_objects import ArchiveObjectRangeStore
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.ports.download_allowance import DownloadAllowance, DownloadAttribution
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
@@ -75,7 +74,6 @@ class SqlAlchemyRetrievalService:
         self,
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
-        archive_ingress_stores: ArchiveIngressStoreRegistry,
         retrieval_cache: RetrievalCache | None,
         download_allowance: DownloadAllowance | None = None,
         *,
@@ -85,7 +83,6 @@ class SqlAlchemyRetrievalService:
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
-        self._archive_ingress_stores = archive_ingress_stores
         self._cache = retrieval_cache
         self._download_allowance = download_allowance
         self._session_factory = session_factory or make_session_factory(config.database_url)
@@ -632,7 +629,7 @@ class SqlAlchemyRetrievalService:
         attribution: DownloadAttribution | None,
     ) -> ArchiveObjectRangeStore:
         if cached is None:
-            base = self._archive_ingress_stores.require(source_store).ranges
+            base = self._archive_stores.require(source_store).object_ranges
             tracked_store = source_store
         else:
             if self._cache is None:
@@ -914,7 +911,7 @@ class SqlAlchemyRetrievalService:
         if object_record.kind not in _DATA_KINDS:
             raise InvalidState("retrieval plan contains a non-data archive object")
         read_mode = (
-            "cache" if cached is not None else self._archive_stores.require(store).read_mode()
+            "cache" if cached is not None else self._archive_stores.require(store).store.read_mode()
         )
         return {
             "collection_id": collection_id,
@@ -1039,7 +1036,7 @@ class SqlAlchemyRetrievalService:
                     + self._config.retrieval_estimated_latency
                 )
                 for (store_name, collection_id), objects in groups.items():
-                    self._archive_stores.require(store_name).prepare_archive_objects_read(
+                    self._archive_stores.require(store_name).store.prepare_archive_objects_read(
                         collection_id=collection_id,
                         objects=objects,
                         retrieval_tier=self._config.retrieval_tier,
@@ -1068,7 +1065,7 @@ class SqlAlchemyRetrievalService:
             all_ready = True
             restore_expired = False
             for (store_name, collection_id), objects in groups.items():
-                store = self._archive_stores.require(store_name)
+                store = self._archive_stores.require(store_name).store
                 status = store.get_archive_objects_read_status(
                     collection_id=collection_id,
                     objects=objects,

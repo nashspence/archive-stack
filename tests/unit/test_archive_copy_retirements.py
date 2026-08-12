@@ -20,7 +20,7 @@ from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
     MemoryArchiveStore,
     add_archive_copy,
-    as_archive_store,
+    archive_store_binding,
     seed_archive_copy,
 )
 
@@ -60,7 +60,7 @@ def _service(
     service = SqlAlchemyArchiveCopyRetirementService(
         config,
         ArchiveStoreRegistry(
-            {"deep": as_archive_store(deep_store), "b2": as_archive_store(b2_store)},
+            {"deep": archive_store_binding(deep_store), "b2": archive_store_binding(b2_store)},
         ),
     )
     return config, deep_store, b2_store, service

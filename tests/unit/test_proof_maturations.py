@@ -15,7 +15,7 @@ from riverhog_core.services.proof_maturations import SqlAlchemyProofMaturationSe
 from tests.fixtures.crypto import FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
-    as_archive_store,
+    archive_store_binding,
     seed_archive_copy,
 )
 
@@ -49,7 +49,7 @@ def test_matures_and_reverifies_an_archive_proof(tmp_path) -> None:
     upgrader = _CompleteUpgrader()
     service = SqlAlchemyProofMaturationService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(store)}),
+        ArchiveStoreRegistry({"deep": archive_store_binding(store)}),
         proof_upgrader=upgrader,
         proof_verifier=FixtureProofVerifier(),
     )
@@ -83,7 +83,7 @@ def test_waits_without_replacing_an_incomplete_proof(tmp_path) -> None:
     upgrader = _WaitingUpgrader()
     service = SqlAlchemyProofMaturationService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(store)}),
+        ArchiveStoreRegistry({"deep": archive_store_binding(store)}),
         proof_upgrader=upgrader,
         proof_verifier=FixtureProofVerifier(),
     )
@@ -106,7 +106,7 @@ def test_requeues_an_interrupted_maturation(tmp_path) -> None:
     store = MemoryArchiveStore(archive)
     service = SqlAlchemyProofMaturationService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(store)}),
+        ArchiveStoreRegistry({"deep": archive_store_binding(store)}),
         proof_upgrader=_WaitingUpgrader(),
         proof_verifier=FixtureProofVerifier(),
     )

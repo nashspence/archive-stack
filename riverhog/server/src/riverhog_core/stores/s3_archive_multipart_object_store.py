@@ -6,7 +6,7 @@ from typing import Any, cast
 from botocore.exceptions import ClientError
 from time_formats import format_utc_timestamp, utc_now
 
-from riverhog_core.ports.archive_ingress_store import (
+from riverhog_core.ports.archive_objects import (
     ArchiveObjectIdentityConflict,
     CompletedObjectReceipt,
     MultipartPartReceipt,
