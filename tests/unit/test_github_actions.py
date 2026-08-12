@@ -9,9 +9,53 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
+CODEQL_WORKFLOW = REPO_ROOT / ".github/workflows/codeql.yml"
 QUALIFICATION_WORKFLOW = REPO_ROOT / ".github/workflows/release-qualification.yml"
 PROVIDER_QUALIFICATION_WORKFLOW = REPO_ROOT / ".github/workflows/provider-qualification.yml"
 MISE_LOCK = REPO_ROOT / "mise.lock"
+
+
+def test_codeql_covers_every_governed_branch_with_stable_checks() -> None:
+    text = CODEQL_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
+
+    assert workflow["on"] == {
+        "pull_request": {"branches": ["main", "release/v1"]},
+        "push": {"branches": ["main", "release/v1"]},
+        "schedule": [{"cron": "41 6 * * 4"}],
+        "workflow_dispatch": "",
+    }
+    assert workflow["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "packages": "read",
+        "security-events": "write",
+    }
+    assert workflow["concurrency"] == {
+        "group": "codeql-${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": "true",
+    }
+    assert set(workflow["jobs"]) == {"analyze"}
+    job = workflow["jobs"]["analyze"]
+    assert job["name"] == "Analyze (${{ matrix.language }})"
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert job["strategy"] == {
+        "fail-fast": "false",
+        "matrix": {"language": ["actions", "python"]},
+    }
+    steps = job["steps"]
+    assert [step["uses"].split("@", 1)[0] for step in steps] == [
+        "actions/checkout",
+        "github/codeql-action/init",
+        "github/codeql-action/analyze",
+    ]
+    assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"]) for step in steps)
+    assert steps[0]["with"] == {"persist-credentials": "false"}
+    assert steps[1]["with"] == {
+        "languages": "${{ matrix.language }}",
+        "queries": "security-extended",
+    }
+    assert steps[2]["with"] == {"category": "/language:${{ matrix.language }}"}
 
 
 def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
