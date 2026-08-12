@@ -6,10 +6,14 @@ import tarfile
 from io import BytesIO
 
 from riverhog_age import CHUNK_SIZE, S3_MIN_PART_SIZE
-from riverhog_core.domain.archive import ArchiveFile, PackVolumePlan
+from riverhog_core.domain.archive import ArchiveFile, PackMemberPlan, PackVolumePlan
 from riverhog_core.pack_volume import (
     PACK_INDEX_PATH,
     PACK_PADDING_PREFIX,
+    _alignment_padding,
+    _pack_index_bytes,
+    _tar_header,
+    _tar_padding,
     iter_render_pack_upload_unit,
     iter_render_pack_upload_unit_payload,
     pack_unit_descriptors,
@@ -32,6 +36,113 @@ def _pack_plaintext(plan: PackVolumePlan, contents: dict[str, bytes]) -> bytes:
             lambda path: (contents[path],),
         )
     )
+
+
+class _SequentialPackAssembler:
+    """Test-only append-as-members-finalize construction of a sealed pack."""
+
+    def __init__(self, *, sequence: int, part_plaintext_bytes: int) -> None:
+        self.sequence = sequence
+        self.part_plaintext_bytes = part_plaintext_bytes
+        self.volume_id = f"pack-{sequence:012d}"
+        self.members: list[PackMemberPlan] = []
+        self.plaintext = bytearray()
+        self.unit = 0
+        self.unit_start = 0
+
+    def append(self, current: ArchiveFile, content: bytes) -> None:
+        if self.members and len(self.plaintext) - self.unit_start >= self.part_plaintext_bytes:
+            padding, end_offset = _alignment_padding(
+                volume_id=self.volume_id,
+                unit=self.unit,
+                cursor=len(self.plaintext),
+            )
+            if padding is not None:
+                assert padding.header_offset == len(self.plaintext)
+                self.plaintext.extend(_tar_header(padding.path, padding.payload_bytes))
+                self.plaintext.extend(b"\0" * padding.payload_bytes)
+                self.plaintext.extend(b"\0" * _tar_padding(padding.payload_bytes))
+            assert len(self.plaintext) == end_offset
+            self.unit += 1
+            self.unit_start = end_offset
+
+        assert len(content) == current.bytes
+        assert hashlib.sha256(content).hexdigest() == current.sha256
+        header_offset = len(self.plaintext)
+        header = _tar_header(current.path, current.bytes)
+        data_offset = header_offset + len(header)
+        self.plaintext.extend(header)
+        self.plaintext.extend(content)
+        self.plaintext.extend(b"\0" * _tar_padding(current.bytes))
+        self.members.append(
+            PackMemberPlan(
+                path=current.path,
+                bytes=current.bytes,
+                sha256=current.sha256,
+                unit=self.unit,
+                header_offset=header_offset,
+                data_offset=data_offset,
+                end_offset=len(self.plaintext),
+            )
+        )
+
+    def seal(self) -> tuple[tuple[PackMemberPlan, ...], bytes, bytes]:
+        members = tuple(self.members)
+        index_bytes = _pack_index_bytes(
+            volume_id=self.volume_id,
+            sequence=self.sequence,
+            members=members,
+        )
+        self.plaintext.extend(_tar_header(PACK_INDEX_PATH, len(index_bytes)))
+        self.plaintext.extend(index_bytes)
+        self.plaintext.extend(b"\0" * _tar_padding(len(index_bytes)))
+        self.plaintext.extend(b"\0" * 1024)
+        return members, index_bytes, bytes(self.plaintext)
+
+
+def test_sequential_pack_seal_matches_canonical_v1_pack() -> None:
+    long_path = "nested/" + ("long-name-" * 14) + "file.txt"
+    cases = (
+        {
+            long_path: b"long path content",
+            "zero": b"",
+        },
+        {f"files/{index:02d}.bin": bytes([index]) * (1024 * 1024) for index in range(7)},
+    )
+
+    for sequence, contents in enumerate(cases):
+        files = [_file(path, contents[path]) for path in sorted(contents)]
+        plan = plan_pack_volume(
+            files,
+            sequence=sequence,
+            part_plaintext_bytes=S3_MIN_PART_SIZE,
+        )
+        assembler = _SequentialPackAssembler(
+            sequence=sequence,
+            part_plaintext_bytes=S3_MIN_PART_SIZE,
+        )
+        for current in files:
+            assembler.append(current, contents[current.path])
+        sequential_members, sequential_index, sequential_plaintext = assembler.seal()
+        planned_plaintext = _pack_plaintext(plan, contents)
+
+        assert sequential_members == plan.members
+        assert sequential_index == plan.index_bytes
+        assert hashlib.sha256(sequential_index).hexdigest() == plan.index_sha256
+        assert sequential_plaintext == planned_plaintext
+        assert len(sequential_plaintext) == plan.plaintext_bytes
+
+        if sequence == 0:
+            assert len(plan.units) == 1
+            assert next(member for member in plan.members if member.path == "zero").bytes == 0
+            assert (
+                next(member for member in plan.members if member.path == long_path).data_offset
+                > 512
+            )
+        else:
+            assert len(plan.units) >= 2
+            assert plan.units[0].padding is not None
+            assert plan.units[-1].includes_index
 
 
 def test_pack_plan_uses_age_aligned_nonfinal_units_and_is_deterministic() -> None:

@@ -91,6 +91,8 @@ def plan_pack_volume(
     max_member_bytes: int = DEFAULT_PACK_MEMBER_BYTES,
     part_plaintext_bytes: int = DEFAULT_PART_PLAINTEXT_BYTES,
 ) -> PackVolumePlan:
+    """Plan the canonical sealed v1 pack layout for finalized members."""
+
     normalized = _normalized_files(files, max_member_bytes=max_member_bytes)
     if sequence < 0:
         raise ValueError("pack sequence must be non-negative")
@@ -189,7 +191,11 @@ def plan_pack_volume(
 
 
 def pack_volume_plan_payload(plan: PackVolumePlan) -> dict[str, object]:
-    """Return the immutable server-side recipe needed to rebuild an open pack plan."""
+    """Return the persisted canonical recipe for a completed v1 pack layout.
+
+    The recipe rebuilds and verifies final identity; it does not make plan-first
+    assembly or multipart transfer an archive-format requirement.
+    """
 
     return {
         "schema": PACK_VOLUME_PLAN_SCHEMA,

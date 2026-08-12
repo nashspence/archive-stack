@@ -13,9 +13,11 @@ executable contracts; this document records only the ownership and authority mod
 - A component's relational database is its durable operational state and schema authority.
   Riverhog's catalog records logical identity, placement, and workflows, but is not required
   to recover a known archive copy.
-- Ingress writes server-encrypted units directly to immutable final archive keys. A
-  retrieval cache contains leased, exact archive ciphertext and is rebuildable from archive
-  stores.
+- Ingress writes server-encrypted units directly to immutable final archive keys. Planner
+  checkpoints, unsealed pack membership, and open multipart uploads are operational state;
+  only sealed archive objects and their published immutable collection root are archive
+  authority. A retrieval cache contains leased, exact archive ciphertext and is rebuildable
+  from archive stores.
 - Payload transfer loops exclude control-plane refresh and reporting work. Phase-separated,
   identity-safe timing records and the `make transfer-profile` harness qualify transfer
   goodput against a same-path raw baseline.
