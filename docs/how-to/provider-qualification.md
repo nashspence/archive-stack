@@ -76,22 +76,38 @@ is restricted to its one dedicated bucket and the `qualification/` prefix, with 
 list/read/write/delete capabilities needed for that role. The provisioning key is
 unavailable during polling invocations.
 
-The protected GitHub environment is named `provider-qualification`. Its secret names are
-the environment-variable names above plus:
+GitHub uses two protected environments. Both permit deployments from the exact `main`
+branch only and prohibit administrator bypass. `provider-qualification-provisioning`
+requires explicit maintainer approval and exposes only infrastructure-reconciliation
+authority. It has these environment variables:
 
-- `RIVERHOG_QUALIFICATION_AWS_PROVISION_ROLE_ARN`
-- `RIVERHOG_QUALIFICATION_AWS_RUNTIME_ROLE_ARN`
-- `RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID`
-- `RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY`
-- `RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID`
-- `RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY`
-- `RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID`
-- `RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY`
-- `RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE`
-- `RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN`
-- `RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY`
-- `RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY`
+- the five bucket and region values above other than the B2 endpoint URL;
+- `RIVERHOG_QUALIFICATION_AWS_PROVISION_ROLE_ARN`;
+- `RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID`; and
+- `RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY`.
 
-AWS OIDC trust is restricted to the repository, the default-branch workflow authority, and
-the `provider-qualification` environment. The workflow uses SHA-pinned actions and has only
-`actions: read`, `contents: read`, and `id-token: write` permissions.
+Its only environment secret is
+`RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY`.
+
+The `provider-qualification` runtime environment has no reviewer gate so six-hour polling
+can continue unattended. It has all six resource variables above plus:
+
+- `RIVERHOG_QUALIFICATION_AWS_RUNTIME_ROLE_ARN`;
+- `RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID`;
+- `RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID`; and
+- `RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY`.
+
+Its environment secrets are:
+
+- `RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY`;
+- `RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY`;
+- `RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE`;
+- `RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN`; and
+- `RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY`.
+
+A fresh run pauses once for provisioning approval, then enters the runtime environment.
+Continuation runs skip provisioning and enter only the unattended runtime environment.
+Each AWS OIDC role trusts only its corresponding environment subject; the exact-`main`
+environment branch policy and workflow authority check supply the branch boundary. The
+workflow uses SHA-pinned actions and grants `id-token: write` only to the two jobs that
+obtain AWS credentials.

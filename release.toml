@@ -61,10 +61,13 @@ tags = "The Riverhog release maintainer alone creates release-candidate and fina
 github_releases = "The Riverhog release maintainer approves the protected release-publication environment."
 registries = "The Riverhog release maintainer approves the protected release-publication environment."
 pages = "The Riverhog release maintainer approves the protected github-pages environment."
+provider_qualification = "The Riverhog release maintainer approves provider infrastructure reconciliation; restartable runtime polling is unattended."
 
 [governance.environments]
 release = "release-publication"
 pages = "github-pages"
+provider_qualification_provisioning = "provider-qualification-provisioning"
+provider_qualification_runtime = "provider-qualification"
 
 [compatibility]
 components = "A supported deployment runs components from one coordinated product version."
