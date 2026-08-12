@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from riverhog_core.runtime_config import (
-    ArchiveStoreConfig,
     RetrievalCacheConfig,
     RuntimeConfig,
 )
+from riverhog_core.stores.s3_client import create_archive_s3_client as create_archive_s3_client
 
 _MISSING_BUCKET_CODES = {"404", "NoSuchBucket", "NotFound"}
 
@@ -28,6 +28,7 @@ def _create_s3_client(
     region: str,
     access_key_id: str,
     secret_access_key: str,
+    session_token: str | None,
     force_path_style: bool,
     max_pool_connections: int,
 ) -> Any:
@@ -38,21 +39,11 @@ def _create_s3_client(
         region_name=region,
         aws_access_key_id=access_key_id,
         aws_secret_access_key=secret_access_key,
+        aws_session_token=session_token,
         config=Config(
             max_pool_connections=max_pool_connections,
             s3={"addressing_style": "path" if force_path_style else "virtual"},
         ),
-    )
-
-
-def create_archive_s3_client(config: RuntimeConfig, store: ArchiveStoreConfig) -> Any:
-    return _create_s3_client(
-        endpoint_url=store.endpoint_url,
-        region=store.region,
-        access_key_id=store.access_key_id,
-        secret_access_key=store.secret_access_key,
-        force_path_style=store.force_path_style,
-        max_pool_connections=config.s3_max_pool_connections,
     )
 
 
@@ -65,6 +56,7 @@ def create_retrieval_cache_s3_client(
         region=cache.region,
         access_key_id=cache.access_key_id,
         secret_access_key=cache.secret_access_key,
+        session_token=cache.session_token,
         force_path_style=cache.force_path_style,
         max_pool_connections=config.s3_max_pool_connections,
     )

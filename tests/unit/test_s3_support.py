@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
+from riverhog_core.runtime_config import ArchiveStoreConfig, RetrievalCacheConfig, RuntimeConfig
+from riverhog_core.stores import s3_client as tuned_s3_client
+from riverhog_core.stores import s3_support
 from riverhog_core.stores.s3_support import (
     _delete_object_versions,
     _ensure_bucket_exists,
@@ -24,6 +29,92 @@ class _UnsupportedVersionListing(Exception):
             "Error": {"Code": "NotImplemented"},
             "ResponseMetadata": {"HTTPStatusCode": 501},
         }
+
+
+class _Boto3:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
+    def client(self, service: str, **kwargs: object) -> object:
+        assert service == "s3"
+        self.requests.append(kwargs)
+        return object()
+
+
+class _Config:
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+
+
+def test_cache_client_forwards_temporary_session_token(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    boto3 = _Boto3()
+    monkeypatch.setattr(s3_support, "_require_boto3", lambda: (boto3, _Config))
+    archive = ArchiveStoreConfig(
+        name="deep",
+        endpoint_url="https://s3.us-west-2.amazonaws.com",
+        region="us-west-2",
+        bucket="archive",
+        access_key_id="archive-key",
+        secret_access_key="archive-secret",
+        session_token="archive-session",
+        force_path_style=False,
+        prefix="qualification",
+        backend="aws",
+        storage_class="DEEP_ARCHIVE",
+    )
+    cache = RetrievalCacheConfig(
+        endpoint_url="https://s3.us-west-004.backblazeb2.com",
+        region="us-west-004",
+        bucket="cache",
+        access_key_id="cache-key",
+        secret_access_key="cache-secret",
+        session_token="cache-session",
+    )
+    config = RuntimeConfig(
+        archive_write_store="deep",
+        archive_read_order=("deep",),
+        archive_stores={"deep": archive},
+        retrieval_cache=cache,
+        archive_passphrase="qualification-passphrase",
+    )
+
+    s3_support.create_retrieval_cache_s3_client(config, cache)
+
+    assert boto3.requests[0]["aws_session_token"] == "cache-session"
+
+
+def test_tuned_archive_client_forwards_temporary_session_token(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    boto3 = _Boto3()
+
+    class _BotocoreConfig:
+        Config = _Config
+
+    monkeypatch.setitem(sys.modules, "boto3", boto3)
+    monkeypatch.setitem(sys.modules, "botocore.config", _BotocoreConfig())
+    archive = ArchiveStoreConfig(
+        name="deep",
+        endpoint_url="https://s3.us-west-2.amazonaws.com",
+        region="us-west-2",
+        bucket="archive",
+        access_key_id="archive-key",
+        secret_access_key="archive-secret",
+        session_token="archive-session",
+        force_path_style=False,
+        prefix="qualification",
+        backend="aws",
+        storage_class="DEEP_ARCHIVE",
+    )
+    config = RuntimeConfig(
+        archive_write_store="deep",
+        archive_read_order=("deep",),
+        archive_stores={"deep": archive},
+        archive_passphrase="qualification-passphrase",
+    )
+
+    tuned_s3_client.create_archive_s3_client(config, archive)
+
+    assert boto3.requests[0]["aws_session_token"] == "archive-session"
+    assert s3_support.create_archive_s3_client is tuned_s3_client.create_archive_s3_client
 
 
 def test_ensure_bucket_exists_uses_head_bucket_for_named_bucket() -> None:
