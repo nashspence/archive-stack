@@ -19,12 +19,15 @@ a cache hit.
 
 ## Lifecycle
 
-`make provider-qualification args="infrastructure apply <config>"` creates missing
-resources or reconciles resources bearing the exact `riverhog-provider-qualification`
-ownership marker. It refuses an existing unmarked bucket. Runs use a UUID-qualified object
-prefix, and the AWS bucket must never have had versioning enabled. The runner retires its B2
-archive copies and retains the small Deep Archive canary until its 185-day lifecycle
-expiration to avoid premature-deletion charges.
+`make provider-qualification args="infrastructure apply <config>"` creates or reconciles
+only the dedicated AWS S3 and CloudFront resources bearing the exact
+`riverhog-provider-qualification` ownership marker. It refuses an existing unmarked bucket.
+B2 provisioning is intentionally manual because the archive and retrieval-cache application
+keys must be created after their dedicated buckets and scoped to those exact buckets.
+`make provider-qualification args="b2-check <config>"` is the read-only conformance check.
+Runs use a UUID-qualified object prefix, and the AWS bucket must never have had versioning
+enabled. The runner retires its B2 archive copies and retains the small Deep Archive canary
+until its 185-day lifecycle expiration to avoid premature-deletion charges.
 
 One `operate` invocation advances all immediately available work and returns while a Deep
 Archive restore is pending. The next invocation reconstructs a disposable Riverhog service
@@ -69,25 +72,28 @@ bucket. GitHub Actions obtains AWS credentials through two OIDC roles:
   object, listing, restore, and metadata operations needed by Riverhog, plus read access to
   the marked CloudFront configuration.
 
-The B2 provisioning key needs `listBuckets`, `writeBuckets`, `readBucketEncryption`,
-`writeBucketEncryption`, and `readBucketRetentions`. The final capability lets the
-reconciler positively prove that Object Lock is disabled. Each per-bucket application key
-is restricted to its one dedicated bucket and the `qualification/` prefix, with the
-list/read/write/delete capabilities needed for that role. The provisioning key is
-unavailable during polling invocations.
+Create both B2 buckets manually as private, S3-compatible, dedicated buckets with Object
+Lock disabled, no CORS rules, default SSE-B2 encryption, and this exact lifecycle for the
+`qualification/` prefix: hide current objects after seven days, delete hidden versions after
+one day, and cancel unfinished large files after three days. Object Lock is the one manual
+assertion because ordinary bucket-scoped runtime keys cannot inspect retention settings.
+For each bucket, create a distinct application key restricted to that exact bucket. A key
+may additionally be restricted to `qualification/`. It needs the B2 capabilities that back
+S3 list/read/write/delete operations plus `listBuckets`, `readBucketEncryption`, and
+`readBucketLifecycleRules`. The read-only `b2-check` verifies the key scope, endpoint,
+region, privacy, CORS, encryption, and lifecycle before any disposable deployment starts.
 
 GitHub uses two protected environments. Both permit deployments from the exact `main`
-branch only and prohibit administrator bypass. `provider-qualification-provisioning`
-requires explicit maintainer approval and exposes only infrastructure-reconciliation
+branch only and prohibit administrator bypass. `provider-qualification-aws-provisioning`
+requires explicit maintainer approval and exposes only AWS infrastructure-reconciliation
 authority. It has these environment variables:
 
-- the five bucket and region values above other than the B2 endpoint URL;
+- `RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET`;
+- `RIVERHOG_QUALIFICATION_AWS_REGION`;
 - `RIVERHOG_QUALIFICATION_AWS_PROVISION_ROLE_ARN`;
-- `RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID`; and
 - `RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY`.
 
-Its only environment secret is
-`RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY`.
+It has no environment secrets. AWS credentials are short-lived and obtained through OIDC.
 
 The `provider-qualification` runtime environment has no reviewer gate so six-hour polling
 can continue unattended. It has all six resource variables above plus:
@@ -105,7 +111,8 @@ Its environment secrets are:
 - `RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN`; and
 - `RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY`.
 
-A fresh run pauses once for provisioning approval, then enters the runtime environment.
+A fresh run pauses once for AWS provisioning approval, then enters the runtime environment
+and verifies the manually provisioned B2 boundary before starting the disposable deployment.
 Continuation runs skip provisioning and enter only the unattended runtime environment.
 Each AWS OIDC role trusts only its corresponding environment subject; the exact-`main`
 environment branch policy and workflow authority check supply the branch boundary. The

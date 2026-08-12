@@ -15,6 +15,7 @@ import tempfile
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
@@ -85,12 +86,6 @@ class BucketDefinition:
 
 
 @dataclass(frozen=True, slots=True)
-class B2ProvisioningDefinition:
-    key_id_env: str
-    application_key_env: str
-
-
-@dataclass(frozen=True, slots=True)
 class CloudFrontDefinition:
     enabled: bool
     public_key_path_env: str
@@ -107,7 +102,6 @@ class QualificationConfig:
     restore_copy_days: int
     restore_deadline_hours: int
     restore_tier: str
-    b2_provisioning: B2ProvisioningDefinition
     cloudfront: CloudFrontDefinition
     buckets: tuple[BucketDefinition, ...]
     config_sha256: str
@@ -365,11 +359,6 @@ def load_config(path: Path) -> QualificationConfig:
     restore_tier = _expect_string(restore, "tier", label="restore").casefold()
     if restore_tier != "bulk":
         raise QualificationError("restore.tier must be bulk for the bounded qualification")
-    b2 = _expect_mapping(raw.get("b2_provisioning"), label="b2_provisioning")
-    b2_provisioning = B2ProvisioningDefinition(
-        key_id_env=_expect_env_name(b2, "key_id_env", label="b2_provisioning"),
-        application_key_env=_expect_env_name(b2, "application_key_env", label="b2_provisioning"),
-    )
     cloudfront_table = _expect_mapping(raw.get("cloudfront"), label="cloudfront")
     cloudfront = CloudFrontDefinition(
         enabled=_expect_bool(cloudfront_table, "enabled", label="cloudfront"),
@@ -423,7 +412,6 @@ def load_config(path: Path) -> QualificationConfig:
             "deadline_hours": restore_deadline_hours,
             "tier": restore_tier,
         },
-        "b2_provisioning": asdict(b2_provisioning),
         "cloudfront": asdict(cloudfront),
         "buckets": [
             asdict(bucket) for bucket in sorted(buckets, key=lambda item: item.logical_name)
@@ -438,7 +426,6 @@ def load_config(path: Path) -> QualificationConfig:
         restore_copy_days=restore_copy_days,
         restore_deadline_hours=restore_deadline_hours,
         restore_tier=restore_tier,
-        b2_provisioning=b2_provisioning,
         cloudfront=cloudfront,
         buckets=tuple(sorted(buckets, key=lambda item: item.logical_name)),
         config_sha256=hashlib.sha256(_canonical_json(structural)).hexdigest(),
@@ -455,6 +442,8 @@ def _required_env(values: Mapping[str, str], name: str) -> str:
 def resolve_buckets(
     config: QualificationConfig,
     values: Mapping[str, str],
+    *,
+    provider: str | None = None,
 ) -> tuple[ResolvedBucket, ...]:
     resolved = tuple(
         ResolvedBucket(
@@ -465,6 +454,7 @@ def resolve_buckets(
             region=_required_env(values, bucket.region_env),
         )
         for bucket in config.buckets
+        if provider is None or bucket.provider == provider
     )
     names = [bucket.bucket_name for bucket in resolved]
     if len(set(names)) != len(names):
@@ -740,6 +730,10 @@ class B2NativeClient:
         self.account_id = ""
         self.api_url = ""
         self.authorization_token = ""
+        self.allowed_buckets: tuple[tuple[str, str | None], ...] = ()
+        self.capabilities: frozenset[str] = frozenset()
+        self.name_prefix: str | None = None
+        self.s3_api_url = ""
 
     def _request(
         self,
@@ -783,23 +777,39 @@ class B2NativeClient:
         )
         storage = payload.get("apiInfo", {}).get("storageApi", {})
         allowed = storage.get("allowed", {}) if isinstance(storage, dict) else {}
-        capabilities = set(allowed.get("capabilities", [])) if isinstance(allowed, dict) else set()
-        required = {
-            "listBuckets",
-            "writeBuckets",
-            "readBucketEncryption",
-            "writeBucketEncryption",
-            "readBucketRetentions",
-        }
-        missing = sorted(required - capabilities)
-        if missing:
-            raise QualificationError(
-                "Backblaze provisioning key lacks capabilities: " + ", ".join(missing)
-            )
+        raw_buckets = allowed.get("buckets", []) if isinstance(allowed, dict) else []
+        capabilities = allowed.get("capabilities", []) if isinstance(allowed, dict) else []
+        name_prefix = allowed.get("namePrefix") if isinstance(allowed, dict) else None
+        if not isinstance(raw_buckets, list) or not all(
+            isinstance(item, dict)
+            and isinstance(item.get("id"), str)
+            and (item.get("name") is None or isinstance(item.get("name"), str))
+            for item in raw_buckets
+        ):
+            raise QualificationError("Backblaze authorization bucket scope is invalid")
+        if not isinstance(capabilities, list) or not all(
+            isinstance(item, str) for item in capabilities
+        ):
+            raise QualificationError("Backblaze authorization capabilities are invalid")
+        if name_prefix is not None and not isinstance(name_prefix, str):
+            raise QualificationError("Backblaze authorization prefix scope is invalid")
         self.account_id = str(payload.get("accountId", ""))
         self.api_url = str(storage.get("apiUrl", "")) if isinstance(storage, dict) else ""
         self.authorization_token = str(payload.get("authorizationToken", ""))
-        if not self.account_id or not self.api_url or not self.authorization_token:
+        self.allowed_buckets = tuple(
+            (cast(str, item["id"]), cast(str | None, item.get("name"))) for item in raw_buckets
+        )
+        self.capabilities = frozenset(capabilities)
+        self.name_prefix = name_prefix
+        self.s3_api_url = (
+            str(storage.get("s3ApiUrl", "")).rstrip("/") if isinstance(storage, dict) else ""
+        )
+        if (
+            not self.account_id
+            or not self.api_url
+            or not self.authorization_token
+            or not self.s3_api_url
+        ):
             raise QualificationError("Backblaze authorization response is incomplete")
 
     def call(self, operation: str, payload: Mapping[str, object]) -> dict[str, Any]:
@@ -812,9 +822,24 @@ class B2NativeClient:
         )
 
 
-class B2BucketManager:
-    def __init__(self, client: B2NativeClient) -> None:
+class B2ManualBucketChecker:
+    """Verify manually provisioned B2 state without mutation authority."""
+
+    _REQUIRED_CAPABILITIES = frozenset(
+        {
+            "deleteFiles",
+            "listBuckets",
+            "listFiles",
+            "readBucketEncryption",
+            "readBucketLifecycleRules",
+            "readFiles",
+            "writeFiles",
+        }
+    )
+
+    def __init__(self, client: B2NativeClient, *, endpoint_url: str) -> None:
         self.client = client
+        self.endpoint_url = endpoint_url.rstrip("/")
 
     def _bucket(self, bucket: ResolvedBucket) -> dict[str, Any] | None:
         result = self.client.call(
@@ -830,23 +855,37 @@ class B2BucketManager:
             )
         return cast(dict[str, Any], buckets[0])
 
-    @staticmethod
-    def _owned(current: Mapping[str, object], bucket: ResolvedBucket) -> bool:
-        info = current.get("bucketInfo")
-        return info == {
-            "riverhog-purpose": QUALIFICATION_MARKER,
-            "riverhog-logical-name": bucket.logical_name,
-        }
-
     def _changes(
         self,
         current: Mapping[str, object],
         bucket: ResolvedBucket,
         config: QualificationConfig,
     ) -> tuple[str, ...]:
-        if not self._owned(current, bucket):
-            return ("ownership-marker",)
         changes: list[str] = []
+        expected_scope = tuple(
+            item for item in self.client.allowed_buckets if item[1] == bucket.bucket_name
+        )
+        if len(self.client.allowed_buckets) != 1 or len(expected_scope) != 1:
+            changes.append("bucket-scoped-key")
+        expected_prefix = f"{config.namespace_prefix}/"
+        if self.client.name_prefix not in (None, expected_prefix):
+            changes.append("prefix-scope")
+        if not self._REQUIRED_CAPABILITIES.issubset(self.client.capabilities):
+            changes.append("runtime-capabilities")
+        endpoint = urllib.parse.urlsplit(self.endpoint_url)
+        if (
+            endpoint.scheme != "https"
+            or endpoint.netloc == ""
+            or endpoint.path not in ("", "/")
+            or endpoint.query
+            or endpoint.fragment
+            or self.endpoint_url != self.client.s3_api_url
+        ):
+            changes.append("endpoint-url")
+        authority = urllib.parse.urlsplit(self.client.s3_api_url)
+        expected_host = f"s3.{bucket.region}.backblazeb2.com"
+        if authority.hostname != expected_host:
+            changes.append("region")
         if current.get("bucketType") != "allPrivate":
             changes.append("private-access")
         if current.get("corsRules") != []:
@@ -858,76 +897,27 @@ class B2BucketManager:
         if value != {"algorithm": "AES256", "mode": "SSE-B2"}:
             changes.append("default-encryption")
         lock = current.get("fileLockConfiguration")
-        if not isinstance(lock, dict) or lock.get("isClientAuthorizedToRead") is not True:
-            changes.append("object-lock-visibility")
-        elif not isinstance(lock.get("value"), dict):
-            changes.append("object-lock-visibility")
-        elif cast(dict[str, object], lock["value"]).get("isFileLockEnabled") is True:
+        if (
+            isinstance(lock, dict)
+            and lock.get("isClientAuthorizedToRead") is True
+            and isinstance(lock.get("value"), dict)
+            and cast(dict[str, object], lock["value"]).get("isFileLockEnabled") is True
+        ):
             changes.append("object-lock")
         return tuple(changes)
 
     def plan(self, bucket: ResolvedBucket, config: QualificationConfig) -> InfrastructureAction:
+        self.client.authorize()
         current = self._bucket(bucket)
         if current is None:
-            return InfrastructureAction(bucket.logical_name, "b2", "create", ("bucket",))
+            return InfrastructureAction(bucket.logical_name, "b2", "blocked", ("bucket",))
         changes = self._changes(current, bucket, config)
-        if any(
-            change in changes
-            for change in ("ownership-marker", "object-lock", "object-lock-visibility")
-        ):
-            return InfrastructureAction(bucket.logical_name, "b2", "blocked", changes)
         return InfrastructureAction(
             bucket.logical_name,
             "b2",
-            "update" if changes else "ready",
+            "blocked" if changes else "ready",
             changes,
         )
-
-    def apply(self, bucket: ResolvedBucket, config: QualificationConfig) -> None:
-        current = self._bucket(bucket)
-        if current is not None and not self._owned(current, bucket):
-            raise QualificationError(
-                f"{bucket.logical_name} exists without its exact qualification ownership marker"
-            )
-        common: dict[str, object] = {
-            "bucketType": "allPrivate",
-            "bucketInfo": {
-                "riverhog-purpose": QUALIFICATION_MARKER,
-                "riverhog-logical-name": bucket.logical_name,
-            },
-            "corsRules": [],
-            "lifecycleRules": _b2_lifecycle(config),
-            "defaultServerSideEncryption": {"algorithm": "AES256", "mode": "SSE-B2"},
-        }
-        if current is None:
-            self.client.call(
-                "b2_create_bucket",
-                {
-                    "accountId": self.client.account_id,
-                    "bucketName": bucket.bucket_name,
-                    "fileLockEnabled": False,
-                    **common,
-                },
-            )
-        else:
-            lock = current.get("fileLockConfiguration")
-            lock_value = lock.get("value") if isinstance(lock, dict) else None
-            if isinstance(lock_value, dict) and lock_value.get("isFileLockEnabled") is True:
-                raise QualificationError(
-                    f"{bucket.logical_name} has irreversible Object Lock enabled"
-                )
-            self.client.call(
-                "b2_update_bucket",
-                {
-                    "accountId": self.client.account_id,
-                    "bucketId": current["bucketId"],
-                    "ifRevisionIs": current["revision"],
-                    **common,
-                },
-            )
-        final = self.plan(bucket, config)
-        if final.action != "ready":
-            raise QualificationError(f"{bucket.logical_name} did not converge after apply")
 
 
 class CloudFrontManager:
@@ -3072,24 +3062,47 @@ def operate_qualification(
         return checkpoint
 
 
-def _real_managers(
+def check_b2_infrastructure(
+    config: QualificationConfig,
+    buckets: Sequence[ResolvedBucket],
+    values: Mapping[str, str],
+) -> InfrastructurePlan:
+    if len(buckets) != 2 or any(bucket.provider != "b2" for bucket in buckets):
+        raise QualificationError("B2 qualification must resolve exactly two manual buckets")
+    endpoint_url = _required_env(values, "RIVERHOG_QUALIFICATION_B2_S3_ENDPOINT_URL")
+    actions: list[InfrastructureAction] = []
+    key_ids: list[str] = []
+    for bucket in sorted(buckets, key=lambda item: item.logical_name):
+        prefix = _credential_prefix(bucket.logical_name)
+        key_id = _required_env(values, f"{prefix}_ACCESS_KEY_ID")
+        key_ids.append(key_id)
+        checker = B2ManualBucketChecker(
+            B2NativeClient(
+                key_id=key_id,
+                application_key=_required_env(values, f"{prefix}_SECRET_ACCESS_KEY"),
+            ),
+            endpoint_url=endpoint_url,
+        )
+        actions.append(checker.plan(bucket, config))
+    if len(set(key_ids)) != len(key_ids):
+        raise QualificationError("B2 archive and retrieval-cache keys must be distinct")
+    return InfrastructurePlan(config_sha256=config.config_sha256, actions=tuple(actions))
+
+
+def _aws_managers(
     config: QualificationConfig,
     buckets: Sequence[ResolvedBucket],
     values: Mapping[str, str],
 ) -> tuple[dict[str, BucketManager], tuple[AdditionalInfrastructureManager, ...]]:
+    if not buckets or any(bucket.provider != "aws" for bucket in buckets):
+        raise QualificationError("AWS infrastructure requires only AWS qualification buckets")
     aws_regions = {bucket.region for bucket in buckets if bucket.provider == "aws"}
     if len(aws_regions) != 1:
         raise QualificationError("AWS qualification buckets must resolve to one region")
-    b2_client = B2NativeClient(
-        key_id=_required_env(values, config.b2_provisioning.key_id_env),
-        application_key=_required_env(values, config.b2_provisioning.application_key_env),
-    )
-    b2_client.authorize()
     aws_region = next(iter(aws_regions))
     s3_client, cloudfront_client = _boto3_clients(aws_region)
     managers: dict[str, BucketManager] = {
         "aws": AwsBucketManager(s3_client),
-        "b2": B2BucketManager(b2_client),
     }
     if not config.cloudfront.enabled:
         return managers, ()
@@ -3136,9 +3149,18 @@ def _parser() -> argparse.ArgumentParser:
     config_parser.add_argument("config", type=Path)
     config_parser.add_argument("--resolve", action="store_true", help="also require bucket env")
 
-    infra = commands.add_parser("infrastructure", help="check or reconcile dedicated buckets")
+    infra = commands.add_parser(
+        "infrastructure",
+        help="check or reconcile dedicated AWS infrastructure",
+    )
     infra.add_argument("mode", choices=("plan", "check", "apply"))
     infra.add_argument("config", type=Path)
+
+    b2_check = commands.add_parser(
+        "b2-check",
+        help="verify manually provisioned B2 buckets and scoped runtime keys",
+    )
+    b2_check.add_argument("config", type=Path)
 
     runtime = commands.add_parser(
         "runtime-env",
@@ -3202,14 +3224,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "infrastructure":
             config = load_config(args.config)
-            buckets = resolve_buckets(config, os.environ)
-            managers, additional = _real_managers(config, buckets, os.environ)
+            buckets = resolve_buckets(config, os.environ, provider="aws")
+            managers, additional = _aws_managers(config, buckets, os.environ)
             if args.mode == "apply":
                 plan = apply_infrastructure(config, buckets, managers, additional)
             else:
                 plan = infrastructure_plan(config, buckets, managers, additional)
             _print_json(plan.as_dict())
             return 0 if args.mode != "check" or plan.ready else 1
+        if args.command == "b2-check":
+            config = load_config(args.config)
+            buckets = resolve_buckets(config, os.environ, provider="b2")
+            plan = check_b2_infrastructure(config, buckets, os.environ)
+            _print_json(plan.as_dict())
+            return 0 if plan.ready else 1
         if args.command == "runtime-env":
             config = load_config(args.config)
             checkpoint = load_checkpoint(args.checkpoint)

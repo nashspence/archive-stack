@@ -79,7 +79,7 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     assert governance["environments"] == {
         "release": "release-publication",
         "pages": "github-pages",
-        "provider_qualification_provisioning": "provider-qualification-provisioning",
+        "provider_qualification_provisioning": "provider-qualification-aws-provisioning",
         "provider_qualification_runtime": "provider-qualification",
     }
     platforms = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))["platforms"]
