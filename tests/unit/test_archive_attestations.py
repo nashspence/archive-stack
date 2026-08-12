@@ -23,7 +23,7 @@ from riverhog_core.services.archive_attestations import SqlAlchemyArchiveAttesta
 from tests.fixtures.crypto import FixtureProofStamper, FixtureProofVerifier
 from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
-    as_archive_store,
+    archive_store_binding,
     make_captured_provenance_archive,
     seed_archive_copy,
 )
@@ -94,7 +94,7 @@ def test_publishes_signs_and_matures_exact_archive_ciphertext_inventory(tmp_path
     store = MemoryArchiveStore(archive)
     service = SqlAlchemyArchiveAttestationService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(store)}),
+        ArchiveStoreRegistry({"deep": archive_store_binding(store)}),
         signer=_Signer(),
         signature_verifier=_SignatureVerifier(),
         proof_stamper=FixtureProofStamper(),
@@ -155,7 +155,7 @@ def test_waits_without_replacing_an_incomplete_attestation_proof(tmp_path) -> No
     store = MemoryArchiveStore(archive)
     service = SqlAlchemyArchiveAttestationService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(store)}),
+        ArchiveStoreRegistry({"deep": archive_store_binding(store)}),
         signer=_Signer(),
         signature_verifier=_SignatureVerifier(),
         proof_stamper=FixtureProofStamper(),
@@ -208,7 +208,7 @@ def test_startup_resumes_a_claimed_archive_attestation(
         )
     service = SqlAlchemyArchiveAttestationService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(MemoryArchiveStore(archive))}),
+        ArchiveStoreRegistry({"deep": archive_store_binding(MemoryArchiveStore(archive))}),
         signer=_Signer(),
         signature_verifier=_SignatureVerifier(),
         proof_stamper=FixtureProofStamper(),

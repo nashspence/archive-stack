@@ -177,7 +177,7 @@ class SqlAlchemyProofMaturationService:
                 collection_id=collection_id,
                 store=store,
             )
-            archive_store = self._archive_stores.require(store)
+            archive_store = self._archive_stores.require(store).store
             manifest = archive_store.read_archive_artifact(
                 collection_id=collection_id,
                 object=manifest_identity,

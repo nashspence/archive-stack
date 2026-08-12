@@ -129,6 +129,19 @@ def test_architecture_states_the_repo_wide_provenance_authority_policy() -> None
     assert "relational provenance rows are a rebuildable query projection" in architecture
 
 
+def test_architecture_states_the_direct_to_final_ingress_authority_policy() -> None:
+    architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
+
+    assert (
+        "Collection ingress writes server-encrypted units directly to immutable final archive "
+        "keys in its selected archive store; it is not a storage tier"
+    ) in architecture
+    assert (
+        "Sealed archive objects and published immutable collection roots alone are archive "
+        "authority"
+    ) in architecture
+
+
 def test_repository_map_exactly_covers_the_workspace_layout() -> None:
     architecture_path = REPO / "docs/architecture.md"
     architecture = architecture_path.read_text(encoding="utf-8")

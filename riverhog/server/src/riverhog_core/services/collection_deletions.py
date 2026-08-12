@@ -191,7 +191,7 @@ class SqlAlchemyCollectionDeletionService:
                 if copy is None or not archive_copy_is_complete(copy):
                     raise Conflict("collection archive changed during deletion")
                 objects = archive_copy_owned_identity(copy).objects
-            self._archive_stores.require(store_name).delete_collection_archive(
+            self._archive_stores.require(store_name).store.delete_collection_archive(
                 collection_id=collection_id,
                 objects=objects,
             )

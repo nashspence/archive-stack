@@ -245,7 +245,7 @@ class SqlAlchemyArchiveAttestationService:
 
     def _publish(self, *, collection_id: int, store: str) -> None:
         try:
-            archive_store = self._archive_stores.require(store)
+            archive_store = self._archive_stores.require(store).store
             copy, objects = self._copy_objects(collection_id=collection_id, store=store)
             for current in objects:
                 if current.kind not in {
@@ -338,7 +338,7 @@ class SqlAlchemyArchiveAttestationService:
 
     def _mature(self, *, collection_id: int, store: str) -> None:
         try:
-            archive_store = self._archive_stores.require(store)
+            archive_store = self._archive_stores.require(store).store
             copy, objects = self._copy_objects(collection_id=collection_id, store=store)
             by_id = {current.object_id: current for current in objects}
             checksums = archive_store.read_archive_attestation_artifact(

@@ -9,11 +9,11 @@ from typing import Any
 
 import pytest
 from botocore.exceptions import ClientError, ConnectionClosedError
-from riverhog_core.ports.archive_ingress_store import ArchiveObjectIdentityConflict
+from riverhog_core.ports.archive_objects import ArchiveObjectIdentityConflict
 from riverhog_core.runtime_config import RuntimeConfig
-from riverhog_core.stores.s3_archive_ingress_store import S3ArchiveMultipartObjectStore
-from riverhog_core.stores.s3_archive_manifest_store import S3ImmutableArchiveObjectStore
-from riverhog_core.stores.s3_archive_range_store import S3ArchiveObjectRangeStore
+from riverhog_core.stores.s3_archive_multipart_object_store import S3ArchiveMultipartObjectStore
+from riverhog_core.stores.s3_archive_object_range_store import S3ArchiveObjectRangeStore
+from riverhog_core.stores.s3_immutable_archive_object_store import S3ImmutableArchiveObjectStore
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -154,7 +154,7 @@ def test_multipart_adapter_completes_create_only_and_recovers_the_same_identity(
 ) -> None:
     client = _FakeClient()
     monkeypatch.setattr(
-        "riverhog_core.stores.s3_archive_ingress_store.create_archive_s3_client",
+        "riverhog_core.stores.s3_archive_multipart_object_store.create_archive_s3_client",
         lambda *_args, **_kwargs: client,
     )
     config = _config(tmp_path)
@@ -206,7 +206,7 @@ def test_multipart_adapter_rejects_an_existing_different_identity(
 ) -> None:
     client = _FakeClient()
     monkeypatch.setattr(
-        "riverhog_core.stores.s3_archive_ingress_store.create_archive_s3_client",
+        "riverhog_core.stores.s3_archive_multipart_object_store.create_archive_s3_client",
         lambda *_args, **_kwargs: client,
     )
     config = _config(tmp_path)
@@ -231,7 +231,7 @@ def test_immutable_adapter_is_idempotent_by_logical_identity(
 ) -> None:
     client = _FakeClient()
     monkeypatch.setattr(
-        "riverhog_core.stores.s3_archive_manifest_store.create_archive_s3_client",
+        "riverhog_core.stores.s3_immutable_archive_object_store.create_archive_s3_client",
         lambda *_args, **_kwargs: client,
     )
     config = _config(tmp_path)
@@ -261,7 +261,7 @@ def test_immutable_adapter_uses_conditional_multipart_when_put_condition_is_unsu
 ) -> None:
     client = _FakeClient(conditional_put_supported=False)
     monkeypatch.setattr(
-        "riverhog_core.stores.s3_archive_manifest_store.create_archive_s3_client",
+        "riverhog_core.stores.s3_immutable_archive_object_store.create_archive_s3_client",
         lambda *_args, **_kwargs: client,
     )
     config = _config(tmp_path)
@@ -297,7 +297,7 @@ def test_immutable_adapter_uses_conditional_multipart_when_put_connection_is_clo
         conditional_put_commits_before_close=commits_before_close,
     )
     monkeypatch.setattr(
-        "riverhog_core.stores.s3_archive_manifest_store.create_archive_s3_client",
+        "riverhog_core.stores.s3_immutable_archive_object_store.create_archive_s3_client",
         lambda *_args, **_kwargs: client,
     )
     config = _config(tmp_path)
@@ -330,7 +330,7 @@ def test_range_adapter_returns_the_exact_requested_bytes(
     client = _FakeClient()
     client.objects["archive/volume.age"] = {"Body": b"0123456789"}
     monkeypatch.setattr(
-        "riverhog_core.stores.s3_archive_range_store.create_archive_s3_client",
+        "riverhog_core.stores.s3_archive_object_range_store.create_archive_s3_client",
         lambda *_args, **_kwargs: client,
     )
     config = _config(tmp_path)

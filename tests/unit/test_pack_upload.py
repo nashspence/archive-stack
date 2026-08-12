@@ -12,7 +12,7 @@ from riverhog_core.pack_upload import (
     merge_pack_upload_checkpoints,
 )
 from riverhog_core.pack_volume import pack_unit_descriptors, plan_pack_volume
-from riverhog_core.ports.archive_ingress_store import (
+from riverhog_core.ports.archive_objects import (
     CompletedObjectReceipt,
     MultipartPartReceipt,
     MultipartUpload,

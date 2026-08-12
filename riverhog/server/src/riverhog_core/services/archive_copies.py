@@ -22,7 +22,6 @@ from riverhog_core.archive_formats import (
     RAW_VOLUME_STORAGE_FORMAT,
     archive_object_storage_format,
 )
-from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -37,12 +36,12 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.pack_upload import PACK_VOLUME_CONTENT_TYPE
-from riverhog_core.ports.archive_ingress_store import (
+from riverhog_core.ports.archive_objects import (
     ArchiveMultipartObjectStore,
+    ImmutableArchiveObjectStore,
     MultipartPartReceipt,
     MultipartUpload,
 )
-from riverhog_core.ports.archive_manifest_store import ImmutableArchiveObjectStore
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     ArchiveStore,
@@ -100,7 +99,6 @@ class SqlAlchemyArchiveCopyService:
         self,
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
-        archive_ingress_stores: ArchiveIngressStoreRegistry,
         *,
         session_factory: SessionFactory | None = None,
         throughput_tuning: ArchiveThroughputTuning | None = None,
@@ -108,7 +106,6 @@ class SqlAlchemyArchiveCopyService:
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
-        self._archive_ingress_stores = archive_ingress_stores
         self._session_factory = session_factory or make_session_factory(config.database_url)
         self._throughput = throughput_tuning or ArchiveThroughputTuning.from_env(os.environ)
         self._resources = transfer_resources or ArchiveTransferResources.from_tuning(
@@ -165,7 +162,7 @@ class SqlAlchemyArchiveCopyService:
         source = self._configured_store(source_store) if source_store is not None else None
         if source == destination:
             raise BadRequest("archive copy source and destination stores must differ")
-        destination_archive_store = self._archive_stores.require(destination)
+        destination_archive_store = self._archive_stores.require(destination).store
         current_text = format_utc_timestamp(utc_now())
         normalized_context_json = event_context_json(event_context)
         with session_scope(self._session_factory) as session:
@@ -477,7 +474,7 @@ class SqlAlchemyArchiveCopyService:
             job.state = "checking"
             job.next_attempt_at = None
 
-        source_store = self._archive_stores.require(source_store_name)
+        source_store = self._archive_stores.require(source_store_name).store
         if read_requested_at is None:
             status = source_store.prepare_archive_objects_read(
                 collection_id=collection_id,
@@ -717,8 +714,8 @@ class SqlAlchemyArchiveCopyService:
             destination_storage_prefix=destination_storage_prefix,
             objects=source_records,
         )
-        source_store = self._archive_stores.require(source_store_name)
-        destination = self._archive_ingress_stores.require(destination_store_name)
+        source_store = self._archive_stores.require(source_store_name).store
+        destination = self._archive_stores.require(destination_store_name)
         copied: dict[str, _CopiedObject] = {}
         for record in source_records:
             self._require_copy_active(collection_id, destination_store_name)
@@ -729,7 +726,7 @@ class SqlAlchemyArchiveCopyService:
                     destination_store_name=destination_store_name,
                     destination_storage_prefix=destination_storage_prefix,
                     source_store=source_store,
-                    destination_object_store=destination.multipart,
+                    destination_object_store=destination.multipart_objects,
                     source=record,
                     identity=identity,
                 )
@@ -738,7 +735,7 @@ class SqlAlchemyArchiveCopyService:
                     collection_id=collection_id,
                     destination_storage_prefix=destination_storage_prefix,
                     source_store=source_store,
-                    destination_store=destination.root,
+                    destination_store=destination.immutable_objects,
                     source=record,
                     identity=identity,
                 )
@@ -1245,7 +1242,7 @@ class SqlAlchemyArchiveCopyService:
                 for current in archive_copy_identity(source_copy).objects
                 if current.kind in _COPY_OBJECT_KINDS
             )
-        source_store = self._archive_stores.require(source_store_name)
+        source_store = self._archive_stores.require(source_store_name).store
         try:
             source_store.cleanup_archive_objects_read(
                 collection_id=collection_id,
@@ -1270,7 +1267,7 @@ class SqlAlchemyArchiveCopyService:
                 return
             destination_storage_prefix = job.destination_storage_prefix
         try:
-            self._archive_stores.require(destination_store).discard_collection_archive_upload(
+            self._archive_stores.require(destination_store).store.discard_collection_archive_upload(
                 archive_storage_prefix=destination_storage_prefix,
             )
         except Exception:

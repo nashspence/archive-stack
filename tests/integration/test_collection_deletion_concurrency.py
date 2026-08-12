@@ -9,8 +9,7 @@ from typing import cast
 
 import pytest
 from riverhog_core.app_permissions import ApplicationPrincipal
-from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
-from riverhog_core.archive_store_registry import ArchiveStoreRegistry
+from riverhog_core.archive_store_registry import ArchiveStoreBinding, ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
     STATE_VERSION_TABLE,
     Base,
@@ -47,7 +46,7 @@ from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol.errors import Conflict
 from sqlalchemy import select, text
 
-from tests.unit.archive_object_fixtures import MemoryArchiveStore, as_ingress_store
+from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 
 pytestmark = pytest.mark.integration
 
@@ -113,6 +112,13 @@ class BlockingArchiveStore:
     ) -> None:
         assert collection_id == COLLECTION_ID
         assert archive.objects
+
+
+def _archive_store_binding(store: BlockingArchiveStore) -> ArchiveStoreBinding:
+    return replace(
+        archive_store_binding(MemoryArchiveStore()),
+        store=cast(ArchiveStore, store),
+    )
 
 
 @pytest.fixture
@@ -238,8 +244,7 @@ def _services(
         archive_read_order=("deep",),
     )
     store = BlockingArchiveStore()
-    stores = ArchiveStoreRegistry({"deep": cast(ArchiveStore, store)})
-    ingress = ArchiveIngressStoreRegistry({"deep": as_ingress_store(MemoryArchiveStore())})
+    stores = ArchiveStoreRegistry({"deep": _archive_store_binding(store)})
     return (
         SqlAlchemyCollectionDeletionService(
             config,
@@ -249,7 +254,6 @@ def _services(
         SqlAlchemyRetrievalService(
             config,
             stores,
-            ingress,
             None,
         ),
         store,
@@ -381,7 +385,7 @@ def test_metadata_publication_and_deletion_cannot_cross_collection_archive_opera
         )
     publisher = SqlAlchemyArchiveMaintenanceService(
         RuntimeConfig(database_url=database_url),
-        ArchiveStoreRegistry({"deep": cast(ArchiveStore, store)}),
+        ArchiveStoreRegistry({"deep": _archive_store_binding(store)}),
     )
     deletion_plan = deletion.plan(COLLECTION_ID)
     failures: list[BaseException] = []
@@ -430,7 +434,7 @@ def test_deletion_marker_prevents_a_due_metadata_publication_claim(
         )
     publisher = SqlAlchemyArchiveMaintenanceService(
         RuntimeConfig(database_url=database_url),
-        ArchiveStoreRegistry({"deep": cast(ArchiveStore, store)}),
+        ArchiveStoreRegistry({"deep": _archive_store_binding(store)}),
     )
     challenge = str(deletion.plan(COLLECTION_ID)["challenge"])
     failures: list[BaseException] = []
@@ -479,20 +483,14 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
     b2.allow_delete.set()
     stores = ArchiveStoreRegistry(
         {
-            "deep": cast(ArchiveStore, deep),
-            "b2": cast(ArchiveStore, b2),
+            "deep": _archive_store_binding(deep),
+            "b2": _archive_store_binding(b2),
         }
     )
     retirement = SqlAlchemyArchiveCopyRetirementService(config, stores)
     retrieval = SqlAlchemyRetrievalService(
         config,
         stores,
-        ArchiveIngressStoreRegistry(
-            {
-                "deep": as_ingress_store(MemoryArchiveStore()),
-                "b2": as_ingress_store(MemoryArchiveStore()),
-            }
-        ),
         None,
     )
     files = [(COLLECTION_ID, FILE_PATH)]

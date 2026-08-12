@@ -20,7 +20,7 @@ from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
     UPLOADED_AT,
     MemoryArchiveStore,
-    as_archive_store,
+    archive_store_binding,
     seed_archive_copy,
 )
 
@@ -37,7 +37,7 @@ def _service(path: Path):
     archive_store = MemoryArchiveStore(archive)
     service = SqlAlchemyCollectionDeletionService(
         config,
-        ArchiveStoreRegistry({"deep": as_archive_store(archive_store)}),
+        ArchiveStoreRegistry({"deep": archive_store_binding(archive_store)}),
         None,
     )
     return config, archive_store, service

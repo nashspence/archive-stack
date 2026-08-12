@@ -167,7 +167,7 @@ class SqlAlchemyArchiveCopyRetirementService:
                     )
                 )
 
-        target_store = self._archive_stores.require(normalized_store)
+        target_store = self._archive_stores.require(normalized_store).store
         if already_absent:
             return _result(plan, status="already_absent", verified_store=None)
 
@@ -222,7 +222,7 @@ class SqlAlchemyArchiveCopyRetirementService:
                     continue
                 identity = archive_copy_identity(copy)
             try:
-                self._archive_stores.require(store).verify_collection_archive(
+                self._archive_stores.require(store).store.verify_collection_archive(
                     collection_id=collection_id,
                     archive=identity,
                 )

@@ -5,8 +5,7 @@ from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import cast
 
-from riverhog_core.archive_ingress_registry import ArchiveIngressStore, ArchiveIngressStoreRegistry
-from riverhog_core.archive_store_registry import ArchiveStoreRegistry
+from riverhog_core.archive_store_registry import ArchiveStoreBinding, ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import TagRecord
 from riverhog_core.collection_plan import CollectionVolumePolicy
@@ -198,20 +197,19 @@ def _seed_collection(
     ranges = MemoryArchiveRangeStore(multipart)
     root_store = MemoryImmutableStore()
     archive_store = DirectArchiveStore(multipart, read_mode=read_mode)
-    archive_registry = ArchiveStoreRegistry({"archive": cast(ArchiveStore, archive_store)})
-    ingress_registry = ArchiveIngressStoreRegistry(
+    archive_registry = ArchiveStoreRegistry(
         {
-            "archive": ArchiveIngressStore(
-                multipart=multipart,
-                root=root_store,
-                ranges=ranges,
+            "archive": ArchiveStoreBinding(
+                store=cast(ArchiveStore, archive_store),
+                multipart_objects=multipart,
+                immutable_objects=root_store,
+                object_ranges=ranges,
             )
         }
     )
     uploads = SqlAlchemyCollectionUploadService(
         config,
         archive_registry,
-        ingress_registry,
         proof_stamper=FixtureProofStamper(),
         policy=_policy(raw=raw),
     )
@@ -273,7 +271,6 @@ def _seed_collection(
     retrieval = SqlAlchemyRetrievalService(
         config,
         archive_registry,
-        ingress_registry,
         cache,
         download_allowance=allowance,
     )

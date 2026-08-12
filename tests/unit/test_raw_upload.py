@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 from riverhog_age import CHUNK_SIZE, S3_MIN_PART_SIZE, ResumableAgeScryptSession
 from riverhog_core.domain.archive import RawVolumePlan
-from riverhog_core.ports.archive_ingress_store import (
+from riverhog_core.ports.archive_objects import (
     CompletedObjectReceipt,
     MultipartPartReceipt,
     MultipartUpload,

@@ -14,7 +14,6 @@ from riverhog_core.app_permissions import (
     ApplicationAccess,
     ApplicationPrincipal,
 )
-from riverhog_core.archive_ingress_registry import ArchiveIngressStoreRegistry
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
     catalog_state_schema,
@@ -35,8 +34,7 @@ from sqlalchemy.engine import make_url
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import (
     MemoryArchiveStore,
-    as_archive_store,
-    as_ingress_store,
+    archive_store_binding,
 )
 
 pytestmark = pytest.mark.integration
@@ -122,8 +120,7 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
     archive_store = MemoryArchiveStore()
     manifest, record_etag = SqlAlchemyRetrievalService(
         RuntimeConfig(database_url=isolated_database_url),
-        ArchiveStoreRegistry({"fixture-archive": as_archive_store(archive_store)}),
-        ArchiveIngressStoreRegistry({"fixture-archive": as_ingress_store(archive_store)}),
+        ArchiveStoreRegistry({"fixture-archive": archive_store_binding(archive_store)}),
         None,
     ).collection_manifest(1, principal=principal)
 
@@ -181,16 +178,12 @@ def test_postgres_upload_idempotency_is_independent_per_application(
         )
     access = frozenset({ApplicationAccess(COLLECTIONS_CREATE, "tag:photos")})
     memory_store = MemoryArchiveStore()
-    archive_stores = ArchiveStoreRegistry({"archive": as_archive_store(memory_store)})
-    archive_ingress_stores = ArchiveIngressStoreRegistry(
-        {"archive": as_ingress_store(memory_store)}
-    )
+    archive_stores = ArchiveStoreRegistry({"archive": archive_store_binding(memory_store)})
 
     def create(app: str, key_id: str) -> dict[str, object]:
         service = SqlAlchemyCollectionUploadService(
             RuntimeConfig(database_url=isolated_database_url),
             archive_stores,
-            archive_ingress_stores,
             proof_stamper=FixtureProofStamper(),
         )
         return service.create_or_resume(

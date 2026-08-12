@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import cast
 
 from riverhog_age import ResumableAgeScryptSession, decrypt_age_scrypt, encrypt_age_scrypt
-from riverhog_core.archive_ingress_registry import ArchiveIngressStore
 from riverhog_core.archive_manifest import build_collection_archive_manifest
+from riverhog_core.archive_store_registry import ArchiveStoreBinding
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -34,13 +34,13 @@ from riverhog_core.domain.archive import (
     StoredPartReceipt,
 )
 from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
-from riverhog_core.ports.archive_ingress_store import (
+from riverhog_core.ports.archive_objects import (
     ArchiveObjectIdentityConflict,
     CompletedObjectReceipt,
+    ImmutableObjectReceipt,
     MultipartPartReceipt,
     MultipartUpload,
 )
-from riverhog_core.ports.archive_manifest_store import ImmutableObjectReceipt
 from riverhog_core.ports.archive_store import (
     ArchiveArtifactRead,
     ArchiveObjectIdentity,
@@ -982,15 +982,12 @@ class MemoryArchiveStore:
         )
 
 
-def as_archive_store(store: MemoryArchiveStore) -> ArchiveStore:
-    return cast(ArchiveStore, store)
-
-
-def as_ingress_store(store: MemoryArchiveStore) -> ArchiveIngressStore:
-    return ArchiveIngressStore(
-        multipart=store,
-        root=store,
-        ranges=store,
+def archive_store_binding(store: MemoryArchiveStore) -> ArchiveStoreBinding:
+    return ArchiveStoreBinding(
+        store=cast(ArchiveStore, store),
+        multipart_objects=store,
+        immutable_objects=store,
+        object_ranges=store,
     )
 
 

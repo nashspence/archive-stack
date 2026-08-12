@@ -7,7 +7,7 @@ from typing import Any, cast
 from botocore.exceptions import ClientError, ConnectionClosedError
 from time_formats import format_utc_timestamp, utc_now
 
-from riverhog_core.ports.archive_manifest_store import ImmutableObjectReceipt
+from riverhog_core.ports.archive_objects import ImmutableObjectReceipt
 from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
 from riverhog_core.stores.s3_client import create_archive_s3_client
 from riverhog_core.throughput import S3TransportTuning

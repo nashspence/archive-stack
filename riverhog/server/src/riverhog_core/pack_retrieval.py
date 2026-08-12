@@ -15,7 +15,7 @@ from riverhog_core.age_range import (
     plan_age_plaintext_range,
 )
 from riverhog_core.pack_volume import RESERVED_ARCHIVE_PREFIX
-from riverhog_core.ports.archive_range_store import ArchiveObjectRangeStore
+from riverhog_core.ports.archive_objects import ArchiveObjectRangeStore
 from riverhog_core.streaming_age import ResumableAgeSessionCache
 from riverhog_core.throughput import (
     DEFAULT_AGE_SESSION_CACHE_ENTRIES,
