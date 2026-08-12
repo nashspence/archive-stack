@@ -26,6 +26,7 @@ def create_archive_s3_client(
         region_name=store.region,
         aws_access_key_id=store.access_key_id,
         aws_secret_access_key=store.secret_access_key,
+        aws_session_token=store.session_token,
         config=Config(
             max_pool_connections=effective.max_pool_connections,
             connect_timeout=effective.connect_timeout_seconds,

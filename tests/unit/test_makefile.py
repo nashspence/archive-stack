@@ -171,6 +171,7 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
         "PATH",
         "MODE",
         "BYTES",
+        "TOKEN",
     }
 
 
@@ -328,6 +329,13 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
                 "required": False,
             }
         ]
+        mounts = compose["services"][service].get("volumes", [])
+        assert {
+            "type": "bind",
+            "source": "${RIVERHOG_CLOUDFRONT_PRIVATE_KEY_HOST_PATH:-/dev/null}",
+            "target": "/run/secrets/riverhog-cloudfront.pem",
+            "read_only": True,
+        } in mounts
 
     compose_helper = (REPO_ROOT / "scripts" / "_compose_env.sh").read_text(encoding="utf-8")
     assert 'export RIVERHOG_COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE}"' in compose_helper
@@ -463,8 +471,25 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[0]
     assert "companions/munchy/client/src companions/munchy/server/src" in uv_log_lines[0]
     assert "riverhog/client/src riverhog/recovery/src riverhog/server/src" in uv_log_lines[0]
+    assert "scripts/provider_qualification.py" in uv_log_lines[0]
     assert "utilities/gogurt/src utilities/mango-fish/src" in uv_log_lines[0]
     assert "--no-error-summary --no-color-output --strict" in uv_log_lines[0]
+
+
+def test_provider_qualification_target_uses_locked_workspace(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(
+        tmp_path,
+        "provider-qualification",
+        "args=config-check config/provider-qualification.example.toml",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(docker_log_path) == []
+    assert _read_log_lines(uv_log_path) == [
+        "|x -- uv run --locked --all-packages --group dev "
+        "python scripts/provider_qualification.py config-check "
+        "config/provider-qualification.example.toml"
+    ]
 
 
 def test_lint_runs_license_format_ruff_and_mypy(tmp_path: Path) -> None:

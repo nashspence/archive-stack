@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
 from pathlib import Path
 
 from gogurt.core import execute_gogurt_action, load_gogurt_actions, plan_gogurt_action
@@ -19,6 +21,7 @@ EXAMPLE_FILES = {
     REPO_ROOT / "companions/munchy/config/examples/review-sweep-job.yaml",
     REPO_ROOT / "utilities/gogurt/config/examples/gogurt-routes.yaml",
     REPO_ROOT / "utilities/gogurt/config/examples/scripts/fake_archive_device.py",
+    REPO_ROOT / "config/provider-qualification.example.toml",
 }
 
 
@@ -32,6 +35,7 @@ def test_every_checked_example_runs_through_its_real_consumer(
             REPO_ROOT / "utilities/mango-fish/config",
             REPO_ROOT / "companions/munchy/config/examples",
             REPO_ROOT / "utilities/gogurt/config/examples",
+            REPO_ROOT / "config",
         )
         for path in root.rglob("*")
         if path.is_file() and "__pycache__" not in path.parts
@@ -82,3 +86,17 @@ def test_every_checked_example_runs_through_its_real_consumer(
     assert review_plan["ok"] is True
     assert review_plan["variants_total"] == 8
     assert str(review_plan["routes"][0]["variants"][0]["location"]).startswith("review-remote:")
+
+    script = REPO_ROOT / "scripts/provider_qualification.py"
+    spec = importlib.util.spec_from_file_location("provider_qualification_example", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    qualification = module.load_config(REPO_ROOT / "config/provider-qualification.example.toml")
+    assert qualification.cloudfront.enabled is True
+    assert {bucket.logical_name for bucket in qualification.buckets} == {
+        "b2-archive",
+        "b2-retrieval-cache",
+        "aws-deep-archive",
+    }

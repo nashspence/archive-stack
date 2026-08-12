@@ -1,0 +1,43 @@
+schema = "riverhog-provider-qualification-config/v1"
+namespace_prefix = "qualification"
+
+[retention]
+aws_deep_archive_expiration_days = 185
+b2_hide_days = 7
+b2_delete_days = 1
+multipart_abort_days = 3
+
+[restore]
+tier = "bulk"
+copy_days = 3
+deadline_hours = 96
+
+[b2_provisioning]
+key_id_env = "RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID"
+application_key_env = "RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY"
+
+[cloudfront]
+enabled = true
+public_key_path_env = "RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY_PATH"
+private_key_path_env = "RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY_PATH"
+
+[[buckets]]
+logical_name = "b2-archive"
+provider = "b2"
+role = "archive"
+name_env = "RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET"
+region_env = "RIVERHOG_QUALIFICATION_B2_REGION"
+
+[[buckets]]
+logical_name = "b2-retrieval-cache"
+provider = "b2"
+role = "retrieval-cache"
+name_env = "RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_BUCKET"
+region_env = "RIVERHOG_QUALIFICATION_B2_REGION"
+
+[[buckets]]
+logical_name = "aws-deep-archive"
+provider = "aws"
+role = "deep-archive"
+name_env = "RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET"
+region_env = "RIVERHOG_QUALIFICATION_AWS_REGION"

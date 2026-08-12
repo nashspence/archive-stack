@@ -46,12 +46,13 @@ MYPY_SOURCES = \
 	riverhog/recovery/src \
 	riverhog/server/src \
 	scripts/install_locked_age.py \
+	scripts/provider_qualification.py \
 	scripts/release.py \
 	utilities/gogurt/src \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness provider-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -88,6 +89,7 @@ help:
 		'  make unit              Run the unit test lane locally.' \
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make dependency-readiness Verify the live uv graph and Dependabot release gate.' \
+		'  make provider-qualification Run the operator/provider qualification command.' \
 		'  make release-check     Validate the coordinated release-unit contract.' \
 		'  make release-plan      Print the exact-SHA v1 release inventory as JSON.' \
 		'  make release-dry-run   Version and smoke-test an exact-SHA copy without publishing.' \
@@ -165,6 +167,9 @@ spec:
 
 dependency-readiness:
 	$(call UV_CMD,python scripts/check_dependency_readiness.py $(args))
+
+provider-qualification:
+	$(call UV_CMD,python scripts/provider_qualification.py $(args))
 
 release-check:
 	$(call UV_CMD,python scripts/release.py check)

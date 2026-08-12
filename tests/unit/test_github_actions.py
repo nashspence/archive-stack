@@ -10,6 +10,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 QUALIFICATION_WORKFLOW = REPO_ROOT / ".github/workflows/release-qualification.yml"
+PROVIDER_QUALIFICATION_WORKFLOW = REPO_ROOT / ".github/workflows/provider-qualification.yml"
 MISE_LOCK = REPO_ROOT / "mise.lock"
 
 
@@ -217,6 +218,111 @@ def test_release_required_check_names_are_derived_from_stable_job_names() -> Non
     }
 
     assert release["governance"]["required_checks"] == sorted(actual)
+
+
+def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required() -> None:
+    text = PROVIDER_QUALIFICATION_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
+
+    assert workflow["on"]["schedule"] == [{"cron": "23 1,7,13,19 * * *"}]
+    assert set(workflow["on"]["workflow_dispatch"]["inputs"]["corpus_profile"]["options"]) == {
+        "regular",
+        "multipart",
+    }
+    assert workflow["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "id-token": "write",
+    }
+    assert workflow["concurrency"] == {
+        "group": "provider-qualification",
+        "cancel-in-progress": "false",
+    }
+    assert set(workflow["jobs"]) == {"qualify"}
+    job = workflow["jobs"]["qualify"]
+    assert job["environment"] == "provider-qualification"
+    assert job["runs-on"] == "ubuntu-24.04"
+    assert {name for name in job["env"] if name.endswith("_BUCKET")} == {
+        "RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET",
+        "RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET",
+        "RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_BUCKET",
+    }
+    steps = job["steps"]
+    assert all(
+        re.fullmatch(r"[^@]+@[0-9a-f]{40}", step["uses"]) for step in steps if "uses" in step
+    )
+
+    resolve = next(
+        step for step in steps if step["name"] == "Resolve continuation and exact source"
+    )
+    assert '"$WORKFLOW_REF" != refs/heads/main' in resolve["run"]
+    assert "actions/workflows/provider-qualification.yml/runs?branch=main" in resolve["run"]
+    assert "actions/runs/$run_id/artifacts" in resolve["run"]
+    assert "release/v1" in resolve["run"]
+    assert "source_sha" in resolve["run"]
+    exact = next(step for step in steps if step["name"] == "Check out verified exact source")
+    assert 'test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"' in exact["run"]
+
+    provision = next(
+        step for step in steps if step["name"] == "Configure AWS provisioning identity"
+    )
+    runtime = next(step for step in steps if step["name"] == "Configure AWS runtime identity")
+    reconcile = next(
+        step for step in steps if step["name"] == "Reconcile dedicated provider infrastructure"
+    )
+    assert provision["if"] == "steps.mode.outputs.action == 'start'"
+    assert "AWS_PROVISION_ROLE_ARN" in provision["with"]["role-to-assume"]
+    assert "AWS_RUNTIME_ROLE_ARN" in runtime["with"]["role-to-assume"]
+    assert runtime["with"]["unset-current-credentials"] == "true"
+    assert set(reconcile["env"]) == {
+        "RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY",
+        "RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID",
+    }
+    assert "B2_PROVISION_APPLICATION_KEY" not in job["env"]
+
+    state = next(step for step in steps if step["name"] == "Create and verify deterministic state")
+    deployment_env = next(
+        step for step in steps if step["name"] == "Generate the disposable deployment environment"
+    )
+    deployment = next(
+        step for step in steps if step["name"] == "Start the disposable Riverhog deployment"
+    )
+    snapshot = next(
+        step for step in steps if step["name"] == "Snapshot bounded disposable database state"
+    )
+    assert "corpus-create" in state["run"] and "checkpoint-start" in state["run"]
+    assert 'test -z "${RIVERHOG_DATABASE_URL:-}"' in deployment_env["run"]
+    assert "RIVERHOG_DATABASE_URL=" in deployment_env["run"]
+    assert "docker volume ls" in deployment_env["run"]
+    assert "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog" in deployment["run"]
+    assert "pg_dump" in snapshot["run"]
+    assert "536870912" in snapshot["run"]
+
+    package = next(
+        step
+        for step in steps
+        if step["name"] == "Package resumable dummy state and public evidence"
+    )
+    upload = next(step for step in steps if step["name"] == "Upload bounded qualification state")
+    assert 'if [[ "$phase" == cleaned || "$phase" == failed ]]' in package["run"]
+    assert 'cp "$STATE_DIR/checkpoint.json" "$STATE_DIR/database.dump"' in package["run"]
+    assert upload["with"] == {
+        "name": "provider-qualification-state",
+        "path": "${{ runner.temp }}/provider-public-artifact",
+        "if-no-files-found": "error",
+        "retention-days": "14",
+    }
+    assert "age --encrypt" not in text and "age --decrypt" not in text
+    assert "RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY" in text
+    assert not any(
+        name.endswith("SECRET_ACCESS_KEY")
+        or name
+        in {
+            "RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE",
+            "RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN",
+        }
+        for name in job["env"]
+    )
 
 
 def test_client_platform_toolchain_is_locked_for_every_matrix_os() -> None:

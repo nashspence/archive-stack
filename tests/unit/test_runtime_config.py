@@ -393,3 +393,30 @@ def test_configured_archive_store_requires_complete_connection_settings(
 
     with pytest.raises(ValueError, match="archive store b2 has blank required fields"):
         load_runtime_config()
+
+
+def test_temporary_s3_credentials_include_session_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_SESSION_TOKEN", "archive-session")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL", "https://cache.example.test")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_REGION", "us-west-2")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_BUCKET", "cache")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID", "cache-key")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY", "cache-secret")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SESSION_TOKEN", "cache-session")
+
+    config = load_runtime_config()
+
+    assert config.archive_store("archive").session_token == "archive-session"
+    assert config.retrieval_cache is not None
+    assert config.retrieval_cache.session_token == "cache-session"
+
+
+def test_retrieval_cache_session_token_alone_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SESSION_TOKEN", "orphan-session")
+
+    with pytest.raises(ValueError, match="RIVERHOG_RETRIEVAL_CACHE_.*incomplete"):
+        load_runtime_config()
