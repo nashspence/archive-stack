@@ -31,27 +31,24 @@ on:
 permissions:
   actions: read
   contents: read
-  id-token: write
 
 concurrency:
   group: provider-qualification
   cancel-in-progress: false
 
 jobs:
-  qualify:
-    name: resumable provider qualification
+  resolve:
+    name: resolve provider qualification
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    environment: provider-qualification
+    timeout-minutes: 10
+    outputs:
+      action: ${{ steps.mode.outputs.action }}
+      artifact_id: ${{ steps.mode.outputs.artifact_id }}
+      profile: ${{ steps.mode.outputs.profile }}
+      source_ref: ${{ steps.mode.outputs.source_ref }}
+      source_sha: ${{ steps.mode.outputs.source_sha }}
     env:
       GH_TOKEN: ${{ github.token }}
-      CONFIG_PATH: config/provider-qualification.example.toml
-      RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET: ${{ secrets.RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET }}
-      RIVERHOG_QUALIFICATION_AWS_REGION: ${{ secrets.RIVERHOG_QUALIFICATION_AWS_REGION }}
-      RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET: ${{ secrets.RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET }}
-      RIVERHOG_QUALIFICATION_B2_REGION: ${{ secrets.RIVERHOG_QUALIFICATION_B2_REGION }}
-      RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_BUCKET: ${{ secrets.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_BUCKET }}
-      RIVERHOG_QUALIFICATION_B2_S3_ENDPOINT_URL: ${{ secrets.RIVERHOG_QUALIFICATION_B2_S3_ENDPOINT_URL }}
     steps:
       - name: Check out workflow authority
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,7 +114,7 @@ jobs:
           fi
 
           if [[ "$action" == skip ]]; then
-            printf 'action=skip\n' >> "$GITHUB_OUTPUT"
+            printf 'action=skip\nartifact_id=%s\n' "$artifact_id" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if [[ "$action" == poll ]]; then
@@ -155,26 +152,129 @@ jobs:
             printf 'Provider qualification source is not an exact commit.\n' >&2
             exit 2
           fi
-          printf 'action=%s\nsource_sha=%s\nsource_ref=%s\nprofile=%s\n' \
-            "$action" "$source_sha" "$source_ref" "$profile" >> "$GITHUB_OUTPUT"
-          printf 'STATE_INPUT_DIR=%s\n' "$input_dir" >> "$GITHUB_ENV"
+          printf 'action=%s\nartifact_id=%s\nsource_sha=%s\nsource_ref=%s\nprofile=%s\n' \
+            "$action" "$artifact_id" "$source_sha" "$source_ref" "$profile" \
+            >> "$GITHUB_OUTPUT"
       - name: Stop when no qualification is due
         if: steps.mode.outputs.action == 'skip'
         run: printf 'Provider qualification scheduler is idle.\n'
-      - name: Check out verified exact source
-        if: steps.mode.outputs.action != 'skip'
+
+  provision:
+    name: reconcile provider infrastructure
+    needs: resolve
+    if: needs.resolve.outputs.action == 'start'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: provider-qualification-provisioning
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CONFIG_PATH: config/provider-qualification.example.toml
+      RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET: ${{ vars.RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET }}
+      RIVERHOG_QUALIFICATION_AWS_REGION: ${{ vars.RIVERHOG_QUALIFICATION_AWS_REGION }}
+      RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET: ${{ vars.RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET }}
+      RIVERHOG_QUALIFICATION_B2_REGION: ${{ vars.RIVERHOG_QUALIFICATION_B2_REGION }}
+      RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_BUCKET: ${{ vars.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_BUCKET }}
+    steps:
+      - name: Check out workflow authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify workflow authority
         env:
-          SOURCE_SHA: ${{ steps.mode.outputs.source_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: test "$WORKFLOW_REF" = refs/heads/main
+      - name: Install repository toolchain
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          install_args: python uv
+      - name: Materialize CloudFront public key
+        env:
+          CLOUDFRONT_PUBLIC_KEY: ${{ vars.RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          public_key="$RUNNER_TEMP/provider-cloudfront-public.pem"
+          umask 077
+          printf '%s\n' "$CLOUDFRONT_PUBLIC_KEY" > "$public_key"
+          chmod 600 "$public_key"
+          printf 'RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY_PATH=%s\n' "$public_key" \
+            >> "$GITHUB_ENV"
+      - name: Configure AWS provisioning identity
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          aws-region: ${{ vars.RIVERHOG_QUALIFICATION_AWS_REGION }}
+          role-to-assume: ${{ vars.RIVERHOG_QUALIFICATION_AWS_PROVISION_ROLE_ARN }}
+          role-session-name: riverhog-provider-provision
+      - name: Reconcile dedicated provider infrastructure
+        env:
+          RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY }}
+          RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID: ${{ vars.RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID }}
+        run: make provider-qualification args="infrastructure apply $CONFIG_PATH"
+
+  qualify:
+    name: resumable provider qualification
+    needs:
+      - resolve
+      - provision
+    if: >-
+      always()
+      && needs.resolve.result == 'success'
+      && needs.resolve.outputs.action != 'skip'
+      && (needs.provision.result == 'success' || needs.provision.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: provider-qualification
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CONFIG_PATH: config/provider-qualification.example.toml
+      RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET: ${{ vars.RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET }}
+      RIVERHOG_QUALIFICATION_AWS_REGION: ${{ vars.RIVERHOG_QUALIFICATION_AWS_REGION }}
+      RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET: ${{ vars.RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET }}
+      RIVERHOG_QUALIFICATION_B2_REGION: ${{ vars.RIVERHOG_QUALIFICATION_B2_REGION }}
+      RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_BUCKET: ${{ vars.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_BUCKET }}
+      RIVERHOG_QUALIFICATION_B2_S3_ENDPOINT_URL: ${{ vars.RIVERHOG_QUALIFICATION_B2_S3_ENDPOINT_URL }}
+    steps:
+      - name: Check out workflow authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download verified continuation state
+        if: needs.resolve.outputs.action == 'poll'
+        env:
+          ARTIFACT_ID: ${{ needs.resolve.outputs.artifact_id }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]]
+          input_dir="$RUNNER_TEMP/provider-artifact-input"
+          mkdir -p "$input_dir"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            > "$input_dir/artifact.zip"
+          unzip -q "$input_dir/artifact.zip" -d "$input_dir"
+          jq --exit-status \
+            '.schema == "riverhog-provider-qualification-status/v1" and .active == true' \
+            "$input_dir/status.json" >/dev/null
+          test "$(jq -r '.source_sha' "$input_dir/status.json")" = "$SOURCE_SHA"
+          test -s "$input_dir/checkpoint.json"
+          test -s "$input_dir/database.dump"
+          printf 'STATE_INPUT_DIR=%s\n' "$input_dir" >> "$GITHUB_ENV"
+      - name: Check out verified exact source
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
         run: |
           set -euo pipefail
           git fetch --force --no-tags origin "$SOURCE_SHA"
           git checkout --detach "$SOURCE_SHA"
           test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"
       - name: Install repository toolchain
-        if: steps.mode.outputs.action != 'skip'
         uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
       - name: Configure Docker engine
-        if: steps.mode.outputs.action != 'skip'
         uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
         with:
           version: v29.3.1
@@ -185,23 +285,19 @@ jobs:
               }
             }
       - name: Install Docker Compose
-        if: steps.mode.outputs.action != 'skip'
         uses: docker/setup-compose-action@4eb059ff7f16592f9c84d5ca339c53cb7c5064e2 # v2.3.0
         with:
           version: v5.1.1
       - name: Configure Docker Buildx
-        if: steps.mode.outputs.action != 'skip'
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
         with:
           version: v0.36.0
       - name: Resolve image metadata
-        if: steps.mode.outputs.action != 'skip'
         id: image-metadata
         run: |
           printf 'created=%s\nepoch=%s\n' \
             "$(git show -s --format=%cI HEAD)" "$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
       - name: Build the disposable Riverhog image
-        if: steps.mode.outputs.action != 'skip'
         uses: docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b # v7.3.0
         with:
           source: .
@@ -209,17 +305,16 @@ jobs:
           targets: riverhog
           load: true
           set: |
-            *.args.SOURCE_REVISION=${{ steps.mode.outputs.source_sha }}
+            *.args.SOURCE_REVISION=${{ needs.resolve.outputs.source_sha }}
             *.args.BUILD_CREATED=${{ steps.image-metadata.outputs.created }}
             *.args.SOURCE_DATE_EPOCH=${{ steps.image-metadata.outputs.epoch }}
             *.args.RELEASE_VERSION=development
             *.cache-from=type=gha,scope=provider-qualification-riverhog
             *.cache-to=type=gha,scope=provider-qualification-riverhog,mode=min,ignore-error=true
       - name: Materialize CloudFront signing keys
-        if: steps.mode.outputs.action != 'skip'
         env:
           CLOUDFRONT_PRIVATE_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY }}
-          CLOUDFRONT_PUBLIC_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY }}
+          CLOUDFRONT_PUBLIC_KEY: ${{ vars.RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           private_key="$RUNNER_TEMP/provider-cloudfront-private.pem"
@@ -230,34 +325,19 @@ jobs:
           chmod 600 "$private_key" "$public_key"
           printf 'RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY_PATH=%s\n' "$private_key" >> "$GITHUB_ENV"
           printf 'RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY_PATH=%s\n' "$public_key" >> "$GITHUB_ENV"
-      - name: Configure AWS provisioning identity
-        if: steps.mode.outputs.action == 'start'
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
-        with:
-          aws-region: ${{ secrets.RIVERHOG_QUALIFICATION_AWS_REGION }}
-          role-to-assume: ${{ secrets.RIVERHOG_QUALIFICATION_AWS_PROVISION_ROLE_ARN }}
-          role-session-name: riverhog-provider-provision
-      - name: Reconcile dedicated provider infrastructure
-        if: steps.mode.outputs.action == 'start'
-        env:
-          RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_PROVISION_APPLICATION_KEY }}
-          RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID: ${{ secrets.RIVERHOG_QUALIFICATION_B2_PROVISION_KEY_ID }}
-        run: make provider-qualification args="infrastructure apply $CONFIG_PATH"
       - name: Configure AWS runtime identity
-        if: steps.mode.outputs.action != 'skip'
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
-          aws-region: ${{ secrets.RIVERHOG_QUALIFICATION_AWS_REGION }}
-          role-to-assume: ${{ secrets.RIVERHOG_QUALIFICATION_AWS_RUNTIME_ROLE_ARN }}
+          aws-region: ${{ vars.RIVERHOG_QUALIFICATION_AWS_REGION }}
+          role-to-assume: ${{ vars.RIVERHOG_QUALIFICATION_AWS_RUNTIME_ROLE_ARN }}
           role-session-name: riverhog-provider-runtime
           unset-current-credentials: true
       - name: Create and verify deterministic state
-        if: steps.mode.outputs.action != 'skip'
         env:
-          ACTION: ${{ steps.mode.outputs.action }}
-          CORPUS_PROFILE: ${{ steps.mode.outputs.profile }}
-          SOURCE_REF: ${{ steps.mode.outputs.source_ref }}
-          SOURCE_SHA: ${{ steps.mode.outputs.source_sha }}
+          ACTION: ${{ needs.resolve.outputs.action }}
+          CORPUS_PROFILE: ${{ needs.resolve.outputs.profile }}
+          SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
         run: |
           set -euo pipefail
           state_dir="$RUNNER_TEMP/provider-state"
@@ -278,12 +358,11 @@ jobs:
           printf 'STATE_DIR=%s\nCORPUS_ROOT=%s\nCORPUS_MANIFEST=%s\n' \
             "$state_dir" "$corpus_root" "$corpus_manifest" >> "$GITHUB_ENV"
       - name: Generate the disposable deployment environment
-        if: steps.mode.outputs.action != 'skip'
         env:
           RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE: ${{ secrets.RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE }}
-          RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID: ${{ secrets.RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID }}
+          RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID: ${{ vars.RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID }}
           RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY }}
-          RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID: ${{ secrets.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID }}
+          RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID: ${{ vars.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID }}
           RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY }}
           RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN: ${{ secrets.RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN }}
         run: |
@@ -303,7 +382,7 @@ jobs:
           printf 'RUNTIME_ENV=%s\nCOMPOSE_PROJECT_NAME=%s\n' \
             "$runtime_env" "$compose_project" >> "$GITHUB_ENV"
       - name: Restore disposable database state
-        if: steps.mode.outputs.action == 'poll'
+        if: needs.resolve.outputs.action == 'poll'
         run: |
           set -euo pipefail
           docker compose --env-file "$RUNTIME_ENV" --project-name "$COMPOSE_PROJECT_NAME" \
@@ -313,7 +392,6 @@ jobs:
             pg_restore --username riverhog --dbname riverhog --clean --if-exists --no-owner \
             < "$STATE_DIR/database.dump"
       - name: Start the disposable Riverhog deployment
-        if: steps.mode.outputs.action != 'skip'
         id: deployment
         run: |
           set -euo pipefail
@@ -325,14 +403,13 @@ jobs:
           test "$actual_url" = 'postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog'
           curl --fail --silent --show-error http://127.0.0.1:8000/health/ready
       - name: Advance one restartable qualification phase
-        if: steps.mode.outputs.action != 'skip'
         id: operate
         continue-on-error: true
         env:
           RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE: ${{ secrets.RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE }}
-          RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID: ${{ secrets.RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID }}
+          RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID: ${{ vars.RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID }}
           RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY }}
-          RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID: ${{ secrets.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID }}
+          RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID: ${{ vars.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID }}
           RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY }}
           RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN: ${{ secrets.RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN }}
         run: >-

@@ -106,8 +106,20 @@ GOVERNANCE_SECTION_KEYS = {
         "support",
     },
     "tags": {"release_candidate", "final", "immutability", "failed_publication"},
-    "authority": {"branches", "tags", "github_releases", "registries", "pages"},
-    "environments": {"release", "pages"},
+    "authority": {
+        "branches",
+        "tags",
+        "github_releases",
+        "registries",
+        "pages",
+        "provider_qualification",
+    },
+    "environments": {
+        "release",
+        "pages",
+        "provider_qualification_provisioning",
+        "provider_qualification_runtime",
+    },
 }
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 PROJECT_VERSION_RE = re.compile(r'(?m)^version = "(?P<version>[^"]+)"$')
