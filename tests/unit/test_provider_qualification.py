@@ -275,7 +275,7 @@ def test_corpus_profiles_exercise_pack_and_direct_multipart_boundaries() -> None
     assert any(len(path.encode()) > 100 for path, _byte_count in regular)
     assert any(path.startswith("packed/") for path, _byte_count in regular)
     assert any(path.startswith("direct/") for path, _byte_count in regular)
-    assert sum(size for _path, size in multipart) > 64 * module.MIB
+    assert sum(size for _path, size in multipart) > 128 * module.MIB
 
 
 def test_checkpoint_is_restartable_tamper_evident_and_emits_bounded_evidence(
@@ -615,34 +615,66 @@ def test_runtime_environment_rejects_mismatched_cloudfront_signing_keys(
         )
 
 
-def test_official_upload_client_writes_directly_to_b2_archive(
+@pytest.mark.parametrize(
+    ("profile", "expected_processes", "multipart_observations"),
+    (
+        ("regular", 1, ()),
+        (
+            "multipart",
+            2,
+            ("multipart-client-interrupted", "multipart-client-restarted"),
+        ),
+    ),
+)
+def test_official_upload_client_writes_directly_and_resumes_multipart(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    profile: str,
+    expected_processes: int,
+    multipart_observations: tuple[str, ...],
 ) -> None:
     module = load_script()
-    captured: dict[str, object] = {}
+    captured: dict[str, object] = {"commands": []}
 
     class _Process:
         stdout = None
-        returncode = 0
 
-        def __init__(self) -> None:
+        def __init__(self, *, interruptible: bool) -> None:
+            self.interruptible = interruptible
             self.polls = 0
+            self.returncode: int | None = None
 
         def poll(self) -> int | None:
+            if self.returncode is not None:
+                return self.returncode
             self.polls += 1
-            return None if self.polls == 1 else 0
+            if self.interruptible or self.polls == 1:
+                return None
+            self.returncode = 0
+            return self.returncode
 
         def communicate(self) -> tuple[str, str]:
-            return '{"collection_id": 42}', ""
+            if self.returncode == 0:
+                return '{"collection_id": 42}', ""
+            return "", ""
 
         def terminate(self) -> None:
-            raise AssertionError("qualification upload unexpectedly timed out")
+            self.returncode = -15
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+        def wait(self, *, timeout: int) -> int:
+            assert timeout == 30
+            assert self.returncode is not None
+            return self.returncode
 
     def popen(command, **kwargs):  # type: ignore[no-untyped-def]
-        captured["command"] = command
+        commands = captured["commands"]
+        assert isinstance(commands, list)
+        commands.append(command)
         captured["environment"] = kwargs["env"]
-        return _Process()
+        return _Process(interruptible=profile == "multipart" and len(commands) == 1)
 
     root = tmp_path / "corpus"
     root.mkdir()
@@ -671,7 +703,7 @@ def test_official_upload_client_writes_directly_to_b2_archive(
         def get_collection_upload_session_unit(
             self, _collection_id: int, _volume_id: str, unit: int
         ) -> dict[str, object]:
-            return {"unit": unit}
+            return {"unit": unit, "state": "committed"}
 
     monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/riverhog")
     monkeypatch.setattr(module.subprocess, "Popen", popen)
@@ -680,24 +712,34 @@ def test_official_upload_client_writes_directly_to_b2_archive(
     collection_id, observations = module._upload_collection_with_observation(
         _Api(),
         root=root,
-        checkpoint=SimpleNamespace(run_id="qualification-run", collection_id=None),
+        checkpoint=SimpleNamespace(
+            run_id="qualification-run",
+            collection_id=None,
+            corpus_profile=profile,
+        ),
         base_url="http://127.0.0.1:8000",
         token="token",
         allow_insecure_http=True,
     )
 
-    command = captured["command"]
-    assert isinstance(command, list)
-    archive_store_index = command.index("--archive-store")
-    assert command[archive_store_index + 1] == "b2-archive"
+    commands = captured["commands"]
+    assert isinstance(commands, list)
+    assert len(commands) == expected_processes
+    for command in commands:
+        archive_store_index = command.index("--archive-store")
+        assert command[archive_store_index + 1] == "b2-archive"
+        idempotency_index = command.index("--idempotency-key")
+        assert command[idempotency_index + 1] == ("provider-qualification:qualification-run")
     assert collection_id == 42
-    assert observations == (
+    assert set(observations) == {
+        "committed-unit-readback",
+        *multipart_observations,
         "registered-file-list",
         "session-show",
         "unit-readback",
         "volume-list",
         "volume-show",
-    )
+    }
 
 
 def test_operator_advances_across_short_restore_invocations(
