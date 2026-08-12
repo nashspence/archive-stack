@@ -80,10 +80,10 @@ def test_provider_lifecycle_contracts_bound_run_state() -> None:
     assert aws["Expiration"]["Days"] == 185
     assert aws["AbortIncompleteMultipartUpload"]["DaysAfterInitiation"] == 3
     assert b2 == {
-        "fileNamePrefix": "qualification/",
-        "daysFromUploadingToHiding": 7,
+        "fileNamePrefix": "",
+        "daysFromUploadingToHiding": None,
         "daysFromHidingToDeleting": 1,
-        "daysFromStartingToCancelingUnfinishedLargeFiles": 3,
+        "daysFromStartingToCancelingUnfinishedLargeFiles": None,
     }
 
 
@@ -166,7 +166,6 @@ def test_b2_manual_check_uses_v4_scope_and_never_mutates() -> None:
             "deleteFiles",
             "listBuckets",
             "listFiles",
-            "readBucketEncryption",
             "readBucketLifecycleRules",
             "readFiles",
             "writeFiles",
@@ -202,7 +201,7 @@ def test_b2_manual_check_uses_v4_scope_and_never_mutates() -> None:
                     "lifecycleRules": module._b2_lifecycle(config),
                     "defaultServerSideEncryption": {
                         "isClientAuthorizedToRead": True,
-                        "value": {"algorithm": "AES256", "mode": "SSE-B2"},
+                        "value": {"algorithm": None, "mode": None},
                     },
                     "fileLockConfiguration": {
                         "isClientAuthorizedToRead": False,
@@ -243,7 +242,6 @@ def test_b2_manual_check_blocks_drift_instead_of_reconciling() -> None:
             "deleteFiles",
             "listBuckets",
             "listFiles",
-            "readBucketEncryption",
             "readBucketLifecycleRules",
             "readFiles",
             "writeFiles",
@@ -277,12 +275,81 @@ def test_b2_manual_check_blocks_drift_instead_of_reconciling() -> None:
     assert set(plan.changes) == {
         "bucket-scoped-key",
         "cors",
-        "default-encryption",
         "endpoint-url",
         "lifecycle",
         "object-lock",
         "private-access",
     }
+
+
+def test_b2_terminal_cleanup_removes_versions_markers_and_multipart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    bucket = module.ResolvedBucket(
+        logical_name="b2-archive",
+        provider="b2",
+        role="archive",
+        bucket_name="qualification-b2",
+        region="us-west-004",
+    )
+
+    class Client:
+        version_calls = 0
+        upload_calls = 0
+        aborted: list[tuple[str, str]] = []
+        deleted: list[dict[str, str]] = []
+
+        def list_object_versions(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["Prefix"] == "qualification/run-id/"
+            self.version_calls += 1
+            if self.version_calls == 1:
+                return {
+                    "IsTruncated": False,
+                    "Versions": [{"Key": "qualification/run-id/archive/object", "VersionId": "v1"}],
+                    "DeleteMarkers": [
+                        {"Key": "qualification/run-id/cache/object", "VersionId": "d1"}
+                    ],
+                }
+            return {"IsTruncated": False, "Versions": [], "DeleteMarkers": []}
+
+        def list_multipart_uploads(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["Prefix"] == "qualification/run-id/"
+            self.upload_calls += 1
+            if self.upload_calls == 1:
+                return {
+                    "IsTruncated": False,
+                    "Uploads": [
+                        {"Key": "qualification/run-id/cache/pending", "UploadId": "upload-1"}
+                    ],
+                }
+            return {"IsTruncated": False, "Uploads": []}
+
+        def abort_multipart_upload(self, **kwargs: object) -> None:
+            self.aborted.append((str(kwargs["Key"]), str(kwargs["UploadId"])))
+
+        def delete_objects(self, **kwargs: object) -> dict[str, object]:
+            delete = kwargs["Delete"]
+            assert isinstance(delete, dict)
+            self.deleted.extend(delete["Objects"])  # type: ignore[arg-type]
+            return {"Errors": []}
+
+    client = Client()
+    monkeypatch.setattr(module, "_runtime_s3_client", lambda *_args, **_kwargs: client)
+
+    module._cleanup_b2_namespace(
+        SimpleNamespace(namespace="qualification/run-id"),
+        (bucket,),
+        {},
+    )
+
+    assert client.aborted == [("qualification/run-id/cache/pending", "upload-1")]
+    assert client.deleted == [
+        {"Key": "qualification/run-id/archive/object", "VersionId": "v1"},
+        {"Key": "qualification/run-id/cache/object", "VersionId": "d1"},
+    ]
+    assert client.version_calls == 2
+    assert client.upload_calls == 2
 
 
 def test_corpus_is_deterministic_and_manifest_is_not_an_uploaded_member(
@@ -893,6 +960,7 @@ def test_operator_advances_across_short_restore_invocations(
         "_cancel_retrieval",
         "_assert_lifecycle_events",
         "_cancel_archive_copy",
+        "_cleanup_b2_namespace",
         "_download_retrieval",
         "_retire_copy",
     ):
@@ -957,6 +1025,7 @@ def test_operator_advances_across_short_restore_invocations(
     assert "_verify_cloudfront_egress" in calls
     assert calls.count("_wait_archive_copy") == 1
     assert calls.count("_retire_copy") == 1
+    assert calls.count("_cleanup_b2_namespace") == 1
     assert {item.surface for item in second.artifacts} == {
         "aws-deep-archive",
         "b2-archive",

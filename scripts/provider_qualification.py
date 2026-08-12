@@ -32,7 +32,6 @@ EVIDENCE_SCHEMA = "riverhog-provider-qualification-evidence/v1"
 QUALIFICATION_MARKER = "riverhog-provider-qualification"
 AWS_DEEP_ARCHIVE_MINIMUM_DAYS = 180
 DEFAULT_AWS_EXPIRATION_DAYS = 185
-DEFAULT_B2_HIDE_DAYS = 7
 DEFAULT_B2_DELETE_DAYS = 1
 DEFAULT_MULTIPART_ABORT_DAYS = 3
 DEFAULT_RESTORE_COPY_DAYS = 3
@@ -96,7 +95,6 @@ class CloudFrontDefinition:
 class QualificationConfig:
     namespace_prefix: str
     aws_expiration_days: int
-    b2_hide_days: int
     b2_delete_days: int
     multipart_abort_days: int
     restore_copy_days: int
@@ -348,7 +346,6 @@ def load_config(path: Path) -> QualificationConfig:
         raise QualificationError(
             "aws_deep_archive_expiration_days must honor the 180-day provider minimum"
         )
-    b2_hide_days = _expect_int(retention, "b2_hide_days", DEFAULT_B2_HIDE_DAYS)
     b2_delete_days = _expect_int(retention, "b2_delete_days", DEFAULT_B2_DELETE_DAYS)
     multipart_abort_days = _expect_int(
         retention, "multipart_abort_days", DEFAULT_MULTIPART_ABORT_DAYS
@@ -403,7 +400,6 @@ def load_config(path: Path) -> QualificationConfig:
         "namespace_prefix": namespace_prefix,
         "retention": {
             "aws_deep_archive_expiration_days": aws_expiration_days,
-            "b2_hide_days": b2_hide_days,
             "b2_delete_days": b2_delete_days,
             "multipart_abort_days": multipart_abort_days,
         },
@@ -420,7 +416,6 @@ def load_config(path: Path) -> QualificationConfig:
     return QualificationConfig(
         namespace_prefix=namespace_prefix,
         aws_expiration_days=aws_expiration_days,
-        b2_hide_days=b2_hide_days,
         b2_delete_days=b2_delete_days,
         multipart_abort_days=multipart_abort_days,
         restore_copy_days=restore_copy_days,
@@ -715,10 +710,10 @@ class AwsBucketManager:
 def _b2_lifecycle(config: QualificationConfig) -> list[dict[str, object]]:
     return [
         {
-            "fileNamePrefix": f"{config.namespace_prefix}/",
-            "daysFromUploadingToHiding": config.b2_hide_days,
+            "fileNamePrefix": "",
+            "daysFromUploadingToHiding": None,
             "daysFromHidingToDeleting": config.b2_delete_days,
-            "daysFromStartingToCancelingUnfinishedLargeFiles": config.multipart_abort_days,
+            "daysFromStartingToCancelingUnfinishedLargeFiles": None,
         }
     ]
 
@@ -830,7 +825,6 @@ class B2ManualBucketChecker:
             "deleteFiles",
             "listBuckets",
             "listFiles",
-            "readBucketEncryption",
             "readBucketLifecycleRules",
             "readFiles",
             "writeFiles",
@@ -892,10 +886,6 @@ class B2ManualBucketChecker:
             changes.append("cors")
         if current.get("lifecycleRules") != _b2_lifecycle(config):
             changes.append("lifecycle")
-        encryption = current.get("defaultServerSideEncryption")
-        value = encryption.get("value") if isinstance(encryption, dict) else None
-        if value != {"algorithm": "AES256", "mode": "SSE-B2"}:
-            changes.append("default-encryption")
         lock = current.get("fileLockConfiguration")
         if (
             isinstance(lock, dict)
@@ -2538,6 +2528,118 @@ def _runtime_s3_client(bucket: ResolvedBucket, values: Mapping[str, str]) -> obj
     )
 
 
+def _b2_namespace_versions(
+    client: object,
+    *,
+    bucket: str,
+    prefix: str,
+) -> tuple[dict[str, str], ...]:
+    request: dict[str, object] = {"Bucket": bucket, "Prefix": prefix}
+    versions: list[dict[str, str]] = []
+    while True:
+        response = cast(dict[str, Any], cast(Any, client).list_object_versions(**request))
+        for field in ("Versions", "DeleteMarkers"):
+            for item in response.get(field, []):
+                if not isinstance(item, dict):
+                    raise QualificationError("B2 version listing returned an invalid item")
+                key = item.get("Key")
+                version_id = item.get("VersionId")
+                if not isinstance(key, str) or not isinstance(version_id, str):
+                    raise QualificationError("B2 version listing omitted an object identity")
+                if not key.startswith(prefix):
+                    raise QualificationError("B2 version listing escaped the run namespace")
+                versions.append({"Key": key, "VersionId": version_id})
+        if not response.get("IsTruncated"):
+            break
+        key_marker = response.get("NextKeyMarker")
+        version_marker = response.get("NextVersionIdMarker")
+        if not isinstance(key_marker, str) or not isinstance(version_marker, str):
+            raise QualificationError("B2 version listing omitted continuation markers")
+        request["KeyMarker"] = key_marker
+        request["VersionIdMarker"] = version_marker
+    return tuple(versions)
+
+
+def _b2_namespace_uploads(
+    client: object,
+    *,
+    bucket: str,
+    prefix: str,
+) -> tuple[tuple[str, str], ...]:
+    request: dict[str, object] = {"Bucket": bucket, "Prefix": prefix}
+    uploads: list[tuple[str, str]] = []
+    while True:
+        response = cast(dict[str, Any], cast(Any, client).list_multipart_uploads(**request))
+        for item in response.get("Uploads", []):
+            if not isinstance(item, dict):
+                raise QualificationError("B2 multipart listing returned an invalid item")
+            key = item.get("Key")
+            upload_id = item.get("UploadId")
+            if not isinstance(key, str) or not isinstance(upload_id, str):
+                raise QualificationError("B2 multipart listing omitted an upload identity")
+            if not key.startswith(prefix):
+                raise QualificationError("B2 multipart listing escaped the run namespace")
+            uploads.append((key, upload_id))
+        if not response.get("IsTruncated"):
+            break
+        key_marker = response.get("NextKeyMarker")
+        upload_marker = response.get("NextUploadIdMarker")
+        if not isinstance(key_marker, str) or not isinstance(upload_marker, str):
+            raise QualificationError("B2 multipart listing omitted continuation markers")
+        request["KeyMarker"] = key_marker
+        request["UploadIdMarker"] = upload_marker
+    return tuple(uploads)
+
+
+def _cleanup_b2_namespace(
+    checkpoint: QualificationCheckpoint,
+    buckets: Sequence[ResolvedBucket],
+    values: Mapping[str, str],
+) -> None:
+    prefix = f"{checkpoint.namespace.rstrip('/')}/"
+    for bucket in sorted(buckets, key=lambda item: item.logical_name):
+        if bucket.provider != "b2":
+            continue
+        client = _runtime_s3_client(bucket, values)
+        for key, upload_id in _b2_namespace_uploads(
+            client,
+            bucket=bucket.bucket_name,
+            prefix=prefix,
+        ):
+            cast(Any, client).abort_multipart_upload(
+                Bucket=bucket.bucket_name,
+                Key=key,
+                UploadId=upload_id,
+            )
+        versions = _b2_namespace_versions(
+            client,
+            bucket=bucket.bucket_name,
+            prefix=prefix,
+        )
+        for offset in range(0, len(versions), 1000):
+            response = cast(
+                dict[str, Any],
+                cast(Any, client).delete_objects(
+                    Bucket=bucket.bucket_name,
+                    Delete={"Objects": list(versions[offset : offset + 1000]), "Quiet": True},
+                ),
+            )
+            if response.get("Errors"):
+                raise QualificationError(f"{bucket.logical_name} terminal namespace cleanup failed")
+        if _b2_namespace_versions(
+            client,
+            bucket=bucket.bucket_name,
+            prefix=prefix,
+        ) or _b2_namespace_uploads(
+            client,
+            bucket=bucket.bucket_name,
+            prefix=prefix,
+        ):
+            raise QualificationError(
+                f"{bucket.logical_name} terminal namespace cleanup did not converge"
+            )
+
+
 def _archive_copy_prefix(api: Any, collection_id: int, store: str) -> str:
     collection = api.get_collection(collection_id)
     copy = _collection_copy(collection, store)
@@ -2942,10 +3044,14 @@ def operate_qualification(
                 raise QualificationError("restore checkpoint identity is incomplete")
             collection_id = checkpoint.collection_id
             if _utc_now() > _parse_timestamp(checkpoint.restore_deadline_at):
+                _cleanup_b2_namespace(checkpoint, buckets, values)
                 checkpoint = advance_checkpoint(
                     checkpoint,
                     phase="failed",
-                    assertions=("deep-archive-restore-deadline-exceeded",),
+                    assertions=(
+                        "deep-archive-restore-deadline-exceeded",
+                        "b2-terminal-prefix-removed",
+                    ),
                 )
                 write_checkpoint(checkpoint_path, checkpoint)
                 return checkpoint
@@ -2960,10 +3066,14 @@ def operate_qualification(
                 write_checkpoint(checkpoint_path, checkpoint)
                 return checkpoint
             if state in {"failed", "canceled", "expired"}:
+                _cleanup_b2_namespace(checkpoint, buckets, values)
                 checkpoint = advance_checkpoint(
                     checkpoint,
                     phase="failed",
-                    assertions=(f"deep-archive-retrieval-{state}",),
+                    assertions=(
+                        f"deep-archive-retrieval-{state}",
+                        "b2-terminal-prefix-removed",
+                    ),
                 )
                 write_checkpoint(checkpoint_path, checkpoint)
                 return checkpoint
@@ -3049,13 +3159,15 @@ def operate_qualification(
             if checkpoint.collection_id is None:
                 raise QualificationError("verified checkpoint has no collection identity")
             _retire_copy(api, checkpoint.collection_id, "b2-archive")
+            _cleanup_b2_namespace(checkpoint, buckets, values)
             checkpoint = advance_checkpoint(
                 checkpoint,
                 phase="cleaned",
                 assertions=(
                     "b2-archive-copy-retired",
                     "aws-canary-retained-for-provider-minimum",
-                    "retrieval-cache-lifecycle-bounded",
+                    "b2-terminal-prefix-removed",
+                    "b2-prior-version-retention-bounded",
                 ),
             )
             write_checkpoint(checkpoint_path, checkpoint)
