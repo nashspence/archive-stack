@@ -1208,7 +1208,12 @@ class CloudFrontManager:
         try:
             response = self._call(self.s3, "get_bucket_policy", Bucket=self.bucket.bucket_name)
         except Exception as exc:
-            if _client_error_code(exc) in {"NoSuchBucketPolicy", "NoSuchPolicy", "404"}:
+            if _client_error_code(exc) in {
+                "NoSuchBucket",
+                "NoSuchBucketPolicy",
+                "NoSuchPolicy",
+                "404",
+            }:
                 return {"Version": "2012-10-17", "Statement": []}
             raise QualificationError("cannot inspect CloudFront origin bucket policy") from exc
         try:

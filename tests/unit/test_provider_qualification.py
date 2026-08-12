@@ -571,6 +571,36 @@ def test_cloudfront_contract_is_private_signed_and_version_exact() -> None:
     )
 
 
+def test_cloudfront_fresh_origin_has_an_empty_policy() -> None:
+    module = load_script()
+    config = module.load_config(CONFIG)
+    bucket = module.ResolvedBucket(
+        logical_name="aws-deep-archive",
+        provider="aws",
+        role="deep-archive",
+        bucket_name="qualification-fresh-origin",
+        region="us-west-2",
+    )
+
+    class FreshOriginError(RuntimeError):
+        response = {"Error": {"Code": "NoSuchBucket"}}
+
+    class FreshOrigin:
+        def get_bucket_policy(self, **_kwargs: object) -> dict[str, object]:
+            raise FreshOriginError("fresh origin")
+
+    manager = module.CloudFrontManager(
+        cloudfront_client=object(),
+        s3_client=FreshOrigin(),
+        bucket=bucket,
+        config=config,
+        public_key_pem="public-key",
+    )
+
+    assert manager._bucket_policy() == {"Version": "2012-10-17", "Statement": []}
+    assert manager._bucket_policy_has_unmanaged_statements() is False
+
+
 def test_infrastructure_evidence_uses_logical_names_only() -> None:
     module = load_script()
     plan = module.InfrastructurePlan(
