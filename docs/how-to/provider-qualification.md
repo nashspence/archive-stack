@@ -66,10 +66,12 @@ bucket. GitHub Actions obtains AWS credentials through two OIDC roles:
   object, listing, restore, and metadata operations needed by Riverhog, plus read access to
   the marked CloudFront configuration.
 
-The B2 provisioning key needs `listBuckets`, `writeBuckets`, `readBucketEncryption`, and
-`writeBucketEncryption`. Each per-bucket application key is restricted to its one dedicated
-bucket and the `qualification/` prefix, with the list/read/write/delete capabilities needed
-for that role. The provisioning key is unavailable during polling invocations.
+The B2 provisioning key needs `listBuckets`, `writeBuckets`, `readBucketEncryption`,
+`writeBucketEncryption`, and `readBucketRetentions`. The final capability lets the
+reconciler positively prove that Object Lock is disabled. Each per-bucket application key
+is restricted to its one dedicated bucket and the `qualification/` prefix, with the
+list/read/write/delete capabilities needed for that role. The provisioning key is
+unavailable during polling invocations.
 
 The protected GitHub environment is named `provider-qualification`. Its secret names are
 the environment-variable names above plus:
