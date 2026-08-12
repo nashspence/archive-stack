@@ -301,7 +301,7 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
 
     assert provision_job["needs"] == "resolve"
     assert provision_job["if"] == "needs.resolve.outputs.action == 'start'"
-    assert provision_job["environment"] == "provider-qualification-aws-provisioning"
+    assert provision_job["environment"] == "provider-qualification-provisioning"
     assert provision_job["permissions"] == {"contents": "read", "id-token": "write"}
     assert references(provision_job, "vars") == {
         "RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET",
