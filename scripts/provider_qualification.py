@@ -1552,7 +1552,7 @@ def _corpus_layout(profile: str) -> tuple[tuple[str, int], ...]:
     if profile == "regular":
         return common
     if profile == "multipart":
-        return (*common, ("direct/multipart-boundary.bin", 64 * MIB + 64 * 1024))
+        return (*common, ("direct/multipart-boundary.bin", 128 * MIB + 64 * 1024))
     raise QualificationError("corpus profile must be regular or multipart")
 
 
@@ -2239,65 +2239,97 @@ def _upload_collection_with_observation(
     resolved_root = str(root.expanduser().resolve())
     observed: set[str] = set()
     collection_id: int | None = checkpoint.collection_id
-    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr:
-        process = subprocess.Popen(  # noqa: S603
-            command,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=stderr,
-            text=True,
+    interrupt_client = checkpoint.corpus_profile == "multipart"
+    interrupted = False
+
+    def observe() -> None:
+        nonlocal collection_id
+        page = api.list_collection_upload_sessions(all_items=True)
+        uploads = _page_items(page, "uploads")
+        upload = next(
+            (item for item in uploads if item.get("ingest_source") == resolved_root),
+            None,
         )
-        deadline = time.monotonic() + 6 * 60 * 60
-        while process.poll() is None:
-            if time.monotonic() >= deadline:
-                process.terminate()
-                raise QualificationError("Riverhog CLI upload exceeded its qualification deadline")
-            try:
-                page = api.list_collection_upload_sessions(all_items=True)
-                uploads = _page_items(page, "uploads")
-                upload = next(
-                    (item for item in uploads if item.get("ingest_source") == resolved_root),
-                    None,
-                )
-                if upload is not None:
-                    collection_id = int(upload["collection_id"])
-                    session = api.get_collection_upload_session(collection_id)
-                    if session.get("state") in {"open", "uploading", "finalizing"}:
-                        observed.add("session-show")
-                    files = api.list_collection_upload_session_files(
-                        collection_id,
-                        all_items=True,
+        if upload is None:
+            return
+        collection_id = int(upload["collection_id"])
+        session = api.get_collection_upload_session(collection_id)
+        if session.get("state") in {"open", "uploading", "finalizing"}:
+            observed.add("session-show")
+        files = api.list_collection_upload_session_files(collection_id, all_items=True)
+        if _page_items(files, "files"):
+            observed.add("registered-file-list")
+        volume_page = api.list_collection_upload_session_volumes(collection_id)
+        volumes = _page_items(volume_page, "volumes")
+        if volumes:
+            observed.add("volume-list")
+        for volume in volumes:
+            volume_id = str(volume["volume_id"])
+            shown = api.get_collection_upload_session_volume(collection_id, volume_id)
+            observed.add("volume-show")
+            units = shown.get("units")
+            if not isinstance(units, list) or not units:
+                continue
+            unit = int(cast(dict[str, Any], units[0])["unit"])
+            readback = api.get_collection_upload_session_unit(
+                collection_id,
+                volume_id,
+                unit,
+            )
+            if int(readback.get("unit", -1)) == unit:
+                observed.add("unit-readback")
+                if readback.get("state") == "committed":
+                    observed.add("committed-unit-readback")
+
+    stdout = ""
+    deadline = time.monotonic() + 6 * 60 * 60
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr:
+        while True:
+            if interrupted:
+                observed.add("multipart-client-restarted")
+            process = subprocess.Popen(  # noqa: S603
+                command,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=stderr,
+                text=True,
+            )
+            restart = False
+            while process.poll() is None:
+                if time.monotonic() >= deadline:
+                    process.terminate()
+                    raise QualificationError(
+                        "Riverhog CLI upload exceeded its qualification deadline"
                     )
-                    if _page_items(files, "files"):
-                        observed.add("registered-file-list")
-                    volume_page = api.list_collection_upload_session_volumes(collection_id)
-                    volumes = _page_items(volume_page, "volumes")
-                    if volumes:
-                        observed.add("volume-list")
-                    for volume in volumes:
-                        volume_id = str(volume["volume_id"])
-                        shown = api.get_collection_upload_session_volume(
-                            collection_id,
-                            volume_id,
-                        )
-                        observed.add("volume-show")
-                        units = shown.get("units")
-                        if isinstance(units, list) and units:
-                            unit = int(cast(dict[str, Any], units[0])["unit"])
-                            readback = api.get_collection_upload_session_unit(
-                                collection_id,
-                                volume_id,
-                                unit,
-                            )
-                            if int(readback.get("unit", -1)) == unit:
-                                observed.add("unit-readback")
+                try:
+                    observe()
+                except Exception:
+                    # The session can move between transactional states while the observer polls.
+                    pass
+                if interrupt_client and not interrupted and "committed-unit-readback" in observed:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=30)
+                    interrupted = True
+                    observed.add("multipart-client-interrupted")
+                    restart = True
+                    break
+                time.sleep(0.1)
+            stdout, _ = process.communicate()
+            if restart:
+                continue
+            if process.returncode != 0:
+                raise QualificationError("the official Riverhog CLI upload failed")
+            try:
+                observe()
             except Exception:
-                # The session can move between transactional states while the observer polls.
+                # Preserve observations gathered while the client was active. A
+                # finalized session can disappear from an active-session listing.
                 pass
-            time.sleep(0.1)
-        stdout, _ = process.communicate()
-        if process.returncode != 0:
-            raise QualificationError("the official Riverhog CLI upload failed")
+            break
     try:
         payload = json.loads(stdout)
         result_id = int(payload["collection_id"])
@@ -2306,12 +2338,15 @@ def _upload_collection_with_observation(
     if collection_id is not None and collection_id != result_id:
         raise QualificationError("observed upload identity changed during finalization")
     required = {
+        "committed-unit-readback",
         "session-show",
         "registered-file-list",
         "volume-list",
         "volume-show",
         "unit-readback",
     }
+    if interrupt_client:
+        required.update({"multipart-client-interrupted", "multipart-client-restarted"})
     if not required <= observed:
         raise QualificationError(
             "upload completed before required session observations were established: "
