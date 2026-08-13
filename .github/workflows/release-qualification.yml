@@ -140,6 +140,47 @@ jobs:
           printf 'QUALIFICATION_DIR=%s\n' "$qualification_dir" >> "$GITHUB_ENV"
           printf 'RELEASE_SUMMARY=%s/release.json\n' "$qualification_dir" >> "$GITHUB_ENV"
           printf 'GOVERNANCE_SUMMARY=%s/governance.json\n' "$qualification_dir" >> "$GITHUB_ENV"
+          printf 'OPERATIONS_SUMMARY=%s/operations.json\n' "$qualification_dir" >> "$GITHUB_ENV"
+          printf 'OPERATIONS_TIMINGS=%s/operation-timings.json\n' "$qualification_dir" >> "$GITHUB_ENV"
+      - name: Exercise disposable operation lifecycles and record timings
+        env:
+          RIVERHOG_OPERATION_SOURCE_SHA: ${{ env.SOURCE_SHA }}
+          RIVERHOG_OPERATION_TIMINGS: ${{ env.OPERATIONS_TIMINGS }}
+        run: >-
+          make unit
+          TESTS="tests/unit/test_operation_lifecycle_api.py::test_riverhog_official_client_positive_disposable_lifecycle
+          companions/munchy/tests/test_munchy_server_contract.py::test_munchy_official_clients_cover_complete_positive_api_lifecycle
+          companions/jeb/tests/test_jeb_health.py::test_jeb_official_client_covers_complete_positive_api_lifecycle
+          tests/unit/test_collection_reads.py::test_collection_list_query_count_is_independent_of_page_rows
+          companions/munchy/tests/test_munchy_server_contract.py::test_list_jobs_does_not_scan_all_job_states_for_current_page
+          companions/jeb/tests/test_jeb_server.py::test_source_registry_lists_compact_filtered_pages_in_sql"
+          args="-p tests.operation_observer"
+      - name: Verify and record the complete operation matrix
+        run: >-
+          make operation-qualification
+          args="evidence --source-sha $SOURCE_SHA --timings $OPERATIONS_TIMINGS
+          --output $OPERATIONS_SUMMARY"
+      - name: Verify exact-SHA operation evidence
+        run: |
+          jq --exit-status --arg sha "$SOURCE_SHA" '
+            .schema == "riverhog-operation-qualification/v1"
+            and .source_sha == $sha
+            and .summary.operations == (.operations | length)
+            and .qualification.positive_local_lifecycles.status == "passed"
+            and .qualification.cli_human_json_projection.status == "passed"
+            and .qualification.bounded_state_access.status == "passed"
+            and .qualification.event_cursor_restart_resume.status == "passed"
+            and .qualification.provider_backed_lifecycles.status == "linked"
+            and .performance.local_api.schema == "riverhog-operation-timings/v1"
+            and .performance.local_api.source_sha == $sha
+            and (.summary.applications | keys == ["jeb", "munchy", "riverhog"])
+            and (.summary.classifications | keys == [
+              "client-only-primitive",
+              "human-cli+json",
+              "service-internal",
+              "standard-tool/protocol"
+            ])
+          ' "$OPERATIONS_SUMMARY"
       - name: Verify live release governance
         run: make release-governance-check RELEASE_SUMMARY="$GOVERNANCE_SUMMARY"
       - name: Build and verify release evidence
@@ -166,6 +207,7 @@ jobs:
               source_sha: $sha,
               version: $version,
               required_checks: "passed",
+              operation_matrix: "passed",
               github_governance: "passed",
               release_evidence: "passed",
               published: false

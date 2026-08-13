@@ -4,6 +4,7 @@ from typing import cast
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import APIRouter, Query, Request, Response
+from http_api_contracts import operation_interface
 
 from riverhog_api.auth import CatalogReader
 from riverhog_api.deps import ContainerDep
@@ -141,7 +142,10 @@ def resourcesync_change_list(
     return _xml(root)
 
 
-@router.get("/v1/catalog/collections/{collection_id}/manifest")
+@router.get(
+    "/v1/catalog/collections/{collection_id}/manifest",
+    openapi_extra=operation_interface("standard-tool/protocol"),
+)
 def get_portable_collection_manifest(
     collection_id: int,
     principal: CatalogReader,

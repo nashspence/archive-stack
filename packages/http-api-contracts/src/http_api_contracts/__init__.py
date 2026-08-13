@@ -73,6 +73,19 @@ PUBLIC_ERROR_RESPONSES: dict[int, dict[str, Any]] = {
     status: {"model": ErrorResponse} for status in (400, 401, 403, 404, 409, 500, 503)
 }
 
+OperationInterface = Literal[
+    "human-cli+json",
+    "client-only-primitive",
+    "standard-tool/protocol",
+    "service-internal",
+]
+
+
+def operation_interface(value: OperationInterface) -> dict[str, str]:
+    """Declare a non-default operation audience in its generated OpenAPI contract."""
+
+    return {"x-riverhog-interface": value}
+
 
 def safe_http_base_url(
     value: str,
@@ -177,11 +190,13 @@ __all__ = [
     "ErrorBody",
     "ErrorResponse",
     "HealthResponse",
+    "OperationInterface",
     "PUBLIC_ERROR_RESPONSES",
     "apply_openapi_error_contract",
     "error_code_for_status",
     "error_payload",
     "error_responses",
+    "operation_interface",
     "parse_error_payload",
     "safe_http_base_url",
     "status_for_error_code",
