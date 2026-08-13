@@ -17,6 +17,17 @@ CloudFront is required. A successful run compares every CloudFront ciphertext by
 SHA-256 identity with direct S3 recovery and requires the second signed HTTPS request to be
 a cache hit.
 
+The reconciled distribution intentionally uses standard pay-as-you-go CloudFront billing,
+whose account-wide free allowance includes the first 1 TB of data transfer out and 10 million
+HTTP(S) requests each month. It does not subscribe to the newer flat-rate Free plan, whose
+transfer allowance is 100 GB and which cannot be combined with the pay-as-you-go allowance.
+The reconciler retains the AWS-enforced pricing-plan-incompatible forwarding configuration
+and removes optional paid features such as access and real-time logging, WAF, Lambda@Edge,
+field-level encryption, and Origin Shield. `PriceClass_100` bounds overage geography, and the
+qualification runner separately limits total monthly downloads to 2 GiB. The AWS allowance
+is shared by an account (or consolidated-billing organization), so unrelated CloudFront use
+still counts against it.
+
 ## Lifecycle
 
 `make provider-qualification args="infrastructure apply <config>"` creates or reconciles

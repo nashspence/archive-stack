@@ -550,6 +550,31 @@ def test_cloudfront_contract_is_private_signed_and_version_exact() -> None:
     assert manager._normalize_distribution(provider_defaults) == manager._normalize_distribution(
         distribution
     )
+    assert manager._pay_as_you_go_billing_changes(distribution) == ()
+    paid_features = json.loads(json.dumps(distribution))
+    paid_features["Logging"] = {"Enabled": True}
+    paid_features["WebACLId"] = "web-acl-id"
+    paid_features["DefaultCacheBehavior"]["LambdaFunctionAssociations"] = {
+        "Quantity": 1,
+        "Items": [{"LambdaFunctionARN": "arn:example", "EventType": "viewer-request"}],
+    }
+    paid_features["DefaultCacheBehavior"]["RealtimeLogConfigArn"] = "arn:example"
+    paid_features["DefaultCacheBehavior"]["FieldLevelEncryptionId"] = "field-encryption-id"
+    paid_features["Origins"]["Items"][0]["OriginShield"] = {"Enabled": True}
+    assert manager._pay_as_you_go_billing_changes(paid_features) == (
+        "access-logging",
+        "web-acl",
+        "lambda-edge",
+        "real-time-logging",
+        "field-level-encryption",
+        "origin-shield",
+    )
+    flat_rate_eligible = json.loads(json.dumps(distribution))
+    del flat_rate_eligible["DefaultCacheBehavior"]["ForwardedValues"]
+    flat_rate_eligible["DefaultCacheBehavior"]["CachePolicyId"] = "cache-policy-id"
+    assert manager._pay_as_you_go_billing_changes(flat_rate_eligible) == (
+        "pricing-plan-eligibility",
+    )
     manager._bucket_policy = lambda: {  # type: ignore[method-assign]
         "Version": "2012-10-17",
         "Statement": [{"Sid": "Unmanaged"}],
@@ -599,6 +624,70 @@ def test_cloudfront_fresh_origin_has_an_empty_policy() -> None:
 
     assert manager._bucket_policy() == {"Version": "2012-10-17", "Statement": []}
     assert manager._bucket_policy_has_unmanaged_statements() is False
+
+
+def test_cloudfront_finds_paginated_aws_key_group_summary() -> None:
+    module = load_script()
+    config = module.load_config(CONFIG)
+    bucket = module.ResolvedBucket(
+        logical_name="aws-deep-archive",
+        provider="aws",
+        role="deep-archive",
+        bucket_name="qualification-private-origin",
+        region="us-west-2",
+    )
+
+    class CloudFront:
+        def __init__(self) -> None:
+            self.markers: list[str | None] = []
+
+        def list_key_groups(self, **kwargs: object) -> dict[str, object]:
+            marker = kwargs.get("Marker")
+            self.markers.append(str(marker) if marker is not None else None)
+            if marker is None:
+                return {
+                    "KeyGroupList": {
+                        "Items": [],
+                        "NextMarker": "next-page",
+                    }
+                }
+            return {
+                "KeyGroupList": {
+                    "Items": [
+                        {
+                            "KeyGroup": {
+                                "Id": "key-group-id",
+                                "KeyGroupConfig": {
+                                    "Name": "qualification-key-group",
+                                    "Items": ["public-key-id"],
+                                    "Comment": manager.marker,
+                                },
+                            }
+                        }
+                    ]
+                }
+            }
+
+        def get_key_group_config(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "KeyGroupConfig": manager._desired_key_group("public-key-id"),
+                "ETag": "etag",
+            }
+
+        def create_key_group(self, **_kwargs: object) -> dict[str, object]:
+            raise AssertionError("an existing key group must not be recreated")
+
+    cloudfront = CloudFront()
+    manager = module.CloudFrontManager(
+        cloudfront_client=cloudfront,
+        s3_client=object(),
+        bucket=bucket,
+        config=config,
+        public_key_pem="public-key",
+    )
+
+    assert manager._ensure_key_group("public-key-id") == "key-group-id"
+    assert cloudfront.markers == [None, "next-page"]
 
 
 def test_infrastructure_evidence_uses_logical_names_only() -> None:

@@ -943,7 +943,11 @@ class CloudFrontManager:
         try:
             return self._call(self.cloudfront, name, **kwargs)
         except Exception as exc:
-            raise QualificationError(f"cannot inspect CloudFront {name.replace('_', ' ')}") from exc
+            code = _client_error_code(exc)
+            detail = f" ({code})" if code else ""
+            raise QualificationError(
+                f"cannot inspect CloudFront {name.replace('_', ' ')}{detail}"
+            ) from exc
 
     def _list(self, operation: str, container_name: str) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -961,9 +965,10 @@ class CloudFrontManager:
                 for item in container.get("Items", [])
                 if isinstance(item, dict)
             )
-            if not container.get("IsTruncated"):
+            next_marker = container.get("NextMarker")
+            if container.get("IsTruncated") is not True and not next_marker:
                 return items
-            marker = str(container.get("NextMarker", ""))
+            marker = str(next_marker or "")
             if not marker:
                 raise QualificationError(f"CloudFront {operation} omitted its next marker")
 
@@ -975,7 +980,9 @@ class CloudFrontManager:
         return None
 
     def _key_group(self) -> dict[str, Any] | None:
-        for item in self._list("list_key_groups", "KeyGroupList"):
+        for summary in self._list("list_key_groups", "KeyGroupList"):
+            nested = summary.get("KeyGroup")
+            item = cast(dict[str, Any], nested) if isinstance(nested, dict) else summary
             current = item.get("KeyGroupConfig", item)
             if isinstance(current, dict) and current.get("Comment") == self.marker:
                 return item
@@ -1184,6 +1191,49 @@ class CloudFrontManager:
             },
         }
 
+    @staticmethod
+    def _pay_as_you_go_billing_changes(config: Mapping[str, object]) -> tuple[str, ...]:
+        """Return optional-cost or flat-rate-eligibility drift for the distribution.
+
+        AWS's account-wide 1 TB CloudFront allowance applies to pay-as-you-go usage.
+        ForwardedValues is retained deliberately because AWS does not permit a
+        distribution using that setting to join a flat-rate pricing plan.
+        """
+        changes: list[str] = []
+        behavior = config.get("DefaultCacheBehavior")
+        behavior = behavior if isinstance(behavior, dict) else {}
+        forwarded = behavior.get("ForwardedValues")
+        if not isinstance(forwarded, dict) or behavior.get("CachePolicyId"):
+            changes.append("pricing-plan-eligibility")
+        logging = config.get("Logging")
+        if isinstance(logging, dict) and logging.get("Enabled") is True:
+            changes.append("access-logging")
+        if config.get("WebACLId"):
+            changes.append("web-acl")
+        if config.get("ConnectionFunctionAssociation"):
+            changes.append("connection-function")
+        for field, label in (
+            ("FunctionAssociations", "function"),
+            ("LambdaFunctionAssociations", "lambda-edge"),
+        ):
+            associations = behavior.get(field)
+            if isinstance(associations, dict) and associations.get("Quantity", 0) != 0:
+                changes.append(label)
+        if behavior.get("RealtimeLogConfigArn"):
+            changes.append("real-time-logging")
+        if behavior.get("FieldLevelEncryptionId"):
+            changes.append("field-level-encryption")
+        origins = config.get("Origins")
+        origin_items = origins.get("Items", []) if isinstance(origins, dict) else []
+        if any(
+            isinstance(origin, dict)
+            and isinstance(origin.get("OriginShield"), dict)
+            and cast(dict[str, object], origin["OriginShield"]).get("Enabled") is True
+            for origin in origin_items
+        ):
+            changes.append("origin-shield")
+        return tuple(changes)
+
     def _distribution_arn(self, distribution_id: str) -> str:
         response = self._cloudfront_call("get_distribution", Id=distribution_id)
         distribution = response.get("Distribution")
@@ -1289,6 +1339,8 @@ class CloudFrontManager:
             desired_distribution
         ):
             changes.append("distribution")
+        if self._pay_as_you_go_billing_changes(actual_distribution):
+            changes.append("pay-as-you-go-billing")
         distribution_arn = self._distribution_arn(distribution_id)
         if not self._bucket_policy_ready(distribution_arn):
             changes.append("origin-policy")
@@ -1405,7 +1457,9 @@ class CloudFrontManager:
             oac_id=oac_id,
             key_group_id=key_group_id,
         )
-        if self._normalize_distribution(actual) != self._normalize_distribution(desired):
+        if self._normalize_distribution(actual) != self._normalize_distribution(
+            desired
+        ) or self._pay_as_you_go_billing_changes(actual):
             self._cloudfront_call(
                 "update_distribution",
                 Id=distribution_id,
@@ -1455,8 +1509,13 @@ class CloudFrontManager:
         )
         self._ensure_bucket_policy(self._distribution_arn(distribution_id))
         self._wait_for_distribution(distribution_id)
-        if self.plan().action != "ready":
-            raise QualificationError("CloudFront egress did not converge after apply")
+        final = self.plan()
+        if final.action != "ready":
+            changes = ",".join(final.changes) or "none"
+            raise QualificationError(
+                "CloudFront egress did not converge after apply: "
+                f"action={final.action}; changes={changes}"
+            )
 
     def runtime_configuration(self) -> tuple[str, str]:
         if self.plan().action != "ready":
