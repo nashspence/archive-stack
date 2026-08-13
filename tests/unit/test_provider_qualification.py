@@ -575,6 +575,34 @@ def test_cloudfront_contract_is_private_signed_and_version_exact() -> None:
     assert manager._pay_as_you_go_billing_changes(flat_rate_eligible) == (
         "pricing-plan-eligibility",
     )
+    provider_managed = json.loads(json.dumps(paid_features))
+    provider_managed.update(
+        {
+            "Aliases": {"Quantity": 0},
+            "ConnectionMode": "direct",
+            "Staging": False,
+        }
+    )
+    updated = manager._updated_distribution(
+        provider_managed,
+        oac_id="oac-id",
+        key_group_id="key-group-id",
+    )
+    assert updated["CallerReference"] == "test"
+    assert updated["ConnectionMode"] == "direct"
+    assert updated["Staging"] is False
+    assert updated["Aliases"] == {"Quantity": 0}
+    assert updated["Logging"] == {
+        "Enabled": False,
+        "IncludeCookies": False,
+        "Bucket": "",
+        "Prefix": "",
+    }
+    assert updated["WebACLId"] == ""
+    assert updated["DefaultCacheBehavior"]["LambdaFunctionAssociations"] == {"Quantity": 0}
+    assert "RealtimeLogConfigArn" not in updated["DefaultCacheBehavior"]
+    assert manager._pay_as_you_go_billing_changes(updated) == ()
+    assert manager._normalize_distribution(updated) == manager._normalize_distribution(distribution)
     manager._bucket_policy = lambda: {  # type: ignore[method-assign]
         "Version": "2012-10-17",
         "Statement": [{"Sid": "Unmanaged"}],
