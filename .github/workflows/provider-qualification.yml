@@ -396,10 +396,17 @@ jobs:
         id: deployment
         run: |
           set -euo pipefail
-          docker compose --env-file "$RUNTIME_ENV" --project-name "$COMPOSE_PROJECT_NAME" \
-            -f riverhog/server/compose.yaml up -d --wait app
-          actual_url="$(docker compose --env-file "$RUNTIME_ENV" --project-name "$COMPOSE_PROJECT_NAME" \
-            -f riverhog/server/compose.yaml config --format json \
+          compose=(docker compose --env-file "$RUNTIME_ENV" --project-name "$COMPOSE_PROJECT_NAME" \
+            -f riverhog/server/compose.yaml)
+          if ! "${compose[@]}" up -d --wait app; then
+            "${compose[@]}" ps
+            "${compose[@]}" logs --no-color --tail 80 app state
+            timeout 30s "${compose[@]}" exec -T app python -c \
+              'from riverhog_api.deps import get_or_create_container; get_or_create_container()' \
+              || true
+            exit 1
+          fi
+          actual_url="$("${compose[@]}" config --format json \
             | jq -r '.services.app.environment.RIVERHOG_DATABASE_URL')"
           test "$actual_url" = 'postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog'
           curl --fail --silent --show-error http://127.0.0.1:8000/health/ready
@@ -432,7 +439,7 @@ jobs:
           test -s "$STATE_DIR/database.dump"
           test "$(stat --format=%s "$STATE_DIR/database.dump")" -le 536870912
       - name: Package resumable dummy state and public evidence
-        if: always() && env.STATE_DIR != ''
+        if: always() && env.STATE_DIR != '' && steps.deployment.outcome == 'success'
         id: package
         run: |
           set -euo pipefail
