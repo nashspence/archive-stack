@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import copy
 import hashlib
 import json
 import os
@@ -1234,6 +1235,75 @@ class CloudFrontManager:
             changes.append("origin-shield")
         return tuple(changes)
 
+    def _updated_distribution(
+        self,
+        actual: Mapping[str, object],
+        *,
+        oac_id: str,
+        key_group_id: str,
+    ) -> dict[str, object]:
+        """Patch managed fields into AWS's current complete update payload."""
+        desired = self._desired_distribution(
+            caller_reference=str(actual.get("CallerReference", self.marker)),
+            oac_id=oac_id,
+            key_group_id=key_group_id,
+        )
+        updated = copy.deepcopy(dict(actual))
+        for field in (
+            "CallerReference",
+            "Comment",
+            "Enabled",
+            "PriceClass",
+            "HttpVersion",
+            "IsIPV6Enabled",
+        ):
+            updated[field] = copy.deepcopy(desired[field])
+
+        actual_origins = actual.get("Origins")
+        actual_origin_items = (
+            actual_origins.get("Items", []) if isinstance(actual_origins, dict) else []
+        )
+        actual_origin = (
+            actual_origin_items[0]
+            if len(actual_origin_items) == 1 and isinstance(actual_origin_items[0], dict)
+            else {}
+        )
+        desired_origin = cast(dict[str, object], desired["Origins"])["Items"]
+        desired_origin = cast(list[dict[str, object]], desired_origin)[0]
+        origin = copy.deepcopy(actual_origin)
+        origin.update(copy.deepcopy(desired_origin))
+        updated["Origins"] = {"Quantity": 1, "Items": [origin]}
+
+        actual_behavior = actual.get("DefaultCacheBehavior")
+        behavior = copy.deepcopy(actual_behavior) if isinstance(actual_behavior, dict) else {}
+        behavior.update(copy.deepcopy(cast(dict[str, object], desired["DefaultCacheBehavior"])))
+        behavior["FunctionAssociations"] = {"Quantity": 0}
+        behavior["LambdaFunctionAssociations"] = {"Quantity": 0}
+        behavior["FieldLevelEncryptionId"] = ""
+        for field in (
+            "CachePolicyId",
+            "OriginRequestPolicyId",
+            "RealtimeLogConfigArn",
+            "ResponseHeadersPolicyId",
+        ):
+            behavior.pop(field, None)
+        updated["DefaultCacheBehavior"] = behavior
+
+        actual_viewer = actual.get("ViewerCertificate")
+        viewer = copy.deepcopy(actual_viewer) if isinstance(actual_viewer, dict) else {}
+        viewer.update(copy.deepcopy(cast(dict[str, object], desired["ViewerCertificate"])))
+        updated["ViewerCertificate"] = viewer
+        updated["Restrictions"] = copy.deepcopy(desired["Restrictions"])
+        updated["Logging"] = {
+            "Enabled": False,
+            "IncludeCookies": False,
+            "Bucket": "",
+            "Prefix": "",
+        }
+        updated["WebACLId"] = ""
+        updated.pop("ConnectionFunctionAssociation", None)
+        return updated
+
     def _distribution_arn(self, distribution_id: str) -> str:
         response = self._cloudfront_call("get_distribution", Id=distribution_id)
         distribution = response.get("Distribution")
@@ -1452,8 +1522,8 @@ class CloudFrontManager:
         actual = response.get("DistributionConfig")
         if not isinstance(actual, dict):
             raise QualificationError("CloudFront distribution configuration is invalid")
-        desired = self._desired_distribution(
-            caller_reference=str(actual.get("CallerReference", self.marker)),
+        desired = self._updated_distribution(
+            actual,
             oac_id=oac_id,
             key_group_id=key_group_id,
         )
