@@ -141,6 +141,12 @@ def test_dependabot_owns_every_release_dependency_ecosystem() -> None:
         f"/{path.parent.relative_to(REPO_ROOT)}" for path in REPO_ROOT.rglob("Dockerfile")
     }
     assert set(updates["docker"]["directories"]) == docker_directories
+    assert updates["docker"]["ignore"] == [
+        {
+            "dependency-name": "python",
+            "versions": [">= 3.13"],
+        }
+    ]
 
 
 def test_dependabot_updates_share_one_low_noise_policy() -> None:

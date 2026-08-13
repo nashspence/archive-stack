@@ -63,6 +63,10 @@ updates:
       - nashspence
     commit-message:
       prefix: deps
+    ignore:
+      - dependency-name: python
+        versions:
+          - ">= 3.13"
     groups:
       version-updates:
         applies-to: version-updates
