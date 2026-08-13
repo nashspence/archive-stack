@@ -402,7 +402,7 @@ jobs:
             "${compose[@]}" ps
             "${compose[@]}" logs --no-color --tail 80 app state
             timeout 30s "${compose[@]}" exec -T app python -c \
-              'from riverhog_api.deps import get_or_create_container; get_or_create_container()' \
+              'from riverhog_api.deps import default_container; default_container()' \
               || true
             exit 1
           fi
