@@ -21,7 +21,7 @@ urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "
 dependencies = [
   "munchy-workflows>=0.1,<0.2",
   "time-formats>=0.1,<0.2",
-  "uvicorn[standard]>=0.52.0,<1.0",
+  "uvicorn[standard]>=0.52.1,<1.0",
 ]
 
 [tool.uv.sources]

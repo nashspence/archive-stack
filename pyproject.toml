@@ -17,14 +17,14 @@ time-formats = { workspace = true }
 
 [dependency-groups]
 dev = [
-  "boto3-stubs[s3]>=1.43.59,<2.0",
+  "boto3-stubs[s3]>=1.43.67,<2.0",
   "httpx2>=2,<3",
   "mypy>=2.3.0,<3.0",
   "psycopg[binary]>=3.3.4,<4.0",
   "pytest>=9.0.3,<10.0",
   "pytest-cov>=7.1.0,<8.0",
   "reuse>=6,<7",
-  "ruff>=0.16.0,<1.0",
+  "ruff>=0.16.2,<1.0",
   "types-jsonschema>=4.25,<5.0",
   "types-PyYAML>=6.0,<7.0",
 ]

@@ -19,7 +19,7 @@ classifiers = [
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
-  "alembic>=1.18.5,<2.0",
+  "alembic>=1.19.1,<2.0",
   "sqlalchemy>=2.0,<3.0",
 ]
 

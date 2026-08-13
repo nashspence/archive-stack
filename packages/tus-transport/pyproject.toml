@@ -19,7 +19,7 @@ classifiers = [
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
-  "httpx[http2]>=0.27,<1.0",
+  "httpx[http2]>=0.28.1,<1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
