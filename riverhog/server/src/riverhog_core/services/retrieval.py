@@ -5,12 +5,12 @@ import json
 import os
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from datetime import timedelta
-from typing import cast
+from datetime import datetime, timedelta
+from typing import Any, cast
 
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import case, delete, desc, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
@@ -67,6 +67,17 @@ from riverhog_core.throughput import (
 )
 
 _DATA_KINDS = {"pack", "segment"}
+_CACHE_SORT_FIELDS = {
+    "collection_id",
+    "source_store",
+    "object_id",
+    "stored_bytes",
+    "cached_at",
+    "verified_at",
+    "protected_until",
+}
+_CACHE_STATES = {"ready", "delete_pending", "deleting"}
+_CACHE_PROTECTION_FILTERS = {"protected", "unleased"}
 
 
 class SqlAlchemyRetrievalService:
@@ -99,6 +110,15 @@ class SqlAlchemyRetrievalService:
             config,
             session_factory=self._session_factory,
         )
+
+    def abort_incomplete_cache_multipart_uploads(
+        self,
+        *,
+        initiated_before: datetime,
+    ) -> int:
+        if self._cache is None:
+            return 0
+        return self._cache.abort_incomplete_multipart_uploads(initiated_before=initiated_before)
 
     def collection_manifest(
         self,
@@ -235,14 +255,291 @@ class SqlAlchemyRetrievalService:
                 ],
             }
 
+    def cache_status(
+        self,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> dict[str, object]:
+        now = format_utc_timestamp(utc_now())
+        visible = collection_access_filter(
+            RetrievalCacheObjectRecord.collection_id,
+            principal,
+            CATALOG_READ,
+        )
+        active_lease = exists(
+            select(1).where(
+                RetrievalCacheLeaseRecord.source_store == RetrievalCacheObjectRecord.source_store,
+                RetrievalCacheLeaseRecord.collection_id == RetrievalCacheObjectRecord.collection_id,
+                RetrievalCacheLeaseRecord.object_id == RetrievalCacheObjectRecord.object_id,
+                RetrievalCacheLeaseRecord.expires_at > now,
+            )
+        )
+        with session_scope(self._session_factory) as session:
+            objects, stored_bytes, protected = session.execute(
+                select(
+                    func.count(),
+                    func.coalesce(func.sum(RetrievalCacheObjectRecord.stored_bytes), 0),
+                    func.coalesce(func.sum(case((active_lease, 1), else_=0)), 0),
+                ).where(visible, RetrievalCacheObjectRecord.state == "ready")
+            ).one()
+        return {
+            "configured": self._cache is not None,
+            "new_archive_enabled": (
+                self._cache is not None and self._config.retrieval_cache_new_archive_enabled
+            ),
+            "objects": int(objects),
+            "stored_bytes": int(stored_bytes),
+            "protected_objects": int(protected),
+            "unleased_objects": int(objects) - int(protected),
+            "policy": {
+                "new_archive_lease_seconds": int(
+                    self._config.retrieval_cache_new_archive_lease.total_seconds()
+                ),
+                "retrieval_default_lease_seconds": int(
+                    self._config.retrieval_default_lease.total_seconds()
+                ),
+                "retrieval_max_lease_seconds": int(
+                    self._config.retrieval_max_lease.total_seconds()
+                ),
+                "sweep_interval_seconds": int(
+                    self._config.retrieval_cache_sweep_interval.total_seconds()
+                ),
+            },
+        }
+
+    def list_cache_objects(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        tag: str | None,
+        collection_id: int | None = None,
+        source_store: str | None = None,
+        state: str | None = None,
+        protection: str | None = None,
+        expires_before: str | None = None,
+        expires_after: str | None = None,
+        sort: str,
+        order: str,
+        all_items: bool = False,
+        principal: ApplicationPrincipal | None = None,
+    ) -> dict[str, object]:
+        if page < 1 or per_page < 1 or per_page > 100:
+            raise BadRequest("retrieval cache page and page size are invalid")
+        if sort not in _CACHE_SORT_FIELDS:
+            raise BadRequest(f"sort must be one of {', '.join(sorted(_CACHE_SORT_FIELDS))}")
+        if order not in {"asc", "desc"}:
+            raise BadRequest("order must be asc or desc")
+        normalized_collection_id = (
+            _normalize_collection_id_or_raise(collection_id) if collection_id is not None else None
+        )
+        normalized_store = (
+            source_store.strip().casefold() if source_store and source_store.strip() else None
+        )
+        normalized_state = state.strip().casefold() if state and state.strip() else None
+        if normalized_state is not None and normalized_state not in _CACHE_STATES:
+            raise BadRequest(f"state must be one of {', '.join(sorted(_CACHE_STATES))}")
+        normalized_protection = (
+            protection.strip().casefold() if protection and protection.strip() else None
+        )
+        if (
+            normalized_protection is not None
+            and normalized_protection not in _CACHE_PROTECTION_FILTERS
+        ):
+            raise BadRequest(
+                f"protection must be one of {', '.join(sorted(_CACHE_PROTECTION_FILTERS))}"
+            )
+        normalized_expires_before = _normalize_cache_expiry(
+            expires_before,
+            name="expires_before",
+        )
+        normalized_expires_after = _normalize_cache_expiry(
+            expires_after,
+            name="expires_after",
+        )
+        if (
+            normalized_expires_before is not None
+            and normalized_expires_after is not None
+            and normalized_expires_after > normalized_expires_before
+        ):
+            raise BadRequest("expires_after must not be later than expires_before")
+        normalized_tag = tag.strip().casefold() if tag and tag.strip() else None
+        needle = q.strip().casefold() if q and q.strip() else None
+        now = format_utc_timestamp(utc_now())
+        lease_summary = _active_cache_lease_summary(now).subquery()
+        statement = (
+            select(
+                RetrievalCacheObjectRecord,
+                lease_summary.c.protected_until,
+                lease_summary.c.new_archive_expires_at,
+                lease_summary.c.retrieval_job_leases,
+            )
+            .outerjoin(
+                lease_summary,
+                (lease_summary.c.source_store == RetrievalCacheObjectRecord.source_store)
+                & (lease_summary.c.collection_id == RetrievalCacheObjectRecord.collection_id)
+                & (lease_summary.c.object_id == RetrievalCacheObjectRecord.object_id),
+            )
+            .where(
+                collection_access_filter(
+                    RetrievalCacheObjectRecord.collection_id,
+                    principal,
+                    CATALOG_READ,
+                ),
+            )
+        )
+        if normalized_collection_id is not None:
+            statement = statement.where(
+                RetrievalCacheObjectRecord.collection_id == normalized_collection_id
+            )
+        if normalized_store is not None:
+            statement = statement.where(RetrievalCacheObjectRecord.source_store == normalized_store)
+        if normalized_state is not None:
+            statement = statement.where(RetrievalCacheObjectRecord.state == normalized_state)
+        if normalized_protection == "protected":
+            statement = statement.where(lease_summary.c.protected_until.is_not(None))
+        elif normalized_protection == "unleased":
+            statement = statement.where(lease_summary.c.protected_until.is_(None))
+        if normalized_expires_before is not None:
+            statement = statement.where(
+                lease_summary.c.protected_until <= normalized_expires_before
+            )
+        if normalized_expires_after is not None:
+            statement = statement.where(lease_summary.c.protected_until >= normalized_expires_after)
+        if normalized_tag is not None:
+            statement = statement.where(
+                exists(
+                    select(1).where(
+                        CollectionTagRecord.collection_id
+                        == RetrievalCacheObjectRecord.collection_id,
+                        CollectionTagRecord.tag_id == normalized_tag,
+                    )
+                )
+            )
+        if needle is not None:
+            filters = [
+                func.lower(RetrievalCacheObjectRecord.source_store).contains(needle),
+                func.lower(RetrievalCacheObjectRecord.object_id).contains(needle),
+            ]
+            if needle.isdigit():
+                filters.append(RetrievalCacheObjectRecord.collection_id == int(needle))
+            statement = statement.where(or_(*filters))
+        sort_expressions = {
+            "collection_id": RetrievalCacheObjectRecord.collection_id,
+            "source_store": RetrievalCacheObjectRecord.source_store,
+            "object_id": RetrievalCacheObjectRecord.object_id,
+            "stored_bytes": RetrievalCacheObjectRecord.stored_bytes,
+            "cached_at": RetrievalCacheObjectRecord.cached_at,
+            "verified_at": RetrievalCacheObjectRecord.verified_at,
+            "protected_until": lease_summary.c.protected_until,
+        }
+        expression = sort_expressions[sort]
+        ordered = desc(expression) if order == "desc" else expression.asc()
+        statement = statement.order_by(
+            ordered,
+            RetrievalCacheObjectRecord.collection_id,
+            RetrievalCacheObjectRecord.source_store,
+            RetrievalCacheObjectRecord.object_id,
+        )
+        with session_scope(self._session_factory) as session:
+            total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
+            if not all_items:
+                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            rows = list(session.execute(statement))
+            tags = _collection_tags(
+                session,
+                {current.collection_id for current, *_ in rows},
+            )
+        return {
+            "page": 1 if all_items else page,
+            "per_page": total if all_items else per_page,
+            "total": total,
+            "pages": (1 if total else 0) if all_items else ((total + per_page - 1) // per_page),
+            "sort": sort,
+            "order": order,
+            "query": needle,
+            "filters": {
+                "tag": normalized_tag,
+                "collection_id": (
+                    str(normalized_collection_id) if normalized_collection_id is not None else None
+                ),
+                "source_store": normalized_store,
+                "state": normalized_state,
+                "protection": normalized_protection,
+                "expires_before": normalized_expires_before,
+                "expires_after": normalized_expires_after,
+            },
+            "objects": [
+                _cache_object_payload(
+                    current,
+                    protected_until=protected_until,
+                    new_archive_expires_at=new_archive_expires_at,
+                    retrieval_job_leases=int(retrieval_job_leases or 0),
+                    tags=tags.get(current.collection_id, ()),
+                )
+                for current, protected_until, new_archive_expires_at, retrieval_job_leases in rows
+            ],
+        }
+
+    def get_cache_object(
+        self,
+        *,
+        collection_id: int,
+        source_store: str,
+        object_id: str,
+        principal: ApplicationPrincipal | None = None,
+    ) -> dict[str, object]:
+        normalized_id = _normalize_collection_id_or_raise(collection_id)
+        normalized_store = source_store.strip().casefold()
+        normalized_object = object_id.strip()
+        if not normalized_store or not normalized_object:
+            raise BadRequest("retrieval cache object identity is required")
+        now = format_utc_timestamp(utc_now())
+        lease_summary = _active_cache_lease_summary(now).subquery()
+        with session_scope(self._session_factory) as session:
+            require_collection_access(session, principal, CATALOG_READ, normalized_id)
+            row = session.execute(
+                select(
+                    RetrievalCacheObjectRecord,
+                    lease_summary.c.protected_until,
+                    lease_summary.c.new_archive_expires_at,
+                    lease_summary.c.retrieval_job_leases,
+                )
+                .outerjoin(
+                    lease_summary,
+                    (lease_summary.c.source_store == RetrievalCacheObjectRecord.source_store)
+                    & (lease_summary.c.collection_id == RetrievalCacheObjectRecord.collection_id)
+                    & (lease_summary.c.object_id == RetrievalCacheObjectRecord.object_id),
+                )
+                .where(
+                    RetrievalCacheObjectRecord.source_store == normalized_store,
+                    RetrievalCacheObjectRecord.collection_id == normalized_id,
+                    RetrievalCacheObjectRecord.object_id == normalized_object,
+                )
+            ).one_or_none()
+            if row is None:
+                raise NotFound("retrieval cache object not found")
+            current, protected_until, new_archive_expires_at, retrieval_job_leases = row
+            tags = _collection_tags(session, {normalized_id}).get(normalized_id, ())
+            return _cache_object_payload(
+                current,
+                protected_until=protected_until,
+                new_archive_expires_at=new_archive_expires_at,
+                retrieval_job_leases=int(retrieval_job_leases or 0),
+                tags=tags,
+            )
+
     def plan(
         self,
         files: Sequence[tuple[int, str]],
         *,
         lease: timedelta | None = None,
+        restore_policy: str = "allow",
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
         normalized = _normalize_file_refs(files)
+        normalized_restore_policy = _normalize_restore_policy(restore_policy)
         requested_lease = lease or self._config.retrieval_default_lease
         if requested_lease.total_seconds() <= 0:
             raise BadRequest("retrieval lease must be positive")
@@ -256,7 +553,12 @@ class SqlAlchemyRetrievalService:
                     RETRIEVAL_MANAGE,
                     collection_id,
                 )
-            payload = self._build_plan(session, normalized, requested_lease)
+            payload = self._build_plan(
+                session,
+                normalized,
+                requested_lease,
+                restore_policy=normalized_restore_policy,
+            )
         canonical = _canonical_json(payload)
         return {
             **payload,
@@ -271,6 +573,7 @@ class SqlAlchemyRetrievalService:
         files: Sequence[tuple[int, str]],
         plan_etag: str,
         lease: timedelta | None = None,
+        restore_policy: str = "allow",
         event_context: dict[str, object] | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
@@ -278,7 +581,12 @@ class SqlAlchemyRetrievalService:
         if principal is not None:
             app = principal.app
             key_id = principal.key_id
-        plan = self.plan(normalized, lease=lease, principal=principal)
+        plan = self.plan(
+            normalized,
+            lease=lease,
+            restore_policy=restore_policy,
+            principal=principal,
+        )
         if not plan_etag or plan_etag != plan["etag"]:
             raise Conflict("retrieval plan changed; request a fresh plan")
         job_id = uuid.uuid4().hex
@@ -288,6 +596,8 @@ class SqlAlchemyRetrievalService:
         planned_files = cast(list[dict[str, object]], plan["files"])
         planned_objects = cast(list[dict[str, object]], plan["objects"])
         requested = any(current["read_mode"] == "restore_required" for current in planned_objects)
+        if requested and plan["restore_policy"] == "never":
+            raise Conflict("retrieval requires archive restoration but restore_policy is never")
         state = "requested" if requested else "ready"
         expires_at = format_utc_timestamp(now + timedelta(seconds=lease_seconds))
         remote_bytes = sum(
@@ -304,11 +614,7 @@ class SqlAlchemyRetrievalService:
                 key_id=key_id,
                 job_id=job_id,
                 expected_bytes=remote_bytes,
-                expires_at=format_utc_timestamp(
-                    now
-                    + self._config.retrieval_estimated_latency
-                    + self._config.retrieval_max_lease
-                ),
+                expires_at=format_utc_timestamp(now + self._config.retrieval_pending_timeout),
             )
         try:
             with session_scope(self._session_factory) as session:
@@ -411,6 +717,53 @@ class SqlAlchemyRetrievalService:
         with session_scope(self._session_factory) as session:
             record = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
             self._expire_job_if_due(session, record)
+            return _job_payload(record)
+
+    def renew(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        lease: timedelta,
+        key_id: str | None = None,
+    ) -> dict[str, object]:
+        if lease.total_seconds() <= 0:
+            raise BadRequest("retrieval lease must be positive")
+        if lease > self._config.retrieval_max_lease:
+            raise BadRequest("retrieval lease exceeds the configured maximum")
+        expires_at = format_utc_timestamp(utc_now() + lease)
+        with session_scope(self._session_factory) as session:
+            record = self._require_job(session, app=app, key_id=key_id, job_id=job_id)
+            self._expire_job_if_due(session, record)
+            if record.state != "ready":
+                raise InvalidState("only a ready retrieval job can be renewed")
+            plan = json.loads(record.constraints_json)
+            plan["lease_seconds"] = int(lease.total_seconds())
+            record.constraints_json = json.dumps(plan, sort_keys=True, separators=(",", ":"))
+            record.expires_at = expires_at
+            for current in record.objects:
+                if current.read_mode not in {"cache", "restore_required"}:
+                    continue
+                cached = session.get(
+                    RetrievalCacheObjectRecord,
+                    (current.source_store, current.collection_id, current.object_id),
+                )
+                if cached is None or cached.state != "ready":
+                    raise InvalidState("retrieval cache object disappeared before renewal")
+                self._lease_cached_object(
+                    session,
+                    owner=_job_owner(job_id),
+                    source_store=current.source_store,
+                    collection_id=current.collection_id,
+                    object_id=current.object_id,
+                    expires_at=expires_at,
+                )
+            self._lifecycle_events.emit_retrieval(
+                type="retrieval.renewed",
+                job=record,
+                details={"expires_at": expires_at},
+                session=session,
+            )
             return _job_payload(record)
 
     def acknowledge(self, *, app: str, job_id: str, key_id: str | None = None) -> dict[str, object]:
@@ -689,7 +1042,6 @@ class SqlAlchemyRetrievalService:
             )
         for job_id in job_ids:
             self._process_one(job_id)
-        self.sweep()
         return len(job_ids)
 
     def requeue_interrupted_cache_cleanup_for_startup(self) -> int:
@@ -824,6 +1176,8 @@ class SqlAlchemyRetrievalService:
         session: Session,
         files: tuple[tuple[int, str], ...],
         lease: timedelta,
+        *,
+        restore_policy: str,
     ) -> dict[str, object]:
         files_payload: list[dict[str, object]] = []
         objects_payload: list[dict[str, object]] = []
@@ -889,6 +1243,10 @@ class SqlAlchemyRetrievalService:
         return {
             "format": "riverhog-retrieval-plan/v1",
             "lease_seconds": int(lease.total_seconds()),
+            "restore_policy": restore_policy,
+            "requires_restore": any(
+                current["read_mode"] == "restore_required" for current in objects_payload
+            ),
             "files": files_payload,
             "objects": objects_payload,
         }
@@ -996,38 +1354,50 @@ class SqlAlchemyRetrievalService:
         raise InvalidState(f"collection has no readable archive copy: {collection_id}")
 
     def _process_one(self, job_id: str) -> None:
+        pending_failed = False
         with session_scope(self._session_factory) as session:
             job = session.get(RetrievalJobRecord, job_id)
             if job is None or job.state != "requested":
                 return
-            groups = self._missing_groups(session, job)
-            restore_requested_at = job.restore_requested_at
-            plan = json.loads(job.constraints_json)
-            attribution = _download_attribution(job)
-            lease_seconds = int(plan["lease_seconds"])
-            pending_expires_at = format_utc_timestamp(
-                utc_now()
-                + self._config.retrieval_estimated_latency
-                + self._config.retrieval_max_lease
+            pending_deadline = (
+                parse_utc_timestamp(job.created_at) + self._config.retrieval_pending_timeout
             )
-            for current in job.objects:
-                if current.read_mode != "restore_required":
-                    continue
-                if (
-                    session.get(
-                        RetrievalCacheObjectRecord,
-                        (current.source_store, current.collection_id, current.object_id),
-                    )
-                    is not None
-                ):
-                    self._lease_cached_object(
-                        session,
-                        owner=_job_owner(job_id),
-                        source_store=current.source_store,
-                        collection_id=current.collection_id,
-                        object_id=current.object_id,
-                        expires_at=pending_expires_at,
-                    )
+            if pending_deadline <= utc_now():
+                self._fail_pending_job(
+                    session,
+                    job,
+                    "retrieval exceeded the configured pending timeout",
+                )
+                pending_failed = True
+            else:
+                groups = self._missing_groups(session, job)
+                restore_requested_at = job.restore_requested_at
+                plan = json.loads(job.constraints_json)
+                attribution = _download_attribution(job)
+                lease_seconds = int(plan["lease_seconds"])
+                pending_expires_at = format_utc_timestamp(pending_deadline)
+                for current in job.objects:
+                    if current.read_mode != "restore_required":
+                        continue
+                    if (
+                        session.get(
+                            RetrievalCacheObjectRecord,
+                            (current.source_store, current.collection_id, current.object_id),
+                        )
+                        is not None
+                    ):
+                        self._lease_cached_object(
+                            session,
+                            owner=_job_owner(job_id),
+                            source_store=current.source_store,
+                            collection_id=current.collection_id,
+                            object_id=current.object_id,
+                            expires_at=pending_expires_at,
+                        )
+        if pending_failed:
+            if self._download_allowance is not None:
+                self._download_allowance.release_retrieval(job_id=job_id)
+            return
         try:
             if groups and restore_requested_at is None:
                 restore_requested_at = format_utc_timestamp(utc_now())
@@ -1040,7 +1410,7 @@ class SqlAlchemyRetrievalService:
                         collection_id=collection_id,
                         objects=objects,
                         retrieval_tier=self._config.retrieval_tier,
-                        hold_days=max(1, self._config.retrieval_max_lease.days),
+                        hold_days=_provider_hold_days(self._config.retrieval_restore_hold),
                         requested_at=restore_requested_at,
                         estimated_ready_at=estimated_ready,
                     )
@@ -1170,7 +1540,7 @@ class SqlAlchemyRetrievalService:
                             job.failure = None
                         else:
                             job.next_poll_at = format_utc_timestamp(
-                                utc_now() + self._config.retrieval_sweep_interval
+                                utc_now() + self._config.retrieval_restore_poll_interval
                             )
         except Exception as exc:
             with session_scope(self._session_factory) as session:
@@ -1180,7 +1550,7 @@ class SqlAlchemyRetrievalService:
                     changed = job.failure != failure
                     job.failure = failure
                     job.next_poll_at = format_utc_timestamp(
-                        utc_now() + self._config.retrieval_sweep_interval
+                        utc_now() + self._config.retrieval_restore_poll_interval
                     )
                     if changed:
                         self._lifecycle_events.emit_retrieval(
@@ -1214,6 +1584,29 @@ class SqlAlchemyRetrievalService:
             )
         return groups
 
+    def _fail_pending_job(
+        self,
+        session: Session,
+        job: RetrievalJobRecord,
+        failure: str,
+    ) -> None:
+        job.state = "failed"
+        job.failure = failure
+        job.next_poll_at = None
+        session.execute(
+            delete(RetrievalCacheLeaseRecord).where(
+                RetrievalCacheLeaseRecord.owner == _job_owner(job.id)
+            )
+        )
+        _release_job_reservation(session, job.id)
+        self._lifecycle_events.emit_retrieval(
+            type="retrieval.failed",
+            job=job,
+            details={"error": failure},
+            terminal=True,
+            session=session,
+        )
+
     @staticmethod
     def _lease_cached_object(
         session: Session,
@@ -1224,9 +1617,14 @@ class SqlAlchemyRetrievalService:
         object_id: str,
         expires_at: str,
     ) -> None:
-        cached = session.get(
-            RetrievalCacheObjectRecord,
-            (source_store, collection_id, object_id),
+        cached = session.scalar(
+            select(RetrievalCacheObjectRecord)
+            .where(
+                RetrievalCacheObjectRecord.source_store == source_store,
+                RetrievalCacheObjectRecord.collection_id == collection_id,
+                RetrievalCacheObjectRecord.object_id == object_id,
+            )
+            .with_for_update()
         )
         if cached is None or cached.state != "ready":
             raise InvalidState("planned retrieval cache object is missing")
@@ -1417,6 +1815,104 @@ def _normalize_file_refs(files: Sequence[tuple[int, str]]) -> tuple[tuple[int, s
     return tuple(normalized)
 
 
+def _normalize_restore_policy(value: str) -> str:
+    normalized = value.strip().casefold()
+    if normalized not in {"allow", "never"}:
+        raise BadRequest("restore_policy must be allow or never")
+    return normalized
+
+
+def _provider_hold_days(value: timedelta) -> int:
+    seconds = value.total_seconds()
+    return max(1, int((seconds + 86_399) // 86_400))
+
+
+def _active_cache_lease_summary(now: str) -> Any:
+    return (
+        select(
+            RetrievalCacheLeaseRecord.source_store.label("source_store"),
+            RetrievalCacheLeaseRecord.collection_id.label("collection_id"),
+            RetrievalCacheLeaseRecord.object_id.label("object_id"),
+            func.max(RetrievalCacheLeaseRecord.expires_at).label("protected_until"),
+            func.max(
+                case(
+                    (
+                        RetrievalCacheLeaseRecord.owner == "new-archive",
+                        RetrievalCacheLeaseRecord.expires_at,
+                    ),
+                    else_=None,
+                )
+            ).label("new_archive_expires_at"),
+            func.sum(
+                case(
+                    (RetrievalCacheLeaseRecord.owner.startswith("job:"), 1),
+                    else_=0,
+                )
+            ).label("retrieval_job_leases"),
+        )
+        .where(RetrievalCacheLeaseRecord.expires_at > now)
+        .group_by(
+            RetrievalCacheLeaseRecord.source_store,
+            RetrievalCacheLeaseRecord.collection_id,
+            RetrievalCacheLeaseRecord.object_id,
+        )
+    )
+
+
+def _collection_tags(session: Session, collection_ids: set[int]) -> dict[int, tuple[str, ...]]:
+    if not collection_ids:
+        return {}
+    rows = session.execute(
+        select(CollectionTagRecord.collection_id, CollectionTagRecord.tag_id)
+        .where(CollectionTagRecord.collection_id.in_(collection_ids))
+        .order_by(CollectionTagRecord.collection_id, CollectionTagRecord.tag_id)
+    )
+    result: dict[int, list[str]] = {}
+    for collection_id, tag in rows:
+        result.setdefault(int(collection_id), []).append(str(tag))
+    return {collection_id: tuple(tags) for collection_id, tags in result.items()}
+
+
+def _cache_object_payload(
+    current: RetrievalCacheObjectRecord,
+    *,
+    protected_until: str | None,
+    new_archive_expires_at: str | None,
+    retrieval_job_leases: int,
+    tags: Sequence[str],
+) -> dict[str, object]:
+    categories: list[str] = []
+    if new_archive_expires_at is not None:
+        categories.append("new_archive")
+    if retrieval_job_leases:
+        categories.append("retrieval_job")
+    return {
+        "collection_id": current.collection_id,
+        "source_store": current.source_store,
+        "object_id": current.object_id,
+        "state": current.state,
+        "stored_bytes": current.stored_bytes,
+        "stored_sha256": current.stored_sha256,
+        "cached_at": current.cached_at,
+        "verified_at": current.verified_at,
+        "protected_until": protected_until,
+        "new_archive_expires_at": new_archive_expires_at,
+        "lease_categories": categories,
+        "retrieval_job_leases": retrieval_job_leases,
+        "tags": list(tags),
+    }
+
+
+def _normalize_cache_expiry(value: str | None, *, name: str) -> str | None:
+    normalized = value.strip() if value and value.strip() else None
+    if normalized is None:
+        return None
+    try:
+        return format_utc_timestamp(parse_utc_timestamp(normalized))
+    except ValueError as exc:
+        raise BadRequest(f"{name} must be an ISO 8601 timestamp with a timezone") from exc
+
+
 def _normalize_collection_id_or_raise(value: str | int) -> int:
     try:
         return normalize_collection_id(value)
@@ -1489,6 +1985,9 @@ def _job_payload(record: RetrievalJobRecord) -> dict[str, object]:
         "completed_at": record.completed_at,
         "canceled_at": record.canceled_at,
         "failure": record.failure,
+        "lease_seconds": plan["lease_seconds"],
+        "restore_policy": plan["restore_policy"],
+        "requires_restore": plan["requires_restore"],
         "files": plan["files"],
         "objects": plan["objects"],
     }

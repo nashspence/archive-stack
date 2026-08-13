@@ -46,6 +46,10 @@ def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
         "/v1/retrieval-jobs/{job_id}",
         "/v1/retrieval-jobs/{job_id}/content",
         "/v1/retrieval-jobs/{job_id}/ack",
+        "/v1/retrieval-jobs/{job_id}/renew",
+        "/v1/retrieval-cache",
+        "/v1/retrieval-cache/objects",
+        "/v1/retrieval-cache/objects/{collection_id}/{source_store}/{object_id}",
         "/v1/download-quota",
         "/v1/download-quotas",
         "/v1/search",
@@ -63,6 +67,8 @@ def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:
     assert set(schemas["RetrievalPlanOut"]["required"]) == {
         "format",
         "lease_seconds",
+        "restore_policy",
+        "requires_restore",
         "files",
         "objects",
         "etag",
@@ -70,6 +76,43 @@ def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:
     assert {"id", "state", "plan_etag", "restore_requested_at", "files", "objects"} <= set(
         schemas["RetrievalJobOut"]["required"]
     )
+    assert {"lease_seconds", "restore_policy", "requires_restore"} <= set(
+        schemas["RetrievalJobOut"]["required"]
+    )
+
+
+def test_retrieval_cache_contract_exposes_indexer_state_and_filters() -> None:
+    openapi = create_app().openapi()
+    schema = openapi["components"]["schemas"]["RetrievalCacheObjectOut"]
+    operation = openapi["paths"]["/v1/retrieval-cache/objects"]["get"]
+
+    assert {
+        "collection_id",
+        "source_store",
+        "object_id",
+        "state",
+        "stored_bytes",
+        "cached_at",
+        "verified_at",
+        "protected_until",
+        "new_archive_expires_at",
+        "lease_categories",
+    } <= set(schema["required"])
+    assert {
+        "page",
+        "per_page",
+        "q",
+        "tag",
+        "collection_id",
+        "source_store",
+        "state",
+        "protection",
+        "expires_before",
+        "expires_after",
+        "sort",
+        "order",
+        "all",
+    } <= {parameter["name"] for parameter in operation["parameters"]}
 
 
 def test_collection_upload_contract_exposes_server_planned_plaintext_units() -> None:

@@ -150,6 +150,7 @@ def default_container() -> ServiceContainer:
             config,
             archive_stores,
             proof_stamper=proof_stamper,
+            retrieval_cache=retrieval_cache,
             session_factory=session_factory,
             throughput_tuning=throughput_tuning,
             transfer_resources=transfer_resources,
@@ -158,7 +159,7 @@ def default_container() -> ServiceContainer:
         collection_deletions=SqlAlchemyCollectionDeletionService(
             config,
             archive_stores,
-            retrieval_cache,
+            retrieval_cache=retrieval_cache,
             session_factory=session_factory,
         ),
         search=SqlAlchemySearchService(config, session_factory=session_factory),
@@ -170,6 +171,7 @@ def default_container() -> ServiceContainer:
         archive_copies=SqlAlchemyArchiveCopyService(
             config,
             archive_stores,
+            retrieval_cache=retrieval_cache,
             session_factory=session_factory,
             throughput_tuning=throughput_tuning,
             transfer_resources=transfer_resources,

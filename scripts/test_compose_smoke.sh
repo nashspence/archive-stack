@@ -5,6 +5,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_compose_env.sh"
 
 setup_test_compose_project
 configure_compose_tty
+export COMPOSE_PROFILES=development
 export RIVERHOG_API_PORT="${RIVERHOG_API_PORT:-0}"
 
 cleanup() {
@@ -13,6 +14,10 @@ cleanup() {
 trap cleanup EXIT
 
 "${ROOT_DIR}/scripts/bootstrap_garage.sh"
+compose run --rm \
+  --env RIVERHOG_GARAGE_ARCHIVE_INGRESS_TEST=1 \
+  --entrypoint python \
+  test -m pytest -q tests/integration/test_garage_encrypted_archive_store.py
 ensure_compose_image app
 compose up --detach --wait app
 

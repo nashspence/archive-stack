@@ -70,7 +70,7 @@ def test_postgres_catalog_schema_is_current_and_stays_operator_controlled(
 
     after = {index["name"] for index in inspect(engine).get_indexes("retrieval_jobs")}
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0002"
+    assert upgraded.current_revision == validated.current_revision == "v1_0003"
     assert after == before
     engine.dispose()
 
@@ -116,6 +116,12 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
                 "(SELECT count(*) FROM collection_provenance_entities)"
             )
         ).one()
+        migrated_retrieval = connection.execute(
+            text(
+                "SELECT plan_etag, constraints_json FROM retrieval_jobs "
+                "WHERE id = 'fixture-retrieval'"
+            )
+        ).one()
 
     archive_store = MemoryArchiveStore()
     manifest, record_etag = SqlAlchemyRetrievalService(
@@ -144,6 +150,10 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
     assert tuple(lifecycle_event) == ("riverhog-v1-event", "fixture-client", "1")
     assert tuple(existing_provenance) == ("omitted", None)
     assert tuple(provenance_projection_counts) == (0, 0, 0)
+    migrated_plan = json.loads(migrated_retrieval.constraints_json)
+    assert migrated_plan["restore_policy"] == "allow"
+    assert migrated_plan["requires_restore"] is True
+    assert migrated_retrieval.plan_etag == migrated_plan["etag"]
     assert manifest == {
         "format": "riverhog-collection/v1",
         "collection": 1,

@@ -213,23 +213,54 @@ def test_paged_lists_use_the_shared_parameter_and_response_envelope(
 
 
 @pytest.mark.parametrize(
-    ("client_type", "prefix", "base_url"),
     (
-        (ApiClient, "RIVERHOG", "https://riverhog.example.test"),
-        (MunchyClient, "MUNCHY", "https://munchy.example.test"),
-        (JebApiClient, "JEB", "https://jeb.example.test"),
+        "client_type",
+        "base_url_env",
+        "token_env",
+        "http2_env",
+        "timeout_env",
+        "base_url",
+    ),
+    (
+        (
+            ApiClient,
+            "RIVERHOG_BASE_URL",
+            "RIVERHOG_TOKEN",
+            "RIVERHOG_HTTP2",
+            "RIVERHOG_HTTP_TIMEOUT_SECONDS",
+            "https://riverhog.example.test",
+        ),
+        (
+            MunchyClient,
+            "MUNCHY_BASE_URL",
+            "MUNCHY_TOKEN",
+            "MUNCHY_HTTP2",
+            "MUNCHY_HTTP_TIMEOUT_SECONDS",
+            "https://munchy.example.test",
+        ),
+        (
+            JebApiClient,
+            "JEB_BASE_URL",
+            "JEB_TOKEN",
+            "JEB_HTTP2",
+            "JEB_HTTP_TIMEOUT_SECONDS",
+            "https://jeb.example.test",
+        ),
     ),
 )
 def test_official_clients_share_transport_configuration(
     monkeypatch: pytest.MonkeyPatch,
     client_type: type[Any],
-    prefix: str,
+    base_url_env: str,
+    token_env: str,
+    http2_env: str,
+    timeout_env: str,
     base_url: str,
 ) -> None:
-    monkeypatch.setenv(f"{prefix}_BASE_URL", f"{base_url}/")
-    monkeypatch.setenv(f"{prefix}_TOKEN", "example-token")
-    monkeypatch.setenv(f"{prefix}_HTTP2", "false")
-    monkeypatch.setenv(f"{prefix}_HTTP_TIMEOUT_SECONDS", "17")
+    monkeypatch.setenv(base_url_env, f"{base_url}/")
+    monkeypatch.setenv(token_env, "example-token")
+    monkeypatch.setenv(http2_env, "false")
+    monkeypatch.setenv(timeout_env, "17")
 
     client = client_type()
     try:
@@ -281,19 +312,19 @@ def test_official_clients_reject_remote_cleartext_transport(
 
 
 @pytest.mark.parametrize(
-    ("client_type", "prefix"),
+    ("client_type", "allow_insecure_env"),
     (
-        (ApiClient, "RIVERHOG"),
-        (MunchyClient, "MUNCHY"),
-        (JebApiClient, "JEB"),
+        (ApiClient, "RIVERHOG_ALLOW_INSECURE_HTTP"),
+        (MunchyClient, "MUNCHY_ALLOW_INSECURE_HTTP"),
+        (JebApiClient, "JEB_ALLOW_INSECURE_HTTP"),
     ),
 )
 def test_official_clients_allow_explicit_remote_cleartext_transport(
     monkeypatch: pytest.MonkeyPatch,
     client_type: type[Any],
-    prefix: str,
+    allow_insecure_env: str,
 ) -> None:
-    monkeypatch.setenv(f"{prefix}_ALLOW_INSECURE_HTTP", "true")
+    monkeypatch.setenv(allow_insecure_env, "true")
     client = client_type(base_url="http://api.example.test")
     try:
         assert client.base_url == "http://api.example.test"

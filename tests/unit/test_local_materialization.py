@@ -177,6 +177,11 @@ class FakeApi:
         assert job_id == "job-1"
         return self._job()
 
+    def renew_retrieval_job(self, job_id: str, *, lease_seconds: int) -> dict[str, object]:
+        assert job_id == "job-1"
+        assert lease_seconds == 21_600
+        return self._job()
+
     def cancel_retrieval_job(self, job_id: str) -> dict[str, object]:
         self.canceled.append(job_id)
         self.job_state = "canceled"
@@ -192,6 +197,7 @@ class FakeApi:
         return {
             "id": "job-1",
             "state": self.job_state,
+            "lease_seconds": 21_600,
             "files": files,
             "objects": [],
         }
@@ -221,6 +227,50 @@ class FakeApi:
     def acknowledge_retrieval_job(self, job_id: str) -> dict[str, object]:
         self.acknowledged.append(job_id)
         return {"id": job_id, "state": "completed"}
+
+
+class CacheMissApi(FakeApi):
+    def plan_retrieval(self, files, **_kwargs: object) -> dict[str, object]:
+        self.selection = list(files)
+        return {
+            "etag": "a" * 64,
+            "requires_restore": True,
+            "objects": [
+                {
+                    "collection_id": collection_id,
+                    "read_mode": "restore_required",
+                    "placements": [{"path": path}],
+                }
+                for collection_id, path in self.selection
+            ],
+        }
+
+    def create_retrieval_job(self, files, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError(
+            f"opportunistic-only sync must not create a restore job: {list(files)}"
+        )
+
+
+class PartialCacheApi(CacheMissApi):
+    def plan_retrieval(self, files, **_kwargs: object) -> dict[str, object]:
+        self.selection = list(files)
+        cold = [current for current in self.selection if current[1] == "notes/one.txt"]
+        return {
+            "etag": "a" * 64,
+            "requires_restore": bool(cold),
+            "objects": [
+                {
+                    "collection_id": collection_id,
+                    "read_mode": "restore_required",
+                    "placements": [{"path": path}],
+                }
+                for collection_id, path in cold
+            ],
+        }
+
+    def create_retrieval_job(self, files, **_kwargs: object) -> dict[str, object]:
+        assert list(files) == self.selection
+        return self._job()
 
 
 def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
@@ -270,6 +320,88 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
     assert output.read_bytes() == CONTENT
     assert projection.is_symlink()
     assert "remote-deleted" in listed.stdout
+
+
+def test_local_opportunistic_only_sync_leaves_restore_required_files_unrequested(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    api = CacheMissApi()
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
+    runner = CliRunner()
+    assert (
+        runner.invoke(
+            local_materialization.local_app,
+            ["add", str(COLLECTION_ID)],
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(
+        local_materialization.local_app,
+        ["sync", "--restore-policy", "never", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "materialized_files": 0,
+        "restore_policy": "never",
+        "status": "cache-miss",
+        "unavailable_files": 2,
+    }
+    assert api.downloaded_files == []
+
+
+def test_local_opportunistic_only_sync_continues_past_cold_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    api = PartialCacheApi()
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    _prepare_local(target)
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
+    runner = CliRunner()
+    assert runner.invoke(local_materialization.local_app, ["add", "1"]).exit_code == 0
+
+    result = runner.invoke(
+        local_materialization.local_app,
+        ["sync", "--restore-policy", "never", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "materialized_files": 1,
+        "restore_policy": "never",
+        "status": "cache-miss",
+        "unavailable_files": 1,
+    }
+    assert api.downloaded_files == ["notes/two.txt"]
+    assert api.acknowledged == ["job-1"]
+
+
+def test_local_sync_batches_large_selections_until_current(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "local"
+    api = FakeApi()
+    monkeypatch.setenv("RIVERHOG_LOCAL_ROOT", str(target))
+    monkeypatch.setattr(local_materialization, "RETRIEVAL_FILE_BATCH_MAX", 1)
+    _prepare_local(target)
+    monkeypatch.setattr(local_materialization, "ApiClient", lambda: api)
+    runner = CliRunner()
+    assert runner.invoke(local_materialization.local_app, ["add", "1"]).exit_code == 0
+
+    result = runner.invoke(local_materialization.local_app, ["sync", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["materialized_files"] == 2
+    assert api.downloaded_files == ["notes/one.txt", "notes/two.txt"]
+    assert api.acknowledged == ["job-1", "job-1"]
 
 
 def test_local_removal_cancels_active_retrieval_before_changing_desired_state(

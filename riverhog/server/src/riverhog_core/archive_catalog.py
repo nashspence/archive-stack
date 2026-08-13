@@ -20,6 +20,7 @@ from riverhog_core.domain.archive import (
     StoredPartReceipt,
     VerifiedRawFile,
 )
+from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,7 @@ class ArchiveVolumeProjection:
     index_sha256: str | None
     plan_sha256: str | None
     completed_at: str
+    retrieval_cache: RetrievalCacheReceipt | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +160,7 @@ def build_archive_catalog_projection(
                 index_sha256=pack_receipt.index_sha256,
                 plan_sha256=pack_receipt.plan_sha256,
                 completed_at=pack_receipt.completed_at,
+                retrieval_cache=pack_receipt.retrieval_cache,
             )
         )
         for member_order, current in enumerate(plan.members):
@@ -194,6 +197,7 @@ def build_archive_catalog_projection(
                 index_sha256=None,
                 plan_sha256=None,
                 completed_at=raw_receipt.completed_at,
+                retrieval_cache=raw_receipt.retrieval_cache,
             )
         )
         segments.append(

@@ -404,8 +404,12 @@ class ApiClient(_HttpApiClient):
         files: Sequence[tuple[int, str]],
         *,
         lease_seconds: int | None = None,
+        restore_policy: str = "allow",
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"files": _file_selections_payload(files)}
+        payload: dict[str, Any] = {
+            "files": _file_selections_payload(files),
+            "restore_policy": restore_policy,
+        }
         if lease_seconds is not None:
             payload["lease_seconds"] = lease_seconds
         return self._json("POST", "/v1/retrieval-plans", json=payload)
@@ -416,9 +420,13 @@ class ApiClient(_HttpApiClient):
         *,
         plan_etag: str,
         lease_seconds: int | None = None,
+        restore_policy: str = "allow",
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"files": _file_selections_payload(files)}
+        payload: dict[str, Any] = {
+            "files": _file_selections_payload(files),
+            "restore_policy": restore_policy,
+        }
         if lease_seconds is not None:
             payload["lease_seconds"] = lease_seconds
         if event_context is not None:
@@ -438,6 +446,71 @@ class ApiClient(_HttpApiClient):
 
     def acknowledge_retrieval_job(self, job_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/retrieval-jobs/{quote(job_id, safe='')}/ack")
+
+    def renew_retrieval_job(self, job_id: str, *, lease_seconds: int) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/retrieval-jobs/{quote(job_id, safe='')}/renew",
+            json={"lease_seconds": lease_seconds},
+        )
+
+    def retrieval_cache_status(self) -> dict[str, Any]:
+        return self._json("GET", "/v1/retrieval-cache")
+
+    def list_retrieval_cache_objects(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+        q: str | None = None,
+        tag: str | None = None,
+        collection_id: int | None = None,
+        source_store: str | None = None,
+        state: str | None = None,
+        protection: str | None = None,
+        expires_before: str | None = None,
+        expires_after: str | None = None,
+        sort: str = "cached_at",
+        order: str = "desc",
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "page": page,
+            "per_page": per_page,
+            "sort": sort,
+            "order": order,
+        }
+        if q:
+            params["q"] = q
+        if tag:
+            params["tag"] = tag
+        if collection_id is not None:
+            params["collection_id"] = collection_id
+        if source_store:
+            params["source_store"] = source_store
+        if state:
+            params["state"] = state
+        if protection:
+            params["protection"] = protection
+        if expires_before:
+            params["expires_before"] = expires_before
+        if expires_after:
+            params["expires_after"] = expires_after
+        if all_items:
+            params["all"] = True
+        return self._json("GET", "/v1/retrieval-cache/objects", params=params)
+
+    def get_retrieval_cache_object(
+        self,
+        collection_id: int,
+        source_store: str,
+        object_id: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            "/v1/retrieval-cache/objects/"
+            f"{str(collection_id)}/{quote(source_store, safe='')}/{quote(object_id, safe='')}",
+        )
 
     def download_retrieval_file(
         self,

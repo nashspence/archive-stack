@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import ast
+from dataclasses import fields, replace
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from riverhog_core.collection_plan import CollectionVolumePolicy
+from riverhog_core.pack_retrieval import PackRangeRetrievalPolicy
 from riverhog_core.runtime_config import (
     DEFAULT_DATABASE_URL,
     DEV_ARCHIVE_PASSPHRASE,
@@ -13,12 +16,74 @@ from riverhog_core.runtime_config import (
     RuntimeConfig,
     load_runtime_config,
 )
+from riverhog_core.throughput import ArchiveThroughputTuning, S3TransportTuning
 
 from tests.unit.db_helpers import sqlite_url
+
+_SERVER_SOURCE = Path(__file__).parents[2] / "riverhog" / "server" / "src"
 
 
 def _config(tmp_path: Path, **overrides: object) -> RuntimeConfig:
     return RuntimeConfig(database_url=sqlite_url(tmp_path / "state.sqlite3"), **overrides)
+
+
+def test_runtime_configuration_fields_have_explicit_production_consumers() -> None:
+    consumed = {
+        node.attr
+        for path in _SERVER_SOURCE.rglob("*.py")
+        if path.name != "runtime_config.py"
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Attribute)
+    }
+    validation_only = {"archive_require_explicit_passphrase"}
+    configuration_fields = {
+        field.name
+        for model in (
+            RuntimeConfig,
+            ArchiveStoreConfig,
+            RetrievalCacheConfig,
+            CollectionVolumePolicy,
+            PackRangeRetrievalPolicy,
+            S3TransportTuning,
+            ArchiveThroughputTuning,
+        )
+        for field in fields(model)
+    }
+
+    assert configuration_fields - consumed == validation_only
+
+    witnessed = {
+        node.attr
+        for root in (Path(__file__).parents[1],)
+        for path in root.rglob("*.py")
+        if path != Path(__file__)
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Attribute)
+    } | {
+        node.id
+        for root in (Path(__file__).parents[1],)
+        for path in root.rglob("*.py")
+        if path != Path(__file__)
+        for node in ast.walk(ast.parse(path.read_text()))
+        if isinstance(node, ast.Name)
+    }
+    locally_witnessed = {
+        node.attr
+        for node in ast.walk(ast.parse(Path(__file__).read_text()))
+        if isinstance(node, ast.Attribute)
+    }
+    assert configuration_fields - witnessed - locally_witnessed == set()
+
+
+def test_public_base_url_is_normalized_and_rejects_ambiguous_authority(
+    tmp_path: Path,
+) -> None:
+    assert (
+        _config(tmp_path, public_base_url="http://riverhog.example.test/prefix/").public_base_url
+        == "http://riverhog.example.test/prefix"
+    )
+    with pytest.raises(ValueError, match="RIVERHOG_PUBLIC_BASE_URL"):
+        _config(tmp_path, public_base_url="https://user@riverhog.example.test")
 
 
 def test_retrieval_max_lease_covers_the_default_lease(tmp_path: Path) -> None:
@@ -108,6 +173,24 @@ def test_load_runtime_config_parses_archive_multipart_safeguards(
     assert config.archive_multipart_sweep_interval == timedelta(hours=2)
 
 
+def test_load_runtime_config_connects_archive_sweep_and_proof_verifier_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "17s")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES", "7MiB")
+    monkeypatch.setenv("RIVERHOG_LOG_LEVEL", "debug")
+    monkeypatch.setenv("RIVERHOG_OTS_STAMP_COMMAND", "custom-ots --calendar example")
+    monkeypatch.setenv("RIVERHOG_OTS_VERIFY_COMMAND", "custom-ots --verify-policy strict")
+
+    config = load_runtime_config()
+
+    assert config.archive_upload_sweep_interval == timedelta(seconds=17)
+    assert config.archive_multipart_part_bytes == 7 * 1024 * 1024
+    assert config.log_level == "DEBUG"
+    assert config.ots_stamp_command == ("custom-ots", "--calendar", "example")
+    assert config.ots_verify_command == ("custom-ots", "--verify-policy", "strict")
+
+
 def test_load_runtime_config_parses_lifecycle_event_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -166,16 +249,27 @@ def test_load_runtime_config_parses_retrieval_settings(
 ) -> None:
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "6h")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_TIER", "standard")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE", "20d")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED", "false")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE", "3d")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_DEFAULT_LEASE", "2d")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_MAX_LEASE", "20d")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_PENDING_TIMEOUT", "4d")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_RESTORE_HOLD", "36h")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL", "7m")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL", "11m")
 
     config = load_runtime_config()
 
     assert config.retrieval_estimated_latency == timedelta(hours=6)
     assert config.retrieval_tier == "standard"
-    assert config.retrieval_cache_new_archive_lease == timedelta(days=20)
+    assert config.retrieval_cache_new_archive_enabled is False
+    assert config.retrieval_cache_new_archive_lease == timedelta(days=3)
     assert config.retrieval_default_lease == timedelta(days=2)
+    assert config.retrieval_max_lease == timedelta(days=20)
+    assert config.retrieval_pending_timeout == timedelta(days=4)
+    assert config.retrieval_restore_hold == timedelta(hours=36)
+    assert config.retrieval_cache_sweep_interval == timedelta(minutes=7)
+    assert config.retrieval_restore_poll_interval == timedelta(minutes=11)
 
 
 def test_load_runtime_config_builds_named_archive_stores(
@@ -405,12 +499,16 @@ def test_temporary_s3_credentials_include_session_tokens(
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID", "cache-key")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY", "cache-secret")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SESSION_TOKEN", "cache-session")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_FORCE_PATH_STYLE", "true")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_PREFIX", "/cache//objects/")
 
     config = load_runtime_config()
 
     assert config.archive_store("archive").session_token == "archive-session"
     assert config.retrieval_cache is not None
     assert config.retrieval_cache.session_token == "cache-session"
+    assert config.retrieval_cache.force_path_style is True
+    assert config.retrieval_cache.prefix == "cache/objects"
 
 
 def test_retrieval_cache_session_token_alone_is_incomplete(

@@ -475,6 +475,24 @@ INSERT INTO collection_archive_file_objects (
     1, 'fixture-archive', 'notes/fixture.txt', 0, 'segment-000000000000',
     0, 0, 12, NULL
 );
+INSERT INTO retrieval_jobs (
+    id, app, initiated_by_key_id, state, plan_etag, constraints_json,
+    created_at, requested_at, next_poll_at
+) VALUES (
+    'fixture-retrieval', 'fixture-client', 'fixture-key', 'requested',
+    'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    '{"etag":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","files":[{"bytes":12,"collection_id":1,"path":"notes/fixture.txt","sha256":"5cb72f90e968922d30557d0af8f719d21f61792becaa87eb32477767d739dc0b"}],"format":"riverhog-retrieval-plan/v1","lease_seconds":3600,"objects":[{"collection_id":1,"object_id":"segment-000000000000","read_mode":"restore_required","source_store":"fixture-archive"}]}',
+    '2026-01-01T00:00:00.000000Z', '2026-01-01T00:00:00.000000Z',
+    '2026-01-01T00:00:00.000000Z'
+);
+INSERT INTO retrieval_job_files (job_id, collection_id, path, file_order)
+VALUES ('fixture-retrieval', 1, 'notes/fixture.txt', 0);
+INSERT INTO retrieval_job_objects (
+    job_id, collection_id, source_store, object_id, object_order, read_mode
+) VALUES (
+    'fixture-retrieval', 1, 'fixture-archive', 'segment-000000000000', 0,
+    'restore_required'
+);
 INSERT INTO retrieval_cache_objects (
     source_store, collection_id, object_id, object_path, version_id, stored_bytes,
     stored_sha256, cached_at, verified_at, state

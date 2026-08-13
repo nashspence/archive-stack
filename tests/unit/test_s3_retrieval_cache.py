@@ -5,6 +5,8 @@ import logging
 import threading
 from typing import Any
 
+import pytest
+from riverhog_core.ports.archive_objects import CompletedObjectReceipt, MultipartPartReceipt
 from riverhog_core.runtime_config import RetrievalCacheConfig, RuntimeConfig
 from riverhog_core.stores.s3_retrieval_cache import S3RetrievalCache
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
@@ -74,6 +76,22 @@ class _FakeS3Client:
     def abort_multipart_upload(self, **kwargs: object) -> None:
         raise AssertionError(f"unexpected abort: {kwargs}")
 
+    def get_object(self, **kwargs: object) -> dict[str, object]:
+        assert kwargs["VersionId"] == "version-1"
+
+        class Body:
+            def iter_chunks(self, *, chunk_size: int):
+                return (
+                    self_content[offset : offset + chunk_size]
+                    for offset in range(0, len(self_content), chunk_size)
+                )
+
+            def close(self) -> None:
+                return
+
+        self_content = self.object
+        return {"Body": Body()}
+
 
 def test_multipart_cache_hydration_overlaps_bounded_part_uploads(
     monkeypatch: Any,
@@ -126,3 +144,45 @@ def test_multipart_cache_hydration_overlaps_bounded_part_uploads(
     assert "operation=retrieval_cache_hydration" in message
     assert "integrity_seconds=" in message
     assert "raw-000001" not in message
+
+
+def test_mirrored_cache_verification_checks_each_archive_part(
+    monkeypatch: Any,
+) -> None:
+    fake = _FakeS3Client()
+    fake.object = b"first-partsecond-part"
+    config = RuntimeConfig(
+        retrieval_cache=RetrievalCacheConfig(
+            endpoint_url="https://cache.invalid",
+            region="us-east-1",
+            bucket="cache",
+            access_key_id="test",
+            secret_access_key="test",
+        ),
+    )
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_retrieval_cache.create_retrieval_cache_s3_client",
+        lambda *_args: fake,
+    )
+    cache = S3RetrievalCache(config)
+    completed = CompletedObjectReceipt(
+        object_path="cache/object",
+        version_id="version-1",
+        etag="etag",
+        bytes=len(fake.object),
+        completed_at="2026-08-13T00:00:00Z",
+    )
+    parts = (
+        MultipartPartReceipt(1, "one", 10, hashlib.sha256(b"first-part").hexdigest()),
+        MultipartPartReceipt(2, "two", 11, hashlib.sha256(b"second-part").hexdigest()),
+    )
+
+    receipt = cache.verify_multipart_object(completed=completed, parts=parts)
+
+    assert receipt.stored_sha256 == hashlib.sha256(fake.object).hexdigest()
+    corrupted = (
+        parts[0],
+        MultipartPartReceipt(2, "two", 11, "0" * 64),
+    )
+    with pytest.raises(RuntimeError, match="part failed integrity"):
+        cache.verify_multipart_object(completed=completed, parts=corrupted)

@@ -82,6 +82,10 @@ from riverhog_cli.output import (
     format_provenance_files,
     format_provenance_trace,
     format_provenance_verification,
+    format_retrieval_cache_object,
+    format_retrieval_cache_objects,
+    format_retrieval_cache_selectors,
+    format_retrieval_cache_status,
     format_tag,
     format_tag_deletion_plan,
     format_tag_deletion_result,
@@ -103,6 +107,8 @@ app_key_access_app = typer.Typer(help="Per-key permission and resource access.")
 app_key_quota_app = typer.Typer(help="Per-key remote-download quotas.")
 tag_app = typer.Typer(help="Collection tag catalog.")
 event_app = typer.Typer(help="Lifecycle event inspection.")
+retrieval_app = typer.Typer(help="Retrieval operations.")
+retrieval_cache_app = typer.Typer(help="Retrieval-cache inspection.")
 app_key_app.add_typer(app_key_access_app, name="access")
 app_key_app.add_typer(app_key_quota_app, name="quota")
 application_app.add_typer(app_key_app, name="key")
@@ -116,6 +122,8 @@ archive_app.add_typer(archive_copy_app, name="copy")
 app.add_typer(application_app, name="app")
 app.add_typer(tag_app, name="tag")
 app.add_typer(event_app, name="event")
+app.add_typer(retrieval_app, name="retrieval")
+retrieval_app.add_typer(retrieval_cache_app, name="cache")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
@@ -279,6 +287,27 @@ def _archive_copy_selector(value: str) -> tuple[int, str]:
     except PathNormalizationError as exc:
         raise typer.BadParameter(str(exc), param_hint="SELECTOR") from exc
     return normalized_collection_id, destination_store
+
+
+def _retrieval_cache_selector(value: str) -> tuple[int, str, str]:
+    collection_id, separator, remainder = value.partition("::")
+    source_store, second_separator, object_id = remainder.partition("::")
+    if (
+        not separator
+        or not second_separator
+        or not collection_id
+        or not source_store
+        or not object_id
+    ):
+        raise typer.BadParameter(
+            "retrieval-cache selector must be COLLECTION_ID::SOURCE_STORE::OBJECT_ID",
+            param_hint="SELECTOR",
+        )
+    try:
+        normalized_collection_id = normalize_collection_id(collection_id)
+    except PathNormalizationError as exc:
+        raise typer.BadParameter(str(exc), param_hint="SELECTOR") from exc
+    return normalized_collection_id, source_store, object_id
 
 
 @application_app.command("list")
@@ -1944,6 +1973,115 @@ _ARCHIVE_STORE_SORT_FIELDS = {
     "objects",
     "stored_bytes",
 }
+
+_RETRIEVAL_CACHE_SORT_FIELDS = {
+    "collection_id",
+    "source_store",
+    "object_id",
+    "stored_bytes",
+    "cached_at",
+    "verified_at",
+    "protected_until",
+}
+
+
+@retrieval_cache_app.command("status")
+def retrieval_cache_status_cmd(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show retrieval-cache policy and current authorized totals."""
+
+    payload = client().retrieval_cache_status()
+    emit(payload if json_mode else format_retrieval_cache_status(payload), json_mode=json_mode)
+
+
+@retrieval_cache_app.command("list")
+def retrieval_cache_list_cmd(
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "cached_at",
+    order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
+    query: Annotated[
+        str | None,
+        typer.Option("--query", "-q", help="Match collection, store, or object identity"),
+    ] = None,
+    tag: Annotated[str | None, typer.Option("--tag", help="Require a collection tag")] = None,
+    collection_id: Annotated[
+        int | None,
+        typer.Option("--collection", min=1, help="Require one collection"),
+    ] = None,
+    source_store: Annotated[
+        str | None,
+        typer.Option("--source-store", help="Require one archive source store"),
+    ] = None,
+    state: Annotated[
+        str | None,
+        typer.Option("--state", help="Require ready, delete_pending, or deleting state"),
+    ] = None,
+    protection: Annotated[
+        str | None,
+        typer.Option("--protection", help="Require protected or unleased objects"),
+    ] = None,
+    expires_before: Annotated[
+        str | None,
+        typer.Option("--expires-before", help="Require protection expiry at or before timestamp"),
+    ] = None,
+    expires_after: Annotated[
+        str | None,
+        typer.Option("--expires-after", help="Require protection expiry at or after timestamp"),
+    ] = None,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every matching cache object"),
+    ] = False,
+    selectors: Annotated[
+        bool,
+        typer.Option(
+            "--selectors",
+            help="Emit one COLLECTION_ID::SOURCE_STORE::OBJECT_ID selector per line",
+        ),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List cache availability visible through authorized collection access."""
+
+    if selectors and json_mode:
+        raise typer.BadParameter("--selectors and --json cannot be used together")
+    normalized_order = _list_order(sort, order, fields=_RETRIEVAL_CACHE_SORT_FIELDS)
+    payload = client().list_retrieval_cache_objects(
+        page=page,
+        per_page=per_page,
+        q=query,
+        tag=tag,
+        collection_id=collection_id,
+        source_store=source_store,
+        state=state,
+        protection=protection,
+        expires_before=expires_before,
+        expires_after=expires_after,
+        sort=sort,
+        order=normalized_order,
+        all_items=all_items,
+    )
+    if selectors:
+        emit(format_retrieval_cache_selectors(payload), json_mode=False)
+        return
+    emit(payload if json_mode else format_retrieval_cache_objects(payload), json_mode=json_mode)
+
+
+@retrieval_cache_app.command("show")
+def retrieval_cache_show_cmd(
+    selector: Annotated[
+        str,
+        typer.Argument(help="COLLECTION_ID::SOURCE_STORE::OBJECT_ID"),
+    ],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show one cached encrypted archive object and its lease protection."""
+
+    collection_id, source_store, object_id = _retrieval_cache_selector(selector)
+    payload = client().get_retrieval_cache_object(collection_id, source_store, object_id)
+    emit(payload if json_mode else format_retrieval_cache_object(payload), json_mode=json_mode)
 
 
 @archive_store_app.command("list")
