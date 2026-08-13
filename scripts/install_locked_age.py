@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
+import time
 import tomllib
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from contextlib import AbstractContextManager
@@ -17,6 +21,7 @@ from typing import BinaryIO, cast
 
 AGE_PLATFORM = "platforms.linux-x64"
 AGE_BINARIES = ("age", "age-keygen", "age-plugin-batchpass")
+DOWNLOAD_RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0, 8.0, 16.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +66,7 @@ def load_locked_age(lock_path: Path) -> LockedArtifact:
     return artifact
 
 
-def _download(
+def _download_once(
     artifact: LockedArtifact,
     destination: Path,
     *,
@@ -76,11 +81,49 @@ def _download(
         raise InstallError("downloaded age artifact does not match mise.lock")
 
 
+def _is_retryable_download_error(error: BaseException) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in {408, 429} or 500 <= error.code <= 599
+    return isinstance(
+        error,
+        (
+            urllib.error.URLError,
+            ConnectionError,
+            TimeoutError,
+            http.client.IncompleteRead,
+        ),
+    )
+
+
+def _download(
+    artifact: LockedArtifact,
+    destination: Path,
+    *,
+    opener: Callable[[str], AbstractContextManager[BinaryIO]],
+    sleeper: Callable[[float], None],
+) -> None:
+    for retry, delay in enumerate(DOWNLOAD_RETRY_DELAYS_SECONDS, start=1):
+        try:
+            _download_once(artifact, destination, opener=opener)
+            return
+        except Exception as error:
+            if not _is_retryable_download_error(error):
+                raise
+            print(
+                "locked age download failed transiently; "
+                f"retrying {retry}/{len(DOWNLOAD_RETRY_DELAYS_SECONDS)} in {delay:g}s",
+                file=sys.stderr,
+            )
+            sleeper(delay)
+    _download_once(artifact, destination, opener=opener)
+
+
 def install_locked_age(
     lock_path: Path,
     destination: Path,
     *,
     opener: Callable[[str], AbstractContextManager[BinaryIO]] | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> LockedArtifact:
     artifact = load_locked_age(lock_path)
     if opener is None:
@@ -91,7 +134,7 @@ def install_locked_age(
     with tempfile.TemporaryDirectory(prefix="riverhog-age-install.") as temporary:
         scratch = Path(temporary)
         archive_path = scratch / "age.tar.gz"
-        _download(artifact, archive_path, opener=opener)
+        _download(artifact, archive_path, opener=opener, sleeper=sleeper)
         unpacked = scratch / "unpacked"
         unpacked.mkdir()
         with tarfile.open(archive_path, mode="r:gz") as archive:
