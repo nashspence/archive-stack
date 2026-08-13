@@ -814,6 +814,7 @@ def test_runtime_environment_uses_scoped_credentials_and_cloudfront(
     text = output.read_text()
 
     assert output.stat().st_mode & 0o777 == 0o600
+    assert f'RIVERHOG_COMPOSE_ENV_FILE="{output.resolve()}"' in text
     assert 'RIVERHOG_ARCHIVE_STORES="b2-archive,aws-deep-archive"' in text
     assert 'RIVERHOG_ARCHIVE_WRITE_STORE="b2-archive"' in text
     assert 'RIVERHOG_ARCHIVE_READ_ORDER="aws-deep-archive,b2-archive"' in text
