@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Continue the active run, start a fresh run, or decide automatically.
+        description: Continue, start, explicitly replace a stale dummy run, or decide automatically.
         default: auto
         required: true
         type: choice
@@ -14,6 +14,7 @@ on:
           - auto
           - start
           - poll
+          - restart
       ref:
         description: release/v1 or an exact v1 release tag for a fresh run.
         default: release/v1
@@ -97,7 +98,9 @@ jobs:
 
           requested_mode="${REQUESTED_MODE:-auto}"
           action=skip
-          if [[ "$active" == true ]]; then
+          if [[ "$active" == true && "$requested_mode" == restart ]]; then
+            action=restart
+          elif [[ "$active" == true ]]; then
             if [[ "$requested_mode" == start ]]; then
               printf 'A provider qualification is already active.\n' >&2
               exit 2
@@ -139,7 +142,7 @@ jobs:
           fi
           git fetch --force --no-tags origin "$source_ref"
           source_tip="$(git rev-parse --verify 'FETCH_HEAD^{commit}')"
-          if [[ "$action" == start ]]; then
+          if [[ "$action" == start || "$action" == restart ]]; then
             source_sha="$source_tip"
           elif [[ "$source_ref" == v1.* && "$source_sha" != "$source_tip" ]]; then
             printf 'Qualification tag moved or checkpoint source changed.\n' >&2
@@ -162,7 +165,9 @@ jobs:
   provision_aws:
     name: reconcile AWS provider infrastructure
     needs: resolve
-    if: needs.resolve.outputs.action == 'start'
+    if: >-
+      needs.resolve.outputs.action == 'start'
+      || needs.resolve.outputs.action == 'restart'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: provider-qualification-provisioning
@@ -239,9 +244,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Download verified continuation state
-        if: needs.resolve.outputs.action == 'poll'
+        if: >-
+          needs.resolve.outputs.action == 'poll'
+          || needs.resolve.outputs.action == 'restart'
         env:
+          ACTION: ${{ needs.resolve.outputs.action }}
           ARTIFACT_ID: ${{ needs.resolve.outputs.artifact_id }}
+          SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
         run: |
           set -euo pipefail
@@ -254,7 +263,11 @@ jobs:
           jq --exit-status \
             '.schema == "riverhog-provider-qualification-status/v1" and .active == true' \
             "$input_dir/status.json" >/dev/null
-          test "$(jq -r '.source_sha' "$input_dir/status.json")" = "$SOURCE_SHA"
+          if [[ "$ACTION" == poll ]]; then
+            test "$(jq -r '.source_sha' "$input_dir/status.json")" = "$SOURCE_SHA"
+          else
+            test "$(jq -r '.source_ref' "$input_dir/status.json")" = "$SOURCE_REF"
+          fi
           test -s "$input_dir/checkpoint.json"
           test -s "$input_dir/database.dump"
           printf 'STATE_INPUT_DIR=%s\n' "$input_dir" >> "$GITHUB_ENV"
@@ -275,6 +288,17 @@ jobs:
           RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID: ${{ vars.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID }}
           RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY }}
         run: make provider-qualification args="b2-check $CONFIG_PATH"
+      - name: Clean superseded dummy B2 state
+        if: needs.resolve.outputs.action == 'restart'
+        env:
+          RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID: ${{ vars.RIVERHOG_QUALIFICATION_B2_ARCHIVE_ACCESS_KEY_ID }}
+          RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY }}
+          RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID: ${{ vars.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID }}
+          RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY }}
+        run: >-
+          make provider-qualification
+          args="cleanup-b2 $CONFIG_PATH
+          --checkpoint $STATE_INPUT_DIR/checkpoint.json"
       - name: Configure Docker engine
         uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
         with:
@@ -346,7 +370,7 @@ jobs:
           corpus_manifest="$RUNNER_TEMP/provider-corpus.qualification.json"
           mkdir -p "$state_dir"
           make provider-qualification args="corpus-create $corpus_root --profile $CORPUS_PROFILE"
-          if [[ "$ACTION" == start ]]; then
+          if [[ "$ACTION" == start || "$ACTION" == restart ]]; then
             make provider-qualification args="checkpoint-start $state_dir/checkpoint.json --config $CONFIG_PATH --corpus-manifest $corpus_manifest --source-sha $SOURCE_SHA --source-ref $SOURCE_REF"
           else
             cp "$STATE_INPUT_DIR/checkpoint.json" "$state_dir/checkpoint.json"
@@ -448,8 +472,10 @@ jobs:
           test -s "$STATE_DIR/checkpoint.json"
           phase="$(jq -r '.phase' "$STATE_DIR/checkpoint.json")"
           active=true
+          retention_days=14
           if [[ "$phase" == cleaned || "$phase" == failed ]]; then
             active=false
+            retention_days=90
             make provider-qualification args="evidence $STATE_DIR/checkpoint.json --output $artifact_dir/evidence.json"
           else
             test -s "$STATE_DIR/database.dump"
@@ -471,6 +497,7 @@ jobs:
               started_at: $started_at,
               active: $active
             }' > "$artifact_dir/status.json"
+          printf 'retention_days=%s\n' "$retention_days" >> "$GITHUB_OUTPUT"
           printf 'PROVIDER_ARTIFACT_DIR=%s\n' "$artifact_dir" >> "$GITHUB_ENV"
       - name: Upload bounded qualification state
         if: always() && steps.package.outcome == 'success'
@@ -479,7 +506,7 @@ jobs:
           name: provider-qualification-state
           path: ${{ runner.temp }}/provider-public-artifact
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ steps.package.outputs.retention_days }}
       - name: Remove the disposable deployment
         if: always() && env.RUNTIME_ENV != ''
         run: |

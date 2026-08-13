@@ -277,6 +277,12 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
         "regular",
         "multipart",
     }
+    assert set(workflow["on"]["workflow_dispatch"]["inputs"]["mode"]["options"]) == {
+        "auto",
+        "start",
+        "poll",
+        "restart",
+    }
     assert workflow["permissions"] == {
         "actions": "read",
         "contents": "read",
@@ -300,7 +306,8 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     assert references(resolve_job, "secrets") == set()
 
     assert provision_job["needs"] == "resolve"
-    assert provision_job["if"] == "needs.resolve.outputs.action == 'start'"
+    assert "needs.resolve.outputs.action == 'start'" in provision_job["if"]
+    assert "needs.resolve.outputs.action == 'restart'" in provision_job["if"]
     assert provision_job["environment"] == "provider-qualification-provisioning"
     assert provision_job["permissions"] == {"contents": "read", "id-token": "write"}
     assert references(provision_job, "vars") == {
@@ -368,9 +375,13 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     download = next(
         step for step in steps if step["name"] == "Download verified continuation state"
     )
-    assert download["if"] == "needs.resolve.outputs.action == 'poll'"
+    assert "needs.resolve.outputs.action == 'poll'" in download["if"]
+    assert "needs.resolve.outputs.action == 'restart'" in download["if"]
     assert "actions/artifacts/$ARTIFACT_ID/zip" in download["run"]
     assert ".active == true" in download["run"]
+    cleanup = next(step for step in steps if step["name"] == "Clean superseded dummy B2 state")
+    assert cleanup["if"] == "needs.resolve.outputs.action == 'restart'"
+    assert "cleanup-b2" in cleanup["run"]
     exact = next(step for step in steps if step["name"] == "Check out verified exact source")
     assert 'test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"' in exact["run"]
 
@@ -432,11 +443,12 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     upload = next(step for step in steps if step["name"] == "Upload bounded qualification state")
     assert 'if [[ "$phase" == cleaned || "$phase" == failed ]]' in package["run"]
     assert 'cp "$STATE_DIR/checkpoint.json" "$STATE_DIR/database.dump"' in package["run"]
+    assert "retention_days=90" in package["run"]
     assert upload["with"] == {
         "name": "provider-qualification-state",
         "path": "${{ runner.temp }}/provider-public-artifact",
         "if-no-files-found": "error",
-        "retention-days": "14",
+        "retention-days": "${{ steps.package.outputs.retention_days }}",
     }
     assert "age --encrypt" not in text and "age --decrypt" not in text
     assert "RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY" in text

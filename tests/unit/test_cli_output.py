@@ -9,6 +9,7 @@ from riverhog_cli.output import (
     format_collections,
     format_find,
     format_local_collections,
+    format_retrieval_cache_status,
 )
 
 
@@ -58,6 +59,33 @@ def test_collection_output_leads_with_archive_copy_state() -> None:
     assert "created: 2026-07-26T18:43:00.000000Z" in rendered
     assert "tags: family, sony-a6700" in rendered
     assert "archive copies: deep=uploaded" in rendered
+
+
+def test_retrieval_cache_status_reports_independent_effective_policy() -> None:
+    rendered = format_retrieval_cache_status(
+        {
+            "configured": True,
+            "new_archive_enabled": True,
+            "objects": 2,
+            "stored_bytes": 30,
+            "protected_objects": 1,
+            "unleased_objects": 1,
+            "policy": {
+                "new_archive_lease_seconds": 3600,
+                "retrieval_default_lease_seconds": 7200,
+                "retrieval_max_lease_seconds": 10800,
+                "pending_timeout_seconds": 14400,
+                "restore_hold_seconds": 18000,
+                "sweep_interval_seconds": 30,
+                "restore_poll_interval_seconds": 60,
+            },
+        }
+    )
+
+    assert "pending timeout: 14400s" in rendered
+    assert "provider restore hold: 18000s" in rendered
+    assert "sweep interval: 30s" in rendered
+    assert "restore poll interval: 60s" in rendered
 
 
 def test_list_and_search_output_use_immutable_logical_identity() -> None:

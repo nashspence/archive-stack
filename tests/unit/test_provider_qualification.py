@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -428,12 +429,37 @@ def test_checkpoint_is_restartable_tamper_evident_and_emits_bounded_evidence(
         "cleaned",
     )
     for offset, phase in enumerate(phases, 1):
+        required = module._REQUIRED_PASS_ASSERTIONS_BY_PHASE.get(phase)
         checkpoint = module.advance_checkpoint(
             checkpoint,
             phase=phase,
-            assertions=(f"{phase}-contract",),
+            assertions=tuple(sorted(required)) if required else (f"{phase}-contract",),
             collection_id=42 if phase == "immediate-qualified" else None,
             retrieval_job_id="retrieval-42" if phase == "restore-requested" else None,
+            artifacts=(
+                (
+                    module.ArtifactIdentity(
+                        surface="b2-archive",
+                        sha256="2" * 64,
+                        objects=1,
+                        bytes=0,
+                    ),
+                    module.ArtifactIdentity(
+                        surface="aws-deep-archive",
+                        sha256="2" * 64,
+                        objects=1,
+                        bytes=0,
+                    ),
+                    module.ArtifactIdentity(
+                        surface="cloudfront-egress",
+                        sha256="2" * 64,
+                        objects=1,
+                        bytes=0,
+                    ),
+                )
+                if phase == "verified"
+                else ()
+            ),
             now=now + timedelta(minutes=offset),
         )
     checkpoint_path = tmp_path / "checkpoint.json"
@@ -486,9 +512,63 @@ def test_checkpoint_is_restartable_tamper_evident_and_emits_bounded_evidence(
         "monthly_download_quota_bytes": 2 * 1024 * 1024 * 1024,
         "corpus_bytes": 0,
     }
+    assert evidence["retrieval_cache"] == {
+        "new_archive_insertion": True,
+        "new_archive_lease_seconds": 3600,
+        "retrieval_default_lease_seconds": 3 * 24 * 60 * 60,
+        "retrieval_max_lease_seconds": 3 * 24 * 60 * 60,
+        "pending_timeout_seconds": 72 * 60 * 60,
+        "restore_hold_seconds": 24 * 60 * 60,
+        "sweep_interval_seconds": 30,
+        "restore_poll_interval_seconds": 60,
+        "opportunistic_restore_policy": "never",
+    }
+    assert set(evidence["proof"]["required_assertions"]) <= set(
+        evidence["proof"]["observed_assertions"]
+    )
+    assert {
+        "ingress-cache-list-show-status",
+        "ingress-cache-retrieval-verified",
+        "new-archive-lease-observed",
+        "opportunistic-cache-retrieval",
+        "retrieval-policy-effective-values",
+        "new-archive-cache-expired",
+        "cache-sweep-cadence-observed",
+        "opportunistic-plan-cost-boundary",
+        "b2-retrieval-cache-hydrated",
+        "retrieval-cache-list-show-status",
+        "retrieval-renewal",
+        "restore-poll-cadence-observed",
+        "restart-boundary-survived",
+        "cloudfront-signed-egress",
+        "cloudfront-warm-cache-hit",
+        "aws-direct-independent-recovery",
+    } <= set(evidence["proof"]["required_assertions"])
+    assert evidence["proof"]["artifact_surfaces"] == [
+        "aws-deep-archive",
+        "b2-archive",
+        "cloudfront-egress",
+    ]
     assert [item["phase"] for item in evidence["phases"]] == ["created", *phases]
     assert "collection_id" not in evidence
     assert "retrieval_job_id" not in evidence
+
+    incomplete = replace(
+        checkpoint,
+        history=tuple(
+            replace(
+                record,
+                assertions=tuple(
+                    value for value in record.assertions if value != "opportunistic-cache-retrieval"
+                ),
+            )
+            if record.phase == "deep-archive-cache-observed"
+            else record
+            for record in checkpoint.history
+        ),
+    )
+    with pytest.raises(module.QualificationError, match="missing required assertions"):
+        module.evidence_from_checkpoint(incomplete)
 
     payload = json.loads(checkpoint_path.read_text())
     payload["phase"] = "failed"
@@ -829,6 +909,8 @@ def test_runtime_environment_uses_scoped_credentials_and_cloudfront(
     assert 'RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY="b2-retrieval-cache-secret"' in text
     assert 'RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED="true"' in text
     assert 'RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE="1h"' in text
+    assert 'RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL="30s"' in text
+    assert 'RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL="1m"' in text
     assert 'RIVERHOG_ARCHIVE_STORE_B2_ARCHIVE_SECRET_ACCESS_KEY="b2-archive-secret"' in text
     assert f'RIVERHOG_ARCHIVE_STORE_B2_ARCHIVE_PREFIX="{checkpoint.namespace}"' in text
 
@@ -1126,7 +1208,17 @@ def test_operator_advances_across_short_restore_invocations(
     monkeypatch.setattr(
         module,
         "_upload_collection_with_observation",
-        lambda *_args, **_kwargs: (42, ("session-show", "unit-readback")),
+        lambda *_args, **_kwargs: (
+            42,
+            (
+                "committed-unit-readback",
+                "registered-file-list",
+                "session-show",
+                "unit-readback",
+                "volume-list",
+                "volume-show",
+            ),
+        ),
     )
     for name in (
         "_wait_archive_copy",
