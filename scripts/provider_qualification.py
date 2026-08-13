@@ -1140,6 +1140,8 @@ class CloudFrontManager:
         query_keys = query_keys if isinstance(query_keys, dict) else {}
         origin_shield = origin.get("OriginShield")
         origin_shield = origin_shield if isinstance(origin_shield, dict) else {}
+        s3_origin = origin.get("S3OriginConfig")
+        s3_origin = s3_origin if isinstance(s3_origin, dict) else {}
         viewer = config.get("ViewerCertificate")
         viewer = viewer if isinstance(viewer, dict) else {}
         restrictions = config.get("Restrictions")
@@ -1156,7 +1158,10 @@ class CloudFrontManager:
                 "Id": origin.get("Id"),
                 "DomainName": origin.get("DomainName"),
                 "OriginAccessControlId": origin.get("OriginAccessControlId"),
-                "S3OriginConfig": origin.get("S3OriginConfig"),
+                "S3OriginConfig": {
+                    "OriginAccessIdentity": s3_origin.get("OriginAccessIdentity"),
+                    "OriginReadTimeout": s3_origin.get("OriginReadTimeout", 30),
+                },
                 "ConnectionAttempts": origin.get("ConnectionAttempts"),
                 "ConnectionTimeout": origin.get("ConnectionTimeout"),
                 "OriginShield": {"Enabled": origin_shield.get("Enabled")},
