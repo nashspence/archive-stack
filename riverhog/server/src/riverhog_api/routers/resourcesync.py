@@ -15,7 +15,11 @@ _RESOURCE_LIST_PAGE_SIZE = 10_000
 
 
 def _url(request: Request, path: str) -> str:
-    return str(request.base_url).rstrip("/") + path
+    app = request.scope.get("app")
+    state = getattr(app, "state", None)
+    configured = getattr(state, "public_base_url", None)
+    base_url = str(configured) if configured else str(request.base_url)
+    return base_url.rstrip("/") + path
 
 
 def _xml(root: Element) -> Response:

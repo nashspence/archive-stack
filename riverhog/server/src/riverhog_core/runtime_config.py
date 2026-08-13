@@ -188,15 +188,20 @@ class RuntimeConfig:
     archive_multipart_max_age: timedelta = field(default_factory=lambda: timedelta(days=3))
     archive_multipart_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=6))
     retrieval_cache: RetrievalCacheConfig | None = None
-    retrieval_cache_new_archive_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
-    retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
-    retrieval_max_lease: timedelta = field(default_factory=lambda: timedelta(days=30))
-    retrieval_cache_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=1))
+    retrieval_cache_new_archive_enabled: bool = True
+    retrieval_cache_new_archive_lease: timedelta = field(
+        default_factory=lambda: timedelta(hours=72)
+    )
+    retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(hours=24))
+    retrieval_max_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
+    retrieval_pending_timeout: timedelta = field(default_factory=lambda: timedelta(hours=72))
+    retrieval_restore_hold: timedelta = field(default_factory=lambda: timedelta(hours=24))
+    retrieval_cache_sweep_interval: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     archive_passphrase: str = DEV_ARCHIVE_PASSPHRASE
     archive_require_explicit_passphrase: bool = False
     archive_scrypt_work_factor: int = DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR
     archive_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
-    retrieval_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    retrieval_restore_poll_interval: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     retrieval_estimated_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
     retrieval_tier: str = "bulk"
     ots_stamp_command: tuple[str, ...] = ("ots",)
@@ -233,6 +238,22 @@ class RuntimeConfig:
                 "RIVERHOG_LOG_LEVEL must be one of CRITICAL, ERROR, WARNING, INFO, or DEBUG"
             )
         object.__setattr__(self, "log_level", log_level)
+        if self.public_base_url is not None:
+            public_base_url = self.public_base_url.strip().rstrip("/")
+            parsed_public_base_url = urlsplit(public_base_url)
+            if (
+                parsed_public_base_url.scheme not in {"http", "https"}
+                or not parsed_public_base_url.hostname
+                or parsed_public_base_url.username is not None
+                or parsed_public_base_url.password is not None
+                or parsed_public_base_url.query
+                or parsed_public_base_url.fragment
+            ):
+                raise ValueError(
+                    "RIVERHOG_PUBLIC_BASE_URL must be an HTTP(S) URL without "
+                    "credentials, query, or fragment"
+                )
+            object.__setattr__(self, "public_base_url", public_base_url)
         archive_write_store = _normalize_archive_store_name(self.archive_write_store)
         normalized_archive_stores: dict[str, ArchiveStoreConfig] = {}
         for raw_name, store in self.archive_stores.items():
@@ -409,8 +430,14 @@ class RuntimeConfig:
             raise ValueError(
                 "RIVERHOG_RETRIEVAL_MAX_LEASE must be at least RIVERHOG_RETRIEVAL_DEFAULT_LEASE"
             )
+        if self.retrieval_pending_timeout.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_RETRIEVAL_PENDING_TIMEOUT must be > 0")
+        if self.retrieval_restore_hold.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_RETRIEVAL_RESTORE_HOLD must be > 0")
         if self.retrieval_cache_sweep_interval.total_seconds() <= 0:
             raise ValueError("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL must be > 0")
+        if self.retrieval_restore_poll_interval.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL must be > 0")
         if self.archive_scrypt_work_factor < 1 or self.archive_scrypt_work_factor > 22:
             raise ValueError("RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR must be in 1..22")
         if not self.archive_passphrase:
@@ -554,7 +581,9 @@ def load_runtime_config() -> RuntimeConfig:
     archive_upload_sweep_interval = parse_duration(
         os.getenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "30s")
     )
-    retrieval_sweep_interval = parse_duration(os.getenv("RIVERHOG_RETRIEVAL_SWEEP_INTERVAL", "30s"))
+    retrieval_restore_poll_interval = parse_duration(
+        os.getenv("RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL", "5m")
+    )
     retrieval_estimated_latency = parse_duration(
         os.getenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "48h")
     )
@@ -655,19 +684,28 @@ def load_runtime_config() -> RuntimeConfig:
         archive_multipart_max_age=archive_multipart_max_age,
         archive_multipart_sweep_interval=archive_multipart_sweep_interval,
         retrieval_cache=retrieval_cache,
-        retrieval_cache_new_archive_lease=parse_duration(
-            os.getenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE", "30d")
+        retrieval_cache_new_archive_enabled=_parse_bool(
+            os.getenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED", "true")
         ),
-        retrieval_default_lease=parse_duration(os.getenv("RIVERHOG_RETRIEVAL_DEFAULT_LEASE", "7d")),
-        retrieval_max_lease=parse_duration(os.getenv("RIVERHOG_RETRIEVAL_MAX_LEASE", "30d")),
+        retrieval_cache_new_archive_lease=parse_duration(
+            os.getenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE", "72h")
+        ),
+        retrieval_default_lease=parse_duration(
+            os.getenv("RIVERHOG_RETRIEVAL_DEFAULT_LEASE", "24h")
+        ),
+        retrieval_max_lease=parse_duration(os.getenv("RIVERHOG_RETRIEVAL_MAX_LEASE", "7d")),
+        retrieval_pending_timeout=parse_duration(
+            os.getenv("RIVERHOG_RETRIEVAL_PENDING_TIMEOUT", "72h")
+        ),
+        retrieval_restore_hold=parse_duration(os.getenv("RIVERHOG_RETRIEVAL_RESTORE_HOLD", "24h")),
         retrieval_cache_sweep_interval=parse_duration(
-            os.getenv("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL", "1h")
+            os.getenv("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL", "5m")
         ),
         archive_passphrase=archive_passphrase,
         archive_require_explicit_passphrase=archive_require_explicit_passphrase,
         archive_scrypt_work_factor=archive_scrypt_work_factor,
         archive_upload_sweep_interval=archive_upload_sweep_interval,
-        retrieval_sweep_interval=retrieval_sweep_interval,
+        retrieval_restore_poll_interval=retrieval_restore_poll_interval,
         retrieval_estimated_latency=retrieval_estimated_latency,
         retrieval_tier=retrieval_tier,
         ots_stamp_command=ots_stamp_command,

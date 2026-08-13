@@ -26,6 +26,8 @@ from riverhog_core.catalog_models import (
     CollectionProvenanceJournalRecord,
     CollectionProvenanceLineageEdgeRecord,
     CollectionUploadRecord,
+    RetrievalCacheLeaseRecord,
+    RetrievalCacheObjectRecord,
     TagRecord,
 )
 from riverhog_core.collection_plan import CollectionVolumePolicy
@@ -34,8 +36,10 @@ from riverhog_core.incremental_plan import (
     incremental_volume_planner_checkpoint_bytes,
     parse_incremental_volume_planner_checkpoint,
 )
+from riverhog_core.ports.archive_objects import CompletedObjectReceipt
+from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.proofs import ProofStamper
-from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.runtime_config import RetrievalCacheConfig, RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.throughput import ArchiveThroughputTuning, log_transfer_timing
@@ -76,6 +80,32 @@ class _FailOnceProofStamper:
         if self.attempts == 1:
             raise RuntimeError("temporary proof service failure")
         return FixtureProofStamper().stamp(manifest_path)
+
+
+class _MemoryMultipartCache:
+    def __init__(self) -> None:
+        self.multipart = MemoryMultipartStore()
+
+    def multipart_object_store(self, **_: object) -> MemoryMultipartStore:
+        return self.multipart
+
+    def verify_multipart_object(
+        self,
+        *,
+        completed: CompletedObjectReceipt,
+        parts: tuple[object, ...] = (),
+    ) -> RetrievalCacheReceipt:
+        assert parts
+        content = self.multipart.objects[completed.object_path][0]
+        assert len(content) == completed.bytes
+        return RetrievalCacheReceipt(
+            object_path=completed.object_path,
+            version_id=completed.version_id,
+            stored_bytes=len(content),
+            stored_sha256=hashlib.sha256(content).hexdigest(),
+            cached_at=completed.completed_at,
+            verified_at=completed.completed_at,
+        )
 
 
 def _service(
@@ -151,6 +181,160 @@ def test_collection_ingress_uses_the_configured_source_read_chunk(
     assert raw_uploader._source_read_chunk_bytes == 256 * 1024
     assert pack_uploader._timing_observer is log_transfer_timing
     assert raw_uploader._timing_observer is log_transfer_timing
+
+
+def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_lease(
+    tmp_path: Path,
+) -> None:
+    database_url = sqlite_url(tmp_path / "catalog.sqlite3")
+    baseline = RuntimeConfig(database_url=database_url)
+    archive = replace(
+        baseline.archive_store("archive"),
+        backend="aws",
+        storage_class="DEEP_ARCHIVE",
+        read_mode="restore_required",
+    )
+    config = RuntimeConfig(
+        database_url=database_url,
+        archive_passphrase="test archive secret",
+        archive_scrypt_work_factor=1,
+        archive_stores={"archive": archive},
+        retrieval_cache=RetrievalCacheConfig(
+            endpoint_url="https://cache.invalid",
+            region="us-east-1",
+            bucket="cache",
+            access_key_id="fixture",
+            secret_access_key="fixture",
+        ),
+    )
+    initialize_db(database_url)
+    with session_scope(make_session_factory(database_url)) as session:
+        session.add(
+            TagRecord(
+                id="docs",
+                created_by_app="fixture",
+                created_at="2026-08-08T00:00:00.000000Z",
+            )
+        )
+    archive_multipart = MemoryMultipartStore()
+    cache = _MemoryMultipartCache()
+    binding = replace(
+        archive_store_binding(MemoryArchiveStore()),
+        multipart_objects=archive_multipart,
+        immutable_objects=MemoryImmutableStore(),
+        object_ranges=_UnusedRangeStore(),
+    )
+    service = SqlAlchemyCollectionUploadService(
+        config,
+        ArchiveStoreRegistry({"archive": binding}),
+        proof_stamper=FixtureProofStamper(),
+        policy=CollectionVolumePolicy(
+            pack_source_bytes=16 * 1024 * 1024,
+            pack_files=100,
+            pack_member_bytes=8 * 1024 * 1024,
+            pack_part_plaintext_bytes=5 * 1024 * 1024,
+            raw_volume_plaintext_bytes=10 * 1024 * 1024,
+            raw_part_plaintext_bytes=5 * 1024 * 1024,
+        ),
+        retrieval_cache=cache,  # type: ignore[arg-type]
+    )
+    content = b"plaintext relinquished by the client"
+    sha256 = hashlib.sha256(content).hexdigest()
+    opened = service.create_or_resume(
+        idempotency_key="deep-cache-upload",
+        tags=("docs",),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture",
+    )
+    collection_id = int(opened["collection_id"])
+    service.register_files(
+        collection_id,
+        ({"path": "document.txt", "bytes": len(content), "sha256": sha256},),
+    )
+    service.complete(
+        collection_id,
+        files_total=1,
+        content_etag=collection_content_etag((("document.txt", len(content), sha256),)),
+    )
+    volume = service.list_volumes(collection_id)["volumes"][0]
+    unit = volume["units"][0]
+    service.upload_unit(
+        collection_id,
+        str(volume["volume_id"]),
+        int(unit["unit"]),
+        plan_sha256=str(volume["plan_sha256"]),
+        content=content,
+    )
+    assert service.process_due_finalizations() == 1
+
+    with session_scope(make_session_factory(database_url)) as session:
+        cached = session.get(
+            RetrievalCacheObjectRecord,
+            ("archive", collection_id, str(volume["volume_id"])),
+        )
+        lease = session.get(
+            RetrievalCacheLeaseRecord,
+            ("new-archive", "archive", collection_id, str(volume["volume_id"])),
+        )
+        assert cached is not None
+        assert lease is not None
+        archive_object = session.get(
+            CollectionArchiveObjectRecord,
+            (collection_id, "archive", str(volume["volume_id"])),
+        )
+        assert archive_object is not None
+        archive_ciphertext = archive_multipart.objects[archive_object.object_path][0]
+        cache_ciphertext = cache.multipart.objects[cached.object_path][0]
+        assert cache_ciphertext == archive_ciphertext
+        assert cache_ciphertext != content
+        assert cached.stored_sha256 == hashlib.sha256(cache_ciphertext).hexdigest()
+
+
+def test_restore_required_ingress_uses_archive_only_when_new_archive_cache_is_disabled(
+    tmp_path: Path,
+) -> None:
+    database_url = sqlite_url(tmp_path / "catalog.sqlite3")
+    baseline = RuntimeConfig(database_url=database_url)
+    archive = replace(
+        baseline.archive_store("archive"),
+        backend="aws",
+        read_mode="restore_required",
+    )
+    config = RuntimeConfig(
+        database_url=database_url,
+        archive_stores={"archive": archive},
+        retrieval_cache=RetrievalCacheConfig(
+            endpoint_url="https://cache.invalid",
+            region="us-east-1",
+            bucket="cache",
+            access_key_id="fixture",
+            secret_access_key="fixture",
+        ),
+        retrieval_cache_new_archive_enabled=False,
+    )
+    archive_multipart = MemoryMultipartStore()
+    binding = replace(
+        archive_store_binding(MemoryArchiveStore()),
+        multipart_objects=archive_multipart,
+    )
+    service = SqlAlchemyCollectionUploadService(
+        config,
+        ArchiveStoreRegistry({"archive": binding}),
+        proof_stamper=FixtureProofStamper(),
+        retrieval_cache=_MemoryMultipartCache(),  # type: ignore[arg-type]
+    )
+
+    selected = service._volume_object_store(
+        store_name="archive",
+        collection_id=42,
+        object_id="pack-000000000000",
+    )
+
+    assert selected is archive_multipart
 
 
 def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(

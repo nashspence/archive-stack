@@ -203,6 +203,18 @@ def test_compose_services_publish_every_static_runtime_setting() -> None:
         assert runtime_names <= set(compose["services"][service]["environment"])
 
 
+def test_bundled_garage_is_development_only_and_not_an_application_dependency() -> None:
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+
+    assert compose["services"]["garage"]["profiles"] == ["development"]
+    assert "garage" not in compose["services"]["app"]["depends_on"]
+
+    bootstrap = (REPO_ROOT / "scripts" / "bootstrap_garage.sh").read_text(encoding="utf-8")
+    smoke = (REPO_ROOT / "scripts" / "test_compose_smoke.sh").read_text(encoding="utf-8")
+    assert "export COMPOSE_PROFILES=development" in bootstrap
+    assert "export COMPOSE_PROFILES=development" in smoke
+
+
 def test_compose_host_interpolation_is_complete_without_an_env_file() -> None:
     expressions = re.findall(
         r"(?<!\$)\$\{([^}]+)\}",
@@ -292,10 +304,14 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_AGE_SESSION_DERIVATION_CONCURRENCY",
         "RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL",
         "RIVERHOG_RETRIEVAL_CACHE_BUCKET",
+        "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE",
         "RIVERHOG_RETRIEVAL_DEFAULT_LEASE",
         "RIVERHOG_RETRIEVAL_MAX_LEASE",
-        "RIVERHOG_RETRIEVAL_SWEEP_INTERVAL",
+        "RIVERHOG_RETRIEVAL_PENDING_TIMEOUT",
+        "RIVERHOG_RETRIEVAL_RESTORE_HOLD",
+        "RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL",
+        "RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL",
         "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY",
         "RIVERHOG_RETRIEVAL_TIER",
         "RIVERHOG_RETRIEVAL_REQUEST_CONCURRENCY",

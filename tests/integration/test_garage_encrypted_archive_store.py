@@ -12,8 +12,12 @@ from riverhog_core.archive_formats import (
     RAW_VOLUME_STORAGE_FORMAT,
     ROOT_MANIFEST_STORAGE_FORMAT,
 )
+from riverhog_core.ports.archive_objects import MultipartPartReceipt
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
-from riverhog_core.runtime_config import load_runtime_config
+from riverhog_core.runtime_config import RetrievalCacheConfig, load_runtime_config
+from riverhog_core.stores.mirrored_archive_multipart_object_store import (
+    MirroredArchiveMultipartObjectStore,
+)
 from riverhog_core.stores.s3_archive_multipart_object_store import S3ArchiveMultipartObjectStore
 from riverhog_core.stores.s3_archive_object_range_store import S3ArchiveObjectRangeStore
 from riverhog_core.stores.s3_archive_store import (
@@ -22,6 +26,7 @@ from riverhog_core.stores.s3_archive_store import (
 )
 from riverhog_core.stores.s3_client import create_archive_s3_client
 from riverhog_core.stores.s3_immutable_archive_object_store import S3ImmutableArchiveObjectStore
+from riverhog_core.stores.s3_retrieval_cache import S3RetrievalCache
 
 pytestmark = pytest.mark.integration
 
@@ -50,9 +55,9 @@ def test_canonical_archive_adapters_against_garage() -> None:
 
     prefix = f"garage-archive-ingress-test/{uuid.uuid4().hex}"
     archive_prefix = f"{prefix}/archives/opaque"
-    passphrase = os.environ.get(
-        "RIVERHOG_ARCHIVE_PASSPHRASE",
-        "garage archive ingress integration passphrase",
+    passphrase = (
+        os.environ.get("RIVERHOG_ARCHIVE_PASSPHRASE", "").strip()
+        or "garage archive ingress integration passphrase"
     )
     base = load_runtime_config()
     store_config = replace(
@@ -65,6 +70,16 @@ def test_canonical_archive_adapters_against_garage() -> None:
         archive_stores={store_config.name: store_config},
         archive_passphrase=passphrase,
         archive_scrypt_work_factor=12,
+        retrieval_cache=RetrievalCacheConfig(
+            endpoint_url=store_config.endpoint_url,
+            region=store_config.region,
+            bucket=store_config.bucket,
+            access_key_id=store_config.access_key_id,
+            secret_access_key=store_config.secret_access_key,
+            force_path_style=store_config.force_path_style,
+            prefix=f"{prefix}/retrieval-cache",
+            session_token=store_config.session_token,
+        ),
     )
     client = create_archive_s3_client(config, store_config)
     client.head_bucket(Bucket=store_config.bucket)
@@ -72,6 +87,7 @@ def test_canonical_archive_adapters_against_garage() -> None:
     immutable = S3ImmutableArchiveObjectStore(config, store_config)
     ranges = S3ArchiveObjectRangeStore(config, store_config)
     archive = S3ArchiveStore(config, store_config)
+    cache = S3RetrievalCache(config)
 
     plaintext = b"canonical direct-final Garage archive volume"
     ciphertext = encrypt_age_scrypt(
@@ -104,6 +120,63 @@ def test_canonical_archive_adapters_against_garage() -> None:
             expected_metadata=metadata,
         )
         assert completed.object_path == volume_path
+
+        mirrored_path = f"{archive_prefix}/volumes/segment-000000000001.bin.age"
+        mirrored = MirroredArchiveMultipartObjectStore(
+            archive=multipart,
+            cache=cache,
+            source_store=store_config.name,
+            collection_id=1,
+            object_id="segment-000000000001",
+        )
+        mirrored_upload = mirrored.create_multipart_upload(
+            object_path=mirrored_path,
+            content_type="application/vnd.riverhog.raw-volume+age",
+            metadata=metadata,
+        )
+        mirrored_part = mirrored.upload_part(
+            upload=mirrored_upload,
+            number=1,
+            content=ciphertext,
+        )
+        mirrored_completed = mirrored.complete_multipart_upload(
+            upload=mirrored_upload,
+            parts=(
+                MultipartPartReceipt(
+                    number=mirrored_part.number,
+                    etag=mirrored_part.etag,
+                    bytes=mirrored_part.bytes,
+                    sha256=stored_sha256,
+                ),
+            ),
+            expected_bytes=len(ciphertext),
+            expected_metadata=metadata,
+        )
+        cache_receipt = mirrored_completed.retrieval_cache
+        assert cache_receipt is not None
+        assert cache_receipt.stored_sha256 == stored_sha256
+        assert (
+            b"".join(
+                cache.iter_object(
+                    object_path=cache_receipt.object_path,
+                    version_id=cache_receipt.version_id,
+                    expected_bytes=cache_receipt.stored_bytes,
+                    expected_sha256=cache_receipt.stored_sha256,
+                )
+            )
+            == ciphertext
+        )
+        assert (
+            b"".join(
+                ranges.iter_object_range(
+                    object_path=mirrored_path,
+                    version_id=mirrored_completed.version_id,
+                    offset=0,
+                    size=len(ciphertext),
+                )
+            )
+            == ciphertext
+        )
 
         manifest_plaintext = b'{"schema":"collection-archive-manifest/v1"}'
         manifest_sha256 = hashlib.sha256(manifest_plaintext).hexdigest()

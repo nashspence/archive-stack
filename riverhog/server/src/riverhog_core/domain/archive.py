@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from riverhog_core.domain.retrieval_cache import RetrievalCacheReceipt
+
 
 @dataclass(frozen=True, slots=True)
 class ArchiveFile:
@@ -115,6 +117,7 @@ class SealedPackVolume:
     parts: tuple[StoredPartReceipt, ...]
     version_id: str | None
     completed_at: str
+    retrieval_cache: RetrievalCacheReceipt | None = None
 
     @property
     def stored_bytes(self) -> int:
@@ -144,6 +147,7 @@ class SealedRawVolume:
     parts: tuple[StoredPartReceipt, ...]
     version_id: str | None
     completed_at: str
+    retrieval_cache: RetrievalCacheReceipt | None = None
 
     @property
     def stored_bytes(self) -> int:

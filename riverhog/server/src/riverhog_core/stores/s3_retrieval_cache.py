@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import time
 from collections.abc import Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from datetime import UTC, datetime
 from typing import Any, cast
 
-from time_formats import utc_timestamp_now
+from botocore.exceptions import ClientError
+from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
 
+from riverhog_core.ports.archive_objects import (
+    ArchiveObjectIdentityConflict,
+    CompletedObjectReceipt,
+    MultipartPartReceipt,
+    MultipartUpload,
+)
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.s3_support import create_retrieval_cache_s3_client
@@ -47,6 +56,141 @@ class S3RetrievalCache:
         digest = hashlib.sha256(identity).hexdigest()
         parts = [part for part in (self._cache.prefix, "objects", digest[:2], digest) if part]
         return "/".join(parts)
+
+    def abort_incomplete_multipart_uploads(
+        self,
+        *,
+        initiated_before: datetime,
+    ) -> int:
+        if initiated_before.tzinfo is None:
+            raise ValueError("retrieval cache multipart cutoff must be timezone-aware")
+        cutoff = initiated_before.astimezone(UTC)
+        object_root = "/".join(part for part in (self._cache.prefix, "objects") if part)
+        request: dict[str, Any] = {
+            "Bucket": self._cache.bucket,
+            "Prefix": f"{object_root}/",
+        }
+        aborted = 0
+        while True:
+            response = cast(dict[str, Any], self._client.list_multipart_uploads(**request))
+            for upload in response.get("Uploads") or ():
+                if not isinstance(upload, dict):
+                    continue
+                object_path = str(upload.get("Key", ""))
+                upload_id = str(upload.get("UploadId", ""))
+                initiated_at = upload.get("Initiated")
+                if (
+                    not object_path.startswith(f"{object_root}/")
+                    or not upload_id
+                    or not isinstance(initiated_at, datetime)
+                    or initiated_at.tzinfo is None
+                    or initiated_at.astimezone(UTC) >= cutoff
+                ):
+                    continue
+                self._client.abort_multipart_upload(
+                    Bucket=self._cache.bucket,
+                    Key=object_path,
+                    UploadId=upload_id,
+                )
+                aborted += 1
+            if not response.get("IsTruncated"):
+                return aborted
+            next_key = str(response.get("NextKeyMarker", ""))
+            next_upload = str(response.get("NextUploadIdMarker", ""))
+            if not next_key or not next_upload:
+                raise RuntimeError(
+                    "retrieval cache multipart listing omitted its pagination markers"
+                )
+            request["KeyMarker"] = next_key
+            request["UploadIdMarker"] = next_upload
+
+    def multipart_object_store(
+        self,
+        *,
+        source_store: str,
+        collection_id: int,
+        object_id: str,
+    ) -> _S3RetrievalCacheMultipartObjectStore:
+        return _S3RetrievalCacheMultipartObjectStore(
+            client=self._client,
+            bucket=self._cache.bucket,
+            object_path=self._object_path(source_store, collection_id, object_id),
+            metadata={
+                "riverhog-cache-format": "encrypted-archive-object-v1",
+                "riverhog-source-store": source_store,
+                "riverhog-source-identity": hashlib.sha256(
+                    f"{collection_id}\0{object_id}".encode()
+                ).hexdigest(),
+            },
+        )
+
+    def verify_multipart_object(
+        self,
+        *,
+        completed: CompletedObjectReceipt,
+        parts: tuple[MultipartPartReceipt, ...] = (),
+    ) -> RetrievalCacheReceipt:
+        request: dict[str, object] = {
+            "Bucket": self._cache.bucket,
+            "Key": completed.object_path,
+        }
+        if completed.version_id is not None:
+            request["VersionId"] = completed.version_id
+        response = self._client.get_object(**request)
+        body = response["Body"]
+        digest = hashlib.sha256()
+        size = 0
+        expected_parts = tuple(sorted(parts, key=lambda current: current.number))
+        if expected_parts and (
+            tuple(current.number for current in expected_parts)
+            != tuple(range(1, len(expected_parts) + 1))
+            or sum(current.bytes for current in expected_parts) != completed.bytes
+            or any(
+                current.sha256 is None or len(current.sha256) != 64 for current in expected_parts
+            )
+        ):
+            raise ValueError("retrieval cache multipart integrity receipts are invalid")
+        part_index = 0
+        part_size = 0
+        part_digest = hashlib.sha256()
+        try:
+            for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+                remaining = memoryview(chunk)
+                while remaining and part_index < len(expected_parts):
+                    expected = expected_parts[part_index]
+                    accepted = min(len(remaining), expected.bytes - part_size)
+                    part_digest.update(remaining[:accepted])
+                    part_size += accepted
+                    remaining = remaining[accepted:]
+                    if part_size == expected.bytes:
+                        if expected.sha256 is None or part_digest.hexdigest() != expected.sha256:
+                            raise RuntimeError(
+                                "retrieval cache multipart part failed integrity verification"
+                            )
+                        part_index += 1
+                        part_size = 0
+                        part_digest = hashlib.sha256()
+                if remaining and expected_parts:
+                    raise RuntimeError("retrieval cache object exceeds its multipart receipts")
+        finally:
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
+        if size != completed.bytes or (
+            expected_parts and (part_index != len(expected_parts) or part_size != 0)
+        ):
+            raise RuntimeError("retrieval cache multipart object length mismatch")
+        verified_at = utc_timestamp_now()
+        return RetrievalCacheReceipt(
+            object_path=completed.object_path,
+            version_id=completed.version_id,
+            stored_bytes=size,
+            stored_sha256=digest.hexdigest(),
+            cached_at=completed.completed_at,
+            verified_at=verified_at,
+        )
 
     def put(
         self,
@@ -409,3 +553,223 @@ class S3RetrievalCache:
         if version_id is not None:
             request["VersionId"] = version_id
         self._client.delete_object(**request)
+
+
+class _S3RetrievalCacheMultipartObjectStore:
+    """Low-level multipart writer for one deterministic cache object identity."""
+
+    def __init__(
+        self,
+        *,
+        client: Any,
+        bucket: str,
+        object_path: str,
+        metadata: dict[str, str],
+    ) -> None:
+        self._client = client
+        self._bucket = bucket
+        self._object_path = object_path
+        self._metadata = _normalized_metadata(metadata)
+
+    def create_multipart_upload(
+        self,
+        *,
+        object_path: str,
+        content_type: str,
+        metadata: dict[str, str],
+    ) -> MultipartUpload:
+        _ = object_path, metadata
+        if not content_type:
+            raise ValueError("retrieval cache multipart content type is required")
+        response = cast(
+            dict[str, Any],
+            self._client.create_multipart_upload(
+                Bucket=self._bucket,
+                Key=self._object_path,
+                ContentType=content_type,
+                Metadata=self._cache_metadata(metadata),
+            ),
+        )
+        upload_id = str(response.get("UploadId", ""))
+        if not upload_id:
+            raise RuntimeError("retrieval cache did not return a multipart upload id")
+        return MultipartUpload(self._object_path, upload_id)
+
+    def upload_part(
+        self,
+        *,
+        upload: MultipartUpload,
+        number: int,
+        content: bytes,
+    ) -> MultipartPartReceipt:
+        self._require_path(upload.object_path)
+        if number < 1 or number > 10_000:
+            raise ValueError("retrieval cache multipart part number is outside 1..10000")
+        if not content:
+            raise ValueError("retrieval cache multipart part must not be empty")
+        response = cast(
+            dict[str, Any],
+            self._client.upload_part(
+                Bucket=self._bucket,
+                Key=self._object_path,
+                UploadId=upload.upload_id,
+                PartNumber=number,
+                Body=content,
+                ContentLength=len(content),
+            ),
+        )
+        etag = str(response.get("ETag", ""))
+        if not etag:
+            raise RuntimeError("retrieval cache did not return a multipart part ETag")
+        return MultipartPartReceipt(number, etag, len(content))
+
+    def list_parts(self, *, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
+        self._require_path(upload.object_path)
+        request: dict[str, Any] = {
+            "Bucket": self._bucket,
+            "Key": self._object_path,
+            "UploadId": upload.upload_id,
+        }
+        parts: list[MultipartPartReceipt] = []
+        while True:
+            response = cast(dict[str, Any], self._client.list_parts(**request))
+            parts.extend(
+                MultipartPartReceipt(
+                    number=int(str(current["PartNumber"])),
+                    etag=str(current["ETag"]),
+                    bytes=int(str(current["Size"])),
+                )
+                for current in response.get("Parts") or ()
+                if isinstance(current, dict)
+            )
+            if not response.get("IsTruncated"):
+                break
+            marker = response.get("NextPartNumberMarker")
+            if marker is None:
+                raise RuntimeError("retrieval cache part listing omitted its next marker")
+            request["PartNumberMarker"] = int(str(marker))
+        return tuple(sorted(parts, key=lambda current: current.number))
+
+    def complete_multipart_upload(
+        self,
+        *,
+        upload: MultipartUpload,
+        parts: tuple[MultipartPartReceipt, ...],
+        expected_bytes: int,
+        expected_metadata: dict[str, str],
+    ) -> CompletedObjectReceipt:
+        _ = expected_metadata
+        self._require_path(upload.object_path)
+        if not parts or [part.number for part in parts] != list(range(1, len(parts) + 1)):
+            raise ValueError("retrieval cache multipart parts must be non-empty and contiguous")
+        if expected_bytes != sum(current.bytes for current in parts):
+            raise ValueError("retrieval cache multipart byte count does not match its parts")
+        try:
+            self._client.complete_multipart_upload(
+                Bucket=self._bucket,
+                Key=self._object_path,
+                UploadId=upload.upload_id,
+                MultipartUpload={
+                    "Parts": [
+                        {"PartNumber": current.number, "ETag": current.etag} for current in parts
+                    ]
+                },
+            )
+        except ClientError as exc:
+            status = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if status not in {404, 409} and code not in {"NoSuchUpload", "NotFound"}:
+                raise
+            completed = self.head_completed_object(
+                object_path=self._object_path,
+                expected_metadata=expected_metadata,
+            )
+            if completed is None or completed.bytes != expected_bytes:
+                raise RuntimeError(
+                    "retrieval cache multipart completion could not be reconciled"
+                ) from exc
+            return completed
+        completed = self.head_completed_object(
+            object_path=self._object_path,
+            expected_metadata=expected_metadata,
+        )
+        if completed is None or completed.bytes != expected_bytes:
+            raise RuntimeError("completed retrieval cache object does not match its upload")
+        return completed
+
+    def head_completed_object(
+        self,
+        *,
+        object_path: str,
+        expected_metadata: dict[str, str],
+    ) -> CompletedObjectReceipt | None:
+        _ = object_path
+        try:
+            head = cast(
+                dict[str, Any],
+                self._client.head_object(Bucket=self._bucket, Key=self._object_path),
+            )
+        except ClientError as exc:
+            status = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if status == 404 or code in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise
+        actual = _normalized_metadata(cast(dict[str, Any], head.get("Metadata") or {}))
+        expected = self._cache_metadata(expected_metadata)
+        if any(actual.get(key) != value for key, value in expected.items()):
+            raise ArchiveObjectIdentityConflict(
+                "retrieval cache key already names a different archive identity"
+            )
+        last_modified = head.get("LastModified")
+        completed_at = (
+            format_utc_timestamp(last_modified)
+            if isinstance(last_modified, datetime)
+            else format_utc_timestamp(utc_now())
+        )
+        return CompletedObjectReceipt(
+            object_path=self._object_path,
+            version_id=(str(head["VersionId"]) if head.get("VersionId") is not None else None),
+            etag=str(head["ETag"]) if head.get("ETag") is not None else None,
+            bytes=int(str(head["ContentLength"])),
+            completed_at=completed_at,
+        )
+
+    def abort_multipart_upload(self, *, upload: MultipartUpload) -> None:
+        self._require_path(upload.object_path)
+        try:
+            self._client.abort_multipart_upload(
+                Bucket=self._bucket,
+                Key=self._object_path,
+                UploadId=upload.upload_id,
+            )
+        except ClientError as exc:
+            status = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if status == 404 or code in {"NoSuchUpload", "NotFound"}:
+                return
+            raise
+
+    def _require_path(self, object_path: str) -> None:
+        if object_path != self._object_path:
+            raise ValueError("retrieval cache multipart object path changed")
+
+    def _cache_metadata(self, source_metadata: dict[str, str]) -> dict[str, str]:
+        if not source_metadata:
+            return dict(self._metadata)
+        normalized_source = _normalized_metadata(source_metadata)
+        source_identity = hashlib.sha256(
+            json.dumps(
+                normalized_source,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            **self._metadata,
+            "riverhog-source-metadata-sha256": source_identity,
+        }
+
+
+def _normalized_metadata(value: dict[str, object] | dict[str, str]) -> dict[str, str]:
+    return {str(key).casefold(): str(current) for key, current in value.items()}

@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session, selectinload
 from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
 
 from riverhog_core.app_permissions import COLLECTIONS_CREATE, ApplicationPrincipal
-from riverhog_core.archive_catalog import build_archive_catalog_projection
+from riverhog_core.archive_catalog import ArchiveVolumeProjection, build_archive_catalog_projection
 from riverhog_core.archive_formats import ROOT_PROOF_STORAGE_FORMAT
 from riverhog_core.archive_manifest import validate_collection_archive_plan
 from riverhog_core.archive_provenance import (
@@ -61,6 +61,8 @@ from riverhog_core.catalog_models import (
     CollectionUploadProvenanceJournalRecord,
     CollectionUploadRecord,
     CollectionUploadTagRecord,
+    RetrievalCacheLeaseRecord,
+    RetrievalCacheObjectRecord,
     TagRecord,
 )
 from riverhog_core.collection_access import require_collection_create_access
@@ -87,6 +89,8 @@ from riverhog_core.pack_volume import (
     pack_volume_plan_bytes,
     parse_pack_volume_plan,
 )
+from riverhog_core.ports.archive_objects import ArchiveMultipartObjectStore
+from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.proofs import ProofStamper
 from riverhog_core.provenance_projection import (
     ProvenanceJournalProjection,
@@ -95,10 +99,17 @@ from riverhog_core.provenance_projection import (
 from riverhog_core.raw_upload import RawUploadCheckpoint, RawVolumeUploader
 from riverhog_core.raw_verification import verify_raw_file_from_part_manifest
 from riverhog_core.raw_volume import parse_raw_volume_plan, raw_volume_plan_bytes
+from riverhog_core.retrieval_cache_receipts import (
+    parse_retrieval_cache_receipt,
+    retrieval_cache_receipt_payload,
+)
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
+)
+from riverhog_core.stores.mirrored_archive_multipart_object_store import (
+    MirroredArchiveMultipartObjectStore,
 )
 from riverhog_core.stores.sqlalchemy_archive_upload_checkpoints import (
     SqlAlchemyArchiveUploadCheckpointStore,
@@ -136,6 +147,7 @@ class SqlAlchemyCollectionUploadService:
         archive_stores: ArchiveStoreRegistry,
         *,
         proof_stamper: ProofStamper,
+        retrieval_cache: RetrievalCache | None = None,
         policy: CollectionVolumePolicy | None = None,
         session_factory: SessionFactory | None = None,
         throughput_tuning: ArchiveThroughputTuning | None = None,
@@ -143,6 +155,7 @@ class SqlAlchemyCollectionUploadService:
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
+        self._retrieval_cache = retrieval_cache
         self._proof_stamper = proof_stamper
         self._policy = policy or CollectionVolumePolicy.from_env(os.environ)
         self._session_factory = session_factory or make_session_factory(config.database_url)
@@ -636,7 +649,6 @@ class SqlAlchemyCollectionUploadService:
             plan_json = record.plan_json
             unit_plaintext_bytes = record.unit_plaintext_bytes
 
-        store = self._archive_stores.require(store_name)
         receipt: SealedPackVolume | SealedRawVolume | None
         try:
             if kind == "pack":
@@ -644,7 +656,13 @@ class SqlAlchemyCollectionUploadService:
                 descriptor = pack_unit_descriptors(pack_plan)[unit]
                 if len(content) != descriptor.payload_bytes:
                     raise ValueError("pack upload unit payload length mismatch")
-                pack_uploader = self._pack_uploader(store.multipart_objects)
+                pack_uploader = self._pack_uploader(
+                    self._volume_object_store(
+                        store_name=store_name,
+                        collection_id=normalized_id,
+                        object_id=volume_id,
+                    )
+                )
                 pack_checkpoint = pack_uploader.open(
                     collection_id=normalized_id,
                     plan=pack_plan,
@@ -676,7 +694,13 @@ class SqlAlchemyCollectionUploadService:
                 )
                 if len(content) != expected_bytes:
                     raise ValueError("raw upload unit payload length mismatch")
-                raw_uploader = self._raw_uploader(store.multipart_objects)
+                raw_uploader = self._raw_uploader(
+                    self._volume_object_store(
+                        store_name=store_name,
+                        collection_id=normalized_id,
+                        object_id=volume_id,
+                    )
+                )
                 raw_checkpoint = raw_uploader.open(
                     collection_id=normalized_id,
                     plan=raw_plan,
@@ -858,18 +882,29 @@ class SqlAlchemyCollectionUploadService:
                 for current in upload.archive_objects
                 if current.checkpoint_json
             ]
-        store = self._archive_stores.require(store_name)
         for kind, checkpoint_json in checkpoints:
             if checkpoint_json is None:
                 continue
             if kind == "pack":
                 pack_checkpoint = PackUploadCheckpoint.from_json(checkpoint_json)
                 if pack_checkpoint.completed is None:
-                    self._pack_uploader(store.multipart_objects).abort(pack_checkpoint)
+                    self._pack_uploader(
+                        self._volume_object_store(
+                            store_name=store_name,
+                            collection_id=normalized_id,
+                            object_id=pack_checkpoint.volume_id,
+                        )
+                    ).abort(pack_checkpoint)
             else:
                 raw_checkpoint = RawUploadCheckpoint.from_json(checkpoint_json)
                 if raw_checkpoint.completed is None:
-                    self._raw_uploader(store.multipart_objects).abort(raw_checkpoint)
+                    self._raw_uploader(
+                        self._volume_object_store(
+                            store_name=store_name,
+                            collection_id=normalized_id,
+                            object_id=raw_checkpoint.volume_id,
+                        )
+                    ).abort(raw_checkpoint)
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, normalized_id)
             if upload is not None:
@@ -880,9 +915,12 @@ class SqlAlchemyCollectionUploadService:
             )
         return payload
 
-    def _pack_uploader(self, object_store: object) -> PackVolumeUploader:
+    def _pack_uploader(
+        self,
+        object_store: ArchiveMultipartObjectStore,
+    ) -> PackVolumeUploader:
         return PackVolumeUploader(
-            object_store=object_store,  # type: ignore[arg-type]
+            object_store=object_store,
             checkpoint_store=self._checkpoints,
             passphrase=self._config.archive_passphrase,
             scrypt_log_n=self._config.archive_scrypt_work_factor,
@@ -892,9 +930,34 @@ class SqlAlchemyCollectionUploadService:
             session_cache=self._age_sessions,
         )
 
-    def _raw_uploader(self, object_store: object) -> RawVolumeUploader:
+    def _volume_object_store(
+        self,
+        *,
+        store_name: str,
+        collection_id: int,
+        object_id: str,
+    ) -> ArchiveMultipartObjectStore:
+        archive = self._archive_stores.require(store_name).multipart_objects
+        if (
+            not self._config.retrieval_cache_new_archive_enabled
+            or self._retrieval_cache is None
+            or self._config.archive_store(store_name).read_mode != "restore_required"
+        ):
+            return archive
+        return MirroredArchiveMultipartObjectStore(
+            archive=archive,
+            cache=self._retrieval_cache,
+            source_store=store_name,
+            collection_id=collection_id,
+            object_id=object_id,
+        )
+
+    def _raw_uploader(
+        self,
+        object_store: ArchiveMultipartObjectStore,
+    ) -> RawVolumeUploader:
         return RawVolumeUploader(
-            object_store=object_store,  # type: ignore[arg-type]
+            object_store=object_store,
             checkpoint_store=self._checkpoints,
             passphrase=self._config.archive_passphrase,
             scrypt_log_n=self._config.archive_scrypt_work_factor,
@@ -1085,7 +1148,6 @@ class SqlAlchemyCollectionUploadService:
                 for current in upload.archive_objects
                 if current.state == "sealed" and current.sealed_receipt_json is None
             ]
-        store = self._archive_stores.require(store_name)
         for volume_id, kind, plan_json, checkpoint_json in pending:
             if checkpoint_json is None:
                 raise RuntimeError(f"sealed archive volume has no checkpoint: {volume_id}")
@@ -1094,7 +1156,11 @@ class SqlAlchemyCollectionUploadService:
                 if checkpoint.completed is None:
                     raise RuntimeError(f"sealed pack volume is incomplete: {volume_id}")
                 receipt: SealedPackVolume | SealedRawVolume = self._pack_uploader(
-                    store.multipart_objects
+                    self._volume_object_store(
+                        store_name=store_name,
+                        collection_id=collection_id,
+                        object_id=volume_id,
+                    )
                 ).sealed_receipt(
                     plan=parse_pack_volume_plan(plan_json),
                     checkpoint=checkpoint,
@@ -1103,7 +1169,13 @@ class SqlAlchemyCollectionUploadService:
                 raw_checkpoint = RawUploadCheckpoint.from_json(checkpoint_json)
                 if not raw_checkpoint.completed:
                     raise RuntimeError(f"sealed raw volume is incomplete: {volume_id}")
-                receipt = self._raw_uploader(store.multipart_objects).sealed_receipt(raw_checkpoint)
+                receipt = self._raw_uploader(
+                    self._volume_object_store(
+                        store_name=store_name,
+                        collection_id=collection_id,
+                        object_id=volume_id,
+                    )
+                ).sealed_receipt(raw_checkpoint)
             else:
                 raise RuntimeError(f"unsupported archive volume kind: {kind}")
             self._record_sealed_volume(collection_id, receipt)
@@ -1402,7 +1474,17 @@ class SqlAlchemyCollectionUploadService:
             )
             session.add(copy)
             session.flush()
+            cache_receipts: list[tuple[ArchiveVolumeProjection, RetrievalCacheReceipt]] = []
+            cache_required = (
+                self._config.retrieval_cache_new_archive_enabled
+                and self._retrieval_cache is not None
+                and store_config.read_mode == "restore_required"
+            )
             for volume in projection.volumes:
+                if cache_required and volume.retrieval_cache is None:
+                    raise RuntimeError(
+                        "restore-required archive volume is missing its retrieval cache receipt"
+                    )
                 session.add(
                     CollectionArchiveObjectRecord(
                         collection_id=collection_id,
@@ -1426,6 +1508,43 @@ class SqlAlchemyCollectionUploadService:
                         verified_at=now,
                     )
                 )
+                if volume.retrieval_cache is not None:
+                    cache_receipts.append((volume, volume.retrieval_cache))
+            session.flush()
+            cache_expires_at = format_utc_timestamp(
+                utc_now() + self._config.retrieval_cache_new_archive_lease
+            )
+            cache_leases: list[RetrievalCacheLeaseRecord] = []
+            for volume, receipt in cache_receipts:
+                if receipt.stored_bytes != volume.stored_bytes or len(receipt.stored_sha256) != 64:
+                    raise RuntimeError(
+                        "retrieval cache receipt does not match its sealed archive volume"
+                    )
+                session.add(
+                    RetrievalCacheObjectRecord(
+                        source_store=upload.archive_store,
+                        collection_id=collection_id,
+                        object_id=volume.volume_id,
+                        object_path=receipt.object_path,
+                        version_id=receipt.version_id,
+                        stored_bytes=receipt.stored_bytes,
+                        stored_sha256=receipt.stored_sha256,
+                        cached_at=receipt.cached_at,
+                        verified_at=receipt.verified_at,
+                        state="ready",
+                    )
+                )
+                cache_leases.append(
+                    RetrievalCacheLeaseRecord(
+                        owner="new-archive",
+                        source_store=upload.archive_store,
+                        collection_id=collection_id,
+                        object_id=volume.volume_id,
+                        expires_at=cache_expires_at,
+                    )
+                )
+            session.flush()
+            session.add_all(cache_leases)
             artifact_order = len(projection.volumes)
             if sealed_provenance is not None:
                 for current in (*sealed_provenance.bundles, sealed_provenance.index):
@@ -1984,6 +2103,7 @@ def _sealed_volume_json(receipt: SealedPackVolume | SealedRawVolume) -> str:
         "parts": [_part_payload(current) for current in receipt.parts],
         "version_id": receipt.version_id,
         "completed_at": receipt.completed_at,
+        "retrieval_cache": retrieval_cache_receipt_payload(receipt.retrieval_cache),
     }
     if isinstance(receipt, SealedPackVolume):
         common.update(
@@ -2044,6 +2164,7 @@ def _parse_sealed_pack(content: str) -> SealedPackVolume:
         parts=_parse_parts(value["parts"]),
         version_id=str(value["version_id"]) if value["version_id"] is not None else None,
         completed_at=str(value["completed_at"]),
+        retrieval_cache=parse_retrieval_cache_receipt(value.get("retrieval_cache")),
     )
 
 
@@ -2062,6 +2183,7 @@ def _parse_sealed_raw(content: str) -> SealedRawVolume:
         parts=_parse_parts(value["parts"]),
         version_id=str(value["version_id"]) if value["version_id"] is not None else None,
         completed_at=str(value["completed_at"]),
+        retrieval_cache=parse_retrieval_cache_receipt(value.get("retrieval_cache")),
     )
 
 

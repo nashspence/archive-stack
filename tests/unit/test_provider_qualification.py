@@ -420,6 +420,7 @@ def test_checkpoint_is_restartable_tamper_evident_and_emits_bounded_evidence(
     phases = (
         "immediate-qualified",
         "deep-archive-uploaded",
+        "deep-archive-cache-observed",
         "restore-requested",
         "restore-pending",
         "restored",
@@ -815,6 +816,7 @@ def test_runtime_environment_uses_scoped_credentials_and_cloudfront(
 
     assert output.stat().st_mode & 0o777 == 0o600
     assert f'RIVERHOG_COMPOSE_ENV_FILE="{output.resolve()}"' in text
+    assert 'RIVERHOG_PUBLIC_BASE_URL=""' in text
     assert 'RIVERHOG_ARCHIVE_STORES="b2-archive,aws-deep-archive"' in text
     assert 'RIVERHOG_ARCHIVE_WRITE_STORE="b2-archive"' in text
     assert 'RIVERHOG_ARCHIVE_READ_ORDER="aws-deep-archive,b2-archive"' in text
@@ -825,6 +827,8 @@ def test_runtime_environment_uses_scoped_credentials_and_cloudfront(
     assert 'RIVERHOG_ARCHIVE_STORE_AWS_DEEP_ARCHIVE_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES="1TB"' in text
     assert 'RIVERHOG_RETRIEVAL_CACHE_BUCKET="qualification-b2-retrieval-cache"' in text
     assert 'RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY="b2-retrieval-cache-secret"' in text
+    assert 'RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED="true"' in text
+    assert 'RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE="1h"' in text
     assert 'RIVERHOG_ARCHIVE_STORE_B2_ARCHIVE_SECRET_ACCESS_KEY="b2-archive-secret"' in text
     assert f'RIVERHOG_ARCHIVE_STORE_B2_ARCHIVE_PREFIX="{checkpoint.namespace}"' in text
 
@@ -1074,6 +1078,7 @@ def test_operator_advances_across_short_restore_invocations(
             return {
                 "etag": "plan",
                 "lease_seconds": kwargs["lease_seconds"],
+                "requires_restore": True,
                 "objects": [{"source_store": "aws-deep-archive", "read_mode": "restore_required"}],
             }
 
@@ -1097,6 +1102,20 @@ def test_operator_advances_across_short_restore_invocations(
             assert job_id == "job-42"
             return {"state": "completed"}
 
+        def renew_retrieval_job(
+            self,
+            job_id: str,
+            *,
+            lease_seconds: int,
+        ) -> dict[str, object]:
+            assert job_id == "job-42"
+            assert lease_seconds == 3 * 24 * 60 * 60
+            return {
+                "id": job_id,
+                "state": "ready",
+                "files": [{"collection_id": 42, "path": "file.txt"}],
+            }
+
     api = _Api()
 
     @contextmanager
@@ -1112,6 +1131,7 @@ def test_operator_advances_across_short_restore_invocations(
     for name in (
         "_wait_archive_copy",
         "_assert_resourcesync",
+        "_assert_retrieval_cache_surface",
         "_ready_retrieval",
         "_cancel_retrieval",
         "_assert_lifecycle_events",

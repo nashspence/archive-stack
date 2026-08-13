@@ -71,6 +71,7 @@ def test_cache_client_forwards_temporary_session_token(monkeypatch) -> None:  # 
         session_token="cache-session",
     )
     config = RuntimeConfig(
+        s3_max_pool_connections=17,
         archive_write_store="deep",
         archive_read_order=("deep",),
         archive_stores={"deep": archive},
@@ -81,6 +82,9 @@ def test_cache_client_forwards_temporary_session_token(monkeypatch) -> None:  # 
     s3_support.create_retrieval_cache_s3_client(config, cache)
 
     assert boto3.requests[0]["aws_session_token"] == "cache-session"
+    client_config = boto3.requests[0]["config"]
+    assert isinstance(client_config, _Config)
+    assert client_config.kwargs["max_pool_connections"] == config.s3_max_pool_connections == 17
 
 
 def test_tuned_archive_client_forwards_temporary_session_token(monkeypatch) -> None:  # type: ignore[no-untyped-def]

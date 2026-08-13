@@ -152,6 +152,12 @@ class CollectionDeletionService(Protocol):
 
 
 class RetrievalService(Protocol):
+    def abort_incomplete_cache_multipart_uploads(
+        self,
+        *,
+        initiated_before: datetime,
+    ) -> int: ...
+
     def collection_manifest(
         self,
         collection_id: int,
@@ -178,11 +184,43 @@ class RetrievalService(Protocol):
         limit: int = 1000,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
+    def cache_status(
+        self,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> JsonObject: ...
+    def list_cache_objects(
+        self,
+        *,
+        page: int,
+        per_page: int,
+        q: str | None,
+        tag: str | None,
+        collection_id: int | None = None,
+        source_store: str | None = None,
+        state: str | None = None,
+        protection: str | None = None,
+        expires_before: str | None = None,
+        expires_after: str | None = None,
+        sort: str,
+        order: str,
+        all_items: bool = False,
+        principal: ApplicationPrincipal | None = None,
+    ) -> JsonObject: ...
+    def get_cache_object(
+        self,
+        *,
+        collection_id: int,
+        source_store: str,
+        object_id: str,
+        principal: ApplicationPrincipal | None = None,
+    ) -> JsonObject: ...
     def plan(
         self,
         files: Sequence[tuple[int, str]],
         *,
         lease: timedelta | None = None,
+        restore_policy: str = "allow",
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
     def create(
@@ -193,10 +231,19 @@ class RetrievalService(Protocol):
         files: Sequence[tuple[int, str]],
         plan_etag: str,
         lease: timedelta | None = None,
+        restore_policy: str = "allow",
         event_context: dict[str, object] | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
     def get(self, *, app: str, job_id: str, key_id: str | None = None) -> JsonObject: ...
+    def renew(
+        self,
+        *,
+        app: str,
+        job_id: str,
+        lease: timedelta,
+        key_id: str | None = None,
+    ) -> JsonObject: ...
     def acknowledge(
         self,
         *,

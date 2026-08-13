@@ -25,6 +25,29 @@ class RecordingClient(ApiClient):
         return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, path))
 
 
+def test_client_host_header_environment_reaches_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RIVERHOG_HOST_HEADER", "archive.internal")
+    client = ApiClient(base_url="https://example.invalid")
+    request_client = client._make_client(timeout_seconds=client.timeout_seconds)
+    try:
+        assert client.host_header == "archive.internal"
+        assert request_client.headers["host"] == "archive.internal"
+    finally:
+        request_client.close()
+        client.close()
+
+
+def test_client_download_timeout_environment_reaches_download_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_DOWNLOAD_TIMEOUT_SECONDS", "47")
+    client = ApiClient(base_url="https://example.invalid")
+    try:
+        assert client._persistent_download_client().timeout.read == 47
+    finally:
+        client.close()
+
+
 @pytest.mark.parametrize(
     ("code", "error_type", "status"),
     [
@@ -174,6 +197,7 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
             }
         ],
         "lease_seconds": 3600,
+        "restore_policy": "allow",
     }
     assert client.calls == [
         ("POST", "/v1/retrieval-plans", {"json": payload}),
@@ -181,6 +205,56 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
             "POST",
             "/v1/retrieval-jobs",
             {"json": payload, "headers": {"If-Match": '"' + "a" * 64 + '"'}},
+        ),
+    ]
+
+
+def test_retrieval_cache_reads_use_list_and_composite_identity_routes() -> None:
+    client = RecordingClient()
+
+    client.retrieval_cache_status()
+    client.list_retrieval_cache_objects(
+        q="pack",
+        tag="docs",
+        collection_id=42,
+        source_store="deep",
+        state="ready",
+        protection="protected",
+        expires_before="2026-08-15T00:00:00Z",
+        expires_after="2026-08-14T00:00:00Z",
+        sort="stored_bytes",
+        order="asc",
+        all_items=True,
+    )
+    client.get_retrieval_cache_object(42, "deep", "pack-000000000000")
+
+    assert client.calls == [
+        ("GET", "/v1/retrieval-cache", {}),
+        (
+            "GET",
+            "/v1/retrieval-cache/objects",
+            {
+                "params": {
+                    "page": 1,
+                    "per_page": 25,
+                    "sort": "stored_bytes",
+                    "order": "asc",
+                    "q": "pack",
+                    "tag": "docs",
+                    "collection_id": 42,
+                    "source_store": "deep",
+                    "state": "ready",
+                    "protection": "protected",
+                    "expires_before": "2026-08-15T00:00:00Z",
+                    "expires_after": "2026-08-14T00:00:00Z",
+                    "all": True,
+                }
+            },
+        ),
+        (
+            "GET",
+            "/v1/retrieval-cache/objects/42/deep/pack-000000000000",
+            {},
         ),
     ]
 

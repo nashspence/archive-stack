@@ -17,9 +17,16 @@ from riverhog_core.catalog_models import (
     ArchiveCopyObjectUploadRecord,
     CollectionArchiveCopyRecord,
     CollectionProofMaturationRecord,
+    RetrievalCacheLeaseRecord,
+    RetrievalCacheObjectRecord,
 )
-from riverhog_core.ports.archive_objects import MultipartPartReceipt, MultipartUpload
+from riverhog_core.ports.archive_objects import (
+    CompletedObjectReceipt,
+    MultipartPartReceipt,
+    MultipartUpload,
+)
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveReadStatus
+from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RetrievalCacheConfig, RuntimeConfig
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
@@ -41,6 +48,31 @@ INITIATOR = ApplicationPrincipal(
     key_id="operator-key",
     access=frozenset(),
 )
+
+
+class _ArchiveCopyCache:
+    def __init__(self) -> None:
+        self.store = MemoryArchiveStore(backend="b2")
+
+    def multipart_object_store(self, **_: object) -> MemoryArchiveStore:
+        return self.store
+
+    def verify_multipart_object(
+        self,
+        *,
+        completed: CompletedObjectReceipt,
+        parts: tuple[MultipartPartReceipt, ...] = (),
+    ) -> RetrievalCacheReceipt:
+        assert parts
+        content = self.store.objects[completed.object_path]
+        return RetrievalCacheReceipt(
+            object_path=completed.object_path,
+            version_id=completed.version_id,
+            stored_bytes=len(content),
+            stored_sha256=hashlib.sha256(content).hexdigest(),
+            cached_at=completed.completed_at,
+            verified_at=completed.completed_at,
+        )
 
 
 def _multipart_archive(files: dict[str, bytes], *, parts: int = 4) -> FixtureArchive:
@@ -321,6 +353,7 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         storage_class="DEEP_ARCHIVE",
         read_mode="restore_required",
     )
+    cache = _ArchiveCopyCache()
     service = SqlAlchemyArchiveCopyService(
         config,
         ArchiveStoreRegistry(
@@ -329,6 +362,7 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
                 "deep": archive_store_binding(destination),
             }
         ),
+        retrieval_cache=cache,  # type: ignore[arg-type]
     )
     service.create_or_resume(
         COLLECTION_ID,
@@ -345,11 +379,72 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         assert copy is not None
         assert copy.storage_class == "DEEP_ARCHIVE"
         assert checkpoints == []
+        cached = session.get(
+            RetrievalCacheObjectRecord,
+            ("deep", COLLECTION_ID, "pack-000000000000"),
+        )
+        lease = session.get(
+            RetrievalCacheLeaseRecord,
+            ("new-archive", "deep", COLLECTION_ID, "pack-000000000000"),
+        )
+        assert cached is not None
+        assert lease is not None
     assert set(destination.objects) == {
         "archives/aws/new-copy/volumes/pack-000000000000.tar.age",
         "archives/aws/new-copy/manifest.json.age",
         "archives/aws/new-copy/manifest.json.ots.age",
     }
+    pack_path = "archives/aws/new-copy/volumes/pack-000000000000.tar.age"
+    assert cache.store.objects[pack_path] == destination.objects[pack_path]
+
+
+def test_restore_required_copy_uses_archive_only_when_new_archive_cache_is_disabled(
+    tmp_path: Path,
+) -> None:
+    config, archive = seed_archive_copy(
+        tmp_path / "catalog.sqlite3",
+        FILES,
+        store="b2",
+        backend="b2",
+    )
+    deep = replace(
+        config.archive_store("b2"),
+        name="deep",
+        backend="aws",
+        read_mode="restore_required",
+    )
+    config = replace(
+        config,
+        archive_stores={"b2": config.archive_store("b2"), "deep": deep},
+        retrieval_cache=RetrievalCacheConfig(
+            endpoint_url="https://cache.example",
+            region="us-east-1",
+            bucket="cache",
+            access_key_id="fixture",
+            secret_access_key="fixture",
+        ),
+        retrieval_cache_new_archive_enabled=False,
+    )
+    source = MemoryArchiveStore(archive, backend="b2")
+    destination = MemoryArchiveStore(backend="aws")
+    service = SqlAlchemyArchiveCopyService(
+        config,
+        ArchiveStoreRegistry(
+            {
+                "b2": archive_store_binding(source),
+                "deep": archive_store_binding(destination),
+            }
+        ),
+        retrieval_cache=_ArchiveCopyCache(),  # type: ignore[arg-type]
+    )
+
+    selected = service._volume_object_store(
+        store_name="deep",
+        collection_id=COLLECTION_ID,
+        object_id="pack-000000000000",
+    )
+
+    assert selected is destination
 
 
 def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:

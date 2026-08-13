@@ -117,3 +117,23 @@ def test_download_progress_does_not_block_transfer_workers(tmp_path: Path) -> No
         == 4
     )
     assert sorted(callbacks) == ["0", "1", "2", "3"]
+
+
+def test_download_heartbeat_runs_while_one_unbounded_file_is_active(tmp_path: Path) -> None:
+    heartbeat = threading.Event()
+
+    def transfer(_path: str) -> None:
+        assert heartbeat.wait(timeout=2)
+
+    api = DownloadApi({"large": b"content"}, transfer)
+
+    assert download_retrieval_files(
+        api,
+        "job-1",
+        _downloads(tmp_path, {"large": b"content"}),
+        concurrency=1,
+        window=1,
+        heartbeat=heartbeat.set,
+        heartbeat_interval_seconds=0.01,
+    ) == len(b"content")
+    assert heartbeat.is_set()

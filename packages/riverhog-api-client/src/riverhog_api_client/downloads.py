@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -15,6 +16,7 @@ MAX_DOWNLOAD_CONCURRENCY = 64
 MAX_DOWNLOAD_WINDOW = 256
 
 DownloadProgress = Callable[["RetrievalDownload", int], None]
+DownloadHeartbeat = Callable[[], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +92,8 @@ def download_retrieval_files(
     window: int,
     client_factory: Callable[[], RetrievalDownloadApi] | None = None,
     on_downloaded: DownloadProgress | None = None,
+    heartbeat: DownloadHeartbeat | None = None,
+    heartbeat_interval_seconds: float = 60.0,
 ) -> int:
     if concurrency < 1 or concurrency > MAX_DOWNLOAD_CONCURRENCY:
         raise ValueError(f"download concurrency must be between 1 and {MAX_DOWNLOAD_CONCURRENCY}")
@@ -100,6 +104,8 @@ def download_retrieval_files(
         )
     if not downloads:
         return 0
+    if heartbeat is not None and heartbeat_interval_seconds <= 0:
+        raise ValueError("download heartbeat interval must be positive")
 
     worker_count = min(concurrency, len(downloads))
     resolved_factory = (client_factory or _client_factory(api)) if worker_count > 1 else None
@@ -131,6 +137,7 @@ def download_retrieval_files(
     ready = deque(downloads)
     pending: dict[Future[int], RetrievalDownload] = {}
     downloaded_bytes = 0
+    next_heartbeat = time.monotonic() + heartbeat_interval_seconds
     try:
         with ThreadPoolExecutor(
             max_workers=worker_count,
@@ -146,7 +153,19 @@ def download_retrieval_files(
             fill()
             try:
                 while pending:
-                    done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+                    timeout = (
+                        max(0.0, next_heartbeat - time.monotonic())
+                        if heartbeat is not None
+                        else None
+                    )
+                    done, _ = wait(
+                        tuple(pending),
+                        timeout=timeout,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    if heartbeat is not None and time.monotonic() >= next_heartbeat:
+                        heartbeat()
+                        next_heartbeat = time.monotonic() + heartbeat_interval_seconds
                     for future in done:
                         download = pending.pop(future)
                         accepted = future.result()
@@ -178,6 +197,7 @@ def _client_factory(api: RetrievalDownloadApi) -> Callable[[], RetrievalDownload
 
 
 __all__ = [
+    "DownloadHeartbeat",
     "DEFAULT_DOWNLOAD_CONCURRENCY",
     "DEFAULT_DOWNLOAD_WINDOW",
     "MAX_DOWNLOAD_CONCURRENCY",

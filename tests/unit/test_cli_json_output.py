@@ -136,6 +136,138 @@ def test_archive_store_views_project_the_same_api_models_in_human_and_json(
     assert calls == ["list", "list", "show:deep", "show:deep"]
 
 
+def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
+    monkeypatch,
+) -> None:
+    cached = {
+        "collection_id": 42,
+        "source_store": "deep",
+        "object_id": "pack-000000000000",
+        "state": "ready",
+        "stored_bytes": 2048,
+        "stored_sha256": "a" * 64,
+        "cached_at": "2026-08-13T00:00:00.000000Z",
+        "verified_at": "2026-08-13T00:00:01.000000Z",
+        "protected_until": "2026-08-14T00:00:00.000000Z",
+        "new_archive_expires_at": "2026-08-14T00:00:00.000000Z",
+        "lease_categories": ["new_archive"],
+        "retrieval_job_leases": 0,
+        "tags": ["photos"],
+    }
+    page = {
+        "page": 1,
+        "per_page": 25,
+        "total": 1,
+        "pages": 1,
+        "sort": "cached_at",
+        "order": "desc",
+        "query": None,
+        "filters": {
+            "tag": "photos",
+            "collection_id": "42",
+            "source_store": "deep",
+            "state": "ready",
+            "protection": "protected",
+            "expires_before": None,
+            "expires_after": None,
+        },
+        "objects": [cached],
+    }
+    calls: list[tuple[str, object]] = []
+
+    class FakeClient:
+        def list_retrieval_cache_objects(self, **kwargs: object) -> dict[str, object]:
+            calls.append(("list", kwargs))
+            return page
+
+        def get_retrieval_cache_object(
+            self,
+            collection_id: int,
+            source_store: str,
+            object_id: str,
+        ) -> dict[str, object]:
+            calls.append(("show", (collection_id, source_store, object_id)))
+            return cached
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+    runner = CliRunner()
+    list_args = [
+        "retrieval",
+        "cache",
+        "list",
+        "--tag",
+        "photos",
+        "--collection",
+        "42",
+        "--source-store",
+        "deep",
+        "--state",
+        "ready",
+        "--protection",
+        "protected",
+    ]
+
+    human_list = runner.invoke(app, list_args)
+    json_list = runner.invoke(app, [*list_args, "--json"])
+    human_show = runner.invoke(
+        app,
+        ["retrieval", "cache", "show", "42::deep::pack-000000000000"],
+    )
+    json_show = runner.invoke(
+        app,
+        ["retrieval", "cache", "show", "42::deep::pack-000000000000", "--json"],
+    )
+
+    assert human_list.exit_code == 0
+    assert "state=ready" in human_list.stdout
+    assert "protected-until=2026-08-14T00:00:00.000000Z" in human_list.stdout
+    assert json.loads(json_list.stdout) == page
+    assert human_show.exit_code == 0
+    assert "state: ready" in human_show.stdout
+    assert "tags: photos" in human_show.stdout
+    assert json.loads(json_show.stdout) == cached
+    assert calls == [
+        (
+            "list",
+            {
+                "page": 1,
+                "per_page": 25,
+                "q": None,
+                "tag": "photos",
+                "collection_id": 42,
+                "source_store": "deep",
+                "state": "ready",
+                "protection": "protected",
+                "expires_before": None,
+                "expires_after": None,
+                "sort": "cached_at",
+                "order": "desc",
+                "all_items": False,
+            },
+        ),
+        (
+            "list",
+            {
+                "page": 1,
+                "per_page": 25,
+                "q": None,
+                "tag": "photos",
+                "collection_id": 42,
+                "source_store": "deep",
+                "state": "ready",
+                "protection": "protected",
+                "expires_before": None,
+                "expires_after": None,
+                "sort": "cached_at",
+                "order": "desc",
+                "all_items": False,
+            },
+        ),
+        ("show", (42, "deep", "pack-000000000000")),
+        ("show", (42, "deep", "pack-000000000000")),
+    ]
+
+
 def test_emit_json_is_compact_machine_output(capsys: CaptureFixture[str]) -> None:
     emit({"b": [1, 2], "a": {"c": True}}, json_mode=True)
 

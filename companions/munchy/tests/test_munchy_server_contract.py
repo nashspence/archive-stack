@@ -122,6 +122,101 @@ def test_health_access_log_filter_drops_only_health_paths() -> None:
     assert access_filter.filter(api) is True
 
 
+def test_nondefault_runtime_settings_reach_munchy_configuration(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    settings = {
+        "MUNCHY_DIAGNOSTIC_DIR": str(tmp_path / "diagnostics"),
+        "MUNCHY_STATE_DB": str(tmp_path / "state" / "custom.sqlite3"),
+        "MUNCHY_APPLICATION_AUTH_REQUIRED": "true",
+        "MUNCHY_TUSD_INTERNAL_BASE_URL": "http://127.0.0.1:9093/internal/",
+        "MUNCHY_TUSD_PUBLIC_BASE_URL": "https://uploads.example.test/files/",
+        "MUNCHY_TUSD_PUBLIC_SIGNING_SECRET": "signing-secret",
+        "MUNCHY_TUSD_PUBLIC_URL_TTL_SECONDS": "123",
+        "MUNCHY_TUSD_HOOK_SECRET": "hook-secret",
+        "MUNCHY_ADMIN_TOKEN": "admin-token",
+        "MUNCHY_GPU_TARGET": "gpu-target",
+        "MUNCHY_GPU_LEASE_TTL_S": "321",
+        "MUNCHY_GPU_WAIT_S": "12",
+        "MUNCHY_GPU_REPOST_SECONDS": "4.5",
+        "MUNCHY_MIN_FREE_BYTES": "456",
+        "MUNCHY_GPU_SCRATCH_MULTIPLIER": "2.25",
+        "MUNCHY_EAGER_ARCHIVE_SCRATCH_MULTIPLIER": "0.75",
+        "MUNCHY_REVIEW_SCRATCH_EXTRA_MULTIPLIER": "0.45",
+        "MUNCHY_BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER": "1.75",
+        "MUNCHY_MAX_ACTIVE_INPUT_UPLOADS": "7",
+        "MUNCHY_MAX_RUNNING_JOBS": "3",
+        "MUNCHY_EVENT_SOURCE": "urn:test:munchy",
+        "MUNCHY_EVENT_CONTEXT_RETENTION": "41d",
+        "MUNCHY_EVENT_REPEAT_INTERVAL": "2h",
+        "MUNCHY_EVENT_REPEAT_TIME": "04:05",
+        "MUNCHY_EVENT_REPEAT_TIMEZONE": "America/Los_Angeles",
+        "MUNCHY_HANDOFF_RETRY_INITIAL_SECONDS": "7.5",
+        "MUNCHY_HANDOFF_RETRY_MAX_SECONDS": "75",
+        "MUNCHY_RESUME_ON_START": "false",
+        "MUNCHY_LOCAL_CLEANUP_MIN_AGE_HOURS": "5",
+        "MUNCHY_INPUT_UPLOAD_TTL_HOURS": "11",
+        "MUNCHY_ORPHAN_INPUT_UPLOAD_TTL_HOURS": "13",
+        "MUNCHY_CLEANUP_INTERVAL_SECONDS": "17",
+        "MUNCHY_TERMINAL_JOB_RETENTION": "19d",
+        "MUNCHY_JOB_DIAGNOSTIC_RETENTION": "23d",
+        "MUNCHY_EAGER_ARCHIVE_BATCH_FILES": "37",
+        "MUNCHY_EAGER_ARCHIVE_PIPELINE_BATCHES": "5",
+        "MUNCHY_EAGER_ARCHIVE_WAIT_SECONDS": "29",
+        "MUNCHY_STORAGE_WAIT_SECONDS": "31",
+        "MUNCHY_AUDIO_BITRATE": "160k",
+        "MUNCHY_AUDIO_ARCHIVE_WORKERS": "6",
+    }
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+
+    runtime = load_server(tmp_path, monkeypatch).runtime_config
+
+    assert runtime.DIAGNOSTIC_DIR == (tmp_path / "diagnostics").resolve()
+    assert runtime.STATE_DIR == (tmp_path / "state").resolve()
+    assert runtime.STATE_DB_PATH == (tmp_path / "state" / "custom.sqlite3").resolve()
+    assert runtime.WORK_DIR == (tmp_path / "work").resolve()
+    assert runtime.APPLICATION_AUTH_REQUIRED is True
+    assert runtime.TUSD_INTERNAL_BASE_URL == "http://127.0.0.1:9093/internal"
+    assert runtime.TUSD_PUBLIC_BASE_URL == "https://uploads.example.test/files"
+    assert runtime.TUSD_PUBLIC_SIGNING_SECRET == "signing-secret"
+    assert runtime.TUSD_PUBLIC_URL_TTL_SECONDS == 123
+    assert runtime.TUSD_HOOK_SECRET == "hook-secret"
+    assert runtime.ADMIN_TOKEN == "admin-token"
+    assert runtime.GPU_TARGET == "gpu-target"
+    assert runtime.GPU_LEASE_TTL_S == 321
+    assert runtime.GPU_WAIT_S == 12
+    assert runtime.GPU_REPOST_SECONDS == 4.5
+    assert runtime.MIN_FREE_BYTES == 456
+    assert runtime.GPU_SCRATCH_MULTIPLIER == 2.25
+    assert runtime.EAGER_ARCHIVE_SCRATCH_MULTIPLIER == 0.75
+    assert runtime.REVIEW_SCRATCH_EXTRA_MULTIPLIER == 0.45
+    assert runtime.BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER == 1.75
+    assert runtime.MAX_ACTIVE_INPUT_UPLOADS == 7
+    assert runtime.MAX_RUNNING_JOBS == 3
+    assert runtime.EVENT_SOURCE == "urn:test:munchy"
+    assert runtime.EVENT_CONTEXT_RETENTION.total_seconds() == 41 * 86_400
+    assert runtime.EVENT_REPEAT_INTERVAL_SECONDS == 2 * 60 * 60
+    assert runtime.EVENT_REPEAT_TIME == "04:05"
+    assert runtime.EVENT_REPEAT_TIMEZONE == "America/Los_Angeles"
+    assert runtime.HANDOFF_RETRY_INITIAL_SECONDS == 7.5
+    assert runtime.HANDOFF_RETRY_MAX_SECONDS == 75
+    assert runtime.RESUME_ON_START is False
+    assert runtime.LOCAL_CLEANUP_MIN_AGE_HOURS == 5
+    assert runtime.INPUT_UPLOAD_TTL_HOURS == 11
+    assert runtime.ORPHAN_INPUT_UPLOAD_TTL_HOURS == 13
+    assert runtime.CLEANUP_INTERVAL_SECONDS == 17
+    assert runtime.TERMINAL_JOB_RETENTION.total_seconds() == 19 * 86_400
+    assert runtime.JOB_DIAGNOSTIC_RETENTION.total_seconds() == 23 * 86_400
+    assert runtime.EAGER_ARCHIVE_BATCH_FILES == 37
+    assert runtime.EAGER_ARCHIVE_PIPELINE_BATCHES == 5
+    assert runtime.EAGER_ARCHIVE_WAIT_SECONDS == 29
+    assert runtime.STORAGE_WAIT_SECONDS == 31
+    assert runtime.ARCHIVE_AUDIO_BITRATE == "160k"
+    assert runtime.AUDIO_ARCHIVE_MAX_PARALLEL == 6
+
+
 def test_external_submission_identity_maps_to_confined_provenance_path(
     tmp_path: Path,
     monkeypatch,

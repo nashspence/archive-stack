@@ -49,6 +49,13 @@ checkpoint digest, exact source, corpus identity, provider binding, and phase hi
 Terminal `evidence` includes only logical providers, regions/classes, byte counts, hashes,
 phase timings, and pass/fail status.
 
+The run also exercises both retrieval policies. Opportunistic-only retrieval uses
+`restore_policy=never` against the immediate B2 archive and the ingress-seeded cache without
+starting a restore. The qualification pins the new-archive cache lease to one hour, observes
+the cache status/list/show surfaces and encrypted readback, then crosses a scheduled restart
+boundary so the cache can expire before the full retrieval path requests Deep Archive. The
+full path renews its ready lease and verifies the restore-hydrated cache before download.
+
 The GitHub adapter runs every six hours while work is active. It starts regular and
 multipart qualifications on approximately alternating half-month boundaries. Its database
 is always a fresh local Compose PostgreSQL service populated exclusively by the deterministic

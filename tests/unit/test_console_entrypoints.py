@@ -42,6 +42,7 @@ PAGED_LIST_COMMANDS = (
     ("riverhog", "tag", "list", "--help"),
     ("riverhog", "archive", "copy", "list", "--help"),
     ("riverhog", "archive", "store", "list", "--help"),
+    ("riverhog", "retrieval", "cache", "list", "--help"),
     ("riverhog", "app", "list", "--help"),
     ("riverhog", "app", "key", "list", "--help"),
     ("riverhog", "app", "key", "access", "list", "--help"),
@@ -133,6 +134,23 @@ def test_bounded_list_cli_help_uses_the_shared_output_contract(command: tuple[st
 
     assert completed.returncode == 0, completed.stderr
     for option in ("--ids", "--json"):
+        assert option in completed.stdout
+
+
+def test_retrieval_cache_list_emits_actionable_composite_selectors() -> None:
+    completed = _run_help(("riverhog", "retrieval", "cache", "list", "--help"))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--selectors" in completed.stdout
+    for option in (
+        "--tag",
+        "--collection",
+        "--source-store",
+        "--state",
+        "--protection",
+        "--expires-before",
+        "--expires-after",
+    ):
         assert option in completed.stdout
 
 

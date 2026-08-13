@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ast
+import logging
 import os
 import re
 from pathlib import Path
 
 import pytest
 import yaml
+from jeb_api import cli as jeb_cli
 from jeb_api.cli import api_host, api_port
 from jeb_api.composition import config_from_env
 from jeb_core.domain.models import DEFAULT_MUNCHY_UPLOAD_WORKERS, parse_duration
@@ -18,6 +20,18 @@ from munchy_api_client.client import (
 )
 
 REPO = Path(__file__).resolve().parents[3]
+
+
+def test_jeb_log_level_reaches_the_service_entrypoint(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    configured: dict[str, object] = {}
+    monkeypatch.setenv("JEB_LOG_LEVEL", "DEBUG")
+    monkeypatch.setattr(logging, "basicConfig", lambda **values: configured.update(values))
+
+    with pytest.raises(SystemExit) as raised:
+        jeb_cli.main(["--version"])
+
+    assert raised.value.code == 0
+    assert configured["level"] == "DEBUG"
 
 
 def test_jeb_compose_exposes_every_runtime_setting() -> None:
@@ -77,6 +91,7 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
         {
             "JEB_LANDING_DIR": str(tmp_path / "landing"),
             "JEB_STATE_DIR": str(tmp_path / "state"),
+            "JEB_BATCH_DIR": str(tmp_path / "batches"),
             "JEB_MUNCHY_URL": "https://munchy.invalid",
         }
     )
@@ -118,6 +133,49 @@ def test_jeb_native_default_uses_the_munchy_client_loopback_contract(tmp_path: P
     )
 
     assert runtime.targets["munchy"].url == DEFAULT_MUNCHY_BASE_URL
+
+
+def test_jeb_nondefault_runtime_settings_reach_the_typed_configuration(tmp_path: Path) -> None:
+    runtime = config_from_env(
+        {
+            "JEB_LANDING_DIR": str(tmp_path / "landing"),
+            "JEB_STATE_DIR": str(tmp_path / "state"),
+            "JEB_BATCH_DIR": str(tmp_path / "batches"),
+            "JEB_TUS_STAGING_DIR": str(tmp_path / "tus"),
+            "JEB_FTP_PROJECTION": str(tmp_path / "ftp-passwd"),
+            "JEB_FTP_UID": "1200",
+            "JEB_FTP_GID": "1300",
+            "JEB_PREFLIGHT_REPAIR": "off",
+            "JEB_PREFLIGHT_REPAIR_ORIGINAL": "delete",
+            "JEB_PREFLIGHT_REPAIR_CORRUPT_DIR": str(tmp_path / "corrupt"),
+            "JEB_PREFLIGHT_REPAIR_FFMPEG": "/opt/ffmpeg",
+            "JEB_INTERVAL": "37s",
+            "JEB_EVENT_REPEAT_INTERVAL": "2h",
+            "JEB_EVENT_REPEAT_TIME": "04:05",
+            "JEB_EVENT_REPEAT_TIMEZONE": "America/Los_Angeles",
+            "JEB_MUNCHY_UPLOAD_CHUNK_MIB": "23",
+            "JEB_MUNCHY_TOKEN": "munchy-token",
+        }
+    )
+
+    assert runtime.ingress.tus_staging_dir == tmp_path / "tus"
+    assert runtime.service.batch_dir == tmp_path / "batches"
+    assert runtime.ingress.provenance_installation_id_path == (
+        tmp_path / "state" / "provenance-installation-id"
+    )
+    assert runtime.ingress.ftp_projection == tmp_path / "ftp-passwd"
+    assert runtime.ingress.ftp_uid == 1200
+    assert runtime.ingress.ftp_gid == 1300
+    assert runtime.service.preflight_repair == "off"
+    assert runtime.service.preflight_repair_original == "delete"
+    assert runtime.service.preflight_repair_corrupt_dir == tmp_path / "corrupt"
+    assert runtime.service.preflight_repair_ffmpeg == "/opt/ffmpeg"
+    assert runtime.service.interval_seconds == 37
+    assert runtime.events.repeat_interval_seconds == 2 * 60 * 60
+    assert runtime.events.repeat_time == "04:05"
+    assert runtime.events.repeat_timezone == "America/Los_Angeles"
+    assert runtime.targets["munchy"].upload_chunk_bytes == 23 * 1024 * 1024
+    assert runtime.targets["munchy"].token == "munchy-token"
 
 
 def test_jeb_munchy_target_validates_cleartext_transport_during_configuration(
