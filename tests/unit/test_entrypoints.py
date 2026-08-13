@@ -109,6 +109,14 @@ def test_agents_requires_post_push_github_validation() -> None:
     assert "never moves a v1 tag" in agents
 
 
+def test_agents_requires_locked_disposable_container_tool_stages() -> None:
+    agents = " ".join((REPO / "AGENTS.md").read_text(encoding="utf-8").split())
+
+    assert "mise install --locked" in agents
+    assert "digest-pinned disposable build stage" in agents
+    assert "copy only its required runtime artifacts forward" in agents
+
+
 def test_architecture_is_scoped_to_quick_context() -> None:
     architecture = (REPO / "docs/architecture.md").read_text(encoding="utf-8")
 

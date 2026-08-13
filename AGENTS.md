@@ -52,6 +52,9 @@ release reference or duplicate executable contracts to `main`.
   formatting in adapters.
 - Put reusable behavior in a focused package; never share code by importing across a
   server, client, companion, target, or utility implementation boundary.
+- Install a mise-owned standalone container tool with `mise install --locked` in a
+  digest-pinned disposable build stage, then copy only its required runtime artifacts
+  forward.
 - Keep each durable relational database under one application owner and one linear,
   forward-only migration history. Runtime startup validates state; deployment applies
   upgrades explicitly.

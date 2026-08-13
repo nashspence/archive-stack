@@ -12,6 +12,9 @@ SBOM_GENERATOR = (
     "docker.io/docker/buildkit-syft-scanner:stable-1@"
     "sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
 )
+MISE_IMAGE = (
+    "jdxcode/mise:2026.7.13@sha256:7fe9145156e33f95f7712632dbadb418592ed0f60fb46e5bcc8c113d372ad8a3"
+)
 
 IMAGE_CONTRACTS = {
     "riverhog": {
@@ -76,6 +79,7 @@ IMAGE_CONTRACTS = {
 PINNED_EXTERNAL_IMAGES = {
     "python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203",
     "ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36",
+    MISE_IMAGE,
     "nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d",
     "nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3",
 }
@@ -215,15 +219,21 @@ def test_every_external_compose_image_is_versioned_and_digest_pinned() -> None:
     assert observed == PINNED_EXTERNAL_COMPOSE_IMAGES
 
 
-def test_age_installation_reuses_the_provenance_locked_toolchain_artifact() -> None:
+def test_age_installation_uses_mise_in_a_disposable_build_stage() -> None:
     for name in ("riverhog", "test"):
         dockerfile = (REPO_ROOT / IMAGE_CONTRACTS[name]["dockerfile"]).read_text(encoding="utf-8")
-        assert "COPY mise.lock /usr/local/share/riverhog/mise.lock" in dockerfile
-        assert (
-            "COPY scripts/install_locked_age.py /usr/local/libexec/riverhog/install_locked_age.py"
-        ) in dockerfile
-        assert "--lock /usr/local/share/riverhog/mise.lock" in dockerfile
-        assert "--destination /usr/local/bin" in dockerfile
+        assert f"FROM {MISE_IMAGE} AS mise" in dockerfile
+        assert "COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise" in dockerfile
+        assert "COPY mise.toml mise.lock ./" in dockerfile
+        assert "mise install --locked age" in dockerfile
+        for binary in ("age", "age-keygen", "age-plugin-batchpass"):
+            assert f'"$(mise which {binary})" /opt/riverhog-age/bin/{binary}' in dockerfile
+            assert f"test -x /usr/local/bin/{binary}" in dockerfile
+        assert "COPY --from=age-tools /opt/riverhog-age/bin/ /usr/local/bin/" in dockerfile
+        assert "! command -v mise" in dockerfile
+
+        final_stage = dockerfile.rsplit("\nFROM python:3.12-slim@", maxsplit=1)[1]
+        assert "/usr/local/bin/mise" not in final_stage
 
 
 def test_av1_source_builds_verify_the_exact_requested_commits() -> None:
