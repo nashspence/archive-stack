@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import shlex
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -15,6 +17,14 @@ SBOM_GENERATOR = (
 MISE_IMAGE = (
     "jdxcode/mise:2026.7.13@sha256:7fe9145156e33f95f7712632dbadb418592ed0f60fb46e5bcc8c113d372ad8a3"
 )
+MISE_CONTAINER_TOOLS = {
+    "riverhog": {"minisign", "uv"},
+    "jeb": {"uv"},
+    "mango-fish": {"uv"},
+    "munchy-server": {"http:exiftool", "uv"},
+    "munchy-av1-nvenc": {"uv"},
+    "test": {"age", "http:exiftool", "minisign", "uv"},
+}
 
 IMAGE_CONTRACTS = {
     "riverhog": {
@@ -78,7 +88,6 @@ IMAGE_CONTRACTS = {
 
 PINNED_EXTERNAL_IMAGES = {
     "python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203",
-    "ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36",
     MISE_IMAGE,
     "nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d",
     "nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3",
@@ -219,21 +228,75 @@ def test_every_external_compose_image_is_versioned_and_digest_pinned() -> None:
     assert observed == PINNED_EXTERNAL_COMPOSE_IMAGES
 
 
-def test_age_installation_uses_mise_in_a_disposable_build_stage() -> None:
-    for name in ("riverhog", "test"):
-        dockerfile = (REPO_ROOT / IMAGE_CONTRACTS[name]["dockerfile"]).read_text(encoding="utf-8")
+def test_mise_container_tools_use_disposable_locked_build_stages() -> None:
+    mise_config = tomllib.loads((REPO_ROOT / "mise.toml").read_text(encoding="utf-8"))
+    container_tools = set().union(*MISE_CONTAINER_TOOLS.values())
+    assert container_tools | {"python"} == set(mise_config["tools"])
+
+    observed_images = set()
+    for name, contract in IMAGE_CONTRACTS.items():
+        dockerfile = (REPO_ROOT / contract["dockerfile"]).read_text(encoding="utf-8")
+        if f"FROM {MISE_IMAGE} AS mise" not in dockerfile:
+            continue
+        observed_images.add(name)
+
         assert f"FROM {MISE_IMAGE} AS mise" in dockerfile
         assert "COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise" in dockerfile
         assert "COPY mise.toml mise.lock ./" in dockerfile
-        assert "mise install --locked age" in dockerfile
-        for binary in ("age", "age-keygen", "age-plugin-batchpass"):
-            assert f'"$(mise which {binary})" /opt/riverhog-age/bin/{binary}' in dockerfile
-            assert f"test -x /usr/local/bin/{binary}" in dockerfile
-        assert "COPY --from=age-tools /opt/riverhog-age/bin/ /usr/local/bin/" in dockerfile
-        assert "! command -v mise" in dockerfile
+        install_match = re.search(r"mise install --locked (?P<tools>[^\\\n]+)", dockerfile)
+        assert install_match is not None
+        assert set(shlex.split(install_match.group("tools"))) == MISE_CONTAINER_TOOLS[name]
+        assert "COPY --from=locked-tools " in dockerfile
 
-        final_stage = dockerfile.rsplit("\nFROM python:3.12-slim@", maxsplit=1)[1]
+        final_stage = dockerfile.rsplit("\nFROM ", maxsplit=1)[1]
         assert "/usr/local/bin/mise" not in final_stage
+
+    assert observed_images == set(IMAGE_CONTRACTS)
+
+
+def test_mise_artifacts_match_each_image_role() -> None:
+    for name, contract in IMAGE_CONTRACTS.items():
+        dockerfile = (REPO_ROOT / contract["dockerfile"]).read_text(encoding="utf-8")
+        assert '"$(mise which uv)" /opt/riverhog-tools/bin/uv' in dockerfile
+        if name == "test":
+            assert "COPY --from=locked-tools /opt/riverhog-tools/bin/ /usr/local/bin/" in dockerfile
+        else:
+            assert (
+                "COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv"
+                in dockerfile
+            )
+
+    riverhog = (REPO_ROOT / IMAGE_CONTRACTS["riverhog"]["dockerfile"]).read_text(encoding="utf-8")
+    assert '"$(mise which minisign)" /opt/riverhog-tools/bin/minisign' in riverhog
+    assert 'test "$(minisign -v)" = "minisign 0.12"' in riverhog
+
+    munchy = (REPO_ROOT / IMAGE_CONTRACTS["munchy-server"]["dockerfile"]).read_text(
+        encoding="utf-8"
+    )
+    assert '"$(mise which exiftool)"' in munchy
+    assert 'test "$(exiftool -ver)" = "13.59"' in munchy
+
+    test = (REPO_ROOT / IMAGE_CONTRACTS["test"]["dockerfile"]).read_text(encoding="utf-8")
+    for binary in ("age", "age-keygen", "age-plugin-batchpass", "minisign", "uv"):
+        assert f'"$(mise which {binary})" /opt/riverhog-tools/bin/{binary}' in test
+    assert 'test "$(exiftool -ver)" = "13.59"' in test
+
+
+def test_container_python_ownership_matches_the_supported_runtime_minor() -> None:
+    mise_config = tomllib.loads((REPO_ROOT / "mise.toml").read_text(encoding="utf-8"))
+    supported_minor = ".".join(mise_config["tools"]["python"].split(".")[:2])
+    observed_python_bases: set[str] = set()
+
+    for contract in IMAGE_CONTRACTS.values():
+        dockerfile = (REPO_ROOT / contract["dockerfile"]).read_text(encoding="utf-8")
+        observed_python_bases.update(re.findall(r"(?m)^FROM python:(\d+\.\d+)-slim@", dockerfile))
+
+    assert observed_python_bases == {supported_minor}
+
+    av1_dockerfile = (REPO_ROOT / IMAGE_CONTRACTS["munchy-av1-nvenc"]["dockerfile"]).read_text(
+        encoding="utf-8"
+    )
+    assert "assert sys.version_info[:2] == (3, 12)" in av1_dockerfile
 
 
 def test_av1_source_builds_verify_the_exact_requested_commits() -> None:

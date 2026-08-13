@@ -673,7 +673,7 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
         "COPY companions companions"
     )
     assert "uv sync --frozen --all-packages --group dev --no-editable" in test_dockerfile
-    assert "COPY --from=ghcr.io/astral-sh/uv:0.11.24" in test_dockerfile
+    assert '"$(mise which uv)" /opt/riverhog-tools/bin/uv' in test_dockerfile
     assert "UV_PROJECT_ENVIRONMENT=/opt/venv" in test_dockerfile
     assert 'ENTRYPOINT ["python", "-m", "pytest"]' in test_dockerfile
     assert test_dockerfile.index("COPY pyproject.toml uv.lock ./") < test_dockerfile.index(
@@ -797,7 +797,8 @@ def test_munchy_server_image_includes_source_artifact_runtime_tools() -> None:
     dockerfile = (REPO_ROOT / "companions/munchy/server" / "Dockerfile").read_text(encoding="utf-8")
 
     assert "ffmpeg" in dockerfile
-    assert "libimage-exiftool-perl" in dockerfile
+    assert 'mise install --locked "http:exiftool"' in dockerfile
+    assert 'test "$(exiftool -ver)" = "13.59"' in dockerfile
     assert "rclone" in dockerfile
     assert "zstd" in dockerfile
 
