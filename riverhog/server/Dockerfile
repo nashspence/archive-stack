@@ -1,17 +1,17 @@
 FROM jdxcode/mise:2026.7.13@sha256:7fe9145156e33f95f7712632dbadb418592ed0f60fb46e5bcc8c113d372ad8a3 AS mise
 
-FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS age-tools
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS locked-tools
 
 COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
 WORKDIR /workspace
 COPY mise.toml mise.lock ./
 RUN mise trust mise.toml \
-    && mise install --locked age \
-    && mkdir -p /opt/riverhog-age/bin \
-    && cp --preserve=mode,timestamps "$(mise which age)" /opt/riverhog-age/bin/age \
-    && cp --preserve=mode,timestamps "$(mise which age-keygen)" /opt/riverhog-age/bin/age-keygen \
-    && cp --preserve=mode,timestamps "$(mise which age-plugin-batchpass)" /opt/riverhog-age/bin/age-plugin-batchpass \
-    && test "$(/opt/riverhog-age/bin/age --version)" = "$(mise exec age -- age --version)"
+    && mise install --locked minisign uv \
+    && mkdir -p /opt/riverhog-tools/bin \
+    && cp --preserve=mode,timestamps "$(mise which minisign)" /opt/riverhog-tools/bin/minisign \
+    && cp --preserve=mode,timestamps "$(mise which uv)" /opt/riverhog-tools/bin/uv \
+    && test "$(/opt/riverhog-tools/bin/minisign -v)" = "$(mise exec minisign -- minisign -v)" \
+    && test "$(/opt/riverhog-tools/bin/uv --version)" = "$(mise exec uv -- uv --version)"
 
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS build
@@ -21,7 +21,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /uvx /usr/local/bin/
+COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv
 WORKDIR /workspace
 
 COPY pyproject.toml uv.lock ./
@@ -61,13 +61,11 @@ COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
 COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates minisign \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=age-tools /opt/riverhog-age/bin/ /usr/local/bin/
-RUN test -x /usr/local/bin/age \
-    && test -x /usr/local/bin/age-keygen \
-    && test -x /usr/local/bin/age-plugin-batchpass \
+COPY --from=locked-tools /opt/riverhog-tools/bin/minisign /usr/local/bin/minisign
+RUN test "$(minisign -v)" = "minisign 0.12" \
     && ! command -v mise
 
 COPY --from=build /opt/venv /opt/venv
