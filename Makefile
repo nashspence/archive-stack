@@ -45,7 +45,6 @@ MYPY_SOURCES = \
 	riverhog/client/src \
 	riverhog/recovery/src \
 	riverhog/server/src \
-	scripts/install_locked_age.py \
 	scripts/provider_qualification.py \
 	scripts/release.py \
 	utilities/gogurt/src \

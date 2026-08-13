@@ -1,3 +1,19 @@
+FROM jdxcode/mise:2026.7.13@sha256:7fe9145156e33f95f7712632dbadb418592ed0f60fb46e5bcc8c113d372ad8a3 AS mise
+
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS age-tools
+
+COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
+WORKDIR /workspace
+COPY mise.toml mise.lock ./
+RUN mise trust mise.toml \
+    && mise install --locked age \
+    && mkdir -p /opt/riverhog-age/bin \
+    && cp --preserve=mode,timestamps "$(mise which age)" /opt/riverhog-age/bin/age \
+    && cp --preserve=mode,timestamps "$(mise which age-keygen)" /opt/riverhog-age/bin/age-keygen \
+    && cp --preserve=mode,timestamps "$(mise which age-plugin-batchpass)" /opt/riverhog-age/bin/age-plugin-batchpass \
+    && test "$(/opt/riverhog-age/bin/age --version)" = "$(mise exec age -- age --version)"
+
+
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 
 ARG SOURCE_DATE_EPOCH=0
@@ -31,12 +47,11 @@ RUN apt-get update \
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /uvx /usr/local/bin/
 
-COPY mise.lock /usr/local/share/riverhog/mise.lock
-COPY scripts/install_locked_age.py /usr/local/libexec/riverhog/install_locked_age.py
-RUN test "$(dpkg --print-architecture)" = amd64 \
-    && python /usr/local/libexec/riverhog/install_locked_age.py \
-      --lock /usr/local/share/riverhog/mise.lock \
-      --destination /usr/local/bin
+COPY --from=age-tools /opt/riverhog-age/bin/ /usr/local/bin/
+RUN test -x /usr/local/bin/age \
+    && test -x /usr/local/bin/age-keygen \
+    && test -x /usr/local/bin/age-plugin-batchpass \
+    && ! command -v mise
 
 WORKDIR /workspace
 
