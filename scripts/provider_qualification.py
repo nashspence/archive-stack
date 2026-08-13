@@ -40,7 +40,14 @@ DEFAULT_RESTORE_DEADLINE_HOURS = 96
 MIB = 1024 * 1024
 QUALIFICATION_MONTHLY_DOWNLOAD_QUOTA_BYTES = 2 * 1024 * MIB
 QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE = "1h"
+QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS = 60 * 60
 QUALIFICATION_OPPORTUNISTIC_LEASE_SECONDS = 15 * 60
+QUALIFICATION_CACHE_SWEEP_INTERVAL = "30s"
+QUALIFICATION_CACHE_SWEEP_INTERVAL_SECONDS = 30
+QUALIFICATION_RESTORE_POLL_INTERVAL = "1m"
+QUALIFICATION_RESTORE_POLL_INTERVAL_SECONDS = 60
+QUALIFICATION_PENDING_TIMEOUT_SECONDS = 72 * 60 * 60
+QUALIFICATION_RESTORE_HOLD_SECONDS = 24 * 60 * 60
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _SOURCE_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
@@ -73,6 +80,74 @@ _TRANSITIONS = {
     "verified": {"cleaned", "failed"},
     "cleaned": set(),
     "failed": set(),
+}
+_REQUIRED_PASS_ASSERTIONS_BY_PHASE = {
+    "immediate-qualified": frozenset(
+        {
+            "committed-unit-readback",
+            "session-show",
+            "registered-file-list",
+            "volume-list",
+            "volume-show",
+            "unit-readback",
+            "b2-immediate-client-retrieval",
+            "b2-independent-recovery",
+            "resourcesync-complete",
+            "lifecycle-cursor-monotonic",
+            "download-quota-bounded",
+            "opportunistic-immediate-retrieval",
+            "retrieval-renewal",
+            "retrieval-lease-bounded",
+        }
+    ),
+    "deep-archive-uploaded": frozenset(
+        {
+            "deep-archive-copy-completed",
+            "archive-copy-list-show",
+            "archive-copy-cancellation",
+        }
+    ),
+    "deep-archive-cache-observed": frozenset(
+        {
+            "ingress-cache-list-show-status",
+            "ingress-cache-retrieval-verified",
+            "new-archive-lease-observed",
+            "opportunistic-cache-retrieval",
+            "retrieval-policy-effective-values",
+        }
+    ),
+    "restore-requested": frozenset(
+        {
+            "deep-archive-restore-requested",
+            "new-archive-cache-expired",
+            "cache-sweep-cadence-observed",
+            "opportunistic-plan-cost-boundary",
+            "retrieval-plan-source-exact",
+        }
+    ),
+    "restored": frozenset({"deep-archive-restore-ready"}),
+    "verified": frozenset(
+        {
+            "aws-direct-independent-recovery",
+            "cloudfront-signed-egress",
+            "cloudfront-warm-cache-hit",
+            "b2-retrieval-cache-hydrated",
+            "retrieval-cache-list-show-status",
+            "retrieval-renewal",
+            "restore-poll-cadence-observed",
+            "deep-client-retrieval",
+            "deep-retrieval-acknowledged",
+            "restart-boundary-survived",
+        }
+    ),
+    "cleaned": frozenset(
+        {
+            "b2-archive-copy-retired",
+            "aws-canary-retained-for-provider-minimum",
+            "b2-terminal-prefix-removed",
+            "b2-prior-version-retention-bounded",
+        }
+    ),
 }
 
 
@@ -2011,6 +2086,39 @@ def load_checkpoint(path: Path) -> QualificationCheckpoint:
 def evidence_from_checkpoint(checkpoint: QualificationCheckpoint) -> dict[str, object]:
     if checkpoint.phase not in {"cleaned", "failed"}:
         raise QualificationError("final evidence requires a cleaned or failed checkpoint")
+    observed_by_phase: dict[str, set[str]] = {}
+    for record in checkpoint.history:
+        observed_by_phase.setdefault(record.phase, set()).update(record.assertions)
+    required_by_phase = {
+        phase: set(assertions) for phase, assertions in _REQUIRED_PASS_ASSERTIONS_BY_PHASE.items()
+    }
+    if checkpoint.corpus_profile == "multipart":
+        required_by_phase["immediate-qualified"].update(
+            {"multipart-client-interrupted", "multipart-client-restarted"}
+        )
+    if checkpoint.phase == "cleaned":
+        missing = {
+            phase: sorted(assertions - observed_by_phase.get(phase, set()))
+            for phase, assertions in required_by_phase.items()
+            if assertions - observed_by_phase.get(phase, set())
+        }
+        if missing:
+            raise QualificationError(
+                "passed qualification evidence is missing required assertions: "
+                + json.dumps(missing, sort_keys=True, separators=(",", ":"))
+            )
+        surfaces = {artifact.surface for artifact in checkpoint.artifacts}
+        required_surfaces = {"b2-archive", "aws-deep-archive", "cloudfront-egress"}
+        if surfaces != required_surfaces:
+            raise QualificationError(
+                "passed qualification evidence is missing required artifact identities"
+            )
+    observed_assertions = sorted(
+        assertion for assertions in observed_by_phase.values() for assertion in assertions
+    )
+    required_assertions = sorted(
+        assertion for assertions in required_by_phase.values() for assertion in assertions
+    )
     return {
         "schema": EVIDENCE_SCHEMA,
         "run_id": checkpoint.run_id,
@@ -2038,6 +2146,22 @@ def evidence_from_checkpoint(checkpoint: QualificationCheckpoint) -> dict[str, o
             "provider": "aws",
             "service": "cloudfront",
             "transport": "signed-https",
+        },
+        "retrieval_cache": {
+            "new_archive_insertion": True,
+            "new_archive_lease_seconds": QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS,
+            "retrieval_default_lease_seconds": checkpoint.restore_copy_days * 24 * 60 * 60,
+            "retrieval_max_lease_seconds": checkpoint.restore_copy_days * 24 * 60 * 60,
+            "pending_timeout_seconds": QUALIFICATION_PENDING_TIMEOUT_SECONDS,
+            "restore_hold_seconds": QUALIFICATION_RESTORE_HOLD_SECONDS,
+            "sweep_interval_seconds": QUALIFICATION_CACHE_SWEEP_INTERVAL_SECONDS,
+            "restore_poll_interval_seconds": QUALIFICATION_RESTORE_POLL_INTERVAL_SECONDS,
+            "opportunistic_restore_policy": "never",
+        },
+        "proof": {
+            "required_assertions": required_assertions,
+            "observed_assertions": observed_assertions,
+            "artifact_surfaces": sorted(artifact.surface for artifact in checkpoint.artifacts),
         },
         "status": "passed" if checkpoint.phase == "cleaned" else "failed",
         "started_at": checkpoint.started_at,
@@ -2212,8 +2336,10 @@ def write_runtime_environment(
         "RIVERHOG_RETRIEVAL_CACHE_PREFIX": checkpoint.namespace,
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED": "true",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE": (QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE),
+        "RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL": QUALIFICATION_CACHE_SWEEP_INTERVAL,
         "RIVERHOG_RETRIEVAL_DEFAULT_LEASE": f"{config.restore_copy_days}d",
         "RIVERHOG_RETRIEVAL_MAX_LEASE": f"{config.restore_copy_days}d",
+        "RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL": QUALIFICATION_RESTORE_POLL_INTERVAL,
         "SOURCE_REVISION": checkpoint.source_sha,
         "TEST_COMPOSE_PROJECT_NAME": f"riverhog-qualification-{checkpoint.run_id[:12]}",
     }
@@ -2635,12 +2761,25 @@ def _assert_retrieval_cache_surface(
     collection_id: int,
     source_store: str,
     expected_lease_category: str,
+    expected_retrieval_lease_seconds: int,
 ) -> tuple[str, ...]:
     status = api.retrieval_cache_status()
     if status.get("configured") is not True or status.get("new_archive_enabled") is not True:
         raise QualificationError("retrieval-cache status omitted the enabled provider policy")
     if int(status.get("objects", 0)) <= 0 or int(status.get("protected_objects", 0)) <= 0:
         raise QualificationError("retrieval-cache status omitted protected objects")
+    policy = status.get("policy")
+    expected_policy = {
+        "new_archive_lease_seconds": QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS,
+        "retrieval_default_lease_seconds": expected_retrieval_lease_seconds,
+        "retrieval_max_lease_seconds": expected_retrieval_lease_seconds,
+        "pending_timeout_seconds": QUALIFICATION_PENDING_TIMEOUT_SECONDS,
+        "restore_hold_seconds": QUALIFICATION_RESTORE_HOLD_SECONDS,
+        "sweep_interval_seconds": QUALIFICATION_CACHE_SWEEP_INTERVAL_SECONDS,
+        "restore_poll_interval_seconds": QUALIFICATION_RESTORE_POLL_INTERVAL_SECONDS,
+    }
+    if policy != expected_policy:
+        raise QualificationError("retrieval-cache status omitted effective qualification policy")
     page = api.list_retrieval_cache_objects(
         q=str(collection_id),
         sort="object_id",
@@ -3262,6 +3401,7 @@ def operate_qualification(
                 collection_id=checkpoint.collection_id,
                 source_store="aws-deep-archive",
                 expected_lease_category="new_archive",
+                expected_retrieval_lease_seconds=lease_seconds,
             )
             with tempfile.TemporaryDirectory(prefix="riverhog-qualification-ingress-cache-") as raw:
                 _ready_retrieval(
@@ -3282,6 +3422,7 @@ def operate_qualification(
                     "ingress-cache-retrieval-verified",
                     "new-archive-lease-observed",
                     "opportunistic-cache-retrieval",
+                    "retrieval-policy-effective-values",
                 ),
             )
             write_checkpoint(checkpoint_path, checkpoint)
@@ -3332,6 +3473,7 @@ def operate_qualification(
                 assertions=(
                     "deep-archive-restore-requested",
                     "new-archive-cache-expired",
+                    "cache-sweep-cadence-observed",
                     "opportunistic-plan-cost-boundary",
                     "retrieval-plan-source-exact",
                 ),
@@ -3397,6 +3539,7 @@ def operate_qualification(
                 collection_id=collection_id,
                 source_store="aws-deep-archive",
                 expected_lease_category="retrieval_job",
+                expected_retrieval_lease_seconds=lease_seconds,
             )
             cloudfront_identity, cloudfront_objects, cloudfront_bytes = _verify_cloudfront_egress(
                 api,
@@ -3449,6 +3592,7 @@ def operate_qualification(
                     "b2-retrieval-cache-hydrated",
                     "retrieval-cache-list-show-status",
                     "retrieval-renewal",
+                    "restore-poll-cadence-observed",
                     "deep-client-retrieval",
                     "deep-retrieval-acknowledged",
                     "restart-boundary-survived",
@@ -3589,6 +3733,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     b2_check.add_argument("config", type=Path)
 
+    cleanup_b2 = commands.add_parser(
+        "cleanup-b2",
+        help="remove a superseded dummy run namespace from the manual B2 buckets",
+    )
+    cleanup_b2.add_argument("config", type=Path)
+    cleanup_b2.add_argument("--checkpoint", type=Path, required=True)
+
     runtime = commands.add_parser(
         "runtime-env",
         help="write a permission-restricted disposable deployment environment",
@@ -3665,6 +3816,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             plan = check_b2_infrastructure(config, buckets, os.environ)
             _print_json(plan.as_dict())
             return 0 if plan.ready else 1
+        if args.command == "cleanup-b2":
+            config = load_config(args.config)
+            checkpoint = load_checkpoint(args.checkpoint)
+            buckets = resolve_buckets(config, os.environ, provider="b2")
+            _verify_checkpoint_providers(
+                checkpoint,
+                resolve_buckets(config, os.environ),
+                config,
+            )
+            _cleanup_b2_namespace(checkpoint, buckets, os.environ)
+            _print_json({"cleaned": True, "schema": CHECKPOINT_SCHEMA})
+            return 0
         if args.command == "runtime-env":
             config = load_config(args.config)
             checkpoint = load_checkpoint(args.checkpoint)

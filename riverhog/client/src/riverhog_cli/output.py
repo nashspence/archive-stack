@@ -450,7 +450,10 @@ def format_retrieval_cache_status(payload: Mapping[str, object]) -> str:
             f"new archive lease: {values.get('new_archive_lease_seconds', 0)}s",
             f"retrieval lease: {values.get('retrieval_default_lease_seconds', 0)}s default, "
             f"{values.get('retrieval_max_lease_seconds', 0)}s maximum",
+            f"pending timeout: {values.get('pending_timeout_seconds', 0)}s",
+            f"provider restore hold: {values.get('restore_hold_seconds', 0)}s",
             f"sweep interval: {values.get('sweep_interval_seconds', 0)}s",
+            f"restore poll interval: {values.get('restore_poll_interval_seconds', 0)}s",
         ]
     )
 

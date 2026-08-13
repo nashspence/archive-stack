@@ -684,6 +684,15 @@ def test_cache_status_reports_effective_new_archive_insertion(tmp_path: Path) ->
 
     assert status["configured"] is False
     assert status["new_archive_enabled"] is False
+    assert status["policy"] == {
+        "new_archive_lease_seconds": 72 * 60 * 60,
+        "retrieval_default_lease_seconds": 24 * 60 * 60,
+        "retrieval_max_lease_seconds": 7 * 24 * 60 * 60,
+        "pending_timeout_seconds": 72 * 60 * 60,
+        "restore_hold_seconds": 24 * 60 * 60,
+        "sweep_interval_seconds": 5 * 60,
+        "restore_poll_interval_seconds": 5 * 60,
+    }
 
 
 def test_cache_sweep_removes_an_unleased_verified_object(tmp_path: Path) -> None:
