@@ -1192,6 +1192,32 @@ class CloudFrontManager:
             },
         }
 
+    @classmethod
+    def _distribution_changes(
+        cls,
+        actual: Mapping[str, object],
+        desired: Mapping[str, object],
+    ) -> tuple[str, ...]:
+        """Describe distribution drift using logical field names, never provider values."""
+        normalized_actual = cls._normalize_distribution(actual)
+        normalized_desired = cls._normalize_distribution(desired)
+        changes: list[str] = []
+
+        def compare(
+            actual_item: object,
+            desired_item: object,
+            path: tuple[str, ...],
+        ) -> None:
+            if isinstance(actual_item, dict) and isinstance(desired_item, dict):
+                for key in sorted(set(actual_item) | set(desired_item)):
+                    compare(actual_item.get(key), desired_item.get(key), (*path, key))
+                return
+            if actual_item != desired_item:
+                changes.append(".".join(path))
+
+        compare(normalized_actual, normalized_desired, ())
+        return tuple(changes)
+
     @staticmethod
     def _pay_as_you_go_billing_changes(config: Mapping[str, object]) -> tuple[str, ...]:
         """Return optional-cost or flat-rate-eligibility drift for the distribution.
@@ -1405,10 +1431,13 @@ class CloudFrontManager:
             oac_id=oac_id,
             key_group_id=key_group_id,
         )
-        if self._normalize_distribution(actual_distribution) != self._normalize_distribution(
-            desired_distribution
-        ):
-            changes.append("distribution")
+        changes.extend(
+            f"distribution.{field}"
+            for field in self._distribution_changes(
+                actual_distribution,
+                desired_distribution,
+            )
+        )
         if self._pay_as_you_go_billing_changes(actual_distribution):
             changes.append("pay-as-you-go-billing")
         distribution_arn = self._distribution_arn(distribution_id)
@@ -1527,9 +1556,9 @@ class CloudFrontManager:
             oac_id=oac_id,
             key_group_id=key_group_id,
         )
-        if self._normalize_distribution(actual) != self._normalize_distribution(
-            desired
-        ) or self._pay_as_you_go_billing_changes(actual):
+        if self._distribution_changes(actual, desired) or self._pay_as_you_go_billing_changes(
+            actual
+        ):
             self._cloudfront_call(
                 "update_distribution",
                 Id=distribution_id,
