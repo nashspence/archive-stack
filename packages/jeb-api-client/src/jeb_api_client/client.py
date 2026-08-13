@@ -468,20 +468,13 @@ class JebIngressClient:
         if not upload_id:
             raise RuntimeError("Jeb TUS upload returned an invalid identity")
         for journal_id, content in sorted(journals.items()):
-            response = self._http.put(
-                self._provenance_url(upload_id, f"journals/{quote(journal_id, safe='')}"),
+            self.put_provenance_journal(
+                upload_id,
+                journal_id,
                 content=content,
-                headers={
-                    "Content-Type": "application/json-seq",
-                    "X-Riverhog-Provenance-SHA256": hashlib.sha256(content).hexdigest(),
-                },
+                sha256=hashlib.sha256(content).hexdigest(),
             )
-            self._raise_ingress_error(response)
-        response = self._http.put(
-            self._provenance_url(upload_id, "binding"),
-            json=dict(binding),
-        )
-        self._raise_ingress_error(response)
+        self.put_provenance_binding(upload_id, binding)
 
         chunk_bytes = chunk_mib * 1024 * 1024
         offset = self._tus.head_offset(upload_url)
@@ -514,6 +507,41 @@ class JebIngressClient:
             "provenance": dict(binding),
         }
 
+    def put_provenance_journal(
+        self,
+        upload_id: str,
+        journal_id: str,
+        *,
+        content: bytes,
+        sha256: str,
+    ) -> dict[str, Any]:
+        """Publish one exact provenance journal for an open ingress upload."""
+
+        response = self._http.put(
+            self._provenance_url(upload_id, f"journals/{quote(journal_id, safe='')}"),
+            content=content,
+            headers={
+                "Content-Type": "application/json-seq",
+                "X-Riverhog-Provenance-SHA256": sha256,
+            },
+        )
+        self._raise_ingress_error(response)
+        return self._ingress_json(response)
+
+    def put_provenance_binding(
+        self,
+        upload_id: str,
+        binding: Mapping[str, object],
+    ) -> dict[str, Any]:
+        """Publish the payload binding for an open ingress upload."""
+
+        response = self._http.put(
+            self._provenance_url(upload_id, "binding"),
+            json=dict(binding),
+        )
+        self._raise_ingress_error(response)
+        return self._ingress_json(response)
+
     def _provenance_url(self, upload_id: str, suffix: str) -> str:
         return urljoin(
             self.base_url.rstrip("/") + "/",
@@ -536,6 +564,13 @@ class JebIngressClient:
         else:
             message = f"Jeb ingress returned HTTP {response.status_code}"
         raise JebApiError(message, status=response.status_code)
+
+    @staticmethod
+    def _ingress_json(response: httpx.Response) -> dict[str, Any]:
+        value = response.json()
+        if not isinstance(value, dict):
+            raise RuntimeError("Jeb ingress returned an invalid JSON receipt")
+        return value
 
 
 def _provenance_binding(value: Mapping[str, object]) -> FileProvenanceBinding:

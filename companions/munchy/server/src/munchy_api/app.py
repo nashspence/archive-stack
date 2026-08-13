@@ -45,6 +45,7 @@ from http_api_contracts import (
     error_code_for_status,
     error_payload,
     error_responses,
+    operation_interface,
     status_for_error_code,
 )
 from lifecycle_events import cloud_event, normalize_event_context
@@ -336,7 +337,11 @@ def list_lifecycle_events(
     return page.model_dump(mode="json")
 
 
-@app.post("/v1/submissions/preflight-failures", status_code=202)
+@app.post(
+    "/v1/submissions/preflight-failures",
+    status_code=202,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 def record_submission_preflight_failure(
     req: domain_models.SubmissionPreflightFailureCreate,
     request: Request,
@@ -557,6 +562,7 @@ def delete_job_template(template_id: str, expected_revision: int) -> dict[str, A
 @app.post(
     "/v1/submissions/preflight",
     responses=error_responses(429, 507),
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def preflight_submission(req: domain_models.SubmissionPreflightRequest) -> dict[str, Any]:
     provisional_id = f"preflight-{uuid.uuid4().hex}"
@@ -582,6 +588,7 @@ def preflight_submission(req: domain_models.SubmissionPreflightRequest) -> dict[
     "/v1/submissions",
     status_code=202,
     responses=error_responses(429, 507),
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def create_submission(
     req: domain_models.CreateSubmissionRequest,
@@ -597,7 +604,10 @@ def create_submission(
     return job_service.submission_response(job)
 
 
-@app.get("/v1/submissions/{submission_id}")
+@app.get(
+    "/v1/submissions/{submission_id}",
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 def get_submission(submission_id: str) -> dict[str, Any]:
     return job_service.submission_response(job_service.load_submission(submission_id))
 
@@ -605,6 +615,7 @@ def get_submission(submission_id: str) -> dict[str, Any]:
 @app.post(
     "/v1/submissions/{submission_id}/files/{rel_path:path}/upload",
     status_code=201,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def create_or_resume_submission_file_upload(
     submission_id: str,
@@ -615,7 +626,10 @@ def create_or_resume_submission_file_upload(
         return job_service._create_or_resume_input_file_upload(submission_id, rel_path)
 
 
-@app.put("/v1/submissions/{submission_id}/provenance/journals/{journal_id}")
+@app.put(
+    "/v1/submissions/{submission_id}/provenance/journals/{journal_id}",
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 async def put_submission_provenance_journal(
     submission_id: str,
     journal_id: str,
@@ -704,7 +718,12 @@ async def tusd_hooks(request: Request) -> JSONResponse:
     )
 
 
-@app.get("/internal/tusd/authorize", include_in_schema=False)
+@app.get(
+    "/internal/tusd/authorize",
+    include_in_schema=False,
+    operation_id="authorize_tusd_upload",
+    openapi_extra=operation_interface("service-internal"),
+)
 def authorize_tusd_upload(request: Request) -> Response:
     original_uri = request.headers.get("X-Munchy-Tusd-Original-Uri", "")
     status = 204 if upload_service.public_tusd_request_is_authorized(original_uri) else 403
@@ -773,7 +792,10 @@ def list_job_diagnostics(
     )
 
 
-@app.get("/v1/admin/jobs/{job_id}/diagnostic")
+@app.get(
+    "/v1/admin/jobs/{job_id}/diagnostic",
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 def get_job_diagnostic(job_id: str) -> dict[str, Any]:
     return diagnostic_service.get_job_diagnostic(job_id)
 

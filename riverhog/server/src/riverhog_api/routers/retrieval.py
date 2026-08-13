@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from http_api_contracts import error_responses
+from http_api_contracts import error_responses, operation_interface
 from riverhog_protocol.errors import BadRequest
 
 from riverhog_api.auth import CatalogReader, RetrievalManager
@@ -98,7 +98,11 @@ def get_retrieval_cache_object(
     )
 
 
-@router.post("/retrieval-plans", response_model=RetrievalPlanOut)
+@router.post(
+    "/retrieval-plans",
+    response_model=RetrievalPlanOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 def plan_retrieval(
     request: RetrievalPlanRequest,
     principal: RetrievalManager,
@@ -119,6 +123,7 @@ def plan_retrieval(
     "/retrieval-jobs",
     response_model=RetrievalJobOut,
     responses=error_responses(429),
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def create_retrieval_job(
     request: CreateRetrievalJobRequest,
@@ -142,7 +147,11 @@ def create_retrieval_job(
     return RetrievalJobOut.model_validate(payload)
 
 
-@router.post("/retrieval-jobs/{job_id}/renew", response_model=RetrievalJobOut)
+@router.post(
+    "/retrieval-jobs/{job_id}/renew",
+    response_model=RetrievalJobOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 def renew_retrieval_job(
     job_id: str,
     request: RenewRetrievalJobRequest,
@@ -159,7 +168,11 @@ def renew_retrieval_job(
     )
 
 
-@router.get("/retrieval-jobs/{job_id}", response_model=RetrievalJobOut)
+@router.get(
+    "/retrieval-jobs/{job_id}",
+    response_model=RetrievalJobOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 def get_retrieval_job(
     job_id: str,
     principal: RetrievalManager,
@@ -174,7 +187,11 @@ def get_retrieval_job(
     )
 
 
-@router.delete("/retrieval-jobs/{job_id}", response_model=RetrievalJobOut)
+@router.delete(
+    "/retrieval-jobs/{job_id}",
+    response_model=RetrievalJobOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 def cancel_retrieval_job(
     job_id: str,
     principal: RetrievalManager,
@@ -185,7 +202,11 @@ def cancel_retrieval_job(
     )
 
 
-@router.post("/retrieval-jobs/{job_id}/ack", response_model=RetrievalJobOut)
+@router.post(
+    "/retrieval-jobs/{job_id}/ack",
+    response_model=RetrievalJobOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 def acknowledge_retrieval_job(
     job_id: str,
     principal: RetrievalManager,
@@ -200,11 +221,17 @@ def acknowledge_retrieval_job(
     )
 
 
-@router.head("/retrieval-jobs/{job_id}/content", include_in_schema=False)
+@router.head(
+    "/retrieval-jobs/{job_id}/content",
+    include_in_schema=False,
+    operation_id="head_retrieval_file",
+    openapi_extra=operation_interface("standard-tool/protocol"),
+)
 @router.get(
     "/retrieval-jobs/{job_id}/content",
     response_class=StreamingResponse,
     responses=error_responses(429),
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def download_retrieval_file(
     job_id: str,

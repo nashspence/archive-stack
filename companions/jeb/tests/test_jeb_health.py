@@ -12,14 +12,25 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import httpx
 import jeb_core.adapters.munchy as munchy_adapter_module
 import pytest
+from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
 from jeb_api.app import JebServiceState, create_app, start_jeb_service_server
 from jeb_api.composition import JebServices, config_from_env, create_services
+from jeb_api_client import JebApiClient, JebIngressClient
 from jeb_core.adapters.munchy import MunchyTargetAdapter
 from jeb_core.persistence.schema import upgrade_state
 from jeb_core.provenance import put_ingress_binding
-from riverhog_provenance import FileProvenanceBinding, build_portable_provenance_set
+from riverhog_provenance import (
+    FileProvenanceBinding,
+    build_portable_provenance_set,
+    create_observation_journal,
+    validate_journal,
+)
+
+from tests.operation_observer import OperationObserver, TimeoutNeutralTestClient
 
 API_HEADERS = {"Authorization": "Bearer jeb-development-api-token"}
 
@@ -180,6 +191,253 @@ def test_jeb_service_api_reports_live_ready_and_status(tmp_path: Path) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_jeb_official_client_covers_complete_positive_api_lifecycle(tmp_path: Path) -> None:
+    env = jeb_env(tmp_path)
+    services = create_services(config_from_env(env))
+    upgrade_state(services.config)
+    application = create_app(JebServiceState(services=services))
+    observer = OperationObserver.install(application, application="jeb")
+    transport = TestClient(application, headers=API_HEADERS)
+    client = JebApiClient(
+        "http://testserver",
+        token="jeb-development-api-token",
+        allow_insecure_http=True,
+    )
+    client._client = TimeoutNeutralTestClient(  # type: ignore[assignment]
+        transport,
+        observer=observer,
+    )
+
+    assert transport.get("/health/live", headers={}).status_code == 200
+    assert transport.get("/health/ready", headers={}).status_code == 200
+    created = client.create_source(
+        {
+            "id": "qualification",
+            "adapters": ["tus"],
+            "target_config": {"template_id": "camera-archive"},
+            "credential": "qualification-password",
+            "stable_seconds": 0,
+            "include_extensions": [".txt"],
+            "cadence": "manual",
+        }
+    )
+    assert created["source"]["id"] == "qualification"
+    assert client.list_sources(query="qualification", all_items=True)["total"] == 1
+    assert client.get_source("qualification")["id"] == "qualification"
+    assert client.update_source("qualification", {"cadence": "weekly"})["cadence"] == "weekly"
+    assert client.disable_source("qualification")["enabled"] is False
+    assert client.enable_source("qualification")["enabled"] is True
+    rotated = client.rotate_source_credential(
+        "qualification",
+        credential="qualification-password-2",
+    )
+    assert rotated["source"]["id"] == "qualification"
+    assert client.check_config()["status"] == "ok"
+    assert client.get_status(include_backlog=True)["sources"][0]["id"] == "qualification"
+
+    source = tmp_path / "landing" / "qualification" / "notes" / "note.txt"
+    write_stable_file(source)
+    archived = client.archive_source_now(source="qualification", process=False)
+    attempt_id = str(archived["attempt_id"])
+    assert client.list_attempts(source="qualification", all_items=True)["total"] == 1
+    assert client.get_attempt(attempt_id)["attempt_id"] == attempt_id
+    assert client.cancel_attempt(attempt_id)["state"] == "canceled"
+
+    once = client.run_once()
+    operation_id = str(once["operation"]["id"])
+    deadline = time.monotonic() + 5
+    while True:
+        operation = client.get_operation(operation_id)
+        if operation["state"] != "running":
+            break
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert operation["state"] == "succeeded"
+    assert client.list_operations(all_items=True)["total"] >= 1
+
+    journal = create_observation_journal(
+        source,
+        relative_path="notes/note.txt",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000469",
+        agent_name="jeb-operation-qualification",
+        agent_version="1.0.0",
+    )
+    journal_summary = validate_journal(journal)
+    source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    binding = FileProvenanceBinding(
+        path="notes/note.txt",
+        bytes=source.stat().st_size,
+        sha256=source_sha256,
+        status="captured",
+        journal_id=journal_summary.journal_id,
+        current_state_id=journal_summary.current_state_id,
+    )
+    provenance_sha256 = hashlib.sha256(
+        build_portable_provenance_set(
+            bindings=(binding,),
+            journals={journal_summary.journal_id: journal},
+        )
+    ).hexdigest()
+    ingress_headers = {
+        "Authorization": basic_authorization(
+            "qualification",
+            "qualification-password-2",
+        )
+    }
+
+    public_operation_ids: list[str] = []
+
+    def public_ingress_handler(request: httpx.Request) -> httpx.Response:
+        started = time.perf_counter()
+        operation_id = ""
+        if request.method == "POST" and request.url.path == "/files/":
+            operation_id = "create_tusd_ingress_upload"
+            response = httpx.Response(
+                201,
+                headers={"Location": "/files/00000000000040008000000000000469"},
+            )
+        elif request.method == "PUT" and "/journals/" in request.url.path:
+            operation_id = "put_public_tus_ingress_provenance_journal"
+            response = httpx.Response(200, json={"status": "accepted"})
+        elif request.method == "PUT" and request.url.path.endswith("/binding"):
+            operation_id = "put_public_tus_ingress_provenance_binding"
+            response = httpx.Response(200, json={"status": "accepted"})
+        elif request.method == "HEAD" and request.url.path.startswith("/files/"):
+            operation_id = "head_tusd_ingress_upload"
+            response = httpx.Response(200, headers={"Upload-Offset": "0"})
+        elif request.method == "PATCH" and request.url.path.startswith("/files/"):
+            operation_id = "patch_tusd_ingress_upload"
+            response = httpx.Response(
+                204,
+                headers={"Upload-Offset": str(source.stat().st_size)},
+            )
+        else:
+            return httpx.Response(404)
+        observer.record_external_server(
+            operation_id,
+            elapsed_ms=(time.perf_counter() - started) * 1000,
+        )
+        public_operation_ids.append(operation_id)
+        return response
+
+    ingress_client = JebIngressClient(
+        source="qualification",
+        password="qualification-password-2",
+        base_url="https://jeb.example.test",
+        transport=httpx.MockTransport(public_ingress_handler),
+    )
+    public_started = time.perf_counter()
+    try:
+        public_result = ingress_client.upload_file(
+            source,
+            relative_path=binding.path,
+            binding={
+                "path": binding.path,
+                "bytes": binding.bytes,
+                "sha256": binding.sha256,
+                "status": binding.status,
+                "journal_id": binding.journal_id,
+                "current_state_id": binding.current_state_id,
+            },
+            journals={journal_summary.journal_id: journal},
+        )
+    finally:
+        ingress_client.close()
+    assert public_result["status"] == "uploaded"
+    public_elapsed_ms = (time.perf_counter() - public_started) * 1000
+    for operation_id in public_operation_ids:
+        observer.record_external_client(operation_id, elapsed_ms=public_elapsed_ms)
+
+    assert transport.get("/internal/ingress/tus/auth", headers=ingress_headers).status_code == 204
+    journal_response = transport.put(
+        (
+            "/internal/ingress/tus/provenance/00000000000040008000000000000469/journals/"
+            f"{journal_summary.journal_id}"
+        ),
+        content=journal,
+        headers={
+            **ingress_headers,
+            "Content-Type": "application/json-seq",
+            "X-Riverhog-Provenance-SHA256": journal_summary.journal_sha256,
+        },
+    )
+    assert journal_response.status_code == 200
+    binding_response = transport.put(
+        "/internal/ingress/tus/provenance/00000000000040008000000000000469/binding",
+        json={
+            "path": binding.path,
+            "bytes": binding.bytes,
+            "sha256": binding.sha256,
+            "status": binding.status,
+            "journal_id": binding.journal_id,
+            "current_state_id": binding.current_state_id,
+        },
+        headers=ingress_headers,
+    )
+    assert binding_response.status_code == 200
+    hook = transport.post(
+        "/internal/ingress/tus/hooks",
+        json={
+            "Type": "pre-create",
+            "Event": {
+                "Upload": {
+                    "Size": binding.bytes,
+                    "Offset": 0,
+                    "MetaData": {
+                        "filename": binding.path,
+                        "sha256": binding.sha256,
+                        "provenance_sha256": provenance_sha256,
+                    },
+                }
+            },
+        },
+        headers=ingress_headers,
+    )
+    assert hook.status_code == 200
+    assert hook.json()["ChangeFileInfo"]["ID"]
+
+    events = client.list_lifecycle_events(limit=100)
+    assert events.events
+    restarted_services = create_services(config_from_env(env))
+    upgrade_state(restarted_services.config)
+    restarted_transport = TestClient(
+        create_app(JebServiceState(services=restarted_services)),
+        headers=API_HEADERS,
+    )
+    restarted_client = JebApiClient(
+        "http://testserver",
+        token="jeb-development-api-token",
+        allow_insecure_http=True,
+    )
+    restarted_client._client = TimeoutNeutralTestClient(  # type: ignore[assignment]
+        restarted_transport
+    )
+    resumed_events = restarted_client.list_lifecycle_events(
+        after=events.next_cursor,
+        limit=100,
+    )
+    assert resumed_events.events == []
+    assert resumed_events.next_cursor == events.next_cursor
+
+    plan = client.plan_source_removal("qualification", purge=True)
+    removed = client.remove_source("qualification", challenge=str(plan["challenge"]))
+    assert removed["status"] == "removed"
+
+    expected = {
+        str(operation["operationId"])
+        for path in application.openapi()["paths"].values()
+        for method, operation in path.items()
+        if method in {"get", "post", "put", "patch", "delete"}
+    }
+    expected.update(
+        route.operation_id or route.name
+        for route in application.routes
+        if isinstance(route, APIRoute) and route.path.startswith(("/v1/", "/internal/", "/health/"))
+    )
+    expected.update(public_operation_ids)
+    observer.require(expected)
 
 
 def test_jeb_management_api_requires_its_own_bearer_token(tmp_path: Path) -> None:
