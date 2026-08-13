@@ -147,8 +147,11 @@ def _abort_incomplete_archive_multipart_uploads(
     *,
     max_age: timedelta,
 ) -> int:
+    initiated_before = utc_now() - max_age
     return container.archive_maintenance.abort_incomplete_multipart_uploads(
-        initiated_before=utc_now() - max_age
+        initiated_before=initiated_before
+    ) + container.retrieval.abort_incomplete_cache_multipart_uploads(
+        initiated_before=initiated_before
     )
 
 
@@ -214,7 +217,31 @@ async def _run_archive_multipart_reaper(
             _LOG.exception("archive multipart upload reaper sweep failed")
 
 
-async def _run_retrieval_reaper(
+async def _run_retrieval_restore_reaper(
+    container_provider: Callable[[], ServiceContainer | None],
+    *,
+    poll_interval: timedelta,
+) -> None:
+    interval_seconds = max(poll_interval.total_seconds(), 0.1)
+    first_run = True
+    while True:
+        try:
+            if first_run:
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(interval_seconds)
+            first_run = False
+            container = container_provider()
+            if container is None:
+                continue
+            await asyncio.to_thread(container.retrieval.process_due, limit=10)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # pragma: no cover - defensive background task logging
+            _LOG.exception("retrieval restore poll failed")
+
+
+async def _run_retrieval_cache_reaper(
     container_provider: Callable[[], ServiceContainer | None],
     *,
     sweep_interval: timedelta,
@@ -241,11 +268,11 @@ async def _run_retrieval_reaper(
                         "startup requeued interrupted retrieval-cache cleanup: count=%s",
                         requeued,
                     )
-            await asyncio.to_thread(container.retrieval.process_due, limit=10)
+            await asyncio.to_thread(container.retrieval.sweep)
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging
-            _LOG.exception("retrieval reaper sweep failed")
+            _LOG.exception("retrieval-cache cleanup sweep failed")
 
 
 async def _run_proof_maturation_reaper(
@@ -283,7 +310,8 @@ def create_app(
     container_provider: Callable[[], ServiceContainer] | None = None,
     archive_upload_reaper_interval: float | None = None,
     archive_multipart_reaper_interval: float | None = None,
-    retrieval_reaper_interval: float | None = None,
+    retrieval_restore_poll_interval: float | None = None,
+    retrieval_cache_reaper_interval: float | None = None,
     proof_maturation_reaper_interval: float | None = None,
 ) -> FastAPI:
     if container is not None and container_provider is not None:
@@ -304,10 +332,15 @@ def create_app(
         if archive_multipart_reaper_interval is not None
         else config.archive_multipart_sweep_interval
     )
-    retrieval_sweep_interval = (
-        timedelta(seconds=retrieval_reaper_interval)
-        if retrieval_reaper_interval is not None
-        else config.retrieval_sweep_interval
+    retrieval_poll_interval = (
+        timedelta(seconds=retrieval_restore_poll_interval)
+        if retrieval_restore_poll_interval is not None
+        else config.retrieval_restore_poll_interval
+    )
+    retrieval_cache_sweep_interval = (
+        timedelta(seconds=retrieval_cache_reaper_interval)
+        if retrieval_cache_reaper_interval is not None
+        else config.retrieval_cache_sweep_interval
     )
     proof_maturation_sweep_interval = (
         timedelta(seconds=proof_maturation_reaper_interval)
@@ -345,10 +378,16 @@ def create_app(
                 operation_lock=archive_operation_lock,
             )
         )
-        retrieval_task = asyncio.create_task(
-            _run_retrieval_reaper(
+        retrieval_restore_task = asyncio.create_task(
+            _run_retrieval_restore_reaper(
                 get_or_create_container,
-                sweep_interval=retrieval_sweep_interval,
+                poll_interval=retrieval_poll_interval,
+            )
+        )
+        retrieval_cache_task = asyncio.create_task(
+            _run_retrieval_cache_reaper(
+                get_or_create_container,
+                sweep_interval=retrieval_cache_sweep_interval,
             )
         )
         proof_maturation_task = asyncio.create_task(
@@ -362,14 +401,17 @@ def create_app(
         finally:
             archive_task.cancel()
             archive_multipart_task.cancel()
-            retrieval_task.cancel()
+            retrieval_restore_task.cancel()
+            retrieval_cache_task.cancel()
             proof_maturation_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_task
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_multipart_task
             with contextlib.suppress(asyncio.CancelledError):
-                await retrieval_task
+                await retrieval_restore_task
+            with contextlib.suppress(asyncio.CancelledError):
+                await retrieval_cache_task
             with contextlib.suppress(asyncio.CancelledError):
                 await proof_maturation_task
             if owns_app_container and app_container is not None:
@@ -382,6 +424,7 @@ def create_app(
         lifespan=lifespan,
         generate_unique_id_function=_operation_id,
     )
+    app.state.public_base_url = config.public_base_url
     app.dependency_overrides[get_container] = get_or_create_container
 
     @app.exception_handler(RiverhogError)

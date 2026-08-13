@@ -40,6 +40,7 @@ class _FakeClient:
         conditional_put_supported: bool = True,
         conditional_put_closes_connection: bool = False,
         conditional_put_commits_before_close: bool = False,
+        put_version_id: str | None = None,
     ) -> None:
         self.objects: dict[str, dict[str, Any]] = {}
         self.uploads: dict[str, dict[str, Any]] = {}
@@ -47,6 +48,7 @@ class _FakeClient:
         self.conditional_put_supported = conditional_put_supported
         self.conditional_put_closes_connection = conditional_put_closes_connection
         self.conditional_put_commits_before_close = conditional_put_commits_before_close
+        self.put_version_id = put_version_id
         self.put_attempts = 0
 
     def create_multipart_upload(self, **request: Any) -> dict[str, str]:
@@ -106,7 +108,7 @@ class _FakeClient:
         if key in self.objects:
             raise _client_error("PreconditionFailed", 412, "PutObject")
         self._store_put(request)
-        return {}
+        return {"VersionId": self.put_version_id} if self.put_version_id is not None else {}
 
     def _store_put(self, request: dict[str, Any]) -> None:
         key = str(request["Key"])
@@ -253,6 +255,35 @@ def test_immutable_adapter_is_idempotent_by_logical_identity(
     assert second == first
     assert client.objects[first.object_path]["Body"] == b"ciphertext"
     assert first.stored_sha256 == hashlib.sha256(b"ciphertext").hexdigest()
+
+
+def test_immutable_adapter_uses_the_head_readable_version_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient(put_version_id="write-response-only-version")
+    monkeypatch.setattr(
+        "riverhog_core.stores.s3_immutable_archive_object_store.create_archive_s3_client",
+        lambda *_args, **_kwargs: client,
+    )
+    config = _config(tmp_path)
+    store = S3ImmutableArchiveObjectStore(config, config.archive_store("primary"))
+
+    first = store.put_immutable_object(
+        object_path="archive/manifest.json.age",
+        content=b"ciphertext",
+        content_type="application/vnd.riverhog.collection-manifest+age",
+        identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+    )
+    second = store.put_immutable_object(
+        object_path="archive/manifest.json.age",
+        content=b"different randomized ciphertext",
+        content_type="application/vnd.riverhog.collection-manifest+age",
+        identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+    )
+
+    assert first.version_id is None
+    assert second == first
 
 
 def test_immutable_adapter_uses_conditional_multipart_when_put_condition_is_unsupported(

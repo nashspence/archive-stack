@@ -434,6 +434,94 @@ def format_archive_stores(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def format_retrieval_cache_status(payload: Mapping[str, object]) -> str:
+    policy = payload.get("policy")
+    values = policy if isinstance(policy, Mapping) else {}
+    return "\n".join(
+        [
+            "retrieval cache",
+            f"configured: {'yes' if payload.get('configured') else 'no'}",
+            "new archive insertion: "
+            f"{'enabled' if payload.get('new_archive_enabled') else 'disabled'}",
+            f"objects: {payload.get('objects', 0)}",
+            f"stored: {_bytes(payload.get('stored_bytes'))}",
+            f"protected: {payload.get('protected_objects', 0)}",
+            f"unleased: {payload.get('unleased_objects', 0)}",
+            f"new archive lease: {values.get('new_archive_lease_seconds', 0)}s",
+            f"retrieval lease: {values.get('retrieval_default_lease_seconds', 0)}s default, "
+            f"{values.get('retrieval_max_lease_seconds', 0)}s maximum",
+            f"pending timeout: {values.get('pending_timeout_seconds', 0)}s",
+            f"provider restore hold: {values.get('restore_hold_seconds', 0)}s",
+            f"sweep interval: {values.get('sweep_interval_seconds', 0)}s",
+            f"restore poll interval: {values.get('restore_poll_interval_seconds', 0)}s",
+        ]
+    )
+
+
+def format_retrieval_cache_objects(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "cache objects")]
+    for current in _items(payload, "objects"):
+        categories = current.get("lease_categories")
+        leases = (
+            ",".join(str(value) for value in categories)
+            if isinstance(categories, Sequence) and not isinstance(categories, (str, bytes))
+            else ""
+        )
+        lines.append(
+            f"- {current.get('collection_id', 'unknown')}::"
+            f"{current.get('source_store', 'unknown')}::"
+            f"{current.get('object_id', 'unknown')}  "
+            f"state={current.get('state', 'unknown')}  "
+            f"stored={_bytes(current.get('stored_bytes'))}  "
+            f"cached={current.get('cached_at', 'unknown')}  "
+            f"protected-until={current.get('protected_until') or 'unleased'}  "
+            f"leases={leases or 'none'}"
+        )
+    return "\n".join(lines)
+
+
+def format_retrieval_cache_selectors(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        f"{current['collection_id']}::{current['source_store']}::{current['object_id']}"
+        for current in _items(payload, "objects")
+        if current.get("collection_id") not in {None, ""}
+        and current.get("source_store") not in {None, ""}
+        and current.get("object_id") not in {None, ""}
+    )
+
+
+def format_retrieval_cache_object(payload: Mapping[str, object]) -> str:
+    categories = payload.get("lease_categories")
+    leases = (
+        ", ".join(str(value) for value in categories)
+        if isinstance(categories, Sequence) and not isinstance(categories, (str, bytes))
+        else "none"
+    )
+    tags = payload.get("tags")
+    tag_text = (
+        ", ".join(str(value) for value in tags)
+        if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes))
+        else "none"
+    )
+    return "\n".join(
+        [
+            f"retrieval cache object {payload.get('collection_id', 'unknown')}::"
+            f"{payload.get('source_store', 'unknown')}::"
+            f"{payload.get('object_id', 'unknown')}",
+            f"stored: {_bytes(payload.get('stored_bytes'))}",
+            f"state: {payload.get('state', 'unknown')}",
+            f"stored sha256: {payload.get('stored_sha256', 'unknown')}",
+            f"cached: {payload.get('cached_at', 'unknown')}",
+            f"verified: {payload.get('verified_at', 'unknown')}",
+            f"protected until: {payload.get('protected_until') or 'unleased'}",
+            f"new archive lease expires: {payload.get('new_archive_expires_at') or 'none'}",
+            f"lease categories: {leases}",
+            f"retrieval job leases: {payload.get('retrieval_job_leases', 0)}",
+            f"tags: {tag_text}",
+        ]
+    )
+
+
 def format_archive_copy_job(payload: Mapping[str, object]) -> str:
     route = (
         f"{payload.get('source_store', 'automatic')} -> "

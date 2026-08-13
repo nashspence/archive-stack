@@ -30,8 +30,9 @@ Use `make help` for development and validation commands. Use each installed comm
 `--help` output for its current interface. A running API publishes its current OpenAPI
 document at `/openapi.json`.
 
-The [Riverhog Compose stack](riverhog/server/compose.yaml) runs from safe development
-defaults.
+The [Riverhog Compose stack](riverhog/server/compose.yaml) accepts deployment-owned object
+storage. Its `development` profile provides a disposable local Garage store for the checked-in
+development and test rails.
 
 ## Context
 

@@ -33,6 +33,8 @@ from riverhog_core.catalog_models import (
     CollectionMetadataPublicationRecord,
     CollectionProofMaturationRecord,
     CollectionRecord,
+    RetrievalCacheLeaseRecord,
+    RetrievalCacheObjectRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.pack_upload import PACK_VOLUME_CONTENT_TYPE
@@ -47,6 +49,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveStore,
     CollectionArchiveIdentity,
 )
+from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.raw_upload import RAW_VOLUME_CONTENT_TYPE
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copy_states import (
@@ -58,6 +61,9 @@ from riverhog_core.services.collection_mutations import require_collection_archi
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
+)
+from riverhog_core.stores.mirrored_archive_multipart_object_store import (
+    MirroredArchiveMultipartObjectStore,
 )
 from riverhog_core.throughput import (
     ArchiveThroughputTuning,
@@ -86,6 +92,7 @@ class _CopiedObject:
     version_id: str | None
     completed_at: str
     part_receipts_json: str | None = None
+    retrieval_cache: RetrievalCacheReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,12 +107,14 @@ class SqlAlchemyArchiveCopyService:
         config: RuntimeConfig,
         archive_stores: ArchiveStoreRegistry,
         *,
+        retrieval_cache: RetrievalCache | None = None,
         session_factory: SessionFactory | None = None,
         throughput_tuning: ArchiveThroughputTuning | None = None,
         transfer_resources: ArchiveTransferResources | None = None,
     ) -> None:
         self._config = config
         self._archive_stores = archive_stores
+        self._retrieval_cache = retrieval_cache
         self._session_factory = session_factory or make_session_factory(config.database_url)
         self._throughput = throughput_tuning or ArchiveThroughputTuning.from_env(os.environ)
         self._resources = transfer_resources or ArchiveTransferResources.from_tuning(
@@ -525,7 +534,7 @@ class SqlAlchemyArchiveCopyService:
             elif status.state != "ready":
                 job.state = "waiting"
                 job.next_attempt_at = format_utc_timestamp(
-                    current + self._config.retrieval_sweep_interval
+                    current + self._config.retrieval_restore_poll_interval
                 )
                 return
             else:
@@ -726,7 +735,11 @@ class SqlAlchemyArchiveCopyService:
                     destination_store_name=destination_store_name,
                     destination_storage_prefix=destination_storage_prefix,
                     source_store=source_store,
-                    destination_object_store=destination.multipart_objects,
+                    destination_object_store=self._volume_object_store(
+                        store_name=destination_store_name,
+                        collection_id=collection_id,
+                        object_id=record.object_id,
+                    ),
                     source=record,
                     identity=identity,
                 )
@@ -775,6 +788,7 @@ class SqlAlchemyArchiveCopyService:
                 completed.version_id,
                 completed.completed_at,
                 source.part_receipts_json,
+                completed.retrieval_cache,
             )
 
         with session_scope(self._session_factory) as session:
@@ -834,6 +848,29 @@ class SqlAlchemyArchiveCopyService:
             completed.version_id,
             completed.completed_at,
             _part_rows_json(part_rows, committed),
+            completed.retrieval_cache,
+        )
+
+    def _volume_object_store(
+        self,
+        *,
+        store_name: str,
+        collection_id: int,
+        object_id: str,
+    ) -> ArchiveMultipartObjectStore:
+        archive = self._archive_stores.require(store_name).multipart_objects
+        if (
+            not self._config.retrieval_cache_new_archive_enabled
+            or self._retrieval_cache is None
+            or self._config.archive_store(store_name).read_mode != "restore_required"
+        ):
+            return archive
+        return MirroredArchiveMultipartObjectStore(
+            archive=archive,
+            cache=self._retrieval_cache,
+            source_store=store_name,
+            collection_id=collection_id,
+            object_id=object_id,
         )
 
     def _copy_volume_parts(
@@ -917,6 +954,7 @@ class SqlAlchemyArchiveCopyService:
                     remote_seconds = time.perf_counter() - remote_started
             if receipt.bytes != len(content):
                 raise Conflict("archive copy multipart part byte count changed")
+            receipt = replace(receipt, sha256=str(row["stored_sha256"]))
             return _CopiedPart(
                 receipt=receipt,
                 timing=TransferTiming(
@@ -1150,12 +1188,23 @@ class SqlAlchemyArchiveCopyService:
         destination.objects.clear()
         store_config = self._config.archive_store(destination_store)
         uploaded_at: list[str] = []
+        cache_receipts: list[tuple[CollectionArchiveObjectRecord, RetrievalCacheReceipt]] = []
+        cache_required = (
+            self._config.retrieval_cache_new_archive_enabled
+            and self._retrieval_cache is not None
+            and store_config.read_mode == "restore_required"
+        )
         for current in sorted(source.objects, key=lambda value: value.object_order):
             if current.kind not in _COPY_OBJECT_KINDS:
                 continue
             receipt = copied.get(current.object_id)
             if receipt is None:
                 raise Conflict("archive copy result omitted an immutable object")
+            if current.kind in {"pack", "segment"} and cache_required:
+                if receipt.retrieval_cache is None:
+                    raise RuntimeError(
+                        "restore-required archive copy is missing its retrieval cache receipt"
+                    )
             copied_record = CollectionArchiveObjectRecord(
                 collection_id=source.collection_id,
                 store=destination_store,
@@ -1192,7 +1241,47 @@ class SqlAlchemyArchiveCopyService:
                     )
                 )
             destination.objects.append(copied_record)
+            if receipt.retrieval_cache is not None:
+                cache_receipts.append((copied_record, receipt.retrieval_cache))
             uploaded_at.append(receipt.completed_at)
+        session.flush()
+        cache_expires_at = format_utc_timestamp(
+            utc_now() + self._config.retrieval_cache_new_archive_lease
+        )
+        cache_leases: list[RetrievalCacheLeaseRecord] = []
+        for copied_record, cache_receipt in cache_receipts:
+            if (
+                cache_receipt.stored_bytes != copied_record.stored_bytes
+                or len(cache_receipt.stored_sha256) != 64
+            ):
+                raise RuntimeError(
+                    "retrieval cache receipt does not match its copied archive volume"
+                )
+            session.add(
+                RetrievalCacheObjectRecord(
+                    source_store=destination_store,
+                    collection_id=source.collection_id,
+                    object_id=copied_record.object_id,
+                    object_path=cache_receipt.object_path,
+                    version_id=cache_receipt.version_id,
+                    stored_bytes=cache_receipt.stored_bytes,
+                    stored_sha256=cache_receipt.stored_sha256,
+                    cached_at=cache_receipt.cached_at,
+                    verified_at=cache_receipt.verified_at,
+                    state="ready",
+                )
+            )
+            cache_leases.append(
+                RetrievalCacheLeaseRecord(
+                    owner="new-archive",
+                    source_store=destination_store,
+                    collection_id=source.collection_id,
+                    object_id=copied_record.object_id,
+                    expires_at=cache_expires_at,
+                )
+            )
+        session.flush()
+        session.add_all(cache_leases)
         if not {"manifest", "proof"}.issubset(copied):
             raise Conflict("archive copy result has no root and proof")
         destination.state = "uploaded"
@@ -1556,4 +1645,5 @@ def _completed_payload(copy: CollectionArchiveCopyRecord) -> dict[str, object]:
 
 
 def _read_hold_days(config: RuntimeConfig) -> int:
-    return max(1, int(config.retrieval_max_lease.total_seconds() // 86400) + 1)
+    seconds = config.retrieval_restore_hold.total_seconds()
+    return max(1, int((seconds + 86_399) // 86_400))

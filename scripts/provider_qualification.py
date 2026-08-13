@@ -39,6 +39,15 @@ DEFAULT_RESTORE_COPY_DAYS = 3
 DEFAULT_RESTORE_DEADLINE_HOURS = 96
 MIB = 1024 * 1024
 QUALIFICATION_MONTHLY_DOWNLOAD_QUOTA_BYTES = 2 * 1024 * MIB
+QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE = "1h"
+QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS = 60 * 60
+QUALIFICATION_OPPORTUNISTIC_LEASE_SECONDS = 15 * 60
+QUALIFICATION_CACHE_SWEEP_INTERVAL = "30s"
+QUALIFICATION_CACHE_SWEEP_INTERVAL_SECONDS = 30
+QUALIFICATION_RESTORE_POLL_INTERVAL = "1m"
+QUALIFICATION_RESTORE_POLL_INTERVAL_SECONDS = 60
+QUALIFICATION_PENDING_TIMEOUT_SECONDS = 72 * 60 * 60
+QUALIFICATION_RESTORE_HOLD_SECONDS = 24 * 60 * 60
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _SOURCE_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
@@ -52,6 +61,7 @@ _PHASES = (
     "created",
     "immediate-qualified",
     "deep-archive-uploaded",
+    "deep-archive-cache-observed",
     "restore-requested",
     "restore-pending",
     "restored",
@@ -62,13 +72,82 @@ _PHASES = (
 _TRANSITIONS = {
     "created": {"immediate-qualified", "failed"},
     "immediate-qualified": {"deep-archive-uploaded", "failed"},
-    "deep-archive-uploaded": {"restore-requested", "failed"},
+    "deep-archive-uploaded": {"deep-archive-cache-observed", "failed"},
+    "deep-archive-cache-observed": {"restore-requested", "failed"},
     "restore-requested": {"restore-pending", "restored", "failed"},
     "restore-pending": {"restore-pending", "restored", "failed"},
     "restored": {"verified", "failed"},
     "verified": {"cleaned", "failed"},
     "cleaned": set(),
     "failed": set(),
+}
+_REQUIRED_PASS_ASSERTIONS_BY_PHASE = {
+    "immediate-qualified": frozenset(
+        {
+            "committed-unit-readback",
+            "session-show",
+            "registered-file-list",
+            "volume-list",
+            "volume-show",
+            "unit-readback",
+            "b2-immediate-client-retrieval",
+            "b2-independent-recovery",
+            "resourcesync-complete",
+            "lifecycle-cursor-monotonic",
+            "download-quota-bounded",
+            "opportunistic-immediate-retrieval",
+            "retrieval-renewal",
+            "retrieval-lease-bounded",
+        }
+    ),
+    "deep-archive-uploaded": frozenset(
+        {
+            "deep-archive-copy-completed",
+            "archive-copy-list-show",
+            "archive-copy-cancellation",
+        }
+    ),
+    "deep-archive-cache-observed": frozenset(
+        {
+            "ingress-cache-list-show-status",
+            "ingress-cache-retrieval-verified",
+            "new-archive-lease-observed",
+            "opportunistic-cache-retrieval",
+            "retrieval-policy-effective-values",
+        }
+    ),
+    "restore-requested": frozenset(
+        {
+            "deep-archive-restore-requested",
+            "new-archive-cache-expired",
+            "cache-sweep-cadence-observed",
+            "opportunistic-plan-cost-boundary",
+            "retrieval-plan-source-exact",
+        }
+    ),
+    "restored": frozenset({"deep-archive-restore-ready"}),
+    "verified": frozenset(
+        {
+            "aws-direct-independent-recovery",
+            "cloudfront-signed-egress",
+            "cloudfront-warm-cache-hit",
+            "b2-retrieval-cache-hydrated",
+            "retrieval-cache-list-show-status",
+            "retrieval-renewal",
+            "restore-poll-cadence-observed",
+            "deep-client-retrieval",
+            "deep-retrieval-acknowledged",
+            "restart-boundary-survived",
+        }
+    ),
+    "cleaned": frozenset(
+        {
+            "b2-archive-copy-retired",
+            "aws-canary-retained-for-provider-minimum",
+            "b2-terminal-prefix-removed",
+            "b2-prior-version-retention-bounded",
+        }
+    ),
 }
 
 
@@ -2007,6 +2086,39 @@ def load_checkpoint(path: Path) -> QualificationCheckpoint:
 def evidence_from_checkpoint(checkpoint: QualificationCheckpoint) -> dict[str, object]:
     if checkpoint.phase not in {"cleaned", "failed"}:
         raise QualificationError("final evidence requires a cleaned or failed checkpoint")
+    observed_by_phase: dict[str, set[str]] = {}
+    for record in checkpoint.history:
+        observed_by_phase.setdefault(record.phase, set()).update(record.assertions)
+    required_by_phase = {
+        phase: set(assertions) for phase, assertions in _REQUIRED_PASS_ASSERTIONS_BY_PHASE.items()
+    }
+    if checkpoint.corpus_profile == "multipart":
+        required_by_phase["immediate-qualified"].update(
+            {"multipart-client-interrupted", "multipart-client-restarted"}
+        )
+    if checkpoint.phase == "cleaned":
+        missing = {
+            phase: sorted(assertions - observed_by_phase.get(phase, set()))
+            for phase, assertions in required_by_phase.items()
+            if assertions - observed_by_phase.get(phase, set())
+        }
+        if missing:
+            raise QualificationError(
+                "passed qualification evidence is missing required assertions: "
+                + json.dumps(missing, sort_keys=True, separators=(",", ":"))
+            )
+        surfaces = {artifact.surface for artifact in checkpoint.artifacts}
+        required_surfaces = {"b2-archive", "aws-deep-archive", "cloudfront-egress"}
+        if surfaces != required_surfaces:
+            raise QualificationError(
+                "passed qualification evidence is missing required artifact identities"
+            )
+    observed_assertions = sorted(
+        assertion for assertions in observed_by_phase.values() for assertion in assertions
+    )
+    required_assertions = sorted(
+        assertion for assertions in required_by_phase.values() for assertion in assertions
+    )
     return {
         "schema": EVIDENCE_SCHEMA,
         "run_id": checkpoint.run_id,
@@ -2034,6 +2146,22 @@ def evidence_from_checkpoint(checkpoint: QualificationCheckpoint) -> dict[str, o
             "provider": "aws",
             "service": "cloudfront",
             "transport": "signed-https",
+        },
+        "retrieval_cache": {
+            "new_archive_insertion": True,
+            "new_archive_lease_seconds": QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS,
+            "retrieval_default_lease_seconds": checkpoint.restore_copy_days * 24 * 60 * 60,
+            "retrieval_max_lease_seconds": checkpoint.restore_copy_days * 24 * 60 * 60,
+            "pending_timeout_seconds": QUALIFICATION_PENDING_TIMEOUT_SECONDS,
+            "restore_hold_seconds": QUALIFICATION_RESTORE_HOLD_SECONDS,
+            "sweep_interval_seconds": QUALIFICATION_CACHE_SWEEP_INTERVAL_SECONDS,
+            "restore_poll_interval_seconds": QUALIFICATION_RESTORE_POLL_INTERVAL_SECONDS,
+            "opportunistic_restore_policy": "never",
+        },
+        "proof": {
+            "required_assertions": required_assertions,
+            "observed_assertions": observed_assertions,
+            "artifact_surfaces": sorted(artifact.surface for artifact in checkpoint.artifacts),
         },
         "status": "passed" if checkpoint.phase == "cleaned" else "failed",
         "started_at": checkpoint.started_at,
@@ -2202,13 +2330,16 @@ def write_runtime_environment(
         "RIVERHOG_BOOTSTRAP_TOKEN": _required_env(values, "RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN"),
         "RIVERHOG_CLOUDFRONT_PRIVATE_KEY_HOST_PATH": str(private_key_path),
         "RIVERHOG_COMPOSE_ENV_FILE": str(output.expanduser().resolve()),
-        "RIVERHOG_PUBLIC_BASE_URL": "http://app:8000",
+        "RIVERHOG_PUBLIC_BASE_URL": "",
         "RIVERHOG_RETRIEVAL_TIER": config.restore_tier,
         "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY": "48h",
         "RIVERHOG_RETRIEVAL_CACHE_PREFIX": checkpoint.namespace,
-        "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE": f"{config.restore_copy_days}d",
+        "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED": "true",
+        "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE": (QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE),
+        "RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL": QUALIFICATION_CACHE_SWEEP_INTERVAL,
         "RIVERHOG_RETRIEVAL_DEFAULT_LEASE": f"{config.restore_copy_days}d",
         "RIVERHOG_RETRIEVAL_MAX_LEASE": f"{config.restore_copy_days}d",
+        "RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL": QUALIFICATION_RESTORE_POLL_INTERVAL,
         "SOURCE_REVISION": checkpoint.source_sha,
         "TEST_COMPOSE_PROJECT_NAME": f"riverhog-qualification-{checkpoint.run_id[:12]}",
     }
@@ -2575,19 +2706,34 @@ def _ready_retrieval(
     collection_id: int,
     corpus: CorpusManifest,
     expected_source: str,
+    expected_read_mode: str,
     lease_seconds: int,
+    restore_policy: str,
     output: Path,
 ) -> dict[str, Any]:
     files = _retrieval_files(collection_id, corpus)
-    plan = api.plan_retrieval(files, lease_seconds=lease_seconds)
+    plan = api.plan_retrieval(
+        files,
+        lease_seconds=lease_seconds,
+        restore_policy=restore_policy,
+    )
     if _plan_sources(plan) != {expected_source}:
         raise QualificationError(f"retrieval did not select {expected_source}")
+    if {str(item.get("read_mode", "")) for item in _page_items(plan, "objects")} != {
+        expected_read_mode
+    }:
+        raise QualificationError(
+            f"retrieval did not use the expected {expected_read_mode} read mode"
+        )
+    if plan.get("requires_restore"):
+        raise QualificationError("ready retrieval unexpectedly required archival restoration")
     if int(plan.get("lease_seconds", -1)) != lease_seconds:
         raise QualificationError("retrieval plan did not preserve its bounded lease")
     job = api.create_retrieval_job(
         files,
         plan_etag=str(plan["etag"]),
         lease_seconds=lease_seconds,
+        restore_policy=restore_policy,
         event_context={"qualification": "provider-v1"},
     )
     deadline = time.monotonic() + 30 * 60
@@ -2599,11 +2745,67 @@ def _ready_retrieval(
             raise QualificationError("immediate retrieval exceeded thirty minutes")
         time.sleep(2)
         job = api.get_retrieval_job(str(job["id"]))
+    job = api.renew_retrieval_job(str(job["id"]), lease_seconds=lease_seconds)
+    if job.get("state") != "ready" or int(job.get("lease_seconds", -1)) != lease_seconds:
+        raise QualificationError("retrieval renewal did not preserve its ready lease")
     _download_retrieval(api, job=job, corpus=corpus, output=output)
     acknowledged = api.acknowledge_retrieval_job(str(job["id"]))
     if acknowledged.get("state") != "completed":
         raise QualificationError("retrieval acknowledgement did not complete")
     return cast(dict[str, Any], acknowledged)
+
+
+def _assert_retrieval_cache_surface(
+    api: Any,
+    *,
+    collection_id: int,
+    source_store: str,
+    expected_lease_category: str,
+    expected_retrieval_lease_seconds: int,
+) -> tuple[str, ...]:
+    status = api.retrieval_cache_status()
+    if status.get("configured") is not True or status.get("new_archive_enabled") is not True:
+        raise QualificationError("retrieval-cache status omitted the enabled provider policy")
+    if int(status.get("objects", 0)) <= 0 or int(status.get("protected_objects", 0)) <= 0:
+        raise QualificationError("retrieval-cache status omitted protected objects")
+    policy = status.get("policy")
+    expected_policy = {
+        "new_archive_lease_seconds": QUALIFICATION_NEW_ARCHIVE_CACHE_LEASE_SECONDS,
+        "retrieval_default_lease_seconds": expected_retrieval_lease_seconds,
+        "retrieval_max_lease_seconds": expected_retrieval_lease_seconds,
+        "pending_timeout_seconds": QUALIFICATION_PENDING_TIMEOUT_SECONDS,
+        "restore_hold_seconds": QUALIFICATION_RESTORE_HOLD_SECONDS,
+        "sweep_interval_seconds": QUALIFICATION_CACHE_SWEEP_INTERVAL_SECONDS,
+        "restore_poll_interval_seconds": QUALIFICATION_RESTORE_POLL_INTERVAL_SECONDS,
+    }
+    if policy != expected_policy:
+        raise QualificationError("retrieval-cache status omitted effective qualification policy")
+    page = api.list_retrieval_cache_objects(
+        q=str(collection_id),
+        sort="object_id",
+        order="asc",
+        all_items=True,
+    )
+    selected = [
+        item
+        for item in _page_items(page, "objects")
+        if int(item.get("collection_id", 0)) == collection_id
+        and item.get("source_store") == source_store
+    ]
+    if not selected:
+        raise QualificationError(f"retrieval-cache list omitted {source_store} objects")
+    object_ids: list[str] = []
+    for item in selected:
+        if expected_lease_category not in item.get("lease_categories", []):
+            raise QualificationError(
+                f"retrieval-cache object omitted its {expected_lease_category} lease"
+            )
+        object_id = str(item.get("object_id", ""))
+        shown = api.get_retrieval_cache_object(collection_id, source_store, object_id)
+        if shown != item:
+            raise QualificationError("retrieval-cache list and show representations differ")
+        object_ids.append(object_id)
+    return tuple(object_ids)
 
 
 def _cancel_retrieval(
@@ -2625,21 +2827,28 @@ def _cancel_retrieval(
         raise QualificationError("retrieval cancellation did not converge")
 
 
-def _assert_resourcesync(api: Any, collection_id: int) -> None:
+def _assert_resourcesync(api: Any, collection_id: int, *, base_url: str) -> None:
+    public_prefix = f"{base_url.rstrip('/')}/"
     discovery = api.resourcesync_discovery()
-    if {item.get("capability") for item in _page_items(discovery, "capabilities")} != {
-        "capabilitylist"
-    }:
+    discovered = _page_items(discovery, "capabilities")
+    if {item.get("capability") for item in discovered} != {"capabilitylist"}:
         raise QualificationError("ResourceSync discovery is incomplete")
+    if not all(str(item.get("location", "")).startswith(public_prefix) for item in discovered):
+        raise QualificationError("ResourceSync discovery published an unusable URL authority")
     capabilities = api.resourcesync_capabilities()
-    if {item.get("capability") for item in _page_items(capabilities, "capabilities")} != {
+    advertised = _page_items(capabilities, "capabilities")
+    if {item.get("capability") for item in advertised} != {
         "resourcelist",
         "changelist",
     }:
         raise QualificationError("ResourceSync capability list is incomplete")
+    if not all(str(item.get("location", "")).startswith(public_prefix) for item in advertised):
+        raise QualificationError("ResourceSync capability list published an unusable URL authority")
     pages = api.resourcesync_resource_pages().get("pages")
     if not isinstance(pages, list) or not pages:
         raise QualificationError("ResourceSync resource list has no pages")
+    if not all(str(location).startswith(public_prefix) for location in pages):
+        raise QualificationError("ResourceSync resource list published an unusable URL authority")
     resources: list[dict[str, Any]] = []
     for page in range(1, len(pages) + 1):
         resources.extend(_page_items(api.resourcesync_resources(page=page), "resources"))
@@ -2649,6 +2858,8 @@ def _assert_resourcesync(api: Any, collection_id: int) -> None:
     )
     if resource is None:
         raise QualificationError("ResourceSync omitted the qualification collection")
+    if not str(resource.get("location", "")).startswith(public_prefix):
+        raise QualificationError("ResourceSync resource published an unusable URL authority")
     portable = api.get_portable_collection_manifest(collection_id)
     if portable.get("format") != "riverhog-collection/v1":
         raise QualificationError("portable collection manifest format is invalid")
@@ -3088,7 +3299,7 @@ def operate_qualification(
                 raise QualificationError("qualification upload did not finalize")
             if int(session.get("files_total", -1)) != len(corpus.files):
                 raise QualificationError("finalized collection file count is invalid")
-            _assert_resourcesync(api, collection_id)
+            _assert_resourcesync(api, collection_id, base_url=base_url)
             with tempfile.TemporaryDirectory(prefix="riverhog-qualification-immediate-") as raw:
                 scratch = Path(raw)
                 _ready_retrieval(
@@ -3096,7 +3307,9 @@ def operate_qualification(
                     collection_id=collection_id,
                     corpus=corpus,
                     expected_source="b2-archive",
+                    expected_read_mode="immediate",
                     lease_seconds=lease_seconds,
+                    restore_policy="never",
                     output=scratch / "client-retrieval",
                 )
                 _cancel_retrieval(
@@ -3134,6 +3347,8 @@ def operate_qualification(
                     "resourcesync-complete",
                     "lifecycle-cursor-monotonic",
                     "download-quota-bounded",
+                    "opportunistic-immediate-retrieval",
+                    "retrieval-renewal",
                     "retrieval-lease-bounded",
                 ),
                 collection_id=collection_id,
@@ -3181,20 +3396,72 @@ def operate_qualification(
         if checkpoint.phase == "deep-archive-uploaded":
             if checkpoint.collection_id is None:
                 raise QualificationError("qualification checkpoint has no collection identity")
+            _assert_retrieval_cache_surface(
+                api,
+                collection_id=checkpoint.collection_id,
+                source_store="aws-deep-archive",
+                expected_lease_category="new_archive",
+                expected_retrieval_lease_seconds=lease_seconds,
+            )
+            with tempfile.TemporaryDirectory(prefix="riverhog-qualification-ingress-cache-") as raw:
+                _ready_retrieval(
+                    api,
+                    collection_id=checkpoint.collection_id,
+                    corpus=corpus,
+                    expected_source="aws-deep-archive",
+                    expected_read_mode="cache",
+                    lease_seconds=QUALIFICATION_OPPORTUNISTIC_LEASE_SECONDS,
+                    restore_policy="never",
+                    output=Path(raw) / "client-retrieval",
+                )
+            checkpoint = advance_checkpoint(
+                checkpoint,
+                phase="deep-archive-cache-observed",
+                assertions=(
+                    "ingress-cache-list-show-status",
+                    "ingress-cache-retrieval-verified",
+                    "new-archive-lease-observed",
+                    "opportunistic-cache-retrieval",
+                    "retrieval-policy-effective-values",
+                ),
+            )
+            write_checkpoint(checkpoint_path, checkpoint)
+
+        if checkpoint.phase == "deep-archive-cache-observed":
+            if checkpoint.collection_id is None:
+                raise QualificationError("qualification checkpoint has no collection identity")
             files = _retrieval_files(checkpoint.collection_id, corpus)
-            plan = api.plan_retrieval(files, lease_seconds=lease_seconds)
-            if _plan_sources(plan) != {"aws-deep-archive"}:
+            opportunistic_plan = api.plan_retrieval(
+                files,
+                lease_seconds=lease_seconds,
+                restore_policy="never",
+            )
+            if _plan_sources(opportunistic_plan) != {"aws-deep-archive"}:
                 raise QualificationError("Deep Archive retrieval did not select AWS")
-            if {str(item.get("read_mode", "")) for item in _page_items(plan, "objects")} != {
-                "restore_required"
-            }:
+            read_modes = {
+                str(item.get("read_mode", ""))
+                for item in _page_items(opportunistic_plan, "objects")
+            }
+            if read_modes == {"cache"}:
+                return checkpoint
+            if read_modes != {"restore_required"}:
                 raise QualificationError("Deep Archive retrieval did not require restore")
+            if opportunistic_plan.get("requires_restore") is not True:
+                raise QualificationError(
+                    "opportunistic Deep Archive plan omitted its restore requirement"
+                )
+            plan = api.plan_retrieval(
+                files,
+                lease_seconds=lease_seconds,
+                restore_policy="allow",
+            )
             if int(plan.get("lease_seconds", -1)) != lease_seconds:
                 raise QualificationError("Deep Archive plan did not preserve its bounded lease")
             job = api.create_retrieval_job(
                 files,
                 plan_etag=str(plan["etag"]),
                 lease_seconds=lease_seconds,
+                restore_policy="allow",
                 event_context={"qualification": "deep-archive-v1"},
             )
             job_id = str(job.get("id", ""))
@@ -3203,7 +3470,13 @@ def operate_qualification(
             checkpoint = advance_checkpoint(
                 checkpoint,
                 phase="restore-requested",
-                assertions=("deep-archive-restore-requested", "retrieval-plan-source-exact"),
+                assertions=(
+                    "deep-archive-restore-requested",
+                    "new-archive-cache-expired",
+                    "cache-sweep-cadence-observed",
+                    "opportunistic-plan-cost-boundary",
+                    "retrieval-plan-source-exact",
+                ),
                 retrieval_job_id=job_id,
             )
             write_checkpoint(checkpoint_path, checkpoint)
@@ -3254,6 +3527,20 @@ def operate_qualification(
                 assertions=("deep-archive-restore-ready",),
             )
             write_checkpoint(checkpoint_path, checkpoint)
+            renewed = api.renew_retrieval_job(
+                checkpoint.retrieval_job_id,
+                lease_seconds=lease_seconds,
+            )
+            if renewed.get("state") != "ready":
+                raise QualificationError("restored retrieval renewal did not remain ready")
+            job = renewed
+            _assert_retrieval_cache_surface(
+                api,
+                collection_id=collection_id,
+                source_store="aws-deep-archive",
+                expected_lease_category="retrieval_job",
+                expected_retrieval_lease_seconds=lease_seconds,
+            )
             cloudfront_identity, cloudfront_objects, cloudfront_bytes = _verify_cloudfront_egress(
                 api,
                 bucket=by_name["aws-deep-archive"],
@@ -3303,6 +3590,9 @@ def operate_qualification(
                     "cloudfront-signed-egress",
                     "cloudfront-warm-cache-hit",
                     "b2-retrieval-cache-hydrated",
+                    "retrieval-cache-list-show-status",
+                    "retrieval-renewal",
+                    "restore-poll-cadence-observed",
                     "deep-client-retrieval",
                     "deep-retrieval-acknowledged",
                     "restart-boundary-survived",
@@ -3443,6 +3733,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     b2_check.add_argument("config", type=Path)
 
+    cleanup_b2 = commands.add_parser(
+        "cleanup-b2",
+        help="remove a superseded dummy run namespace from the manual B2 buckets",
+    )
+    cleanup_b2.add_argument("config", type=Path)
+    cleanup_b2.add_argument("--checkpoint", type=Path, required=True)
+
     runtime = commands.add_parser(
         "runtime-env",
         help="write a permission-restricted disposable deployment environment",
@@ -3519,6 +3816,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             plan = check_b2_infrastructure(config, buckets, os.environ)
             _print_json(plan.as_dict())
             return 0 if plan.ready else 1
+        if args.command == "cleanup-b2":
+            config = load_config(args.config)
+            checkpoint = load_checkpoint(args.checkpoint)
+            buckets = resolve_buckets(config, os.environ, provider="b2")
+            _verify_checkpoint_providers(
+                checkpoint,
+                resolve_buckets(config, os.environ),
+                config,
+            )
+            _cleanup_b2_namespace(checkpoint, buckets, os.environ)
+            _print_json({"cleaned": True, "schema": CHECKPOINT_SCHEMA})
+            return 0
         if args.command == "runtime-env":
             config = load_config(args.config)
             checkpoint = load_checkpoint(args.checkpoint)

@@ -74,7 +74,7 @@ class S3ImmutableArchiveObjectStore:
         if self._storage_class:
             request["StorageClass"] = self._storage_class
         try:
-            response = self._put_create_only(request)
+            self._put_create_only(request)
         except ClientError as exc:
             status = int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0))
             code = str(exc.response.get("Error", {}).get("Code", ""))
@@ -104,16 +104,6 @@ class S3ImmutableArchiveObjectStore:
         receipt = self._receipt(object_path, head)
         if receipt.stored_bytes != len(content) or receipt.stored_sha256 != stored_sha256:
             raise RuntimeError("S3 immutable object does not match the uploaded content")
-        response_version = response.get("VersionId")
-        if receipt.version_id is None and response_version is not None:
-            receipt = ImmutableObjectReceipt(
-                object_path=receipt.object_path,
-                version_id=str(response_version),
-                etag=receipt.etag,
-                stored_bytes=receipt.stored_bytes,
-                stored_sha256=receipt.stored_sha256,
-                completed_at=receipt.completed_at,
-            )
         return receipt
 
     def _put_create_only(self, request: dict[str, Any]) -> dict[str, Any]:

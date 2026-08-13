@@ -4,6 +4,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
+from riverhog_core.domain.retrieval_cache import RetrievalCacheReceipt
+
 
 class ArchiveObjectIdentityConflict(RuntimeError):
     """The requested immutable object key already names a different object."""
@@ -14,6 +16,7 @@ class MultipartPartReceipt:
     number: int
     etag: str
     bytes: int
+    sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +32,7 @@ class CompletedObjectReceipt:
     etag: str | None
     bytes: int
     completed_at: str
+    retrieval_cache: RetrievalCacheReceipt | None = None
 
 
 class ArchiveMultipartObjectStore(Protocol):

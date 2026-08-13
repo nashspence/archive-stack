@@ -236,6 +236,15 @@ def test_source_artifact_default_path_is_zstd_tar() -> None:
     )
 
 
+def test_source_artifact_zstd_environment_reaches_tool_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VCRUNCH_ZSTD", "custom-zstd")
+    monkeypatch.setattr(shutil, "which", lambda command: f"/tools/{command}")
+
+    assert source_artifacts._zstd_command() == "/tools/custom-zstd"
+
+
 def test_source_artifact_bridge_accepts_service_encode_profile_shape() -> None:
     profile = {
         "schema_version": 1,

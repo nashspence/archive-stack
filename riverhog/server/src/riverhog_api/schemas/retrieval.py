@@ -15,6 +15,7 @@ class RetrievalFileIn(RiverhogModel):
 class RetrievalPlanRequest(RiverhogModel):
     files: list[RetrievalFileIn] = Field(min_length=1, max_length=10_000)
     lease_seconds: int | None = Field(default=None, ge=1)
+    restore_policy: Literal["allow", "never"] = "allow"
 
 
 class RetrievalPlanFileOut(RetrievalFileIn):
@@ -47,6 +48,8 @@ class RetrievalPlanObjectOut(RiverhogModel):
 class RetrievalPlanOut(RiverhogModel):
     format: Literal["riverhog-retrieval-plan/v1"]
     lease_seconds: int
+    restore_policy: Literal["allow", "never"]
+    requires_restore: bool
     files: list[RetrievalPlanFileOut]
     objects: list[RetrievalPlanObjectOut]
     etag: str
@@ -54,6 +57,10 @@ class RetrievalPlanOut(RiverhogModel):
 
 class CreateRetrievalJobRequest(RetrievalPlanRequest):
     event_context: dict[str, Any] | None = None
+
+
+class RenewRetrievalJobRequest(RiverhogModel):
+    lease_seconds: int = Field(ge=1)
 
 
 class RetrievalJobOut(RiverhogModel):
@@ -68,5 +75,56 @@ class RetrievalJobOut(RiverhogModel):
     completed_at: str | None
     canceled_at: str | None
     failure: str | None
+    lease_seconds: int
+    restore_policy: Literal["allow", "never"]
+    requires_restore: bool
     files: list[RetrievalPlanFileOut]
     objects: list[RetrievalPlanObjectOut]
+
+
+class RetrievalCachePolicyOut(RiverhogModel):
+    new_archive_lease_seconds: int
+    retrieval_default_lease_seconds: int
+    retrieval_max_lease_seconds: int
+    pending_timeout_seconds: int
+    restore_hold_seconds: int
+    sweep_interval_seconds: int
+    restore_poll_interval_seconds: int
+
+
+class RetrievalCacheStatusOut(RiverhogModel):
+    configured: bool
+    new_archive_enabled: bool
+    objects: int
+    stored_bytes: int
+    protected_objects: int
+    unleased_objects: int
+    policy: RetrievalCachePolicyOut
+
+
+class RetrievalCacheObjectOut(RiverhogModel):
+    collection_id: int
+    source_store: str
+    object_id: str
+    state: Literal["ready", "delete_pending", "deleting"]
+    stored_bytes: int
+    stored_sha256: str
+    cached_at: str
+    verified_at: str
+    protected_until: str | None
+    new_archive_expires_at: str | None
+    lease_categories: list[Literal["new_archive", "retrieval_job"]]
+    retrieval_job_leases: int
+    tags: list[str]
+
+
+class RetrievalCacheObjectListOut(RiverhogModel):
+    page: int
+    per_page: int
+    total: int
+    pages: int
+    sort: str
+    order: Literal["asc", "desc"]
+    query: str | None
+    filters: dict[str, str | None]
+    objects: list[RetrievalCacheObjectOut]

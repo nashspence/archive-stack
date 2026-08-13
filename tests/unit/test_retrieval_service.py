@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Iterator
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
+import pytest
+from riverhog_core.app_permissions import (
+    CATALOG_READ,
+    TAG_PREFIX,
+    ApplicationAccess,
+    ApplicationPrincipal,
+)
 from riverhog_core.archive_store_registry import ArchiveStoreBinding, ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
-from riverhog_core.catalog_models import TagRecord
+from riverhog_core.catalog_models import RetrievalCacheLeaseRecord, RetrievalJobRecord, TagRecord
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveStore
 from riverhog_core.ports.download_allowance import DownloadAttribution
@@ -15,6 +23,7 @@ from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
+from riverhog_protocol.errors import Conflict, NotFound
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_protocol.raw_ingress import hash_raw_source
 
@@ -54,6 +63,16 @@ class DirectArchiveStore(MemoryArchiveStore):
     ) -> None:
         super().__init__(read_mode=read_mode)
         self._multipart = multipart
+        self.prepare_holds: list[int] = []
+
+    def prepare_archive_objects_read(
+        self,
+        *,
+        hold_days: int,
+        **kwargs: object,
+    ):  # type: ignore[no-untyped-def]
+        self.prepare_holds.append(hold_days)
+        return super().prepare_archive_objects_read(hold_days=hold_days, **kwargs)
 
     def iter_stored_archive_object(
         self,
@@ -175,6 +194,8 @@ def _seed_collection(
     read_mode: str = "immediate",
     cache: MemoryRetrievalCache | None = None,
     allowance: RecordingDownloadAllowance | None = None,
+    pending_timeout: timedelta | None = None,
+    restore_hold: timedelta | None = None,
 ) -> tuple[
     SqlAlchemyRetrievalService,
     int,
@@ -182,7 +203,12 @@ def _seed_collection(
     DirectArchiveStore,
 ]:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
-    config = RuntimeConfig(database_url=database_url, archive_scrypt_work_factor=1)
+    config = RuntimeConfig(
+        database_url=database_url,
+        archive_scrypt_work_factor=1,
+        retrieval_pending_timeout=pending_timeout or timedelta(hours=72),
+        retrieval_restore_hold=restore_hold or timedelta(hours=24),
+    )
     initialize_db(database_url)
     with session_scope(make_session_factory(database_url)) as session:
         session.add(
@@ -448,3 +474,241 @@ def test_cancel_releases_a_ready_job_and_its_download_reservation(tmp_path: Path
 
     assert canceled["state"] == "canceled"
     assert allowance.released == [str(job["id"])]
+
+
+def test_restore_policy_never_is_atomic_and_never_requests_archive_restore(
+    tmp_path: Path,
+) -> None:
+    cache = MemoryRetrievalCache()
+    service, collection_id, _ranges, store = _seed_collection(
+        tmp_path,
+        {"document.txt": b"document"},
+        read_mode="restore_required",
+        cache=cache,
+    )
+    plan = service.plan(((collection_id, "document.txt"),), restore_policy="never")
+
+    assert plan["requires_restore"] is True
+    with pytest.raises(Conflict, match="restore_policy is never"):
+        service.create(
+            app="reader",
+            files=((collection_id, "document.txt"),),
+            plan_etag=str(plan["etag"]),
+            restore_policy="never",
+        )
+    assert store.prepared == []
+
+
+def test_requested_retrieval_uses_the_independent_provider_hold(tmp_path: Path) -> None:
+    cache = MemoryRetrievalCache()
+    service, collection_id, _ranges, store = _seed_collection(
+        tmp_path,
+        {"document.txt": b"document"},
+        read_mode="restore_required",
+        cache=cache,
+        restore_hold=timedelta(hours=49),
+    )
+    _ready_job(service, collection_id, "document.txt")
+
+    assert service.process_due() == 1
+    assert store.prepare_holds == [3]
+
+
+def test_requested_retrieval_converges_after_its_pending_timeout(tmp_path: Path) -> None:
+    cache = MemoryRetrievalCache()
+    allowance = RecordingDownloadAllowance()
+    service, collection_id, _ranges, store = _seed_collection(
+        tmp_path,
+        {"document.txt": b"document"},
+        read_mode="restore_required",
+        cache=cache,
+        allowance=allowance,
+        pending_timeout=timedelta(hours=1),
+    )
+    requested = _ready_job(
+        service,
+        collection_id,
+        "document.txt",
+        key_id="reader-key",
+    )
+    with session_scope(service._session_factory) as session:
+        record = session.get(RetrievalJobRecord, str(requested["id"]))
+        assert record is not None
+        record.created_at = "2020-01-01T00:00:00.000000Z"
+
+    assert service.process_due() == 1
+    failed = service.get(
+        app="reader",
+        key_id="reader-key",
+        job_id=str(requested["id"]),
+    )
+    assert failed["state"] == "failed"
+    assert failed["failure"] == "retrieval exceeded the configured pending timeout"
+    assert store.prepared == []
+    assert allowance.released == [str(requested["id"])]
+
+
+def test_ready_retrieval_renewal_extends_its_cache_lease(tmp_path: Path) -> None:
+    cache = MemoryRetrievalCache()
+    service, collection_id, _ranges, _store = _seed_collection(
+        tmp_path,
+        {"document.txt": b"document"},
+        read_mode="restore_required",
+        cache=cache,
+    )
+    requested = _ready_job(service, collection_id, "document.txt")
+    assert service.process_due() == 1
+    ready = service.get(app="reader", job_id=str(requested["id"]))
+
+    renewed = service.renew(
+        app="reader",
+        job_id=str(ready["id"]),
+        lease=timedelta(hours=36),
+    )
+
+    assert renewed["state"] == "ready"
+    assert renewed["lease_seconds"] == 36 * 60 * 60
+    with session_scope(service._session_factory) as session:
+        lease = session.get(
+            RetrievalCacheLeaseRecord,
+            (
+                f"job:{ready['id']}",
+                "archive",
+                collection_id,
+                "pack-000000000000",
+            ),
+        )
+        assert lease is not None
+        assert lease.expires_at == renewed["expires_at"]
+
+
+def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -> None:
+    cache = MemoryRetrievalCache()
+    service, collection_id, _ranges, _store = _seed_collection(
+        tmp_path,
+        {"document.txt": b"document"},
+        read_mode="restore_required",
+        cache=cache,
+    )
+    requested = _ready_job(service, collection_id, "document.txt")
+    assert service.process_due() == 1
+    permitted = ApplicationPrincipal(
+        app="indexer",
+        key_id="indexer-key",
+        access=frozenset({ApplicationAccess(CATALOG_READ, f"{TAG_PREFIX}docs")}),
+    )
+    denied = ApplicationPrincipal(
+        app="outsider",
+        key_id="outsider-key",
+        access=frozenset({ApplicationAccess(CATALOG_READ, f"{TAG_PREFIX}other")}),
+    )
+
+    status = service.cache_status(principal=permitted)
+    listed = service.list_cache_objects(
+        page=1,
+        per_page=25,
+        q=None,
+        tag="docs",
+        sort="cached_at",
+        order="desc",
+        principal=permitted,
+    )
+    filtered = service.list_cache_objects(
+        page=1,
+        per_page=25,
+        q=None,
+        tag="docs",
+        collection_id=collection_id,
+        source_store="ARCHIVE",
+        state="READY",
+        protection="PROTECTED",
+        expires_before="2099-01-01T00:00:00+00:00",
+        expires_after="2020-01-01T00:00:00Z",
+        sort="protected_until",
+        order="asc",
+        principal=permitted,
+    )
+    current = listed["objects"][0]
+    shown = service.get_cache_object(
+        collection_id=collection_id,
+        source_store=str(current["source_store"]),
+        object_id=str(current["object_id"]),
+        principal=permitted,
+    )
+
+    assert status["objects"] == 1
+    assert listed["total"] == 1
+    assert filtered["objects"] == listed["objects"]
+    assert filtered["filters"] == {
+        "tag": "docs",
+        "collection_id": str(collection_id),
+        "source_store": "archive",
+        "state": "ready",
+        "protection": "protected",
+        "expires_before": "2099-01-01T00:00:00.000000Z",
+        "expires_after": "2020-01-01T00:00:00.000000Z",
+    }
+    assert shown["collection_id"] == collection_id
+    assert shown["state"] == "ready"
+    assert shown["lease_categories"] == ["retrieval_job"]
+    assert service.cache_status(principal=denied)["objects"] == 0
+    assert (
+        service.list_cache_objects(
+            page=1,
+            per_page=25,
+            q=None,
+            tag=None,
+            sort="cached_at",
+            order="desc",
+            principal=denied,
+        )["objects"]
+        == []
+    )
+    with pytest.raises(NotFound):
+        service.get_cache_object(
+            collection_id=collection_id,
+            source_store="archive",
+            object_id=str(current["object_id"]),
+            principal=denied,
+        )
+    assert requested["state"] == "requested"
+
+
+def test_cache_status_reports_effective_new_archive_insertion(tmp_path: Path) -> None:
+    service, _collection_id, _ranges, _store = _seed_collection(
+        tmp_path,
+        {"document.txt": b"document"},
+    )
+
+    status = service.cache_status()
+
+    assert status["configured"] is False
+    assert status["new_archive_enabled"] is False
+    assert status["policy"] == {
+        "new_archive_lease_seconds": 72 * 60 * 60,
+        "retrieval_default_lease_seconds": 24 * 60 * 60,
+        "retrieval_max_lease_seconds": 7 * 24 * 60 * 60,
+        "pending_timeout_seconds": 72 * 60 * 60,
+        "restore_hold_seconds": 24 * 60 * 60,
+        "sweep_interval_seconds": 5 * 60,
+        "restore_poll_interval_seconds": 5 * 60,
+    }
+
+
+def test_cache_sweep_removes_an_unleased_verified_object(tmp_path: Path) -> None:
+    cache = MemoryRetrievalCache()
+    service, collection_id, _ranges, _store = _seed_collection(
+        tmp_path,
+        {"document.txt": b"document"},
+        read_mode="restore_required",
+        cache=cache,
+    )
+    requested = _ready_job(service, collection_id, "document.txt")
+    assert service.process_due() == 1
+    ready = service.get(app="reader", job_id=str(requested["id"]))
+    completed = service.acknowledge(app="reader", job_id=str(ready["id"]))
+
+    assert completed["state"] == "completed"
+    assert service.sweep() == 1
+    assert len(cache.deleted) == 1
+    assert service.cache_status()["objects"] == 0

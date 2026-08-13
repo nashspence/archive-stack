@@ -24,7 +24,12 @@ from riverhog_core.ports.archive_objects import (
     MultipartUpload,
 )
 from riverhog_core.ports.archive_upload_checkpoints import RawUploadCheckpointStore
+from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.raw_volume import raw_s3_part_plans
+from riverhog_core.retrieval_cache_receipts import (
+    parse_retrieval_cache_receipt,
+    retrieval_cache_receipt_payload,
+)
 from riverhog_core.streaming_age import (
     PreparedAgePart,
     ResumableAgeSessionCache,
@@ -57,6 +62,7 @@ class CompletedRawObject:
     etag: str | None
     bytes: int
     completed_at: str
+    retrieval_cache: RetrievalCacheReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +110,9 @@ class RawUploadCheckpoint:
                         "etag": self.completed.etag,
                         "bytes": self.completed.bytes,
                         "completed_at": self.completed.completed_at,
+                        "retrieval_cache": retrieval_cache_receipt_payload(
+                            self.completed.retrieval_cache
+                        ),
                     }
                     if self.completed is not None
                     else None
@@ -472,6 +481,7 @@ class RawVolumeUploader:
             parts=tuple(sorted(checkpoint.parts, key=lambda current: current.number)),
             version_id=completed.version_id,
             completed_at=completed.completed_at,
+            retrieval_cache=completed.retrieval_cache,
         )
 
     def abort(self, checkpoint: RawUploadCheckpoint) -> None:
@@ -580,7 +590,12 @@ class RawVolumeUploader:
         completed = self._object_store.complete_multipart_upload(
             upload=MultipartUpload(checkpoint.object_path, checkpoint.upload_id),
             parts=tuple(
-                MultipartPartReceipt(current.number, current.etag, current.stored_bytes)
+                MultipartPartReceipt(
+                    current.number,
+                    current.etag,
+                    current.stored_bytes,
+                    current.stored_sha256,
+                )
                 for current in parts
             ),
             expected_bytes=sum(current.stored_bytes for current in parts),
@@ -608,6 +623,7 @@ class RawVolumeUploader:
                 etag=completed.etag,
                 bytes=completed.bytes,
                 completed_at=completed.completed_at,
+                retrieval_cache=completed.retrieval_cache,
             ),
         )
         return self._save(sealed)
@@ -897,6 +913,7 @@ def _completed_from_payload(value: object) -> CompletedRawObject | None:
         etag=str(etag) if etag is not None else None,
         bytes=byte_count,
         completed_at=completed_at,
+        retrieval_cache=parse_retrieval_cache_receipt(value.get("retrieval_cache")),
     )
 
 

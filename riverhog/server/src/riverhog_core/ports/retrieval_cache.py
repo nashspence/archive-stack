@@ -1,21 +1,26 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
-from typing import Protocol
+from datetime import datetime
+from typing import TYPE_CHECKING, Protocol
 
+from riverhog_core.domain.retrieval_cache import RetrievalCacheReceipt as RetrievalCacheReceipt
 
-@dataclass(frozen=True, slots=True)
-class RetrievalCacheReceipt:
-    object_path: str
-    version_id: str | None
-    stored_bytes: int
-    stored_sha256: str
-    cached_at: str
-    verified_at: str
+if TYPE_CHECKING:
+    from riverhog_core.ports.archive_objects import (
+        ArchiveMultipartObjectStore,
+        CompletedObjectReceipt,
+        MultipartPartReceipt,
+    )
 
 
 class RetrievalCache(Protocol):
+    def abort_incomplete_multipart_uploads(
+        self,
+        *,
+        initiated_before: datetime,
+    ) -> int: ...
+
     def put(
         self,
         *,
@@ -45,3 +50,18 @@ class RetrievalCache(Protocol):
     ) -> Iterator[bytes]: ...
 
     def delete(self, *, object_path: str, version_id: str | None) -> None: ...
+
+    def multipart_object_store(
+        self,
+        *,
+        source_store: str,
+        collection_id: int,
+        object_id: str,
+    ) -> ArchiveMultipartObjectStore: ...
+
+    def verify_multipart_object(
+        self,
+        *,
+        completed: CompletedObjectReceipt,
+        parts: tuple[MultipartPartReceipt, ...] = (),
+    ) -> RetrievalCacheReceipt: ...

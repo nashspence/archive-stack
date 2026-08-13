@@ -65,19 +65,34 @@ class RetrievalStub:
         )
 
 
-def _request(path: str) -> Request:
-    return Request(
-        {
-            "type": "http",
-            "method": "GET",
-            "scheme": "https",
-            "server": ("riverhog.example.test", 443),
-            "path": path,
-            "root_path": "",
-            "query_string": b"",
-            "headers": [],
-        }
+def _request(path: str, *, public_base_url: str | None = None) -> Request:
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "scheme": "https",
+        "server": ("riverhog.example.test", 443),
+        "path": path,
+        "root_path": "",
+        "query_string": b"",
+        "headers": [],
+    }
+    if public_base_url is not None:
+        scope["app"] = SimpleNamespace(
+            state=SimpleNamespace(public_base_url=public_base_url),
+        )
+    return Request(scope)
+
+
+def test_resourcesync_uses_the_configured_public_url_authority() -> None:
+    response = well_known_resourcesync(
+        _request(
+            "/.well-known/resourcesync",
+            public_base_url="https://public.example.test/riverhog",
+        ),
+        "app",
     )
+
+    assert b"https://public.example.test/riverhog/resourcesync/capabilitylist.xml" in response.body
 
 
 def test_resourcesync_lists_portable_manifests_and_incremental_changes() -> None:

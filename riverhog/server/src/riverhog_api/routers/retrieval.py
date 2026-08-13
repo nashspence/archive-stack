@@ -9,10 +9,14 @@ from fastapi.responses import StreamingResponse
 from http_api_contracts import error_responses
 from riverhog_protocol.errors import BadRequest
 
-from riverhog_api.auth import RetrievalManager
+from riverhog_api.auth import CatalogReader, RetrievalManager
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.retrieval import (
     CreateRetrievalJobRequest,
+    RenewRetrievalJobRequest,
+    RetrievalCacheObjectListOut,
+    RetrievalCacheObjectOut,
+    RetrievalCacheStatusOut,
     RetrievalJobOut,
     RetrievalPlanOut,
     RetrievalPlanRequest,
@@ -23,6 +27,75 @@ router = APIRouter(tags=["retrieval"])
 
 def _files(request: RetrievalPlanRequest) -> list[tuple[int, str]]:
     return [(item.collection_id, item.path) for item in request.files]
+
+
+@router.get("/retrieval-cache", response_model=RetrievalCacheStatusOut)
+def retrieval_cache_status(
+    principal: CatalogReader,
+    container: ContainerDep,
+) -> RetrievalCacheStatusOut:
+    return RetrievalCacheStatusOut.model_validate(
+        container.retrieval.cache_status(principal=principal)
+    )
+
+
+@router.get("/retrieval-cache/objects", response_model=RetrievalCacheObjectListOut)
+def list_retrieval_cache_objects(
+    principal: CatalogReader,
+    container: ContainerDep,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+    q: str | None = Query(None),
+    tag: str | None = Query(None),
+    collection_id: int | None = Query(None, ge=1),
+    source_store: str | None = Query(None),
+    state: str | None = Query(None),
+    protection: str | None = Query(None),
+    expires_before: str | None = Query(None),
+    expires_after: str | None = Query(None),
+    sort: str = Query("cached_at"),
+    order: str = Query("desc"),
+    all_items: bool = Query(False, alias="all"),
+) -> RetrievalCacheObjectListOut:
+    return RetrievalCacheObjectListOut.model_validate(
+        container.retrieval.list_cache_objects(
+            page=page,
+            per_page=per_page,
+            q=q,
+            tag=tag,
+            collection_id=collection_id,
+            source_store=source_store,
+            state=state,
+            protection=protection,
+            expires_before=expires_before,
+            expires_after=expires_after,
+            sort=sort,
+            order=order,
+            all_items=all_items,
+            principal=principal,
+        )
+    )
+
+
+@router.get(
+    "/retrieval-cache/objects/{collection_id}/{source_store}/{object_id}",
+    response_model=RetrievalCacheObjectOut,
+)
+def get_retrieval_cache_object(
+    collection_id: int,
+    source_store: str,
+    object_id: str,
+    principal: CatalogReader,
+    container: ContainerDep,
+) -> RetrievalCacheObjectOut:
+    return RetrievalCacheObjectOut.model_validate(
+        container.retrieval.get_cache_object(
+            collection_id=collection_id,
+            source_store=source_store,
+            object_id=object_id,
+            principal=principal,
+        )
+    )
 
 
 @router.post("/retrieval-plans", response_model=RetrievalPlanOut)
@@ -36,6 +109,7 @@ def plan_retrieval(
         lease=(
             timedelta(seconds=request.lease_seconds) if request.lease_seconds is not None else None
         ),
+        restore_policy=request.restore_policy,
         principal=principal,
     )
     return RetrievalPlanOut.model_validate(payload)
@@ -61,10 +135,28 @@ def create_retrieval_job(
         lease=(
             timedelta(seconds=request.lease_seconds) if request.lease_seconds is not None else None
         ),
+        restore_policy=request.restore_policy,
         event_context=request.event_context,
         principal=principal,
     )
     return RetrievalJobOut.model_validate(payload)
+
+
+@router.post("/retrieval-jobs/{job_id}/renew", response_model=RetrievalJobOut)
+def renew_retrieval_job(
+    job_id: str,
+    request: RenewRetrievalJobRequest,
+    principal: RetrievalManager,
+    container: ContainerDep,
+) -> RetrievalJobOut:
+    return RetrievalJobOut.model_validate(
+        container.retrieval.renew(
+            app=principal.app,
+            key_id=principal.key_id,
+            job_id=job_id,
+            lease=timedelta(seconds=request.lease_seconds),
+        )
+    )
 
 
 @router.get("/retrieval-jobs/{job_id}", response_model=RetrievalJobOut)

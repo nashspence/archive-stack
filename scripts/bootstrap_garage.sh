@@ -5,6 +5,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_compose_env.sh"
 
 setup_test_compose_project
 configure_compose_tty
+export COMPOSE_PROFILES=development
 ensure_compose_image test
 
 archive_store_names="$(compose_env_value RIVERHOG_ARCHIVE_STORES archive)"

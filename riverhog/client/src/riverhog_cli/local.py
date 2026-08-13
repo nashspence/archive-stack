@@ -44,6 +44,8 @@ LOCAL_LIST_SORT_FIELDS = {
 }
 PROJECTION_NAME_BYTES_MAX = 240
 LOCAL_AUDIT_SAMPLE_LIMIT = 100
+RETRIEVAL_FILE_BATCH_MAX = 10_000
+RETRIEVAL_RENEW_INTERVAL_MAX_SECONDS = 60 * 60
 
 
 def _target(*, create: bool = True) -> Path:
@@ -444,6 +446,11 @@ def _download_job(
     api: ApiClient,
     job: dict[str, Any],
 ) -> int:
+    lease_seconds = int(job["lease_seconds"])
+    job = api.renew_retrieval_job(
+        str(job["id"]),
+        lease_seconds=lease_seconds,
+    )
     expected: dict[tuple[int, str], tuple[int, str]] = {}
     for current in job["files"]:
         collection_id = normalize_collection_id(current["collection_id"])
@@ -476,12 +483,24 @@ def _download_job(
                 )
             )
         concurrency = configured_download_concurrency()
+
+        def maintain_lease() -> None:
+            api.renew_retrieval_job(
+                str(job["id"]),
+                lease_seconds=lease_seconds,
+            )
+
         download_retrieval_files(
             api,
             str(job["id"]),
             downloads,
             concurrency=concurrency,
             window=configured_download_window(concurrency=concurrency),
+            heartbeat=maintain_lease,
+            heartbeat_interval_seconds=max(
+                0.1,
+                min(RETRIEVAL_RENEW_INTERVAL_MAX_SECONDS, lease_seconds / 3),
+            ),
         )
         for download in downloads:
             if not _matches(
@@ -523,72 +542,111 @@ def _sync_notice(message: str, *, json_mode: bool) -> None:
     typer.echo(message, err=json_mode)
 
 
-def _sync(*, wait: bool, repair: bool, json_mode: bool) -> dict[str, object]:
+def _sync(
+    *,
+    wait: bool,
+    repair: bool,
+    restore_policy: str,
+    json_mode: bool,
+) -> dict[str, object]:
+    if restore_policy not in {"allow", "never"}:
+        raise typer.BadParameter("--restore-policy must be allow or never")
     target = _target()
     with closing(_connect(target)) as db, ApiClient() as api:
         _refresh_catalog(db, api)
         _reconcile_projection(db, target)
-        active = db.execute(
-            "SELECT id FROM retrieval_jobs ORDER BY updated_at DESC LIMIT 1"
-        ).fetchone()
-        if active is not None:
-            job = api.get_retrieval_job(str(active["id"]))
-            if job["state"] in {"expired", "failed", "canceled"}:
-                db.execute("DELETE FROM retrieval_jobs WHERE id = ?", (job["id"],))
-                active = None
-            elif job["state"] == "ready":
-                count = _download_job(db, target, api, job)
-                _reconcile_projection(db, target)
+        materialized_files = 0
+        unavailable: set[tuple[int, str]] = set()
+        last_retrieval_id: str | None = None
+
+        while True:
+            active = db.execute(
+                "SELECT id FROM retrieval_jobs ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
+            job: dict[str, Any] | None = None
+            if active is not None:
+                job = api.get_retrieval_job(str(active["id"]))
+                if job["state"] in {"expired", "failed", "canceled"}:
+                    db.execute("DELETE FROM retrieval_jobs WHERE id = ?", (job["id"],))
+                    db.commit()
+                    job = None
+                elif job["state"] != "ready" and not wait:
+                    db.commit()
+                    return {
+                        "status": str(job["state"]),
+                        "retrieval": job,
+                        "materialized_files": materialized_files,
+                    }
+
+            if job is None:
+                missing = [
+                    current
+                    for current in _missing_files(db, target, repair=repair)
+                    if current not in unavailable
+                ]
+                if not missing:
+                    db.commit()
+                    if unavailable:
+                        return {
+                            "status": "cache-miss",
+                            "restore_policy": restore_policy,
+                            "materialized_files": materialized_files,
+                            "unavailable_files": len(unavailable),
+                        }
+                    payload: dict[str, object] = {
+                        "status": "materialized" if materialized_files else "current",
+                        "materialized_files": materialized_files,
+                    }
+                    if last_retrieval_id is not None:
+                        payload["retrieval_id"] = last_retrieval_id
+                    return payload
+
+                batch = missing[:RETRIEVAL_FILE_BATCH_MAX]
+                plan = api.plan_retrieval(batch, restore_policy=restore_policy)
+                if restore_policy == "never" and plan.get("requires_restore"):
+                    blocked = {
+                        (
+                            normalize_collection_id(current["collection_id"]),
+                            normalize_relpath(str(placement["path"])),
+                        )
+                        for current in plan.get("objects", [])
+                        if current.get("read_mode") == "restore_required"
+                        for placement in current.get("placements", [])
+                    }
+                    unavailable.update(blocked)
+                    batch = [current for current in batch if current not in blocked]
+                    if not batch:
+                        continue
+                    plan = api.plan_retrieval(batch, restore_policy=restore_policy)
+                job = api.create_retrieval_job(
+                    batch,
+                    plan_etag=str(plan["etag"]),
+                    restore_policy=restore_policy,
+                )
+                db.execute(
+                    "INSERT INTO retrieval_jobs (id, state, files_json) VALUES (?, ?, ?)",
+                    (job["id"], job["state"], json.dumps(job["files"])),
+                )
                 db.commit()
-                return {
-                    "status": "materialized",
-                    "retrieval_id": str(job["id"]),
-                    "materialized_files": count,
-                }
-            elif not wait:
-                db.commit()
+
+            while job["state"] == "requested" and wait:
+                _sync_notice(
+                    f"retrieval {job['id']} is waiting for archive availability",
+                    json_mode=json_mode,
+                )
+                time.sleep(10)
+                job = api.get_retrieval_job(str(job["id"]))
+            if job["state"] != "ready":
                 return {
                     "status": str(job["state"]),
                     "retrieval": job,
-                    "materialized_files": 0,
+                    "materialized_files": materialized_files,
                 }
 
-        if active is None:
-            missing = _missing_files(db, target, repair=repair)
-            if not missing:
-                db.commit()
-                return {"status": "current", "materialized_files": 0}
-            plan = api.plan_retrieval(missing)
-            job = api.create_retrieval_job(missing, plan_etag=str(plan["etag"]))
-            db.execute(
-                "INSERT INTO retrieval_jobs (id, state, files_json) VALUES (?, ?, ?)",
-                (job["id"], job["state"], json.dumps(job["files"])),
-            )
+            materialized_files += _download_job(db, target, api, job)
+            last_retrieval_id = str(job["id"])
+            _reconcile_projection(db, target)
             db.commit()
-        else:
-            job = api.get_retrieval_job(str(active["id"]))
-
-        while job["state"] == "requested" and wait:
-            _sync_notice(
-                f"retrieval {job['id']} is waiting for archive availability",
-                json_mode=json_mode,
-            )
-            time.sleep(10)
-            job = api.get_retrieval_job(str(job["id"]))
-        if job["state"] != "ready":
-            return {
-                "status": str(job["state"]),
-                "retrieval": job,
-                "materialized_files": 0,
-            }
-        count = _download_job(db, target, api, job)
-        _reconcile_projection(db, target)
-        db.commit()
-        return {
-            "status": "materialized",
-            "retrieval_id": str(job["id"]),
-            "materialized_files": count,
-        }
 
 
 def _format_sync_result(payload: dict[str, object]) -> str:
@@ -597,6 +655,13 @@ def _format_sync_result(payload: dict[str, object]) -> str:
         return f"materialized {payload.get('materialized_files', 0)} file(s)"
     if status == "current":
         return "materialization is current"
+    if status == "cache-miss":
+        raw_materialized = payload.get("materialized_files", 0)
+        materialized = raw_materialized if isinstance(raw_materialized, int) else 0
+        prefix = f"materialized {materialized} file(s); " if materialized else ""
+        return prefix + (
+            f"{payload.get('unavailable_files', 0)} remaining file(s) would require archive restore"
+        )
     retrieval = payload.get("retrieval")
     retrieval_id = retrieval.get("id") if isinstance(retrieval, dict) else "unknown"
     return f"retrieval {retrieval_id} is {status}; rerun sync later"
@@ -766,18 +831,42 @@ def show_collection(
 @local_app.command("sync")
 def sync(
     wait: Annotated[bool, typer.Option(help="Wait while archival retrieval is pending")] = False,
+    restore_policy: Annotated[
+        str,
+        typer.Option(
+            "--restore-policy",
+            help="Use allow for full retrieval or never for opportunistic-only materialization",
+        ),
+    ] = "allow",
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    payload = _sync(wait=wait, repair=False, json_mode=json_mode)
+    payload = _sync(
+        wait=wait,
+        repair=False,
+        restore_policy=restore_policy,
+        json_mode=json_mode,
+    )
     emit(payload if json_mode else _format_sync_result(payload), json_mode=json_mode)
 
 
 @local_app.command("repair")
 def repair(
     wait: Annotated[bool, typer.Option(help="Wait while archival retrieval is pending")] = False,
+    restore_policy: Annotated[
+        str,
+        typer.Option(
+            "--restore-policy",
+            help="Use allow for full retrieval or never for opportunistic-only repair",
+        ),
+    ] = "allow",
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    payload = _sync(wait=wait, repair=True, json_mode=json_mode)
+    payload = _sync(
+        wait=wait,
+        repair=True,
+        restore_policy=restore_policy,
+        json_mode=json_mode,
+    )
     emit(payload if json_mode else _format_sync_result(payload), json_mode=json_mode)
 
 
