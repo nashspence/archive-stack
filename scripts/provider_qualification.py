@@ -2201,6 +2201,7 @@ def write_runtime_environment(
         "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE": "true",
         "RIVERHOG_BOOTSTRAP_TOKEN": _required_env(values, "RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN"),
         "RIVERHOG_CLOUDFRONT_PRIVATE_KEY_HOST_PATH": str(private_key_path),
+        "RIVERHOG_COMPOSE_ENV_FILE": str(output.expanduser().resolve()),
         "RIVERHOG_PUBLIC_BASE_URL": "http://app:8000",
         "RIVERHOG_RETRIEVAL_TIER": config.restore_tier,
         "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY": "48h",

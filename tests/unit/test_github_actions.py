@@ -416,7 +416,7 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     assert "docker volume ls" in deployment_env["run"]
     assert "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog" in deployment["run"]
     assert "logs --no-color --tail 80 app state" in deployment["run"]
-    assert "get_or_create_container; get_or_create_container()" in deployment["run"]
+    assert "default_container; default_container()" in deployment["run"]
     assert "timeout 30s" in deployment["run"]
     assert "pg_dump" in snapshot["run"]
     assert "536870912" in snapshot["run"]
