@@ -415,6 +415,9 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     assert "RIVERHOG_DATABASE_URL=" in deployment_env["run"]
     assert "docker volume ls" in deployment_env["run"]
     assert "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog" in deployment["run"]
+    assert "logs --no-color --tail 80 app state" in deployment["run"]
+    assert "get_or_create_container; get_or_create_container()" in deployment["run"]
+    assert "timeout 30s" in deployment["run"]
     assert "pg_dump" in snapshot["run"]
     assert "536870912" in snapshot["run"]
 
@@ -422,6 +425,9 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
         step
         for step in steps
         if step["name"] == "Package resumable dummy state and public evidence"
+    )
+    assert package["if"] == (
+        "always() && env.STATE_DIR != '' && steps.deployment.outcome == 'success'"
     )
     upload = next(step for step in steps if step["name"] == "Upload bounded qualification state")
     assert 'if [[ "$phase" == cleaned || "$phase" == failed ]]' in package["run"]
