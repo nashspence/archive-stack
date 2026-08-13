@@ -1,4 +1,4 @@
-FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS ffmpeg-build
+FROM nvidia/cuda:13.3.1-devel-ubuntu24.04@sha256:4ff859525f99de5782aa73607ce24219b07dddd48d12b97c1c301d7e1cfb0a87 AS ffmpeg-build
 
 ARG SOURCE_DATE_EPOCH=0
 ARG FFMPEG_REF=8885116f4dbe10527d4e7a14dc691b07e3915d55
@@ -57,7 +57,7 @@ RUN git init ffmpeg \
  && sh /build/verify-ffmpeg /opt/ffmpeg/bin/ffmpeg
 
 
-FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS python-build
+FROM python:3.14-slim@sha256:ce40764625a4ff50df3548277632e7f96c4e77fe75fa848aae9885476e7df5a4 AS python-build
 
 ARG SOURCE_DATE_EPOCH=0
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
@@ -84,7 +84,7 @@ COPY packages/tus-transport packages/tus-transport
 RUN uv sync --frozen --package munchy-av1-nvenc-target --no-dev --no-editable
 
 
-FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3
+FROM nvidia/cuda:13.3.1-runtime-ubuntu24.04@sha256:63da350831208559df18c7b8f3e0d5d1c984eaa815cdde690aacd6606cd0cb11
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
