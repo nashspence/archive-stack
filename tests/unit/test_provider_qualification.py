@@ -548,10 +548,16 @@ def test_cloudfront_contract_is_private_signed_and_version_exact() -> None:
     provider_defaults["ViewerCertificate"].update(
         {"CertificateSource": "cloudfront", "MinimumProtocolVersion": "TLSv1"}
     )
+    provider_defaults["Origins"]["Items"][0]["S3OriginConfig"]["OriginReadTimeout"] = 30
     assert manager._normalize_distribution(provider_defaults) == manager._normalize_distribution(
         distribution
     )
     assert manager._distribution_changes(provider_defaults, distribution) == ()
+    nondefault_origin_timeout = json.loads(json.dumps(provider_defaults))
+    nondefault_origin_timeout["Origins"]["Items"][0]["S3OriginConfig"]["OriginReadTimeout"] = 45
+    assert manager._distribution_changes(nondefault_origin_timeout, distribution) == (
+        "Origin.S3OriginConfig.OriginReadTimeout",
+    )
     assert manager._pay_as_you_go_billing_changes(distribution) == ()
     paid_features = json.loads(json.dumps(distribution))
     paid_features["Logging"] = {"Enabled": True}
