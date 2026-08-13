@@ -49,6 +49,7 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     assert mise["tools"]["uv"] == "0.11.24"
     assert mise["tools"]["age"] == "1.3.1"
     assert mise["tools"]["minisign"] == "0.12"
+    assert mise["settings"]["http_retries"] == 5
     assert mise["settings"]["lockfile"] is True
     assert "dev" in pyproject["dependency-groups"]
     assert pyproject["tool"]["uv"]["workspace"]["members"] == [
