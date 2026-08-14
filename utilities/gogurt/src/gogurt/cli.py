@@ -433,7 +433,7 @@ def main() -> None:
         ListenerPlatformError,
     ) as exc:
         _emit_cli_error(exc, json_mode=_json_requested(sys.argv[1:]))
-        raise typer.Exit(1) from None
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
