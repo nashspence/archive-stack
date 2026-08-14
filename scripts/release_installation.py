@@ -18,6 +18,7 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast
 
+from gogurt.listener import listener_release_contract
 from packaging.markers import Marker, default_environment
 from packaging.tags import Tag, compatible_tags, cpython_tags, mac_platforms
 from packaging.utils import InvalidWheelFilename, parse_wheel_filename
@@ -37,6 +38,13 @@ INSTALLATION_POLICY = {
     "managed_python": True,
     "wheel_only": True,
     "simple_index_path": "artifacts/v{version}/simple/",
+    "listener": {
+        "root": "gogurt",
+        "scope": "current-user",
+        "resume": "next-login",
+        "autorun": "explicit-required",
+        "service_managers": ["systemd-user", "launchd-user", "task-scheduler-user"],
+    },
 }
 
 
@@ -768,6 +776,27 @@ def build_installation_artifacts(
             ],
         }
     )
+    listener_contract = listener_release_contract()
+    listener_reference_name = f"gogurt-listener-v{version}.md"
+    listener_reference_path = installation_dir / listener_reference_name
+    listener_reference_path.write_text(
+        _render_listener_reference(listener_contract, version=version),
+        encoding="utf-8",
+    )
+    listener_reference_relative = listener_reference_path.relative_to(output).as_posix()
+    listener_reference_sha256 = sha256_file(listener_reference_path)
+    records.append(
+        {
+            "kind": "install-reference",
+            "name": listener_reference_relative,
+            "sha256": listener_reference_sha256,
+            "size": listener_reference_path.stat().st_size,
+            "distribution": "gogurt",
+            "version": version,
+            "license": "Apache-2.0",
+            "dependencies": [],
+        }
+    )
     manifest = {
         "schema": INSTALLATION_SCHEMA,
         "version": version,
@@ -792,12 +821,58 @@ def build_installation_artifacts(
         },
         "wheels": {name: wheels[name] for name in sorted(required_names)},
         "components": component_items,
+        "gogurt_listener": {
+            "contract": listener_contract,
+            "reference_asset": listener_reference_name,
+            "reference_path": listener_reference_relative,
+            "reference_sha256": listener_reference_sha256,
+        },
     }
     manifest_path = output / "install-manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return manifest, records
+
+
+def _render_listener_reference(contract: dict[str, object], *, version: str) -> str:
+    platforms = cast(dict[str, str], contract["platforms"])
+    dispatch = cast(dict[str, str], contract["dispatch"])
+    return (
+        f"# Gogurt listener v{version}\n\n"
+        "Gogurt installs a current-user listener. It resumes at the user's next login; "
+        "it is not a pre-login system service. Installation requires explicit `--autorun`.\n\n"
+        "## Install and operate\n\n"
+        "```console\n"
+        "gogurt listener install --config /absolute/path/gogurt-routes.yaml "
+        "--actions-dir /absolute/path/actions --autorun\n"
+        "gogurt listener status\n"
+        "gogurt listener status --json\n"
+        "gogurt listener start\n"
+        "gogurt listener stop\n"
+        "gogurt listener restart\n"
+        "gogurt listener uninstall\n"
+        "```\n\n"
+        "The registration binds the absolute executable from the independent Gogurt "
+        "installation. It does not depend on shell `PATH`, system Python, administrator "
+        "access, or another Riverhog component's runtime.\n\n"
+        "## Platform registration\n\n"
+        + "".join(f"- `{platform}`: `{manager}`\n" for platform, manager in platforms.items())
+        + "\n## Dispatch and troubleshooting\n\n"
+        "`gogurt listener status --json` is the authoritative health and durable-dispatch "
+        "diagnostic. `healthy` confirms a current versioned heartbeat; `stopped` means the "
+        "registration remains installed but is not running; `stale` or `failed` requires "
+        "operator attention. The `dispatches.attention` rows expose retry, uncertain, and "
+        "failed actions.\n\n"
+        f"- Completed observations: `{dispatch['completed']}`.\n"
+        f"- Crash-window actions: `{dispatch['running_after_crash']}`.\n"
+        f"- Known failures: `{dispatch['known_failure']}`.\n"
+        f"- Replay boundary: `{dispatch['downstream']}`.\n\n"
+        "Use `restart` for a stale process after reviewing its diagnostic. Use `uninstall` "
+        "to remove the native registration, listener database, heartbeat, lock, and bounded "
+        "logs. Reinstalling the same version is replacement-safe and retains completed "
+        "dispatch history.\n"
+    )
 
 
 def verify_installation_artifacts(output: Path, manifest: dict[str, Any]) -> None:
@@ -845,3 +920,15 @@ def verify_installation_artifacts(output: Path, manifest: dict[str, Any]) -> Non
     }
     if files != expected_files:
         raise InstallationError("Simple index snapshot inventory differs from its manifest")
+    listener = manifest.get("gogurt_listener")
+    if not isinstance(listener, dict) or listener.get("contract") != listener_release_contract():
+        raise InstallationError("Gogurt listener contract differs from its executable")
+    reference = output / str(listener["reference_path"])
+    if not reference.is_file() or sha256_file(reference) != listener["reference_sha256"]:
+        raise InstallationError("Gogurt listener generated reference does not verify")
+    reference_text = reference.read_text(encoding="utf-8")
+    if any(
+        f"gogurt listener {operation}" not in reference_text
+        for operation in listener["contract"]["operations"]
+    ):
+        raise InstallationError("Gogurt listener generated reference omits an operation")

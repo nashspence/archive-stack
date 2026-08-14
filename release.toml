@@ -100,6 +100,13 @@ managed_python = true
 wheel_only = true
 simple_index_path = "artifacts/v{version}/simple/"
 
+[installation.listener]
+root = "gogurt"
+scope = "current-user"
+resume = "next-login"
+autorun = "explicit-required"
+service_managers = ["systemd-user", "launchd-user", "task-scheduler-user"]
+
 [signing]
 checksums = "SHA-256"
 signature = "minisign"

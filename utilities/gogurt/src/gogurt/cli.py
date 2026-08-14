@@ -20,9 +20,22 @@ from gogurt.core import (
     plan_gogurt_marker,
     write_gogurt_marker,
 )
+from gogurt.listener import (
+    ListenerError,
+    install_listener,
+    listener_status,
+    restart_listener,
+    run_listener,
+    start_listener,
+    stop_listener,
+    uninstall_listener,
+)
+from gogurt.listener_platform import ListenerPlatformError
 from gogurt.mounts import discover_mount_points, iter_new_mounts
 
 app = typer.Typer(help="Portable mounted-volume marker actions.")
+listener_app = typer.Typer(help="Install and manage the per-user Gogurt listener.")
+app.add_typer(listener_app, name="listener")
 
 
 def _version_callback(value: bool) -> None:
@@ -52,6 +65,20 @@ def emit(payload: object, *, json_mode: bool) -> None:
         typer.echo(json_text(payload))
         return
     typer.echo(str(payload))
+
+
+def _emit_listener(payload: dict[str, object], *, json_mode: bool, operation: str) -> None:
+    if json_mode:
+        emit(payload, json_mode=True)
+        return
+    typer.echo(f"gogurt listener {operation}")
+    typer.echo(f"health: {payload.get('health', 'unknown')}")
+    typer.echo(f"installed: {str(bool(payload.get('installed'))).lower()}")
+    typer.echo(f"enabled: {str(bool(payload.get('enabled'))).lower()}")
+    typer.echo(f"running: {str(bool(payload.get('running'))).lower()}")
+    diagnostic = payload.get("diagnostic")
+    if diagnostic:
+        typer.echo(f"diagnostic: {diagnostic}")
 
 
 @app.command("list")
@@ -237,6 +264,100 @@ def watch_cmd(
         typer.echo(f"{GOGURT_EMOJI} gogurt watcher stopped", err=True)
 
 
+@listener_app.command("install")
+def listener_install_cmd(
+    config: Annotated[
+        Path,
+        typer.Option("--config", help="Absolute Gogurt route YAML file."),
+    ] = Path(DEFAULT_GOGURT_CONFIG_FILENAME),
+    actions_dir: Annotated[
+        Path | None,
+        typer.Option("--actions-dir", help="Directory containing configured action commands."),
+    ] = None,
+    marker_name: Annotated[
+        str,
+        typer.Option("--marker-name", help="Marker file name at each mount root."),
+    ] = DEFAULT_GOGURT_MARKER_NAME,
+    interval_seconds: Annotated[
+        float,
+        typer.Option("--interval", min=0.1, help="Mount polling interval in seconds."),
+    ] = 2.0,
+    autorun: Annotated[
+        bool,
+        typer.Option("--autorun", help="Explicitly enable unattended action execution."),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Install and start the current-user listener."""
+
+    if not autorun:
+        raise ConfigError("gogurt listener install requires explicit --autorun")
+    payload = install_listener(
+        config,
+        actions_dir=actions_dir,
+        marker_name=marker_name,
+        interval_seconds=interval_seconds,
+    )
+    _emit_listener(payload, json_mode=json_mode, operation="installed")
+
+
+@listener_app.command("status")
+def listener_status_cmd(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Report native registration, health, and durable dispatch state."""
+
+    _emit_listener(listener_status(), json_mode=json_mode, operation="status")
+
+
+@listener_app.command("start")
+def listener_start_cmd(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Start an installed current-user listener."""
+
+    _emit_listener(start_listener(), json_mode=json_mode, operation="started")
+
+
+@listener_app.command("stop")
+def listener_stop_cmd(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Stop the current-user listener without removing login persistence."""
+
+    _emit_listener(stop_listener(), json_mode=json_mode, operation="stopped")
+
+
+@listener_app.command("restart")
+def listener_restart_cmd(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Restart the installed current-user listener."""
+
+    _emit_listener(restart_listener(), json_mode=json_mode, operation="restarted")
+
+
+@listener_app.command("uninstall")
+def listener_uninstall_cmd(
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Stop the listener and remove its registration, state, and bounded logs."""
+
+    _emit_listener(uninstall_listener(), json_mode=json_mode, operation="uninstalled")
+
+
+@listener_app.command("_run", hidden=True)
+def listener_run_cmd(
+    runtime_config: Annotated[
+        Path,
+        typer.Option("--runtime-config", help="Installed listener runtime config."),
+    ],
+) -> None:
+    """Run the registered listener process."""
+
+    run_listener(runtime_config)
+
+
 @app.command("write")
 def write_cmd(
     route: Annotated[str, typer.Argument(help="Configured Gogurt route key.")],
@@ -289,7 +410,12 @@ def _json_requested(argv: list[str]) -> bool:
 def _emit_cli_error(exc: BaseException, *, json_mode: bool) -> None:
     message = str(exc) or type(exc).__name__
     if json_mode:
-        typer.echo(json_text({"error": {"code": "config_error", "message": message}}))
+        code = (
+            "listener_error"
+            if isinstance(exc, (ListenerError, ListenerPlatformError))
+            else "config_error"
+        )
+        typer.echo(json_text({"error": {"code": code, "message": message}}))
         return
     typer.echo(f"gogurt: {message}", err=True)
 
@@ -303,9 +429,11 @@ def main() -> None:
         FileNotFoundError,
         NotADirectoryError,
         PermissionError,
+        ListenerError,
+        ListenerPlatformError,
     ) as exc:
         _emit_cli_error(exc, json_mode=_json_requested(sys.argv[1:]))
-        raise typer.Exit(1) from None
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
