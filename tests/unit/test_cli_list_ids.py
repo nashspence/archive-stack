@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import riverhog_cli.main
@@ -103,10 +104,12 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
                     {
                         "collection_id": 41,
                         "path": "tax/invoice.pdf",
+                        "file_ref": "41/tax/invoice.pdf",
                     },
                     {
                         "collection_id": 42,
                         "path": "tax/invoice.pdf",
+                        "file_ref": "42/tax/invoice.pdf",
                     },
                 ]
             }
@@ -117,6 +120,11 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert result.stdout == ("41::tax/invoice.pdf\n42::tax/invoice.pdf\n")
+    human = runner.invoke(app, ["find", "-q", "invoice", "--all"])
+    structured = runner.invoke(app, ["find", "-q", "invoice", "--all", "--json"])
+    assert human.exit_code == structured.exit_code == 0
+    assert "tax/invoice.pdf" in human.stdout
+    assert json.loads(structured.stdout)["files"][0]["collection_id"] == 41
 
 
 def test_riverhog_closes_its_shared_api_client(monkeypatch) -> None:

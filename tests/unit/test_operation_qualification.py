@@ -129,6 +129,22 @@ def test_exact_sha_evidence_contains_only_generated_current_rows(
                 "source_sha": source_sha,
                 "pytest_exit_status": 0,
                 "operations": timing_rows,
+                "cli_projections": [
+                    {
+                        "application": application,
+                        "command": command,
+                        "human_executions": 1,
+                        "json_executions": 1,
+                    }
+                    for application, command in sorted(
+                        {
+                            (item.application, command)
+                            for item in matrix
+                            if item.classification == "human-cli+json"
+                            for command in item.cli_commands
+                        }
+                    )
+                ],
             }
         )
     )
@@ -150,6 +166,21 @@ def test_exact_sha_evidence_contains_only_generated_current_rows(
     assert payload["qualification"]["event_cursor_restart_resume"]["status"] == "passed"
     assert all(set(item) == set(module.Operation.__dataclass_fields__) for item in operations)
 
+    incomplete = json.loads(timings.read_text())
+    projection = next(
+        item
+        for item in incomplete["cli_projections"]
+        if item["application"] == "riverhog" and item["command"] == "retrieval cache status"
+    )
+    projection["json_executions"] = 0
+    timings.write_text(json.dumps(incomplete))
+    try:
+        module._load_operation_timings(timings, source_sha=source_sha, matrix=matrix)
+    except module.QualificationError as exc:
+        assert "commands lack executed human/JSON projection parity" in str(exc)
+    else:
+        raise AssertionError("missing executable CLI projection parity must fail qualification")
+
 
 def test_timing_evidence_fails_closed_on_missing_local_operation(tmp_path: Path) -> None:
     module = load_script()
@@ -162,6 +193,7 @@ def test_timing_evidence_fails_closed_on_missing_local_operation(tmp_path: Path)
                 "source_sha": source_sha,
                 "pytest_exit_status": 0,
                 "operations": [],
+                "cli_projections": [],
             }
         )
     )

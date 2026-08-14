@@ -176,6 +176,26 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
     calls: list[tuple[str, object]] = []
 
     class FakeClient:
+        def retrieval_cache_status(self) -> dict[str, object]:
+            calls.append(("status", None))
+            return {
+                "configured": True,
+                "new_archive_enabled": True,
+                "objects": 1,
+                "stored_bytes": 2048,
+                "protected_objects": 1,
+                "unleased_objects": 0,
+                "policy": {
+                    "new_archive_lease_seconds": 3600,
+                    "retrieval_default_lease_seconds": 7200,
+                    "retrieval_max_lease_seconds": 10800,
+                    "pending_timeout_seconds": 14400,
+                    "restore_hold_seconds": 18000,
+                    "sweep_interval_seconds": 30,
+                    "restore_poll_interval_seconds": 60,
+                },
+            }
+
         def list_retrieval_cache_objects(self, **kwargs: object) -> dict[str, object]:
             calls.append(("list", kwargs))
             return page
@@ -217,6 +237,8 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         app,
         ["retrieval", "cache", "show", "42::deep::pack-000000000000", "--json"],
     )
+    human_status = runner.invoke(app, ["retrieval", "cache", "status"])
+    json_status = runner.invoke(app, ["retrieval", "cache", "status", "--json"])
 
     assert human_list.exit_code == 0
     assert "state=ready" in human_list.stdout
@@ -226,6 +248,9 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
     assert "state: ready" in human_show.stdout
     assert "tags: photos" in human_show.stdout
     assert json.loads(json_show.stdout) == cached
+    assert human_status.exit_code == json_status.exit_code == 0
+    assert "retrieval cache" in human_status.stdout
+    assert json.loads(json_status.stdout)["configured"] is True
     assert calls == [
         (
             "list",
@@ -265,6 +290,8 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         ),
         ("show", (42, "deep", "pack-000000000000")),
         ("show", (42, "deep", "pack-000000000000")),
+        ("status", None),
+        ("status", None),
     ]
 
 

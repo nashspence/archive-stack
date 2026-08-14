@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from collections import defaultdict
 from collections.abc import Iterable
@@ -114,6 +115,51 @@ class OperationObserver:
 
 
 _OBSERVERS: list[OperationObserver] = []
+_CLI_CALLBACKS: dict[object, list[tuple[str, str]]] = defaultdict(list)
+_CLI_PROJECTIONS: dict[tuple[str, str], dict[bool, int]] = defaultdict(lambda: defaultdict(int))
+_PREVIOUS_PROFILE: Any = None
+
+
+def _install_cli_projection_observer() -> None:
+    """Observe real command callbacks in both supported output projections."""
+
+    global _PREVIOUS_PROFILE
+
+    from scripts.operation_qualification import application_surfaces, operation_matrix
+
+    required = {
+        (item.application, command)
+        for item in operation_matrix()
+        if item.classification == "human-cli+json"
+        for command in item.cli_commands
+    }
+    for surface in application_surfaces():
+        for command, callback, _parity in surface.cli_commands:
+            identity = (surface.name, command)
+            if identity in required:
+                _CLI_CALLBACKS[callback.__code__].append(identity)
+    _PREVIOUS_PROFILE = sys.getprofile()
+    sys.setprofile(_observe_cli_projection)
+
+
+def _observe_cli_projection(frame: Any, event: str, argument: object) -> None:
+    del argument
+    identities = _CLI_CALLBACKS.get(frame.f_code) if event == "call" else None
+    if not identities:
+        return
+    local = frame.f_locals
+    if "json_mode" in local:
+        json_mode = bool(local["json_mode"])
+    elif "args" in local:
+        json_mode = bool(getattr(local["args"], "json", False))
+    else:
+        return
+    if len(identities) > 1 and "args" in local:
+        enabled = bool(getattr(local["args"], "enabled", True))
+        suffix = "enable" if enabled else "disable"
+        identities = [identity for identity in identities if identity[1].endswith(suffix)]
+    for identity in identities:
+        _CLI_PROJECTIONS[identity][json_mode] += 1
 
 
 def _timing_summary(samples: list[float]) -> dict[str, int | float]:
@@ -147,7 +193,22 @@ def timing_evidence(*, source_sha: str, exit_status: int) -> dict[str, object]:
         "source_sha": source_sha,
         "pytest_exit_status": exit_status,
         "operations": operations,
+        "cli_projections": [
+            {
+                "application": application,
+                "command": command,
+                "human_executions": modes[False],
+                "json_executions": modes[True],
+            }
+            for (application, command), modes in sorted(_CLI_PROJECTIONS.items())
+        ],
     }
+
+
+def pytest_sessionstart(session: Any) -> None:
+    del session
+    if os.getenv("RIVERHOG_OPERATION_TIMINGS"):
+        _install_cli_projection_observer()
 
 
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
@@ -155,6 +216,7 @@ def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
     output = os.getenv("RIVERHOG_OPERATION_TIMINGS")
     if not output:
         return
+    sys.setprofile(_PREVIOUS_PROFILE)
     payload = timing_evidence(
         source_sha=os.environ.get("RIVERHOG_OPERATION_SOURCE_SHA", ""),
         exit_status=exitstatus,
