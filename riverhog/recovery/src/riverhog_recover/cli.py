@@ -21,10 +21,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("archive", type=Path, help="downloaded opaque archive directory")
     parser.add_argument("output", type=Path, help="new directory for recovered files")
-    parser.add_argument(
+    passphrase = parser.add_mutually_exclusive_group()
+    passphrase.add_argument(
         "--passphrase-file",
         type=Path,
         help="read the archive passphrase from a permission-restricted file",
+    )
+    passphrase.add_argument(
+        "--passphrase-stdin",
+        action="store_true",
+        help="read one archive passphrase line from standard input",
     )
     parser.add_argument(
         "--minisign-public-key",
@@ -37,14 +43,19 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _passphrase(path: Path | None) -> str:
-    if path is None:
-        value = getpass.getpass("Archive passphrase: ")
-    else:
+def _passphrase(path: Path | None, *, stdin: bool) -> str:
+    if path is not None:
         try:
             value = path.read_text(encoding="utf-8").rstrip("\r\n")
         except OSError as exc:
             raise RecoveryError(f"cannot read passphrase file: {exc}") from exc
+    elif stdin:
+        try:
+            value = sys.stdin.readline().rstrip("\r\n")
+        except OSError as exc:
+            raise RecoveryError(f"cannot read passphrase from stdin: {exc}") from exc
+    else:
+        value = getpass.getpass("Archive passphrase: ")
     if not value:
         raise RecoveryError("archive passphrase is empty")
     return value
@@ -56,7 +67,7 @@ def main() -> None:
         summary = recover_archive(
             args.archive,
             args.output,
-            passphrase=_passphrase(args.passphrase_file),
+            passphrase=_passphrase(args.passphrase_file, stdin=args.passphrase_stdin),
             age_command=args.age_command,
             ots_command=args.ots_command,
             minisign_public_key=args.minisign_public_key,
