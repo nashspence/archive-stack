@@ -53,6 +53,7 @@ support = "Maintain eligible v1 fixes until v2.0.0, then critical security, arch
 release_candidate = "v{version}-rc.{candidate}"
 final = "v{version}"
 immutability = "Published v1 tags are never moved or deleted."
+github_releases = "GitHub immutable releases must remain enabled before any v1 publication."
 failed_publication = "Resume only for the same tag and source SHA when safe; otherwise publish the next release candidate or patch version."
 
 [governance.authority]
@@ -83,6 +84,7 @@ python_formats = ["wheel", "sdist"]
 documentation = "riverhog-docs-v{version}.tar.gz"
 source = "riverhog-source-v{version}.tar.gz"
 evidence = [
+  "install-manifest.json",
   "release-manifest.json",
   "SHA256SUMS",
   "SHA256SUMS.minisig",
@@ -90,6 +92,13 @@ evidence = [
   "release.intoto.jsonl",
   "THIRD_PARTY_NOTICES.md",
 ]
+
+[installation]
+method = "uv-tool"
+lock_format = "pylock.toml"
+managed_python = true
+wheel_only = true
+simple_index_path = "artifacts/v{version}/simple/"
 
 [signing]
 checksums = "SHA-256"

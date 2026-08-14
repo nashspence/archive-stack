@@ -47,6 +47,7 @@ dev = [
     { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.43.59,<2.0" },
     { name = "httpx2", specifier = ">=2,<3" },
     { name = "mypy", specifier = ">=2.3.0,<3.0" },
+    { name = "packaging", specifier = ">=26,<27" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4.0" },
     { name = "pytest", specifier = ">=9.0.3,<10.0" },
     { name = "pytest-cov", specifier = ">=7.1.0,<8.0" },
