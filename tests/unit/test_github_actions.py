@@ -149,18 +149,19 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
         },
     }
     assert client_platforms["runs-on"] == "${{ matrix.os }}"
+    assert client_platforms["env"] == {"MISE_AUTO_INSTALL": "0"}
     assert [
         step["uses"].split("@", 1)[0] for step in client_platforms["steps"] if "uses" in step
     ] == ["actions/checkout", "jdx/mise-action"]
     assert client_platforms["steps"][0]["with"]["persist-credentials"] == "false"
     assert client_platforms["steps"][1]["with"] == {"install_args": "python uv age"}
     assert [step["run"] for step in client_platforms["steps"] if "run" in step] == [
-        "mise x -- uv run --locked --all-packages --group dev "
+        "mise x python uv age -- uv run --locked --all-packages --group dev "
         "python -m pytest -q "
         "packages/riverhog-provenance/tests/test_platform_live.py "
         "utilities/gogurt/tests "
         "tests/platform/test_end_user_artifacts.py",
-        "mise x -- uv run --locked --all-packages --group dev "
+        "mise x python uv age -- uv run --locked --all-packages --group dev "
         "python scripts/qualify_installation.py --version 1.0.0",
     ]
     assert "secrets." not in text
