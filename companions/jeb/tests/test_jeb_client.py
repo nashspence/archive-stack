@@ -215,6 +215,19 @@ def test_jeb_ingress_transports_signed_identities_and_exact_journal_separately(
                 204,
                 headers={"Upload-Offset": str(payload.stat().st_size)},
             )
+        if request.method == "GET" and request.url.path == f"/publications/{upload_id}":
+            return httpx.Response(
+                200,
+                json={
+                    "format": "jeb-ingress-publication/v1",
+                    "status": "accepted",
+                    "upload_id": upload_id,
+                    "path": relative_path,
+                    "bytes": binding["bytes"],
+                    "payload_sha256": binding["sha256"],
+                    "provenance_identity": "b" * 64,
+                },
+            )
         return httpx.Response(404)
 
     client = JebIngressClient(
@@ -234,6 +247,7 @@ def test_jeb_ingress_transports_signed_identities_and_exact_journal_separately(
         client.close()
 
     assert result["upload_id"] == upload_id
+    assert result["status"] == "accepted"
     create = requests[0]
     metadata = {
         key: base64.b64decode(value).decode("utf-8")
@@ -251,7 +265,14 @@ def test_jeb_ingress_transports_signed_identities_and_exact_journal_separately(
     )
     patch_request = next(request for request in requests if request.method == "PATCH")
     assert patch_request.headers["Authorization"] == "Basic cGhvbmU6c2VjcmV0"
-    assert [request.method for request in requests] == ["POST", "PUT", "PUT", "HEAD", "PATCH"]
+    assert [request.method for request in requests] == [
+        "POST",
+        "PUT",
+        "PUT",
+        "HEAD",
+        "PATCH",
+        "GET",
+    ]
 
 
 def test_jeb_ingress_uses_the_shared_explicit_cleartext_opt_in(

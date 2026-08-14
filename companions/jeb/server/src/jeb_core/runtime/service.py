@@ -14,11 +14,9 @@ import jeb_core.domain.models as domain_models
 import jeb_core.persistence.sqlite_state as state_store
 import jeb_core.services.attempts as attempt_service
 import jeb_core.services.events as event_service
+import jeb_core.services.ingress as ingress_service
 import jeb_core.services.sources as source_service
-from jeb_core.ingress import (
-    incomplete_tus_upload_status,
-    reap_stale_incomplete_tus_uploads,
-)
+from jeb_core.ingress import incomplete_tus_upload_status
 from jeb_core.persistence.source_registry import SourceRegistry
 from jeb_core.ports.target import TargetAdapter, TargetContext
 
@@ -33,6 +31,7 @@ class JebRuntime:
         events: event_service.JebEventService,
         sources: source_service.JebSourceService,
         attempts: attempt_service.JebAttemptService,
+        ingress: ingress_service.JebIngressPublicationService,
         source_registry: SourceRegistry,
         target_adapters: Mapping[str, TargetAdapter],
         operation_lock: threading.RLock,
@@ -45,6 +44,7 @@ class JebRuntime:
         self.events = events
         self.sources = sources
         self.attempts = attempts
+        self.ingress = ingress
         self.source_registry = source_registry
         self.target_adapters = dict(target_adapters)
         self.operation_lock = operation_lock
@@ -53,9 +53,18 @@ class JebRuntime:
         self.sleep = sleep
         self._attempt_cursor: tuple[str, str] | None = None
         self._source_cursor: str | None = None
+        self._startup_ingress_reconciled = False
+        self._startup_lock = threading.Lock()
 
     def initialize(self) -> None:
         self._initialize()
+        if self._startup_ingress_reconciled:
+            return
+        with self._startup_lock:
+            if self._startup_ingress_reconciled:
+                return
+            self.ingress.reconcile()
+            self._startup_ingress_reconciled = True
 
     def run_forever(self) -> None:
         self.initialize()
@@ -68,22 +77,17 @@ class JebRuntime:
     def run_once(self) -> None:
         with self.operation_lock:
             self.initialize()
-            reap = reap_stale_incomplete_tus_uploads(
-                self.config.ingress,
-                self.source_registry,
-            )
-            if reap["terminated"] or reap["already_absent"]:
+            ingress = self.ingress.reconcile()
+            if ingress["accepted"] or ingress["rejected"]:
                 LOG.info(
-                    "terminated %s stale incomplete TUS upload(s); %s already absent",
-                    reap["terminated"],
-                    reap["already_absent"],
+                    "reconciled Jeb ingress publications: accepted=%s rejected=%s",
+                    ingress["accepted"],
+                    ingress["rejected"],
                 )
-            if reap["failed"] or reap["scan_error"]:
+            if ingress["failed"]:
                 LOG.warning(
-                    "incomplete TUS upload cleanup was not fully successful: "
-                    "failed=%s scan_error=%s",
-                    reap["failed"],
-                    reap["scan_error"],
+                    "Jeb ingress publication reconciliation had %s failure(s)",
+                    ingress["failed"],
                 )
             self.sources.resolve_inactive_target_preflight_failures()
             attempts = self.store.unresolved_attempts(after=self._attempt_cursor)
@@ -148,4 +152,5 @@ class JebRuntime:
                 self.config.ingress,
                 self.source_registry,
             ),
+            "ingress_publications": self.store.ingress_publication_counts(),
         }

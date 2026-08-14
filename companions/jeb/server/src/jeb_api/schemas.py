@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from http_api_contracts import ErrorBody, ErrorResponse, HealthResponse
+from jeb_protocol import SOURCE_ID_PATTERN
 from lifecycle_events import EventPage
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
@@ -17,7 +18,7 @@ class ConfigCheckOut(JebModel):
 
 
 class SourceCreateIn(JebModel):
-    id: str = Field(min_length=1)
+    id: str = Field(pattern=SOURCE_ID_PATTERN)
     adapters: list[str] = Field(min_length=1)
     target_config: dict[str, Any]
     credential: str | None = None
@@ -69,7 +70,7 @@ class SourceRemovalIn(JebModel):
 
 
 class ArchiveNowIn(JebModel):
-    source: str = Field(min_length=1)
+    source: str = Field(pattern=SOURCE_ID_PATTERN)
     process: StrictBool = True
     dry_run: StrictBool = False
 
@@ -141,7 +142,7 @@ class AttemptOut(JebModel):
     emitted_error_at: str | None
     file_count: int
     total_bytes: int
-    staged_file_count: int
+    claimed_file_count: int
 
 
 class AttemptFiltersOut(JebModel):
@@ -196,6 +197,22 @@ class OperationStartedOut(JebModel):
     operation: OperationOut
 
 
+class IngressPublicationErrorOut(JebModel):
+    code: str
+    message: str
+
+
+class IngressPublicationOut(JebModel):
+    format: Literal["jeb-ingress-publication/v1"]
+    status: Literal["pending", "accepted", "rejected"]
+    upload_id: str
+    path: str
+    bytes: int
+    payload_sha256: str
+    provenance_identity: str | None = None
+    error: IngressPublicationErrorOut | None = None
+
+
 class StatusOut(JebModel):
     sources: list[dict[str, Any]]
     batches: dict[str, Any]
@@ -203,6 +220,7 @@ class StatusOut(JebModel):
     recent_failures: AttemptPageOut
     target_preflight_failures: dict[str, Any]
     incomplete_tus_uploads: dict[str, Any]
+    ingress_publications: dict[str, int]
     active_operation: OperationOut | None
 
 
@@ -216,6 +234,7 @@ __all__ = [
     "ErrorResponse",
     "EventPage",
     "HealthResponse",
+    "IngressPublicationOut",
     "OperationOut",
     "OperationPageOut",
     "OperationStartedOut",

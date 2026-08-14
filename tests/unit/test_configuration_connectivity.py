@@ -286,7 +286,7 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
             "test-only": 0,
         },
         "jeb": {
-            "credential": 1,
+            "credential": 2,
             "identity": 12,
             "runtime": 19,
             "build-only": 0,

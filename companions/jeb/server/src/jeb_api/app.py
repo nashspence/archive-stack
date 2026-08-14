@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import importlib.metadata
-import os
 import secrets
 import socket
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from http import HTTPStatus
 from typing import Annotated, Any
@@ -29,15 +28,6 @@ from jeb_core.ingress import (
     JebIngressAuthenticationError,
     JebIngressError,
     authenticate_tus_source,
-    prepare_tus_upload,
-    publish_validated_tus_upload,
-    validate_tus_upload,
-)
-from jeb_core.provenance import (
-    finalize_ingress_provenance,
-    publish_ingress_provenance,
-    put_ingress_binding,
-    put_ingress_journal,
 )
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS
 from riverhog_provenance import ProvenanceValidationError
@@ -53,6 +43,7 @@ from jeb_api.schemas import (
     ErrorResponse,
     EventPage,
     HealthResponse,
+    IngressPublicationOut,
     OperationOut,
     OperationPageOut,
     OperationStartedOut,
@@ -66,7 +57,6 @@ from jeb_api.schemas import (
     StatusOut,
 )
 
-DEFAULT_JEB_API_TOKEN = "jeb-development-api-token"
 ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     status: response for status, response in PUBLIC_ERROR_RESPONSES.items()
 }
@@ -91,9 +81,10 @@ class ResolutionFilter(StrEnum):
 @dataclass(frozen=True)
 class JebServiceState:
     services: JebServices
-    api_token: str = field(
-        default_factory=lambda: os.getenv("JEB_API_TOKEN") or DEFAULT_JEB_API_TOKEN
-    )
+
+    @property
+    def api_token(self) -> str:
+        return self.services.config.management_api_token
 
 
 @dataclass(frozen=True)
@@ -236,6 +227,18 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
             message=str(exc),
         )
 
+    @app.exception_handler(JebIngressAuthenticationError)
+    async def handle_ingress_authentication_error(
+        _request: object,
+        _exc: JebIngressAuthenticationError,
+    ) -> JSONResponse:
+        return _error_response(
+            HTTPStatus.UNAUTHORIZED,
+            code="unauthorized",
+            message="valid Jeb ingress credentials are required",
+            headers={"WWW-Authenticate": 'Basic realm="Jeb ingress"'},
+        )
+
     @app.exception_handler(ValueError)
     async def handle_value_error(_request: object, exc: ValueError) -> JSONResponse:
         return _error_response(HTTPStatus.BAD_REQUEST, code="bad_request", message=str(exc))
@@ -344,11 +347,9 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
         x_riverhog_provenance_sha256: Annotated[str, Header()] = "",
     ) -> dict[str, object]:
         services.runtime.initialize()
-        source_id = authenticate_tus_source(services.source_registry, authorization)
-        return put_ingress_journal(
-            services.config.ingress,
+        return services.ingress.put_journal(
+            authorization=authorization,
             upload_id=upload_id,
-            source_id=source_id,
             journal_id=journal_id,
             content=content,
             expected_sha256=x_riverhog_provenance_sha256,
@@ -364,13 +365,24 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
         authorization: Annotated[str | None, Header()] = None,
     ) -> dict[str, object]:
         services.runtime.initialize()
-        source_id = authenticate_tus_source(services.source_registry, authorization)
-        return put_ingress_binding(
-            services.config.ingress,
+        return services.ingress.put_binding(
+            authorization=authorization,
             upload_id=upload_id,
-            source_id=source_id,
             payload=payload,
         )
+
+    @internal.get(
+        "/ingress/tus/publications/{upload_id}",
+        response_model=IngressPublicationOut,
+        response_model_exclude_none=True,
+        operation_id="get_tus_ingress_publication",
+    )
+    def get_tus_ingress_publication(
+        upload_id: str,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> dict[str, object]:
+        services.runtime.initialize()
+        return services.ingress.receipt(upload_id, authorization=authorization)
 
     @internal.post(
         "/ingress/tus/hooks",
@@ -390,9 +402,7 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
             if not isinstance(metadata, Mapping):
                 metadata = {}
             try:
-                prepared = prepare_tus_upload(
-                    services.config.ingress,
-                    services.source_registry,
+                prepared = services.ingress.prepare(
                     authorization=authorization,
                     metadata=metadata,
                     size=upload.get("Size"),
@@ -414,23 +424,7 @@ def create_app(state: JebServiceState | None = None) -> FastAPI:
                 }
             }
         if hook_type == "post-finish":
-            validated = validate_tus_upload(
-                services.config.ingress,
-                services.source_registry,
-                upload=upload,
-            )
-            provenance = finalize_ingress_provenance(
-                services.config.ingress,
-                upload_id=validated.upload_id,
-                source_id=validated.source_id,
-                source=validated.source,
-                target_path=f"{validated.source_id}/{validated.relative_path}",
-                expected_provenance_sha256=validated.provenance_sha256,
-            )
-            if provenance.binding.sha256 != validated.payload_sha256:
-                raise JebIngressError("Jeb TUS payload identity changed before publication")
-            publish_ingress_provenance(validated.destination, provenance)
-            publish_validated_tus_upload(services.config.ingress, validated)
+            services.ingress.publish(upload)
         return {}
 
     management = APIRouter(
@@ -852,7 +846,6 @@ def start_jeb_service_server(
 
 
 __all__ = [
-    "DEFAULT_JEB_API_TOKEN",
     "JebServiceServer",
     "JebServiceState",
     "create_app",

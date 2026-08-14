@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import secrets
 import sqlite3
 import uuid
@@ -15,7 +14,7 @@ from typing import Any, cast
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from jeb_protocol import MAX_LIST_PAGE_SIZE, SOURCE_LIST_SORT_FIELDS
+from jeb_protocol import MAX_LIST_PAGE_SIZE, SOURCE_LIST_SORT_FIELDS, SourceIdError, source_id
 from time_formats import format_utc_timestamp, utc_now
 
 from jeb_core.domain.sources import (
@@ -26,8 +25,8 @@ from jeb_core.domain.sources import (
     SourceRegistryError,
 )
 from jeb_core.persistence.sql import like_literal
+from jeb_core.source_paths import SourceRootResolver
 
-SOURCE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 INGRESS_ADAPTERS = frozenset({"ftp", "tus"})
 DEFAULT_INCLUDE_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".xml", ".json", ".txt"})
 PASSWORD_HASHER = PasswordHasher()
@@ -57,13 +56,13 @@ class SourceRegistry:
         self,
         *,
         database: Path,
-        landing_dir: Path,
+        source_roots: SourceRootResolver,
         ftp_projection: Path,
         ftp_uid: int = 1000,
         ftp_gid: int = 1000,
     ) -> None:
         self.database = database
-        self.landing_dir = landing_dir
+        self.source_roots = source_roots
         self.ftp_projection = ftp_projection
         self.ftp_uid = ftp_uid
         self.ftp_gid = ftp_gid
@@ -82,10 +81,16 @@ class SourceRegistry:
             yield connection
 
     def initialize(self) -> None:
+        self.source_roots.initialize()
         with self.transaction() as connection:
             columns = tuple(str(row[1]) for row in connection.execute("PRAGMA table_info(sources)"))
+            source_ids = tuple(
+                str(row[0]) for row in connection.execute("SELECT id FROM sources ORDER BY id")
+            )
         if columns != SOURCE_COLUMNS:
             raise SourceRegistryError("Jeb source registry does not match the current schema")
+        for enrolled_source_id in source_ids:
+            self.source_roots.root(enrolled_source_id)
         self.write_ftp_projection()
 
     @staticmethod
@@ -133,6 +138,7 @@ class SourceRegistry:
         minute: int = 0,
     ) -> tuple[SourceConfig, str | None]:
         normalized_id = _source_id(source_id)
+        self.source_roots.root(normalized_id)
         normalized_adapters = _adapters(adapters)
         _settings(
             stable_seconds=stable_seconds,
@@ -456,7 +462,7 @@ class SourceRegistry:
 
     def authenticate(self, source_id: str, credential: str, *, adapter: str) -> SourceConfig:
         source = self.get(source_id)
-        if not source.enabled or adapter not in source.adapters:
+        if not source.enabled or adapter not in source.adapters or self.is_removing(source.id):
             raise SourceRegistryError("invalid Jeb ingress credentials")
         with self.transaction() as connection:
             row = connection.execute(
@@ -468,6 +474,15 @@ class SourceRegistry:
         except (InvalidHashError, VerifyMismatchError) as exc:
             raise SourceRegistryError("invalid Jeb ingress credentials") from exc
         return source
+
+    def is_removing(self, source_id: str) -> bool:
+        normalized_id = _source_id(source_id)
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM source_removals WHERE source_id = ? AND status = 'removing' LIMIT 1",
+                (normalized_id,),
+            ).fetchone()
+        return row is not None
 
     def signing_key(self, source_id: str) -> str:
         source = self.get(source_id)
@@ -495,8 +510,12 @@ class SourceRegistry:
             rows = connection.execute(
                 """
                 SELECT id, password_hash
-                FROM sources
+                FROM sources s
                 WHERE enabled = 1 AND adapters_json LIKE '%\"ftp\"%'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM source_removals r
+                      WHERE r.source_id = s.id AND r.status = 'removing'
+                  )
                 ORDER BY id
                 """
             ).fetchall()
@@ -518,8 +537,7 @@ class SourceRegistry:
             temporary.unlink(missing_ok=True)
 
     def _ensure_ftp_home(self, source_id: str) -> None:
-        home = self.landing_dir / source_id
-        home.mkdir(parents=True, exist_ok=True)
+        home = self.source_roots.root(source_id, create=True)
         try:
             os.chown(home, self.ftp_uid, self.ftp_gid)
         except PermissionError as exc:
@@ -531,14 +549,14 @@ class SourceRegistry:
         home.chmod(0o770)
 
     def _ftp_record(self, source_id: str, password_hash: str) -> str:
-        home = (self.landing_dir / source_id).as_posix().rstrip("/") + "/./"
+        home = self.source_roots.root(source_id).as_posix().rstrip("/") + "/./"
         return f"{source_id}:{password_hash}:{self.ftp_uid}:{self.ftp_gid}::{home}::::::::::::\n"
 
     def _source(self, connection: sqlite3.Connection, row: sqlite3.Row) -> SourceConfig:
         return SourceConfig(
             id=str(row["id"]),
             enabled=bool(row["enabled"]),
-            path=self.landing_dir / str(row["id"]),
+            path=self.source_roots.root(str(row["id"])),
             adapters=tuple(json.loads(row["adapters_json"])),
             stable_seconds=int(row["stable_seconds"]),
             include_extensions=frozenset(json.loads(row["include_extensions_json"])),
@@ -554,10 +572,10 @@ class SourceRegistry:
 
 
 def _source_id(value: str) -> str:
-    normalized = value.strip()
-    if not SOURCE_ID.fullmatch(normalized):
-        raise SourceRegistryError(f"source must be a safe id: {value!r}")
-    return normalized
+    try:
+        return source_id(value)
+    except SourceIdError as exc:
+        raise SourceRegistryError(str(exc)) from exc
 
 
 def _target_config(value: Mapping[str, Any]) -> dict[str, Any]:

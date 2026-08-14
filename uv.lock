@@ -864,6 +864,7 @@ name = "jeb-server"
 version = "0.1.0"
 source = { editable = "companions/jeb/server" }
 dependencies = [
+    { name = "alembic" },
     { name = "argon2-cffi" },
     { name = "fastapi" },
     { name = "http-api-contracts" },
@@ -876,6 +877,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "riverhog-cli-support" },
     { name = "riverhog-provenance" },
+    { name = "sqlalchemy" },
     { name = "starlette" },
     { name = "state-schema" },
     { name = "time-formats" },
@@ -884,6 +886,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = ">=1.18.5,<2.0" },
     { name = "argon2-cffi", specifier = ">=23,<26" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
@@ -896,6 +899,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
     { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },

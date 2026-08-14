@@ -10,6 +10,7 @@ from .attempts import (
     attempt_watch_finished,
 )
 from .listing import ATTEMPT_LIST_SORT_FIELDS, MAX_LIST_PAGE_SIZE, SOURCE_LIST_SORT_FIELDS
+from .sources import SOURCE_ID_PATTERN, SourceIdError, source_id
 
 __all__ = [
     "ATTEMPT_LIST_SORT_FIELDS",
@@ -19,7 +20,10 @@ __all__ = [
     "ATTEMPT_WATCH_STOP_STATES",
     "MAX_LIST_PAGE_SIZE",
     "SOURCE_LIST_SORT_FIELDS",
+    "SOURCE_ID_PATTERN",
+    "SourceIdError",
     "attempt_state",
     "attempt_succeeded",
     "attempt_watch_finished",
+    "source_id",
 ]

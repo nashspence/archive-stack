@@ -9,6 +9,8 @@ from pathlib import Path
 
 import jeb_core.adapters.munchy as munchy_adapter_module
 import jeb_core.domain.models as domain_models
+import jeb_core.services.attempts as attempt_service_module
+import jeb_core.services.ingress as ingress_service_module
 import pytest
 from jeb_api.composition import JebServices, config_from_env, create_services
 from jeb_core.adapters.munchy import MunchyTargetAdapter
@@ -30,6 +32,7 @@ TEST_TEMPLATE = "camera-archive"
 def env_for(tmp_path: Path, *, sources: str = "camera,phone") -> dict[str, str]:
     return {
         "TEST_SOURCE_IDS": sources,
+        "JEB_API_TOKEN": "test-jeb-management-token",
         "JEB_LANDING_DIR": str(tmp_path / "landing"),
         "JEB_STATE_DIR": str(tmp_path / "state"),
         "JEB_MUNCHY_URL": "https://munchy.test",
@@ -415,15 +418,16 @@ def test_operator_can_cancel_and_explicitly_retry_an_unresolved_attempt(tmp_path
     services = services_from_env(env)
     attempt_id = services.attempts.archive_now(source_id="camera", process=False)
     assert attempt_id is not None
-    services.attempts.stage_attempt_files(attempt_id)
     services.attempts.ensure_hashes(attempt_id)
     services.attempts.ensure_provenance(attempt_id)
+    claimed_before = services.store.attempt_files(attempt_id)[0]
     batch_root = services.config.service.batch_dir / attempt_id
-    first_attempt_root = batch_root / "attempts" / attempt_id
+    custody_path = batch_root / "custody" / "camera" / "a.txt"
     provenance_index = batch_root / "provenance" / "index.json"
     provenance_bytes = provenance_index.read_bytes()
 
-    assert first_attempt_root.is_dir()
+    assert custody_path.read_bytes() == b"data"
+    assert not (tmp_path / "landing" / "camera" / "a.txt").exists()
 
     canceled = services.attempts.cancel_attempt(attempt_id)
 
@@ -438,13 +442,15 @@ def test_operator_can_cancel_and_explicitly_retry_an_unresolved_attempt(tmp_path
     assert services.store.get_attempt(retried_id)["state"] == "batching"
     retried_file = services.store.attempt_files(retried_id)[0]
 
-    assert Path(str(retried_file["staging_path"])).is_relative_to(
-        batch_root / "attempts" / retried_id / "input"
-    )
-    assert not first_attempt_root.exists()
+    assert services.store.load_attempt(retried_id)["batch_id"] == attempt_id
+    assert retried_file["target_path"] == claimed_before["target_path"]
+    assert retried_file["sha256"] == claimed_before["sha256"]
+    assert retried_file["custody_device"] == claimed_before["custody_device"]
+    assert retried_file["custody_inode"] == claimed_before["custody_inode"]
+    assert Path(str(retried_file["custody_path"])) == custody_path
     assert provenance_index.read_bytes() == provenance_bytes
 
-    services.attempts.stage_attempt_files(retried_id)
+    services.attempts.claim_attempt_files(retried_id)
     services.attempts.ensure_hashes(retried_id)
     services.attempts.ensure_provenance(retried_id)
 
@@ -525,15 +531,62 @@ def test_munchy_target_uses_its_explicit_cleartext_transport_opt_in(tmp_path: Pa
         client.close()
 
 
-def test_source_registry_requires_safe_source_ids(tmp_path: Path) -> None:
+@pytest.mark.parametrize("invalid_source", ("phone/raw", ".", "..", "Phone", "phone_1"))
+def test_source_registry_requires_canonical_source_ids(
+    tmp_path: Path,
+    invalid_source: str,
+) -> None:
     services = services_from_env(env_for(tmp_path, sources=""))
 
-    with pytest.raises(SourceRegistryError, match="safe id"):
+    with pytest.raises(SourceRegistryError, match="lowercase ASCII slug"):
         services.sources.add_source(
-            "phone/raw",
+            invalid_source,
             adapters=("tus",),
             target_config={"template_id": TEST_TEMPLATE},
         )
+
+
+def test_source_registry_rejects_a_configured_managed_child_before_mutation(
+    tmp_path: Path,
+) -> None:
+    env = {
+        **env_for(tmp_path, sources=""),
+        "JEB_BATCH_DIR": str(tmp_path / "landing" / "camera" / "batches"),
+    }
+    services = services_from_env(env)
+    managed_root = tmp_path / "landing" / "camera"
+    before = sorted(path.relative_to(managed_root) for path in managed_root.rglob("*"))
+
+    with pytest.raises(SourceRegistryError, match="Jeb-managed landing path"):
+        services.sources.add_source(
+            "camera",
+            adapters=("tus",),
+            target_config={"template_id": TEST_TEMPLATE},
+        )
+
+    assert services.source_registry.count() == 0
+    assert sorted(path.relative_to(managed_root) for path in managed_root.rglob("*")) == before
+
+
+def test_source_registry_rejects_a_symlink_landing_child_before_mutation(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    landing = tmp_path / "landing"
+    landing.mkdir()
+    (landing / "camera").symlink_to(outside, target_is_directory=True)
+    services = services_from_env(env_for(tmp_path, sources=""))
+
+    with pytest.raises(SourceRegistryError, match="must not be a symlink"):
+        services.sources.add_source(
+            "camera",
+            adapters=("tus",),
+            target_config={"template_id": TEST_TEMPLATE},
+        )
+
+    assert services.source_registry.count() == 0
+    assert outside.is_dir()
 
 
 def test_cleanup_after_success_requires_safe_munchy_target(tmp_path: Path) -> None:
@@ -591,13 +644,81 @@ def test_source_purge_is_plan_bound_guarded_and_idempotent(tmp_path: Path) -> No
         "status": "removed",
         "source": "camera",
         "purged": True,
-        "files": 1,
-        "bytes": len(b"changed after planning"),
+        "files": 2,
+        "bytes": len(b"first") + len(b"changed after planning"),
     }
     assert not landing_file.exists()
     with pytest.raises(SourceRegistryError, match="source not found"):
         services.source_registry.get("camera")
     assert services.sources.remove_source("camera", challenge=plan["challenge"]) == result
+
+
+def test_source_removal_quiesces_ingress_and_resumes_after_cancellation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = services_from_env(env_for(tmp_path, sources="camera"))
+    source_path = tmp_path / "landing" / "camera" / "clip.txt"
+    write_stable_file(source_path, b"custody")
+    attempt_id = services.attempts.archive_now(source_id="camera", process=False)
+    assert attempt_id is not None
+    custody = Path(str(services.store.attempt_files(attempt_id)[0]["custody_path"]))
+    upload_id = "a" * 32
+    services.store.create_ingress_publication(
+        upload_id=upload_id,
+        source_id="camera",
+        relative_path="pending.txt",
+        declared_bytes=7,
+        payload_sha256="b" * 64,
+        provenance_sha256="c" * 64,
+    )
+    staging = services.config.ingress.tus_staging_dir
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / upload_id).write_bytes(b"pending")
+    (staging / f"{upload_id}.info").write_text("{}", encoding="utf-8")
+    staged_provenance = staging / ".provenance" / upload_id
+    staged_provenance.mkdir(parents=True)
+    (staged_provenance / "binding.json").write_text("{}", encoding="utf-8")
+    terminated_uploads: list[str] = []
+    monkeypatch.setattr(
+        ingress_service_module,
+        "terminate_tus_upload",
+        lambda _config, value: terminated_uploads.append(value),
+    )
+    plan = services.sources.source_removal_plan("camera", purge=True)
+    adapter = services.target_adapters["munchy"]
+    original_cancel = adapter.cancel
+
+    def fail_cancel(_context: object, _attempt_id: str) -> None:
+        raise RuntimeError("injected target cancellation failure")
+
+    monkeypatch.setattr(adapter, "cancel", fail_cancel)
+    with pytest.raises(RuntimeError, match="injected target cancellation failure"):
+        services.sources.remove_source("camera", challenge=str(plan["challenge"]))
+
+    with pytest.raises(SourceRegistryError, match="invalid Jeb ingress credentials"):
+        services.source_registry.authenticate("camera", "camera-password", adapter="tus")
+    assert "camera:" not in services.config.ingress.ftp_projection.read_text(encoding="utf-8")
+    assert custody.read_bytes() == b"custody"
+    with services.store.transaction() as conn:
+        removal = conn.execute(
+            "SELECT phase, last_error FROM source_removals WHERE challenge = ?",
+            (plan["challenge"],),
+        ).fetchone()
+    assert removal is not None
+    assert removal["phase"] == "cancel_attempts"
+    assert "injected target cancellation failure" in str(removal["last_error"])
+
+    monkeypatch.setattr(adapter, "cancel", original_cancel)
+    result = services.sources.remove_source("camera", challenge=str(plan["challenge"]))
+
+    assert result["status"] == "removed"
+    assert not custody.exists()
+    assert not (staging / upload_id).exists()
+    assert not (staging / f"{upload_id}.info").exists()
+    assert not staged_provenance.exists()
+    assert terminated_uploads == [upload_id]
+    assert services.store.ingress_publication(upload_id)["status"] == "rejected"
 
 
 def test_scheduler_batches_each_source_independently(tmp_path: Path) -> None:
@@ -742,7 +863,6 @@ def test_munchy_submission_uses_template_and_generic_target_identity(
     batch_id = services.attempts.archive_now(source_id="camera", process=False)
     assert batch_id is not None
     assert batch_id.startswith("20260719T160102Z__camera__")
-    services.attempts.stage_attempt_files(batch_id)
     services.attempts.ensure_hashes(batch_id)
     services.attempts.ensure_provenance(batch_id)
     request = MunchyTargetAdapter().submission_request(
@@ -783,7 +903,7 @@ def test_jeb_attempt_issue_is_appended_to_lifecycle_log(tmp_path: Path) -> None:
     assert page.events[0].data["error"] == "target failed"
 
 
-def test_jeb_failed_attempt_reports_retained_source_as_error(tmp_path: Path) -> None:
+def test_jeb_failed_attempt_reports_retained_custody_as_error(tmp_path: Path) -> None:
     source_path = tmp_path / "landing" / "camera" / "clip.txt"
     write_stable_file(source_path)
     services = services_from_env(env_for(tmp_path, sources="camera"))
@@ -794,7 +914,155 @@ def test_jeb_failed_attempt_reports_retained_source_as_error(tmp_path: Path) -> 
 
     event = services.event_log.page(after=None, limit=100).events[0]
     assert event.data["severity"] == "error"
-    assert source_path.is_file()
+    assert not source_path.exists()
+    custody = Path(str(services.store.attempt_files(attempt_id)[0]["custody_path"]))
+    assert custody.read_bytes() == b"data"
+
+
+def test_claimed_custody_isolated_from_open_writer_and_cleanup_preserves_replacement(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "landing" / "camera" / "clip.txt"
+    write_stable_file(source_path, b"first")
+    services = services_from_env(env_for(tmp_path, sources="camera"))
+    with source_path.open("r+b", buffering=0) as writer:
+        attempt_id = services.attempts.archive_now(source_id="camera", process=False)
+        assert attempt_id is not None
+        custody = Path(str(services.store.attempt_files(attempt_id)[0]["custody_path"]))
+        writer.seek(0)
+        writer.write(b"other")
+        os.fsync(writer.fileno())
+
+    assert custody.read_bytes() == b"first"
+    write_stable_file(source_path, b"replacement")
+    services.attempts.cleanup_attempt(attempt_id)
+
+    assert source_path.read_bytes() == b"replacement"
+    assert not custody.exists()
+
+
+def test_claim_rejects_replacement_after_discovery_and_preserves_new_input(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "landing" / "camera" / "clip.txt"
+    write_stable_file(source_path, b"first")
+    services = services_from_env(env_for(tmp_path, sources="camera"))
+    source = services.source_registry.get("camera")
+    files = services.sources.eligible_files(source)
+    source_path.unlink()
+    write_stable_file(source_path, b"replacement")
+
+    with pytest.raises(domain_models.TransientJebError, match="changed before custody claim"):
+        services.attempts.create_batch(source, files, period=datetime.now(UTC))
+
+    assert source_path.read_bytes() == b"replacement"
+    [row] = services.store.attempt_files(services.store.unresolved_attempt_ids()[0])
+    assert not Path(str(row["custody_path"])).exists()
+
+
+def test_claim_rejects_replacement_in_the_identity_check_to_rename_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "landing" / "camera" / "clip.txt"
+    write_stable_file(source_path, b"first")
+    services = services_from_env(env_for(tmp_path, sources="camera"))
+    source = services.source_registry.get("camera")
+    files = services.sources.eligible_files(source)
+    original_rename = attempt_service_module.os.rename
+    replaced = False
+
+    def replace_then_rename(source_name: object, destination_name: object) -> None:
+        nonlocal replaced
+        source_value = Path(source_name)  # type: ignore[arg-type]
+        destination_value = Path(destination_name)  # type: ignore[arg-type]
+        if source_value == source_path and destination_value.name.endswith(".claim-source"):
+            assert not replaced
+            replaced = True
+            source_path.unlink()
+            write_stable_file(source_path, b"replacement")
+        original_rename(source_name, destination_name)
+
+    monkeypatch.setattr(attempt_service_module.os, "rename", replace_then_rename)
+    with pytest.raises(domain_models.TransientJebError, match="changed during custody claim"):
+        services.attempts.create_batch(source, files, period=datetime.now(UTC))
+
+    [row] = services.store.attempt_files(services.store.unresolved_attempt_ids()[0])
+    custody = Path(str(row["custody_path"]))
+    assert replaced is True
+    assert source_path.read_bytes() == b"replacement"
+    assert not custody.exists()
+    assert not custody.with_name(f".{custody.name}.claim-source").exists()
+
+
+def test_claim_retries_when_an_open_writer_changes_during_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_path = tmp_path / "landing" / "camera" / "clip.txt"
+    write_stable_file(source_path, b"first")
+    services = services_from_env(env_for(tmp_path, sources="camera"))
+    source = services.source_registry.get("camera")
+    files = services.sources.eligible_files(source)
+    original_copy = attempt_service_module.shutil.copyfileobj
+    changed = False
+
+    with source_path.open("r+b", buffering=0) as writer:
+
+        def copy_then_change(
+            source_stream: object, destination_stream: object, length: int
+        ) -> None:
+            nonlocal changed
+            original_copy(source_stream, destination_stream, length)
+            writer.seek(0)
+            writer.write(b"other")
+            os.fsync(writer.fileno())
+            changed = True
+
+        monkeypatch.setattr(attempt_service_module.shutil, "copyfileobj", copy_then_change)
+        with pytest.raises(domain_models.TransientJebError, match="changed while Jeb copied"):
+            services.attempts.create_batch(source, files, period=datetime.now(UTC))
+
+    [attempt_id] = services.store.unresolved_attempt_ids()
+    [row] = services.store.attempt_files(attempt_id)
+    custody = Path(str(row["custody_path"]))
+    holding = custody.with_name(f".{custody.name}.claim-source")
+    assert changed is True
+    assert holding.read_bytes() == b"other"
+    assert not custody.exists()
+
+    monkeypatch.setattr(attempt_service_module.shutil, "copyfileobj", original_copy)
+    services.attempts.claim_attempt_files(attempt_id)
+
+    assert custody.read_bytes() == b"other"
+    assert not holding.exists()
+
+
+def test_claim_reports_disappearance_without_manufacturing_custody(tmp_path: Path) -> None:
+    source_path = tmp_path / "landing" / "camera" / "clip.txt"
+    write_stable_file(source_path, b"first")
+    services = services_from_env(env_for(tmp_path, sources="camera"))
+    source = services.source_registry.get("camera")
+    files = services.sources.eligible_files(source)
+    source_path.unlink()
+
+    with pytest.raises(domain_models.TransientJebError, match="disappeared before custody claim"):
+        services.attempts.create_batch(source, files, period=datetime.now(UTC))
+
+    [row] = services.store.attempt_files(services.store.unresolved_attempt_ids()[0])
+    assert not Path(str(row["custody_path"])).exists()
+
+
+def test_discovery_never_claims_a_symlink_payload(tmp_path: Path) -> None:
+    services = services_from_env(env_for(tmp_path, sources="camera"))
+    outside = tmp_path / "outside.txt"
+    write_stable_file(outside, b"outside")
+    source_path = tmp_path / "landing" / "camera" / "clip.txt"
+    source_path.symlink_to(outside)
+
+    assert services.attempts.archive_now(source_id="camera", process=False) is None
+    assert source_path.is_symlink()
+    assert outside.read_bytes() == b"outside"
 
 
 def test_unrecoverable_remote_failure_cancels_target_before_failing_attempt(
@@ -856,6 +1124,8 @@ def test_jeb_target_preflight_events_and_status_use_source_context(tmp_path: Pat
         bytes=4,
         mtime=1.0,
         mtime_ns=1,
+        device=1,
+        inode=1,
     )
     services.store.store_target_preflight_failure(
         source=source,
