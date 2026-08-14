@@ -19,6 +19,7 @@ from gogurt.listener import (
     ListenerStore,
     install_listener,
     listener_status,
+    stop_listener,
     uninstall_listener,
 )
 from gogurt.listener_platform import ListenerPaths, NativeListenerStatus
@@ -337,6 +338,32 @@ def test_listener_status_reports_health_and_dispatch_attention(tmp_path: Path) -
     assert status["health"] == "healthy"
     assert status["installed"] is True
     assert status["running"] is True
+
+
+def test_listener_status_tolerates_native_startup_before_schema_commit(tmp_path: Path) -> None:
+    _config, paths, _mount, _counter = _fixture(tmp_path)
+    paths.state_dir.mkdir(parents=True)
+    paths.database_file.touch()
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+
+    status = listener_status(paths=paths, adapter=adapter)
+
+    assert status["health"] == "starting"
+    assert status["dispatches"] == {"counts": {}, "attention": []}
+
+
+def test_listener_stop_reports_settled_native_state(tmp_path: Path) -> None:
+    _config, paths, _mount, _counter = _fixture(tmp_path)
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+
+    status = stop_listener(paths=paths, adapter=adapter)
+
+    assert status["health"] == "stopped"
+    assert status["running"] is False
 
 
 def datetime_timestamp(value: str) -> float:

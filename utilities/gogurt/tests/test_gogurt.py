@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 
+import gogurt.cli as cli
 import pytest
 from config_validation import ConfigError
 from gogurt.cli import app
@@ -23,6 +24,25 @@ from typer.testing import CliRunner
 RUNNER = CliRunner()
 EXAMPLE_ROOT = Path(__file__).resolve().parents[1] / "config" / "examples"
 EXAMPLE_CONFIG = EXAMPLE_ROOT / "gogurt-routes.yaml"
+
+
+def test_console_main_reports_listener_errors_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def fail() -> None:
+        raise cli.ListenerError("native lifecycle failed")
+
+    monkeypatch.setattr(cli, "app", fail)
+    monkeypatch.setattr(sys, "argv", ["gogurt", "listener", "install"])
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main()
+
+    captured = capsys.readouterr()
+    assert raised.value.code == 1
+    assert captured.err == "gogurt: native lifecycle failed\n"
+    assert captured.out == ""
 
 
 def test_loads_portable_gogurt_actions_from_public_example() -> None:

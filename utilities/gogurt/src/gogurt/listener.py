@@ -433,21 +433,28 @@ class ListenerStore:
     def summary(self) -> dict[str, object]:
         if not self.path.is_file():
             return {"counts": {}, "attention": []}
-        with closing(self._connect()) as connection:
-            counts = {
-                str(row["state"]): int(row["count"])
-                for row in connection.execute(
-                    "SELECT state, COUNT(*) AS count FROM dispatches GROUP BY state"
-                )
-            }
-            rows = connection.execute(
-                """
-                SELECT dispatch_id, mount_point, route, state, attempts, exit_code, error
-                FROM dispatches
-                WHERE state IN ('retry', 'uncertain', 'failed')
-                ORDER BY observed_at DESC LIMIT 20
-                """
-            ).fetchall()
+        try:
+            with closing(self._connect()) as connection:
+                counts = {
+                    str(row["state"]): int(row["count"])
+                    for row in connection.execute(
+                        "SELECT state, COUNT(*) AS count FROM dispatches GROUP BY state"
+                    )
+                }
+                rows = connection.execute(
+                    """
+                    SELECT dispatch_id, mount_point, route, state, attempts, exit_code, error
+                    FROM dispatches
+                    WHERE state IN ('retry', 'uncertain', 'failed')
+                    ORDER BY observed_at DESC LIMIT 20
+                    """
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table: dispatches" not in str(exc):
+                raise
+            # The native service may have created the database file but not yet
+            # committed its schema while an install/status health probe runs.
+            return {"counts": {}, "attention": []}
         return {
             "counts": counts,
             "attention": [
@@ -902,7 +909,11 @@ def stop_listener(
     resolved_paths = paths or default_listener_paths()
     native_adapter = adapter or listener_adapter()
     native_adapter.stop(resolved_paths)
-    return listener_status(paths=resolved_paths, adapter=native_adapter)
+    return _wait_for_health(
+        frozenset({"stopped"}),
+        paths=resolved_paths,
+        adapter=native_adapter,
+    )
 
 
 def restart_listener(
