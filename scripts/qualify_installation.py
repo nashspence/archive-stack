@@ -395,8 +395,11 @@ def _run_recovery(
     archive.mkdir()
     expected, _journal = write_archive(archive)
     passphrase = scratch / "passphrase.txt"
-    # codeql[py/clear-text-storage-sensitive-data]
-    passphrase.write_text(passphrase_value + "\n", encoding="utf-8")
+    passphrase.write_text(
+        # codeql[py/clear-text-storage-sensitive-data]
+        passphrase_value + "\n",
+        encoding="utf-8",
+    )
     passphrase.chmod(0o600)
     output = scratch / "recovered"
     ots = _write_ots_fixture(scratch)
