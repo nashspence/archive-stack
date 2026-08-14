@@ -59,6 +59,7 @@ LABEL org.opencontainers.image.title="Riverhog" \
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
 COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
 COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
+COPY third_party/minisign/0.12/LICENSE /usr/share/licenses/riverhog-third-party/minisign/0.12/LICENSE
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

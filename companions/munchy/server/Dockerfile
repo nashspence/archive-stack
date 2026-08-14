@@ -8,9 +8,11 @@ COPY mise.toml mise.lock ./
 RUN mise trust mise.toml \
     && mise install --locked "http:exiftool" uv \
     && exiftool_path="$(mise which exiftool)" \
+    && exiftool_root="$(mise where http:exiftool)" \
     && mkdir -p /opt/exiftool /opt/riverhog-tools/bin \
     && cp --preserve=mode,timestamps "${exiftool_path}" /opt/exiftool/exiftool \
     && cp -a "$(dirname "${exiftool_path}")/lib" /opt/exiftool/lib \
+    && cp --preserve=mode,timestamps "${exiftool_root}/LICENSE" /opt/exiftool/LICENSE \
     && cp --preserve=mode,timestamps "$(mise which uv)" /opt/riverhog-tools/bin/uv \
     && test "$(/opt/riverhog-tools/bin/uv --version)" = "$(mise exec uv -- uv --version)"
 
@@ -73,6 +75,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=locked-tools /opt/exiftool /opt/exiftool
+COPY --from=locked-tools /opt/exiftool/LICENSE /usr/share/licenses/riverhog-third-party/exiftool/13.59/LICENSE
 RUN ln -s /opt/exiftool/exiftool /usr/local/bin/exiftool \
     && test "$(exiftool -ver)" = "13.59" \
     && ! command -v mise

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -141,6 +142,13 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
             "index_snapshot": "riverhog-python-index-v1.0.0.tar.gz",
             "gogurt_listener_reference": "gogurt-listener-v1.0.0.md",
         },
+        "notices": {
+            "schema": "riverhog-artifact-notices/v1",
+            "directory": "notices",
+            "format": "tar.gz",
+            "basis": "exact-artifact-contents",
+            "required_for": ["wheel", "image"],
+        },
         "evidence": [
             "install-manifest.json",
             "release-manifest.json",
@@ -274,6 +282,75 @@ def test_source_archive_is_deterministic_and_commit_time_normalized(tmp_path: Pa
     assert members[-1].mode == 0o755
 
 
+def test_artifact_notice_bundle_is_deterministic_and_subject_bound(tmp_path: Path) -> None:
+    module = load_script()
+    record = {
+        "kind": "wheel",
+        "name": "python/riverhog_client-1.0.0-py3-none-any.whl",
+        "sha256": "2" * 64,
+    }
+    components = [
+        {
+            "kind": "python",
+            "name": "riverhog-client",
+            "version": "1.0.0",
+            "notices": [
+                {
+                    "source": "riverhog_client-1.0.0.dist-info/licenses/LICENSE",
+                    "content": b"license text\n",
+                }
+            ],
+        }
+    ]
+    first = tmp_path / "first.tar.gz"
+    second = tmp_path / "second.tar.gz"
+
+    module._write_notice_bundle(first, record, components, source_epoch=1234567890)
+    module._write_notice_bundle(second, record, components, source_epoch=1234567890)
+
+    assert first.read_bytes() == second.read_bytes()
+    assert module._verify_notice_bundle(first, record) == 1
+    with tarfile.open(first, mode="r:gz") as archive:
+        index_stream = archive.extractfile("NOTICE.json")
+        assert index_stream is not None
+        index = json.loads(index_stream.read())
+    assert index["schema"] == "riverhog-artifact-notices/v1"
+    assert index["subject"] == record
+
+
+def test_required_artifact_notice_input_fails_closed(tmp_path: Path) -> None:
+    module = load_script()
+    record = {
+        "kind": "wheel",
+        "name": "python/artifact.whl",
+        "sha256": "3" * 64,
+    }
+
+    with pytest.raises(module.ReleaseError, match="notice input is absent"):
+        module._write_subject_notices(tmp_path, [record], source_epoch=1234567890)
+
+
+def test_generated_install_reference_has_a_file_sbom(tmp_path: Path) -> None:
+    module = load_script()
+    record = {
+        "kind": "install-reference",
+        "name": "installation/gogurt-listener-v1.0.0.md",
+        "sha256": "4" * 64,
+        "version": "1.0.0",
+        "license": "Apache-2.0",
+    }
+
+    module._write_subject_sboms(
+        tmp_path,
+        [record],
+        source_sha="1" * 40,
+        created="2009-02-13T23:31:30Z",
+    )
+
+    sbom = json.loads((tmp_path / record["sbom"]).read_text(encoding="utf-8"))
+    assert sbom["packages"][0]["primaryPackagePurpose"] == "FILE"
+
+
 def test_release_evidence_is_complete_and_minisign_verified(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -318,6 +395,19 @@ def test_release_evidence_is_complete_and_minisign_verified(
                     "license": "CAL-1.0",
                 }
             ],
+            "_notice_components": [
+                {
+                    "kind": "python",
+                    "name": "riverhog-client",
+                    "version": "1.0.0",
+                    "notices": [
+                        {
+                            "source": "riverhog_client.dist-info/licenses/LICENSE",
+                            "content": b"CAL\n",
+                        }
+                    ],
+                }
+            ],
         }
     ]
     install_manifest = {"schema": "riverhog-installation/v1"}
@@ -336,6 +426,7 @@ def test_release_evidence_is_complete_and_minisign_verified(
         records,
         version="1.0.0",
         source_sha="1" * 40,
+        source_epoch=1234567890,
         spdx_created="2009-02-13T23:31:30Z",
         install_manifest=install_manifest,
         signing_key=signing_key,
@@ -343,9 +434,11 @@ def test_release_evidence_is_complete_and_minisign_verified(
     )
 
     assert verification["subjects"] == 1
+    assert verification["notice_components"] == 1
     assert verification["signature_verified"] is True
     assert (output / "SHA256SUMS.minisig").is_file()
     assert (output / records[0]["sbom"]).is_file()
+    assert (output / records[0]["notices"]).is_file()
     manifest = module.json.loads((output / "release-manifest.json").read_text(encoding="utf-8"))
     assert manifest["published"] is False
     assert manifest["subjects"] == records
