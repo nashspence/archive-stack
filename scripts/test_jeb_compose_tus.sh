@@ -66,3 +66,11 @@ api_url="http://127.0.0.1:${api_port}"
   --management-token "${JEB_API_TOKEN}" \
   --landing-dir "${JEB_LANDING_HOST_DIR}" \
   --work-dir "${RUNTIME_DIR}/work"
+
+IFS= read -r upload_id < "${RUNTIME_DIR}/work/upload-id"
+compose exec -T jeb sh -ceu '
+  staging=/landing/.ingress/tus
+  test ! -e "${staging}/${1}"
+  test ! -e "${staging}/${1}.info"
+  test ! -e "${staging}/.provenance/${1}"
+' sh "${upload_id}"
