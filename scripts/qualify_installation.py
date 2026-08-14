@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import http.server
-import importlib
+import importlib.util
 import io
 import json
 import os
@@ -357,8 +357,26 @@ if proof != f"sha256:{hashlib.sha256(manifest).hexdigest()}\\n":
     return wrapper
 
 
-def _run_recovery(executable: Path, *, scratch: Path, environment: dict[str, str]) -> str:
-    fixture = importlib.import_module("riverhog.recovery.tests.test_recovery")
+def _run_recovery(
+    executable: Path,
+    *,
+    source_root: Path,
+    scratch: Path,
+    environment: dict[str, str],
+) -> str:
+    fixture_path = source_root / "riverhog/recovery/tests/test_recovery.py"
+    spec = importlib.util.spec_from_file_location(
+        "_riverhog_recovery_qualification_fixture",
+        fixture_path,
+    )
+    if spec is None or spec.loader is None:
+        raise QualificationError("could not load the independent recovery fixture")
+    fixture = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(source_root))
+    try:
+        spec.loader.exec_module(fixture)
+    finally:
+        sys.path.remove(str(source_root))
     passphrase_value = cast(str, fixture.PASSPHRASE)
     write_archive = cast(
         Callable[[Path], tuple[dict[str, bytes], bytes | None]],
@@ -518,7 +536,12 @@ def _qualify_component(
             environment=environment,
         )
     else:
-        operation = _run_recovery(primary, scratch=scratch, environment=environment)
+        operation = _run_recovery(
+            primary,
+            source_root=source_root,
+            scratch=scratch,
+            environment=environment,
+        )
 
     requests = QualificationHandler.requests[request_offset:]
     wheel_assets = {
