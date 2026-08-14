@@ -311,6 +311,9 @@ def test_local_materializer_materializes_repairs_and_preserves_remote_deletions(
     assert repaired.exit_code == 0
     assert output.read_bytes() == CONTENT
     assert list((target / ".riverhog-local-quarantine").rglob("one.txt"))
+    repaired_json = runner.invoke(local_materialization.local_app, ["repair", "--json"])
+    assert repaired_json.exit_code == 0
+    assert json.loads(repaired_json.stdout)["status"] == "current"
 
     api.deleted = True
     after_deletion = runner.invoke(local_materialization.local_app, ["sync"])

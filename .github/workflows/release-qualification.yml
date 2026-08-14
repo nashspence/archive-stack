@@ -153,7 +153,26 @@ jobs:
           companions/jeb/tests/test_jeb_health.py::test_jeb_official_client_covers_complete_positive_api_lifecycle
           tests/unit/test_collection_reads.py::test_collection_list_query_count_is_independent_of_page_rows
           companions/munchy/tests/test_munchy_server_contract.py::test_list_jobs_does_not_scan_all_job_states_for_current_page
-          companions/jeb/tests/test_jeb_server.py::test_source_registry_lists_compact_filtered_pages_in_sql"
+          companions/jeb/tests/test_jeb_server.py::test_source_registry_lists_compact_filtered_pages_in_sql
+          tests/unit/test_cli_app_keys.py
+          tests/unit/test_cli_archive_copy.py
+          tests/unit/test_cli_archive_retire.py
+          tests/unit/test_cli_client.py
+          tests/unit/test_cli_collection_delete.py
+          tests/unit/test_cli_errors.py
+          tests/unit/test_cli_events.py
+          tests/unit/test_cli_help.py
+          tests/unit/test_cli_json_output.py
+          tests/unit/test_cli_list_ids.py
+          tests/unit/test_cli_output.py
+          tests/unit/test_cli_provenance.py
+          tests/unit/test_cli_status.py
+          tests/unit/test_cli_tags.py
+          tests/unit/test_cli_upload.py
+          tests/unit/test_local_materialization.py
+          companions/munchy/tests/test_munchy_cli.py
+          companions/jeb/tests/test_jeb_cli.py
+          companions/jeb/tests/test_jeb_remote_cli.py"
           args="-p tests.operation_observer"
       - name: Verify and record the complete operation matrix
         run: >-

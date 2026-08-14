@@ -52,7 +52,13 @@ def test_archive_copy_selects_destination_and_optional_source(monkeypatch) -> No
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["state"] == "requested"
-    assert calls == [(1, "deep", "b2")]
+    human = runner.invoke(
+        app,
+        ["archive", "copy", "start", "1", "--from", "b2", "--to", "deep"],
+    )
+    assert human.exit_code == 0
+    assert "deep" in human.stdout
+    assert calls == [(1, "deep", "b2"), (1, "deep", "b2")]
 
 
 def test_archive_copy_list_and_show_share_server_job_models(monkeypatch) -> None:
@@ -115,7 +121,7 @@ def test_archive_copy_list_and_show_share_server_job_models(monkeypatch) -> None
 
 
 def test_archive_copy_list_selectors_cancel_and_watch_are_actionable(monkeypatch) -> None:
-    states = iter(("copying", "completed"))
+    states = iter(("copying", "completed", "copying", "completed"))
     calls: list[object] = []
 
     def job(state: str) -> dict[str, object]:
@@ -173,6 +179,15 @@ def test_archive_copy_list_selectors_cancel_and_watch_are_actionable(monkeypatch
     assert listed.stdout == "7::deep\n"
     assert canceled.exit_code == 0
     assert json.loads(canceled.stdout)["state"] == "canceled"
+    canceled_human = runner.invoke(app, ["archive", "copy", "cancel", "7::deep"])
+    assert canceled_human.exit_code == 0
+    assert "canceled" in canceled_human.stdout
     assert watched.exit_code == 0
     assert json.loads(watched.stdout)["state"] == "completed"
+    watched_human = runner.invoke(
+        app,
+        ["archive", "copy", "watch", "7::deep", "--interval", "0.1"],
+    )
+    assert watched_human.exit_code == 0
+    assert "completed" in watched_human.stdout
     assert calls[0][1]["state"] == "waiting"

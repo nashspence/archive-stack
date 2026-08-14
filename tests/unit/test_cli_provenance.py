@@ -170,6 +170,15 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
         ("export", (41, JOURNAL_ID)),
         ("verify", 41),
     ]
+    shown_human = RUNNER.invoke(app, ["collection", "provenance", "show", "41", "media/movie.mov"])
+    traced_human = RUNNER.invoke(
+        app, ["collection", "provenance", "trace", "41", "media/movie.mov"]
+    )
+    verified_human = RUNNER.invoke(app, ["collection", "provenance", "verify", "41"])
+    assert shown_human.exit_code == traced_human.exit_code == verified_human.exit_code == 0
+    assert "media/movie.mov" in shown_human.stdout
+    assert "media/movie.mov" in traced_human.stdout
+    assert "valid" in verified_human.stdout
 
 
 def test_provenance_list_selectors_match_other_file_list_commands(monkeypatch) -> None:

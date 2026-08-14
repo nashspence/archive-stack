@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import median
-from typing import Any, TypeGuard
+from typing import Any, TypeGuard, cast
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
@@ -720,6 +720,51 @@ def _load_operation_timings(
         raise QualificationError(
             f"official-client operations lack client wall timings: {missing_client}"
         )
+    raw_projections = payload.get("cli_projections")
+    if not isinstance(raw_projections, list):
+        raise QualificationError("CLI projection evidence rows are invalid")
+    required_commands = {
+        (item.application, command)
+        for item in matrix
+        if item.classification == "human-cli+json"
+        for command in item.cli_commands
+    }
+    projections: list[dict[str, object]] = []
+    projection_identities: set[tuple[str, str]] = set()
+    complete_commands: set[tuple[str, str]] = set()
+    for raw in raw_projections:
+        if not isinstance(raw, dict):
+            raise QualificationError("CLI projection evidence row is invalid")
+        identity = (str(raw.get("application") or ""), str(raw.get("command") or ""))
+        if identity not in required_commands or identity in projection_identities:
+            raise QualificationError(f"CLI projection evidence identity is invalid: {identity}")
+        projection_identities.add(identity)
+        human = raw.get("human_executions")
+        machine = raw.get("json_executions")
+        if (
+            not isinstance(human, int)
+            or isinstance(human, bool)
+            or human < 0
+            or not isinstance(machine, int)
+            or isinstance(machine, bool)
+            or machine < 0
+        ):
+            raise QualificationError(f"CLI projection evidence counts are invalid: {identity}")
+        if human > 0 and machine > 0:
+            complete_commands.add(identity)
+        projections.append(
+            {
+                "application": identity[0],
+                "command": identity[1],
+                "human_executions": human,
+                "json_executions": machine,
+            }
+        )
+    missing_cli_commands = sorted(required_commands - complete_commands)
+    if missing_cli_commands:
+        raise QualificationError(
+            f"CLI commands lack executed human/JSON projection parity: {missing_cli_commands}"
+        )
     return {
         "schema": TIMING_SCHEMA,
         "source_sha": source_sha,
@@ -727,6 +772,11 @@ def _load_operation_timings(
             validated,
             key=lambda item: (str(item["application"]), str(item["operation_id"])),
         ),
+        "cli_projections": sorted(
+            projections,
+            key=lambda item: (str(item["application"]), str(item["command"])),
+        ),
+        "complete_cli_commands": len(complete_commands),
     }
 
 
@@ -750,6 +800,7 @@ def evidence(*, source_sha: str, timings: Path) -> dict[str, object]:
             "cli_human_json_projection": {
                 "status": "passed",
                 "operations": sum(item.classification == "human-cli+json" for item in matrix),
+                "commands": cast(int, local_timings["complete_cli_commands"]),
             },
             "bounded_state_access": {
                 "status": "passed",

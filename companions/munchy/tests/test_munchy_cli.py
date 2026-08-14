@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 
+import munchy_cli.main as munchy_main
 from lifecycle_events import EventPage, cloud_event
 from munchy_api_client.client import MunchyHttpError
 from munchy_cli.main import app
@@ -140,8 +141,36 @@ def test_munchy_watch_json_emits_unsuccessful_final_document(monkeypatch) -> Non
     assert result.stderr == ""
 
 
+def test_munchy_watch_success_has_human_and_json_receipts(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    final = {
+        "job_id": "job-1",
+        "state": "succeeded",
+        "phase": "done",
+        "handoff": {"state": "complete", "safe_to_delete": True},
+    }
+
+    class FakeClient:
+        def __init__(self, _base_url: str) -> None:
+            pass
+
+        def wait_for_job(self, job_id: str, *, interval: float) -> dict[str, object]:
+            assert job_id == "job-1"
+            assert interval == 0.5
+            return final
+
+    monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
+    base = ["job", "watch", "job-1", "--server-url", "https://munchy.test", "--interval", "0.5"]
+    human = runner.invoke(app, base)
+    structured = runner.invoke(app, [*base, "--json"])
+
+    assert human.exit_code == structured.exit_code == 0
+    assert "job-1" in human.stdout
+    assert json.loads(structured.stdout)["job_id"] == "job-1"
+
+
 def test_munchy_scheduler_controls_use_admin_api(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls: list[str] = []
+    state = {"paused": False}
 
     class FakeAdminClient:
         def __init__(self, base_url: str) -> None:
@@ -150,7 +179,7 @@ def test_munchy_scheduler_controls_use_admin_api(monkeypatch) -> None:  # type: 
         def get_scheduler_status(self) -> dict[str, object]:
             calls.append("status")
             return {
-                "paused": "pause" in calls and "resume" not in calls,
+                "paused": state["paused"],
                 "active_jobs": ["job-1"],
                 "scheduled_jobs": [],
                 "running_job_limit": 2,
@@ -161,10 +190,12 @@ def test_munchy_scheduler_controls_use_admin_api(monkeypatch) -> None:  # type: 
 
         def pause_scheduler(self) -> dict[str, object]:
             calls.append("pause")
+            state["paused"] = True
             return {"paused": True}
 
         def resume_scheduler(self) -> dict[str, object]:
             calls.append("resume")
+            state["paused"] = False
             return {"paused": False}
 
     monkeypatch.setattr("munchy_cli.main.MunchyAdminClient", FakeAdminClient)
@@ -183,6 +214,25 @@ def test_munchy_scheduler_controls_use_admin_api(monkeypatch) -> None:  # type: 
     assert resumed.exit_code == 0
     assert json.loads(resumed.stdout)["paused"] is False
     assert calls == ["pause", "status", "resume", "status"]
+
+    status_human = runner.invoke(
+        app, ["scheduler", "status", "--server-url", "https://munchy.test"]
+    )
+    status_json = runner.invoke(
+        app, ["scheduler", "status", "--server-url", "https://munchy.test", "--json"]
+    )
+    pause_json = runner.invoke(
+        app, ["scheduler", "pause", "--server-url", "https://munchy.test", "--json"]
+    )
+    resume_human = runner.invoke(
+        app, ["scheduler", "resume", "--server-url", "https://munchy.test"]
+    )
+    assert status_human.exit_code == status_json.exit_code == 0
+    assert "scheduler:" in status_human.stdout
+    assert "paused" in json.loads(status_json.stdout)
+    assert pause_json.exit_code == resume_human.exit_code == 0
+    assert json.loads(pause_json.stdout)["paused"] is True
+    assert "scheduler:" in resume_human.stdout
 
 
 def test_munchy_command_help_has_summaries() -> None:
@@ -642,6 +692,30 @@ def test_munchy_job_diagnostic_list_matches_list_conventions(monkeypatch) -> Non
     assert "job diagnostics page 2/2" in result.stdout
     assert "job-1" in result.stdout
     assert "encoding_failed" in result.stdout
+    structured = runner.invoke(
+        app,
+        [
+            "job",
+            "diagnostic",
+            "list",
+            "--server-url",
+            "https://munchy.test",
+            "--page",
+            "2",
+            "--per-page",
+            "3",
+            "--sort",
+            "bytes",
+            "--order",
+            "asc",
+            "--query",
+            "encoding",
+            "--all",
+            "--json",
+        ],
+    )
+    assert structured.exit_code == 0
+    assert json.loads(structured.stdout)["diagnostics"][0]["job_id"] == "job-1"
 
 
 def test_munchy_job_diagnostic_list_ids_is_pipeable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -714,6 +788,22 @@ def test_munchy_job_diagnostic_download_requires_explicit_output_and_forwards_ov
     assert missing.exit_code == 2
     assert result.exit_code == 0
     assert json.loads(result.stdout)["output"] == str(tmp_path / "case.tar.gz")
+    human = runner.invoke(
+        app,
+        [
+            "job",
+            "diagnostic",
+            "download",
+            "job-1",
+            "--output",
+            str(tmp_path / "case.tar.gz"),
+            "--overwrite",
+            "--server-url",
+            "https://munchy.test",
+        ],
+    )
+    assert human.exit_code == 0
+    assert "job-1" in human.stdout
 
 
 def test_munchy_removes_diagnostics_and_terminal_jobs_by_explicit_ids(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -758,6 +848,24 @@ def test_munchy_removes_diagnostics_and_terminal_jobs_by_explicit_ids(monkeypatc
         ("job", "job-3"),
         ("job", "job-4"),
     ]
+    diagnostics_json = runner.invoke(
+        app,
+        [
+            "job",
+            "diagnostic",
+            "remove",
+            "job-1",
+            "--server-url",
+            "https://munchy.test",
+            "--json",
+        ],
+    )
+    jobs_json = runner.invoke(
+        app,
+        ["job", "remove", "job-3", "--server-url", "https://munchy.test", "--json"],
+    )
+    assert json.loads(diagnostics_json.stdout)["removed"][0]["job_id"] == "job-1"
+    assert json.loads(jobs_json.stdout)["removed"][0]["job_id"] == "job-3"
 
 
 def test_munchy_retention_is_a_plan_until_apply_is_explicit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -806,6 +914,23 @@ def test_munchy_retention_is_a_plan_until_apply_is_explicit(monkeypatch) -> None
     assert apply.exit_code == 0
     assert "terminal jobs removed: 2" in apply.stdout
     assert calls == ["plan", "apply"]
+    plan_json = runner.invoke(
+        app,
+        ["maintenance", "retention", "--server-url", "https://munchy.test", "--json"],
+    )
+    apply_json = runner.invoke(
+        app,
+        [
+            "maintenance",
+            "retention",
+            "--server-url",
+            "https://munchy.test",
+            "--apply",
+            "--json",
+        ],
+    )
+    assert json.loads(plan_json.stdout)["terminal_jobs"]["eligible"] == 2
+    assert json.loads(apply_json.stdout)["removed"]["terminal_jobs"] == 2
 
 
 def test_munchy_job_list_reports_server_errors_without_traceback(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -852,6 +977,20 @@ def test_munchy_job_show(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     assert "job-1" in result.stdout
     assert "camera-archive · 20260727T123456Z" in result.stdout
     assert "encoding" in result.stdout
+    structured = runner.invoke(
+        app,
+        [
+            "job",
+            "show",
+            "job-1",
+            "--server-url",
+            "https://munchy.test",
+            "--compact",
+            "--json",
+        ],
+    )
+    assert structured.exit_code == 0
+    assert json.loads(structured.stdout)["job_id"] == "job-1"
 
 
 def test_munchy_job_cancel_does_not_require_confirmation(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -870,6 +1009,153 @@ def test_munchy_job_cancel_does_not_require_confirmation(monkeypatch) -> None:  
 
     assert result.exit_code == 0
     assert "canceled" in result.stdout
+    structured = runner.invoke(
+        app,
+        ["job", "cancel", "job-1", "--server-url", "https://munchy.test", "--json"],
+    )
+    assert structured.exit_code == 0
+    assert json.loads(structured.stdout)["state"] == "canceled"
+
+
+def test_munchy_job_resume_has_human_and_json_receipts(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class FakeClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "https://munchy.test"
+
+        def resume_job(self, job_id: str) -> dict[str, object]:
+            return {"job_id": job_id, "state": "queued", "phase": "queued"}
+
+    monkeypatch.setattr("munchy_cli.main.MunchyClient", FakeClient)
+
+    human = runner.invoke(app, ["job", "resume", "job-1", "--server-url", "https://munchy.test"])
+    structured = runner.invoke(
+        app,
+        ["job", "resume", "job-1", "--server-url", "https://munchy.test", "--json"],
+    )
+
+    assert human.exit_code == structured.exit_code == 0
+    assert "job-1" in human.stdout
+    assert json.loads(structured.stdout)["job_id"] == "job-1"
+
+
+def test_munchy_admin_operations_have_executable_human_json_parity(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    template_path = tmp_path / "template.yaml"
+    template_path.write_text("workflow_mode: collection_archive\n", encoding="utf-8")
+    monkeypatch.setattr(
+        munchy_main,
+        "_job_template_definition",
+        lambda _path: {"workflow_mode": "collection_archive"},
+    )
+    monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
+
+    template = {
+        "template_id": "review",
+        "revision": 3,
+        "enabled": True,
+        "digest": "sha256:template",
+        "definition": {"workflow_mode": "collection_archive"},
+    }
+
+    class FakeAdminClient:
+        def __init__(self, base_url: str) -> None:
+            assert base_url == "https://munchy.test"
+
+        def list_apps(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "apps": [{"name": "jeb", "keys": 1, "active_keys": 1}],
+            }
+
+        def create_app_key(self, app_name: str, **_kwargs: object) -> dict[str, object]:
+            return {
+                "id": "key-1",
+                "app": app_name,
+                "permissions": ["jobs:submit"],
+                "status": "active",
+                "token": "one-time-token",
+            }
+
+        def list_app_keys(self, app_name: str, **_kwargs: object) -> dict[str, object]:
+            return {
+                "app": app_name,
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "keys": [{"id": "key-1", "status": "active"}],
+            }
+
+        def revoke_app_key(self, app_name: str, key_id: str) -> dict[str, object]:
+            return {"app": app_name, "id": key_id, "status": "revoked"}
+
+        def list_job_templates(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "templates": [template],
+            }
+
+        def get_job_template(self, _template_id: str) -> dict[str, object]:
+            return dict(template)
+
+        def validate_job_template(
+            self, template_id: str, _definition: dict[str, object]
+        ) -> dict[str, object]:
+            return {"template_id": template_id, "valid": True, "digest": "sha256:template"}
+
+        def create_job_template(
+            self, _template_id: str, _definition: dict[str, object], **_kwargs: object
+        ) -> dict[str, object]:
+            return dict(template)
+
+        def replace_job_template(
+            self, _template_id: str, _definition: dict[str, object], **_kwargs: object
+        ) -> dict[str, object]:
+            return {**template, "revision": 4}
+
+        def enable_job_template(self, _template_id: str, **_kwargs: object) -> dict[str, object]:
+            return {**template, "enabled": True}
+
+        def disable_job_template(self, _template_id: str, **_kwargs: object) -> dict[str, object]:
+            return {**template, "enabled": False}
+
+    monkeypatch.setattr(munchy_main, "MunchyAdminClient", FakeAdminClient)
+
+    cases = (
+        (["app", "list"], "jeb"),
+        (["app", "key", "create", "jeb", "--permission", "jobs:submit"], "key-1"),
+        (["app", "key", "list", "jeb"], "key-1"),
+        (["app", "key", "revoke", "jeb", "key-1"], "key-1"),
+        (["template", "list"], "review"),
+        (["template", "show", "review"], "review"),
+        (["template", "check", "review", str(template_path)], "review"),
+        (["template", "create", "review", str(template_path)], "review"),
+        (["template", "replace", "review", str(template_path)], "review"),
+        (["template", "enable", "review"], "review"),
+        (["template", "disable", "review"], "review"),
+    )
+    for arguments, identity in cases:
+        base = [*arguments, "--server-url", "https://munchy.test"]
+        human = runner.invoke(app, base)
+        structured = runner.invoke(app, [*base, "--json"])
+        assert human.exit_code == 0, human.output
+        assert structured.exit_code == 0, structured.output
+        assert identity in human.stdout
+        assert identity in json.dumps(json.loads(structured.stdout), sort_keys=True)
+
+    listed = runner.invoke(
+        app,
+        ["app", "key", "list", "jeb", "--server-url", "https://munchy.test", "--json"],
+    )
+    assert "one-time-token" not in listed.stdout
 
 
 def test_munchy_job_cleanup_accepts_cleaned_terminal_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1044,6 +1330,21 @@ def test_munchy_submit_dry_run_preflights_without_creating_state(
     assert payload["template_id"] == "phone-review"
     assert payload["template_revision"] == 2
     assert payload["workflow_mode"] == "review"
+    human = runner.invoke(
+        app,
+        [
+            "submit",
+            str(source_dir),
+            "--template",
+            "phone-review",
+            "--server-url",
+            "https://munchy.test",
+            "--no-hash-cache",
+            "--dry-run",
+        ],
+    )
+    assert human.exit_code == 0
+    assert "phone-review" in human.stdout
 
 
 def test_munchy_job_plan_review_sweep_reports_routes(tmp_path) -> None:  # type: ignore[no-untyped-def]
