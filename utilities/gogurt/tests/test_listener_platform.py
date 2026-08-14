@@ -226,8 +226,10 @@ def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path:
     state_command = adapter.commands[-1]
     assert state_command[0].endswith("WindowsPowerShell\\v1.0\\powershell.exe")
     assert "Running" not in " ".join(state_command)
-    assert str(WINDOWS_TASK_NOT_FOUND_HRESULT) in " ".join(state_command)
-    assert f"exit {WINDOWS_TASK_NOT_FOUND_EXIT}" in " ".join(state_command)
+    joined_state_command = " ".join(state_command)
+    assert "} catch { if ($_.Exception.HResult" in joined_state_command
+    assert str(WINDOWS_TASK_NOT_FOUND_HRESULT) in joined_state_command
+    assert f"exit {WINDOWS_TASK_NOT_FOUND_EXIT}" in joined_state_command
 
     adapter.task_state = "3"
     ready = adapter.status(paths)
