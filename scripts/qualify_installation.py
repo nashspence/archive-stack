@@ -79,15 +79,25 @@ def _run(
     env: dict[str, str] | None = None,
     capture: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    completed = subprocess.run(
         command,
         cwd=cwd,
         env=env,
-        check=True,
+        check=False,
         text=True,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
     )
+    if completed.returncode != 0:
+        detail = (
+            (completed.stderr or "").strip()
+            or (completed.stdout or "").strip()
+            or "no captured diagnostic"
+        )
+        raise QualificationError(
+            f"{Path(command[0]).name} exited {completed.returncode}: {detail[-4000:]}"
+        )
+    return completed
 
 
 def _source_checkout(root: Path, destination: Path, source_sha: str) -> None:
@@ -350,9 +360,9 @@ def _run_gogurt(
 
 @contextmanager
 def _qualification_mount(scratch: Path) -> Iterator[Path]:
-    backing = scratch / "gogurt-listener-volume"
-    backing.mkdir()
     if sys.platform.startswith("linux"):
+        backing = scratch / "gogurt-listener-volume"
+        backing.mkdir()
         _run(
             [
                 "sudo",
@@ -378,6 +388,7 @@ def _qualification_mount(scratch: Path) -> Iterator[Path]:
             )
         return
     if sys.platform == "darwin":
+        backing = Path("/Volumes") / f"GogurtQualification-{os.getpid()}"
         image = scratch / "gogurt-listener.dmg"
         _run(
             [
@@ -418,6 +429,8 @@ def _qualification_mount(scratch: Path) -> Iterator[Path]:
             )
         return
     if sys.platform == "win32":
+        backing = scratch / "gogurt-listener-volume"
+        backing.mkdir()
         drive = next(
             (
                 f"{letter}:"
