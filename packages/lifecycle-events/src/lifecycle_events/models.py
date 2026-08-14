@@ -46,6 +46,11 @@ class EventPage(BaseModel):
     next_cursor: str
     has_more: bool
 
+    def require_progress_after(self, cursor: str) -> None:
+        """Reject a nonempty page that cannot advance an opaque consumer cursor."""
+        if self.events and self.next_cursor == cursor:
+            raise ValueError("nonempty lifecycle-event page did not advance its cursor")
+
 
 def cloud_event(
     *,

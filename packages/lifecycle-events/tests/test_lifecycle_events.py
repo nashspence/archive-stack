@@ -3,12 +3,24 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from lifecycle_events import (
+    EventPage,
     SQLiteEventCursorStore,
     SQLiteLifecycleEventLog,
     caused_event,
     cloud_event,
 )
+
+
+def test_nonempty_event_pages_require_opaque_cursor_progress() -> None:
+    event = cloud_event(source="urn:riverhog", type="io.riverhog.test")
+    nonadvancing = EventPage(events=[event], next_cursor="cursor-7", has_more=False)
+    terminal = EventPage(events=[], next_cursor="cursor-7", has_more=False)
+
+    with pytest.raises(ValueError, match="did not advance"):
+        nonadvancing.require_progress_after("cursor-7")
+    terminal.require_progress_after("cursor-7")
 
 
 def sqlite_connect(path: Path) -> sqlite3.Connection:

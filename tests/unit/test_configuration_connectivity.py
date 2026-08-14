@@ -203,7 +203,7 @@ def test_jeb_configuration_model_fields_have_production_consumers() -> None:
 def test_direct_environment_settings_have_explicit_test_witnesses() -> None:
     settings = _called_environment_settings()
 
-    assert len(settings) == 204
+    assert len(settings) == 205
     assert settings - _test_string_literals() == set()
     assert Counter(
         (name.split("_", 1)[0].casefold(), _classification(name)) for name in settings
@@ -219,6 +219,7 @@ def test_direct_environment_settings_have_explicit_test_witnesses() -> None:
             ("munchy", "credential"): 3,
             ("munchy", "identity"): 11,
             ("munchy", "runtime"): 62,
+            ("mango", "runtime"): 1,
             ("vcrunch", "runtime"): 1,
         }
     )
