@@ -137,8 +137,6 @@ class ListenerAdapter(Protocol):
 
     def stop(self, paths: ListenerPaths) -> None: ...
 
-    def restart(self, paths: ListenerPaths) -> None: ...
-
     def unregister(self, paths: ListenerPaths) -> None: ...
 
 
@@ -209,12 +207,6 @@ class SystemdUserAdapter(_CommandAdapter):
                 allowed=frozenset({0, 5}),
             )
 
-    def restart(self, paths: ListenerPaths) -> None:
-        registration = self._require_registration(paths)
-        if not registration.is_file():
-            raise ListenerPlatformError("Gogurt listener is not installed")
-        self._run(["systemctl", "--user", "restart", registration.name])
-
     def unregister(self, paths: ListenerPaths) -> None:
         registration = self._require_registration(paths)
         self._run(
@@ -283,10 +275,6 @@ class LaunchdUserAdapter(_CommandAdapter):
                 allowed=frozenset({0, 3, 113}),
             )
 
-    def restart(self, paths: ListenerPaths) -> None:
-        self.stop(paths)
-        self.start(paths)
-
     def unregister(self, paths: ListenerPaths) -> None:
         registration = self._require_registration(paths)
         self.stop(paths)
@@ -343,10 +331,6 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
             allowed=frozenset({0, 1}),
         )
 
-    def restart(self, paths: ListenerPaths) -> None:
-        self.stop(paths)
-        self.start(paths)
-
     def unregister(self, paths: ListenerPaths) -> None:
         del paths
         self._run(
@@ -372,12 +356,15 @@ def listener_adapter(platform: str | None = None) -> ListenerAdapter:
 
 def resolve_listener_executable(raw: str | None = None) -> Path:
     candidate = raw or sys.argv[0]
-    resolved = shutil.which(candidate) if not Path(candidate).is_absolute() else candidate
-    if resolved is None:
-        raise ListenerPlatformError(
-            f"could not resolve the installed Gogurt executable: {candidate}"
-        )
-    path = Path(resolved).expanduser().resolve()
-    if not path.is_file():
-        raise ListenerPlatformError(f"installed Gogurt executable is absent: {path}")
-    return path
+    source = Path(candidate).expanduser()
+    resolved = shutil.which(candidate)
+    candidates = [Path(resolved)] if resolved is not None else [source]
+    if sys.platform == "win32" and source.suffix == "":
+        extensions = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";")
+        candidates.extend(Path(f"{source}{extension}") for extension in extensions if extension)
+    for value in candidates:
+        path = value.resolve()
+        if path.is_file():
+            return path
+    path = source.resolve()
+    raise ListenerPlatformError(f"installed Gogurt executable is absent: {path}")

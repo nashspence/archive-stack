@@ -5,6 +5,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
 from gogurt.listener_platform import (
     LISTENER_LABEL,
     LaunchdUserAdapter,
@@ -14,6 +15,7 @@ from gogurt.listener_platform import (
     default_listener_paths,
     render_launchd_plist,
     render_systemd_unit,
+    resolve_listener_executable,
 )
 
 
@@ -57,6 +59,17 @@ def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> 
     )
     assert windows.state_dir == tmp_path / "LocalAppData" / "Gogurt"
     assert windows.registration_file is None
+
+
+def test_windows_resolves_the_uv_console_launcher_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = tmp_path / "gogurt.exe"
+    launcher.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr("gogurt.listener_platform.sys.platform", "win32")
+    monkeypatch.setenv("PATHEXT", ".exe;.cmd")
+
+    assert resolve_listener_executable(str(tmp_path / "gogurt")) == launcher.resolve()
 
 
 def test_native_registrations_bind_only_the_absolute_installed_command() -> None:
