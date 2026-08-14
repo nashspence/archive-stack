@@ -132,6 +132,15 @@ def test_v1_tag_policy_is_immutable() -> None:
     module._check_tag_ruleset(ruleset)
 
 
+def test_github_immutable_releases_must_remain_enabled() -> None:
+    module = load_script()
+
+    module._check_immutable_releases({"enabled": True, "enforced_by_owner": False})
+
+    with pytest.raises(module.GovernanceError, match="must remain enabled"):
+        module._check_immutable_releases({"enabled": False})
+
+
 @pytest.mark.parametrize("reviewer_required", [False, True])
 def test_environment_policy_supports_gated_and_unattended_jobs(
     reviewer_required: bool,

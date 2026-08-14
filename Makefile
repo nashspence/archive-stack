@@ -48,11 +48,13 @@ MYPY_SOURCES = \
 	scripts/operation_qualification.py \
 	scripts/provider_qualification.py \
 	scripts/release.py \
+	scripts/release_installation.py \
+	scripts/qualify_installation.py \
 	utilities/gogurt/src \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -91,6 +93,7 @@ help:
 		'  make dependency-readiness Verify the live uv graph and Dependabot release gate.' \
 		'  make operation-qualification Verify or emit the generated operation matrix.' \
 		'  make provider-qualification Run the operator/provider qualification command.' \
+		'  make installation-qualification Stage and qualify independent uv-tool installs.' \
 		'  make release-check     Validate the coordinated release-unit contract.' \
 		'  make release-plan      Print the exact-SHA v1 release inventory as JSON.' \
 		'  make release-dry-run   Version and smoke-test an exact-SHA copy without publishing.' \
@@ -174,6 +177,9 @@ operation-qualification:
 
 provider-qualification:
 	$(call UV_CMD,python scripts/provider_qualification.py $(args))
+
+installation-qualification:
+	$(call UV_CMD,python scripts/qualify_installation.py --version "$(RELEASE_VERSION)" $(args))
 
 release-check:
 	$(call UV_CMD,python scripts/release.py check)

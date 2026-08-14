@@ -18,6 +18,8 @@ SCRIPT = REPO_ROOT / "scripts/release.py"
 
 
 def load_script() -> ModuleType:
+    if str(SCRIPT.parent) not in sys.path:
+        sys.path.insert(0, str(SCRIPT.parent))
     spec = importlib.util.spec_from_file_location("riverhog_release", SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -127,7 +129,19 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert plan["supporting_artifacts"] == {
         "documentation": "riverhog-docs-v1.0.0.tar.gz",
         "source": "riverhog-source-v1.0.0.tar.gz",
+        "installation": {
+            "manifest": "install-manifest.json",
+            "locks": [
+                "pylock.gogurt.toml",
+                "pylock.jeb-client.toml",
+                "pylock.munchy-client.toml",
+                "pylock.riverhog-client.toml",
+                "pylock.riverhog-recover.toml",
+            ],
+            "index_snapshot": "riverhog-python-index-v1.0.0.tar.gz",
+        },
         "evidence": [
+            "install-manifest.json",
             "release-manifest.json",
             "SHA256SUMS",
             "SHA256SUMS.minisig",
@@ -259,7 +273,9 @@ def test_source_archive_is_deterministic_and_commit_time_normalized(tmp_path: Pa
     assert members[-1].mode == 0o755
 
 
-def test_release_evidence_is_complete_and_minisign_verified(tmp_path: Path) -> None:
+def test_release_evidence_is_complete_and_minisign_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     module = load_script()
     output = tmp_path / "evidence"
     output.mkdir()
@@ -303,6 +319,15 @@ def test_release_evidence_is_complete_and_minisign_verified(tmp_path: Path) -> N
             ],
         }
     ]
+    install_manifest = {"schema": "riverhog-installation/v1"}
+    (output / "install-manifest.json").write_text(
+        module.json.dumps(install_manifest), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        module.installation,
+        "verify_installation_artifacts",
+        lambda _output, _manifest: None,
+    )
 
     verification = module._generate_release_evidence(
         REPO_ROOT,
@@ -311,6 +336,7 @@ def test_release_evidence_is_complete_and_minisign_verified(tmp_path: Path) -> N
         version="1.0.0",
         source_sha="1" * 40,
         spdx_created="2009-02-13T23:31:30Z",
+        install_manifest=install_manifest,
         signing_key=signing_key,
         public_key=public_key,
     )

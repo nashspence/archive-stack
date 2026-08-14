@@ -20,6 +20,8 @@ from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+import release_installation as installation
+
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_CONFIG = "release.toml"
 RELEASE_SCHEMA = "riverhog-release/v1"
@@ -105,7 +107,13 @@ GOVERNANCE_SECTION_KEYS = {
         "return_to_main",
         "support",
     },
-    "tags": {"release_candidate", "final", "immutability", "failed_publication"},
+    "tags": {
+        "release_candidate",
+        "final",
+        "immutability",
+        "github_releases",
+        "failed_publication",
+    },
     "authority": {
         "branches",
         "tags",
@@ -305,6 +313,8 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         raise ReleaseError("release-candidate tags must use v{version}-rc.{candidate}")
     if governance["tags"]["final"] != config["tag_template"]:
         raise ReleaseError("final tag governance differs from the release tag template")
+    if config.get("installation") != installation.INSTALLATION_POLICY:
+        raise ReleaseError("release.toml differs from the v1 installation policy")
 
     workspace = {
         path.parent.relative_to(root).as_posix(): path for path in _workspace_pyprojects(root)
@@ -614,6 +624,11 @@ def build_release_plan(root: Path, version: str, *, allow_dirty: bool = False) -
     supporting = {
         "documentation": config["artifacts"]["documentation"].format(version=version),
         "source": config["artifacts"]["source"].format(version=version),
+        "installation": {
+            "manifest": "install-manifest.json",
+            "locks": [f"pylock.{name}.toml" for name in installation.END_USER_ROOTS],
+            "index_snapshot": f"riverhog-python-index-v{version}.tar.gz",
+        },
         "evidence": list(config["artifacts"]["evidence"]),
     }
     return {
@@ -1148,11 +1163,15 @@ def _write_subject_sboms(
         components = cast(list[dict[str, str]], record.pop("_components", []))
         purpose = {
             "image": "CONTAINER",
+            "install-index": "ARCHIVE",
+            "install-lock": "OTHER",
             "source": "SOURCE",
             "wheel": "LIBRARY",
             "sdist": "ARCHIVE",
         }[str(record["kind"])]
-        relationship = "CONTAINS" if record["kind"] in {"image", "source"} else "DEPENDS_ON"
+        relationship = (
+            "CONTAINS" if record["kind"] in {"image", "install-index", "source"} else "DEPENDS_ON"
+        )
         _write_json(
             output / sbom_relative,
             _spdx_document(
@@ -1386,6 +1405,16 @@ def verify_release_evidence(
     )
     if manifest.get("schema") != RELEASE_SCHEMA:
         raise ReleaseError("release manifest uses another schema")
+    install_manifest = cast(
+        dict[str, Any],
+        json.loads((output / "install-manifest.json").read_text(encoding="utf-8")),
+    )
+    installation.verify_installation_artifacts(output, install_manifest)
+    if manifest.get("installation") != {
+        "manifest": "install-manifest.json",
+        "sha256": _sha256_file(output / "install-manifest.json"),
+    }:
+        raise ReleaseError("release manifest installation identity differs from its evidence")
     subjects = cast(list[dict[str, Any]], manifest.get("subjects"))
     if not subjects:
         raise ReleaseError("release manifest contains no subjects")
@@ -1509,10 +1538,18 @@ def _generate_release_evidence(
     version: str,
     source_sha: str,
     spdx_created: str,
+    install_manifest: dict[str, Any],
     signing_key: Path,
     public_key: Path,
 ) -> dict[str, Any]:
     shutil.copy2(root / "THIRD_PARTY_NOTICES.md", output / "THIRD_PARTY_NOTICES.md")
+    written_install_manifest = cast(
+        dict[str, Any],
+        json.loads((output / "install-manifest.json").read_text(encoding="utf-8")),
+    )
+    if written_install_manifest != install_manifest:
+        raise ReleaseError("generated install manifest changed before evidence assembly")
+    installation.verify_installation_artifacts(output, install_manifest)
     _write_subject_sboms(output, records, source_sha=source_sha, created=spdx_created)
     _write_release_spdx(
         output,
@@ -1530,6 +1567,10 @@ def _generate_release_evidence(
         "created": spdx_created,
         "platforms": config["images"]["platforms"],
         "subjects": sorted(records, key=lambda item: (str(item["kind"]), str(item["name"]))),
+        "installation": {
+            "manifest": "install-manifest.json",
+            "sha256": _sha256_file(output / "install-manifest.json"),
+        },
         "evidence": config["artifacts"]["evidence"],
         "signing": config["signing"],
         "published": False,
@@ -1612,6 +1653,18 @@ def build_release_evidence(
                 version=version,
                 source_archive=source_archive,
             )
+            install_manifest, install_records = installation.build_installation_artifacts(
+                checkout,
+                output,
+                projects,
+                records,
+                version=version,
+                source_sha=source_sha,
+                source_epoch=source_epoch,
+                repository=str(_load_config(checkout)["governance"]["repository"]),
+                simple_index_path=str(_load_config(checkout)["installation"]["simple_index_path"]),
+            )
+            records.extend(install_records)
             records.extend(
                 _build_release_images(
                     checkout,
@@ -1630,6 +1683,7 @@ def build_release_evidence(
                 version=version,
                 source_sha=source_sha,
                 spdx_created=spdx_created,
+                install_manifest=install_manifest,
                 signing_key=signing_key,
                 public_key=public_key,
             )
@@ -1642,6 +1696,7 @@ def build_release_evidence(
         "source_sha": source_sha,
         "python_distributions": len(projects),
         "runtime_images": len(RUNTIME_IMAGE_TARGETS),
+        "installation_roots": len(install_manifest["components"]),
         "evidence_subjects": verification["subjects"],
         "evidence_files": verification["files"],
         "signature_verified": verification["signature_verified"],
@@ -1649,6 +1704,8 @@ def build_release_evidence(
         "validation": [
             "uv lock --offline",
             "make dist-smoke",
+            "five independent PEP 751 installation locks",
+            "tag-specific Python Simple index snapshot",
             "runtime image release-unit closure",
             "SHA-256 checksums",
             "SPDX 2.3 SBOMs",
