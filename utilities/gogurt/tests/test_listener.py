@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
 
 import gogurt.listener as listener_module
@@ -280,7 +281,7 @@ def test_listener_store_negotiates_wal_only_during_initialization(
 ) -> None:
     store = ListenerStore(tmp_path / "listener.sqlite3")
     store.create()
-    with sqlite3.connect(store.path) as connection:
+    with closing(sqlite3.connect(store.path)) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
 
     statements: list[str] = []
@@ -358,7 +359,7 @@ def test_install_binds_absolute_executable_and_rolls_back_failed_startup(tmp_pat
         wait_for_health=False,
     )
     assert status["installed"] is True
-    with sqlite3.connect(paths.database_file) as connection:
+    with closing(sqlite3.connect(paths.database_file)) as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
         assert connection.execute(
             "SELECT value FROM listener_meta WHERE key = 'schema'"
