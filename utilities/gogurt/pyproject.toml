@@ -33,7 +33,3 @@ riverhog-cli-support = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gogurt"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"macos/io.github.nashspence.gogurt.plist" = "gogurt/macos/io.github.nashspence.gogurt.plist"
-"macos/gogurt.swift" = "gogurt/macos/gogurt.swift"
