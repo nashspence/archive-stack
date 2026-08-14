@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import sqlite3
 import stat
 import sys
 import threading
@@ -273,6 +274,28 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in private_files)
 
 
+def test_listener_store_negotiates_wal_only_during_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ListenerStore(tmp_path / "listener.sqlite3")
+    store.create()
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+
+    statements: list[str] = []
+    real_connect = sqlite3.connect
+
+    def traced_connect(database: str | Path, timeout: float = 5.0) -> sqlite3.Connection:
+        connection = real_connect(database, timeout=timeout)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", traced_connect)
+    assert store.summary() == {"counts": {}, "attention": []}
+    assert not any("journal_mode" in statement.casefold() for statement in statements)
+
+
 class FakeAdapter:
     def __init__(
         self,
@@ -335,6 +358,11 @@ def test_install_binds_absolute_executable_and_rolls_back_failed_startup(tmp_pat
         wait_for_health=False,
     )
     assert status["installed"] is True
+    with sqlite3.connect(paths.database_file) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        assert connection.execute(
+            "SELECT value FROM listener_meta WHERE key = 'schema'"
+        ).fetchone() == ("1",)
     assert adapter.commands == [
         [
             str(executable.resolve()),
