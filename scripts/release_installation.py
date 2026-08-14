@@ -838,6 +838,8 @@ def build_installation_artifacts(
 def _render_listener_reference(contract: dict[str, object], *, version: str) -> str:
     platforms = cast(dict[str, str], contract["platforms"])
     dispatch = cast(dict[str, str], contract["dispatch"])
+    health = cast(dict[str, str], contract["health"])
+    state = cast(dict[str, str], contract["state"])
     return (
         f"# Gogurt listener v{version}\n\n"
         "Gogurt installs a current-user listener. It resumes at the user's next login; "
@@ -860,14 +862,21 @@ def _render_listener_reference(contract: dict[str, object], *, version: str) -> 
         + "".join(f"- `{platform}`: `{manager}`\n" for platform, manager in platforms.items())
         + "\n## Dispatch and troubleshooting\n\n"
         "`gogurt listener status --json` is the authoritative health and durable-dispatch "
-        "diagnostic. `healthy` confirms a current versioned heartbeat; `stopped` means the "
-        "registration remains installed but is not running; `stale` or `failed` requires "
-        "operator attention. The `dispatches.attention` rows expose retry, uncertain, and "
-        "failed actions.\n\n"
+        "diagnostic. `healthy` confirms a current versioned heartbeat and valid global "
+        "configuration; `stopped` means the registration remains installed but is not "
+        "running; `stale` or `failed` requires operator attention. A global configuration "
+        "failure prevents dispatch and appears in `diagnostic`; bounded per-volume input or "
+        "I/O problems appear in `mount_attention` without stopping other volumes. The "
+        "`dispatches.attention` rows expose retry, uncertain, and failed actions.\n\n"
+        f"- Healthy contract: `{health['healthy']}`.\n"
+        f"- Failed contract: `{health['failed']}`.\n"
+        f"- Mount attention: `{health['mount_attention']}`.\n"
         f"- Completed observations: `{dispatch['completed']}`.\n"
         f"- Crash-window actions: `{dispatch['running_after_crash']}`.\n"
         f"- Known failures: `{dispatch['known_failure']}`.\n"
         f"- Replay boundary: `{dispatch['downstream']}`.\n\n"
+        f"Replacement contract: `{contract['replacement']}`. POSIX state is "
+        f"`{state['posix']}`; Windows state uses `{state['windows']}`.\n\n"
         "Use `restart` for a stale process after reviewing its diagnostic. Use `uninstall` "
         "to remove the native registration, listener database, heartbeat, lock, and bounded "
         "logs. Reinstalling the same version is replacement-safe and retains completed "

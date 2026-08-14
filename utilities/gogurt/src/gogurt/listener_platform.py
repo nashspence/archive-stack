@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import csv
 import os
 import plistlib
 import shutil
 import subprocess
 import sys
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Protocol
+
+from gogurt.filesystem import PRIVATE_FILE_MODE, atomic_write
 
 LISTENER_LABEL = "io.github.nashspence.gogurt"
 WINDOWS_TASK_NAME = "Riverhog.Gogurt"
+WINDOWS_TASK_STATE_DISABLED = 1
+WINDOWS_TASK_STATE_RUNNING = 4
 
 
 class ListenerPlatformError(RuntimeError):
@@ -78,17 +80,7 @@ def default_listener_paths(
 
 def _write_private(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, raw_temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(raw_temporary)
-    try:
-        os.chmod(temporary, 0o600)
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_write(path, content, mode=PRIVATE_FILE_MODE)
 
 
 def _systemd_quote(value: str) -> str:
@@ -287,6 +279,29 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
     def _task_command(command: Sequence[str]) -> str:
         return subprocess.list2cmdline(list(command))
 
+    @staticmethod
+    def _state_command() -> list[str]:
+        system_root = PureWindowsPath(os.environ.get("SystemRoot", r"C:\Windows"))
+        powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        script = (
+            "$ErrorActionPreference = 'Stop'; "
+            "try { "
+            "$service = New-Object -ComObject 'Schedule.Service'; "
+            "$service.Connect(); "
+            f"$task = $service.GetFolder('\\').GetTask('{WINDOWS_TASK_NAME}'); "
+            "[Console]::Out.Write([int]$task.State); "
+            "exit 0 "
+            "} catch { exit 1 }"
+        )
+        return [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ]
+
     def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
         self._run(
             ["schtasks.exe", "/End", "/TN", WINDOWS_TASK_NAME],
@@ -313,13 +328,23 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
     def status(self, paths: ListenerPaths) -> NativeListenerStatus:
         del paths
         completed = self._run(
-            ["schtasks.exe", "/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "CSV", "/NH"],
+            self._state_command(),
             allowed=frozenset({0, 1}),
         )
         installed = completed.returncode == 0
-        rows = list(csv.reader(completed.stdout.splitlines())) if installed else []
-        running = bool(rows and rows[0] and rows[0][-1].strip().casefold() == "running")
-        return NativeListenerStatus(installed=installed, enabled=installed, running=running)
+        if not installed:
+            return NativeListenerStatus(installed=False, enabled=False, running=False)
+        try:
+            state = int(completed.stdout.strip())
+        except ValueError as exc:
+            raise ListenerPlatformError("Task Scheduler returned an invalid numeric state") from exc
+        if state not in range(5):
+            raise ListenerPlatformError(
+                f"Task Scheduler returned an unknown numeric state: {state}"
+            )
+        enabled = state != WINDOWS_TASK_STATE_DISABLED
+        running = state == WINDOWS_TASK_STATE_RUNNING
+        return NativeListenerStatus(installed=True, enabled=enabled, running=running)
 
     def start(self, paths: ListenerPaths) -> None:
         del paths
@@ -365,7 +390,7 @@ def resolve_listener_executable(raw: str | None = None) -> Path:
         candidates.extend(Path(f"{source}{extension}") for extension in extensions if extension)
     for value in candidates:
         path = value.resolve()
-        if path.is_file():
+        if path.is_file() and (sys.platform == "win32" or os.access(path, os.X_OK)):
             return path
     path = source.resolve()
-    raise ListenerPlatformError(f"installed Gogurt executable is absent: {path}")
+    raise ListenerPlatformError(f"installed Gogurt executable is absent or not executable: {path}")

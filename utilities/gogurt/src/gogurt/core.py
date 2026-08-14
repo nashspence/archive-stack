@@ -15,6 +15,8 @@ from typing import Any
 
 from config_validation import ConfigError, load_yaml_config, validate_json_schema
 
+from gogurt.filesystem import PORTABLE_FILE_MODE, atomic_write
+
 DEFAULT_GOGURT_MARKER_NAME = ".gogurt"
 DEFAULT_GOGURT_CONFIG_FILENAME = "gogurt-routes.yaml"
 MAX_GOGURT_MARKER_BYTES = 4096
@@ -154,7 +156,7 @@ def _validate_gogurt_route(route_name: str) -> None:
         raise ConfigError(f"invalid gogurt route: {route_name!r}")
 
 
-def _validate_gogurt_marker_name(marker_name: str) -> None:
+def validate_gogurt_marker_name(marker_name: str) -> None:
     if not marker_name or "/" in marker_name or "\\" in marker_name or marker_name in {".", ".."}:
         raise ConfigError(f"invalid gogurt marker name: {marker_name!r}")
 
@@ -299,7 +301,7 @@ def plan_gogurt_action(
     actions_dir: PathInput | None = None,
     marker_name: str = DEFAULT_GOGURT_MARKER_NAME,
 ) -> dict[str, object]:
-    _validate_gogurt_marker_name(marker_name)
+    validate_gogurt_marker_name(marker_name)
     config_path = Path(config_file).expanduser().resolve()
     root = Path(mount_point).expanduser().resolve()
     if not root.is_dir():
@@ -374,7 +376,7 @@ def plan_gogurt_marker(
     marker_name: str = DEFAULT_GOGURT_MARKER_NAME,
     force: bool = False,
 ) -> dict[str, object]:
-    _validate_gogurt_marker_name(marker_name)
+    validate_gogurt_marker_name(marker_name)
     marker_route = route_for_gogurt_marker(config_file, route_name)
     root = Path(mount_point).expanduser().resolve()
     if not root.is_dir():
@@ -424,10 +426,9 @@ def write_gogurt_marker(
     )
     marker = Path(str(plan["marker"]))
     marker.parent.mkdir(parents=True, exist_ok=True)
-    temporary = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(str(plan["content"]), encoding="utf-8")
-        os.replace(temporary, marker)
-    finally:
-        temporary.unlink(missing_ok=True)
+    atomic_write(
+        marker,
+        str(plan["content"]).encode("utf-8"),
+        mode=PORTABLE_FILE_MODE,
+    )
     return marker
