@@ -485,8 +485,6 @@ def _posix_commands(
         "tool",
         "install",
         f"{package}=={version}",
-        "--with-requirements",
-        lock_name,
         "--index",
         index_url,
         "--default-index",
@@ -504,9 +502,22 @@ def _posix_commands(
         "curl --fail --location --proto '=https' --tlsv1.2 "
         f"--output {shlex.quote(lock_name)} {shlex.quote(lock_url)}"
     )
+    tool_python = f'"$(uv --no-config tool dir)/{package}/bin/python"'
+    verify = shlex.join(
+        [
+            "uv",
+            "--no-config",
+            "pip",
+            "sync",
+            lock_name,
+            "--python",
+        ]
+    )
+    verify += f" {tool_python} --dry-run --strict --no-build"
     return [
         download,
         shlex.join(install),
+        verify,
         shlex.join([*install, "--reinstall"]),
         shlex.join(["uv", "--no-config", "tool", "uninstall", package]),
     ]
@@ -532,8 +543,6 @@ def _windows_commands(
         "tool",
         "install",
         f"{package}=={version}",
-        "--with-requirements",
-        lock_name,
         "--index",
         index_url,
         "--default-index",
@@ -555,9 +564,17 @@ def _windows_commands(
         f"Invoke-WebRequest -Uri {_powershell_quote(lock_url)} "
         f"-OutFile {_powershell_quote(lock_name)}"
     )
+    tool_relative = package + "\\Scripts\\python.exe"
+    verify = (
+        f"$toolPython = Join-Path (uv --no-config tool dir) "
+        f"{_powershell_quote(tool_relative)}; "
+        f"uv --no-config pip sync {_powershell_quote(lock_name)} "
+        "--python $toolPython --dry-run --strict --no-build"
+    )
     return [
         download,
         render(install),
+        verify,
         render([*install, "--reinstall"]),
         render(["uv", "--no-config", "tool", "uninstall", package]),
     ]
@@ -757,6 +774,7 @@ def build_installation_artifacts(
         "tag": tag,
         "source_sha": source_sha,
         "method": "uv-tool",
+        "lock_enforcement": "direct-hashed-wheels-with-pep751-sync-verification",
         "wheel_only": True,
         "platforms": list(SUPPORTED_PLATFORMS),
         "toolchain": {
@@ -813,7 +831,7 @@ def verify_installation_artifacts(output: Path, manifest: dict[str, Any]) -> Non
             raise InstallationError(f"component lock inventory differs: {component['root']}")
         for platform in SUPPORTED_PLATFORMS:
             commands = component["commands"].get(platform)
-            if not isinstance(commands, list) or len(commands) != 4:
+            if not isinstance(commands, list) or len(commands) != 5:
                 raise InstallationError(f"component commands are incomplete: {component['root']}")
     snapshot = output / str(manifest["index"]["snapshot_path"])
     if not snapshot.is_file() or sha256_file(snapshot) != manifest["index"]["snapshot_sha256"]:

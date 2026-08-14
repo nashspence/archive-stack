@@ -403,7 +403,7 @@ def _run_recovery(executable: Path, *, scratch: Path, environment: dict[str, str
     return actual_digest
 
 
-def _install_command(component: dict[str, Any], manifest: dict[str, Any], lock: Path) -> list[str]:
+def _install_command(component: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
     platform = {
         "darwin": "macos-arm64",
         "linux": "linux-x64",
@@ -419,8 +419,6 @@ def _install_command(component: dict[str, Any], manifest: dict[str, Any], lock: 
         "tool",
         "install",
         f"{component['root']}=={manifest['version']}",
-        "--with-requirements",
-        str(lock),
         "--index",
         str(manifest["index"]["url"]),
         "--default-index",
@@ -453,7 +451,7 @@ def _qualify_component(
     tool_dir = Path(environment["UV_TOOL_DIR"])
     bin_dir = Path(environment["UV_TOOL_BIN_DIR"])
     lock = artifact_root / str(component["lock"]["path"])
-    command = _install_command(component, manifest, lock)
+    command = _install_command(component, manifest)
     request_offset = len(QualificationHandler.requests)
     _run(command, cwd=scratch, env=environment)
     _run(command, cwd=scratch, env=environment)
@@ -474,6 +472,27 @@ def _qualify_component(
     locked = {str(item["name"]): str(item["version"]) for item in component["resolved_packages"]}
     if any(locked.get(name) != version for name, version in inventory.items()):
         raise QualificationError(f"{root} installed a version outside its PEP 751 lock")
+    sync = _run(
+        [
+            "uv",
+            "--no-config",
+            "--allow-insecure-host",
+            "127.0.0.1",
+            "pip",
+            "sync",
+            str(lock),
+            "--python",
+            str(python),
+            "--dry-run",
+            "--strict",
+            "--no-build",
+        ],
+        cwd=scratch,
+        env=environment,
+        capture=True,
+    )
+    if "Would make no changes" not in sync.stdout + sync.stderr:
+        raise QualificationError(f"{root} is not already synchronized to its PEP 751 lock")
 
     entry_points = [str(value) for value in component["entry_points"]]
     executables = [_executable(bin_dir, name) for name in entry_points]

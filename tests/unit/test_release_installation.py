@@ -98,9 +98,11 @@ def test_installation_artifacts_are_derived_and_mutually_consistent(
         )
         for platform in installation.SUPPORTED_PLATFORMS:
             commands = component["commands"][platform]
-            assert len(commands) == 4
+            assert len(commands) == 5
             assert "3.12.3" in commands[1]
             assert "--no-build" in commands[1]
+            assert "pip sync" in commands[2]
+            assert "--dry-run --strict --no-build" in commands[2]
 
     snapshot = tmp_path / manifest["index"]["snapshot_path"]
     with tarfile.open(snapshot, mode="r:gz") as archive:
