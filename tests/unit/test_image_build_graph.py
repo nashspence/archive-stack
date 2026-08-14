@@ -342,6 +342,12 @@ def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:
         "uses": "docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
         "with": {"version": "v0.36.0"},
     }
+    assert steps["Install Mango Fish smoke toolchain"] == {
+        "name": "Install Mango Fish smoke toolchain",
+        "if": "matrix.target == 'mango-fish'",
+        "uses": "jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14",
+        "with": {"install_args": "python"},
+    }
     assert steps["Resolve image metadata"] == {
         "name": "Resolve image metadata",
         "id": "image-metadata",
@@ -367,4 +373,9 @@ def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:
                 "*.cache-to=type=gha,scope=${{ matrix.target }},mode=min,ignore-error=true\n"
             ),
         },
+    }
+    assert steps["Smoke Mango Fish image"] == {
+        "name": "Smoke Mango Fish image",
+        "if": "matrix.target == 'mango-fish'",
+        "run": "make mango-fish-smoke",
     }

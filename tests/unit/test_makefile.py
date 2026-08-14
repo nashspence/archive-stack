@@ -661,6 +661,14 @@ def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
     assert " down --volumes --remove-orphans" in docker_log
 
 
+def test_mango_fish_smoke_uses_the_repo_python_and_final_image_script(tmp_path: Path) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(tmp_path, "mango-fish-smoke")
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(docker_log_path) == []
+    assert _read_log_lines(uv_log_path) == ["|x python -- python scripts/test_mango_fish_image.py"]
+
+
 def test_postgres_concurrency_target_uses_disposable_postgres(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
@@ -885,6 +893,7 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make build-riverhog" in completed.stdout
     assert "make build-jeb" in completed.stdout
     assert "make build-mango-fish" in completed.stdout
+    assert "make mango-fish-smoke" in completed.stdout
     assert "make build-munchy-server" in completed.stdout
     assert "make build-munchy-av1-nvenc" in completed.stdout
     assert "make build-test" in completed.stdout

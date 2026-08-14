@@ -49,12 +49,13 @@ MYPY_SOURCES = \
 	scripts/provider_qualification.py \
 	scripts/release.py \
 	scripts/release_installation.py \
+	scripts/test_mango_fish_image.py \
 	scripts/qualify_installation.py \
 	utilities/gogurt/src \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke mango-fish-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -103,6 +104,7 @@ help:
 		'  make c2sp-vectors      Download and run the pinned C2SP age conformance corpus.' \
 		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
 		'  make compose-smoke     Start and verify a fresh disposable Riverhog stack.' \
+		'  make mango-fish-smoke  Exercise the already-built final Mango Fish image.' \
 		'  make tus-throughput    Measure a TUS endpoint with incomplete, deleted probes.' \
 		'  make transfer-profile  Profile a supported transfer command with secret-free JSON.' \
 		'  make stop-spec         Stop any in-flight local spec harness process.' \
@@ -248,6 +250,13 @@ build-jeb:
 
 build-mango-fish:
 	$(call BAKE_IMAGE,mango-fish)
+
+mango-fish-smoke:
+	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
+		printf '%s\n' 'Mango Fish image smoke requires mise on PATH, or MISE_BIN=/abs/path/to/mise.' >&2; \
+		exit 127; \
+	fi
+	@"$(MISE_BIN)" x python -- python scripts/test_mango_fish_image.py
 
 build-munchy-server:
 	$(call BAKE_IMAGE,munchy-server)

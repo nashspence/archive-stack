@@ -42,6 +42,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     config = load_config(args.config)
     if args.command == "state":
         schema = state_schema(config.state_path)
@@ -69,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     relay = MangoFish(config)
     if args.once:
-        relay.run_once()
+        return 1 if relay.run_once().failures else 0
     else:
         relay.run()
     return 0

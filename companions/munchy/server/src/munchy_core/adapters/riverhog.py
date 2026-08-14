@@ -364,6 +364,7 @@ def consume_riverhog_events_once(api: ApiClient) -> int:
     cursors = lifecycle_store.lifecycle_event_cursors()
     cursor = cursors.cursor("riverhog")
     page = api.list_lifecycle_events(after=cursor, limit=100)
+    page.require_progress_after(cursor)
     translated = sum(1 for event in page.events if translate_riverhog_event(event))
     if page.next_cursor != cursor:
         cursors.advance("riverhog", page.next_cursor)
