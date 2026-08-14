@@ -87,8 +87,24 @@ def test_installation_artifacts_are_derived_and_mutually_consistent(
         "python_provider": "uv-managed-cpython",
     }
     assert [item["root"] for item in manifest["components"]] == list(installation.END_USER_ROOTS)
-    assert {item["kind"] for item in records} == {"install-index", "install-lock"}
+    assert {item["kind"] for item in records} == {
+        "install-index",
+        "install-lock",
+        "install-reference",
+    }
     assert len([item for item in records if item["kind"] == "install-lock"]) == 5
+    listener = manifest["gogurt_listener"]
+    assert listener["contract"]["operations"] == [
+        "install",
+        "status",
+        "start",
+        "stop",
+        "restart",
+        "uninstall",
+    ]
+    reference = tmp_path / listener["reference_path"]
+    assert reference.is_file()
+    assert "gogurt listener status --json" in reference.read_text(encoding="utf-8")
     for component in manifest["components"]:
         lock = tomllib.loads((tmp_path / component["lock"]["path"]).read_text(encoding="utf-8"))
         locked_names = {item["name"] for item in lock["packages"]}

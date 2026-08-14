@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
+from hashlib import sha256
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ from config_validation import ConfigError, load_yaml_config, validate_json_schem
 
 DEFAULT_GOGURT_MARKER_NAME = ".gogurt"
 DEFAULT_GOGURT_CONFIG_FILENAME = "gogurt-routes.yaml"
+MAX_GOGURT_MARKER_BYTES = 4096
 GOGURT_EMOJI = "🛹"
 _COMMAND_PLACEHOLDERS = {"{config_dir}", "{mount_point}", "{python}"}
 _PLACEHOLDER_RE = re.compile(r"\{[^{}]+\}")
@@ -53,6 +56,89 @@ PathInput = str | PathLike[str]
 class GogurtAction:
     route: str
     command: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GogurtMarker:
+    route: str
+    identity: str
+
+
+def _marker_identity(info: os.stat_result, content: bytes) -> str:
+    payload = "\0".join(
+        (
+            str(info.st_dev),
+            str(info.st_ino),
+            str(info.st_size),
+            str(info.st_mtime_ns),
+            sha256(content).hexdigest(),
+        )
+    )
+    return sha256(payload.encode("ascii")).hexdigest()
+
+
+def read_gogurt_marker(marker: PathInput) -> GogurtMarker:
+    path = Path(marker)
+    try:
+        initial = path.lstat()
+    except FileNotFoundError:
+        raise
+    if not stat.S_ISREG(initial.st_mode) or path.is_symlink():
+        raise ConfigError(f"gogurt marker must be a regular file: {path}")
+    if initial.st_size > MAX_GOGURT_MARKER_BYTES:
+        raise ConfigError(f"gogurt marker exceeds {MAX_GOGURT_MARKER_BYTES} bytes: {path}")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ConfigError(f"gogurt marker must be a regular file: {path}")
+        if opened.st_size > MAX_GOGURT_MARKER_BYTES:
+            raise ConfigError(f"gogurt marker exceeds {MAX_GOGURT_MARKER_BYTES} bytes: {path}")
+        content = os.read(descriptor, MAX_GOGURT_MARKER_BYTES + 1)
+        final = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    if len(content) > MAX_GOGURT_MARKER_BYTES:
+        raise ConfigError(f"gogurt marker exceeds {MAX_GOGURT_MARKER_BYTES} bytes: {path}")
+    if (
+        initial.st_dev,
+        initial.st_ino,
+        initial.st_size,
+        initial.st_mtime_ns,
+    ) != (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_size,
+        opened.st_mtime_ns,
+    ) or (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_size,
+        opened.st_mtime_ns,
+    ) != (
+        final.st_dev,
+        final.st_ino,
+        final.st_size,
+        final.st_mtime_ns,
+    ):
+        raise ConfigError(f"gogurt marker changed while it was read: {path}")
+
+    try:
+        marker_text = content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"gogurt marker must be strict UTF-8: {path}") from exc
+    marker_lines = marker_text.splitlines()
+    if len(marker_lines) != 1 or not marker_lines[0].strip():
+        raise ConfigError(f"gogurt marker must contain one route name: {path}")
+    route = marker_lines[0].strip()
+    if route != marker_lines[0]:
+        raise ConfigError(f"gogurt marker route may not have surrounding whitespace: {path}")
+    return GogurtMarker(route=route, identity=_marker_identity(final, content))
 
 
 def default_gogurt_config_file(
@@ -225,14 +311,11 @@ def plan_gogurt_action(
         "marker": str(marker),
         "marker_name": marker_name,
     }
-    if not marker.is_file():
+    try:
+        marker_value = read_gogurt_marker(marker)
+    except FileNotFoundError:
         return {**base, "status": "unmarked"}
-
-    marker_text = marker.read_text(encoding="utf-8", errors="strict")
-    marker_lines = marker_text.splitlines()
-    if len(marker_lines) != 1 or not marker_lines[0].strip():
-        raise ConfigError(f"gogurt marker must contain one route name: {marker}")
-    action = _action_for_route(config_path, marker_lines[0].strip())
+    action = _action_for_route(config_path, marker_value.route)
     actions_path = Path(actions_dir).expanduser().resolve() if actions_dir is not None else None
     command = _resolve_command(
         action,
@@ -245,6 +328,7 @@ def plan_gogurt_action(
         "status": "ready",
         "route": action.route,
         "command": command,
+        "marker_identity": marker_value.identity,
     }
 
 
@@ -253,6 +337,18 @@ def execute_gogurt_action(
     *,
     capture_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    command = revalidate_gogurt_action(plan)
+    return subprocess.run(
+        command,
+        check=False,
+        capture_output=capture_output,
+        text=True,
+    )
+
+
+def revalidate_gogurt_action(plan: Mapping[str, object]) -> list[str]:
+    """Return a planned argv only while its marker retains the observed identity."""
+
     if plan.get("status") != "ready":
         raise ValueError("gogurt action plan is not ready")
     raw_command = plan.get("command")
@@ -260,12 +356,14 @@ def execute_gogurt_action(
         not isinstance(token, str) for token in raw_command
     ):
         raise ValueError("gogurt action plan has no command")
-    return subprocess.run(
-        raw_command,
-        check=False,
-        capture_output=capture_output,
-        text=True,
-    )
+    raw_marker = plan.get("marker")
+    raw_identity = plan.get("marker_identity")
+    if not isinstance(raw_marker, str) or not isinstance(raw_identity, str):
+        raise ValueError("gogurt action plan has no marker identity")
+    current = read_gogurt_marker(raw_marker)
+    if current.identity != raw_identity:
+        raise ConfigError(f"gogurt marker changed before action execution: {raw_marker}")
+    return list(raw_command)
 
 
 def plan_gogurt_marker(
@@ -284,10 +382,13 @@ def plan_gogurt_marker(
 
     marker = root / marker_name
     text = f"{marker_route}\n"
-    current = marker.read_text(encoding="utf-8", errors="replace") if marker.exists() else None
-    if current is not None and current != text and not force:
+    try:
+        current = read_gogurt_marker(marker)
+    except FileNotFoundError:
+        current = None
+    if current is not None and current.route != marker_route and not force:
         raise FileExistsError(f"gogurt marker already exists with different content: {marker}")
-    if current == text:
+    if current is not None and current.route == marker_route:
         status = "would_keep"
     elif current is not None:
         status = "would_replace"
@@ -322,5 +423,11 @@ def write_gogurt_marker(
         force=force,
     )
     marker = Path(str(plan["marker"]))
-    marker.write_text(str(plan["content"]), encoding="utf-8")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    temporary = marker.with_name(f".{marker.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(str(plan["content"]), encoding="utf-8")
+        os.replace(temporary, marker)
+    finally:
+        temporary.unlink(missing_ok=True)
     return marker

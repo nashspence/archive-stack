@@ -139,6 +139,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
                 "pylock.riverhog-recover.toml",
             ],
             "index_snapshot": "riverhog-python-index-v1.0.0.tar.gz",
+            "gogurt_listener_reference": "gogurt-listener-v1.0.0.md",
         },
         "evidence": [
             "install-manifest.json",

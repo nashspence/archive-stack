@@ -628,6 +628,7 @@ def build_release_plan(root: Path, version: str, *, allow_dirty: bool = False) -
             "manifest": "install-manifest.json",
             "locks": [f"pylock.{name}.toml" for name in installation.END_USER_ROOTS],
             "index_snapshot": f"riverhog-python-index-v{version}.tar.gz",
+            "gogurt_listener_reference": f"gogurt-listener-v{version}.md",
         },
         "evidence": list(config["artifacts"]["evidence"]),
     }
