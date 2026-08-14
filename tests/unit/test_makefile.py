@@ -392,6 +392,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             ("args=check",),
             "python scripts/operation_qualification.py check",
         ),
+        (
+            "installation-qualification",
+            ("RELEASE_VERSION=1.0.0",),
+            "python scripts/qualify_installation.py --version 1.0.0",
+        ),
         ("release-check", (), "python scripts/release.py check"),
         (
             "release-plan",

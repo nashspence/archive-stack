@@ -20,6 +20,7 @@ dev = [
   "boto3-stubs[s3]>=1.43.59,<2.0",
   "httpx2>=2,<3",
   "mypy>=2.3.0,<3.0",
+  "packaging>=26,<27",
   "psycopg[binary]>=3.3.4,<4.0",
   "pytest>=9.0.3,<10.0",
   "pytest-cov>=7.1.0,<8.0",

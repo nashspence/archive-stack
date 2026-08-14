@@ -72,7 +72,9 @@ jobs:
   client-platforms:
     name: client platform (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
+    env:
+      MISE_AUTO_INSTALL: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -89,14 +91,18 @@ jobs:
       - name: Install repository toolchain
         uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
-          install_args: python uv
+          install_args: python uv age
       - name: Qualify native end-user behavior
         run: >-
-          mise x -- uv run --locked --all-packages --group dev
+          mise x python uv age -- uv run --locked --all-packages --group dev
           python -m pytest -q
           packages/riverhog-provenance/tests/test_platform_live.py
           utilities/gogurt/tests
           tests/platform/test_end_user_artifacts.py
+      - name: Qualify independent staged uv-tool installs
+        run: >-
+          mise x python uv age -- uv run --locked --all-packages --group dev
+          python scripts/qualify_installation.py --version 1.0.0
 
   images:
     name: build ${{ matrix.target }}

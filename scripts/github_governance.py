@@ -23,7 +23,7 @@ class GovernanceError(RuntimeError):
 
 def _gh(endpoint: str) -> Any:
     completed = subprocess.run(
-        ["gh", "api", endpoint],
+        ["gh", "api", "-H", "X-GitHub-Api-Version: 2026-03-10", endpoint],
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -126,6 +126,11 @@ def _check_tag_ruleset(ruleset: dict[str, Any]) -> None:
         raise GovernanceError("v1 tags must reject deletion and non-fast-forward updates")
 
 
+def _check_immutable_releases(settings: dict[str, Any]) -> None:
+    if settings.get("enabled") is not True:
+        raise GovernanceError("GitHub immutable releases must remain enabled")
+
+
 def _check_environment(
     repository: str,
     name: str,
@@ -194,6 +199,7 @@ def check() -> dict[str, Any]:
         int(governance["required_check_integration_id"]),
     )
     _check_tag_ruleset(tag_ruleset)
+    _check_immutable_releases(_gh(f"repos/{repository}/immutable-releases"))
 
     environments = governance["environments"]
     maintainer = str(governance["maintainer"])
@@ -230,6 +236,7 @@ def check() -> dict[str, Any]:
         "release_branch": "protected-pull-request-delivery",
         "required_checks": required_checks,
         "tag_policy": "immutable-v1",
+        "immutable_releases": "enabled",
         "environments": sorted(environments.values()),
     }
 
