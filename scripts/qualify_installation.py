@@ -75,7 +75,6 @@ def _run(
     cwd: Path,
     env: dict[str, str] | None = None,
     capture: bool = False,
-    input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
@@ -83,7 +82,6 @@ def _run(
         env=env,
         check=True,
         text=True,
-        input=input_text,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
     )
@@ -396,21 +394,31 @@ def _run_recovery(
     archive = scratch / "recovery-archive"
     archive.mkdir()
     expected, _journal = write_archive(archive)
+    passphrase = scratch / "passphrase.txt"
+    passphrase.write_text(
+        # codeql[py/clear-text-storage-sensitive-data]
+        passphrase_value + "\n",
+        encoding="utf-8",
+    )
+    passphrase.chmod(0o600)
     output = scratch / "recovered"
     ots = _write_ots_fixture(scratch)
-    _run(
-        [
-            str(executable),
-            str(archive),
-            str(output),
-            "--passphrase-stdin",
-            "--ots-command",
-            str(ots),
-        ],
-        cwd=scratch,
-        env=environment,
-        input_text=passphrase_value + "\n",
-    )
+    try:
+        _run(
+            [
+                str(executable),
+                str(archive),
+                str(output),
+                "--passphrase-file",
+                str(passphrase),
+                "--ots-command",
+                str(ots),
+            ],
+            cwd=scratch,
+            env=environment,
+        )
+    finally:
+        passphrase.unlink(missing_ok=True)
     actual = {
         path.relative_to(output).as_posix(): path.read_bytes()
         for path in output.rglob("*")

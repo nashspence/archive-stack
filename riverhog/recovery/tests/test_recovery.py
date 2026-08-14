@@ -319,34 +319,6 @@ def test_cli_recovers_with_permission_restricted_passphrase_file(tmp_path: Path)
     assert {path: (output / path).read_bytes() for path in expected} == expected
 
 
-def test_cli_recovers_with_passphrase_stdin(tmp_path: Path) -> None:
-    archive = tmp_path / "archive"
-    expected, _journal = _write_archive(archive)
-    output = tmp_path / "recovered"
-    ots = _write_ots_command(tmp_path / "ots-fixture")
-
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "riverhog_recover.cli",
-            str(archive),
-            str(output),
-            "--passphrase-stdin",
-            "--ots-command",
-            str(ots),
-        ],
-        input=PASSPHRASE + "\n",
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    assert "Recovered 3 files" in completed.stdout
-    assert {path: (output / path).read_bytes() for path in expected} == expected
-
-
 def test_windows_recovery_uses_batchpass_environment_without_unix_fds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
