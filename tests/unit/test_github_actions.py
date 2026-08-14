@@ -162,7 +162,7 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
         "utilities/gogurt/tests "
         "tests/platform/test_end_user_artifacts.py",
         "mise x python uv age -- uv run --locked --all-packages --group dev "
-        "python scripts/qualify_installation.py --version 1.0.0",
+        "python scripts/qualify_installation.py --version 1.0.0 --listener-lifecycle",
     ]
     assert "secrets." not in text
 

@@ -102,7 +102,7 @@ jobs:
       - name: Qualify independent staged uv-tool installs
         run: >-
           mise x python uv age -- uv run --locked --all-packages --group dev
-          python scripts/qualify_installation.py --version 1.0.0
+          python scripts/qualify_installation.py --version 1.0.0 --listener-lifecycle
 
   images:
     name: build ${{ matrix.target }}

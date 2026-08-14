@@ -11,13 +11,16 @@ import io
 import json
 import os
 import shutil
+import string
 import subprocess
 import sys
 import tarfile
 import tempfile
 import threading
+import time
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -308,7 +311,12 @@ def _run_client_operation(
 
 
 def _run_gogurt(
-    executable: Path, *, source_root: Path, scratch: Path, environment: dict[str, str]
+    executable: Path,
+    *,
+    source_root: Path,
+    scratch: Path,
+    environment: dict[str, str],
+    listener_lifecycle: bool,
 ) -> str:
     examples = scratch / "gogurt-examples"
     shutil.copytree(source_root / "utilities/gogurt/config/examples", examples)
@@ -330,7 +338,340 @@ def _run_gogurt(
     )
     if "gogurt would run" not in completed.stderr:
         raise QualificationError("installed Gogurt did not execute its portable foreground plan")
-    return "portable-foreground-dry-run"
+    if not listener_lifecycle:
+        return "portable-foreground-dry-run"
+    _run_gogurt_listener_lifecycle(
+        executable,
+        scratch=scratch,
+        environment=environment,
+    )
+    return "native-listener-lifecycle"
+
+
+@contextmanager
+def _qualification_mount(scratch: Path) -> Iterator[Path]:
+    backing = scratch / "gogurt-listener-volume"
+    backing.mkdir()
+    if sys.platform.startswith("linux"):
+        _run(
+            [
+                "sudo",
+                "mount",
+                "-t",
+                "tmpfs",
+                "-o",
+                "size=16m",
+                "gogurt-qualification",
+                str(backing),
+            ],
+            cwd=scratch,
+        )
+        try:
+            yield backing
+        finally:
+            subprocess.run(
+                ["sudo", "umount", str(backing)],
+                cwd=scratch,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        return
+    if sys.platform == "darwin":
+        image = scratch / "gogurt-listener.dmg"
+        _run(
+            [
+                "hdiutil",
+                "create",
+                "-quiet",
+                "-size",
+                "16m",
+                "-fs",
+                "HFS+",
+                "-volname",
+                "GogurtQualification",
+                str(image),
+            ],
+            cwd=scratch,
+        )
+        _run(
+            [
+                "hdiutil",
+                "attach",
+                "-quiet",
+                "-nobrowse",
+                "-mountpoint",
+                str(backing),
+                str(image),
+            ],
+            cwd=scratch,
+        )
+        try:
+            yield backing
+        finally:
+            subprocess.run(
+                ["hdiutil", "detach", "-quiet", str(backing)],
+                cwd=scratch,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        return
+    if sys.platform == "win32":
+        drive = next(
+            (
+                f"{letter}:"
+                for letter in reversed(string.ascii_uppercase[3:])
+                if not Path(f"{letter}:\\").exists()
+            ),
+            None,
+        )
+        if drive is None:
+            raise QualificationError("no disposable Windows drive letter is available")
+        _run(["subst.exe", drive, str(backing)], cwd=scratch)
+        try:
+            yield Path(drive + "\\")
+        finally:
+            subprocess.run(
+                ["subst.exe", drive, "/D"],
+                cwd=scratch,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        return
+    raise QualificationError(f"no disposable mount strategy for {sys.platform}")
+
+
+def _listener_status(
+    executable: Path,
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+) -> dict[str, Any]:
+    completed = _run(
+        [str(executable), "listener", "status", "--json"],
+        cwd=scratch,
+        env=environment,
+        capture=True,
+    )
+    value = json.loads(completed.stdout)
+    if not isinstance(value, dict):
+        raise QualificationError("installed Gogurt listener status is not an object")
+    return value
+
+
+def _wait_for_listener(
+    executable: Path,
+    predicate: Callable[[dict[str, Any]], bool],
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+    timeout_seconds: float = 30,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    status = _listener_status(
+        executable,
+        scratch=scratch,
+        environment=environment,
+    )
+    while not predicate(status) and time.monotonic() < deadline:
+        time.sleep(0.2)
+        status = _listener_status(
+            executable,
+            scratch=scratch,
+            environment=environment,
+        )
+    if not predicate(status):
+        raise QualificationError(
+            f"installed Gogurt listener did not reach expected state: {status}"
+        )
+    return status
+
+
+def _run_gogurt_listener_lifecycle(
+    executable: Path,
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+) -> None:
+    initial = _listener_status(
+        executable,
+        scratch=scratch,
+        environment=environment,
+    )
+    if initial.get("installed") is not False:
+        raise QualificationError("listener qualification would replace an existing installation")
+
+    action = scratch / "gogurt-listener-action.py"
+    action.write_text(
+        "import sys,time\n"
+        "from pathlib import Path\n"
+        "sentinel=Path(sys.argv[2])\n"
+        "with sentinel.open('a', encoding='utf-8') as stream:\n"
+        "    stream.write('run\\n')\n"
+        "time.sleep(0.75)\n",
+        encoding="utf-8",
+    )
+    failure = scratch / "gogurt-listener-failure.py"
+    failure.write_text("raise SystemExit(7)\n", encoding="utf-8")
+    sentinel = scratch / "gogurt-listener-sentinel.txt"
+    routes = scratch / "gogurt-listener-routes.yaml"
+    routes.write_text(
+        "schema_version: 1\n"
+        "kind: gogurt.routes\n"
+        "routes:\n"
+        "  qualification-success:\n"
+        "    command:\n"
+        '      - "{python}"\n'
+        f"      - {json.dumps(str(action))}\n"
+        '      - "{mount_point}"\n'
+        f"      - {json.dumps(str(sentinel))}\n"
+        "  qualification-failure:\n"
+        "    command:\n"
+        '      - "{python}"\n'
+        f"      - {json.dumps(str(failure))}\n"
+        '      - "{mount_point}"\n',
+        encoding="utf-8",
+    )
+
+    installed = False
+    try:
+        with _qualification_mount(scratch) as mount:
+            marker = mount / ".gogurt"
+            marker.write_text("qualification-success\n", encoding="utf-8")
+            installed_payload = json.loads(
+                _run(
+                    [
+                        str(executable),
+                        "listener",
+                        "install",
+                        "--config",
+                        str(routes),
+                        "--interval",
+                        "0.2",
+                        "--autorun",
+                        "--json",
+                    ],
+                    cwd=scratch,
+                    env=environment,
+                    capture=True,
+                ).stdout
+            )
+            installed = True
+            if installed_payload.get("health") != "healthy":
+                raise QualificationError("installed Gogurt listener did not report healthy")
+            human = _run(
+                [str(executable), "listener", "status"],
+                cwd=scratch,
+                env=environment,
+                capture=True,
+            )
+            if "health: healthy" not in human.stdout:
+                raise QualificationError("Gogurt listener human status differs from JSON status")
+
+            def one_completed(status: dict[str, Any]) -> bool:
+                dispatches = status.get("dispatches")
+                counts = dispatches.get("counts") if isinstance(dispatches, dict) else None
+                return isinstance(counts, dict) and counts.get("completed") == 1
+
+            _wait_for_listener(
+                executable,
+                one_completed,
+                scratch=scratch,
+                environment=environment,
+            )
+            time.sleep(1)
+            if sentinel.read_text(encoding="utf-8").splitlines() != ["run"]:
+                raise QualificationError(
+                    "Gogurt listener dispatched one observation more than once"
+                )
+
+            stopped = json.loads(
+                _run(
+                    [str(executable), "listener", "stop", "--json"],
+                    cwd=scratch,
+                    env=environment,
+                    capture=True,
+                ).stdout
+            )
+            if stopped.get("health") != "stopped":
+                raise QualificationError("Gogurt listener stop did not preserve stopped state")
+            for operation in ("start", "restart"):
+                payload = json.loads(
+                    _run(
+                        [str(executable), "listener", operation, "--json"],
+                        cwd=scratch,
+                        env=environment,
+                        capture=True,
+                    ).stdout
+                )
+                if payload.get("health") != "healthy":
+                    raise QualificationError(f"Gogurt listener {operation} did not become healthy")
+                time.sleep(0.5)
+                if sentinel.read_text(encoding="utf-8").splitlines() != ["run"]:
+                    raise QualificationError(
+                        f"Gogurt listener replayed a completed observation after {operation}"
+                    )
+
+            reinstalled = json.loads(
+                _run(
+                    [
+                        str(executable),
+                        "listener",
+                        "install",
+                        "--config",
+                        str(routes),
+                        "--interval",
+                        "0.2",
+                        "--autorun",
+                        "--json",
+                    ],
+                    cwd=scratch,
+                    env=environment,
+                    capture=True,
+                ).stdout
+            )
+            if reinstalled.get("health") != "healthy":
+                raise QualificationError("same-version listener reinstall did not become healthy")
+            time.sleep(0.5)
+            if sentinel.read_text(encoding="utf-8").splitlines() != ["run"]:
+                raise QualificationError("same-version listener reinstall replayed completed work")
+
+            replacement = mount / ".gogurt.replacement"
+            replacement.write_text("qualification-failure\n", encoding="utf-8")
+            os.replace(replacement, marker)
+
+            def failure_visible(status: dict[str, Any]) -> bool:
+                dispatches = status.get("dispatches")
+                attention = dispatches.get("attention") if isinstance(dispatches, dict) else None
+                return isinstance(attention, list) and any(
+                    isinstance(item, dict)
+                    and item.get("state") == "retry"
+                    and item.get("exit_code") == 7
+                    for item in attention
+                )
+
+            _wait_for_listener(
+                executable,
+                failure_visible,
+                scratch=scratch,
+                environment=environment,
+            )
+    finally:
+        if installed:
+            removed = json.loads(
+                _run(
+                    [str(executable), "listener", "uninstall", "--json"],
+                    cwd=scratch,
+                    env=environment,
+                    capture=True,
+                ).stdout
+            )
+            if removed.get("installed") is not False or removed.get("health") != "absent":
+                raise QualificationError("Gogurt listener uninstall left native registration")
+            if Path(str(removed["state_dir"])).exists():
+                raise QualificationError("Gogurt listener uninstall left durable state")
 
 
 def _write_ots_fixture(path: Path) -> Path:
@@ -479,6 +820,7 @@ def _qualify_component(
     scratch: Path,
     base_url: str,
     all_project_names: set[str],
+    listener_lifecycle: bool,
 ) -> dict[str, Any]:
     root = str(component["root"])
     environment = _tool_environment(scratch, root)
@@ -550,6 +892,7 @@ def _qualify_component(
             source_root=source_root,
             scratch=scratch,
             environment=environment,
+            listener_lifecycle=listener_lifecycle,
         )
     else:
         operation = _run_recovery(
@@ -587,7 +930,7 @@ def _qualify_component(
     }
 
 
-def qualify(root: Path, *, version: str) -> dict[str, Any]:
+def qualify(root: Path, *, version: str, listener_lifecycle: bool = False) -> dict[str, Any]:
     release._ensure_clean(root)
     source_sha = release._source_sha(root)
     actual_uv = _run(["uv", "--version"], cwd=root, capture=True).stdout.split()[1]
@@ -622,6 +965,7 @@ def qualify(root: Path, *, version: str) -> dict[str, Any]:
                     scratch=scratch,
                     base_url=base_url,
                     all_project_names=all_project_names,
+                    listener_lifecycle=listener_lifecycle,
                 )
                 for component in manifest["components"]
             ]
@@ -639,6 +983,7 @@ def qualify(root: Path, *, version: str) -> dict[str, Any]:
         "components": results,
         "staged_http": "passed",
         "published": False,
+        "listener_lifecycle": listener_lifecycle,
     }
 
 
@@ -646,13 +991,22 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
     parser.add_argument("--summary", type=Path)
+    parser.add_argument(
+        "--listener-lifecycle",
+        action="store_true",
+        help="Exercise the real per-user service manager and a disposable mounted volume.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        payload = qualify(ROOT, version=args.version)
+        payload = qualify(
+            ROOT,
+            version=args.version,
+            listener_lifecycle=args.listener_lifecycle,
+        )
     except (
         OSError,
         QualificationError,
