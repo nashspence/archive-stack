@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import riverhog_recover.recovery as recovery_module
 from riverhog_age import encrypt_age_scrypt
 from riverhog_core.archive_manifest import build_collection_archive_manifest
 from riverhog_core.domain.archive import (
@@ -316,6 +317,54 @@ def test_cli_recovers_with_permission_restricted_passphrase_file(tmp_path: Path)
     assert completed.returncode == 0, completed.stderr
     assert "Recovered 3 files" in completed.stdout
     assert {path: (output / path).read_bytes() for path in expected} == expected
+
+
+def test_windows_recovery_uses_batchpass_environment_without_unix_fds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source.age"
+    source.write_bytes(b"ciphertext")
+    destination = tmp_path / "destination"
+
+    def run(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        env: dict[str, str],
+        pass_fds: tuple[int, ...],
+    ) -> subprocess.CompletedProcess[str]:
+        assert command == [
+            "age",
+            "--decrypt",
+            "-j",
+            "batchpass",
+            "-o",
+            str(destination),
+            str(source),
+        ]
+        assert check is False
+        assert capture_output is True
+        assert text is True
+        assert env["AGE_PASSPHRASE"] == PASSPHRASE
+        assert "AGE_PASSPHRASE_FD" not in env
+        assert pass_fds == ()
+        destination.write_bytes(b"plaintext")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(recovery_module, "_windows_host", lambda: True)
+    monkeypatch.setattr(recovery_module.subprocess, "run", run)
+
+    recovery_module._age_decrypt(
+        source,
+        destination,
+        passphrase=PASSPHRASE,
+        command="age",
+    )
+
+    assert destination.read_bytes() == b"plaintext"
 
 
 def test_ciphertext_corruption_fails_without_publishing_partial_output(

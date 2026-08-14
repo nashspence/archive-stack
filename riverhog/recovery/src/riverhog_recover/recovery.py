@@ -960,16 +960,27 @@ def _is_nonfatal_timestamp_status(stdout: str, stderr: str) -> bool:
     return bool(lines) and allowed and deferred and described
 
 
+def _windows_host() -> bool:
+    return os.name == "nt"
+
+
 def _age_decrypt(source: Path, destination: Path, *, passphrase: str, command: str) -> None:
     destination.unlink(missing_ok=True)
-    read_fd, write_fd = os.pipe()
-    try:
-        os.write(write_fd, passphrase.encode("utf-8"))
-    finally:
-        os.close(write_fd)
     env = os.environ.copy()
     env.pop("AGE_PASSPHRASE", None)
-    env["AGE_PASSPHRASE_FD"] = str(read_fd)
+    env.pop("AGE_PASSPHRASE_FD", None)
+    read_fd: int | None = None
+    pass_fds: tuple[int, ...] = ()
+    if _windows_host():
+        env["AGE_PASSPHRASE"] = passphrase
+    else:
+        read_fd, write_fd = os.pipe()
+        try:
+            os.write(write_fd, passphrase.encode("utf-8"))
+        finally:
+            os.close(write_fd)
+        env["AGE_PASSPHRASE_FD"] = str(read_fd)
+        pass_fds = (read_fd,)
     try:
         try:
             completed = subprocess.run(
@@ -978,12 +989,13 @@ def _age_decrypt(source: Path, destination: Path, *, passphrase: str, command: s
                 capture_output=True,
                 text=True,
                 env=env,
-                pass_fds=(read_fd,),
+                pass_fds=pass_fds,
             )
         except OSError as exc:
             raise RecoveryError(f"cannot run age: {exc}") from exc
     finally:
-        os.close(read_fd)
+        if read_fd is not None:
+            os.close(read_fd)
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip()
         raise RecoveryError(message or f"age decryption failed: {source.name}")

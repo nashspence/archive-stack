@@ -395,7 +395,8 @@ def _run_recovery(
     archive.mkdir()
     expected, _journal = write_archive(archive)
     passphrase = scratch / "passphrase.txt"
-    passphrase.write_text(  # lgtm[py/clear-text-storage-sensitive-data]
+    # codeql[py/clear-text-storage-sensitive-data]
+    passphrase.write_text(
         passphrase_value + "\n",
         encoding="utf-8",
     )
