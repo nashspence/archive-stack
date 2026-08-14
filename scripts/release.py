@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import hashlib
 import io
@@ -25,6 +26,14 @@ import release_installation as installation
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_CONFIG = "release.toml"
 RELEASE_SCHEMA = "riverhog-release/v1"
+NOTICE_SCHEMA = "riverhog-artifact-notices/v1"
+NOTICE_POLICY = {
+    "schema": NOTICE_SCHEMA,
+    "directory": "notices",
+    "format": "tar.gz",
+    "basis": "exact-artifact-contents",
+    "required_for": ["wheel", "image"],
+}
 RELEASE_ROLES = (
     "end_user_artifact",
     "deployed_implementation",
@@ -224,6 +233,21 @@ def _bake_targets(root: Path) -> set[str]:
     return set(re.findall(r'"([^"]+)"', targets.group("body")))
 
 
+def _buildkit_sbom_attestation(root: Path) -> str:
+    text = (root / "docker-bake.hcl").read_text(encoding="utf-8")
+    common = re.search(r'target "image-common" \{(?P<body>.*?)\n\}', text, re.DOTALL)
+    if common is None:
+        raise ReleaseError("docker-bake.hcl has no common image contract")
+    attest = re.search(r"attest\s*=\s*\[(?P<body>.*?)\]", common.group("body"), re.DOTALL)
+    if attest is None:
+        raise ReleaseError("release images do not request a BuildKit SBOM attestation")
+    values = re.findall(r'"([^"]+)"', attest.group("body"))
+    sboms = [value for value in values if value.startswith("type=sbom,generator=")]
+    if len(sboms) != 1 or re.search(r"@sha256:[0-9a-f]{64}$", sboms[0]) is None:
+        raise ReleaseError("release images require one digest-pinned BuildKit SBOM generator")
+    return str(sboms[0])
+
+
 def _dependency_name(value: str) -> str:
     match = re.match(r"[A-Za-z0-9_.-]+", value)
     if match is None:
@@ -315,6 +339,20 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         raise ReleaseError("final tag governance differs from the release tag template")
     if config.get("installation") != installation.INSTALLATION_POLICY:
         raise ReleaseError("release.toml differs from the v1 installation policy")
+    artifacts = config.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != {
+        "python_formats",
+        "documentation",
+        "source",
+        "evidence",
+        "notices",
+    }:
+        raise ReleaseError("release.toml lacks the complete artifact contract")
+    if artifacts["python_formats"] != ["wheel", "sdist"]:
+        raise ReleaseError("release.toml requires wheel and sdist Python artifacts")
+    if artifacts["notices"] != NOTICE_POLICY:
+        raise ReleaseError("release.toml differs from the artifact notice policy")
+    _buildkit_sbom_attestation(root)
 
     workspace = {
         path.parent.relative_to(root).as_posix(): path for path in _workspace_pyprojects(root)
@@ -630,6 +668,7 @@ def build_release_plan(root: Path, version: str, *, allow_dirty: bool = False) -
             "index_snapshot": f"riverhog-python-index-v{version}.tar.gz",
             "gogurt_listener_reference": f"gogurt-listener-v{version}.md",
         },
+        "notices": dict(config["artifacts"]["notices"]),
         "evidence": list(config["artifacts"]["evidence"]),
     }
     return {
@@ -698,6 +737,158 @@ def _sha256_file(path: Path) -> str:
 def _write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _wheel_notice_components(
+    path: Path,
+    *,
+    distribution: str,
+    version: str,
+) -> list[dict[str, Any]]:
+    notices: list[dict[str, Any]] = []
+    with zipfile.ZipFile(path) as archive:
+        for name in sorted(archive.namelist()):
+            relative = PurePosixPath(name)
+            parts = tuple(part.lower() for part in relative.parts)
+            basename = relative.name.upper()
+            in_metadata = any(part.endswith(".dist-info") for part in parts)
+            is_notice = in_metadata and (
+                "licenses" in parts
+                or basename.startswith(("LICENSE", "COPYING", "NOTICE", "COPYRIGHT"))
+            )
+            if not is_notice or name.endswith("/"):
+                continue
+            content = archive.read(name)
+            if not content:
+                raise ReleaseError(f"wheel contains an empty attribution file: {path.name}:{name}")
+            notices.append({"source": name, "content": content})
+    if not notices:
+        raise ReleaseError(f"wheel contains no packaged license or notice text: {path.name}")
+    return [
+        {
+            "kind": "python",
+            "name": distribution,
+            "version": version,
+            "notices": notices,
+        }
+    ]
+
+
+def _notice_tar_info(name: str, content: bytes, *, source_epoch: int) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(name)
+    info.size = len(content)
+    info.mode = 0o644
+    info.uid = info.gid = 0
+    info.uname = info.gname = "root"
+    info.mtime = source_epoch
+    return info
+
+
+def _write_notice_bundle(
+    destination: Path,
+    record: dict[str, Any],
+    components: list[dict[str, Any]],
+    *,
+    source_epoch: int,
+) -> None:
+    if not components:
+        raise ReleaseError(f"artifact has no attribution components: {record['name']}")
+    files: dict[str, bytes] = {}
+    indexed_components: list[dict[str, Any]] = []
+    seen_components: set[tuple[str, str, str]] = set()
+    for component in sorted(
+        components,
+        key=lambda item: (str(item["kind"]), str(item["name"]), str(item["version"])),
+    ):
+        identity = (
+            str(component["kind"]),
+            str(component["name"]),
+            str(component["version"]),
+        )
+        if identity in seen_components:
+            raise ReleaseError(f"artifact notice bundle repeats a component: {identity}")
+        seen_components.add(identity)
+        raw_notices = cast(list[dict[str, Any]], component.get("notices"))
+        if not raw_notices:
+            raise ReleaseError(f"artifact component has no attribution text: {identity}")
+        notices: list[dict[str, str]] = []
+        seen_sources: set[str] = set()
+        for notice in sorted(raw_notices, key=lambda item: str(item["source"])):
+            source = str(notice["source"])
+            content = notice["content"]
+            if (
+                not source
+                or source in seen_sources
+                or not isinstance(content, bytes)
+                or not content
+            ):
+                raise ReleaseError(f"artifact component has invalid attribution text: {identity}")
+            seen_sources.add(source)
+            digest = hashlib.sha256(content).hexdigest()
+            bundle_path = f"files/{digest}"
+            existing = files.setdefault(bundle_path, content)
+            if existing != content:
+                raise ReleaseError("SHA-256 collision while assembling artifact notices")
+            notices.append({"source": source, "sha256": digest, "file": bundle_path})
+        indexed_components.append(
+            {
+                "kind": identity[0],
+                "name": identity[1],
+                "version": identity[2],
+                "notices": notices,
+            }
+        )
+    index = {
+        "schema": NOTICE_SCHEMA,
+        "basis": NOTICE_POLICY["basis"],
+        "subject": {
+            "kind": str(record["kind"]),
+            "name": str(record["name"]),
+            "sha256": str(record["sha256"]),
+        },
+        "components": indexed_components,
+    }
+    index_bytes = (json.dumps(index, indent=2, sort_keys=True) + "\n").encode()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=source_epoch) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
+                archive.addfile(
+                    _notice_tar_info("NOTICE.json", index_bytes, source_epoch=source_epoch),
+                    io.BytesIO(index_bytes),
+                )
+                for name, content in sorted(files.items()):
+                    archive.addfile(
+                        _notice_tar_info(name, content, source_epoch=source_epoch),
+                        io.BytesIO(content),
+                    )
+
+
+def _write_subject_notices(
+    output: Path,
+    records: list[dict[str, Any]],
+    *,
+    source_epoch: int,
+) -> None:
+    required = set(NOTICE_POLICY["required_for"])
+    for record in records:
+        kind = str(record["kind"])
+        components = record.pop("_notice_components", None)
+        if kind not in required:
+            if components is not None:
+                raise ReleaseError(f"unexpected artifact notice input for {record['name']}")
+            continue
+        if not isinstance(components, list):
+            raise ReleaseError(f"artifact notice input is absent: {record['name']}")
+        slug = re.sub(r"[^A-Za-z0-9.-]+", "-", str(record["name"])).strip("-.")
+        relative = f"{NOTICE_POLICY['directory']}/{kind}-{slug}.tar.gz"
+        _write_notice_bundle(
+            output / relative,
+            record,
+            cast(list[dict[str, Any]], components),
+            source_epoch=source_epoch,
+        )
+        record["notices"] = relative
 
 
 def _source_time(root: Path, source_sha: str) -> tuple[int, str, str]:
@@ -935,6 +1126,215 @@ IMAGE_INVENTORY_PROGRAM = (
     "for d in importlib.metadata.distributions())))"
 )
 
+IMAGE_NOTICE_PROGRAM = r"""
+import base64
+import importlib.metadata
+import json
+from pathlib import Path, PurePosixPath
+import subprocess
+
+MAX_NOTICE_BYTES = 8 * 1024 * 1024
+
+
+def encoded_notice(path):
+    content = path.read_bytes()
+    if not content or len(content) > MAX_NOTICE_BYTES:
+        raise RuntimeError(f"invalid attribution file size: {path}")
+    return {
+        "source": str(path),
+        "content": base64.b64encode(content).decode("ascii"),
+    }
+
+
+python = []
+for distribution in importlib.metadata.distributions():
+    notices = []
+    for item in distribution.files or []:
+        relative = PurePosixPath(str(item))
+        parts = tuple(part.lower() for part in relative.parts)
+        basename = relative.name.upper()
+        in_metadata = any(part.endswith(".dist-info") for part in parts)
+        is_notice = in_metadata and (
+            "licenses" in parts
+            or basename.startswith(("LICENSE", "COPYING", "NOTICE", "COPYRIGHT"))
+        )
+        if not is_notice:
+            continue
+        path = Path(distribution.locate_file(item))
+        if path.is_file():
+            notices.append(encoded_notice(path))
+    python.append(
+        {
+            "kind": "python",
+            "name": distribution.metadata["Name"],
+            "version": distribution.version,
+            "notices": sorted(notices, key=lambda item: item["source"]),
+        }
+    )
+
+query = subprocess.run(
+    [
+        "dpkg-query",
+        "-W",
+        "-f=${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\n",
+    ],
+    check=True,
+    text=True,
+    stdout=subprocess.PIPE,
+).stdout
+packages = []
+for line in query.splitlines():
+    name, version, architecture, source = line.split("\t")
+    packages.append(
+        {
+            "name": name,
+            "base": name.partition(":")[0],
+            "version": version,
+            "architecture": architecture,
+            "source": (source or name).partition(":")[0],
+        }
+    )
+
+copyrights = {}
+for package in packages:
+    path = Path("/usr/share/doc") / package["base"] / "copyright"
+    if path.is_file():
+        copyrights[package["name"]] = path
+
+deb = []
+missing = []
+for package in packages:
+    path = copyrights.get(package["name"])
+    if path is None:
+        path = next(
+            (
+                copyrights[candidate["name"]]
+                for candidate in packages
+                if candidate["source"] == package["source"]
+                and candidate["name"] in copyrights
+            ),
+            None,
+        )
+    if path is None:
+        listed = subprocess.run(
+            ["dpkg-query", "-L", package["name"]],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.splitlines()
+        payload = []
+        for value in listed:
+            candidate = Path(value)
+            if value.startswith(("/usr/share/doc/", "/usr/share/man/", "/usr/share/lintian/")):
+                continue
+            if candidate.is_file() or candidate.is_symlink():
+                payload.append(value)
+        if payload:
+            missing.append(package["name"])
+        continue
+    deb.append(
+        {
+            "kind": "deb",
+            "name": f"{package['name']}:{package['architecture']}",
+            "version": package["version"],
+            "notices": [encoded_notice(path)],
+        }
+    )
+
+standalone = []
+for standalone_root in (
+    Path("/usr/share/licenses/riverhog-third-party"),
+    Path("/usr/local/share/licenses/riverhog-third-party"),
+):
+    if standalone_root.is_dir():
+        for component in sorted(standalone_root.iterdir()):
+            if not component.is_dir():
+                raise RuntimeError(f"invalid standalone attribution component: {component}")
+            for version in sorted(component.iterdir()):
+                if not version.is_dir():
+                    raise RuntimeError(f"invalid standalone attribution version: {version}")
+                paths = sorted(path for path in version.rglob("*") if path.is_file())
+                if not paths:
+                    raise RuntimeError(f"standalone component has no attribution text: {version}")
+                standalone.append(
+                    {
+                        "kind": "standalone",
+                        "name": component.name,
+                        "version": version.name,
+                        "notices": [encoded_notice(path) for path in paths],
+                    }
+                )
+
+print(json.dumps({"python": python, "deb": deb, "standalone": standalone, "missing": missing}))
+"""
+
+
+def _image_notice_components(
+    root: Path,
+    reference: str,
+    *,
+    first_party: set[str],
+) -> list[dict[str, Any]]:
+    raw = _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network=none",
+            "--entrypoint",
+            "/opt/venv/bin/python",
+            reference,
+            "-c",
+            IMAGE_NOTICE_PROGRAM,
+        ],
+        cwd=root,
+        capture=True,
+    ).stdout
+    payload = cast(dict[str, Any], json.loads(raw))
+    missing = payload.get("missing")
+    if not isinstance(missing, list) or any(not isinstance(item, str) for item in missing):
+        raise ReleaseError("image attribution inventory returned an invalid missing list")
+    if missing:
+        raise ReleaseError(
+            "image payload packages have no packaged attribution text: "
+            + ", ".join(sorted(missing))
+        )
+    result: list[dict[str, Any]] = []
+    for item in [
+        *cast(list[dict[str, Any]], payload.get("python")),
+        *cast(list[dict[str, Any]], payload.get("deb")),
+        *cast(list[dict[str, Any]], payload.get("standalone")),
+    ]:
+        name = str(item.get("name", ""))
+        kind = str(item.get("kind", ""))
+        if kind == "python" and _normalize_name(name) in first_party:
+            continue
+        raw_notices = item.get("notices")
+        if not isinstance(raw_notices, list) or not raw_notices:
+            raise ReleaseError(f"image component has no packaged attribution text: {kind}:{name}")
+        notices = []
+        for notice in raw_notices:
+            if not isinstance(notice, dict):
+                raise ReleaseError("image attribution inventory returned an invalid notice")
+            try:
+                content = base64.b64decode(str(notice["content"]), validate=True)
+            except (KeyError, ValueError) as error:
+                raise ReleaseError(
+                    "image attribution inventory returned invalid content"
+                ) from error
+            notices.append({"source": str(notice.get("source", "")), "content": content})
+        result.append(
+            {
+                "kind": kind,
+                "name": name,
+                "version": str(item.get("version", "")),
+                "notices": notices,
+            }
+        )
+    if not result:
+        raise ReleaseError("image contains no third-party attribution components")
+    return result
+
 
 def _docker_image_exists(reference: str, *, cwd: Path) -> bool:
     result = subprocess.run(
@@ -978,6 +1378,7 @@ def _build_release_images(
     project_versions = {project.name: project.version for project in projects}
     project_names = set(project_versions)
     bake = (root / "docker-bake.hcl").read_text(encoding="utf-8")
+    sbom_attestation = _buildkit_sbom_attestation(root)
     github_cache = os.environ.get("RIVERHOG_RELEASE_GHA_CACHE") == "true"
     records: list[dict[str, Any]] = []
     for target, image in config["images"]["runtime"].items():
@@ -1057,6 +1458,11 @@ def _build_release_images(
             raise ReleaseError(f"release image labels differ from the release plan: {target}")
         if image_data.get("Os") != "linux" or image_data.get("Architecture") != "amd64":
             raise ReleaseError(f"release image has an unqualified platform: {target}")
+        notice_components = _image_notice_components(
+            root,
+            local_version_tag,
+            first_party=project_names,
+        )
         installed_raw = _run(
             [
                 "docker",
@@ -1145,7 +1551,9 @@ def _build_release_images(
                     for name in sorted(expected_internal - {distribution})
                 ],
                 "dockerfile": dockerfile_match.group(1),
+                "buildkit_sbom_attestation": sbom_attestation,
                 "_components": components,
+                "_notice_components": notice_components,
             }
         )
     return records
@@ -1166,6 +1574,7 @@ def _write_subject_sboms(
             "image": "CONTAINER",
             "install-index": "ARCHIVE",
             "install-lock": "OTHER",
+            "install-reference": "FILE",
             "source": "SOURCE",
             "wheel": "LIBRARY",
             "sdist": "ARCHIVE",
@@ -1300,7 +1709,19 @@ def _write_release_provenance(
                             {
                                 "name": str(record["sbom"]),
                                 "digest": {"sha256": _sha256_file(output / str(record["sbom"]))},
-                            }
+                            },
+                            *(
+                                [
+                                    {
+                                        "name": str(record["notices"]),
+                                        "digest": {
+                                            "sha256": _sha256_file(output / str(record["notices"]))
+                                        },
+                                    }
+                                ]
+                                if "notices" in record
+                                else []
+                            ),
                         ],
                     },
                 },
@@ -1350,6 +1771,94 @@ def _sign_checksums(
         ],
         cwd=output,
     )
+
+
+def _verify_notice_bundle(path: Path, subject: dict[str, Any]) -> int:
+    try:
+        with tarfile.open(path, mode="r:gz") as archive:
+            members = archive.getmembers()
+            names = [member.name for member in members]
+            if (
+                len(names) != len(set(names))
+                or "NOTICE.json" not in names
+                or any(
+                    not member.isfile()
+                    or PurePosixPath(member.name).is_absolute()
+                    or ".." in PurePosixPath(member.name).parts
+                    for member in members
+                )
+            ):
+                raise ReleaseError(f"artifact notice archive is unsafe: {path.name}")
+            contents: dict[str, bytes] = {}
+            for member in members:
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ReleaseError(f"artifact notice archive cannot be read: {path.name}")
+                contents[member.name] = stream.read()
+    except (tarfile.TarError, OSError) as error:
+        raise ReleaseError(f"artifact notice archive is invalid: {path.name}") from error
+    try:
+        index = cast(dict[str, Any], json.loads(contents["NOTICE.json"]))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReleaseError(f"artifact notice index is invalid: {path.name}") from error
+    if (
+        set(index) != {"schema", "basis", "subject", "components"}
+        or index["schema"] != NOTICE_SCHEMA
+        or index["basis"] != NOTICE_POLICY["basis"]
+    ):
+        raise ReleaseError(f"artifact notice index uses another schema: {path.name}")
+    expected_subject = {
+        "kind": str(subject["kind"]),
+        "name": str(subject["name"]),
+        "sha256": str(subject["sha256"]),
+    }
+    if index["subject"] != expected_subject:
+        raise ReleaseError(f"artifact notice index describes another subject: {path.name}")
+    components = index["components"]
+    if not isinstance(components, list) or not components:
+        raise ReleaseError(f"artifact notice index has no components: {path.name}")
+    referenced = {"NOTICE.json"}
+    identities: set[tuple[str, str, str]] = set()
+    for component in components:
+        if not isinstance(component, dict) or set(component) != {
+            "kind",
+            "name",
+            "version",
+            "notices",
+        }:
+            raise ReleaseError(f"artifact notice component is invalid: {path.name}")
+        identity = (
+            str(component["kind"]),
+            str(component["name"]),
+            str(component["version"]),
+        )
+        if not all(identity) or identity in identities:
+            raise ReleaseError(f"artifact notice component identity is invalid: {path.name}")
+        identities.add(identity)
+        notices = component["notices"]
+        if not isinstance(notices, list) or not notices:
+            raise ReleaseError(f"artifact notice component has no text: {path.name}")
+        sources: set[str] = set()
+        for notice in notices:
+            if not isinstance(notice, dict) or set(notice) != {"source", "sha256", "file"}:
+                raise ReleaseError(f"artifact notice reference is invalid: {path.name}")
+            source = str(notice["source"])
+            digest = str(notice["sha256"])
+            name = str(notice["file"])
+            if (
+                not source
+                or source in sources
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                or name != f"files/{digest}"
+                or name not in contents
+                or hashlib.sha256(contents[name]).hexdigest() != digest
+            ):
+                raise ReleaseError(f"artifact notice text does not verify: {path.name}")
+            sources.add(source)
+            referenced.add(name)
+    if set(contents) != referenced:
+        raise ReleaseError(f"artifact notice archive contains unindexed text: {path.name}")
+    return len(components)
 
 
 def verify_release_evidence(
@@ -1406,6 +1915,8 @@ def verify_release_evidence(
     )
     if manifest.get("schema") != RELEASE_SCHEMA:
         raise ReleaseError("release manifest uses another schema")
+    if manifest.get("notices") != config["artifacts"]["notices"]:
+        raise ReleaseError("release manifest differs from the artifact notice policy")
     install_manifest = cast(
         dict[str, Any],
         json.loads((output / "install-manifest.json").read_text(encoding="utf-8")),
@@ -1422,15 +1933,32 @@ def verify_release_evidence(
     subject_keys = {(str(item["name"]), str(item["sha256"])) for item in subjects}
     if len(subject_keys) != len(subjects):
         raise ReleaseError("release manifest repeats a subject")
+    required_notices = set(config["artifacts"]["notices"]["required_for"])
+    notice_components = 0
+    sbom_attestation = _buildkit_sbom_attestation(root)
     for subject in subjects:
         sbom_path = output / str(subject["sbom"])
         sbom = cast(dict[str, Any], json.loads(sbom_path.read_text(encoding="utf-8")))
         if sbom.get("spdxVersion") != "SPDX-2.3" or not sbom.get("documentDescribes"):
             raise ReleaseError(f"artifact SBOM is invalid: {subject['sbom']}")
+        if subject["kind"] in required_notices:
+            notice_relative = str(subject.get("notices", ""))
+            expected_prefix = f"{config['artifacts']['notices']['directory']}/"
+            if not notice_relative.startswith(expected_prefix) or notice_relative not in entries:
+                raise ReleaseError(f"artifact notice bundle is absent: {subject['name']}")
+            notice_components += _verify_notice_bundle(output / notice_relative, subject)
+        elif "notices" in subject:
+            raise ReleaseError(f"artifact has an unexpected notice bundle: {subject['name']}")
+        if subject["kind"] == "image":
+            if subject.get("buildkit_sbom_attestation") != sbom_attestation:
+                raise ReleaseError(
+                    f"image lacks its BuildKit SBOM attestation policy: {subject['name']}"
+                )
         if subject["kind"] != "image":
             if entries.get(str(subject["name"])) != subject["sha256"]:
                 raise ReleaseError(f"manifest digest differs from checksums: {subject['name']}")
     provenance_subjects: set[tuple[str, str]] = set()
+    provenance_byproducts: dict[tuple[str, str], set[str]] = {}
     for line in (output / "release.intoto.jsonl").read_text(encoding="utf-8").splitlines():
         statement = cast(dict[str, Any], json.loads(line))
         if statement.get("predicateType") != "https://slsa.dev/provenance/v1":
@@ -1438,14 +1966,33 @@ def verify_release_evidence(
         statement_subject = statement["subject"]
         if not isinstance(statement_subject, list) or len(statement_subject) != 1:
             raise ReleaseError("release provenance statement has no unique subject")
-        provenance_subjects.add(
-            (
-                str(statement_subject[0]["name"]),
-                str(statement_subject[0]["digest"]["sha256"]),
-            )
+        key = (
+            str(statement_subject[0]["name"]),
+            str(statement_subject[0]["digest"]["sha256"]),
         )
+        provenance_subjects.add(key)
+        raw_byproducts = statement["predicate"]["runDetails"]["byproducts"]
+        if not isinstance(raw_byproducts, list):
+            raise ReleaseError("release provenance byproducts are invalid")
+        byproducts: set[str] = set()
+        for item in raw_byproducts:
+            if not isinstance(item, dict):
+                raise ReleaseError("release provenance byproduct is invalid")
+            name = str(item.get("name", ""))
+            digest = str(item.get("digest", {}).get("sha256", ""))
+            if not name or name in byproducts or name not in entries or digest != entries[name]:
+                raise ReleaseError("release provenance byproduct does not verify")
+            byproducts.add(name)
+        provenance_byproducts[key] = byproducts
     if provenance_subjects != subject_keys:
         raise ReleaseError("release provenance does not cover every manifest subject")
+    for subject in subjects:
+        key = (str(subject["name"]), str(subject["sha256"]))
+        expected_byproducts = {str(subject["sbom"])}
+        if "notices" in subject:
+            expected_byproducts.add(str(subject["notices"]))
+        if provenance_byproducts.get(key) != expected_byproducts:
+            raise ReleaseError(f"release provenance byproducts differ: {subject['name']}")
     release_spdx = cast(
         dict[str, Any],
         json.loads((output / "release.spdx.json").read_text(encoding="utf-8")),
@@ -1455,6 +2002,7 @@ def verify_release_evidence(
     return {
         "subjects": len(subjects),
         "files": len(entries),
+        "notice_components": notice_components,
         "signature_verified": True,
     }
 
@@ -1488,22 +2036,27 @@ def _prepare_file_subjects(
             for dependency in sorted(dependencies)
         ]
         internal_closure = _dependency_closure(graph, project.name)
-        records.append(
-            {
-                "kind": "wheel" if name.endswith(".whl") else "sdist",
-                "name": relative,
-                "sha256": _sha256_file(destination),
-                "size": destination.stat().st_size,
-                "distribution": project.name,
-                "version": version,
-                "license": licenses[project.name],
-                "dependencies": [
-                    {"name": dependency, "version": project_versions[dependency]}
-                    for dependency in sorted(internal_closure - {project.name})
-                ],
-                "_components": components,
-            }
-        )
+        record: dict[str, Any] = {
+            "kind": "wheel" if name.endswith(".whl") else "sdist",
+            "name": relative,
+            "sha256": _sha256_file(destination),
+            "size": destination.stat().st_size,
+            "distribution": project.name,
+            "version": version,
+            "license": licenses[project.name],
+            "dependencies": [
+                {"name": dependency, "version": project_versions[dependency]}
+                for dependency in sorted(internal_closure - {project.name})
+            ],
+            "_components": components,
+        }
+        if record["kind"] == "wheel":
+            record["_notice_components"] = _wheel_notice_components(
+                destination,
+                distribution=project.name,
+                version=version,
+            )
+        records.append(record)
     source_relative = source_archive.relative_to(output).as_posix()
     records.append(
         {
@@ -1538,6 +2091,7 @@ def _generate_release_evidence(
     *,
     version: str,
     source_sha: str,
+    source_epoch: int,
     spdx_created: str,
     install_manifest: dict[str, Any],
     signing_key: Path,
@@ -1551,6 +2105,7 @@ def _generate_release_evidence(
     if written_install_manifest != install_manifest:
         raise ReleaseError("generated install manifest changed before evidence assembly")
     installation.verify_installation_artifacts(output, install_manifest)
+    _write_subject_notices(output, records, source_epoch=source_epoch)
     _write_subject_sboms(output, records, source_sha=source_sha, created=spdx_created)
     _write_release_spdx(
         output,
@@ -1567,6 +2122,7 @@ def _generate_release_evidence(
         "source_sha": source_sha,
         "created": spdx_created,
         "platforms": config["images"]["platforms"],
+        "notices": config["artifacts"]["notices"],
         "subjects": sorted(records, key=lambda item: (str(item["kind"]), str(item["name"]))),
         "installation": {
             "manifest": "install-manifest.json",
@@ -1683,6 +2239,7 @@ def build_release_evidence(
                 records,
                 version=version,
                 source_sha=source_sha,
+                source_epoch=source_epoch,
                 spdx_created=spdx_created,
                 install_manifest=install_manifest,
                 signing_key=signing_key,
@@ -1700,6 +2257,7 @@ def build_release_evidence(
         "installation_roots": len(install_manifest["components"]),
         "evidence_subjects": verification["subjects"],
         "evidence_files": verification["files"],
+        "notice_components": verification["notice_components"],
         "signature_verified": verification["signature_verified"],
         "published": False,
         "validation": [
@@ -1710,6 +2268,7 @@ def build_release_evidence(
             "runtime image release-unit closure",
             "SHA-256 checksums",
             "SPDX 2.3 SBOMs",
+            "artifact-specific attribution notice bundles",
             "SLSA provenance",
             "minisign signature",
         ],

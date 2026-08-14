@@ -70,6 +70,23 @@ RUN git init ffmpeg \
  && make install \
  && sh /build/verify-ffmpeg /opt/ffmpeg/bin/ffmpeg
 
+RUN mkdir -p \
+      "/opt/ffmpeg/share/licenses/riverhog-third-party/ffmpeg/${FFMPEG_REF}" \
+      "/opt/ffmpeg/share/licenses/riverhog-third-party/nv-codec-headers/${NV_CODEC_HEADERS_REF}" \
+ && cp /build/ffmpeg/COPYING.GPLv2 \
+      "/opt/ffmpeg/share/licenses/riverhog-third-party/ffmpeg/${FFMPEG_REF}/COPYING.GPLv2" \
+ && header_count="$(find /build/nv-codec-headers/include/ffnvcodec -maxdepth 1 -type f -name '*.h' | wc -l)" \
+ && test "${header_count}" -gt 0 \
+ && { \
+      for header in /build/nv-codec-headers/include/ffnvcodec/*.h; do \
+        printf '===== %s =====\n' "$(basename "${header}")"; \
+        awk '1; /\*\// { exit }' "${header}"; \
+      done; \
+    } > "/opt/ffmpeg/share/licenses/riverhog-third-party/nv-codec-headers/${NV_CODEC_HEADERS_REF}/ATTRIBUTION" \
+ && test "$(grep -c 'Permission is hereby granted' \
+      "/opt/ffmpeg/share/licenses/riverhog-third-party/nv-codec-headers/${NV_CODEC_HEADERS_REF}/ATTRIBUTION")" \
+      = "${header_count}"
+
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS python-build
 

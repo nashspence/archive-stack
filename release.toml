@@ -93,6 +93,13 @@ evidence = [
   "THIRD_PARTY_NOTICES.md",
 ]
 
+[artifacts.notices]
+schema = "riverhog-artifact-notices/v1"
+directory = "notices"
+format = "tar.gz"
+basis = "exact-artifact-contents"
+required_for = ["wheel", "image"]
+
 [installation]
 method = "uv-tool"
 lock_format = "pylock.toml"

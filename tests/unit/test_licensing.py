@@ -38,6 +38,10 @@ def test_reuse_policy_assigns_an_apache_default_and_narrow_server_overrides() ->
         "companions/jeb/server/openapi/**",
     ]
     assert annotations[2]["SPDX-License-Identifier"] == "Apache-2.0"
+    assert len(annotations) == 3
+    minisign_license = (REPO_ROOT / "third_party/minisign/0.12/LICENSE").read_text(encoding="utf-8")
+    assert "Copyright (c) 2015-2025" in minisign_license
+    assert "Permission to use, copy, modify, and/or distribute" in minisign_license
 
 
 def test_every_workspace_distribution_declares_and_contains_its_component_license() -> None:
@@ -93,6 +97,24 @@ def test_published_images_carry_source_and_license_identity() -> None:
         assert "LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt" in dockerfile
         assert "LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt" in dockerfile
         assert "THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md" in dockerfile
+
+
+def test_standalone_runtime_tools_preserve_their_exact_attribution_text() -> None:
+    riverhog = (REPO_ROOT / "riverhog/server/Dockerfile").read_text(encoding="utf-8")
+    munchy = (REPO_ROOT / "companions/munchy/server/Dockerfile").read_text(encoding="utf-8")
+    av1 = (REPO_ROOT / "companions/munchy/server/targets/av1-nvenc/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "third_party/minisign/0.12/LICENSE "
+        "/usr/share/licenses/riverhog-third-party/minisign/0.12/LICENSE"
+    ) in riverhog
+    assert '"${exiftool_root}/LICENSE" /opt/exiftool/LICENSE' in munchy
+    assert ("/usr/share/licenses/riverhog-third-party/exiftool/13.59/LICENSE") in munchy
+    assert "riverhog-third-party/ffmpeg/${FFMPEG_REF}/COPYING.GPLv2" in av1
+    assert "riverhog-third-party/nv-codec-headers/${NV_CODEC_HEADERS_REF}/ATTRIBUTION" in av1
+    assert "awk '1; /\\*\\// { exit }'" in av1
 
 
 def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
