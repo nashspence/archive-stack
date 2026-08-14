@@ -197,6 +197,37 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     )
     assert 'qualification_dir="$RUNNER_TEMP/release-qualification"' in locate_evidence["run"]
     assert '>> "$GITHUB_ENV"' in locate_evidence["run"]
+    assert "OPERATIONS_SUMMARY" in locate_evidence["run"]
+    assert "OPERATIONS_TIMINGS" in locate_evidence["run"]
+    lifecycle_evidence = next(
+        step
+        for step in audit["steps"]
+        if step["name"] == "Exercise disposable operation lifecycles and record timings"
+    )
+    assert "test_operation_lifecycle_api.py" in lifecycle_evidence["run"]
+    assert "test_munchy_server_contract.py" in lifecycle_evidence["run"]
+    assert "test_jeb_health.py" in lifecycle_evidence["run"]
+    assert "test_collection_reads.py" in lifecycle_evidence["run"]
+    assert "test_list_jobs_does_not_scan_all_job_states" in lifecycle_evidence["run"]
+    assert "test_source_registry_lists_compact_filtered_pages" in lifecycle_evidence["run"]
+    assert "tests.operation_observer" in lifecycle_evidence["run"]
+    operation_evidence = next(
+        step
+        for step in audit["steps"]
+        if step["name"] == "Verify and record the complete operation matrix"
+    )
+    assert "make operation-qualification" in operation_evidence["run"]
+    assert "--source-sha $SOURCE_SHA" in operation_evidence["run"]
+    assert "--timings $OPERATIONS_TIMINGS" in operation_evidence["run"]
+    verify_operations = next(
+        step for step in audit["steps"] if step["name"] == "Verify exact-SHA operation evidence"
+    )
+    assert "riverhog-operation-qualification/v1" in verify_operations["run"]
+    assert ".source_sha == $sha" in verify_operations["run"]
+    assert "positive_local_lifecycles.status" in verify_operations["run"]
+    assert "cli_human_json_projection.status" in verify_operations["run"]
+    assert "bounded_state_access.status" in verify_operations["run"]
+    assert "event_cursor_restart_resume.status" in verify_operations["run"]
     resolve_source = next(
         step
         for step in workflow["jobs"]["resolve"]["steps"]
@@ -233,6 +264,7 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     assert upload["with"]["path"] == "${{ runner.temp }}/release-qualification/*.json"
     assert "published == false" in text
     assert "riverhog-release-qualification/v1" in text
+    assert 'operation_matrix: "passed"' in text
     assert "Analyze (actions)" in text and "Analyze (python)" in text
     assert "release/v1" in text
     assert "v1\\.[0-9]+\\.[0-9]+" in text

@@ -10,11 +10,22 @@ import sqlite3
 import sys
 import tarfile
 import threading
+import time
 from pathlib import Path
 from types import ModuleType
 
+import httpx
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from munchy_api_client.client import (
+    MunchyAdminClient,
+    MunchyClient,
+    SubmissionInputFile,
+    SubmissionPreflightInputFile,
+    SubmissionPreflightRequest,
+    SubmissionUploadRequest,
+)
 from munchy_target_support.metadata_projection import project_immich_metadata
 from munchy_target_support.uvicorn_logging import DropHealthAccessLogFilter
 from riverhog_api_client import Conflict, NotFound
@@ -24,6 +35,8 @@ from riverhog_provenance import (
     validate_journal,
 )
 from time_formats import utc_timestamp_now
+
+from tests.operation_observer import OperationObserver, TimeoutNeutralTestClient
 
 SERVER_MODULES = {
     "external": "munchy_core.adapters.external",
@@ -277,6 +290,308 @@ def test_api_auth_protects_v1_but_not_health(tmp_path: Path, monkeypatch) -> Non
     )
     assert authorized.status_code == 200
     assert authorized.json()["jobs"] == []
+
+
+def test_munchy_official_clients_cover_complete_positive_api_lifecycle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("MUNCHY_APPLICATION_AUTH_REQUIRED", "1")
+    monkeypatch.setenv("MUNCHY_ADMIN_TOKEN", "qualification-admin")
+    server = load_server(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.job_service, "schedule_pending_jobs", lambda *_args: [])
+    monkeypatch.setattr(server.upload_service, "head_tusd_upload", lambda _url: -1)
+    monkeypatch.setattr(
+        server.upload_service,
+        "create_tusd_upload",
+        lambda _path, _length: "http://testserver/files/qualification",
+    )
+    monkeypatch.setattr(
+        server.upload_service,
+        "public_tusd_request_is_authorized",
+        lambda _uri: True,
+    )
+    observer = OperationObserver.install(server.app, application="munchy")
+    transport = TestClient(server.app)
+    bound_transport = TimeoutNeutralTestClient(transport, observer=observer)
+    admin = MunchyAdminClient(
+        "http://testserver",
+        token="qualification-admin",
+        allow_insecure_http=True,
+    )
+    admin._http = bound_transport  # type: ignore[assignment]
+
+    assert transport.get("/health/live").status_code == 200
+    assert transport.get("/health/ready").status_code == 200
+    created_key = admin.create_app_key(
+        "qualification-client",
+        permissions=["*"],
+    )
+    assert admin.list_apps(query="qualification", all_items=True)["total"] == 1
+    assert admin.list_app_keys("qualification-client", all_items=True)["total"] == 1
+    client = MunchyClient(
+        "http://testserver",
+        token=str(created_key["token"]),
+        allow_insecure_http=True,
+    )
+    client._http = bound_transport  # type: ignore[assignment]
+
+    definition = job_template_definition()
+    validated = admin.validate_job_template("qualification-template", definition)
+    assert validated["valid"] is True
+    template = admin.create_job_template("qualification-template", definition)
+    assert admin.get_job_template("qualification-template")["revision"] == 1
+    assert admin.list_job_templates(query="qualification", all_items=True)["total"] == 1
+    template = admin.replace_job_template(
+        "qualification-template",
+        definition,
+        expected_revision=int(template["revision"]),
+    )
+    template = admin.disable_job_template(
+        "qualification-template",
+        expected_revision=int(template["revision"]),
+    )
+    template = admin.enable_job_template(
+        "qualification-template",
+        expected_revision=int(template["revision"]),
+    )
+
+    source = tmp_path / "qualification.txt"
+    source.write_bytes(b"munchy qualification\n")
+    journal = create_observation_journal(
+        source,
+        relative_path="qualification/qualification.txt",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000469",
+        agent_name="munchy-operation-qualification",
+        agent_version="1.0.0",
+    )
+    journal_summary = validate_journal(journal)
+    source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    preflight = client.preflight_submission(
+        SubmissionPreflightRequest(
+            template_id="qualification-template",
+            files=(
+                SubmissionPreflightInputFile(
+                    rel_path="qualification/qualification.txt",
+                    bytes=source.stat().st_size,
+                ),
+            ),
+        )
+    )
+    assert preflight["accepted"] is True
+    request = SubmissionUploadRequest(
+        submission_id="qualification-submission",
+        template_id="qualification-template",
+        files=(
+            SubmissionInputFile(
+                source=source,
+                rel_path="qualification/qualification.txt",
+                bytes=source.stat().st_size,
+                sha256=source_sha256,
+                provenance={
+                    "status": "captured",
+                    "journal_id": journal_summary.journal_id,
+                    "current_state_id": journal_summary.current_state_id,
+                },
+                provenance_journals={journal_summary.journal_id: journal},
+            ),
+        ),
+    )
+    submitted = client.create_submission(request)
+    assert submitted["submission_id"] == "qualification-submission"
+    assert client.get_submission("qualification-submission")["template_id"] == (
+        "qualification-template"
+    )
+    journal_receipt = client.put_submission_provenance_journal(
+        "qualification-submission",
+        journal_summary.journal_id,
+        content=journal,
+        sha256=journal_summary.journal_sha256,
+    )
+    assert journal_receipt["sha256"] == journal_summary.journal_sha256
+    upload = client.create_or_resume_submission_file_upload(
+        "qualification-submission",
+        "qualification/qualification.txt",
+    )
+    assert upload["protocol"] == "tus"
+
+    def protocol_handler(http_request: httpx.Request) -> httpx.Response:
+        started = time.perf_counter()
+        if http_request.method == "POST" and "/v1/submissions/" in http_request.url.path:
+            return httpx.Response(
+                201,
+                json={
+                    "upload_url": "https://uploads.example.test/files/qualification",
+                    "offset": 0,
+                    "length": source.stat().st_size,
+                },
+            )
+        if http_request.method == "PATCH" and http_request.url.path == "/files/qualification":
+            response = httpx.Response(
+                204,
+                headers={"Upload-Offset": str(source.stat().st_size)},
+            )
+            observer.record_external_server(
+                "patch_tusd_submission_file",
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+            )
+            return response
+        return httpx.Response(404)
+
+    protocol_client = MunchyClient(
+        "https://munchy.example.test",
+        token=str(created_key["token"]),
+        transport=httpx.MockTransport(protocol_handler),
+    )
+    protocol_started = time.perf_counter()
+    try:
+        protocol_client.upload_file(
+            "qualification-submission",
+            request.files[0],
+            chunk_bytes=source.stat().st_size,
+        )
+    finally:
+        protocol_client.close()
+    observer.record_external_client(
+        "patch_tusd_submission_file",
+        elapsed_ms=(time.perf_counter() - protocol_started) * 1000,
+    )
+
+    failure = client.record_submission_preflight_failure(
+        {
+            "submission_id": "qualification-preflight-failure",
+            "message": "qualification observation",
+            "template_id": "qualification-template",
+            "workflow_mode": "collection_archive",
+            "group": "qualification",
+            "files_total": 1,
+            "failed_files_total": 1,
+            "failed_files": [
+                {
+                    "path": "qualification/qualification.txt",
+                    "source": "qualification.txt",
+                    "issues": [{"code": "qualification", "message": "qualification observation"}],
+                }
+            ],
+        }
+    )
+    assert failure["status"] == "recorded"
+    assert client.list_jobs(terminal="all", all_items=True)["total"] == 1
+    assert client.get_job("qualification-submission")["job_id"] == ("qualification-submission")
+    assert client.cancel_job("qualification-submission", cleanup=True)["state"] == "canceled"
+
+    server.upload_service.save_input_upload_raw(
+        {"input_upload_id": "qualification-resume-input", "state": "uploaded", "files": []}
+    )
+    server.state_store.save_job(
+        {
+            "job_id": "qualification-resume",
+            "state": "failed",
+            "phase": "failed",
+            "input_upload_id": "qualification-resume-input",
+            "handoff": {"destination": "command", "options": {}},
+        }
+    )
+    assert client.resume_job("qualification-resume")["state"] == "queued"
+    assert client.cancel_job("qualification-resume", cleanup=True)["state"] == "canceled"
+
+    for job_id in ("qualification-diagnostic", "qualification-removal"):
+        server.state_store.save_job(
+            {
+                "job_id": job_id,
+                "state": "failed",
+                "phase": "failed",
+                "error": "qualification failure",
+                "finished_at": "2026-08-13T00:00:00Z",
+                "cleanup_completed_at": "2026-08-13T00:01:00Z",
+            }
+        )
+        assert server.diagnostic_service.create_job_diagnostic(
+            server.state_store.load_job(job_id),
+            reason="qualification",
+        )
+    assert admin.list_job_diagnostics(query="qualification", all_items=True)["total"] == 2
+    diagnostic = admin.get_job_diagnostic("qualification-diagnostic")
+    diagnostic_output = tmp_path / "qualification-diagnostic.tar.gz"
+    downloaded = admin.download_job_diagnostic(
+        "qualification-diagnostic",
+        output=diagnostic_output,
+    )
+    assert downloaded["sha256"] == diagnostic["sha256"]
+    assert admin.remove_job_diagnostic("qualification-diagnostic")["removed"] is True
+    assert admin.remove_terminal_job("qualification-removal")["removed"] is True
+
+    assert admin.get_retention_plan()["policy"]
+    assert admin.apply_retention()["removed"]
+    assert admin.pause_scheduler()["paused"] is True
+    assert admin.get_scheduler_status()["paused"] is True
+    assert admin.resume_scheduler()["paused"] is False
+
+    auth = transport.get(
+        "/internal/tusd/authorize",
+        headers={"X-Munchy-Tusd-Original-Uri": "/files/qualification"},
+    )
+    assert auth.status_code == 204
+    hook = transport.post(
+        "/internal/tusd/hooks",
+        json={
+            "Type": "pre-create",
+            "Event": {
+                "Upload": {
+                    "MetaData": {
+                        "target_path": (
+                            ".munchy-server/uploads/qualification-submission/"
+                            "qualification/qualification.txt"
+                        )
+                    }
+                }
+            },
+        },
+    )
+    assert hook.status_code == 200
+    assert hook.json()["ChangeFileInfo"]["ID"]
+
+    events = client.list_lifecycle_events(limit=100)
+    assert events.events
+    restarted = load_server(tmp_path, monkeypatch)
+    restarted_transport = TestClient(restarted.app)
+    restarted_client = MunchyClient(
+        "http://testserver",
+        token=str(created_key["token"]),
+        allow_insecure_http=True,
+    )
+    restarted_client._http = TimeoutNeutralTestClient(  # type: ignore[assignment]
+        restarted_transport
+    )
+    resumed_events = restarted_client.list_lifecycle_events(
+        after=events.next_cursor,
+        limit=100,
+    )
+    assert resumed_events.events == []
+    assert resumed_events.next_cursor == events.next_cursor
+
+    removed_template = admin.delete_job_template(
+        "qualification-template",
+        expected_revision=int(template["revision"]),
+    )
+    assert removed_template["state"] == "removed"
+    assert admin.revoke_app_key("qualification-client", str(created_key["id"]))["status"] == (
+        "revoked"
+    )
+
+    expected = {
+        str(operation["operationId"])
+        for path in server.app.openapi()["paths"].values()
+        for method, operation in path.items()
+        if method in {"get", "post", "put", "patch", "delete"}
+    }
+    expected.update(
+        route.operation_id or route.name
+        for route in server.app.routes
+        if isinstance(route, APIRoute) and route.path.startswith(("/v1/", "/internal/", "/health/"))
+    )
+    expected.add("patch_tusd_submission_file")
+    observer.require(expected)
 
 
 def test_readiness_requires_a_current_job_template_registry(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

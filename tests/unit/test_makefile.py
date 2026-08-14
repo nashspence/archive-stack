@@ -387,6 +387,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             ("SPEC_TESTS=tests/harness/test_spec_harness.py", "args=-k garage"),
             "python -m pytest -q tests/harness/test_spec_harness.py -k garage",
         ),
+        (
+            "operation-qualification",
+            ("args=check",),
+            "python scripts/operation_qualification.py check",
+        ),
         ("release-check", (), "python scripts/release.py check"),
         (
             "release-plan",
@@ -487,6 +492,7 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[0]
     assert "companions/munchy/client/src companions/munchy/server/src" in uv_log_lines[0]
     assert "riverhog/client/src riverhog/recovery/src riverhog/server/src" in uv_log_lines[0]
+    assert "scripts/operation_qualification.py" in uv_log_lines[0]
     assert "scripts/provider_qualification.py" in uv_log_lines[0]
     assert "utilities/gogurt/src utilities/mango-fish/src" in uv_log_lines[0]
     assert "--no-error-summary --no-color-output --strict" in uv_log_lines[0]

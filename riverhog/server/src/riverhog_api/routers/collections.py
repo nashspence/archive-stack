@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
+from http_api_contracts import operation_interface
 from riverhog_core.app_permissions import COLLECTIONS_DELETE
 from starlette.concurrency import run_in_threadpool
 
@@ -87,7 +88,11 @@ def list_collection_upload_sessions(
     )
 
 
-@router.post("/collection-upload-sessions", response_model=CollectionUploadSessionOut)
+@router.post(
+    "/collection-upload-sessions",
+    response_model=CollectionUploadSessionOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
 def create_or_resume_collection_upload_session(
     request: CreateOrResumeCollectionUploadSessionRequest,
     container: ContainerDep,
@@ -109,6 +114,7 @@ def create_or_resume_collection_upload_session(
 @router.post(
     "/collection-upload-sessions/{collection_id}/files",
     response_model=CollectionUploadSessionFilesRegistrationOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def register_collection_upload_session_files(
     collection_id: int,
@@ -127,6 +133,7 @@ def register_collection_upload_session_files(
 @router.put(
     "/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
     response_model=CollectionUploadProvenanceJournalOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 async def put_collection_upload_session_provenance_journal(
     collection_id: int,
@@ -162,6 +169,7 @@ async def put_collection_upload_session_provenance_journal(
 @router.get(
     "/collection-upload-sessions/{collection_id}/files",
     response_model=ListCollectionUploadSessionFilesResponse,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def list_collection_upload_session_files(
     collection_id: int,
@@ -184,6 +192,7 @@ def list_collection_upload_session_files(
 @router.post(
     "/collection-upload-sessions/{collection_id}/complete",
     response_model=CollectionUploadSessionOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def complete_collection_upload_session(
     collection_id: int,
@@ -231,6 +240,7 @@ def get_collection_upload_session(
 @router.get(
     "/collection-upload-sessions/{collection_id}/volumes",
     response_model=ListCollectionUploadVolumesResponse,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def list_collection_upload_session_volumes(
     collection_id: int,
@@ -246,6 +256,7 @@ def list_collection_upload_session_volumes(
 @router.get(
     "/collection-upload-sessions/{collection_id}/volumes/{volume_id}",
     response_model=CollectionUploadVolumeOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def get_collection_upload_session_volume(
     collection_id: int,
@@ -262,6 +273,7 @@ def get_collection_upload_session_volume(
 @router.get(
     "/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
     response_model=CollectionUploadUnitOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def get_collection_upload_session_unit(
     collection_id: int,
@@ -279,6 +291,7 @@ def get_collection_upload_session_unit(
 @router.put(
     "/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
     response_model=CollectionUploadUnitOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 async def put_collection_upload_session_unit(
     collection_id: int,
