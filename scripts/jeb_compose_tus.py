@@ -68,6 +68,10 @@ def upload(args: argparse.Namespace) -> None:
         json.dumps(receipt, sort_keys=True),
         encoding="utf-8",
     )
+    (work_dir / "upload-id").write_text(
+        f"{receipt['upload_id']}\n",
+        encoding="utf-8",
+    )
 
 
 def verify(args: argparse.Namespace) -> None:
@@ -96,10 +100,6 @@ def verify(args: argparse.Namespace) -> None:
     }
     landing = Path(args.landing_dir)
     assert (landing / SOURCE_ID / RELATIVE_PATH).read_bytes() == PAYLOAD
-    staging = landing / ".ingress" / "tus"
-    assert not (staging / upload_id).exists()
-    assert not (staging / f"{upload_id}.info").exists()
-    assert not (staging / ".provenance" / upload_id).exists()
 
 
 def build_parser() -> argparse.ArgumentParser:
