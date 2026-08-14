@@ -797,11 +797,22 @@ def _wait_for_health(
     while time.monotonic() < deadline:
         heartbeat = status.get("heartbeat")
         current_pid = heartbeat.get("pid") if isinstance(heartbeat, dict) else None
-        if status["health"] in expected and (previous_pid is None or current_pid != previous_pid):
+        runtime_released = True
+        if status["health"] in {"absent", "stopped"} and paths.lock_file.is_file():
+            try:
+                with ListenerLock(paths.lock_file):
+                    pass
+            except ListenerError:
+                runtime_released = False
+        if (
+            status["health"] in expected
+            and (previous_pid is None or current_pid != previous_pid)
+            and runtime_released
+        ):
             return status
         time.sleep(0.2)
         status = listener_status(paths=paths, adapter=adapter)
-    raise ListenerError(f"Gogurt listener did not become healthy: {status['health']}")
+    raise ListenerError(f"Gogurt listener did not reach {sorted(expected)}: {status['health']}")
 
 
 def _heartbeat_pid(paths: ListenerPaths) -> int | None:
@@ -845,6 +856,13 @@ def install_listener(
     if resolved_paths.config_file.is_file():
         previous = ListenerConfig.read(resolved_paths.config_file)
     previous_pid = _heartbeat_pid(resolved_paths)
+    if native_adapter.status(resolved_paths).installed:
+        native_adapter.stop(resolved_paths)
+        _wait_for_health(
+            frozenset({"absent", "stopped"}),
+            paths=resolved_paths,
+            adapter=native_adapter,
+        )
     config.write(resolved_paths.config_file)
     try:
         native_adapter.register(
@@ -910,7 +928,7 @@ def stop_listener(
     native_adapter = adapter or listener_adapter()
     native_adapter.stop(resolved_paths)
     return _wait_for_health(
-        frozenset({"stopped"}),
+        frozenset({"absent", "stopped"}),
         paths=resolved_paths,
         adapter=native_adapter,
     )
@@ -923,7 +941,13 @@ def restart_listener(
     native_adapter = adapter or listener_adapter()
     ListenerConfig.read(resolved_paths.config_file)
     previous_pid = _heartbeat_pid(resolved_paths)
-    native_adapter.restart(resolved_paths)
+    native_adapter.stop(resolved_paths)
+    _wait_for_health(
+        frozenset({"absent", "stopped"}),
+        paths=resolved_paths,
+        adapter=native_adapter,
+    )
+    native_adapter.start(resolved_paths)
     return _wait_for_health(
         frozenset({"healthy"}),
         paths=resolved_paths,

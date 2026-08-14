@@ -227,10 +227,6 @@ class FakeAdapter:
         del paths
         self.running = False
 
-    def restart(self, paths: ListenerPaths) -> None:
-        del paths
-        self.running = True
-
     def unregister(self, paths: ListenerPaths) -> None:
         del paths
         self.installed = False
@@ -360,10 +356,21 @@ def test_listener_stop_reports_settled_native_state(tmp_path: Path) -> None:
     adapter.installed = True
     adapter.running = True
 
-    status = stop_listener(paths=paths, adapter=adapter)
+    result: list[dict[str, object]] = []
 
-    assert status["health"] == "stopped"
-    assert status["running"] is False
+    def stop() -> None:
+        result.append(stop_listener(paths=paths, adapter=adapter))
+
+    with ListenerLock(paths.lock_file):
+        thread = threading.Thread(target=stop)
+        thread.start()
+        time.sleep(0.1)
+        assert thread.is_alive()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert result[0]["health"] == "stopped"
+    assert result[0]["running"] is False
 
 
 def datetime_timestamp(value: str) -> float:
