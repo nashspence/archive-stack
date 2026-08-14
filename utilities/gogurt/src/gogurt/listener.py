@@ -790,6 +790,7 @@ def _wait_for_health(
     paths: ListenerPaths,
     adapter: ListenerAdapter,
     previous_pid: int | None = None,
+    terminated_pid: int | None = None,
     timeout_seconds: float = 20,
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout_seconds
@@ -808,6 +809,7 @@ def _wait_for_health(
             status["health"] in expected
             and (previous_pid is None or current_pid != previous_pid)
             and runtime_released
+            and (terminated_pid is None or not _process_is_running(terminated_pid))
         ):
             return status
         time.sleep(0.2)
@@ -821,6 +823,27 @@ def _heartbeat_pid(paths: ListenerPaths) -> int | None:
         return None
     value = heartbeat.get("pid")
     return int(value) if isinstance(value, int) else None
+
+
+def _process_is_running(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = cast(Any, ctypes).windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            return kernel32.GetLastError() == 5  # ERROR_ACCESS_DENIED
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x00000102  # WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def install_listener(
@@ -862,6 +885,7 @@ def install_listener(
             frozenset({"absent", "stopped"}),
             paths=resolved_paths,
             adapter=native_adapter,
+            terminated_pid=previous_pid,
         )
     config.write(resolved_paths.config_file)
     try:
@@ -880,8 +904,15 @@ def install_listener(
     except (ListenerError, ListenerPlatformError, OSError) as exc:
         rollback_errors: list[str] = []
         try:
+            failed_pid = _heartbeat_pid(resolved_paths)
             native_adapter.unregister(resolved_paths)
-        except (ListenerPlatformError, OSError) as rollback_exc:
+            _wait_for_health(
+                frozenset({"absent"}),
+                paths=resolved_paths,
+                adapter=native_adapter,
+                terminated_pid=failed_pid,
+            )
+        except (ListenerError, ListenerPlatformError, OSError) as rollback_exc:
             rollback_errors.append(f"unregister: {rollback_exc}")
         if previous is None:
             try:
@@ -926,11 +957,13 @@ def stop_listener(
 ) -> dict[str, object]:
     resolved_paths = paths or default_listener_paths()
     native_adapter = adapter or listener_adapter()
+    previous_pid = _heartbeat_pid(resolved_paths)
     native_adapter.stop(resolved_paths)
     return _wait_for_health(
         frozenset({"absent", "stopped"}),
         paths=resolved_paths,
         adapter=native_adapter,
+        terminated_pid=previous_pid,
     )
 
 
@@ -946,6 +979,7 @@ def restart_listener(
         frozenset({"absent", "stopped"}),
         paths=resolved_paths,
         adapter=native_adapter,
+        terminated_pid=previous_pid,
     )
     native_adapter.start(resolved_paths)
     return _wait_for_health(
@@ -961,7 +995,18 @@ def uninstall_listener(
 ) -> dict[str, object]:
     resolved_paths = paths or default_listener_paths()
     native_adapter = adapter or listener_adapter()
+    previous_pid = _heartbeat_pid(resolved_paths)
     native_adapter.unregister(resolved_paths)
+    status = _wait_for_health(
+        frozenset({"absent"}),
+        paths=resolved_paths,
+        adapter=native_adapter,
+        terminated_pid=previous_pid,
+    )
     if resolved_paths.state_dir.is_dir():
         shutil.rmtree(resolved_paths.state_dir)
-    return listener_status(paths=resolved_paths, adapter=native_adapter)
+    return status | {
+        "heartbeat": None,
+        "heartbeat_age_seconds": None,
+        "dispatches": {"counts": {}, "attention": []},
+    }
