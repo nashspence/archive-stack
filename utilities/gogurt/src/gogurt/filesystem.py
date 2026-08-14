@@ -12,9 +12,31 @@ PRIVATE_FILE_MODE = 0o600
 PORTABLE_FILE_MODE = 0o644
 
 
-def _set_mode(path: Path, mode: int) -> None:
+def _set_private_directory_mode(path: Path) -> None:
     if os.name != "nt":
-        os.chmod(path, mode, follow_symlinks=False)
+        os.chmod(path, PRIVATE_DIRECTORY_MODE, follow_symlinks=False)
+
+
+def _set_private_file_mode(path: Path) -> None:
+    if os.name != "nt":
+        os.chmod(path, PRIVATE_FILE_MODE, follow_symlinks=False)
+
+
+def _set_portable_file_mode(path: Path) -> None:
+    if os.name != "nt":
+        # Volume markers contain only non-secret routing metadata and must remain
+        # readable when portable media moves between ordinary local users.
+        os.chmod(path, PORTABLE_FILE_MODE, follow_symlinks=False)
+
+
+def _set_staged_file_mode(path: Path, mode: int) -> None:
+    if mode == PRIVATE_FILE_MODE:
+        _set_private_file_mode(path)
+        return
+    if mode == PORTABLE_FILE_MODE:
+        _set_portable_file_mode(path)
+        return
+    raise ValueError(f"unsupported Gogurt file mode: {mode:o}")
 
 
 def ensure_private_directory(path: Path) -> None:
@@ -22,7 +44,7 @@ def ensure_private_directory(path: Path) -> None:
     info = path.lstat()
     if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
         raise OSError(f"Gogurt listener state path is not a directory: {path}")
-    _set_mode(path, PRIVATE_DIRECTORY_MODE)
+    _set_private_directory_mode(path)
 
 
 def ensure_private_file(path: Path) -> None:
@@ -61,7 +83,7 @@ def stage_bytes(destination: Path, content: bytes, *, mode: int) -> Path:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        _set_mode(temporary, mode)
+        _set_staged_file_mode(temporary, mode)
         return temporary
     except BaseException:
         if descriptor >= 0:
@@ -71,7 +93,7 @@ def stage_bytes(destination: Path, content: bytes, *, mode: int) -> Path:
 
 
 def promote_staged(temporary: Path, destination: Path, *, mode: int) -> None:
-    _set_mode(temporary, mode)
+    _set_staged_file_mode(temporary, mode)
     os.replace(temporary, destination)
 
 

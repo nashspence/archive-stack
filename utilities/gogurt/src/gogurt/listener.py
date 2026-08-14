@@ -250,12 +250,16 @@ class ListenerStore:
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
         ensure_private_files(self.path.parent.glob(f"{self.path.name}-*"))
         return connection
 
     def create(self) -> None:
         with closing(self._connect()) as connection:
+            journal_mode = connection.execute("PRAGMA journal_mode").fetchone()
+            if journal_mode is None or str(journal_mode[0]).casefold() != "wal":
+                configured = connection.execute("PRAGMA journal_mode = WAL").fetchone()
+                if configured is None or str(configured[0]).casefold() != "wal":
+                    raise ListenerError("Gogurt listener state could not enable WAL journaling")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS listener_meta (
@@ -1059,6 +1063,9 @@ def install_listener(
                 resolved_paths.config_file,
                 mode=PRIVATE_FILE_MODE,
             )
+            # Establish schema and WAL before the native process and status
+            # probes can open concurrent database connections.
+            ListenerStore(resolved_paths.database_file).create()
             native_adapter.register(
                 paths=resolved_paths,
                 command=_service_command(config, resolved_paths.config_file),
