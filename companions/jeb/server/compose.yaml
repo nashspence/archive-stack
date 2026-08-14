@@ -8,6 +8,7 @@ services:
     image: jeb:dev
     restart: "no"
     environment:
+      JEB_API_TOKEN: ${JEB_API_TOKEN:?JEB_API_TOKEN is required}
       JEB_STATE_DIR: /state
       JEB_STATE_DB: /state/jeb.sqlite3
     command: ["jeb-service", "state", "upgrade"]
@@ -31,7 +32,7 @@ services:
       jeb-state:
         condition: service_completed_successfully
     environment:
-      JEB_API_TOKEN: ${JEB_API_TOKEN:-jeb-development-api-token}
+      JEB_API_TOKEN: ${JEB_API_TOKEN:?JEB_API_TOKEN is required}
       JEB_HOST: 0.0.0.0
       JEB_PORT: "8081"
       JEB_LOG_LEVEL: ${JEB_LOG_LEVEL:-INFO}

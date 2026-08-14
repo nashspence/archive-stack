@@ -19,6 +19,7 @@ classifiers = [
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
+  "alembic>=1.18.5,<2.0",
   "argon2-cffi>=23,<26",
   "fastapi>=0.111,<1.0",
   "http-api-contracts>=0.1,<0.2",
@@ -31,6 +32,7 @@ dependencies = [
   "pydantic>=2.7,<3.0",
   "riverhog-cli-support>=0.1,<0.2",
   "riverhog-provenance>=0.1,<0.2",
+  "sqlalchemy>=2.0,<3.0",
   "starlette>=0.37,<2.0",
   "state-schema>=0.1,<0.2",
   "time-formats>=0.1,<0.2",

@@ -123,6 +123,8 @@ def test_jeb_preflight_is_accepted_by_the_running_munchy_contract(
             bytes=5,
             mtime=1.0,
             mtime_ns=1,
+            device=1,
+            inode=1,
         )
 
         accepted, summary = MunchyTargetAdapter().preflight(

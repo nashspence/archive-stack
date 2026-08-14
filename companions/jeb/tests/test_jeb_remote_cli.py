@@ -64,7 +64,7 @@ class FakeJebApi:
             "target_name": "munchy",
             "state": "failed",
             "file_count": 2,
-            "staged_file_count": 1,
+            "claimed_file_count": 1,
             "total_bytes": 42,
             "last_error": "target unavailable",
         }
@@ -308,7 +308,15 @@ def test_jeb_remote_cli_uploads_with_existing_provenance(
 
         def upload_file(self, path: Path, **kwargs: object) -> dict[str, object]:
             calls.append(("upload", {"path": path, **kwargs}))
-            return {"upload_id": "upload-1", "path": kwargs["relative_path"]}
+            return {
+                "format": "jeb-ingress-publication/v1",
+                "status": "accepted",
+                "upload_id": "upload-1",
+                "path": kwargs["relative_path"],
+                "bytes": 5,
+                "payload_sha256": "a" * 64,
+                "provenance_identity": "b" * 64,
+            }
 
     monkeypatch.setattr(jeb_cli, "prepare_file_provenance", prepare)
     monkeypatch.setattr(jeb_cli, "user_installation_id", lambda _agent: "host-1")
@@ -332,7 +340,12 @@ def test_jeb_remote_cli_uploads_with_existing_provenance(
     )
 
     assert json.loads(capsys.readouterr().out) == {
+        "bytes": 5,
+        "format": "jeb-ingress-publication/v1",
         "path": "incoming/movie.mov",
+        "payload_sha256": "a" * 64,
+        "provenance_identity": "b" * 64,
+        "status": "accepted",
         "upload_id": "upload-1",
     }
     assert calls[0][0] == "prepare"
@@ -348,6 +361,27 @@ def test_jeb_remote_cli_uploads_with_existing_provenance(
         "current_state_id": state_id,
     }
     assert upload["journals"] == {journal_id: b"existing journal"}  # type: ignore[index]
+
+    calls.clear()
+    assert (
+        jeb_cli.main(
+            [
+                "upload",
+                str(source),
+                "--path",
+                "incoming/movie.mov",
+                "--provenance",
+                str(sidecar),
+            ]
+        )
+        == 0
+    )
+    human = capsys.readouterr().out
+    assert "Jeb ingress accepted" in human
+    assert "upload: upload-1" in human
+    assert "path: incoming/movie.mov" in human
+    assert "payload sha256: " + "a" * 64 in human
+    assert "provenance: " + "b" * 64 in human
 
 
 def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]

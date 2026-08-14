@@ -27,6 +27,7 @@ from jeb_cli_support.output import (
     format_source_result,
     format_sources,
     format_status,
+    format_upload_receipt,
 )
 from jeb_protocol import ATTEMPT_LIST_SORT_FIELDS, SOURCE_LIST_SORT_FIELDS, attempt_succeeded
 from riverhog_cli_support.output import (
@@ -229,7 +230,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
             journals=prepared.journals,
             chunk_mib=args.upload_chunk_mib,
         )
-    emit(result, json_mode=args.json)
+    emit(result if args.json else format_upload_receipt(result), json_mode=args.json)
     return 0
 
 

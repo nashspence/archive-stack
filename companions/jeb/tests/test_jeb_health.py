@@ -32,7 +32,7 @@ from riverhog_provenance import (
 
 from tests.operation_observer import OperationObserver, TimeoutNeutralTestClient
 
-API_HEADERS = {"Authorization": "Bearer jeb-development-api-token"}
+API_HEADERS = {"Authorization": "Bearer test-jeb-management-token"}
 
 
 def read_json(
@@ -95,6 +95,7 @@ def request_json(
 
 def jeb_env(tmp_path: Path) -> dict[str, str]:
     return {
+        "JEB_API_TOKEN": "test-jeb-management-token",
         "JEB_LANDING_DIR": str(tmp_path / "landing"),
         "JEB_STATE_DIR": str(tmp_path / "state"),
         "JEB_MUNCHY_URL": "https://munchy.invalid",
@@ -202,7 +203,7 @@ def test_jeb_official_client_covers_complete_positive_api_lifecycle(tmp_path: Pa
     transport = TestClient(application, headers=API_HEADERS)
     client = JebApiClient(
         "http://testserver",
-        token="jeb-development-api-token",
+        token="test-jeb-management-token",
         allow_insecure_http=True,
     )
     client._client = TimeoutNeutralTestClient(  # type: ignore[assignment]
@@ -257,6 +258,8 @@ def test_jeb_official_client_covers_complete_positive_api_lifecycle(tmp_path: Pa
     assert operation["state"] == "succeeded"
     assert client.list_operations(all_items=True)["total"] >= 1
 
+    source = tmp_path / "client-upload" / "note.txt"
+    write_stable_file(source)
     journal = create_observation_journal(
         source,
         relative_path="notes/note.txt",
@@ -313,6 +316,20 @@ def test_jeb_official_client_covers_complete_positive_api_lifecycle(tmp_path: Pa
                 204,
                 headers={"Upload-Offset": str(source.stat().st_size)},
             )
+        elif request.method == "GET" and request.url.path.startswith("/publications/"):
+            operation_id = "get_tus_ingress_publication"
+            response = httpx.Response(
+                200,
+                json={
+                    "format": "jeb-ingress-publication/v1",
+                    "status": "accepted",
+                    "upload_id": "00000000000040008000000000000469",
+                    "path": binding.path,
+                    "bytes": binding.bytes,
+                    "payload_sha256": binding.sha256,
+                    "provenance_identity": provenance_sha256,
+                },
+            )
         else:
             return httpx.Response(404)
         observer.record_external_server(
@@ -345,38 +362,12 @@ def test_jeb_official_client_covers_complete_positive_api_lifecycle(tmp_path: Pa
         )
     finally:
         ingress_client.close()
-    assert public_result["status"] == "uploaded"
+    assert public_result["status"] == "accepted"
     public_elapsed_ms = (time.perf_counter() - public_started) * 1000
     for operation_id in public_operation_ids:
         observer.record_external_client(operation_id, elapsed_ms=public_elapsed_ms)
 
     assert transport.get("/internal/ingress/tus/auth", headers=ingress_headers).status_code == 204
-    journal_response = transport.put(
-        (
-            "/internal/ingress/tus/provenance/00000000000040008000000000000469/journals/"
-            f"{journal_summary.journal_id}"
-        ),
-        content=journal,
-        headers={
-            **ingress_headers,
-            "Content-Type": "application/json-seq",
-            "X-Riverhog-Provenance-SHA256": journal_summary.journal_sha256,
-        },
-    )
-    assert journal_response.status_code == 200
-    binding_response = transport.put(
-        "/internal/ingress/tus/provenance/00000000000040008000000000000469/binding",
-        json={
-            "path": binding.path,
-            "bytes": binding.bytes,
-            "sha256": binding.sha256,
-            "status": binding.status,
-            "journal_id": binding.journal_id,
-            "current_state_id": binding.current_state_id,
-        },
-        headers=ingress_headers,
-    )
-    assert binding_response.status_code == 200
     hook = transport.post(
         "/internal/ingress/tus/hooks",
         json={
@@ -396,8 +387,35 @@ def test_jeb_official_client_covers_complete_positive_api_lifecycle(tmp_path: Pa
         headers=ingress_headers,
     )
     assert hook.status_code == 200
-    assert hook.json()["ChangeFileInfo"]["ID"]
-
+    upload_id = hook.json()["ChangeFileInfo"]["ID"]
+    journal_response = transport.put(
+        (f"/internal/ingress/tus/provenance/{upload_id}/journals/{journal_summary.journal_id}"),
+        content=journal,
+        headers={
+            **ingress_headers,
+            "Content-Type": "application/json-seq",
+            "X-Riverhog-Provenance-SHA256": journal_summary.journal_sha256,
+        },
+    )
+    assert journal_response.status_code == 200
+    binding_response = transport.put(
+        f"/internal/ingress/tus/provenance/{upload_id}/binding",
+        json={
+            "path": binding.path,
+            "bytes": binding.bytes,
+            "sha256": binding.sha256,
+            "status": binding.status,
+            "journal_id": binding.journal_id,
+            "current_state_id": binding.current_state_id,
+        },
+        headers=ingress_headers,
+    )
+    assert binding_response.status_code == 200
+    services.store.reject_ingress_publication(
+        upload_id,
+        code="qualification_complete",
+        message="qualification fixture closed its synthetic publication",
+    )
     events = client.list_lifecycle_events(limit=100)
     assert events.events
     restarted_services = create_services(config_from_env(env))
@@ -408,7 +426,7 @@ def test_jeb_official_client_covers_complete_positive_api_lifecycle(tmp_path: Pa
     )
     restarted_client = JebApiClient(
         "http://testserver",
-        token="jeb-development-api-token",
+        token="test-jeb-management-token",
         allow_insecure_http=True,
     )
     restarted_client._client = TimeoutNeutralTestClient(  # type: ignore[assignment]

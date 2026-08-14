@@ -12,10 +12,10 @@ from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 from http_api_contracts import parse_error_payload, safe_http_base_url
-from jeb_protocol import attempt_state, attempt_watch_finished
+from jeb_protocol import SourceIdError, attempt_state, attempt_watch_finished, source_id
 from lifecycle_events import EventPage
 from riverhog_provenance import FileProvenanceBinding, build_portable_provenance_set
-from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB, TusTransport
+from tus_transport import DEFAULT_TUS_UPLOAD_CHUNK_MIB, TusHttpError, TusTransport
 
 QueryValue = str | int | float | bool | None
 DEFAULT_INGRESS_URL = "http://127.0.0.1:1081"
@@ -57,6 +57,20 @@ def _timeout() -> float:
     if value <= 0:
         raise ValueError("JEB_HTTP_TIMEOUT_SECONDS must be a positive number")
     return value
+
+
+def _canonical_source(value: str) -> str:
+    try:
+        return source_id(value)
+    except SourceIdError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def _is_sha256(value: object) -> bool:
+    normalized = str(value or "")
+    return len(normalized) == 64 and all(
+        character in "0123456789abcdef" for character in normalized
+    )
 
 
 class JebApiClient:
@@ -182,6 +196,8 @@ class JebApiClient:
         query: str | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
+        if source is not None:
+            source = _canonical_source(source)
         params: dict[str, QueryValue] = {
             "page": page,
             "per_page": per_page,
@@ -292,6 +308,7 @@ class JebApiClient:
         process: bool = True,
         dry_run: bool = False,
     ) -> dict[str, Any]:
+        source = _canonical_source(source)
         return self._json(
             "POST",
             "/v1/archive-now",
@@ -330,9 +347,11 @@ class JebApiClient:
         return self._json("GET", "/v1/sources", params=params)
 
     def get_source(self, source_id: str) -> dict[str, Any]:
+        source_id = _canonical_source(source_id)
         return self._json("GET", f"/v1/sources/{quote(source_id, safe='')}")
 
     def create_source(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        _canonical_source(str(payload.get("id") or ""))
         return self._json("POST", "/v1/sources", json=payload)
 
     def update_source(
@@ -340,6 +359,7 @@ class JebApiClient:
         source_id: str,
         changes: Mapping[str, Any],
     ) -> dict[str, Any]:
+        source_id = _canonical_source(source_id)
         return self._json(
             "PATCH",
             f"/v1/sources/{quote(source_id, safe='')}",
@@ -347,9 +367,11 @@ class JebApiClient:
         )
 
     def enable_source(self, source_id: str) -> dict[str, Any]:
+        source_id = _canonical_source(source_id)
         return self._json("POST", f"/v1/sources/{quote(source_id, safe='')}/enable")
 
     def disable_source(self, source_id: str) -> dict[str, Any]:
+        source_id = _canonical_source(source_id)
         return self._json("POST", f"/v1/sources/{quote(source_id, safe='')}/disable")
 
     def rotate_source_credential(
@@ -358,6 +380,7 @@ class JebApiClient:
         *,
         credential: str | None = None,
     ) -> dict[str, Any]:
+        source_id = _canonical_source(source_id)
         payload = {} if credential is None else {"credential": credential}
         return self._json(
             "POST",
@@ -371,6 +394,7 @@ class JebApiClient:
         *,
         purge: bool,
     ) -> dict[str, Any]:
+        source_id = _canonical_source(source_id)
         return self._json(
             "POST",
             f"/v1/sources/{quote(source_id, safe='')}/removal-plan",
@@ -378,6 +402,7 @@ class JebApiClient:
         )
 
     def remove_source(self, source_id: str, *, challenge: str) -> dict[str, Any]:
+        source_id = _canonical_source(source_id)
         return self._json(
             "DELETE",
             f"/v1/sources/{quote(source_id, safe='')}",
@@ -397,8 +422,7 @@ class JebIngressClient:
         transport: httpx.BaseTransport | None = None,
         allow_insecure_http: bool | None = None,
     ) -> None:
-        if not source.strip() or source != source.strip():
-            raise ValueError("Jeb ingress source must be a non-empty canonical value")
+        _canonical_source(source)
         if not password:
             raise ValueError("Jeb ingress password is required")
         self.allow_insecure_http = (
@@ -493,19 +517,89 @@ class JebIngressClient:
                         content=content,
                         checksum_algorithm="sha256",
                     )
-                except (OSError, http.client.HTTPException, httpx.TransportError):
-                    resumed = self._tus.head_offset(upload_url)
+                except (OSError, http.client.HTTPException, httpx.TransportError, TusHttpError):
+                    try:
+                        resumed = self._tus.head_offset(upload_url)
+                    except (OSError, http.client.HTTPException, httpx.TransportError, TusHttpError):
+                        if offset + len(content) == size:
+                            offset = size
+                            break
+                        raise
+                    if resumed == -1 and offset + len(content) == size:
+                        offset = size
+                        break
                     if resumed < offset or resumed > offset + len(content):
                         raise RuntimeError("Jeb TUS retry returned an invalid offset") from None
                     offset = resumed
                     stream.seek(offset)
-        return {
-            "status": "uploaded",
-            "upload_id": upload_id,
-            "path": relative_path,
-            "bytes": size,
-            "provenance": dict(binding),
-        }
+        receipt = self.wait_for_publication(upload_id)
+        if (
+            str(receipt.get("format") or "") != "jeb-ingress-publication/v1"
+            or str(receipt.get("upload_id") or "") != upload_id
+            or str(receipt.get("path") or "") != relative_path
+            or int(receipt.get("bytes") or -1) != size
+            or str(receipt.get("payload_sha256") or "") != normalized_binding.sha256
+        ):
+            raise JebApiError(
+                "Jeb accepted receipt does not match the submitted payload",
+                code="invalid_response",
+            )
+        return receipt
+
+    def wait_for_publication(
+        self,
+        upload_id: str,
+        *,
+        interval: float = 1.0,
+    ) -> dict[str, Any]:
+        if interval <= 0:
+            raise ValueError("Jeb publication poll interval must be positive")
+        url = urljoin(
+            self.base_url.rstrip("/") + "/",
+            f"publications/{quote(upload_id, safe='')}",
+        )
+        while True:
+            try:
+                response = self._http.get(url)
+            except httpx.TransportError:
+                time.sleep(interval)
+                continue
+            if 500 <= response.status_code < 600:
+                time.sleep(interval)
+                continue
+            self._raise_ingress_error(response)
+            receipt = self._ingress_json(response)
+            if (
+                str(receipt.get("format") or "") != "jeb-ingress-publication/v1"
+                or str(receipt.get("upload_id") or "") != upload_id
+            ):
+                raise JebApiError(
+                    "Jeb ingress returned an invalid publication receipt",
+                    code="invalid_response",
+                )
+            status = str(receipt.get("status") or "")
+            if status == "accepted":
+                if not _is_sha256(receipt.get("provenance_identity")):
+                    raise JebApiError(
+                        "Jeb accepted receipt has no valid provenance identity",
+                        code="invalid_response",
+                    )
+                return receipt
+            if status == "rejected":
+                error = receipt.get("error")
+                if isinstance(error, Mapping):
+                    code = str(error.get("code") or "ingress_rejected")
+                    message = str(error.get("message") or "Jeb rejected the ingress publication")
+                else:
+                    code = "ingress_rejected"
+                    message = "Jeb rejected the ingress publication"
+                raise JebApiError(message, code=code, details={"upload_id": upload_id})
+            if status != "pending":
+                raise JebApiError(
+                    "Jeb ingress returned an invalid publication state",
+                    code="invalid_response",
+                )
+            time.sleep(interval)
 
     def put_provenance_journal(
         self,

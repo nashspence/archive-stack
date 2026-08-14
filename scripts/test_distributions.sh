@@ -158,7 +158,7 @@ smoke_workspace_distribution \
 smoke_workspace_distribution \
   jeb-server \
   'jeb_server-*.whl' \
-  'import importlib.metadata as m; from jeb_api.app import create_app; app = create_app(); assert app.version == m.version("jeb-server"); assert "SourceCreateIn" in app.openapi()["components"]["schemas"]' \
+  'import importlib.metadata as m; from jeb_api.app import JebServiceState, create_app; from jeb_api.composition import config_from_env, create_services; config = config_from_env({"JEB_API_TOKEN": "distribution-smoke-management-token", "JEB_MUNCHY_URL": "https://munchy.invalid"}); app = create_app(JebServiceState(services=create_services(config))); assert app.version == m.version("jeb-server"); assert "SourceCreateIn" in app.openapi()["components"]["schemas"]' \
   jeb-service
 smoke_workspace_distribution \
   munchy-client \

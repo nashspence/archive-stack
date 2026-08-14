@@ -224,8 +224,10 @@ def load_portable_provenance_set(index_path: Path) -> ValidatedProvenanceIndex:
     return validate_portable_provenance_set(index_path.read_bytes(), journals)
 
 
-def remove_ingress_provenance(payload: Path) -> None:
-    shutil.rmtree(ingress_provenance_path(payload), ignore_errors=True)
+def remove_staged_ingress_provenance(config: JebIngressConfig, upload_id: str) -> None:
+    root = _upload_root(config, upload_id)
+    if root.exists():
+        shutil.rmtree(root)
 
 
 def _upload_root(config: JebIngressConfig, upload_id: str) -> Path:

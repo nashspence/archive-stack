@@ -69,6 +69,9 @@ def config_from_env(
     targets: Mapping[str, TargetConfig] | None = None,
 ) -> JebConfig:
     values = os.environ if env is None else env
+    management_api_token = required_env(values, "JEB_API_TOKEN")
+    if management_api_token == "jeb-development-api-token":
+        raise ValueError("JEB_API_TOKEN must not use the retired development credential")
     landing_dir = Path(
         os.path.expandvars(env_value_from(values, "JEB_LANDING_DIR", "/landing") or "/landing")
     )
@@ -183,6 +186,7 @@ def config_from_env(
     )
 
     return JebConfig(
+        management_api_token=management_api_token,
         service=service,
         ingress=ingress,
         events=events,

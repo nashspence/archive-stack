@@ -15,6 +15,7 @@ from jeb_core.persistence.schema import upgrade_state
 def jeb_env(tmp_path: Path, *, sources: str = "phone") -> dict[str, str]:
     return {
         "TEST_SOURCE_IDS": sources,
+        "JEB_API_TOKEN": "test-jeb-management-token",
         "JEB_LANDING_DIR": str(tmp_path / "landing"),
         "JEB_STATE_DIR": str(tmp_path / "state"),
         "JEB_MUNCHY_URL": "https://munchy.invalid",
@@ -201,7 +202,7 @@ def test_jeb_state_commands_report_and_verify_the_current_revision(
     verified = json.loads(capsys.readouterr().out)
 
     assert empty["condition"] == "empty"
-    assert upgraded["current_revision"] == "v1_0001"
+    assert upgraded["current_revision"] == "v1_0002"
     assert verified["condition"] == "current"
 
 
@@ -275,28 +276,28 @@ def test_jeb_attempts_json_pages_sorts_and_filters(
     assert ids == [attempt["attempt_id"] for attempt in all_attempts["attempts"]]
 
 
-def test_jeb_attempts_source_filter_treats_slug_as_literal(
+def test_jeb_attempts_source_filter_uses_exact_canonical_slug(
     tmp_path: Path,
     capsys,
     monkeypatch,
 ) -> None:
-    env = enroll(jeb_env(tmp_path, sources="front_door,frontxdoor"))
+    env = enroll(jeb_env(tmp_path, sources="front-door,frontxdoor"))
     for key, value in env.items():
         monkeypatch.setenv(key, value)
-    write_stable_file(tmp_path / "landing" / "front_door" / "note.txt", b"under")
+    write_stable_file(tmp_path / "landing" / "front-door" / "note.txt", b"hyphen")
     write_stable_file(tmp_path / "landing" / "frontxdoor" / "note.txt", b"plain")
-    assert jeb_main(["archive-now", "--source", "front_door", "--no-process"]) == 0
+    assert jeb_main(["archive-now", "--source", "front-door", "--no-process"]) == 0
     assert jeb_main(["archive-now", "--source", "frontxdoor", "--no-process"]) == 0
     capsys.readouterr()
 
     assert (
-        jeb_main(["attempt", "list", "--resolution", "all", "--source", "front_door", "--json"])
+        jeb_main(["attempt", "list", "--resolution", "all", "--source", "front-door", "--json"])
         == 0
     )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["total"] == 1
-    assert payload["attempts"][0]["source_id"] == "front_door"
+    assert payload["attempts"][0]["source_id"] == "front-door"
 
 
 def test_jeb_status_json_reports_sources_backlog_and_unresolved_attempts(
@@ -315,12 +316,12 @@ def test_jeb_status_json_reports_sources_backlog_and_unresolved_attempts(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["sources"][0]["id"] == "phone"
-    assert payload["sources"][0]["eligible_files"] == 1
-    assert payload["sources"][0]["eligible_bytes"] == 5
+    assert payload["sources"][0]["eligible_files"] == 0
+    assert payload["sources"][0]["eligible_bytes"] == 0
     assert payload["batches"]["unresolved"] == 1
     assert payload["batches"]["resolved"] == 0
-    assert payload["batches"]["states"] == {"batching": 1}
+    assert payload["batches"]["states"] == {"batched": 1}
     assert payload["unresolved_attempts"]["total"] == 1
-    assert payload["unresolved_attempts"]["attempts"][0]["state"] == "batching"
+    assert payload["unresolved_attempts"]["attempts"][0]["state"] == "batched"
     assert payload["target_preflight_failures"]["total"] == 0
     assert payload["incomplete_tus_uploads"]["total"] == 0

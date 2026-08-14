@@ -34,8 +34,10 @@ from jeb_core.runtime.config import (
 from jeb_core.runtime.service import JebRuntime
 from jeb_core.services.attempts import JebAttemptService
 from jeb_core.services.events import JebEventService
+from jeb_core.services.ingress import JebIngressPublicationService
 from jeb_core.services.operations import JebServiceOperations
 from jeb_core.services.sources import JebSourceService
+from jeb_core.source_paths import SourceRootResolver
 from lifecycle_events import SQLiteEventCursorStore, SQLiteLifecycleEventLog
 
 DEFAULT_MUNCHY_BASE_URL = "http://127.0.0.1:8092"
@@ -48,6 +50,7 @@ class JebServices:
     events: JebEventService
     operations: JebServiceOperations
     sources: JebSourceService
+    ingress: JebIngressPublicationService
     attempts: JebAttemptService
     runtime: JebRuntime
     source_registry: SourceRegistry
@@ -133,9 +136,17 @@ def create_services(
     store = SQLiteJebStore(config)
     event_log = SQLiteLifecycleEventLog(store.connect)
     event_cursors = SQLiteEventCursorStore(store.connect)
+    source_roots = SourceRootResolver(
+        config.ingress.landing_dir,
+        managed_paths=(
+            config.ingress.tus_staging_dir,
+            config.service.batch_dir,
+            config.service.preflight_repair_corrupt_dir,
+        ),
+    )
     source_registry = SourceRegistry(
         database=config.service.state_db,
-        landing_dir=config.ingress.landing_dir,
+        source_roots=source_roots,
         ftp_projection=config.ingress.ftp_projection,
         ftp_uid=config.ingress.ftp_uid,
         ftp_gid=config.ingress.ftp_gid,
@@ -151,6 +162,7 @@ def create_services(
         return holder["services"]
 
     events = JebEventService(config, store, event_log)
+    ingress = JebIngressPublicationService(config, store, source_registry)
     operations = JebServiceOperations(store, initialize)
     sources = JebSourceService(
         config,
@@ -161,6 +173,7 @@ def create_services(
         current_time,
         target_context,
         initialize,
+        ingress.cancel_source,
     )
     attempts = JebAttemptService(
         config,
@@ -178,6 +191,7 @@ def create_services(
         events,
         sources,
         attempts,
+        ingress,
         source_registry,
         adapters,
         operation_lock,
@@ -191,6 +205,7 @@ def create_services(
         events=events,
         operations=operations,
         sources=sources,
+        ingress=ingress,
         attempts=attempts,
         runtime=runtime,
         source_registry=source_registry,
