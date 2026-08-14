@@ -95,3 +95,68 @@ def test_collection_tag_add_and_remove_match_json_data_model(monkeypatch) -> Non
     assert removed.exit_code == 0
     assert json.loads(removed.stdout)["tags"] == ["reviewed"]
     assert calls == [("add", 41, "reviewed"), ("remove", 41, "photos")]
+    added_human = runner.invoke(app, ["collection", "tag", "add", "41", "reviewed"])
+    removed_human = runner.invoke(app, ["collection", "tag", "remove", "41", "photos"])
+    assert added_human.exit_code == removed_human.exit_code == 0
+    assert "collection 41" in added_human.stdout
+    assert "collection 41" in removed_human.stdout
+
+
+def test_tag_and_collection_tag_reads_have_human_json_parity(monkeypatch) -> None:
+    tag = {
+        "id": "photos",
+        "created_by_app": "operator",
+        "created_by_key_id": "key-one",
+        "created_at": "2026-08-13T00:00:00Z",
+        "collections": 1,
+    }
+    collection_tags = {
+        "collection_id": 41,
+        "metadata_revision": 2,
+        "record_etag": "etag-2",
+        "tags": ["photos"],
+    }
+
+    class FakeClient:
+        def create_tag(self, value: str) -> dict[str, object]:
+            assert value == "photos"
+            return tag
+
+        def get_tag(self, value: str) -> dict[str, object]:
+            assert value == "photos"
+            return tag
+
+        def list_tags(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "tags": [tag],
+            }
+
+        def get_collection_tags(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 41
+            return collection_tags
+
+        def replace_collection_tags(self, collection_id: int, tags: list[str]) -> dict[str, object]:
+            assert collection_id == 41
+            assert tags == ["photos"]
+            return collection_tags
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+
+    cases = (
+        (["tag", "create", "photos"], "photos"),
+        (["tag", "show", "photos"], "photos"),
+        (["tag", "list"], "photos"),
+        (["collection", "tag", "list", "41"], "photos"),
+        (["collection", "tag", "replace", "41", "--tag", "photos"], "photos"),
+    )
+    for arguments, identity in cases:
+        human = runner.invoke(app, arguments)
+        structured = runner.invoke(app, [*arguments, "--json"])
+        assert human.exit_code == 0, human.output
+        assert structured.exit_code == 0, structured.output
+        assert identity in human.stdout
+        assert identity in json.dumps(json.loads(structured.stdout), sort_keys=True)

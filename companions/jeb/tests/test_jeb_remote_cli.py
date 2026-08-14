@@ -249,6 +249,8 @@ def test_jeb_remote_cli_calls_api_for_status(capsys, monkeypatch) -> None:  # ty
     assert fake.calls == [("status", {"include_backlog": False})]
     payload = json.loads(capsys.readouterr().out)
     assert payload["batches"]["total"] == 0
+    assert jeb_cli.main(["status", "--no-backlog"]) == 0
+    assert "Jeb status" in capsys.readouterr().out
 
 
 def test_jeb_remote_cli_lists_lifecycle_events(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -262,6 +264,8 @@ def test_jeb_remote_cli_lists_lifecycle_events(capsys, monkeypatch) -> None:  # 
     assert "events: 1" in output
     assert "io.riverhog.jeb.attempt.succeeded" in output
     assert "next cursor: 8" in output
+    assert jeb_cli.main(["event", "list", "--after", "3", "--limit", "5", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["next_cursor"] == "8"
 
 
 def test_jeb_remote_cli_uploads_with_existing_provenance(
@@ -371,6 +375,11 @@ def test_jeb_remote_cli_calls_api_for_attempts(capsys, monkeypatch) -> None:  # 
         )
     ]
     assert "Jeb attempts: 0 (page 1/0)" in capsys.readouterr().out
+    assert (
+        jeb_cli.main(["attempt", "list", "--resolution", "all", "--source", "camera", "--json"])
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["attempts"] == []
 
 
 def test_jeb_remote_cli_shows_one_actionable_attempt(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -385,6 +394,8 @@ def test_jeb_remote_cli_shows_one_actionable_attempt(capsys, monkeypatch) -> Non
     assert "Jeb attempt attempt-1" in output
     assert "source: camera" in output
     assert "error: target unavailable" in output
+    assert jeb_cli.main(["attempt", "show", "attempt-1", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["attempt_id"] == "attempt-1"
 
 
 def test_jeb_remote_cli_watches_only_jeb_attempt_state(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -424,12 +435,22 @@ def test_jeb_remote_cli_cancels_attempt_and_inspects_operations(capsys, monkeypa
 
     assert jeb_cli.main(["attempt", "cancel", "attempt-1", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["state"] == "canceled"
+    assert jeb_cli.main(["attempt", "cancel", "attempt-1"]) == 0
+    assert "canceled" in capsys.readouterr().out
     assert jeb_cli.main(["operation", "list", "--all", "--ids"]) == 0
     assert capsys.readouterr().out == "op-once\n"
+    assert jeb_cli.main(["operation", "list"]) == 0
+    assert "op-once" in capsys.readouterr().out
+    assert jeb_cli.main(["operation", "list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["operations"][0]["id"] == "op-once"
     assert jeb_cli.main(["operation", "show", "op-once"]) == 0
     assert "Jeb operation op-once" in capsys.readouterr().out
+    assert jeb_cli.main(["operation", "show", "op-once", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["id"] == "op-once"
     assert jeb_cli.main(["operation", "watch", "op-once", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["state"] == "succeeded"
+    assert jeb_cli.main(["operation", "watch", "op-once"]) == 0
+    assert "op-once" in capsys.readouterr().out
 
 
 def test_jeb_remote_cli_lists_ids_and_forwards_list_filters(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -487,6 +508,8 @@ def test_jeb_remote_cli_formats_source_page(capsys, monkeypatch) -> None:  # typ
     output = capsys.readouterr().out
     assert "Jeb sources: 1 (page 1/1)" in output
     assert "- camera  state=enabled  adapters=ftp  target=munchy" in output
+    assert jeb_cli.main(["source", "list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["sources"][0]["id"] == "camera"
 
 
 def test_jeb_remote_cli_source_show_has_human_and_json_projections(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -529,11 +552,29 @@ def test_jeb_remote_cli_source_mutations_have_human_and_json_projections(
         == 0
     )
     assert "Jeb source camera" in capsys.readouterr().out
+    assert (
+        jeb_cli.main(
+            [
+                "source",
+                "set",
+                "camera",
+                "--target-config",
+                "template_id=camera-review",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["id"] == "camera"
 
     assert jeb_cli.main(["source", "enable", "camera", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["enabled"] is True
+    assert jeb_cli.main(["source", "enable", "camera"]) == 0
+    assert "state: enabled" in capsys.readouterr().out
     assert jeb_cli.main(["source", "disable", "camera"]) == 0
     assert "state: disabled" in capsys.readouterr().out
+    assert jeb_cli.main(["source", "disable", "camera", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["enabled"] is False
 
     assert jeb_cli.main(["source", "credential", "camera"]) == 0
     assert "credential: generated" in capsys.readouterr().out
@@ -544,6 +585,8 @@ def test_jeb_remote_cli_source_mutations_have_human_and_json_projections(
     removal = capsys.readouterr().out
     assert "removed Jeb source camera" in removal
     assert "purged: false" in removal
+    assert jeb_cli.main(["source", "remove", "camera", "--confirm", "challenge", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["source"] == "camera"
 
 
 def test_jeb_remote_cli_attempt_ids_request_all_matches(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -575,6 +618,12 @@ def test_jeb_remote_cli_calls_api_for_actions(capsys, monkeypatch) -> None:  # t
     assert "Jeb config: ok" in output
     assert "jeb scheduler pass: started" in output
     assert "jeb archive: started" in output
+    assert jeb_cli.main(["check-config", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+    assert jeb_cli.main(["once", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "started"
+    assert jeb_cli.main(["archive-now", "--source", "camera", "--no-process", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["source"] == "camera"
 
 
 def test_jeb_remote_cli_reports_started_archive_operation(capsys, monkeypatch) -> None:  # type: ignore[no-untyped-def]

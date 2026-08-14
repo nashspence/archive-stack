@@ -95,6 +95,24 @@ def test_collection_upload_dry_run_hashes_without_opening_an_api_client(
     assert payload["tags"] == ["my-trip"]
     assert payload["archive_store"] == "b2"
     assert payload["files_preview"][0]["sha256"] == hashlib.sha256(b"video").hexdigest()
+    human = RUNNER.invoke(
+        riverhog_main.app,
+        [
+            "collection",
+            "upload",
+            "start",
+            str(root),
+            "--tag",
+            "my-trip",
+            "--idempotency-key",
+            "test-upload",
+            "--archive-store",
+            "b2",
+            "--dry-run",
+        ],
+    )
+    assert human.exit_code == 0
+    assert "collection upload dry-run" in human.stdout
 
 
 def test_large_source_hash_includes_server_layout_part_digests(tmp_path: Path) -> None:
@@ -419,3 +437,57 @@ def test_plain_upload_progress_describes_direct_transport() -> None:
     assert "1/2 files" in line
     assert "5 B / 10 B" in line
     assert "2 worker(s)" in line
+
+
+def test_collection_upload_control_commands_have_human_json_parity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def upload(state: str = "finalized") -> dict[str, object]:
+        return {
+            "collection_id": COLLECTION_ID,
+            "state": state,
+            "files_total": 2,
+            "files_uploaded": 2,
+            "bytes_total": 10,
+            "tags": ["my-trip"],
+            "created_at": "2026-08-13T00:00:00Z",
+        }
+
+    class Api:
+        def list_collection_upload_sessions(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "page": 1,
+                "pages": 1,
+                "per_page": 25,
+                "total": 1,
+                "uploads": [upload()],
+            }
+
+        def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            return upload()
+
+        def cancel_collection_upload_session(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            return upload("canceled")
+
+    monkeypatch.setattr(riverhog_main, "client", Api)
+
+    cases = (
+        (["collection", "upload", "list"], "finalized"),
+        (["collection", "upload", "show", str(COLLECTION_ID)], "finalized"),
+        (["collection", "upload", "cancel", str(COLLECTION_ID)], "canceled"),
+        (["collection", "upload", "watch", str(COLLECTION_ID)], "finalized"),
+    )
+    for arguments, state in cases:
+        human = RUNNER.invoke(riverhog_main.app, arguments)
+        structured = RUNNER.invoke(riverhog_main.app, [*arguments, "--json"])
+        assert human.exit_code == 0, human.output
+        assert structured.exit_code == 0, structured.output
+        assert str(COLLECTION_ID) in human.stdout
+        assert state in human.stdout
+        payload = json.loads(structured.stdout)
+        if "uploads" in payload:
+            payload = payload["uploads"][0]
+        assert payload["collection_id"] == COLLECTION_ID
+        assert payload["state"] == state

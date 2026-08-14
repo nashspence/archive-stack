@@ -41,6 +41,13 @@ def test_app_list_matches_pipeable_list_conventions(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert result.stdout == "review-station\n"
+    human = runner.invoke(app, ["app", "list", "--query", "review", "--active", "--all"])
+    structured = runner.invoke(
+        app, ["app", "list", "--query", "review", "--active", "--all", "--json"]
+    )
+    assert human.exit_code == structured.exit_code == 0
+    assert "review-station" in human.stdout
+    assert json.loads(structured.stdout)["apps"][0]["name"] == "review-station"
 
 
 def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> None:
@@ -91,6 +98,24 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
 
     assert result.exit_code == 0
     assert json.loads(result.stdout)["token"] == "rh_app_secret"
+    human = runner.invoke(
+        app,
+        [
+            "app",
+            "key",
+            "create",
+            "local",
+            "--allow",
+            "catalog:read=tag:photos",
+            "--allow",
+            "retrieval:manage=tag:photos",
+            "--expires-in",
+            "30d",
+        ],
+    )
+    assert human.exit_code == 0
+    assert "0123456789abcdef" in human.stdout
+    assert "rh_app_secret" in human.stdout
 
 
 def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
@@ -116,6 +141,14 @@ def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert result.stdout == "0123456789abcdef\n"
+    human = runner.invoke(app, ["app", "key", "list", "local", "--inactive", "--all"])
+    structured = runner.invoke(
+        app, ["app", "key", "list", "local", "--inactive", "--all", "--json"]
+    )
+    assert human.exit_code == structured.exit_code == 0
+    assert "0123456789abcdef" in human.stdout
+    assert json.loads(structured.stdout)["keys"][0]["id"] == "0123456789abcdef"
+    assert "token" not in structured.stdout
 
 
 def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
@@ -169,7 +202,19 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                 "per_page": 1,
                 "total": 1,
                 "pages": 1,
-                "quotas": [{"id": "key-one"}],
+                "quotas": [
+                    {
+                        "id": "key-one",
+                        "app": "local",
+                        "key_id": "key-one",
+                        "key_status": "active",
+                        "monthly_bytes": 1024,
+                        "accounted_bytes": 0,
+                        "reserved_bytes": 0,
+                        "remaining_bytes": 1024,
+                        "resets_at": "2026-09-01T00:00:00Z",
+                    }
+                ],
             }
 
         def remove_app_key_access(
@@ -237,6 +282,69 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     assert quotas.exit_code == 0
     assert quotas.stdout == "key-one\n"
 
+    access_json = runner.invoke(
+        app,
+        [
+            "app",
+            "key",
+            "access",
+            "list",
+            "--app",
+            "local",
+            "--key",
+            "key-one",
+            "--resource",
+            "tag:photos",
+            "--active",
+            "--query",
+            "photos",
+            "--all",
+            "--json",
+        ],
+    )
+    quota_human = runner.invoke(
+        app,
+        [
+            "app",
+            "key",
+            "quota",
+            "list",
+            "--query",
+            "review",
+            "--app",
+            "local",
+            "--active",
+            "--sort",
+            "remaining_bytes",
+            "--order",
+            "desc",
+            "--all",
+        ],
+    )
+    quota_json = runner.invoke(
+        app,
+        [
+            "app",
+            "key",
+            "quota",
+            "list",
+            "--query",
+            "review",
+            "--app",
+            "local",
+            "--active",
+            "--sort",
+            "remaining_bytes",
+            "--order",
+            "desc",
+            "--all",
+            "--json",
+        ],
+    )
+    assert json.loads(access_json.stdout)["access"][0]["key_id"] == "key-one"
+    assert "key-one" in quota_human.stdout
+    assert json.loads(quota_json.stdout)["quotas"][0]["id"] == "key-one"
+
     selectors = runner.invoke(
         app,
         [
@@ -272,6 +380,12 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     assert selectors.stdout == "local::key-one::catalog:read=tag:photos\n"
     assert removed.exit_code == 0
     assert json.loads(removed.stdout)["access"] == []
+    removed_human = runner.invoke(
+        app,
+        ["app", "key", "access", "remove", "local::key-one::catalog:read=tag:photos"],
+    )
+    assert removed_human.exit_code == 0
+    assert "local" in removed_human.stdout
 
 
 def test_quota_ids_require_an_application_for_actionable_identity() -> None:
@@ -292,7 +406,16 @@ def test_quota_assignment_accepts_human_binary_sizes_and_explicit_unlimited(monk
         ) -> dict[str, object]:
             assert (app_name, key_id) == ("local", "key-one")
             assigned.append(monthly_bytes)
-            return {"monthly_bytes": monthly_bytes}
+            return {
+                "app": app_name,
+                "key_id": key_id,
+                "key_status": "active",
+                "monthly_bytes": monthly_bytes,
+                "accounted_bytes": 0,
+                "reserved_bytes": 0,
+                "remaining_bytes": monthly_bytes,
+                "resets_at": "2026-09-01T00:00:00Z",
+            }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
@@ -307,4 +430,100 @@ def test_quota_assignment_accepts_human_binary_sizes_and_explicit_unlimited(monk
 
     assert finite.exit_code == 0
     assert unlimited.exit_code == 0
-    assert assigned == [500 * 1024**3, None]
+    finite_human = runner.invoke(app, ["app", "key", "quota", "set", "local", "key-one", "500GiB"])
+    assert finite_human.exit_code == 0
+    assert "local" in finite_human.stdout
+    assert assigned == [500 * 1024**3, None, 500 * 1024**3]
+
+
+def test_app_key_policy_mutations_have_human_json_parity(monkeypatch) -> None:
+    access = [{"permission": "catalog:read", "resource": "tag:photos"}]
+    quota = {
+        "app": "local",
+        "key_id": "key-one",
+        "key_status": "active",
+        "monthly_bytes": 1024,
+        "accounted_bytes": 0,
+        "reserved_bytes": 0,
+        "remaining_bytes": 1024,
+        "resets_at": "2026-09-01T00:00:00Z",
+    }
+
+    class FakeClient:
+        def replace_app_key_access(
+            self, app_name: str, key_id: str, *, access: list[dict[str, str]]
+        ) -> dict[str, object]:
+            return {"app": app_name, "key_id": key_id, "access": access}
+
+        def add_app_key_access(
+            self,
+            app_name: str,
+            key_id: str,
+            *,
+            permission: str,
+            resource: str,
+        ) -> dict[str, object]:
+            return {
+                "app": app_name,
+                "key_id": key_id,
+                "access": [{"permission": permission, "resource": resource}],
+            }
+
+        def revoke_app_key(self, app_name: str, key_id: str) -> dict[str, object]:
+            return {
+                "app": app_name,
+                "id": key_id,
+                "status": "revoked",
+                "revoked_at": "2026-08-13T00:00:00Z",
+            }
+
+        def rotate_app_key(self, app_name: str, key_id: str) -> dict[str, object]:
+            return {
+                "app": app_name,
+                "id": key_id,
+                "access": access,
+                "token": "one-time-rotated-token",
+            }
+
+        def get_download_quota(self) -> dict[str, object]:
+            return dict(quota)
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+
+    cases = (
+        (
+            [
+                "app",
+                "key",
+                "access",
+                "set",
+                "local",
+                "key-one",
+                "--allow",
+                "catalog:read=tag:photos",
+            ],
+            "key-one",
+        ),
+        (
+            [
+                "app",
+                "key",
+                "access",
+                "add",
+                "local",
+                "key-one",
+                "catalog:read=tag:photos",
+            ],
+            "key-one",
+        ),
+        (["app", "key", "revoke", "local", "key-one"], "key-one"),
+        (["app", "key", "rotate", "local", "key-one"], "key-one"),
+        (["app", "key", "quota", "show"], "key-one"),
+    )
+    for arguments, identity in cases:
+        human = runner.invoke(app, arguments)
+        structured = runner.invoke(app, [*arguments, "--json"])
+        assert human.exit_code == 0, human.output
+        assert structured.exit_code == 0, structured.output
+        assert identity in human.stdout
+        assert identity in json.dumps(json.loads(structured.stdout), sort_keys=True)
