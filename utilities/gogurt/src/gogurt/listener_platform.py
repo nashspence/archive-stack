@@ -293,7 +293,7 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
             f"$task = $service.GetFolder('\\').GetTask('{WINDOWS_TASK_NAME}'); "
             "[Console]::Out.Write([int]$task.State); "
             "exit 0 "
-            "} catch [System.Runtime.InteropServices.COMException] { "
+            "} catch { "
             f"if ($_.Exception.HResult -eq {WINDOWS_TASK_NOT_FOUND_HRESULT}) {{ exit "
             f"{WINDOWS_TASK_NOT_FOUND_EXIT} }}; "
             "throw "
