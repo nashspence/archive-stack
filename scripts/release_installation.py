@@ -13,9 +13,14 @@ import subprocess
 import tarfile
 import tempfile
 import tomllib
+import urllib.parse
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
+
+from packaging.markers import Marker, default_environment
+from packaging.tags import Tag, compatible_tags, cpython_tags, mac_platforms
+from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 
 INSTALLATION_SCHEMA = "riverhog-installation/v1"
 END_USER_ROOTS = (
@@ -264,6 +269,125 @@ def _write_component_lock(
     return sorted(components, key=lambda item: str(item["name"]))
 
 
+def _marker_environment(platform: str, python_version: str) -> dict[str, str]:
+    environment = cast(dict[str, str], dict(default_environment()))
+    environment.update(
+        {
+            "implementation_name": "cpython",
+            "implementation_version": python_version,
+            "python_full_version": python_version,
+            "python_version": ".".join(python_version.split(".")[:2]),
+        }
+    )
+    if platform == "linux-x64":
+        environment.update(
+            {
+                "os_name": "posix",
+                "platform_machine": "x86_64",
+                "platform_system": "Linux",
+                "sys_platform": "linux",
+            }
+        )
+    elif platform == "macos-arm64":
+        environment.update(
+            {
+                "os_name": "posix",
+                "platform_machine": "arm64",
+                "platform_system": "Darwin",
+                "sys_platform": "darwin",
+            }
+        )
+    elif platform == "windows-x64":
+        environment.update(
+            {
+                "os_name": "nt",
+                "platform_machine": "AMD64",
+                "platform_system": "Windows",
+                "sys_platform": "win32",
+            }
+        )
+    else:  # pragma: no cover - guarded by the release platform contract
+        raise InstallationError(f"unsupported installation platform: {platform}")
+    return environment
+
+
+def _platform_tags(platform: str) -> list[Tag]:
+    if platform == "linux-x64":
+        platform_tags = [
+            *(f"manylinux_2_{minor}_x86_64" for minor in range(39, 16, -1)),
+            "manylinux2014_x86_64",
+            "manylinux2010_x86_64",
+            "manylinux1_x86_64",
+            "linux_x86_64",
+        ]
+    elif platform == "macos-arm64":
+        platform_tags = list(mac_platforms(version=(15, 0), arch="arm64"))
+    elif platform == "windows-x64":
+        platform_tags = ["win_amd64"]
+    else:  # pragma: no cover - guarded by the release platform contract
+        raise InstallationError(f"unsupported installation platform: {platform}")
+    return [
+        *cpython_tags(
+            python_version=(3, 12),
+            abis=["cp312", "abi3", "none"],
+            platforms=platform_tags,
+        ),
+        *compatible_tags(
+            python_version=(3, 12),
+            interpreter="cp312",
+            platforms=platform_tags,
+        ),
+    ]
+
+
+def _platform_requirements(
+    lock_path: Path,
+    *,
+    platform: str,
+    python_version: str,
+) -> list[dict[str, str]]:
+    lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    environment = _marker_environment(platform, python_version)
+    supported = {tag: rank for rank, tag in enumerate(_platform_tags(platform))}
+    requirements: list[dict[str, str]] = []
+    for package in lock["packages"]:
+        marker = package.get("marker")
+        if marker is not None and not Marker(str(marker)).evaluate(environment=environment):
+            continue
+        candidates: list[tuple[int, dict[str, Any]]] = []
+        for wheel in package.get("wheels", []):
+            url = str(wheel["url"])
+            filename = PurePosixPath(urllib.parse.urlsplit(url).path).name
+            try:
+                _name, _version, _build, tags = parse_wheel_filename(filename)
+            except InvalidWheelFilename as exc:
+                raise InstallationError(
+                    f"PEP 751 lock contains an invalid wheel: {filename}"
+                ) from exc
+            ranks = [supported[tag] for tag in tags if tag in supported]
+            if ranks:
+                candidates.append((min(ranks), wheel))
+        if not candidates:
+            raise InstallationError(
+                f"PEP 751 lock has no {platform} CPython 3.12 wheel for {package['name']}"
+            )
+        wheel = min(candidates, key=lambda item: item[0])[1]
+        digest = str(wheel.get("hashes", {}).get("sha256", ""))
+        if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise InstallationError(f"PEP 751 wheel has no SHA-256: {package['name']}")
+        url = str(wheel["url"])
+        requirements.append(
+            {
+                "name": normalize_name(str(package["name"])),
+                "version": str(package["version"]),
+                "url": url,
+                "sha256": digest,
+                "requirement": (f"{normalize_name(str(package['name']))} @ {url}#sha256={digest}"),
+            }
+        )
+    return sorted(requirements, key=lambda item: item["name"])
+
+
 def _simple_project_page(name: str, wheel: dict[str, Any], asset_base_url: str) -> bytes:
     href = html.escape(
         asset_base_url + str(wheel["asset"]) + "#sha256=" + str(wheel["sha256"]),
@@ -346,7 +470,14 @@ def write_index_snapshot(
 
 
 def _posix_commands(
-    *, package: str, version: str, lock_name: str, lock_url: str, index_url: str, python: str
+    *,
+    package: str,
+    version: str,
+    lock_name: str,
+    lock_url: str,
+    index_url: str,
+    python: str,
+    requirements: list[str],
 ) -> list[str]:
     install = [
         "uv",
@@ -367,6 +498,8 @@ def _posix_commands(
         "--managed-python",
         "--no-build",
     ]
+    for requirement in requirements:
+        install.extend(("--with", requirement))
     download = (
         "curl --fail --location --proto '=https' --tlsv1.2 "
         f"--output {shlex.quote(lock_name)} {shlex.quote(lock_url)}"
@@ -384,7 +517,14 @@ def _powershell_quote(value: str) -> str:
 
 
 def _windows_commands(
-    *, package: str, version: str, lock_name: str, lock_url: str, index_url: str, python: str
+    *,
+    package: str,
+    version: str,
+    lock_name: str,
+    lock_url: str,
+    index_url: str,
+    python: str,
+    requirements: list[str],
 ) -> list[str]:
     install = [
         "uv",
@@ -405,6 +545,8 @@ def _windows_commands(
         "--managed-python",
         "--no-build",
     ]
+    for requirement in requirements:
+        install.extend(("--with", requirement))
 
     def render(values: list[str]) -> str:
         return " ".join(_powershell_quote(value) for value in values)
@@ -484,6 +626,14 @@ def build_installation_artifacts(
         lock_relative = lock_path.relative_to(output).as_posix()
         lock_sha256 = sha256_file(lock_path)
         lock_url = release_base + lock_name
+        platform_requirements = {
+            platform: _platform_requirements(
+                lock_path,
+                platform=platform,
+                python_version=tools["python"],
+            )
+            for platform in SUPPORTED_PLATFORMS
+        }
         commands = {
             "linux-x64": _posix_commands(
                 package=project.name,
@@ -492,6 +642,11 @@ def build_installation_artifacts(
                 lock_url=lock_url,
                 index_url=index_url,
                 python=tools["python"],
+                requirements=[
+                    item["requirement"]
+                    for item in platform_requirements["linux-x64"]
+                    if item["name"] != project.name
+                ],
             ),
             "macos-arm64": _posix_commands(
                 package=project.name,
@@ -500,6 +655,11 @@ def build_installation_artifacts(
                 lock_url=lock_url,
                 index_url=index_url,
                 python=tools["python"],
+                requirements=[
+                    item["requirement"]
+                    for item in platform_requirements["macos-arm64"]
+                    if item["name"] != project.name
+                ],
             ),
             "windows-x64": _windows_commands(
                 package=project.name,
@@ -508,6 +668,11 @@ def build_installation_artifacts(
                 lock_url=lock_url,
                 index_url=index_url,
                 python=tools["python"],
+                requirements=[
+                    item["requirement"]
+                    for item in platform_requirements["windows-x64"]
+                    if item["name"] != project.name
+                ],
             ),
         }
         component_items.append(
@@ -518,6 +683,7 @@ def build_installation_artifacts(
                     {"name": name, "version": project_versions[name]} for name in sorted(closure)
                 ],
                 "resolved_packages": packages,
+                "platform_requirements": platform_requirements,
                 "lock": {
                     "asset": lock_name,
                     "path": lock_relative,

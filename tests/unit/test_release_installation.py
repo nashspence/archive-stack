@@ -35,7 +35,8 @@ def _external_lock() -> tuple[str, dict[str, str]]:
                 "[[packages]]\n"
                 'name = "external-fixture"\n'
                 'version = "2.0.0"\n'
-                'wheels = [{ url = "https://example.invalid/external-fixture.whl", '
+                'wheels = [{ url = "https://example.invalid/'
+                'external_fixture-2.0.0-py3-none-any.whl", '
                 'size = 10, hashes = { sha256 = "' + "f" * 64 + '" } }]\n'
             )
         },

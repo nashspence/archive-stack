@@ -404,7 +404,14 @@ def _run_recovery(executable: Path, *, scratch: Path, environment: dict[str, str
 
 
 def _install_command(component: dict[str, Any], manifest: dict[str, Any], lock: Path) -> list[str]:
-    return [
+    platform = {
+        "darwin": "macos-arm64",
+        "linux": "linux-x64",
+        "win32": "windows-x64",
+    }.get(sys.platform)
+    if platform is None:
+        raise QualificationError(f"unsupported qualification platform: {sys.platform}")
+    command = [
         "uv",
         "--no-config",
         "--allow-insecure-host",
@@ -425,6 +432,10 @@ def _install_command(component: dict[str, Any], manifest: dict[str, Any], lock: 
         "--managed-python",
         "--no-build",
     ]
+    for item in component["platform_requirements"][platform]:
+        if item["name"] != component["root"]:
+            command.extend(("--with", str(item["requirement"])))
+    return command
 
 
 def _qualify_component(
