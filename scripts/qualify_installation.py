@@ -120,6 +120,24 @@ def _wheel_records(
     return records
 
 
+def _build_distributions(checkout: Path, projects: list[release.Project]) -> None:
+    dist = checkout / "dist"
+    shutil.rmtree(dist, ignore_errors=True)
+    dist.mkdir()
+    for project in projects:
+        _run(
+            [
+                "uv",
+                "--no-config",
+                "build",
+                "--package",
+                project.name,
+                "--no-create-gitignore",
+            ],
+            cwd=checkout,
+        )
+
+
 def _stage_artifacts(
     root: Path,
     scratch: Path,
@@ -133,17 +151,7 @@ def _stage_artifacts(
     release.apply_release_version(checkout, version)
     _run(["uv", "lock", "--offline"], cwd=checkout)
     projects = release.validate_release_contract(checkout, expected_version=version)
-    _run(
-        [
-            "uv",
-            "--no-config",
-            "build",
-            "--all-packages",
-            "--clear",
-            "--no-create-gitignore",
-        ],
-        cwd=checkout,
-    )
+    _build_distributions(checkout, projects)
     wheel_records = _wheel_records(checkout, projects, version)
 
     web_root = scratch / "web"
