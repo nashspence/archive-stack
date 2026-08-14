@@ -17,6 +17,7 @@ from gogurt.core import (
     plan_gogurt_action,
     plan_gogurt_marker,
     route_for_gogurt_marker,
+    validate_gogurt_marker_name,
     write_gogurt_marker,
 )
 from gogurt.listener import ListenerError
@@ -190,6 +191,57 @@ def test_write_gogurt_marker_refuses_to_replace_different_route(tmp_path: Path) 
 
     write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path, force=True)
     assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
+
+
+def test_same_route_marker_write_is_an_identity_preserving_noop(tmp_path: Path) -> None:
+    marker = write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+    before = marker.stat()
+    before_plan = plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+
+    preview = plan_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+    repeated = write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+
+    after = marker.stat()
+    after_plan = plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+    assert preview["status"] == "would_keep"
+    assert repeated == marker
+    assert marker.read_bytes() == b"example-camera-card\n"
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    assert after_plan["marker_identity"] == before_plan["marker_identity"]
+
+
+@pytest.mark.parametrize(
+    "marker_name",
+    ["CON", "con.txt", "bad name", "marker.", "märk", "x" * 256],
+)
+def test_marker_names_follow_the_portable_filename_contract(marker_name: str) -> None:
+    with pytest.raises(ConfigError, match="invalid gogurt marker name"):
+        validate_gogurt_marker_name(marker_name)
+
+    validate_gogurt_marker_name(DEFAULT_GOGURT_MARKER_NAME)
+
+
+@pytest.mark.parametrize("route_name", ["Camera", "camera_card", "-camera", "camera-"])
+def test_route_identifiers_must_be_canonical_slugs(tmp_path: Path, route_name: str) -> None:
+    config = tmp_path / "routes.yaml"
+    config.write_text(
+        "schema_version: 1\n"
+        "kind: gogurt.routes\n"
+        "routes:\n"
+        f"  {json.dumps(route_name)}:\n"
+        "    command:\n"
+        "      - echo\n"
+        '      - "{mount_point}"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError):
+        load_gogurt_actions(config)
 
 
 def test_write_gogurt_marker_refuses_a_symlink_target(tmp_path: Path) -> None:
