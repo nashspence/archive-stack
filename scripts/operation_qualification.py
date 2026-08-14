@@ -22,7 +22,10 @@ from typing import Any, TypeGuard, cast
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from jeb_api.app import JebServiceState
 from jeb_api.app import create_app as create_jeb_app
+from jeb_api.composition import config_from_env as jeb_config_from_env
+from jeb_api.composition import create_services as create_jeb_services
 from jeb_api_client import JebApiClient, JebIngressClient
 from jeb_cli import main as jeb_cli
 from munchy_api.app import app as munchy_app
@@ -37,6 +40,21 @@ TIMING_SCHEMA = "riverhog-operation-timings/v1"
 HTTP_METHODS = frozenset({"delete", "get", "patch", "post", "put"})
 SUPPORTED_ROUTE_METHODS = HTTP_METHODS | {"head"}
 SOURCE_SHA_PATTERN = "0123456789abcdef"
+
+
+def create_jeb_contract_app() -> FastAPI:
+    return create_jeb_app(
+        JebServiceState(
+            services=create_jeb_services(
+                jeb_config_from_env(
+                    {
+                        "JEB_API_TOKEN": "operation-qualification-management-token",
+                        "JEB_MUNCHY_URL": "https://munchy.invalid",
+                    }
+                )
+            )
+        )
+    )
 
 
 class QualificationError(RuntimeError):
@@ -213,7 +231,7 @@ def application_surfaces() -> tuple[ApplicationSurface, ...]:
         ),
         ApplicationSurface(
             "jeb",
-            create_jeb_app(),
+            create_jeb_contract_app(),
             (JebApiClient, JebIngressClient),
             tuple(_argparse_commands(jeb_cli.build_parser())),
             (
@@ -260,6 +278,15 @@ def application_surfaces() -> tuple[ApplicationSurface, ...]:
                     classification="standard-tool/protocol",
                     client_type=JebIngressClient,
                     client_method="upload_file",
+                    cli_commands=("upload",),
+                ),
+                SupplementalOperation(
+                    operation_id="get_public_tus_ingress_publication",
+                    method="GET",
+                    path="/publications/{upload_id}",
+                    classification="client-only-primitive",
+                    client_type=JebIngressClient,
+                    client_method="wait_for_publication",
                     cli_commands=("upload",),
                 ),
             ),

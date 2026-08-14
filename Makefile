@@ -45,6 +45,7 @@ MYPY_SOURCES = \
 	riverhog/client/src \
 	riverhog/recovery/src \
 	riverhog/server/src \
+	scripts/jeb_compose_tus.py \
 	scripts/operation_qualification.py \
 	scripts/provider_qualification.py \
 	scripts/release.py \
@@ -55,7 +56,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke mango-fish-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke jeb-compose-smoke mango-fish-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -104,6 +105,7 @@ help:
 		'  make c2sp-vectors      Download and run the pinned C2SP age conformance corpus.' \
 		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
 		'  make compose-smoke     Start and verify a fresh disposable Riverhog stack.' \
+		'  make jeb-compose-smoke Exercise TUS publication through the real Jeb Compose stack.' \
 		'  make mango-fish-smoke  Exercise the already-built final Mango Fish image.' \
 		'  make tus-throughput    Measure a TUS endpoint with incomplete, deleted probes.' \
 		'  make transfer-profile  Profile a supported transfer command with secret-free JSON.' \
@@ -217,6 +219,13 @@ postgres-concurrency:
 
 compose-smoke:
 	@./scripts/test_compose_smoke.sh
+
+jeb-compose-smoke:
+	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
+		printf '%s\n' 'Jeb Compose smoke requires mise on PATH, or MISE_BIN=/abs/path/to/mise.' >&2; \
+		exit 127; \
+	fi
+	@MISE_BIN="$(MISE_BIN)" ./scripts/test_jeb_compose_tus.sh
 
 tus-throughput:
 	@if [[ -z "$(TUS_URL)" ]]; then \

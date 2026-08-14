@@ -36,7 +36,9 @@ class SQLiteJebStore:
                 plan_json TEXT NOT NULL,
                 status TEXT NOT NULL,
                 started_at TEXT NOT NULL,
-                completed_at TEXT
+                completed_at TEXT,
+                phase TEXT NOT NULL DEFAULT 'quiesce',
+                last_error TEXT
             )
             """
         )
@@ -44,7 +46,196 @@ class SQLiteJebStore:
             "CREATE INDEX IF NOT EXISTS idx_jeb_source_removals_source "
             "ON source_removals(source_id, started_at)"
         )
+        self.create_ingress_publication_schema(conn)
         self.create_service_operation_schema(conn)
+
+    def create_ingress_publication_schema(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ingress_publications (
+                upload_id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                declared_bytes INTEGER NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                provenance_sha256 TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error_code TEXT,
+                error_message TEXT,
+                destination_path TEXT,
+                provenance_identity TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_ingress_publications_source_status "
+            "ON ingress_publications(source_id, status, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_jeb_ingress_publications_status_updated "
+            "ON ingress_publications(status, updated_at)"
+        )
+
+    def create_ingress_publication(
+        self,
+        *,
+        upload_id: str,
+        source_id: str,
+        relative_path: str,
+        declared_bytes: int,
+        payload_sha256: str,
+        provenance_sha256: str,
+    ) -> sqlite3.Row:
+        created_at = event_timestamp()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO ingress_publications(
+                    upload_id, source_id, relative_path, declared_bytes,
+                    payload_sha256, provenance_sha256, status, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    upload_id,
+                    source_id,
+                    relative_path,
+                    declared_bytes,
+                    payload_sha256,
+                    provenance_sha256,
+                    created_at,
+                    created_at,
+                ),
+            )
+            row = conn.execute(
+                "SELECT * FROM ingress_publications WHERE upload_id = ?",
+                (upload_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Jeb ingress publication was not persisted")
+        return cast(sqlite3.Row, row)
+
+    def ingress_publication(self, upload_id: str) -> sqlite3.Row:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM ingress_publications WHERE upload_id = ?",
+                (upload_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(upload_id)
+        return cast(sqlite3.Row, row)
+
+    def pending_ingress_publications(self, *, source_id: str | None = None) -> list[sqlite3.Row]:
+        with self.transaction() as conn:
+            if source_id is None:
+                return conn.execute(
+                    "SELECT * FROM ingress_publications "
+                    "WHERE status = 'pending' ORDER BY created_at, upload_id"
+                ).fetchall()
+            return conn.execute(
+                "SELECT * FROM ingress_publications "
+                "WHERE status = 'pending' AND source_id = ? ORDER BY created_at, upload_id",
+                (source_id,),
+            ).fetchall()
+
+    def pending_ingress_paths(self, source_id: str) -> frozenset[str]:
+        with self.transaction() as conn:
+            rows = conn.execute(
+                "SELECT relative_path FROM ingress_publications "
+                "WHERE source_id = ? AND status = 'pending'",
+                (source_id,),
+            ).fetchall()
+        return frozenset(str(row["relative_path"]) for row in rows)
+
+    def accept_ingress_publication(
+        self,
+        upload_id: str,
+        *,
+        destination_path: str,
+        provenance_identity: str,
+    ) -> sqlite3.Row:
+        completed_at = event_timestamp()
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM ingress_publications WHERE upload_id = ?",
+                (upload_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(upload_id)
+            if str(row["status"]) == "rejected":
+                raise RuntimeError("rejected Jeb ingress publication is immutable")
+            if str(row["status"]) == "accepted":
+                if (
+                    str(row["destination_path"]) != destination_path
+                    or str(row["provenance_identity"]) != provenance_identity
+                ):
+                    raise RuntimeError("accepted Jeb ingress publication identity changed")
+            else:
+                conn.execute(
+                    """
+                    UPDATE ingress_publications
+                    SET status = 'accepted', destination_path = ?, provenance_identity = ?,
+                        error_code = NULL, error_message = NULL, updated_at = ?, completed_at = ?
+                    WHERE upload_id = ? AND status = 'pending'
+                    """,
+                    (
+                        destination_path,
+                        provenance_identity,
+                        completed_at,
+                        completed_at,
+                        upload_id,
+                    ),
+                )
+            accepted = conn.execute(
+                "SELECT * FROM ingress_publications WHERE upload_id = ?",
+                (upload_id,),
+            ).fetchone()
+        return cast(sqlite3.Row, accepted)
+
+    def reject_ingress_publication(
+        self,
+        upload_id: str,
+        *,
+        code: str,
+        message: str,
+    ) -> sqlite3.Row:
+        completed_at = event_timestamp()
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM ingress_publications WHERE upload_id = ?",
+                (upload_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(upload_id)
+            if str(row["status"]) == "accepted":
+                raise RuntimeError("accepted Jeb ingress publication is immutable")
+            if str(row["status"]) == "pending":
+                conn.execute(
+                    """
+                    UPDATE ingress_publications
+                    SET status = 'rejected', error_code = ?, error_message = ?,
+                        updated_at = ?, completed_at = ?
+                    WHERE upload_id = ? AND status = 'pending'
+                    """,
+                    (code, message[:240], completed_at, completed_at, upload_id),
+                )
+            rejected = conn.execute(
+                "SELECT * FROM ingress_publications WHERE upload_id = ?",
+                (upload_id,),
+            ).fetchone()
+        return cast(sqlite3.Row, rejected)
+
+    def ingress_publication_counts(self) -> dict[str, int]:
+        with self.transaction() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS count FROM ingress_publications "
+                "GROUP BY status ORDER BY status"
+            ).fetchall()
+        counts = {"pending": 0, "accepted": 0, "rejected": 0}
+        counts.update({str(row["status"]): int(row["count"]) for row in rows})
+        return counts
 
     def create_service_operation_schema(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -315,11 +506,17 @@ class SQLiteJebStore:
             """
             CREATE TABLE IF NOT EXISTS files (
                 batch_id TEXT NOT NULL,
-                input_path TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                custody_path TEXT NOT NULL,
                 target_path TEXT NOT NULL,
                 bytes INTEGER NOT NULL,
                 mtime_ns INTEGER NOT NULL,
+                source_device INTEGER NOT NULL,
+                source_inode INTEGER NOT NULL,
+                custody_device INTEGER,
+                custody_inode INTEGER,
                 sha256 TEXT,
+                claimed_at TEXT,
                 PRIMARY KEY (batch_id, target_path),
                 FOREIGN KEY(batch_id) REFERENCES batches(id)
             )
@@ -330,8 +527,7 @@ class SQLiteJebStore:
             CREATE TABLE IF NOT EXISTS attempt_files (
                 attempt_id TEXT NOT NULL,
                 target_path TEXT NOT NULL,
-                staging_path TEXT NOT NULL,
-                staged_at TEXT,
+                ready_at TEXT,
                 PRIMARY KEY (attempt_id, target_path),
                 FOREIGN KEY(attempt_id) REFERENCES batch_attempts(id)
             )
@@ -661,12 +857,12 @@ class SQLiteJebStore:
                 ).fetchall()
             )
             rows = [dict(row) for row in selected_rows]
-            staged_counts = self._staged_file_counts_by_attempt(
+            claimed_counts = self._claimed_file_counts_by_attempt(
                 conn,
                 [str(row["id"]) for row in rows],
             )
             for row in rows:
-                row["staged_file_count"] = staged_counts.get(str(row["id"]), 0)
+                row["claimed_file_count"] = claimed_counts.get(str(row["id"]), 0)
         attempts = [self._attempt_summary(row) for row in rows]
         result_page = 1 if all_items else page
         result_per_page = total if all_items else per_page
@@ -711,9 +907,9 @@ class SQLiteJebStore:
                     b.file_count,
                     b.total_bytes,
                     COALESCE(
-                        SUM(CASE WHEN af.staged_at IS NOT NULL THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN af.ready_at IS NOT NULL THEN 1 ELSE 0 END),
                         0
-                    ) AS staged_file_count
+                    ) AS claimed_file_count
                 FROM batch_attempts AS a
                 JOIN batches AS b ON b.id = a.batch_id
                 LEFT JOIN attempt_files AS af ON af.attempt_id = a.id
@@ -742,7 +938,7 @@ class SQLiteJebStore:
             raise KeyError(attempt_id)
         return self._attempt_summary(row)
 
-    def _staged_file_counts_by_attempt(
+    def _claimed_file_counts_by_attempt(
         self,
         conn: sqlite3.Connection,
         attempt_ids: Sequence[str],
@@ -755,16 +951,16 @@ class SQLiteJebStore:
             SELECT
                 attempt_id,
                 COALESCE(
-                    SUM(CASE WHEN staged_at IS NOT NULL THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN ready_at IS NOT NULL THEN 1 ELSE 0 END),
                     0
-                ) AS staged_file_count
+                ) AS claimed_file_count
             FROM attempt_files
             WHERE attempt_id IN ({placeholders})
             GROUP BY attempt_id
             """,
             tuple(attempt_ids),
         ).fetchall()
-        return {str(row["attempt_id"]): int(row["staged_file_count"]) for row in rows}
+        return {str(row["attempt_id"]): int(row["claimed_file_count"]) for row in rows}
 
     def batch_state_counts(self) -> dict[str, int]:
         with self.transaction() as conn:
@@ -796,7 +992,7 @@ class SQLiteJebStore:
             "emitted_error_at": row["emitted_error_at"],
             "file_count": int(row["file_count"]),
             "total_bytes": int(row["total_bytes"]),
-            "staged_file_count": int(row["staged_file_count"]),
+            "claimed_file_count": int(row["claimed_file_count"]),
         }
 
     def _target_preflight_failure_summary(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -849,13 +1045,18 @@ class SQLiteJebStore:
                 SELECT
                     f.batch_id,
                     af.attempt_id,
-                    f.input_path,
-                    af.staging_path,
+                    f.source_path,
+                    f.custody_path,
                     f.target_path,
                     f.bytes,
                     f.mtime_ns,
+                    f.source_device,
+                    f.source_inode,
+                    f.custody_device,
+                    f.custody_inode,
                     f.sha256,
-                    af.staged_at
+                    f.claimed_at,
+                    af.ready_at
                 FROM batch_attempts a
                 JOIN files f ON f.batch_id = a.batch_id
                 JOIN attempt_files af

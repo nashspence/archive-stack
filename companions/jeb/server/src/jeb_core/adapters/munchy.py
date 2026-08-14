@@ -225,7 +225,7 @@ class MunchyTargetAdapter:
         bindings = {item.path: item for item in provenance.bindings}
         files = tuple(
             SubmissionInputFile(
-                source=Path(str(row["staging_path"])),
+                source=Path(str(row["custody_path"])),
                 rel_path=str(row["target_path"]),
                 bytes=int(row["bytes"]),
                 sha256=str(row["sha256"]),

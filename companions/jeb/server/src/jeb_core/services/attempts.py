@@ -7,8 +7,10 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
@@ -51,14 +53,12 @@ from jeb_core.ports.target import TargetAdapter, TargetContext
 from jeb_core.provenance import (
     ingress_provenance_path,
     load_portable_provenance_set,
-    remove_ingress_provenance,
     replace_portable_provenance_set,
     write_portable_provenance_set,
 )
 from jeb_core.services.files import (
     file_sha256,
     format_media_preflight_error,
-    hardlink_stage_file,
     normalize_posix,
     run_safe_remux,
     unique_corrupt_path,
@@ -310,13 +310,13 @@ class JebAttemptService:
     ) -> bool:
         with self.store.transaction() as conn:
             rows = conn.execute(
-                "SELECT input_path, target_path FROM files WHERE batch_id = ?",
+                "SELECT source_path, target_path FROM files WHERE batch_id = ?",
                 (retryable_attempt["batch_id"],),
             ).fetchall()
         current_target_paths: list[str] = []
         for row in rows:
             current_target_path = self.current_target_path_for_input_path(
-                Path(str(row["input_path"])),
+                Path(str(row["source_path"])),
                 source,
             )
             if current_target_path is None:
@@ -379,22 +379,17 @@ class JebAttemptService:
                 ),
             )
             file_rows = conn.execute(
-                "SELECT target_path FROM files WHERE batch_id = ? ORDER BY target_path",
+                "SELECT target_path, claimed_at FROM files WHERE batch_id = ? ORDER BY target_path",
                 (batch_id,),
             ).fetchall()
             for file_row in file_rows:
                 target_path = str(file_row["target_path"])
-                staging = (
-                    self.attempt_work_dir(batch_id, attempt_id)
-                    / "input"
-                    / PurePosixPath(target_path)
-                )
                 conn.execute(
                     """
-                    INSERT INTO attempt_files(attempt_id, target_path, staging_path, staged_at)
-                    VALUES(?, ?, ?, NULL)
+                    INSERT INTO attempt_files(attempt_id, target_path, ready_at)
+                    VALUES(?, ?, ?)
                     """,
-                    (attempt_id, target_path, str(staging)),
+                    (attempt_id, target_path, file_row["claimed_at"]),
                 )
             conn.execute(
                 """
@@ -434,7 +429,7 @@ class JebAttemptService:
             batch_id, digest = self.batch_identity(source, files, period=period)
         target = self.sources.target_by_name(source.target)
         target_submission_id = f"jeb-{source.id}-{run_id.lower()}-{digest}"
-        batch_root = self.attempt_work_dir(batch_id, batch_id) / "input"
+        custody_root = self.config.service.batch_dir / batch_id / "custody"
         created_at = event_timestamp()
         with self.store.transaction() as conn:
             exists = conn.execute("SELECT 1 FROM batches WHERE id = ?", (batch_id,)).fetchone()
@@ -476,27 +471,35 @@ class JebAttemptService:
                 ),
             )
             for item in files:
-                staging = batch_root / PurePosixPath(item.target_path)
+                custody = custody_root / PurePosixPath(item.target_path)
                 conn.execute(
                     """
-                    INSERT INTO files(batch_id, input_path, target_path, bytes, mtime_ns, sha256)
-                    VALUES(?, ?, ?, ?, ?, NULL)
+                    INSERT INTO files(
+                        batch_id, source_path, custody_path, target_path, bytes, mtime_ns,
+                        source_device, source_inode, custody_device, custody_inode,
+                        sha256, claimed_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
                     """,
                     (
                         batch_id,
                         str(item.path),
+                        str(custody),
                         item.target_path,
                         item.bytes,
                         item.mtime_ns,
+                        item.device,
+                        item.inode,
                     ),
                 )
                 conn.execute(
                     """
-                    INSERT INTO attempt_files(attempt_id, target_path, staging_path, staged_at)
-                    VALUES(?, ?, ?, NULL)
+                    INSERT INTO attempt_files(attempt_id, target_path, ready_at)
+                    VALUES(?, ?, NULL)
                     """,
-                    (batch_id, item.target_path, str(staging)),
+                    (batch_id, item.target_path),
                 )
+        self.claim_attempt_files(batch_id)
         LOG.info(
             "created batch %s for source %s with %d files",
             batch_id,
@@ -586,7 +589,7 @@ class JebAttemptService:
                 self.cleanup_attempt(attempt_id)
                 return
             if state == "batching":
-                self.stage_attempt_files(attempt_id)
+                self.claim_attempt_files(attempt_id)
             if self.store.load_attempt(attempt_id)["state"] == "batched":
                 self.ensure_hashes(attempt_id)
             if self.store.load_attempt(attempt_id)["state"] == "hashed":
@@ -638,30 +641,246 @@ class JebAttemptService:
                 return
         self.mark_unrecoverable(attempt_id, message, component="target")
 
-    def stage_attempt_files(self, attempt_id: str) -> None:
+    def claim_attempt_files(self, attempt_id: str) -> None:
         for row in self.store.attempt_files(attempt_id):
-            if row["staged_at"]:
-                continue
-            source = Path(str(row["input_path"]))
-            staging = Path(str(row["staging_path"]))
-            if source.exists():
-                hardlink_stage_file(source, staging)
-            elif not staging.exists():
-                raise UnrecoverableJebError(
-                    f"source and staging file are both missing: {source} -> {staging}"
-                )
+            if row["ready_at"] or row["claimed_at"]:
+                self._verify_claimed_file(row)
+            else:
+                self._claim_file(row)
             with self.store.transaction() as conn:
                 conn.execute(
                     """
                     UPDATE attempt_files
-                    SET staged_at = ?
+                    SET ready_at = ?
                     WHERE attempt_id = ? AND target_path = ?
                     """,
                     (event_timestamp(), attempt_id, row["target_path"]),
                 )
         self.store.set_attempt_state(attempt_id, "batched")
 
+    def _claim_file(self, row: sqlite3.Row) -> None:
+        source = Path(str(row["source_path"]))
+        custody = Path(str(row["custody_path"]))
+        holding = custody.with_name(f".{custody.name}.claim-source")
+        custody.parent.mkdir(parents=True, exist_ok=True)
+        observed_companions: dict[Path, tuple[Path, int, int]] = {}
+        if not holding.exists() and not holding.is_symlink():
+            if custody.exists() or custody.is_symlink():
+                raise UnrecoverableJebError(
+                    f"unrecorded custody artifact blocks claim recovery: {custody}"
+                )
+            try:
+                observed = os.lstat(source)
+            except FileNotFoundError as exc:
+                raise TransientJebError(
+                    f"source disappeared before custody claim: {source}"
+                ) from exc
+            if not stat.S_ISREG(observed.st_mode):
+                raise UnrecoverableJebError(f"Jeb custody claim requires a regular file: {source}")
+            if (
+                observed.st_dev != int(row["source_device"])
+                or observed.st_ino != int(row["source_inode"])
+                or observed.st_size != int(row["bytes"])
+                or observed.st_mtime_ns != int(row["mtime_ns"])
+            ):
+                raise TransientJebError(f"source changed before custody claim: {source}")
+            observed_companions = self._observe_claimed_companions(source, custody)
+            try:
+                os.rename(source, holding)
+            except FileNotFoundError as exc:
+                raise TransientJebError(
+                    f"source disappeared during custody claim: {source}"
+                ) from exc
+            except OSError as exc:
+                raise UnrecoverableJebError(
+                    "Jeb source and batch custody must share one filesystem"
+                ) from exc
+            moved = os.lstat(holding)
+            if (
+                not stat.S_ISREG(moved.st_mode)
+                or moved.st_dev != int(row["source_device"])
+                or moved.st_ino != int(row["source_inode"])
+                or moved.st_size != int(row["bytes"])
+                or moved.st_mtime_ns != int(row["mtime_ns"])
+            ):
+                if not source.exists() and not source.is_symlink():
+                    os.rename(holding, source)
+                raise TransientJebError(f"source changed during custody claim: {source}")
+        else:
+            self._verify_holding_file(row, holding)
+            if not source.exists() and not source.is_symlink():
+                observed_companions = self._observe_claimed_companions(source, custody)
+            elif any(
+                path.exists() or path.is_symlink()
+                for path, _destination in self._companion_paths(source, custody)
+            ):
+                raise TransientJebError(
+                    f"source replacement made provenance custody ambiguous: {source}"
+                )
+        self._move_claimed_companions(observed_companions)
+        claimed = self._snapshot_claimed_inode(
+            holding,
+            custody,
+            expected_device=int(row["source_device"]),
+            expected_inode=int(row["source_inode"]),
+        )
+        with self.store.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE files
+                SET bytes = ?, mtime_ns = ?, custody_device = ?, custody_inode = ?, claimed_at = ?
+                WHERE batch_id = ? AND target_path = ?
+                """,
+                (
+                    claimed.st_size,
+                    claimed.st_mtime_ns,
+                    claimed.st_dev,
+                    claimed.st_ino,
+                    event_timestamp(),
+                    row["batch_id"],
+                    row["target_path"],
+                ),
+            )
+        holding.unlink()
+
+    def _snapshot_claimed_inode(
+        self,
+        holding: Path,
+        custody: Path,
+        *,
+        expected_device: int,
+        expected_inode: int,
+    ) -> os.stat_result:
+        temporary = custody.with_name(f".{custody.name}.{uuid.uuid4().hex}.claim")
+        temporary.unlink(missing_ok=True)
+        try:
+            source_fd = os.open(holding, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                initial = os.fstat(source_fd)
+                if (
+                    not stat.S_ISREG(initial.st_mode)
+                    or initial.st_dev != expected_device
+                    or initial.st_ino != expected_inode
+                ):
+                    raise TransientJebError(f"source changed while entering Jeb custody: {holding}")
+                with (
+                    os.fdopen(source_fd, "rb", closefd=True) as input_stream,
+                    temporary.open("xb") as output_stream,
+                ):
+                    shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+                    output_stream.flush()
+                    os.fsync(output_stream.fileno())
+                    final = os.fstat(input_stream.fileno())
+            except Exception:
+                raise
+            if (
+                final.st_dev != initial.st_dev
+                or final.st_ino != initial.st_ino
+                or final.st_size != initial.st_size
+                or final.st_mtime_ns != initial.st_mtime_ns
+            ):
+                raise TransientJebError(f"source changed while Jeb copied custody: {holding}")
+            os.utime(temporary, ns=(initial.st_atime_ns, initial.st_mtime_ns))
+            os.replace(temporary, custody)
+            claimed = os.lstat(custody)
+            if not stat.S_ISREG(claimed.st_mode):
+                raise UnrecoverableJebError(
+                    f"Jeb custody artifact is not a regular file: {custody}"
+                )
+            return claimed
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _companion_paths(source: Path, custody: Path) -> tuple[tuple[Path, Path], ...]:
+        return (
+            (canonical_sidecar_path(source), canonical_sidecar_path(custody)),
+            (ingress_provenance_path(source), ingress_provenance_path(custody)),
+        )
+
+    def _observe_claimed_companions(
+        self,
+        source: Path,
+        custody: Path,
+    ) -> dict[Path, tuple[Path, int, int]]:
+        observed: dict[Path, tuple[Path, int, int]] = {}
+        for source_companion, custody_companion in self._companion_paths(source, custody):
+            try:
+                companion_stat = os.lstat(source_companion)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(companion_stat.st_mode):
+                raise UnrecoverableJebError(
+                    f"Jeb provenance companion must not be a symlink: {source_companion}"
+                )
+            expected_mode = (
+                stat.S_ISREG if source_companion == canonical_sidecar_path(source) else stat.S_ISDIR
+            )
+            if not expected_mode(companion_stat.st_mode):
+                raise UnrecoverableJebError(
+                    f"Jeb provenance companion has an invalid type: {source_companion}"
+                )
+            observed[source_companion] = (
+                custody_companion,
+                companion_stat.st_dev,
+                companion_stat.st_ino,
+            )
+        return observed
+
+    @staticmethod
+    def _move_claimed_companions(
+        observed: Mapping[Path, tuple[Path, int, int]],
+    ) -> None:
+        for source_companion, (custody_companion, device, inode) in observed.items():
+            try:
+                current = os.lstat(source_companion)
+            except FileNotFoundError as exc:
+                raise TransientJebError(
+                    f"provenance companion disappeared during custody claim: {source_companion}"
+                ) from exc
+            if current.st_dev != device or current.st_ino != inode:
+                raise TransientJebError(
+                    f"provenance companion changed during custody claim: {source_companion}"
+                )
+            if custody_companion.exists() or custody_companion.is_symlink():
+                raise UnrecoverableJebError(
+                    f"provenance custody path already exists: {custody_companion}"
+                )
+            custody_companion.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(source_companion, custody_companion)
+
+    @staticmethod
+    def _verify_holding_file(row: sqlite3.Row, holding: Path) -> None:
+        try:
+            observed = os.lstat(holding)
+        except FileNotFoundError as exc:
+            raise TransientJebError(f"custody claim source disappeared: {holding}") from exc
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_dev != int(row["source_device"])
+            or observed.st_ino != int(row["source_inode"])
+        ):
+            raise UnrecoverableJebError(f"custody claim source identity changed: {holding}")
+
+    @staticmethod
+    def _verify_claimed_file(row: sqlite3.Row) -> None:
+        custody = Path(str(row["custody_path"]))
+        try:
+            observed = os.lstat(custody)
+        except FileNotFoundError as exc:
+            raise UnrecoverableJebError(f"claimed custody artifact is missing: {custody}") from exc
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_dev != int(row["custody_device"])
+            or observed.st_ino != int(row["custody_inode"])
+            or observed.st_size != int(row["bytes"])
+            or observed.st_mtime_ns != int(row["mtime_ns"])
+        ):
+            raise UnrecoverableJebError(f"claimed custody artifact identity changed: {custody}")
+
     def ensure_hashes(self, batch_id: str) -> None:
+        for claimed in self.store.attempt_files(batch_id):
+            self._verify_claimed_file(claimed)
         with self.store.transaction() as conn:
             totals = conn.execute(
                 """
@@ -694,7 +913,7 @@ class JebAttemptService:
             with self.store.transaction() as conn:
                 rows = conn.execute(
                     """
-                    SELECT f.batch_id, f.target_path, af.staging_path, f.bytes
+                    SELECT f.batch_id, f.target_path, f.custody_path, f.bytes
                     FROM batch_attempts a
                     JOIN files f ON f.batch_id = a.batch_id
                     JOIN attempt_files af
@@ -709,9 +928,9 @@ class JebAttemptService:
             if not rows:
                 break
             for row in rows:
-                path = Path(str(row["staging_path"]))
+                path = Path(str(row["custody_path"]))
                 if not path.exists():
-                    raise UnrecoverableJebError(f"staged file disappeared before hashing: {path}")
+                    raise UnrecoverableJebError(f"custody file disappeared before hashing: {path}")
                 digest = file_sha256(path)
                 done_bytes += int(row["bytes"] or 0)
                 completed_files += 1
@@ -764,10 +983,8 @@ class JebAttemptService:
         bindings: list[FileProvenanceBinding] = []
         journals: dict[str, bytes] = {}
         for row in rows:
-            source = Path(str(row["input_path"]))
-            staging = Path(str(row["staging_path"]))
-            payload = source if source.is_file() else staging
-            incoming = ingress_provenance_path(source) / "index.json"
+            payload = Path(str(row["custody_path"]))
+            incoming = ingress_provenance_path(payload) / "index.json"
             prepared = prepare_file_provenance(
                 payload,
                 relative_path=str(row["target_path"]),
@@ -853,7 +1070,7 @@ class JebAttemptService:
     def media_preflight_files(self, batch_id: str) -> list[MediaPreflightFile]:
         return [
             MediaPreflightFile(
-                source=Path(str(row["staging_path"])),
+                source=Path(str(row["custody_path"])),
                 label=str(row["target_path"]),
                 bytes=int(row["bytes"]),
             )
@@ -920,22 +1137,18 @@ class JebAttemptService:
         row: sqlite3.Row,
     ) -> MediaPreflightResult:
         target_path = str(row["target_path"])
-        source = Path(str(row["input_path"]))
-        staging = Path(str(row["staging_path"]))
-        input_path = source if source.exists() else staging
-        if not input_path.exists():
-            raise UnrecoverableJebError(
-                f"source and staging file are both missing: {source} -> {staging}"
-            )
-        source_stat = input_path.stat()
-        suffix = Path(target_path).suffix or staging.suffix or ".mkv"
-        temp = staging.with_name(f".{staging.name}.safe-remux-{os.getpid()}{suffix}")
+        custody = Path(str(row["custody_path"]))
+        if not custody.exists():
+            raise UnrecoverableJebError(f"custody file is missing: {custody}")
+        source_stat = custody.stat()
+        suffix = Path(target_path).suffix or custody.suffix or ".mkv"
+        temp = custody.with_name(f".{custody.name}.safe-remux-{os.getpid()}{suffix}")
         temp.unlink(missing_ok=True)
         transform_started_at = event_timestamp()
         try:
             run_safe_remux(
                 ffmpeg_path=self.config.service.preflight_repair_ffmpeg,
-                source=input_path,
+                source=custody,
                 dest=temp,
             )
             os.utime(temp, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
@@ -952,28 +1165,16 @@ class JebAttemptService:
             if not repair_report.ok:
                 raise PreflightJebError(format_media_preflight_error(repair_report))
 
-            if source.exists():
-                if self.config.service.preflight_repair_original == "keep_corrupt":
-                    corrupt_dest = unique_corrupt_path(
-                        self.config.service.preflight_repair_corrupt_dir
-                        / PurePosixPath(target_path)
-                    )
-                    corrupt_dest.parent.mkdir(parents=True, exist_ok=True)
-                    source.replace(corrupt_dest)
-                else:
-                    source.unlink()
-            elif self.config.service.preflight_repair_original == "keep_corrupt":
+            if self.config.service.preflight_repair_original == "keep_corrupt":
                 corrupt_dest = unique_corrupt_path(
                     self.config.service.preflight_repair_corrupt_dir / PurePosixPath(target_path)
                 )
                 corrupt_dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(input_path, corrupt_dest)
-            source.parent.mkdir(parents=True, exist_ok=True)
-            temp.replace(source)
-            os.utime(source, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
-            hardlink_stage_file(source, staging)
-            stat = source.stat()
-            digest = file_sha256(staging)
+                custody.replace(corrupt_dest)
+            temp.replace(custody)
+            os.utime(custody, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+            custody_stat = custody.stat()
+            digest = file_sha256(custody)
             provenance_root = self.config.service.batch_dir / str(row["batch_id"]) / "provenance"
             provenance = load_portable_provenance_set(provenance_root / "index.json")
             bindings = {item.path: item for item in provenance.bindings}
@@ -983,7 +1184,7 @@ class JebAttemptService:
                 journal_id = str(original_binding.journal_id)
                 transformed = append_replacement_transformation(
                     journals[journal_id],
-                    staging,
+                    custody,
                     relative_path=target_path,
                     host_id=load_or_create_installation_id(
                         self.config.ingress.provenance_installation_id_path
@@ -998,7 +1199,7 @@ class JebAttemptService:
                 current = validate_journal(transformed)
                 bindings[target_path] = FileProvenanceBinding(
                     path=target_path,
-                    bytes=stat.st_size,
+                    bytes=custody_stat.st_size,
                     sha256=digest,
                     status="captured",
                     journal_id=journal_id,
@@ -1007,7 +1208,7 @@ class JebAttemptService:
             else:
                 bindings[target_path] = FileProvenanceBinding(
                     path=target_path,
-                    bytes=stat.st_size,
+                    bytes=custody_stat.st_size,
                     sha256=digest,
                     status="omitted",
                     omission_reason=original_binding.omission_reason,
@@ -1021,24 +1222,32 @@ class JebAttemptService:
                 conn.execute(
                     """
                     UPDATE files
-                    SET bytes = ?, mtime_ns = ?, sha256 = ?
+                    SET bytes = ?, mtime_ns = ?, custody_device = ?, custody_inode = ?, sha256 = ?
                     WHERE batch_id = ? AND target_path = ?
                     """,
-                    (stat.st_size, stat.st_mtime_ns, digest, row["batch_id"], target_path),
+                    (
+                        custody_stat.st_size,
+                        custody_stat.st_mtime_ns,
+                        custody_stat.st_dev,
+                        custody_stat.st_ino,
+                        digest,
+                        row["batch_id"],
+                        target_path,
+                    ),
                 )
                 conn.execute(
                     """
                     UPDATE attempt_files
-                    SET staged_at = ?
+                    SET ready_at = ?
                     WHERE attempt_id = ? AND target_path = ?
                     """,
                     (event_timestamp(), batch_id, target_path),
                 )
             return MediaPreflightResult(
                 file=MediaPreflightFile(
-                    source=staging,
+                    source=custody,
                     label=target_path,
-                    bytes=stat.st_size,
+                    bytes=custody_stat.st_size,
                 ),
                 issues=[],
             )
@@ -1047,21 +1256,20 @@ class JebAttemptService:
 
     def quarantine_batch_file(self, batch_id: str, row: sqlite3.Row) -> None:
         target_path = str(row["target_path"])
-        source = Path(str(row["input_path"]))
-        staging = Path(str(row["staging_path"]))
+        custody = Path(str(row["custody_path"]))
         corrupt_dest = unique_corrupt_path(
             self.config.service.preflight_repair_corrupt_dir / PurePosixPath(target_path)
         )
         corrupt_dest.parent.mkdir(parents=True, exist_ok=True)
-        if source.exists():
-            source.replace(corrupt_dest)
-            staging.unlink(missing_ok=True)
-        elif staging.exists():
-            staging.replace(corrupt_dest)
-        else:
-            raise UnrecoverableJebError(
-                f"source and staging file are both missing: {source} -> {staging}"
-            )
+        if not custody.exists():
+            raise UnrecoverableJebError(f"custody file is missing: {custody}")
+        custody.replace(corrupt_dest)
+        for custody_companion, corrupt_companion in (
+            (canonical_sidecar_path(custody), canonical_sidecar_path(corrupt_dest)),
+            (ingress_provenance_path(custody), ingress_provenance_path(corrupt_dest)),
+        ):
+            if custody_companion.exists():
+                custody_companion.replace(corrupt_companion)
         self.remove_batch_provenance_binding(str(row["batch_id"]), target_path)
         with self.store.transaction() as conn:
             conn.execute(
@@ -1111,16 +1319,9 @@ class JebAttemptService:
     def cleanup_attempt(self, attempt_id: str) -> None:
         try:
             attempt = self.store.load_attempt(attempt_id)
-            rows = self.store.attempt_files(attempt_id)
-            for row in rows:
-                input_path = Path(str(row["input_path"]))
-                input_path.unlink(missing_ok=True)
-                canonical_sidecar_path(input_path).unlink(missing_ok=True)
-                remove_ingress_provenance(input_path)
-            shutil.rmtree(
-                self.config.service.batch_dir / str(attempt["batch_id"]),
-                ignore_errors=True,
-            )
+            batch_root = self.config.service.batch_dir / str(attempt["batch_id"])
+            if batch_root.exists():
+                shutil.rmtree(batch_root)
         except FileNotFoundError:
             pass
         except Exception as exc:

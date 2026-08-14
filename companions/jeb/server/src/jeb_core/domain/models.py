@@ -185,6 +185,7 @@ class TargetConfig:
 
 @dataclass(frozen=True)
 class JebConfig:
+    management_api_token: str
     service: ServiceSettings
     ingress: JebIngressConfig
     events: LifecycleEventSettings
@@ -199,6 +200,8 @@ class EligibleFile:
     bytes: int
     mtime: float
     mtime_ns: int
+    device: int
+    inode: int
 
 
 def stable_json(value: object) -> str:

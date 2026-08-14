@@ -33,7 +33,7 @@ def format_attempt(payload: Mapping[str, object]) -> str:
         f"source: {payload.get('source_id', 'unknown')}",
         f"target: {payload.get('target_name', 'unknown')}",
         f"state: {payload.get('state', 'unknown')}",
-        f"files: {payload.get('staged_file_count', 0)}/{payload.get('file_count', 0)}",
+        f"files: {payload.get('claimed_file_count', 0)}/{payload.get('file_count', 0)}",
         f"bytes: {_bytes(payload.get('total_bytes'))}",
         f"cleanup: {payload.get('cleanup', 'unknown')}",
         f"run: {payload.get('run_id', 'unknown')}",
@@ -51,7 +51,20 @@ def format_attempt_transition(payload: Mapping[str, object]) -> str:
     return (
         f"Jeb attempt {payload.get('attempt_id', 'unknown')}: "
         f"{payload.get('state', 'unknown')}  "
-        f"files={payload.get('staged_file_count', 0)}/{payload.get('file_count', 0)}"
+        f"files={payload.get('claimed_file_count', 0)}/{payload.get('file_count', 0)}"
+    )
+
+
+def format_upload_receipt(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        (
+            f"Jeb ingress {payload.get('status', 'unknown')}",
+            f"upload: {payload.get('upload_id', 'unknown')}",
+            f"path: {payload.get('path', 'unknown')}",
+            f"bytes: {_bytes(payload.get('bytes'))}",
+            f"payload sha256: {payload.get('payload_sha256', 'unknown')}",
+            f"provenance: {payload.get('provenance_identity', 'unknown')}",
+        )
     )
 
 
@@ -172,6 +185,14 @@ def format_status(payload: Mapping[str, object]) -> str:
             f"{incomplete.get('total', 0)} ({_bytes(incomplete.get('bytes'))}), "
             f"stale={incomplete.get('stale', 0)}, "
             f"oldest={incomplete.get('oldest_age_seconds', 0)}s"
+        )
+    publications = payload.get("ingress_publications")
+    if isinstance(publications, Mapping):
+        lines.append(
+            "ingress publications: "
+            f"pending={publications.get('pending', 0)} "
+            f"accepted={publications.get('accepted', 0)} "
+            f"rejected={publications.get('rejected', 0)}"
         )
     return "\n".join(lines)
 

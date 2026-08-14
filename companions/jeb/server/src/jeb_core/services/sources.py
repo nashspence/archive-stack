@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 import shutil
+import stat
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -27,9 +29,6 @@ from jeb_core.domain.models import (
     target_preflight_error,
 )
 from jeb_core.domain.sources import Cadence, SourceConfig, SourceRegistryError
-from jeb_core.ingress import (
-    scan_incomplete_tus_uploads,
-)
 from jeb_core.persistence.source_registry import SourceRegistry
 from jeb_core.ports.target import TargetAdapter, TargetContext
 from jeb_core.services.files import (
@@ -38,7 +37,6 @@ from jeb_core.services.files import (
     source_removal_challenge,
     source_removal_expiry,
     source_removal_is_purge,
-    terminate_tus_upload,
 )
 
 LOG = logging.getLogger("jeb")
@@ -55,6 +53,7 @@ class JebSourceService:
         clock: Callable[[], datetime],
         target_context: Callable[[], TargetContext],
         initialize: Callable[[], None],
+        cancel_ingress_source: Callable[[str], None],
     ) -> None:
         self.config = config
         self.store = store
@@ -64,6 +63,7 @@ class JebSourceService:
         self.current_time = clock
         self.target_context = target_context
         self.initialize = initialize
+        self.cancel_ingress_source = cancel_ingress_source
         self._preflight_failure_cursor: str | None = None
 
     def source_statuses(self, *, include_backlog: bool = True) -> list[dict[str, Any]]:
@@ -210,14 +210,13 @@ class JebSourceService:
                 """,
                 (source.id,),
             ).fetchall()
-            staged_rows = conn.execute(
+            custody_rows = conn.execute(
                 """
-                SELECT DISTINCT af.staging_path
-                FROM attempt_files af
-                JOIN batch_attempts a ON a.id = af.attempt_id
-                JOIN batches b ON b.id = a.batch_id
+                SELECT DISTINCT f.custody_path
+                FROM files f
+                JOIN batches b ON b.id = f.batch_id
                 WHERE b.source_id = ?
-                ORDER BY af.staging_path
+                ORDER BY f.custody_path
                 """,
                 (source.id,),
             ).fetchall()
@@ -230,23 +229,25 @@ class JebSourceService:
             for row in attempt_rows
             if str(row["state"]) not in ATTEMPT_RESOLVED_STATES
         ]
-        staged_files = filesystem_listing(*(Path(str(row["staging_path"])) for row in staged_rows))
-        tus_scan = scan_incomplete_tus_uploads(
-            self.config.ingress,
-            self.source_registry,
+        custody_files = filesystem_listing(
+            *(Path(str(row["custody_path"])) for row in custody_rows)
         )
-        tus_uploads = [
-            {"id": upload.upload_id, "bytes": upload.bytes}
-            for upload in tus_scan.uploads
-            if upload.source_id == source.id
-        ]
-        tus_bytes = sum(
-            upload.bytes for upload in tus_scan.uploads if upload.source_id == source.id
-        )
+        ingress_publications = []
+        tus_bytes = 0
+        for publication in self.store.pending_ingress_publications(source_id=source.id):
+            staged_path = self.config.ingress.tus_staging_dir / str(publication["upload_id"])
+            try:
+                staged_bytes = staged_path.stat().st_size
+            except FileNotFoundError:
+                staged_bytes = 0
+            ingress_publications.append(
+                {"id": str(publication["upload_id"]), "bytes": staged_bytes}
+            )
+            tus_bytes += staged_bytes
         managed_file_count = (
-            landing_files["file_count"] + staged_files["file_count"] + len(tus_uploads)
+            landing_files["file_count"] + custody_files["file_count"] + len(ingress_publications)
         )
-        managed_bytes = landing_files["bytes"] + staged_files["bytes"] + tus_bytes
+        managed_bytes = landing_files["bytes"] + custody_files["bytes"] + tus_bytes
         blockers: list[str] = []
         if not purge:
             if managed_file_count:
@@ -281,8 +282,8 @@ class JebSourceService:
             "expires_at": format_utc_timestamp(expires),
             "landing_root": str(source.path.resolve()),
             "landing_files": landing_files,
-            "staged_files": staged_files,
-            "incomplete_uploads": tus_uploads,
+            "custody_files": custody_files,
+            "ingress_publications": ingress_publications,
             "unresolved_attempts": unresolved_attempts,
             "batches": int(batch_row["count"] if batch_row is not None else 0),
             "batch_bytes": int(batch_row["bytes"] if batch_row is not None else 0),
@@ -344,8 +345,8 @@ class JebSourceService:
                 conn.execute(
                     """
                     INSERT INTO source_removals(
-                        source_id, challenge, plan_json, status, started_at
-                    ) VALUES(?, ?, ?, 'removing', ?)
+                        source_id, challenge, plan_json, status, phase, started_at
+                    ) VALUES(?, ?, ?, 'removing', 'quiesce', ?)
                     """,
                     (
                         source_id,
@@ -354,7 +355,17 @@ class JebSourceService:
                         event_timestamp(),
                     ),
                 )
-        self._apply_source_removal(plan)
+            self.source_registry.write_ftp_projection()
+        try:
+            self._apply_source_removal(plan, challenge=supplied)
+        except Exception as exc:
+            diagnostic = f"{exc.__class__.__name__}: {exc}"[:400]
+            with self.store.transaction() as conn:
+                conn.execute(
+                    "UPDATE source_removals SET last_error = ? WHERE challenge = ?",
+                    (diagnostic, supplied),
+                )
+            raise
         result = {
             "status": "removed",
             "source": source_id,
@@ -366,36 +377,100 @@ class JebSourceService:
             conn.execute(
                 """
                 UPDATE source_removals
-                SET status = 'complete', plan_json = ?, completed_at = ?
+                SET status = 'complete', phase = 'complete', last_error = NULL,
+                    plan_json = ?, completed_at = ?
                 WHERE source_id = ? AND challenge = ?
                 """,
                 (stable_json(result), event_timestamp(), source_id, supplied),
             )
         return result
 
-    def _apply_source_removal(self, plan: Mapping[str, Any]) -> None:
+    def _apply_source_removal(self, plan: Mapping[str, Any], *, challenge: str) -> None:
         source_id = str(plan["source"])
-        if bool(plan["purge"]):
-            for attempt in cast(list[dict[str, Any]], plan["unresolved_attempts"]):
-                try:
-                    self.store.load_attempt(str(attempt["id"]))
-                except KeyError:
-                    continue
-                adapter = self.target_adapters[str(attempt["target"])]
-                adapter.cancel(self.target_context(), str(attempt["id"]))
-            for upload in cast(list[dict[str, Any]], plan["incomplete_uploads"]):
-                terminate_tus_upload(self.config.ingress, str(upload["id"]))
-            shutil.rmtree(Path(str(plan["landing_root"])), ignore_errors=True)
+        phases = (
+            "quiesce",
+            "cancel_attempts",
+            "cancel_ingress",
+            "delete_landing",
+            "delete_custody",
+            "delete_state",
+            "delete_source",
+            "verify",
+        )
         with self.store.transaction() as conn:
-            batch_rows = conn.execute(
-                "SELECT id FROM batches WHERE source_id = ?",
-                (source_id,),
-            ).fetchall()
-        for row in batch_rows:
-            shutil.rmtree(
-                self.config.service.batch_dir / str(row["id"]),
-                ignore_errors=True,
-            )
+            row = conn.execute(
+                "SELECT phase FROM source_removals WHERE challenge = ?",
+                (challenge,),
+            ).fetchone()
+        if row is None:
+            raise UnrecoverableJebError("source removal state disappeared")
+        phase = str(row["phase"])
+        try:
+            start = phases.index(phase)
+        except ValueError as exc:
+            raise UnrecoverableJebError("source removal phase is invalid") from exc
+        for index in range(start, len(phases)):
+            current = phases[index]
+            if current == "quiesce":
+                self.source_registry.write_ftp_projection()
+            elif current == "cancel_attempts" and bool(plan["purge"]):
+                with self.store.transaction() as conn:
+                    attempts = conn.execute(
+                        """
+                        SELECT a.id, a.state, b.target_name AS target
+                        FROM batch_attempts a JOIN batches b ON b.id = a.batch_id
+                        WHERE b.source_id = ?
+                        ORDER BY a.id
+                        """,
+                        (source_id,),
+                    ).fetchall()
+                for attempt in attempts:
+                    if str(attempt["state"]) in ATTEMPT_RESOLVED_STATES:
+                        continue
+                    adapter = self.target_adapters[str(attempt["target"])]
+                    adapter.cancel(self.target_context(), str(attempt["id"]))
+            elif current == "cancel_ingress" and bool(plan["purge"]):
+                self.cancel_ingress_source(source_id)
+            elif current == "delete_landing":
+                landing_root = self.source_registry.source_roots.root(source_id)
+                if landing_root.exists():
+                    if bool(plan["purge"]):
+                        shutil.rmtree(landing_root)
+                    else:
+                        landing_root.rmdir()
+                if landing_root.exists():
+                    raise UnrecoverableJebError("source landing root remains after removal")
+            elif current == "delete_custody":
+                with self.store.transaction() as conn:
+                    batch_rows = conn.execute(
+                        "SELECT id FROM batches WHERE source_id = ? ORDER BY id",
+                        (source_id,),
+                    ).fetchall()
+                for batch in batch_rows:
+                    batch_root = self.config.service.batch_dir / str(batch["id"])
+                    if batch_root.exists():
+                        shutil.rmtree(batch_root)
+                    if batch_root.exists():
+                        raise UnrecoverableJebError("batch custody remains after removal")
+            elif current == "delete_state":
+                self._delete_source_state(source_id)
+            elif current == "delete_source":
+                try:
+                    self.source_registry.get(source_id)
+                except SourceRegistryError:
+                    pass
+                else:
+                    self.source_registry.delete(source_id)
+            elif current == "verify":
+                self._verify_source_absent(source_id)
+            next_phase = phases[index + 1] if index + 1 < len(phases) else "verify"
+            with self.store.transaction() as conn:
+                conn.execute(
+                    "UPDATE source_removals SET phase = ?, last_error = NULL WHERE challenge = ?",
+                    (next_phase, challenge),
+                )
+
+    def _delete_source_state(self, source_id: str) -> None:
         with self.store.transaction() as conn:
             conn.execute(
                 """
@@ -421,12 +496,41 @@ class JebSourceService:
             )
             conn.execute("DELETE FROM batches WHERE source_id = ?", (source_id,))
             conn.execute("DELETE FROM target_preflight_failures WHERE source_id = ?", (source_id,))
+
+    def _verify_source_absent(self, source_id: str) -> None:
+        source_root = self.source_registry.source_roots.root(source_id)
+        with self.store.transaction() as conn:
+            counts = {
+                "batches": int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM batches WHERE source_id = ?", (source_id,)
+                    ).fetchone()[0]
+                ),
+                "attempts": int(
+                    conn.execute(
+                        """
+                        SELECT COUNT(*) FROM batch_attempts a
+                        JOIN batches b ON b.id = a.batch_id WHERE b.source_id = ?
+                        """,
+                        (source_id,),
+                    ).fetchone()[0]
+                ),
+                "pending_ingress": int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM ingress_publications "
+                        "WHERE source_id = ? AND status = 'pending'",
+                        (source_id,),
+                    ).fetchone()[0]
+                ),
+            }
         try:
             self.source_registry.get(source_id)
         except SourceRegistryError:
-            pass
+            enrolled = False
         else:
-            self.source_registry.delete(source_id)
+            enrolled = True
+        if source_root.exists() or enrolled or any(counts.values()):
+            raise UnrecoverableJebError("source removal verification found retained state")
 
     def target_by_name(self, target_name: str) -> TargetConfig:
         try:
@@ -541,18 +645,24 @@ class JebSourceService:
         before_ts = before.timestamp() if before is not None else None
         out: list[EligibleFile] = []
         seen_target_paths: set[str] = set()
+        pending_publications = self.store.pending_ingress_paths(source.id)
         for path in sorted(source.path.rglob("*")):
-            if not path.is_file():
+            try:
+                observed = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(observed.st_mode):
                 continue
             rel = path.relative_to(source.path)
+            if rel.as_posix() in pending_publications:
+                continue
             if any(part.startswith(".") for part in rel.parts):
                 continue
             if source.include_extensions and path.suffix.lower() not in source.include_extensions:
                 continue
-            stat = path.stat()
-            if stat.st_mtime > cutoff:
+            if observed.st_mtime > cutoff:
                 continue
-            if before_ts is not None and stat.st_mtime >= before_ts:
+            if before_ts is not None and observed.st_mtime >= before_ts:
                 continue
             target_path = normalize_posix(PurePosixPath(source.id, *rel.parts))
             if target_path in seen_target_paths:
@@ -565,9 +675,11 @@ class JebSourceService:
                     path=path,
                     rel=rel,
                     target_path=target_path,
-                    bytes=stat.st_size,
-                    mtime=stat.st_mtime,
-                    mtime_ns=stat.st_mtime_ns,
+                    bytes=observed.st_size,
+                    mtime=observed.st_mtime,
+                    mtime_ns=observed.st_mtime_ns,
+                    device=observed.st_dev,
+                    inode=observed.st_ino,
                 )
             )
         return out

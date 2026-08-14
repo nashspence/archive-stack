@@ -58,6 +58,7 @@ def test_jeb_compose_exposes_every_runtime_setting() -> None:
     assert adapter_settings <= set(services["jeb-ftp"]["environment"])
 
     assert services["jeb-state"]["environment"] == {
+        "JEB_API_TOKEN": services["jeb"]["environment"]["JEB_API_TOKEN"],
         "JEB_STATE_DIR": services["jeb"]["environment"]["JEB_STATE_DIR"],
         "JEB_STATE_DB": services["jeb"]["environment"]["JEB_STATE_DB"],
     }
@@ -78,7 +79,7 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     assert service["environment"]["JEB_HOST"] == "0.0.0.0"
     assert service["environment"]["JEB_PORT"] == "8081"
     assert service["environment"]["JEB_API_TOKEN"] == (
-        "${JEB_API_TOKEN:-jeb-development-api-token}"
+        "${JEB_API_TOKEN:?JEB_API_TOKEN is required}"
     )
     assert service["environment"]["JEB_MUNCHY_ALLOW_INSECURE_HTTP"] == (
         "${JEB_MUNCHY_ALLOW_INSECURE_HTTP:-false}"
@@ -89,6 +90,7 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
     assert service["ports"] == ["${JEB_API_BIND_ADDR:-127.0.0.1}:${JEB_API_PORT:-8081}:8081"]
     runtime = config_from_env(
         {
+            "JEB_API_TOKEN": "test-jeb-management-token",
             "JEB_LANDING_DIR": str(tmp_path / "landing"),
             "JEB_STATE_DIR": str(tmp_path / "state"),
             "JEB_BATCH_DIR": str(tmp_path / "batches"),
@@ -127,6 +129,7 @@ def test_jeb_compose_exposes_readiness_healthcheck(tmp_path: Path) -> None:
 def test_jeb_native_default_uses_the_munchy_client_loopback_contract(tmp_path: Path) -> None:
     runtime = config_from_env(
         {
+            "JEB_API_TOKEN": "test-jeb-management-token",
             "JEB_LANDING_DIR": str(tmp_path / "landing"),
             "JEB_STATE_DIR": str(tmp_path / "state"),
         }
@@ -138,6 +141,7 @@ def test_jeb_native_default_uses_the_munchy_client_loopback_contract(tmp_path: P
 def test_jeb_nondefault_runtime_settings_reach_the_typed_configuration(tmp_path: Path) -> None:
     runtime = config_from_env(
         {
+            "JEB_API_TOKEN": "test-jeb-management-token",
             "JEB_LANDING_DIR": str(tmp_path / "landing"),
             "JEB_STATE_DIR": str(tmp_path / "state"),
             "JEB_BATCH_DIR": str(tmp_path / "batches"),
@@ -158,6 +162,7 @@ def test_jeb_nondefault_runtime_settings_reach_the_typed_configuration(tmp_path:
         }
     )
 
+    assert runtime.management_api_token == "test-jeb-management-token"
     assert runtime.ingress.tus_staging_dir == tmp_path / "tus"
     assert runtime.service.batch_dir == tmp_path / "batches"
     assert runtime.ingress.provenance_installation_id_path == (
@@ -178,12 +183,36 @@ def test_jeb_nondefault_runtime_settings_reach_the_typed_configuration(tmp_path:
     assert runtime.targets["munchy"].token == "munchy-token"
 
 
+@pytest.mark.parametrize(
+    ("token", "message"),
+    (
+        (None, "JEB_API_TOKEN is required"),
+        ("   ", "JEB_API_TOKEN is required"),
+        ("jeb-development-api-token", "retired development credential"),
+    ),
+)
+def test_jeb_management_token_fails_closed(
+    tmp_path: Path,
+    token: str | None,
+    message: str,
+) -> None:
+    env = {
+        "JEB_LANDING_DIR": str(tmp_path / "landing"),
+        "JEB_STATE_DIR": str(tmp_path / "state"),
+    }
+    if token is not None:
+        env["JEB_API_TOKEN"] = token
+    with pytest.raises(ValueError, match=message):
+        config_from_env(env)
+
+
 def test_jeb_munchy_target_validates_cleartext_transport_during_configuration(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ValueError, match="must use HTTPS"):
         config_from_env(
             {
+                "JEB_API_TOKEN": "test-jeb-management-token",
                 "JEB_LANDING_DIR": str(tmp_path / "landing"),
                 "JEB_STATE_DIR": str(tmp_path / "state"),
                 "JEB_MUNCHY_URL": "http://munchy.example.test",

@@ -28,6 +28,7 @@ required_checks = [
   "make compile",
   "make compose-smoke",
   "make dist-smoke",
+  "make jeb-compose-smoke",
   "make lint",
   "make postgres-concurrency",
   "make spec",

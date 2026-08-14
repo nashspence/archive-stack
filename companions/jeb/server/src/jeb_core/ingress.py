@@ -7,14 +7,12 @@ import hmac
 import json
 import os
 import secrets
+import stat
 import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from urllib.parse import urljoin
-
-import httpx
 
 from jeb_core.domain.models import JebIngressConfig
 from jeb_core.domain.sources import SourceRegistryError
@@ -25,7 +23,6 @@ TUS_PATH_METADATA = "jeb_path"
 TUS_SIGNATURE_METADATA = "jeb_signature"
 TUS_PAYLOAD_SHA256_METADATA = "jeb_payload_sha256"
 TUS_PROVENANCE_SHA256_METADATA = "jeb_provenance_sha256"
-TUS_VERSION = "1.0.0"
 
 
 class JebIngressError(RuntimeError):
@@ -198,66 +195,6 @@ def incomplete_tus_upload_status(
     }
 
 
-def reap_stale_incomplete_tus_uploads(
-    config: JebIngressConfig,
-    registry: SourceRegistry,
-    *,
-    now: float | None = None,
-    client: httpx.Client | None = None,
-) -> dict[str, object]:
-    scan = scan_incomplete_tus_uploads(config, registry, now=now)
-    stale = [
-        upload
-        for upload in scan.uploads
-        if upload.age_seconds >= config.tus_incomplete_max_age_seconds
-    ]
-    terminated = 0
-    already_absent = 0
-    failed = 0
-    result: dict[str, object] = {
-        "candidates": len(stale),
-        "candidate_bytes": sum(upload.bytes for upload in stale),
-        "terminated": terminated,
-        "already_absent": already_absent,
-        "failed": failed,
-        "invalid_records": scan.invalid_records,
-        "scan_error": scan.scan_error,
-    }
-    if not stale:
-        return result
-    owned_client = client is None
-    active_client = client or httpx.Client(timeout=10.0)
-    try:
-        for upload in stale:
-            upload_url = urljoin(
-                config.tusd_base_url.rstrip("/") + "/",
-                upload.upload_id,
-            )
-            try:
-                response = active_client.delete(
-                    upload_url,
-                    headers={"Tus-Resumable": TUS_VERSION},
-                )
-                if response.status_code == 404:
-                    already_absent += 1
-                    continue
-                response.raise_for_status()
-                terminated += 1
-            except httpx.HTTPError:
-                failed += 1
-    finally:
-        if owned_client:
-            active_client.close()
-    result.update(
-        {
-            "terminated": terminated,
-            "already_absent": already_absent,
-            "failed": failed,
-        }
-    )
-    return result
-
-
 def authenticate_tus_source(registry: SourceRegistry, authorization: str | None) -> str:
     source, supplied_password = _basic_credentials(authorization)
     try:
@@ -300,16 +237,6 @@ def prepare_tus_upload(
     )
 
 
-def publish_tus_upload(
-    config: JebIngressConfig,
-    registry: SourceRegistry,
-    *,
-    upload: Mapping[str, object],
-) -> Path:
-    validated = validate_tus_upload(config, registry, upload=upload)
-    return publish_validated_tus_upload(config, validated)
-
-
 def validate_tus_upload(
     config: JebIngressConfig,
     registry: SourceRegistry,
@@ -344,8 +271,12 @@ def validate_tus_upload(
     storage = upload.get("Storage")
     if not isinstance(storage, Mapping) or storage.get("Type") != "filestore":
         raise JebIngressError("Jeb TUS ingress requires filestore staging")
-    expected_source = (config.tus_staging_dir / upload_id).resolve()
-    expected_info = (config.tus_staging_dir / f"{upload_id}.info").resolve()
+    raw_source = config.tus_staging_dir / upload_id
+    raw_info = config.tus_staging_dir / f"{upload_id}.info"
+    if raw_source.is_symlink() or raw_info.is_symlink():
+        raise JebIngressError("Jeb TUS staging records must not be symlinks")
+    expected_source = raw_source.resolve()
+    expected_info = raw_info.resolve()
     reported_source = Path(str(storage.get("Path") or "")).resolve()
     reported_info = Path(str(storage.get("InfoPath") or "")).resolve()
     if reported_source != expected_source or reported_info != expected_info:
@@ -370,24 +301,10 @@ def validate_tus_upload(
     )
 
 
-def publish_validated_tus_upload(
-    config: JebIngressConfig,
-    upload: ValidatedTusUpload,
-) -> Path:
-    return JebLandingPublisher(config).publish(
-        upload_id=upload.upload_id,
-        source=upload.source,
-        info=upload.info,
-        destination=upload.destination,
-        size=upload.size,
-    )
-
-
 class JebLandingPublisher:
     def __init__(self, config: JebIngressConfig) -> None:
         self._landing_dir = config.landing_dir.resolve()
         self._staging_dir = config.tus_staging_dir.resolve()
-        self._receipt_dir = self._staging_dir / ".published"
 
     def publish(
         self,
@@ -405,21 +322,15 @@ class JebLandingPublisher:
         self._require_within(source, self._staging_dir, label="source")
         self._require_within(info, self._staging_dir, label="info")
         self._require_within(destination, self._landing_dir, label="destination")
-        receipt = (self._receipt_dir / f"{upload_id}.json").resolve()
-        self._require_within(receipt, self._receipt_dir, label="receipt")
         relative_destination = destination.relative_to(self._landing_dir).as_posix()
 
-        if receipt.exists():
-            self._verify_receipt(
-                receipt,
-                upload_id=upload_id,
-                relative_destination=relative_destination,
-                destination=destination,
-                size=size,
-            )
-            self._cleanup_staging(source, info)
-            return destination
-
+        try:
+            source_mode = os.lstat(source).st_mode
+            info_mode = os.lstat(info).st_mode
+        except FileNotFoundError as exc:
+            raise JebIngressError("completed Jeb TUS upload is missing from staging") from exc
+        if not stat.S_ISREG(source_mode) or not stat.S_ISREG(info_mode):
+            raise JebIngressError("completed Jeb TUS upload staging must contain regular files")
         if not source.is_file():
             raise JebIngressError("completed Jeb TUS upload is missing from staging")
         if source.stat().st_size != size:
@@ -448,15 +359,6 @@ class JebLandingPublisher:
                     "filesystem"
                 ) from exc
 
-        self._write_receipt(
-            receipt,
-            {
-                "upload_id": upload_id,
-                "destination": relative_destination,
-                "bytes": size,
-            },
-        )
-        self._cleanup_staging(source, info)
         return destination
 
     @staticmethod
@@ -465,45 +367,9 @@ class JebLandingPublisher:
             raise JebIngressError(f"Jeb ingress {label} escaped its configured root")
 
     @staticmethod
-    def _cleanup_staging(source: Path, info: Path) -> None:
+    def cleanup_staging(source: Path, info: Path) -> None:
         source.unlink(missing_ok=True)
         info.unlink(missing_ok=True)
-
-    @staticmethod
-    def _verify_receipt(
-        receipt: Path,
-        *,
-        upload_id: str,
-        relative_destination: str,
-        destination: Path,
-        size: int,
-    ) -> None:
-        try:
-            payload = json.loads(receipt.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise JebIngressError("Jeb ingress publication receipt is invalid") from exc
-        if payload != {
-            "upload_id": upload_id,
-            "destination": relative_destination,
-            "bytes": size,
-        }:
-            raise JebIngressError("Jeb ingress publication receipt does not match the upload")
-        if not destination.is_file() or destination.stat().st_size != size:
-            raise JebIngressError("published Jeb landing file does not match its receipt")
-
-    @staticmethod
-    def _write_receipt(path: Path, payload: Mapping[str, object]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.part")
-        try:
-            with temporary.open("x", encoding="utf-8") as stream:
-                json.dump(payload, stream, sort_keys=True, separators=(",", ":"))
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
 
 
 def normalize_landing_path(raw: object) -> str:
@@ -532,9 +398,8 @@ def _landing_destination(
     if not configured.enabled or "tus" not in configured.adapters:
         raise JebIngressAuthenticationError("Jeb TUS source is not enabled")
     normalized_path = PurePosixPath(normalize_landing_path(relative_path))
-    source_id = configured.id
-    destination = (config.landing_dir / source_id / normalized_path).resolve()
-    source_root = (config.landing_dir / source_id).resolve()
+    source_root = configured.path.resolve()
+    destination = (configured.path / normalized_path).resolve()
     if not destination.is_relative_to(source_root):
         raise JebIngressError("Jeb TUS upload escaped its source landing directory")
     return destination

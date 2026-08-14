@@ -6,7 +6,10 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from http_api_contracts import safe_http_base_url
+from jeb_api.app import JebServiceState
 from jeb_api.app import create_app as create_jeb_app
+from jeb_api.composition import config_from_env as jeb_config_from_env
+from jeb_api.composition import create_services as create_jeb_services
 from jeb_api_client import JebApiClient
 from munchy_api.app import app as munchy_app
 from munchy_api_client.client import MunchyAdminClient, MunchyClient
@@ -59,6 +62,21 @@ SUPPORTED_CLIENT_HELPERS = {
 }
 
 
+def create_jeb_contract_app() -> FastAPI:
+    return create_jeb_app(
+        JebServiceState(
+            services=create_jeb_services(
+                jeb_config_from_env(
+                    {
+                        "JEB_API_TOKEN": "interface-parity-management-token",
+                        "JEB_MUNCHY_URL": "https://munchy.invalid",
+                    }
+                )
+            )
+        )
+    )
+
+
 def public_operations(app: FastAPI) -> list[tuple[str, str]]:
     operations: list[tuple[str, str]] = []
     for path, path_item in app.openapi()["paths"].items():
@@ -76,7 +94,7 @@ def public_operations(app: FastAPI) -> list[tuple[str, str]]:
     (
         ("riverhog", create_riverhog_app, (ApiClient,)),
         ("munchy", lambda: munchy_app, (MunchyClient, MunchyAdminClient)),
-        ("jeb", create_jeb_app, (JebApiClient,)),
+        ("jeb", create_jeb_contract_app, (JebApiClient,)),
     ),
 )
 def test_every_public_api_operation_has_an_official_client_method(
@@ -105,7 +123,7 @@ def test_every_public_api_operation_has_an_official_client_method(
     (
         ("riverhog", create_riverhog_app, (ApiClient,)),
         ("munchy", lambda: munchy_app, (MunchyClient, MunchyAdminClient)),
-        ("jeb", create_jeb_app, (JebApiClient,)),
+        ("jeb", create_jeb_contract_app, (JebApiClient,)),
     ),
 )
 def test_every_official_client_method_is_current_or_a_supported_helper(
@@ -129,7 +147,7 @@ def test_every_official_client_method_is_current_or_a_supported_helper(
     (
         ("riverhog", create_riverhog_app),
         ("munchy", lambda: munchy_app),
-        ("jeb", create_jeb_app),
+        ("jeb", create_jeb_contract_app),
     ),
 )
 def test_public_http_health_and_error_schemas_are_conventional(
@@ -183,7 +201,7 @@ def test_public_http_health_and_error_schemas_are_conventional(
 
 @pytest.mark.parametrize(
     "app_factory",
-    (create_riverhog_app, lambda: munchy_app, create_jeb_app),
+    (create_riverhog_app, lambda: munchy_app, create_jeb_contract_app),
 )
 def test_paged_lists_use_the_shared_parameter_and_response_envelope(
     app_factory: Callable[[], FastAPI],

@@ -39,6 +39,8 @@ jobs:
             docker: true
           - target: compose-smoke
             docker: true
+          - target: jeb-compose-smoke
+            docker: true
           - target: dist-smoke
     steps:
       - name: Check out repository
