@@ -31,7 +31,12 @@ from gogurt.listener import (
     uninstall_listener,
 )
 from gogurt.listener_platform import ListenerPlatformError
-from gogurt.mounts import discover_mount_points, iter_new_mounts
+from gogurt.mounts import (
+    MAX_GOGURT_INTERVAL_SECONDS,
+    MIN_GOGURT_INTERVAL_SECONDS,
+    discover_mount_points,
+    iter_new_mounts,
+)
 
 app = typer.Typer(help="Portable mounted-volume marker actions.")
 listener_app = typer.Typer(help="Install and manage the per-user Gogurt listener.")
@@ -214,7 +219,12 @@ def watch_cmd(
     ] = DEFAULT_GOGURT_MARKER_NAME,
     interval_seconds: Annotated[
         float,
-        typer.Option("--interval", min=0.1, help="Mount polling interval in seconds."),
+        typer.Option(
+            "--interval",
+            min=MIN_GOGURT_INTERVAL_SECONDS,
+            max=MAX_GOGURT_INTERVAL_SECONDS,
+            help="Mount polling interval in seconds.",
+        ),
     ] = 2.0,
     include_existing: Annotated[
         bool,
@@ -280,7 +290,12 @@ def listener_install_cmd(
     ] = DEFAULT_GOGURT_MARKER_NAME,
     interval_seconds: Annotated[
         float,
-        typer.Option("--interval", min=0.1, help="Mount polling interval in seconds."),
+        typer.Option(
+            "--interval",
+            min=MIN_GOGURT_INTERVAL_SECONDS,
+            max=MAX_GOGURT_INTERVAL_SECONDS,
+            help="Mount polling interval in seconds.",
+        ),
     ] = 2.0,
     autorun: Annotated[
         bool,

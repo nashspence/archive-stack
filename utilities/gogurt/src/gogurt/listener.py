@@ -25,9 +25,9 @@ from config_validation import ConfigError
 
 from gogurt.core import (
     DEFAULT_GOGURT_MARKER_NAME,
-    load_gogurt_actions,
     plan_gogurt_action,
     revalidate_gogurt_action,
+    validate_gogurt_action_executables,
     validate_gogurt_marker_name,
 )
 from gogurt.filesystem import (
@@ -43,12 +43,11 @@ from gogurt.filesystem import (
 from gogurt.listener_platform import (
     ListenerAdapter,
     ListenerPaths,
-    ListenerPlatformError,
     default_listener_paths,
     listener_adapter,
     resolve_listener_executable,
 )
-from gogurt.mounts import discover_mount_points
+from gogurt.mounts import discover_mount_points, validate_gogurt_interval
 
 LISTENER_CONFIG_SCHEMA = "gogurt-listener-config/v1"
 LISTENER_HEARTBEAT_SCHEMA = "gogurt-listener-heartbeat/v1"
@@ -59,6 +58,7 @@ LISTENER_RETRY_SECONDS = (5.0, 30.0)
 LISTENER_LOG_BYTES = 1_048_576
 LISTENER_LOG_BACKUPS = 3
 LISTENER_MOUNT_ATTENTION_LIMIT = 20
+LISTENER_DIAGNOSTIC_LIMIT = 512
 LISTENER_OPERATIONS = ("install", "status", "start", "stop", "restart", "uninstall")
 
 
@@ -79,8 +79,8 @@ def listener_release_contract() -> dict[str, object]:
         },
         "status_schema": LISTENER_STATUS_SCHEMA,
         "health": {
-            "healthy": "current-heartbeat-and-valid-global-configuration",
-            "failed": "global-configuration-prevents-dispatch",
+            "healthy": "current-heartbeat-valid-global-configuration-and-live-worker",
+            "failed": "global-configuration-or-runtime-prevents-dispatch",
             "mount_attention": "isolated-bounded-nonfatal-diagnostics",
         },
         "replacement": "validated-staged-transaction-with-healthy-rollback",
@@ -105,6 +105,26 @@ class ListenerError(RuntimeError):
     """The Gogurt listener contract could not be satisfied."""
 
 
+def _listener_interval(value: object) -> float:
+    try:
+        return validate_gogurt_interval(value)
+    except ValueError as exc:
+        raise ListenerError(str(exc)) from exc
+
+
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ListenerError(f"Gogurt listener config contains duplicate field: {key}")
+        payload[key] = value
+    return payload
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ListenerError(f"Gogurt listener config contains nonfinite number: {value}")
+
+
 def _now_text(now: float | None = None) -> str:
     value = time.time() if now is None else now
     return datetime.fromtimestamp(value, tz=UTC).isoformat().replace("+00:00", "Z")
@@ -124,6 +144,9 @@ class ListenerConfig:
     state_dir: Path
     autorun: bool = True
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "interval_seconds", _listener_interval(self.interval_seconds))
+
     def payload(self) -> dict[str, object]:
         return {
             "schema": LISTENER_CONFIG_SCHEMA,
@@ -138,7 +161,9 @@ class ListenerConfig:
         }
 
     def content(self) -> bytes:
-        return (json.dumps(self.payload(), indent=2, sort_keys=True) + "\n").encode("utf-8")
+        return (
+            json.dumps(self.payload(), allow_nan=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
 
     def write(self, path: Path) -> None:
         atomic_write(path, self.content(), mode=PRIVATE_FILE_MODE)
@@ -146,7 +171,13 @@ class ListenerConfig:
     @classmethod
     def read(cls, path: Path) -> ListenerConfig:
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(
+                path.read_text(encoding="utf-8"),
+                object_pairs_hook=_strict_json_object,
+                parse_constant=_reject_json_constant,
+            )
+        except ListenerError:
+            raise
         except (FileNotFoundError, json.JSONDecodeError, UnicodeError) as exc:
             raise ListenerError(f"invalid Gogurt listener config: {path}") from exc
         expected = {
@@ -168,27 +199,34 @@ class ListenerConfig:
             )
         if raw["autorun"] is not True:
             raise ListenerError("installed Gogurt listener config must explicitly enable autorun")
-        interval = float(raw["interval_seconds"])
-        if interval < 0.1:
-            raise ListenerError("Gogurt listener interval must be at least 0.1 seconds")
-        executable = Path(str(raw["executable"]))
-        routes_file = Path(str(raw["routes_file"]))
-        state_dir = Path(str(raw["state_dir"]))
+        interval = _listener_interval(raw["interval_seconds"])
+        path_fields = ("executable", "routes_file", "state_dir")
+        if any(not isinstance(raw[field], str) or not raw[field] for field in path_fields):
+            raise ListenerError("Gogurt listener config paths must be nonempty strings")
+        executable = Path(raw["executable"])
+        routes_file = Path(raw["routes_file"])
+        state_dir = Path(raw["state_dir"])
         raw_actions = raw["actions_dir"]
-        actions_dir = Path(str(raw_actions)) if raw_actions is not None else None
+        if raw_actions is not None and (not isinstance(raw_actions, str) or not raw_actions):
+            raise ListenerError(
+                "Gogurt listener config actions directory must be a nonempty string or null"
+            )
+        actions_dir = Path(raw_actions) if isinstance(raw_actions, str) else None
         if not all(path.is_absolute() for path in (executable, routes_file, state_dir)):
             raise ListenerError("Gogurt listener paths must be absolute")
         if actions_dir is not None and not actions_dir.is_absolute():
             raise ListenerError("Gogurt listener actions directory must be absolute")
+        if not isinstance(raw["marker_name"], str):
+            raise ListenerError("installed Gogurt listener marker name must be a string")
         try:
-            validate_gogurt_marker_name(str(raw["marker_name"]))
+            validate_gogurt_marker_name(raw["marker_name"])
         except ConfigError as exc:
             raise ListenerError("installed Gogurt listener marker name is invalid") from exc
         return cls(
             executable=executable,
             routes_file=routes_file,
             actions_dir=actions_dir,
-            marker_name=str(raw["marker_name"]),
+            marker_name=raw["marker_name"],
             interval_seconds=interval,
             state_dir=state_dir,
         )
@@ -205,7 +243,10 @@ def _service_command(config: ListenerConfig, config_file: Path) -> tuple[str, ..
 
 
 def _safe_diagnostic(scope: str, exc: BaseException) -> str:
-    return f"{scope}: {type(exc).__name__}: {exc}"
+    value = " ".join(f"{scope}: {type(exc).__name__}: {exc}".splitlines())
+    if len(value) <= LISTENER_DIAGNOSTIC_LIMIT:
+        return value
+    return value[: LISTENER_DIAGNOSTIC_LIMIT - 1] + "…"
 
 
 def _secure_listener_state(paths: ListenerPaths) -> None:
@@ -230,6 +271,7 @@ def _require_matching_state(config: ListenerConfig, paths: ListenerPaths) -> Non
 
 def _validate_global_configuration(config: ListenerConfig, paths: ListenerPaths) -> None:
     _require_matching_state(config, paths)
+    _listener_interval(config.interval_seconds)
     validate_gogurt_marker_name(config.marker_name)
     if not config.executable.is_file() or (
         sys.platform != "win32" and not os.access(config.executable, os.X_OK)
@@ -237,7 +279,10 @@ def _validate_global_configuration(config: ListenerConfig, paths: ListenerPaths)
         raise ListenerError("installed Gogurt executable is absent or not executable")
     if config.actions_dir is not None and not config.actions_dir.is_dir():
         raise ListenerError("installed Gogurt actions directory is absent")
-    load_gogurt_actions(config.routes_file)
+    validate_gogurt_action_executables(
+        config.routes_file,
+        actions_dir=config.actions_dir,
+    )
 
 
 class ListenerStore:
@@ -607,6 +652,8 @@ class ListenerRuntime:
         self._active_process: subprocess.Popen[bytes] | None = None
         self._health_lock = threading.Lock()
         self._configuration_diagnostic: str | None = None
+        self._runtime_diagnostic: str | None = None
+        self._worker_failure: Exception | None = None
         self._mount_attention: list[dict[str, str]] = []
         self.started_at = self.clock()
 
@@ -625,7 +672,7 @@ class ListenerRuntime:
                 actions_dir=self.config.actions_dir,
                 marker_name=self.config.marker_name,
             )
-        except (ConfigError, OSError, UnicodeError, ValueError) as exc:
+        except (ConfigError, ListenerError, OSError, UnicodeError, ValueError) as exc:
             diagnostic = _safe_diagnostic("mount input", exc)
             with self._health_lock:
                 if len(self._mount_attention) < LISTENER_MOUNT_ATTENTION_LIMIT:
@@ -652,6 +699,7 @@ class ListenerRuntime:
             active = self._active_dispatch
         with self._health_lock:
             configuration_diagnostic = self._configuration_diagnostic
+            runtime_diagnostic = self._runtime_diagnostic
             mount_attention = list(self._mount_attention)
         payload = {
             "schema": LISTENER_HEARTBEAT_SCHEMA,
@@ -665,6 +713,10 @@ class ListenerRuntime:
             "configuration": {
                 "status": "failed" if configuration_diagnostic is not None else "valid",
                 "diagnostic": configuration_diagnostic,
+            },
+            "runtime": {
+                "status": "failed" if runtime_diagnostic is not None else "running",
+                "diagnostic": runtime_diagnostic,
             },
             "mount_attention": mount_attention,
         }
@@ -734,13 +786,31 @@ class ListenerRuntime:
             self.dispatch_queue.task_done()
             self._heartbeat()
 
+    def _supervised_worker(self) -> None:
+        try:
+            self._worker()
+        except Exception as exc:
+            diagnostic = _safe_diagnostic("dispatch worker", exc)
+            with self._health_lock:
+                self._worker_failure = exc
+                self._runtime_diagnostic = diagnostic
+            self.logger.error("runtime=%s", diagnostic)
+            self.stop_event.set()
+            try:
+                self._heartbeat()
+            except Exception as heartbeat_exc:
+                self.logger.error(
+                    "runtime heartbeat=%s",
+                    _safe_diagnostic("dispatch worker heartbeat", heartbeat_exc),
+                )
+
     def run_once(self) -> None:
         now = self.clock()
         with self._health_lock:
             self._mount_attention = []
         try:
             _validate_global_configuration(self.config, self.paths)
-        except (ConfigError, OSError, UnicodeError, ValueError) as exc:
+        except (ConfigError, ListenerError, OSError, UnicodeError, ValueError) as exc:
             diagnostic = _safe_diagnostic("global configuration", exc)
             with self._health_lock:
                 self._configuration_diagnostic = diagnostic
@@ -756,7 +826,9 @@ class ListenerRuntime:
             with self._health_lock:
                 self._mount_attention.append({"mount_point": "", "diagnostic": diagnostic})
             self.logger.warning("mount discovery attention=%s", diagnostic)
-            mount_points = []
+            self._enqueue(self.store.runnable(now=now))
+            self._heartbeat()
+            return
         queued = self.store.observe(mount_points, self._planner, now=now)
         self._enqueue(queued)
         self._enqueue(self.store.runnable(now=now))
@@ -764,7 +836,11 @@ class ListenerRuntime:
 
     def run(self) -> None:
         self.store.create()
-        worker = threading.Thread(target=self._worker, name="gogurt-dispatch", daemon=True)
+        worker = threading.Thread(
+            target=self._supervised_worker,
+            name="gogurt-dispatch",
+            daemon=True,
+        )
         worker.start()
         try:
             while not self.stop_event.is_set():
@@ -773,7 +849,17 @@ class ListenerRuntime:
         finally:
             self.request_stop()
             worker.join(timeout=10)
-            self._heartbeat()
+            try:
+                self._heartbeat()
+            except Exception as heartbeat_exc:
+                if self._worker_failure is None:
+                    raise
+                self.logger.error(
+                    "final heartbeat=%s",
+                    _safe_diagnostic("listener final heartbeat", heartbeat_exc),
+                )
+        if self._worker_failure is not None:
+            raise ListenerError(str(self._runtime_diagnostic)) from self._worker_failure
 
 
 class _PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
@@ -856,6 +942,12 @@ def _read_heartbeat(path: Path) -> dict[str, object] | None:
         "failed",
     }:
         return None
+    runtime = value.get("runtime")
+    if not isinstance(runtime, dict) or runtime.get("status") not in {
+        "running",
+        "failed",
+    }:
+        return None
     mount_attention = value.get("mount_attention")
     if not isinstance(mount_attention, list):
         return None
@@ -895,6 +987,7 @@ def listener_status(
         except (KeyError, TypeError, ValueError):
             heartbeat = None
     heartbeat_diagnostic: str | None = None
+    runtime_diagnostic: str | None = None
     mount_attention: list[object] = []
     if heartbeat is not None:
         configuration = cast(dict[str, object], heartbeat["configuration"])
@@ -905,8 +998,16 @@ def listener_status(
                 if raw_diagnostic
                 else "global configuration: listener reported failure"
             )
+        runtime = cast(dict[str, object], heartbeat["runtime"])
+        if runtime.get("status") == "failed":
+            raw_runtime_diagnostic = runtime.get("diagnostic")
+            runtime_diagnostic = (
+                str(raw_runtime_diagnostic)
+                if raw_runtime_diagnostic
+                else "listener runtime: dispatch worker reported failure"
+            )
         mount_attention = cast(list[object], heartbeat["mount_attention"])
-    diagnostic = config_error or heartbeat_diagnostic
+    diagnostic = config_error or runtime_diagnostic or heartbeat_diagnostic
     if not native.installed:
         health = "absent"
     elif not native.running:
@@ -1013,13 +1114,12 @@ def install_listener(
     wait_for_health: bool = True,
 ) -> dict[str, object]:
     routes = routes_file.expanduser().resolve()
-    load_gogurt_actions(routes)
     validate_gogurt_marker_name(marker_name)
     actions = actions_dir.expanduser().resolve() if actions_dir is not None else None
     if actions is not None and not actions.is_dir():
         raise NotADirectoryError(actions)
-    if interval_seconds < 0.1:
-        raise ListenerError("Gogurt listener interval must be at least 0.1 seconds")
+    interval = _listener_interval(interval_seconds)
+    validate_gogurt_action_executables(routes, actions_dir=actions)
     resolved_paths = paths or default_listener_paths()
     native_adapter = adapter or listener_adapter()
     resolved_executable = resolve_listener_executable(
@@ -1030,7 +1130,7 @@ def install_listener(
         routes_file=routes,
         actions_dir=actions,
         marker_name=marker_name,
-        interval_seconds=interval_seconds,
+        interval_seconds=interval,
         state_dir=resolved_paths.state_dir,
     )
     _secure_listener_state(resolved_paths)
@@ -1078,9 +1178,13 @@ def install_listener(
                     previous_pid=previous_pid,
                 )
             return listener_status(paths=resolved_paths, adapter=native_adapter)
-        except (ListenerError, ListenerPlatformError, OSError) as exc:
+        except Exception as exc:
             rollback_errors: list[str] = []
-            failed_pid = _heartbeat_pid(resolved_paths)
+            try:
+                failed_pid = _heartbeat_pid(resolved_paths)
+            except Exception as rollback_exc:
+                failed_pid = None
+                rollback_errors.append(_safe_diagnostic("read failed listener pid", rollback_exc))
             try:
                 native_adapter.unregister(resolved_paths)
                 _wait_for_health(
@@ -1089,13 +1193,13 @@ def install_listener(
                     adapter=native_adapter,
                     terminated_pid=failed_pid,
                 )
-            except (ListenerError, ListenerPlatformError, OSError) as rollback_exc:
-                rollback_errors.append(f"remove failed registration: {rollback_exc}")
+            except Exception as rollback_exc:
+                rollback_errors.append(_safe_diagnostic("remove failed registration", rollback_exc))
             if previous is None:
                 try:
                     resolved_paths.config_file.unlink(missing_ok=True)
-                except OSError as rollback_exc:
-                    rollback_errors.append(f"remove config: {rollback_exc}")
+                except Exception as rollback_exc:
+                    rollback_errors.append(_safe_diagnostic("remove config", rollback_exc))
             else:
                 assert previous_content is not None
                 try:
@@ -1114,12 +1218,15 @@ def install_listener(
                         adapter=native_adapter,
                         previous_pid=failed_pid,
                     )
-                except (ListenerError, ListenerPlatformError, OSError) as rollback_exc:
-                    rollback_errors.append(f"restore prior healthy listener: {rollback_exc}")
+                except Exception as rollback_exc:
+                    rollback_errors.append(
+                        _safe_diagnostic("restore prior healthy listener", rollback_exc)
+                    )
             if rollback_errors:
                 detail = "; ".join(rollback_errors)
                 raise ListenerError(
-                    f"Gogurt listener installation failed ({exc}); rollback failed ({detail})"
+                    f"{_safe_diagnostic('Gogurt listener installation failed', exc)}; "
+                    f"rollback failed ({detail})"
                 ) from exc
             raise
     finally:

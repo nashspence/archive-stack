@@ -9,8 +9,11 @@ import gogurt.filesystem as filesystem_module
 import pytest
 from gogurt.listener_platform import (
     LISTENER_LABEL,
+    WINDOWS_TASK_NOT_FOUND_EXIT,
+    WINDOWS_TASK_NOT_FOUND_HRESULT,
     LaunchdUserAdapter,
     ListenerPaths,
+    ListenerPlatformError,
     NativeListenerStatus,
     SystemdUserAdapter,
     TaskSchedulerUserAdapter,
@@ -181,6 +184,7 @@ class RecordingTaskAdapter(TaskSchedulerUserAdapter):
         self.commands: list[list[str]] = []
         self.task_state = "4"
         self.task_exists = True
+        self.query_failure = False
 
     def _run(
         self,
@@ -188,15 +192,20 @@ class RecordingTaskAdapter(TaskSchedulerUserAdapter):
         *,
         allowed: frozenset[int] = frozenset({0}),
     ) -> subprocess.CompletedProcess[str]:
-        del allowed
         self.commands.append(list(command))
         if "-Command" in command:
-            return subprocess.CompletedProcess(
-                list(command),
-                0 if self.task_exists else 1,
-                self.task_state if self.task_exists else "localized task-not-found text",
-                "",
+            return_code = (
+                1 if self.query_failure else 0 if self.task_exists else WINDOWS_TASK_NOT_FOUND_EXIT
             )
+            completed = subprocess.CompletedProcess(
+                list(command),
+                return_code,
+                self.task_state if self.task_exists else "localized task-not-found text",
+                "scheduler query failed" if self.query_failure else "",
+            )
+            if completed.returncode not in allowed:
+                raise ListenerPlatformError("Task Scheduler query failed")
+            return completed
         return subprocess.CompletedProcess(list(command), 0, "", "")
 
 
@@ -217,6 +226,10 @@ def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path:
     state_command = adapter.commands[-1]
     assert state_command[0].endswith("WindowsPowerShell\\v1.0\\powershell.exe")
     assert "Running" not in " ".join(state_command)
+    joined_state_command = " ".join(state_command)
+    assert "} catch { if ($_.Exception.HResult" in joined_state_command
+    assert str(WINDOWS_TASK_NOT_FOUND_HRESULT) in joined_state_command
+    assert f"exit {WINDOWS_TASK_NOT_FOUND_EXIT}" in joined_state_command
 
     adapter.task_state = "3"
     ready = adapter.status(paths)
@@ -230,5 +243,11 @@ def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path:
     absent = adapter.status(paths)
     assert absent == NativeListenerStatus(installed=False, enabled=False, running=False)
 
+    adapter.task_exists = True
+    adapter.query_failure = True
+    with pytest.raises(ListenerPlatformError, match="query failed"):
+        adapter.status(paths)
+
+    adapter.query_failure = False
     adapter.unregister(paths)
     assert any("/Delete" in item for item in adapter.commands)
