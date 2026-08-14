@@ -161,6 +161,7 @@ def test_launchd_registration_bootstraps_and_removes_the_agent(tmp_path: Path) -
 class RecordingTaskAdapter(TaskSchedulerUserAdapter):
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
+        self.query_output = '"\\Riverhog.Gogurt","N/A","Running"\n'
 
     def _run(
         self,
@@ -170,7 +171,7 @@ class RecordingTaskAdapter(TaskSchedulerUserAdapter):
     ) -> subprocess.CompletedProcess[str]:
         del allowed
         self.commands.append(list(command))
-        return subprocess.CompletedProcess(list(command), 0, "Status: Running\n", "")
+        return subprocess.CompletedProcess(list(command), 0, self.query_output, "")
 
 
 def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path: Path) -> None:
@@ -186,6 +187,8 @@ def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path:
     assert "/IT" in create
     assert "/RU" not in create
     assert adapter.status(paths).running is True
+    adapter.query_output = '"\\Riverhog.Gogurt","N/A","Ready"\n'
+    assert adapter.status(paths).running is False
 
     adapter.unregister(paths)
     assert any("/Delete" in item for item in adapter.commands)

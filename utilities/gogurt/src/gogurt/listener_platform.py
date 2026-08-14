@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 import plistlib
 import shutil
@@ -312,12 +313,12 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
     def status(self, paths: ListenerPaths) -> NativeListenerStatus:
         del paths
         completed = self._run(
-            ["schtasks.exe", "/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "LIST", "/V"],
+            ["schtasks.exe", "/Query", "/TN", WINDOWS_TASK_NAME, "/FO", "CSV", "/NH"],
             allowed=frozenset({0, 1}),
         )
         installed = completed.returncode == 0
-        output = completed.stdout.casefold()
-        running = installed and "running" in output
+        rows = list(csv.reader(completed.stdout.splitlines())) if installed else []
+        running = bool(rows and rows[0] and rows[0][-1].strip().casefold() == "running")
         return NativeListenerStatus(installed=installed, enabled=installed, running=running)
 
     def start(self, paths: ListenerPaths) -> None:
