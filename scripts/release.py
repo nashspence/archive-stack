@@ -542,7 +542,7 @@ def _apply_release_version_to_lock(
 def _ensure_clean(root: Path) -> None:
     status = _git_output(root, "status", "--porcelain=v1", "--untracked-files=all")
     if status:
-        raise ReleaseError("release operations require a clean worktree")
+        raise ReleaseError("release operations require a clean worktree; Git reported:\n" + status)
 
 
 def _trusted_config_paths(checkout: Path) -> str:
