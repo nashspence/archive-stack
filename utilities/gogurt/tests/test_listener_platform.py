@@ -5,6 +5,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+import gogurt.filesystem as filesystem_module
 import pytest
 from gogurt.listener_platform import (
     LISTENER_LABEL,
@@ -31,6 +32,22 @@ def _paths(tmp_path: Path, registration: Path | None) -> ListenerPaths:
         log_file=state / "listener.log",
         registration_file=registration,
     )
+
+
+def test_windows_existing_private_file_is_validated_without_reopening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sidecar = tmp_path / "listener.sqlite3-shm"
+    sidecar.touch()
+
+    def refuse_open(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("Windows existing state must not be reopened for POSIX modes")
+
+    monkeypatch.setattr("gogurt.filesystem.os.name", "nt")
+    monkeypatch.setattr("gogurt.filesystem.os.open", refuse_open)
+
+    filesystem_module.ensure_private_file(sidecar)
 
 
 def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> None:
