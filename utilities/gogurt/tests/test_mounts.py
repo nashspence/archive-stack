@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from gogurt.mounts import (
+    MAX_GOGURT_INTERVAL_SECONDS,
+    MIN_GOGURT_INTERVAL_SECONDS,
     iter_new_mounts,
     linux_mount_points,
     macos_mount_points,
+    validate_gogurt_interval,
     windows_mount_points,
 )
 
@@ -55,3 +59,12 @@ def test_mount_watcher_can_include_existing_mounts() -> None:
     )
 
     assert next(events) == Path("/camera")
+
+
+def test_polling_interval_is_finite_and_bounded() -> None:
+    assert validate_gogurt_interval(MIN_GOGURT_INTERVAL_SECONDS) == 0.1
+    assert validate_gogurt_interval(MAX_GOGURT_INTERVAL_SECONDS) == 3600.0
+
+    for value in (True, "2", float("nan"), float("inf"), 0.09, 3600.01):
+        with pytest.raises(ValueError):
+            validate_gogurt_interval(value)

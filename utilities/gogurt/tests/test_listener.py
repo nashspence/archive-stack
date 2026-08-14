@@ -15,7 +15,7 @@ from pathlib import Path
 import gogurt.listener as listener_module
 import pytest
 from config_validation import ConfigError
-from gogurt.core import load_gogurt_actions
+from gogurt.core import load_gogurt_actions, write_gogurt_marker
 from gogurt.core import plan_gogurt_action as core_plan_gogurt_action
 from gogurt.listener import (
     LISTENER_CONFIG_SCHEMA,
@@ -123,6 +123,28 @@ def test_listener_config_is_versioned_absolute_and_autorun(tmp_path: Path) -> No
         ListenerConfig.read(paths.config_file)
 
 
+def test_listener_config_json_and_fields_are_strict(tmp_path: Path) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    payload = config.payload()
+    invalid_payloads = [
+        json.dumps(payload)[:-1] + ', "autorun": true}',
+        json.dumps(payload | {"interval_seconds": True}),
+        json.dumps(payload | {"interval_seconds": "2"}),
+        json.dumps(payload | {"unexpected": "field"}),
+        json.dumps(payload).replace('"interval_seconds": 0.1', '"interval_seconds": NaN'),
+    ]
+
+    for content in invalid_payloads:
+        paths.config_file.parent.mkdir(parents=True, exist_ok=True)
+        paths.config_file.write_text(content, encoding="utf-8")
+        with pytest.raises(ListenerError):
+            ListenerConfig.read(paths.config_file)
+
+    bounded = payload | {"interval_seconds": 3600.0}
+    paths.config_file.write_text(json.dumps(bounded), encoding="utf-8")
+    assert ListenerConfig.read(paths.config_file).interval_seconds == 3600.0
+
+
 def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Path) -> None:
     config, paths, mount, counter = _fixture(tmp_path)
     first = ListenerRuntime(config, paths, discover=lambda: [mount])
@@ -146,6 +168,109 @@ def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Pat
     second.request_stop()
     thread.join(timeout=5)
     assert counter.read_text(encoding="utf-8").splitlines() == ["run", "run"]
+
+
+def test_same_route_marker_write_does_not_create_a_second_dispatch(tmp_path: Path) -> None:
+    config, paths, mount, _counter = _fixture(tmp_path)
+    store = ListenerStore(paths.database_file)
+    store.create()
+    [dispatch_id] = store.observe(
+        [mount],
+        lambda point: core_plan_gogurt_action(config.routes_file, point),
+        now=1,
+    )
+    assert store.start_dispatch(dispatch_id, now=2) is not None
+    assert store.finish_dispatch(dispatch_id, return_code=0, error=None, now=3) == "completed"
+
+    marker = mount / config.marker_name
+    marker_identity = core_plan_gogurt_action(config.routes_file, mount)["marker_identity"]
+    assert write_gogurt_marker(config.routes_file, "camera", mount) == marker
+    queued = store.observe(
+        [mount],
+        lambda point: core_plan_gogurt_action(config.routes_file, point),
+        now=4,
+    )
+
+    assert queued == []
+    assert core_plan_gogurt_action(config.routes_file, mount)["marker_identity"] == marker_identity
+    with closing(sqlite3.connect(paths.database_file)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("dispatch_state", ["completed", "running"])
+def test_discovery_failure_preserves_mount_generation_without_replay(
+    tmp_path: Path,
+    dispatch_state: str,
+) -> None:
+    config, paths, mount, _counter = _fixture(tmp_path)
+    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    runtime.store.create()
+    [dispatch_id] = runtime.store.observe([mount], runtime._planner, now=1)
+    assert runtime.store.start_dispatch(dispatch_id, now=2) is not None
+    if dispatch_state == "completed":
+        assert (
+            runtime.store.finish_dispatch(
+                dispatch_id,
+                return_code=0,
+                error=None,
+                now=3,
+            )
+            == "completed"
+        )
+
+    def fail_discovery() -> Sequence[Path]:
+        raise OSError("temporary discovery failure")
+
+    runtime.discover = fail_discovery
+    runtime.run_once()
+    with closing(sqlite3.connect(paths.database_file)) as connection:
+        assert connection.execute("SELECT present, generation FROM observed_mounts").fetchone() == (
+            1,
+            1,
+        )
+        assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (1,)
+
+    runtime.discover = lambda: [mount]
+    runtime.run_once()
+    with closing(sqlite3.connect(paths.database_file)) as connection:
+        assert connection.execute("SELECT present, generation FROM observed_mounts").fetchone() == (
+            1,
+            1,
+        )
+        assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (1,)
+    assert runtime.dispatch_queue.empty()
+
+    runtime.discover = lambda: []
+    runtime.run_once()
+    runtime.discover = lambda: [mount]
+    runtime.run_once()
+    with closing(sqlite3.connect(paths.database_file)) as connection:
+        assert connection.execute("SELECT present, generation FROM observed_mounts").fetchone() == (
+            1,
+            2,
+        )
+        assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (2,)
+    assert not runtime.dispatch_queue.empty()
+
+
+def test_unexpected_worker_failure_terminates_with_failed_runtime_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    runtime = ListenerRuntime(config, paths, discover=lambda: [])
+
+    def fail_worker() -> None:
+        raise sqlite3.OperationalError("worker state failed")
+
+    monkeypatch.setattr(runtime, "_worker", fail_worker)
+
+    with pytest.raises(ListenerError, match="dispatch worker"):
+        runtime.run()
+
+    heartbeat = json.loads(paths.heartbeat_file.read_text(encoding="utf-8"))
+    assert heartbeat["runtime"]["status"] == "failed"
+    assert "dispatch worker" in heartbeat["runtime"]["diagnostic"]
 
 
 def test_interrupted_dispatch_becomes_observable_uncertain_state(tmp_path: Path) -> None:
@@ -419,6 +544,243 @@ def test_install_rejects_invalid_marker_name_before_registration(tmp_path: Path)
     assert not paths.config_file.exists()
 
 
+def test_install_rejects_missing_static_action_before_registration(tmp_path: Path) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    config.routes_file.write_text(
+        "schema_version: 1\n"
+        "kind: gogurt.routes\n"
+        "routes:\n"
+        "  camera:\n"
+        "    command:\n"
+        "      - definitely-absent-gogurt-action\n"
+        '      - "{mount_point}"\n',
+        encoding="utf-8",
+    )
+    executable = tmp_path / "installed" / "gogurt"
+    executable.parent.mkdir()
+    executable.write_text("fixture", encoding="utf-8")
+    executable.chmod(0o755)
+    adapter = FakeAdapter()
+
+    with pytest.raises(FileNotFoundError, match="action executable not found"):
+        install_listener(
+            config.routes_file,
+            actions_dir=None,
+            executable=executable,
+            paths=paths,
+            adapter=adapter,
+            wait_for_health=False,
+        )
+
+    assert adapter.register_calls == 0
+    assert adapter.stop_calls == 0
+    assert not paths.config_file.exists()
+
+
+def test_missing_installed_static_action_reports_failed_health_without_dispatch(
+    tmp_path: Path,
+) -> None:
+    config, paths, mount, _counter = _fixture(tmp_path)
+    actions_dir = tmp_path / "actions"
+    actions_dir.mkdir()
+    action = actions_dir / "archive-camera"
+    action.write_text("fixture", encoding="utf-8")
+    action.chmod(0o755)
+    config.routes_file.write_text(
+        "schema_version: 1\n"
+        "kind: gogurt.routes\n"
+        "routes:\n"
+        "  camera:\n"
+        "    command:\n"
+        "      - archive-camera\n"
+        '      - "{mount_point}"\n',
+        encoding="utf-8",
+    )
+    runtime_config = ListenerConfig(
+        executable=config.executable,
+        routes_file=config.routes_file,
+        actions_dir=actions_dir,
+        marker_name=config.marker_name,
+        interval_seconds=config.interval_seconds,
+        state_dir=config.state_dir,
+    )
+    runtime_config.write(paths.config_file)
+    runtime = ListenerRuntime(runtime_config, paths, discover=lambda: [mount])
+    runtime.store.create()
+
+    action.unlink()
+    runtime.run_once()
+
+    heartbeat = json.loads(paths.heartbeat_file.read_text(encoding="utf-8"))
+    assert heartbeat["configuration"]["status"] == "failed"
+    assert "action executable not found" in heartbeat["configuration"]["diagnostic"]
+    assert heartbeat["dispatches"]["counts"] == {}
+    assert runtime.dispatch_queue.empty()
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+def test_native_status_failure_preserves_the_existing_installation_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: bool,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    executable = tmp_path / "installed" / "gogurt"
+    executable.parent.mkdir()
+    executable.write_text("fixture", encoding="utf-8")
+    executable.chmod(0o755)
+    adapter = FakeAdapter()
+    previous_content: bytes | None = None
+    if replacement:
+        install_listener(
+            config.routes_file,
+            actions_dir=None,
+            executable=executable,
+            paths=paths,
+            adapter=adapter,
+            wait_for_health=False,
+        )
+        previous_content = paths.config_file.read_bytes()
+
+    def fail_status(_paths: ListenerPaths) -> NativeListenerStatus:
+        raise OSError("native status unavailable")
+
+    monkeypatch.setattr(adapter, "status", fail_status)
+
+    with pytest.raises(OSError, match="native status unavailable"):
+        install_listener(
+            config.routes_file,
+            actions_dir=None,
+            interval_seconds=0.2,
+            executable=executable,
+            paths=paths,
+            adapter=adapter,
+            wait_for_health=False,
+        )
+
+    assert adapter.stop_calls == 0
+    assert adapter.unregister_calls == 0
+    if replacement:
+        assert adapter.installed is True
+        assert adapter.running is True
+        assert paths.config_file.read_bytes() == previous_content
+    else:
+        assert adapter.installed is False
+        assert not paths.config_file.exists()
+
+
+def test_install_rollback_aggregates_bounded_single_line_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    executable = tmp_path / "installed" / "gogurt"
+    executable.parent.mkdir()
+    executable.write_text("fixture", encoding="utf-8")
+    executable.chmod(0o755)
+    adapter = FakeAdapter(fail_registration=True)
+
+    def fail_unregister(_paths: ListenerPaths) -> None:
+        raise OSError("cleanup failed\n" + "bounded-detail-" * 100)
+
+    monkeypatch.setattr(adapter, "unregister", fail_unregister)
+
+    with pytest.raises(ListenerError) as raised:
+        install_listener(
+            config.routes_file,
+            actions_dir=None,
+            executable=executable,
+            paths=paths,
+            adapter=adapter,
+            wait_for_health=False,
+        )
+
+    diagnostic = str(raised.value)
+    assert "Gogurt listener installation failed: OSError: startup failed" in diagnostic
+    assert "remove failed registration: OSError: cleanup failed" in diagnostic
+    assert "\n" not in diagnostic
+    assert len(diagnostic) <= 1200
+    assert not paths.config_file.exists()
+
+
+def test_first_install_rolls_back_sqlite_initialization_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    executable = tmp_path / "installed" / "gogurt"
+    executable.parent.mkdir()
+    executable.write_text("fixture", encoding="utf-8")
+    executable.chmod(0o755)
+    adapter = FakeAdapter()
+
+    def fail_create(_store: ListenerStore) -> None:
+        raise sqlite3.OperationalError("schema unavailable")
+
+    monkeypatch.setattr(ListenerStore, "create", fail_create)
+
+    with pytest.raises(sqlite3.OperationalError, match="schema unavailable"):
+        install_listener(
+            config.routes_file,
+            actions_dir=None,
+            executable=executable,
+            paths=paths,
+            adapter=adapter,
+            wait_for_health=False,
+        )
+
+    assert adapter.installed is False
+    assert adapter.unregister_calls == 1
+    assert not paths.config_file.exists()
+
+
+def test_replacement_rolls_back_sqlite_initialization_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    executable = tmp_path / "installed" / "gogurt"
+    executable.parent.mkdir()
+    executable.write_text("fixture", encoding="utf-8")
+    executable.chmod(0o755)
+    adapter = FakeAdapter()
+    install_listener(
+        config.routes_file,
+        actions_dir=None,
+        interval_seconds=0.1,
+        executable=executable,
+        paths=paths,
+        adapter=adapter,
+        wait_for_health=False,
+    )
+    previous_content = paths.config_file.read_bytes()
+
+    def instant_health(expected: frozenset[str], **_kwargs: object) -> dict[str, object]:
+        return {"health": sorted(expected)[0]}
+
+    def fail_create(_store: ListenerStore) -> None:
+        raise sqlite3.OperationalError("schema unavailable")
+
+    monkeypatch.setattr(listener_module, "_wait_for_health", instant_health)
+    monkeypatch.setattr(ListenerStore, "create", fail_create)
+
+    with pytest.raises(sqlite3.OperationalError, match="schema unavailable"):
+        install_listener(
+            config.routes_file,
+            actions_dir=None,
+            interval_seconds=0.2,
+            executable=executable,
+            paths=paths,
+            adapter=adapter,
+            wait_for_health=False,
+        )
+
+    assert paths.config_file.read_bytes() == previous_content
+    assert adapter.installed is True
+    assert adapter.running is True
+    assert adapter.register_calls == 2
+
+
 def test_failed_replacement_restores_the_previous_listener(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -578,7 +940,7 @@ def test_unhealthy_replacement_restores_proven_healthy_listener(
         if expected == frozenset({"healthy"}):
             healthy_checks += 1
             if healthy_checks == 1:
-                raise ListenerError("replacement unhealthy")
+                raise RuntimeError("replacement health probe failed")
         return {"health": sorted(expected)[0]}
 
     monkeypatch.setattr(
@@ -586,7 +948,7 @@ def test_unhealthy_replacement_restores_proven_healthy_listener(
         replacement_then_rollback_health,
     )
 
-    with pytest.raises(ListenerError, match="replacement unhealthy"):
+    with pytest.raises(RuntimeError, match="replacement health probe failed"):
         install_listener(
             config.routes_file,
             actions_dir=None,
@@ -712,6 +1074,7 @@ def test_listener_status_reports_health_and_dispatch_attention(tmp_path: Path) -
         "active_dispatch": None,
         "dispatches": {"counts": {}, "attention": []},
         "configuration": {"status": "valid", "diagnostic": None},
+        "runtime": {"status": "running", "diagnostic": None},
         "mount_attention": [],
     }
     paths.heartbeat_file.write_text(json.dumps(heartbeat), encoding="utf-8")

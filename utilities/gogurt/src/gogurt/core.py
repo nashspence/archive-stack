@@ -23,6 +23,16 @@ MAX_GOGURT_MARKER_BYTES = 4096
 GOGURT_EMOJI = "🛹"
 _COMMAND_PLACEHOLDERS = {"{config_dir}", "{mount_point}", "{python}"}
 _PLACEHOLDER_RE = re.compile(r"\{[^{}]+\}")
+_GOGURT_ROUTE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_GOGURT_MARKER_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_WINDOWS_RESERVED_BASENAMES = {
+    "aux",
+    "con",
+    "nul",
+    "prn",
+    *(f"com{value}" for value in range(1, 10)),
+    *(f"lpt{value}" for value in range(1, 10)),
+}
 
 GOGURT_ROUTES_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -32,6 +42,7 @@ GOGURT_ROUTES_SCHEMA: dict[str, Any] = {
         "kind": {"type": "string", "const": "gogurt.routes"},
         "routes": {
             "type": "object",
+            "propertyNames": {"pattern": _GOGURT_ROUTE_RE.pattern},
             "additionalProperties": {
                 "type": "object",
                 "properties": {
@@ -152,20 +163,32 @@ def default_gogurt_config_file(
 
 
 def _validate_gogurt_route(route_name: str) -> None:
-    if not route_name or "/" in route_name or "\\" in route_name or route_name in {".", ".."}:
+    if _GOGURT_ROUTE_RE.fullmatch(route_name) is None:
         raise ConfigError(f"invalid gogurt route: {route_name!r}")
 
 
 def validate_gogurt_marker_name(marker_name: str) -> None:
-    if not marker_name or "/" in marker_name or "\\" in marker_name or marker_name in {".", ".."}:
+    basename = marker_name.split(".", 1)[0].casefold()
+    if (
+        len(marker_name.encode("ascii", errors="ignore")) != len(marker_name)
+        or len(marker_name) > 255
+        or _GOGURT_MARKER_NAME_RE.fullmatch(marker_name) is None
+        or marker_name in {".", ".."}
+        or marker_name.endswith((".", " "))
+        or basename in _WINDOWS_RESERVED_BASENAMES
+    ):
         raise ConfigError(f"invalid gogurt marker name: {marker_name!r}")
 
 
 def _route_command(route_name: str, route: Mapping[str, Any]) -> tuple[str, ...]:
     raw_command = route.get("command")
-    if not isinstance(raw_command, list) or not raw_command:
+    if (
+        not isinstance(raw_command, list)
+        or not raw_command
+        or any(not isinstance(token, str) for token in raw_command)
+    ):
         raise ConfigError(f"gogurt route {route_name!r}.command must be a nonempty list")
-    command = tuple(str(token) for token in raw_command)
+    command = tuple(raw_command)
     if any(not token.strip() for token in command):
         raise ConfigError(f"gogurt route {route_name!r}.command contains an empty token")
     if command.count("{mount_point}") != 1:
@@ -213,7 +236,9 @@ def load_gogurt_actions(config_file: PathInput) -> list[GogurtAction]:
 
     actions: list[GogurtAction] = []
     for raw_route_name, raw_route in routes.items():
-        route_name = str(raw_route_name).strip()
+        if not isinstance(raw_route_name, str):
+            raise ConfigError("gogurt route identifiers must be strings")
+        route_name = raw_route_name
         if not isinstance(raw_route, Mapping):
             raise ConfigError(f"gogurt route {route_name!r} must be a mapping")
         if not bool(raw_route.get("enabled", True)):
@@ -226,7 +251,6 @@ def load_gogurt_actions(config_file: PathInput) -> list[GogurtAction]:
 
 
 def _action_for_route(config_file: PathInput, route_name: str) -> GogurtAction:
-    route_name = route_name.strip()
     routes = {action.route: action for action in load_gogurt_actions(config_file)}
     try:
         return routes[route_name]
@@ -292,6 +316,29 @@ def _resolve_command(
         command[0] = sys.executable
     _resolve_executable(command, config_dir, actions_dir)
     return command
+
+
+def validate_gogurt_action_executables(
+    config_file: PathInput,
+    *,
+    actions_dir: PathInput | None = None,
+) -> list[GogurtAction]:
+    """Validate every action executable that does not depend on a mounted volume."""
+
+    config_path = Path(config_file).expanduser().resolve()
+    actions_path = Path(actions_dir).expanduser().resolve() if actions_dir is not None else None
+    actions = load_gogurt_actions(config_path)
+    validation_mount = config_path.parent / ".gogurt-validation-mount"
+    for action in actions:
+        if "{mount_point}" in action.command[0]:
+            continue
+        _resolve_command(
+            action,
+            config_file=config_path,
+            mount_point=validation_mount,
+            actions_dir=actions_path,
+        )
+    return actions
 
 
 def plan_gogurt_action(
@@ -425,6 +472,8 @@ def write_gogurt_marker(
         force=force,
     )
     marker = Path(str(plan["marker"]))
+    if plan["status"] == "would_keep":
+        return marker
     marker.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(
         marker,

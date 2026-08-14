@@ -16,6 +16,8 @@ LISTENER_LABEL = "io.github.nashspence.gogurt"
 WINDOWS_TASK_NAME = "Riverhog.Gogurt"
 WINDOWS_TASK_STATE_DISABLED = 1
 WINDOWS_TASK_STATE_RUNNING = 4
+WINDOWS_TASK_NOT_FOUND_EXIT = 3
+WINDOWS_TASK_NOT_FOUND_HRESULT = -2147024894
 
 
 class ListenerPlatformError(RuntimeError):
@@ -291,7 +293,11 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
             f"$task = $service.GetFolder('\\').GetTask('{WINDOWS_TASK_NAME}'); "
             "[Console]::Out.Write([int]$task.State); "
             "exit 0 "
-            "} catch { exit 1 }"
+            "} catch [System.Runtime.InteropServices.COMException] { "
+            f"if ($_.Exception.HResult -eq {WINDOWS_TASK_NOT_FOUND_HRESULT}) {{ exit "
+            f"{WINDOWS_TASK_NOT_FOUND_EXIT} }}; "
+            "throw "
+            "}"
         )
         return [
             str(powershell),
@@ -329,7 +335,7 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
         del paths
         completed = self._run(
             self._state_command(),
-            allowed=frozenset({0, 1}),
+            allowed=frozenset({0, WINDOWS_TASK_NOT_FOUND_EXIT}),
         )
         installed = completed.returncode == 0
         if not installed:

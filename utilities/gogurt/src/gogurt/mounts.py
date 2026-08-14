@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import re
 import string
@@ -9,6 +10,24 @@ from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 _MOUNTINFO_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
+MIN_GOGURT_INTERVAL_SECONDS = 0.1
+MAX_GOGURT_INTERVAL_SECONDS = 3600.0
+
+
+def validate_gogurt_interval(value: object) -> float:
+    """Return a finite polling interval within the supported v1 range."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Gogurt polling interval must be a number")
+    interval = float(value)
+    if not math.isfinite(interval):
+        raise ValueError("Gogurt polling interval must be finite")
+    if not MIN_GOGURT_INTERVAL_SECONDS <= interval <= MAX_GOGURT_INTERVAL_SECONDS:
+        raise ValueError(
+            "Gogurt polling interval must be between "
+            f"{MIN_GOGURT_INTERVAL_SECONDS} and {MAX_GOGURT_INTERVAL_SECONDS} seconds"
+        )
+    return interval
 
 
 def _decode_mountinfo_path(value: str) -> str:
@@ -68,11 +87,10 @@ def iter_new_mounts(
     include_existing: bool = False,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Iterator[Path]:
-    if interval_seconds <= 0:
-        raise ValueError("Gogurt polling interval must be positive")
+    interval = validate_gogurt_interval(interval_seconds)
     known = set() if include_existing else set(discover())
     while True:
         current = set(discover())
         yield from sorted(current - known, key=lambda path: str(path).casefold())
         known = current
-        sleep(interval_seconds)
+        sleep(interval)
