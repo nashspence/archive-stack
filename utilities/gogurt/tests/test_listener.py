@@ -191,18 +191,22 @@ def test_controlled_stop_does_not_replay_interrupted_custody(tmp_path: Path) -> 
     runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
     thread = threading.Thread(target=runtime.run)
     thread.start()
-    _wait_for_runs(counter, 1)
-    runtime.request_stop()
-    thread.join(timeout=5)
+    try:
+        _wait_for_runs(counter, 1)
+    finally:
+        runtime.request_stop()
+        thread.join(timeout=5)
     assert not thread.is_alive()
     assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
 
     restarted = ListenerRuntime(config, paths, discover=lambda: [mount])
     thread = threading.Thread(target=restarted.run)
     thread.start()
-    time.sleep(0.4)
-    restarted.request_stop()
-    thread.join(timeout=5)
+    try:
+        time.sleep(0.4)
+    finally:
+        restarted.request_stop()
+        thread.join(timeout=5)
     assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
 
 

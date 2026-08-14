@@ -52,6 +52,11 @@ def ensure_private_file(path: Path) -> None:
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
             raise OSError(f"Gogurt listener state path is not a regular file: {path}")
+        if os.name == "nt":
+            # Windows state inherits the current-user directory ACL. Reopening
+            # an active SQLite sidecar solely to emulate chmod can conflict
+            # with SQLite's mandatory sharing mode.
+            return
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path, flags, PRIVATE_FILE_MODE)
