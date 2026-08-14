@@ -21,7 +21,7 @@ from jeb_core.domain.models import (
 )
 from jeb_core.domain.sources import SourceRegistryError
 from jeb_core.persistence.schema import upgrade_state
-from lifecycle_events import cloud_event
+from lifecycle_events import EventPage, cloud_event
 from munchy_api_client.client import SubmissionUploadRequest
 
 TEST_TEMPLATE = "camera-archive"
@@ -960,3 +960,34 @@ def test_jeb_translates_owned_munchy_events_idempotently(tmp_path: Path) -> None
         "type": upstream.type,
         "subject": job_id,
     }
+
+
+def test_jeb_rejects_nonadvancing_munchy_page_before_translation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = services_from_env(env_for(tmp_path, sources=""))
+    event = cloud_event(
+        source="urn:munchy",
+        type="io.riverhog.munchy.job.archive.finalized",
+        subject="job-1",
+    )
+    translated: list[str] = []
+
+    class Client:
+        def list_lifecycle_events(self, *, after: str, limit: int) -> EventPage:
+            assert (after, limit) == ("0", 100)
+            return EventPage(events=[event], next_cursor="0", has_more=False)
+
+    adapter = MunchyTargetAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "translate_event",
+        lambda context, item: translated.append(item.id) or True,
+    )
+
+    with pytest.raises(ValueError, match="did not advance"):
+        adapter.consume_events_once(services, Client())  # type: ignore[arg-type]
+
+    assert translated == []
+    assert services.event_cursors.cursor("munchy") == "0"

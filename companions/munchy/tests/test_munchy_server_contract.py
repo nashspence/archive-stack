@@ -18,6 +18,7 @@ import httpx
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from lifecycle_events import EventPage, cloud_event
 from munchy_api_client.client import (
     MunchyAdminClient,
     MunchyClient,
@@ -71,6 +72,46 @@ SERVER_MODULES = {
 
 def omitted_test_provenance() -> dict[str, str]:
     return {"status": "omitted", "omission_reason": "test fixture"}
+
+
+def test_munchy_rejects_nonadvancing_riverhog_page_before_translation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = load_server(tmp_path, monkeypatch)
+    event = cloud_event(
+        source="urn:riverhog",
+        type="io.riverhog.riverhog.collection.finalized",
+        subject="41",
+    )
+    translated: list[str] = []
+    advanced: list[str] = []
+
+    class Cursors:
+        def cursor(self, source: str) -> str:
+            assert source == "riverhog"
+            return "opaque-7"
+
+        def advance(self, source: str, cursor: str) -> None:
+            advanced.append(f"{source}:{cursor}")
+
+    class Api:
+        def list_lifecycle_events(self, *, after: str, limit: int) -> EventPage:
+            assert (after, limit) == ("opaque-7", 100)
+            return EventPage(events=[event], next_cursor="opaque-7", has_more=False)
+
+    monkeypatch.setattr(server.lifecycle_store, "lifecycle_event_cursors", Cursors)
+    monkeypatch.setattr(
+        server.riverhog,
+        "translate_riverhog_event",
+        lambda item: translated.append(item.id) or True,
+    )
+
+    with pytest.raises(ValueError, match="did not advance"):
+        server.riverhog.consume_riverhog_events_once(Api())
+
+    assert translated == []
+    assert advanced == []
 
 
 def load_server(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-untyped-def]

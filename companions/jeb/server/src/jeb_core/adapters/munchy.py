@@ -269,6 +269,7 @@ class MunchyTargetAdapter:
     def consume_events_once(self, context: TargetContext, client: MunchyClient) -> int:
         cursor = context.event_cursors.cursor(self.name)
         page = client.list_lifecycle_events(after=cursor, limit=100)
+        page.require_progress_after(cursor)
         translated = sum(1 for event in page.events if self.translate_event(context, event))
         if page.next_cursor != cursor:
             context.event_cursors.advance(self.name, page.next_cursor)

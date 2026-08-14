@@ -6,6 +6,7 @@ import sqlite3
 import threading
 from collections.abc import Mapping
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,66 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from mango_fish.schema import validate_state
 
 LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SourceFailure:
+    source: str
+    phase: str
+    error_type: str
+    status_code: int | None
+
+
+@dataclass(frozen=True)
+class RunOnceResult:
+    delivered: int
+    failures: tuple[SourceFailure, ...]
+
+
+class SourceRelayError(RuntimeError):
+    """A secret-free description of one failed source relay phase."""
+
+    def __init__(self, *, phase: str, error_type: str, status_code: int | None) -> None:
+        self.phase = phase
+        self.error_type = error_type
+        self.status_code = status_code
+        status = f" status={status_code}" if status_code is not None else ""
+        super().__init__(f"{phase} failed: error={error_type}{status}")
+
+
+def _relay_error(phase: str, error: Exception) -> SourceRelayError:
+    status_code = error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None
+    return SourceRelayError(
+        phase=phase,
+        error_type=type(error).__name__,
+        status_code=status_code,
+    )
+
+
+def _source_failure(source: SourceConfig, error: Exception) -> SourceFailure:
+    if isinstance(error, SourceRelayError):
+        return SourceFailure(
+            source=source.name,
+            phase=error.phase,
+            error_type=error.error_type,
+            status_code=error.status_code,
+        )
+    return SourceFailure(
+        source=source.name,
+        phase="relay",
+        error_type=type(error).__name__,
+        status_code=None,
+    )
+
+
+def _log_failure(failure: SourceFailure) -> None:
+    LOG.error(
+        "Mango Fish source failed: source=%s phase=%s error=%s status=%s",
+        failure.source,
+        failure.phase,
+        failure.error_type,
+        failure.status_code if failure.status_code is not None else "none",
+    )
 
 
 class SourceConfig(BaseModel):
@@ -55,10 +116,15 @@ class MangoFishConfig(BaseModel):
 
 
 def load_config(path: Path) -> MangoFishConfig:
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config_path = path.expanduser().resolve()
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise ValueError("Mango Fish config must be a YAML object")
     config = MangoFishConfig.model_validate(payload)
+    state_path = config.state_path.expanduser()
+    if not state_path.is_absolute():
+        state_path = config_path.parent / state_path
+    config = config.model_copy(update={"state_path": state_path.resolve()})
     for source in config.sources:
         if not os.getenv(source.token_env, "").strip():
             raise ValueError(f"Mango Fish source {source.name} requires {source.token_env}")
@@ -115,39 +181,55 @@ class MangoFish:
         owns_client = client is None
         http = client or httpx.Client(timeout=self.config.request_timeout_seconds)
         try:
-            cursor = self.state.cursor(source.name)
-            response = http.get(
-                source.events_url,
-                params={"after": cursor, "limit": self.config.batch_size},
-                headers={"Authorization": f"Bearer {os.environ[source.token_env]}"},
-            )
-            response.raise_for_status()
-            page = EventPage.model_validate(response.json())
+            try:
+                cursor = self.state.cursor(source.name)
+            except Exception as exc:
+                raise _relay_error("state", exc) from None
+            try:
+                response = http.get(
+                    source.events_url,
+                    params={"after": cursor, "limit": self.config.batch_size},
+                    headers={"Authorization": f"Bearer {os.environ[source.token_env]}"},
+                )
+                response.raise_for_status()
+                page = EventPage.model_validate(response.json())
+                page.require_progress_after(cursor)
+            except Exception as exc:
+                raise _relay_error("fetch", exc) from None
             delivered = 0
             for event in page.events:
-                delivery = http.post(
-                    os.environ[source.webhook_url_env],
-                    content=event.model_dump_json(exclude_none=True),
-                    headers={"Content-Type": CLOUDEVENTS_JSON_CONTENT_TYPE},
-                )
-                delivery.raise_for_status()
+                try:
+                    delivery = http.post(
+                        os.environ[source.webhook_url_env],
+                        content=event.model_dump_json(exclude_none=True),
+                        headers={"Content-Type": CLOUDEVENTS_JSON_CONTENT_TYPE},
+                    )
+                    delivery.raise_for_status()
+                except Exception as exc:
+                    raise _relay_error("delivery", exc) from None
                 delivered += 1
             if page.events or page.next_cursor != cursor:
-                self.state.advance(source.name, page.next_cursor)
+                try:
+                    self.state.advance(source.name, page.next_cursor)
+                except Exception as exc:
+                    raise _relay_error("state", exc) from None
             return delivered
         finally:
             if owns_client:
                 http.close()
 
-    def run_once(self) -> int:
+    def run_once(self) -> RunOnceResult:
         delivered = 0
+        failures: list[SourceFailure] = []
         with httpx.Client(timeout=self.config.request_timeout_seconds) as client:
             for source in self.config.sources:
                 try:
                     delivered += self.relay_source_once(source, client=client)
-                except Exception:
-                    LOG.exception("Mango Fish source failed: %s", source.name)
-        return delivered
+                except Exception as exc:
+                    failure = _source_failure(source, exc)
+                    failures.append(failure)
+                    _log_failure(failure)
+        return RunOnceResult(delivered=delivered, failures=tuple(failures))
 
     def run(self) -> None:
         stop = threading.Event()
@@ -177,8 +259,8 @@ class MangoFish:
                     delivered = self.relay_source_once(source, client=client)
                     if delivered:
                         continue
-                except Exception:
-                    LOG.exception("Mango Fish source failed: %s", source.name)
+                except Exception as exc:
+                    _log_failure(_source_failure(source, exc))
                 stop.wait(self.config.poll_interval_seconds)
 
 
