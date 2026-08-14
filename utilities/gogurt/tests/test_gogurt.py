@@ -19,6 +19,7 @@ from gogurt.core import (
     route_for_gogurt_marker,
     write_gogurt_marker,
 )
+from gogurt.listener import ListenerError
 from typer.testing import CliRunner
 
 RUNNER = CliRunner()
@@ -31,7 +32,7 @@ def test_console_main_reports_listener_errors_without_a_traceback(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     def fail() -> None:
-        raise cli.ListenerError("native lifecycle failed")
+        raise ListenerError("native lifecycle failed")
 
     monkeypatch.setattr(cli, "app", fail)
     monkeypatch.setattr(sys, "argv", ["gogurt", "listener", "install"])
@@ -200,6 +201,19 @@ def test_write_gogurt_marker_refuses_a_symlink_target(tmp_path: Path) -> None:
         write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path, force=True)
 
 
+def test_write_gogurt_marker_uses_exclusive_temporary_creation(tmp_path: Path) -> None:
+    protected = tmp_path / "protected"
+    protected.write_text("unchanged\n", encoding="utf-8")
+    former_temporary = tmp_path / (f".{DEFAULT_GOGURT_MARKER_NAME}.{os.getpid()}.tmp")
+    former_temporary.symlink_to(protected)
+
+    marker = write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+
+    assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
+    assert protected.read_text(encoding="utf-8") == "unchanged\n"
+    assert former_temporary.is_symlink()
+
+
 def test_plan_gogurt_marker_does_not_write(tmp_path: Path) -> None:
     plan = plan_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
 
@@ -328,6 +342,18 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
     )
     assert installed.exit_code == 0
     assert json.loads(installed.stdout) == payload
+
+    failed_payload = payload | {
+        "health": "failed",
+        "diagnostic": "global configuration: ConfigError: routes are invalid",
+    }
+    monkeypatch.setattr("gogurt.cli.listener_status", lambda: failed_payload)
+    human_failure = RUNNER.invoke(app, ["listener", "status"])
+    json_failure = RUNNER.invoke(app, ["listener", "status", "--json"])
+    assert human_failure.exit_code == 0
+    assert "health: failed" in human_failure.stdout
+    assert "diagnostic: global configuration" in human_failure.stdout
+    assert json.loads(json_failure.stdout) == failed_payload
 
     refused = RUNNER.invoke(
         app,

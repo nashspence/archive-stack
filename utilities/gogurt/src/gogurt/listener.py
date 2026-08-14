@@ -28,6 +28,17 @@ from gogurt.core import (
     load_gogurt_actions,
     plan_gogurt_action,
     revalidate_gogurt_action,
+    validate_gogurt_marker_name,
+)
+from gogurt.filesystem import (
+    PRIVATE_FILE_MODE,
+    atomic_write,
+    ensure_private_directory,
+    ensure_private_file,
+    ensure_private_files,
+    open_private_text_append,
+    promote_staged,
+    stage_bytes,
 )
 from gogurt.listener_platform import (
     ListenerAdapter,
@@ -47,6 +58,7 @@ LISTENER_MAX_ATTEMPTS = 3
 LISTENER_RETRY_SECONDS = (5.0, 30.0)
 LISTENER_LOG_BYTES = 1_048_576
 LISTENER_LOG_BACKUPS = 3
+LISTENER_MOUNT_ATTENTION_LIMIT = 20
 LISTENER_OPERATIONS = ("install", "status", "start", "stop", "restart", "uninstall")
 
 
@@ -66,6 +78,16 @@ def listener_release_contract() -> dict[str, object]:
             "windows-x64": "task-scheduler-user",
         },
         "status_schema": LISTENER_STATUS_SCHEMA,
+        "health": {
+            "healthy": "current-heartbeat-and-valid-global-configuration",
+            "failed": "global-configuration-prevents-dispatch",
+            "mount_attention": "isolated-bounded-nonfatal-diagnostics",
+        },
+        "replacement": "validated-staged-transaction-with-healthy-rollback",
+        "state": {
+            "posix": "private-directory-and-files",
+            "windows": "current-user-native-acl",
+        },
         "dispatch": {
             "completed": "not-replayed-across-ordinary-restart",
             "running_after_crash": "uncertain-no-automatic-replay",
@@ -92,20 +114,6 @@ def _package_version() -> str:
     return importlib.metadata.version("gogurt")
 
 
-def _atomic_write(path: Path, content: bytes, *, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        with temporary.open("wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 @dataclass(frozen=True, slots=True)
 class ListenerConfig:
     executable: Path
@@ -129,9 +137,11 @@ class ListenerConfig:
             "autorun": self.autorun,
         }
 
+    def content(self) -> bytes:
+        return (json.dumps(self.payload(), indent=2, sort_keys=True) + "\n").encode("utf-8")
+
     def write(self, path: Path) -> None:
-        content = (json.dumps(self.payload(), indent=2, sort_keys=True) + "\n").encode("utf-8")
-        _atomic_write(path, content)
+        atomic_write(path, self.content(), mode=PRIVATE_FILE_MODE)
 
     @classmethod
     def read(cls, path: Path) -> ListenerConfig:
@@ -170,6 +180,10 @@ class ListenerConfig:
             raise ListenerError("Gogurt listener paths must be absolute")
         if actions_dir is not None and not actions_dir.is_absolute():
             raise ListenerError("Gogurt listener actions directory must be absolute")
+        try:
+            validate_gogurt_marker_name(str(raw["marker_name"]))
+        except ConfigError as exc:
+            raise ListenerError("installed Gogurt listener marker name is invalid") from exc
         return cls(
             executable=executable,
             routes_file=routes_file,
@@ -190,19 +204,57 @@ def _service_command(config: ListenerConfig, config_file: Path) -> tuple[str, ..
     )
 
 
+def _safe_diagnostic(scope: str, exc: BaseException) -> str:
+    return f"{scope}: {type(exc).__name__}: {exc}"
+
+
+def _secure_listener_state(paths: ListenerPaths) -> None:
+    ensure_private_directory(paths.state_dir)
+    ensure_private_files(
+        (
+            paths.config_file,
+            paths.database_file,
+            paths.heartbeat_file,
+            paths.lock_file,
+            paths.log_file,
+            *paths.state_dir.glob(f"{paths.database_file.name}-*"),
+            *paths.state_dir.glob(f"{paths.log_file.name}.*"),
+        )
+    )
+
+
+def _require_matching_state(config: ListenerConfig, paths: ListenerPaths) -> None:
+    if config.state_dir != paths.state_dir:
+        raise ListenerError("installed Gogurt listener state directory does not match its config")
+
+
+def _validate_global_configuration(config: ListenerConfig, paths: ListenerPaths) -> None:
+    _require_matching_state(config, paths)
+    validate_gogurt_marker_name(config.marker_name)
+    if not config.executable.is_file() or (
+        sys.platform != "win32" and not os.access(config.executable, os.X_OK)
+    ):
+        raise ListenerError("installed Gogurt executable is absent or not executable")
+    if config.actions_dir is not None and not config.actions_dir.is_dir():
+        raise ListenerError("installed Gogurt actions directory is absent")
+    load_gogurt_actions(config.routes_file)
+
+
 class ListenerStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
     def _connect(self) -> sqlite3.Connection:
+        ensure_private_directory(self.path.parent)
+        ensure_private_file(self.path)
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
+        ensure_private_files(self.path.parent.glob(f"{self.path.name}-*"))
         return connection
 
     def create(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
             connection.executescript(
                 """
@@ -307,8 +359,11 @@ class ListenerStore:
                     else:
                         previous_identity = row["marker_identity"]
                 plan = planner(Path(path_value))
-                if plan.get("status") == "unmarked":
+                plan_status = plan.get("status")
+                if plan_status in {"unmarked", "attention"}:
                     continue
+                if plan_status != "ready":
+                    raise ListenerError("Gogurt returned an invalid listener plan status")
                 marker_identity = plan.get("marker_identity")
                 route = plan.get("route")
                 if not isinstance(marker_identity, str) or not isinstance(route, str):
@@ -478,8 +533,12 @@ class ListenerLock:
         self._stream: Any = None
 
     def __enter__(self) -> ListenerLock:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._stream = self.path.open("a+b")
+        ensure_private_directory(self.path.parent)
+        ensure_private_file(self.path)
+        flags = os.O_RDWR | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(self.path, flags)
+        self._stream = os.fdopen(descriptor, "a+b")
         self._stream.seek(0)
         self._stream.write(b"0")
         self._stream.flush()
@@ -542,6 +601,9 @@ class ListenerRuntime:
         self._active_lock = threading.Lock()
         self._active_dispatch: str | None = None
         self._active_process: subprocess.Popen[bytes] | None = None
+        self._health_lock = threading.Lock()
+        self._configuration_diagnostic: str | None = None
+        self._mount_attention: list[dict[str, str]] = []
         self.started_at = self.clock()
 
     def request_stop(self) -> None:
@@ -559,15 +621,18 @@ class ListenerRuntime:
                 actions_dir=self.config.actions_dir,
                 marker_name=self.config.marker_name,
             )
-        except (
-            ConfigError,
-            FileNotFoundError,
-            NotADirectoryError,
-            PermissionError,
-            UnicodeError,
-        ) as exc:
-            self.logger.warning("mount=%s skipped: %s", mount_point, exc)
-            return {"status": "unmarked"}
+        except (ConfigError, OSError, UnicodeError, ValueError) as exc:
+            diagnostic = _safe_diagnostic("mount input", exc)
+            with self._health_lock:
+                if len(self._mount_attention) < LISTENER_MOUNT_ATTENTION_LIMIT:
+                    self._mount_attention.append(
+                        {
+                            "mount_point": str(mount_point),
+                            "diagnostic": diagnostic,
+                        }
+                    )
+            self.logger.warning("mount=%s attention=%s", mount_point, diagnostic)
+            return {"status": "attention"}
 
     def _enqueue(self, dispatch_ids: Sequence[str]) -> None:
         with self._queue_lock:
@@ -581,6 +646,9 @@ class ListenerRuntime:
         summary = self.store.summary()
         with self._active_lock:
             active = self._active_dispatch
+        with self._health_lock:
+            configuration_diagnostic = self._configuration_diagnostic
+            mount_attention = list(self._mount_attention)
         payload = {
             "schema": LISTENER_HEARTBEAT_SCHEMA,
             "version": _package_version(),
@@ -590,10 +658,16 @@ class ListenerRuntime:
             "queue_depth": self.dispatch_queue.qsize(),
             "active_dispatch": active,
             "dispatches": summary,
+            "configuration": {
+                "status": "failed" if configuration_diagnostic is not None else "valid",
+                "diagnostic": configuration_diagnostic,
+            },
+            "mount_attention": mount_attention,
         }
-        _atomic_write(
+        atomic_write(
             self.paths.heartbeat_file,
             (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            mode=PRIVATE_FILE_MODE,
         )
 
     def _worker(self) -> None:
@@ -604,6 +678,15 @@ class ListenerRuntime:
                 continue
             with self._queue_lock:
                 self._queued.discard(dispatch_id)
+            while not self.stop_event.is_set():
+                with self._health_lock:
+                    configuration_valid = self._configuration_diagnostic is None
+                if configuration_valid:
+                    break
+                self.stop_event.wait(0.2)
+            if self.stop_event.is_set():
+                self.dispatch_queue.task_done()
+                continue
             plan = self.store.start_dispatch(dispatch_id, now=self.clock())
             if plan is None:
                 self.dispatch_queue.task_done()
@@ -649,11 +732,28 @@ class ListenerRuntime:
 
     def run_once(self) -> None:
         now = self.clock()
+        with self._health_lock:
+            self._mount_attention = []
         try:
-            queued = self.store.observe(self.discover(), self._planner, now=now)
-        except (ConfigError, FileNotFoundError, NotADirectoryError, PermissionError) as exc:
-            self.logger.warning("mount observation skipped: %s", exc)
-            queued = []
+            _validate_global_configuration(self.config, self.paths)
+        except (ConfigError, OSError, UnicodeError, ValueError) as exc:
+            diagnostic = _safe_diagnostic("global configuration", exc)
+            with self._health_lock:
+                self._configuration_diagnostic = diagnostic
+            self.logger.error("configuration=%s", diagnostic)
+            self._heartbeat()
+            return
+        with self._health_lock:
+            self._configuration_diagnostic = None
+        try:
+            mount_points = self.discover()
+        except (OSError, ValueError) as exc:
+            diagnostic = _safe_diagnostic("mount discovery", exc)
+            with self._health_lock:
+                self._mount_attention.append({"mount_point": "", "diagnostic": diagnostic})
+            self.logger.warning("mount discovery attention=%s", diagnostic)
+            mount_points = []
+        queued = self.store.observe(mount_points, self._planner, now=now)
         self._enqueue(queued)
         self._enqueue(self.store.runnable(now=now))
         self._heartbeat()
@@ -672,12 +772,22 @@ class ListenerRuntime:
             self._heartbeat()
 
 
+class _PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    def _open(self) -> Any:
+        return open_private_text_append(
+            Path(self.baseFilename),
+            encoding=self.encoding or "utf-8",
+            errors=self.errors,
+        )
+
+
 def _logger(paths: ListenerPaths) -> logging.Logger:
-    paths.state_dir.mkdir(parents=True, exist_ok=True)
+    _secure_listener_state(paths)
+    ensure_private_file(paths.log_file)
     logger = logging.getLogger("gogurt.listener")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
-    handler = logging.handlers.RotatingFileHandler(
+    handler = _PrivateRotatingFileHandler(
         paths.log_file,
         maxBytes=LISTENER_LOG_BYTES,
         backupCount=LISTENER_LOG_BACKUPS,
@@ -689,6 +799,17 @@ def _logger(paths: ListenerPaths) -> logging.Logger:
 
 
 def run_listener(config_file: Path) -> None:
+    state_dir = config_file.parent
+    bootstrap_paths = ListenerPaths(
+        state_dir=state_dir,
+        config_file=config_file,
+        database_file=state_dir / "listener.sqlite3",
+        heartbeat_file=state_dir / "heartbeat.json",
+        lock_file=state_dir / "listener.lock",
+        log_file=state_dir / "listener.log",
+        registration_file=None,
+    )
+    _secure_listener_state(bootstrap_paths)
     config = ListenerConfig.read(config_file)
     paths = ListenerPaths(
         state_dir=config.state_dir,
@@ -699,6 +820,8 @@ def run_listener(config_file: Path) -> None:
         log_file=config.state_dir / "listener.log",
         registration_file=None,
     )
+    _require_matching_state(config, paths)
+    _secure_listener_state(paths)
     runtime = ListenerRuntime(config, paths, logger=_logger(paths))
 
     def stop(_signum: int, _frame: object) -> None:
@@ -723,6 +846,15 @@ def _read_heartbeat(path: Path) -> dict[str, object] | None:
         return None
     if value.get("version") != _package_version():
         return None
+    configuration = value.get("configuration")
+    if not isinstance(configuration, dict) or configuration.get("status") not in {
+        "valid",
+        "failed",
+    }:
+        return None
+    mount_attention = value.get("mount_attention")
+    if not isinstance(mount_attention, list):
+        return None
     return value
 
 
@@ -741,8 +873,13 @@ def listener_status(
     if resolved_paths.config_file.is_file():
         try:
             config = ListenerConfig.read(resolved_paths.config_file)
-        except ListenerError as exc:
-            config_error = str(exc)
+            _validate_global_configuration(config, resolved_paths)
+        except (ConfigError, ListenerError, OSError, UnicodeError, ValueError) as exc:
+            config_error = _safe_diagnostic("global configuration", exc)
+    elif native.installed:
+        config_error = (
+            f"global configuration: listener config is absent: {resolved_paths.config_file}"
+        )
     current = time.time() if now is None else now
     heartbeat_age: float | None = None
     if heartbeat is not None:
@@ -753,11 +890,24 @@ def listener_status(
             heartbeat_age = max(0.0, current - heartbeat_time)
         except (KeyError, TypeError, ValueError):
             heartbeat = None
+    heartbeat_diagnostic: str | None = None
+    mount_attention: list[object] = []
+    if heartbeat is not None:
+        configuration = cast(dict[str, object], heartbeat["configuration"])
+        if configuration.get("status") == "failed":
+            raw_diagnostic = configuration.get("diagnostic")
+            heartbeat_diagnostic = (
+                str(raw_diagnostic)
+                if raw_diagnostic
+                else "global configuration: listener reported failure"
+            )
+        mount_attention = cast(list[object], heartbeat["mount_attention"])
+    diagnostic = config_error or heartbeat_diagnostic
     if not native.installed:
         health = "absent"
     elif not native.running:
         health = "stopped"
-    elif config_error is not None:
+    elif diagnostic is not None:
         health = "failed"
     elif heartbeat is None:
         health = "starting"
@@ -780,7 +930,8 @@ def listener_status(
         "heartbeat_age_seconds": heartbeat_age,
         "heartbeat": heartbeat,
         "dispatches": state,
-        "diagnostic": config_error,
+        "mount_attention": mount_attention,
+        "diagnostic": diagnostic,
     }
 
 
@@ -859,6 +1010,7 @@ def install_listener(
 ) -> dict[str, object]:
     routes = routes_file.expanduser().resolve()
     load_gogurt_actions(routes)
+    validate_gogurt_marker_name(marker_name)
     actions = actions_dir.expanduser().resolve() if actions_dir is not None else None
     if actions is not None and not actions.is_dir():
         raise NotADirectoryError(actions)
@@ -866,7 +1018,9 @@ def install_listener(
         raise ListenerError("Gogurt listener interval must be at least 0.1 seconds")
     resolved_paths = paths or default_listener_paths()
     native_adapter = adapter or listener_adapter()
-    resolved_executable = (executable or resolve_listener_executable()).expanduser().resolve()
+    resolved_executable = resolve_listener_executable(
+        str(executable.expanduser()) if executable is not None else None
+    )
     config = ListenerConfig(
         executable=resolved_executable,
         routes_file=routes,
@@ -875,65 +1029,94 @@ def install_listener(
         interval_seconds=interval_seconds,
         state_dir=resolved_paths.state_dir,
     )
+    _secure_listener_state(resolved_paths)
+    native_status = native_adapter.status(resolved_paths)
     previous: ListenerConfig | None = None
-    if resolved_paths.config_file.is_file():
+    previous_content: bytes | None = None
+    if native_status.installed:
+        if not resolved_paths.config_file.is_file():
+            raise ListenerError("installed Gogurt listener config is absent")
         previous = ListenerConfig.read(resolved_paths.config_file)
+        previous_content = resolved_paths.config_file.read_bytes()
     previous_pid = _heartbeat_pid(resolved_paths)
-    if native_adapter.status(resolved_paths).installed:
-        native_adapter.stop(resolved_paths)
-        _wait_for_health(
-            frozenset({"absent", "stopped"}),
-            paths=resolved_paths,
-            adapter=native_adapter,
-            terminated_pid=previous_pid,
-        )
-    config.write(resolved_paths.config_file)
+    staged_config = stage_bytes(
+        resolved_paths.config_file,
+        config.content(),
+        mode=PRIVATE_FILE_MODE,
+    )
     try:
-        native_adapter.register(
-            resolved_paths,
-            _service_command(config, resolved_paths.config_file),
-        )
-        if wait_for_health:
-            return _wait_for_health(
-                frozenset({"healthy"}),
-                paths=resolved_paths,
-                adapter=native_adapter,
-                previous_pid=previous_pid,
-            )
-        return listener_status(paths=resolved_paths, adapter=native_adapter)
-    except (ListenerError, ListenerPlatformError, OSError) as exc:
-        rollback_errors: list[str] = []
         try:
-            failed_pid = _heartbeat_pid(resolved_paths)
-            native_adapter.unregister(resolved_paths)
-            _wait_for_health(
-                frozenset({"absent"}),
-                paths=resolved_paths,
-                adapter=native_adapter,
-                terminated_pid=failed_pid,
-            )
-        except (ListenerError, ListenerPlatformError, OSError) as rollback_exc:
-            rollback_errors.append(f"unregister: {rollback_exc}")
-        if previous is None:
-            try:
-                resolved_paths.config_file.unlink(missing_ok=True)
-            except OSError as rollback_exc:
-                rollback_errors.append(f"remove config: {rollback_exc}")
-        else:
-            try:
-                previous.write(resolved_paths.config_file)
-                native_adapter.register(
-                    resolved_paths,
-                    _service_command(previous, resolved_paths.config_file),
+            if native_status.installed:
+                native_adapter.stop(resolved_paths)
+                _wait_for_health(
+                    frozenset({"absent", "stopped"}),
+                    paths=resolved_paths,
+                    adapter=native_adapter,
+                    terminated_pid=previous_pid,
                 )
-            except (ListenerPlatformError, OSError) as rollback_exc:
-                rollback_errors.append(f"restore prior listener: {rollback_exc}")
-        if rollback_errors:
-            detail = "; ".join(rollback_errors)
-            raise ListenerError(
-                f"Gogurt listener installation failed ({exc}); rollback failed ({detail})"
-            ) from exc
-        raise
+            promote_staged(
+                staged_config,
+                resolved_paths.config_file,
+                mode=PRIVATE_FILE_MODE,
+            )
+            native_adapter.register(
+                paths=resolved_paths,
+                command=_service_command(config, resolved_paths.config_file),
+            )
+            if wait_for_health:
+                return _wait_for_health(
+                    frozenset({"healthy"}),
+                    paths=resolved_paths,
+                    adapter=native_adapter,
+                    previous_pid=previous_pid,
+                )
+            return listener_status(paths=resolved_paths, adapter=native_adapter)
+        except (ListenerError, ListenerPlatformError, OSError) as exc:
+            rollback_errors: list[str] = []
+            failed_pid = _heartbeat_pid(resolved_paths)
+            try:
+                native_adapter.unregister(resolved_paths)
+                _wait_for_health(
+                    frozenset({"absent"}),
+                    paths=resolved_paths,
+                    adapter=native_adapter,
+                    terminated_pid=failed_pid,
+                )
+            except (ListenerError, ListenerPlatformError, OSError) as rollback_exc:
+                rollback_errors.append(f"remove failed registration: {rollback_exc}")
+            if previous is None:
+                try:
+                    resolved_paths.config_file.unlink(missing_ok=True)
+                except OSError as rollback_exc:
+                    rollback_errors.append(f"remove config: {rollback_exc}")
+            else:
+                assert previous_content is not None
+                try:
+                    atomic_write(
+                        resolved_paths.config_file,
+                        previous_content,
+                        mode=PRIVATE_FILE_MODE,
+                    )
+                    native_adapter.register(
+                        resolved_paths,
+                        _service_command(previous, resolved_paths.config_file),
+                    )
+                    _wait_for_health(
+                        frozenset({"healthy"}),
+                        paths=resolved_paths,
+                        adapter=native_adapter,
+                        previous_pid=failed_pid,
+                    )
+                except (ListenerError, ListenerPlatformError, OSError) as rollback_exc:
+                    rollback_errors.append(f"restore prior healthy listener: {rollback_exc}")
+            if rollback_errors:
+                detail = "; ".join(rollback_errors)
+                raise ListenerError(
+                    f"Gogurt listener installation failed ({exc}); rollback failed ({detail})"
+                ) from exc
+            raise
+    finally:
+        staged_config.unlink(missing_ok=True)
 
 
 def start_listener(
@@ -941,7 +1124,9 @@ def start_listener(
 ) -> dict[str, object]:
     resolved_paths = paths or default_listener_paths()
     native_adapter = adapter or listener_adapter()
-    ListenerConfig.read(resolved_paths.config_file)
+    _secure_listener_state(resolved_paths)
+    config = ListenerConfig.read(resolved_paths.config_file)
+    _validate_global_configuration(config, resolved_paths)
     previous_pid = _heartbeat_pid(resolved_paths)
     native_adapter.start(resolved_paths)
     return _wait_for_health(
@@ -972,7 +1157,9 @@ def restart_listener(
 ) -> dict[str, object]:
     resolved_paths = paths or default_listener_paths()
     native_adapter = adapter or listener_adapter()
-    ListenerConfig.read(resolved_paths.config_file)
+    _secure_listener_state(resolved_paths)
+    config = ListenerConfig.read(resolved_paths.config_file)
+    _validate_global_configuration(config, resolved_paths)
     previous_pid = _heartbeat_pid(resolved_paths)
     native_adapter.stop(resolved_paths)
     _wait_for_health(
