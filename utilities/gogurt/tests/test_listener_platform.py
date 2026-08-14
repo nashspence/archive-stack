@@ -5,11 +5,13 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+import gogurt.filesystem as filesystem_module
 import pytest
 from gogurt.listener_platform import (
     LISTENER_LABEL,
     LaunchdUserAdapter,
     ListenerPaths,
+    NativeListenerStatus,
     SystemdUserAdapter,
     TaskSchedulerUserAdapter,
     default_listener_paths,
@@ -30,6 +32,22 @@ def _paths(tmp_path: Path, registration: Path | None) -> ListenerPaths:
         log_file=state / "listener.log",
         registration_file=registration,
     )
+
+
+def test_windows_existing_private_file_is_validated_without_reopening(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sidecar = tmp_path / "listener.sqlite3-shm"
+    sidecar.touch()
+
+    def refuse_open(*_args: object, **_kwargs: object) -> int:
+        raise AssertionError("Windows existing state must not be reopened for POSIX modes")
+
+    monkeypatch.setattr("gogurt.filesystem.os.name", "nt")
+    monkeypatch.setattr("gogurt.filesystem.os.open", refuse_open)
+
+    filesystem_module.ensure_private_file(sidecar)
 
 
 def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> None:
@@ -161,7 +179,8 @@ def test_launchd_registration_bootstraps_and_removes_the_agent(tmp_path: Path) -
 class RecordingTaskAdapter(TaskSchedulerUserAdapter):
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
-        self.query_output = '"\\Riverhog.Gogurt","N/A","Running"\n'
+        self.task_state = "4"
+        self.task_exists = True
 
     def _run(
         self,
@@ -171,7 +190,14 @@ class RecordingTaskAdapter(TaskSchedulerUserAdapter):
     ) -> subprocess.CompletedProcess[str]:
         del allowed
         self.commands.append(list(command))
-        return subprocess.CompletedProcess(list(command), 0, self.query_output, "")
+        if "-Command" in command:
+            return subprocess.CompletedProcess(
+                list(command),
+                0 if self.task_exists else 1,
+                self.task_state if self.task_exists else "localized task-not-found text",
+                "",
+            )
+        return subprocess.CompletedProcess(list(command), 0, "", "")
 
 
 def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path: Path) -> None:
@@ -186,9 +212,23 @@ def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path:
     assert create[create.index("/RL") + 1] == "LIMITED"
     assert "/IT" in create
     assert "/RU" not in create
-    assert adapter.status(paths).running is True
-    adapter.query_output = '"\\Riverhog.Gogurt","N/A","Ready"\n'
-    assert adapter.status(paths).running is False
+    running = adapter.status(paths)
+    assert running == NativeListenerStatus(installed=True, enabled=True, running=True)
+    state_command = adapter.commands[-1]
+    assert state_command[0].endswith("WindowsPowerShell\\v1.0\\powershell.exe")
+    assert "Running" not in " ".join(state_command)
+
+    adapter.task_state = "3"
+    ready = adapter.status(paths)
+    assert ready == NativeListenerStatus(installed=True, enabled=True, running=False)
+
+    adapter.task_state = "1"
+    disabled = adapter.status(paths)
+    assert disabled == NativeListenerStatus(installed=True, enabled=False, running=False)
+
+    adapter.task_exists = False
+    absent = adapter.status(paths)
+    assert absent == NativeListenerStatus(installed=False, enabled=False, running=False)
 
     adapter.unregister(paths)
     assert any("/Delete" in item for item in adapter.commands)

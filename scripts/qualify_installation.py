@@ -11,6 +11,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import string
 import subprocess
 import sys
@@ -552,7 +553,6 @@ def _run_gogurt_listener_lifecycle(
     try:
         with _qualification_mount(scratch) as mount:
             marker = mount / ".gogurt"
-            marker.write_text("qualification-success\n", encoding="utf-8")
             installed_payload = json.loads(
                 _run(
                     [
@@ -582,6 +582,55 @@ def _run_gogurt_listener_lifecycle(
             )
             if "health: healthy" not in human.stdout:
                 raise QualificationError("Gogurt listener human status differs from JSON status")
+
+            state_dir = Path(str(installed_payload["state_dir"]))
+            if os.name != "nt":
+                if stat.S_IMODE(state_dir.stat().st_mode) != 0o700:
+                    raise QualificationError("Gogurt listener state directory is not private")
+                private_names = (
+                    "listener.json",
+                    "listener.sqlite3",
+                    "heartbeat.json",
+                    "listener.lock",
+                    "listener.log",
+                )
+                if any(
+                    stat.S_IMODE((state_dir / name).stat().st_mode) != 0o600
+                    for name in private_names
+                ):
+                    raise QualificationError("Gogurt listener state files are not private")
+
+            routes_content = routes.read_text(encoding="utf-8")
+            routes.write_text("not: [valid", encoding="utf-8")
+            failed = _wait_for_listener(
+                executable,
+                lambda status: status.get("health") == "failed",
+                scratch=scratch,
+                environment=environment,
+            )
+            if "global configuration" not in str(failed.get("diagnostic")):
+                raise QualificationError("Gogurt global config failure lacks a diagnostic")
+            human_failed = _run(
+                [str(executable), "listener", "status"],
+                cwd=scratch,
+                env=environment,
+                capture=True,
+            )
+            if (
+                "health: failed" not in human_failed.stdout
+                or "diagnostic:" not in human_failed.stdout
+            ):
+                raise QualificationError("Gogurt human status hid global config failure")
+            if sentinel.exists():
+                raise QualificationError("Gogurt dispatched while global config was invalid")
+            routes.write_text(routes_content, encoding="utf-8")
+            _wait_for_listener(
+                executable,
+                lambda status: status.get("health") == "healthy",
+                scratch=scratch,
+                environment=environment,
+            )
+            marker.write_text("qualification-success\n", encoding="utf-8")
 
             def one_completed(status: dict[str, Any]) -> bool:
                 dispatches = status.get("dispatches")
