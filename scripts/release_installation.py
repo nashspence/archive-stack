@@ -204,6 +204,7 @@ def _export_external_lock(root: Path, package: str, uv_version: str) -> tuple[st
             ],
             cwd=root,
             check=True,
+            stdout=subprocess.DEVNULL,
         )
         header, blocks = _split_lock(path.read_text(encoding="utf-8"))
     header = re.sub(
@@ -355,8 +356,10 @@ def _posix_commands(
         f"{package}=={version}",
         "--with-requirements",
         lock_name,
-        "--default-index",
+        "--index",
         index_url,
+        "--default-index",
+        "https://pypi.org/simple",
         "--index-strategy",
         "first-index",
         "--python",
@@ -391,8 +394,10 @@ def _windows_commands(
         f"{package}=={version}",
         "--with-requirements",
         lock_name,
-        "--default-index",
+        "--index",
         index_url,
+        "--default-index",
+        "https://pypi.org/simple",
         "--index-strategy",
         "first-index",
         "--python",
