@@ -53,6 +53,29 @@ def test_windows_existing_private_file_is_validated_without_reopening(
     filesystem_module.ensure_private_file(sidecar)
 
 
+def test_vanished_sqlite_sidecar_does_not_abort_remaining_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vanished = tmp_path / "listener.sqlite3-shm"
+    remaining = tmp_path / "listener.sqlite3-wal"
+    vanished.touch()
+    remaining.touch()
+    observed: list[Path] = []
+
+    def validate(path: Path) -> None:
+        observed.append(path)
+        if path == vanished:
+            vanished.unlink()
+            raise FileNotFoundError(vanished)
+
+    monkeypatch.setattr(filesystem_module, "ensure_private_file", validate)
+
+    filesystem_module.ensure_private_files([vanished, remaining])
+
+    assert observed == [vanished, remaining]
+
+
 def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> None:
     linux = default_listener_paths(
         platform="linux",

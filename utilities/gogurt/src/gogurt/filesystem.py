@@ -70,7 +70,12 @@ def ensure_private_file(path: Path) -> None:
 def ensure_private_files(paths: Iterable[Path]) -> None:
     for path in paths:
         if path.exists() or path.is_symlink():
-            ensure_private_file(path)
+            try:
+                ensure_private_file(path)
+            except FileNotFoundError:
+                # SQLite may remove a transient WAL sidecar between directory
+                # enumeration and validation. There is no file left to secure.
+                continue
 
 
 def stage_bytes(destination: Path, content: bytes, *, mode: int) -> Path:
