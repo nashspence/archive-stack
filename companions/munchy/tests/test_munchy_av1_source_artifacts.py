@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from munchy_av1_nvenc import main as av1
+from munchy_workflows.profiles import SourcePreservationProfile
 
 
 class SourceArtifactsTests(unittest.TestCase):
@@ -54,17 +55,14 @@ class SourceArtifactsTests(unittest.TestCase):
 
     def test_profile_source_artifact_drops_require_reason(self) -> None:
         with self.assertRaisesRegex(ValueError, "reason"):
-            av1.EncodeProfile.model_validate(
+            SourcePreservationProfile.model_validate(
                 {
-                    "schema_version": 1,
-                    "source": {
-                        "artifact_drops": [
-                            {
-                                "selector": "stream:7",
-                                "reason": " ",
-                            }
-                        ]
-                    },
+                    "artifact_drops": [
+                        {
+                            "selector": "stream:7",
+                            "reason": " ",
+                        }
+                    ]
                 }
             )
 
@@ -92,12 +90,14 @@ class SourceArtifactsTests(unittest.TestCase):
                 encode_command: list[str],
                 encode_profile: dict,
                 source_sidecars: list[dict] | None = None,
+                target_output: dict | None = None,
             ) -> dict:
                 self.assertEqual(source.name, "clip.mp4")
                 self.assertEqual(archive_mkv, output)
                 self.assertEqual(encode_command, ["ffmpeg", "-i", "clip.mp4", "clip.mkv"])
                 self.assertEqual(encode_profile["name"], "test-profile")
                 self.assertIsNone(source_sidecars)
+                self.assertIsNone(target_output)
                 archive_mkv.write_bytes(b"after-source-artifacts")
                 return {"output": str(archive_mkv) + ".source-artifacts.tar.zst"}
 

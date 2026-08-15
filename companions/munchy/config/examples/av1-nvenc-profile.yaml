@@ -1,14 +1,16 @@
 name: example-camera
+target: munchy-av1-nvenc
+target_options:
+  preset: p7
+  tune: uhq
 archive:
-  codec: av1_nvenc
+  codec: av1
   container: mkv
   quality: 49
   max_height: 720
   fps_mode: passthrough
   scale_flags: lanczos
   pix_fmt: p010le
-  preset: p7
-  tune: uhq
   audio:
     codec: opus
     bitrate: 28k

@@ -35,7 +35,7 @@ def test_munchy_job_defaults_from_config_lowers_public_config() -> None:
                     "schema_version": 1,
                     "target": "munchy-av1-nvenc",
                     "name": "camera",
-                    "archive": {"codec": "av1_nvenc", "container": "webm", "quality": 36},
+                    "archive": {"codec": "av1", "container": "webm", "quality": 36},
                 }
             },
             "groups": {
@@ -75,7 +75,7 @@ section:
     target: munchy-av1-nvenc
     name: '{device_id}-webm'
     archive:
-      codec: av1_nvenc
+      codec: av1
       container: webm
       quality: 36
   routing:
@@ -234,7 +234,7 @@ def test_build_review_sweep_plan_expands_configured_routes(tmp_path) -> None:  #
                 "target": "munchy-av1-nvenc",
                 "name": "video",
                 "archive": {
-                    "codec": "av1_nvenc",
+                    "codec": "av1",
                     "container": "webm",
                     "quality": 40,
                 },

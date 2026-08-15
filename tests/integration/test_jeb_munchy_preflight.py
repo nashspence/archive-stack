@@ -4,6 +4,7 @@ import importlib
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any, cast
 
 import jeb_core.adapters.munchy as munchy_adapter_module
 from fastapi.testclient import TestClient
@@ -11,6 +12,56 @@ from jeb_core.adapters.munchy import MunchyTargetAdapter
 from jeb_core.domain.models import EligibleFile, TargetConfig
 from jeb_core.domain.sources import SourceConfig
 from munchy_api_client.client import MunchyClient
+from munchy_target_support.operations import (
+    AUDIO_REVIEW_OPERATION,
+    VIDEO_ARCHIVE_OPERATION,
+    VIDEO_REVIEW_OPERATION,
+    operation_contract,
+)
+from munchy_target_support.protocol import (
+    JsonSchemaDocument,
+    TargetContract,
+    TargetContractPayload,
+    TargetOperationSupport,
+)
+
+
+class _PreflightTransformTargetPlatform:
+    def __init__(self) -> None:
+        operations = tuple(
+            operation_contract(operation_id)
+            for operation_id in (
+                VIDEO_ARCHIVE_OPERATION,
+                VIDEO_REVIEW_OPERATION,
+                AUDIO_REVIEW_OPERATION,
+            )
+        )
+        options_schema = JsonSchemaDocument.from_schema(
+            "test.video-target.options/v1",
+            {
+                "type": "object",
+                "additionalProperties": False,
+            },
+        )
+        self._contract = TargetContract.seal(
+            TargetContractPayload(
+                implementation_id="test.video-target/v1",
+                implementation_version="1.0.0",
+                source_revision="test",
+                operations=tuple(
+                    TargetOperationSupport(
+                        operation_id=operation.id,
+                        operation_contract_sha256=operation.contract_sha256,
+                        options_schema=options_schema,
+                    )
+                    for operation in operations
+                ),
+            )
+        )
+
+    def contract(self, registration_id: str) -> TargetContract:
+        assert registration_id == "munchy-av1-nvenc"
+        return self._contract
 
 
 def load_munchy_server(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-untyped-def]
@@ -18,12 +69,14 @@ def load_munchy_server(tmp_path: Path, monkeypatch) -> ModuleType:  # type: igno
     monkeypatch.setenv("MUNCHY_STATE_DIR", str(tmp_path / "munchy-state"))
     monkeypatch.setenv("MUNCHY_WORK_DIR", str(tmp_path / "munchy-work"))
     monkeypatch.setenv("MUNCHY_TUSD_DIR", str(tmp_path / "munchy-tusd"))
-    monkeypatch.setenv("MUNCHY_GPU_RUNTIME_DIR", str(tmp_path / "munchy-gpu-runtime"))
+    monkeypatch.setenv("MUNCHY_TRANSFORM_RUNTIME_DIR", str(tmp_path / "munchy-transform-runtime"))
     for module_name in tuple(sys.modules):
         if module_name == "munchy_api.app" or module_name.startswith("munchy_core."):
             sys.modules.pop(module_name, None)
     server = importlib.import_module("munchy_api.app")
     persistence = importlib.import_module("munchy_core.persistence")
+    media = importlib.import_module("munchy_core.services.media")
+    media.register_transform_target_platform(cast(Any, _PreflightTransformTargetPlatform()))
     persistence.initialize_persistence()
     return server
 

@@ -24,17 +24,17 @@ def test_rejects_invalid_artifact_drop_selector() -> None:
         normalize_artifact_drop_selector("metadata:everything")
 
 
-def test_validates_av1_nvenc_profile_and_drop_reasons() -> None:
+def test_validates_av1_profile_and_drop_reasons() -> None:
     profile = EncodeProfile.model_validate(
         {
             "schema_version": 1,
             "target": "munchy-av1-nvenc",
             "name": "camera-archive",
+            "target_options": {"preset": "p6"},
             "archive": {
-                "codec": "av1_nvenc",
+                "codec": "av1",
                 "container": "webm",
                 "quality": 52,
-                "preset": "p6",
                 "audio": {"bitrate": "28k", "frame_duration": 40},
             },
             "source": {
@@ -48,6 +48,7 @@ def test_validates_av1_nvenc_profile_and_drop_reasons() -> None:
 
     assert profile.archive.container == "webm"
     assert profile.archive.quality == 52
+    assert profile.target_options == {"preset": "p6"}
     assert profile.archive.audio.frame_duration == 40
     assert profile.source is not None
     assert profile.source.allow_conversion_only_container is True
@@ -131,7 +132,7 @@ schema_version: 1
 target: munchy-av1-nvenc
 name: camera-archive
 archive:
-  codec: av1_nvenc
+  codec: av1
   container: mkv
   quality: 49
 """.strip(),
@@ -156,7 +157,7 @@ profiles:
     target: munchy-av1-nvenc
     name: camera
     archive:
-      codec: av1_nvenc
+      codec: av1
       container: webm
       quality: 38
   preserve:

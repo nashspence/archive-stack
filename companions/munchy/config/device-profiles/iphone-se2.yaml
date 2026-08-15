@@ -15,15 +15,16 @@ section:
   profiles:
     video-av1-webm:
       name: video-av1-webm
+      target_options:
+        preset: p7
+        tune: uhq
       archive:
-        codec: av1_nvenc
+        codec: av1
         container: webm
         quality: 36
         fps_mode: passthrough
         scale_flags: lanczos
         pix_fmt: p010le
-        preset: p7
-        tune: uhq
         audio:
           codec: opus
           bitrate: 128k

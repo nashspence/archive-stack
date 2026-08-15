@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import closing
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from munchy_api_client.routing import (
     routing_plan,
     sidecar_rules,
 )
+from munchy_target_support.protocol import TargetJobStatus, canonical_json_sha256
 from pydantic import BaseModel, ConfigDict, field_validator
 from riverhog_api_client import Conflict, NotFound
 from riverhog_api_client.client import ApiClient
@@ -39,6 +41,7 @@ from riverhog_provenance import (
     create_derivative_journal,
     load_or_create_installation_id,
     provenance_journal_filename,
+    software_agent_id,
     validate_journal,
 )
 from time_formats import format_utc_timestamp, utc_timestamp_now
@@ -69,6 +72,10 @@ RIVERHOG_FINALIZE_POLL_SECONDS = max(
 )
 
 MUNCHY_PROVENANCE_AGENT_NAME = "munchy-server"
+MUNCHY_TARGET_EXECUTION_REFERENCE_SCHEMA = (
+    "https://nashspence.github.io/riverhog/v1/munchy/schemas/"
+    "transform-target-execution-reference.json"
+)
 
 
 def _provenance_host_id() -> str:
@@ -703,6 +710,94 @@ def _reachable_output_journals(
     return {journal_id: candidates[journal_id] for journal_id in sorted(reachable)}
 
 
+def _target_terminal_records(
+    job: Mapping[str, Any],
+) -> Iterator[tuple[str, str, TargetJobStatus]]:
+    target_payloads = job.get("target_payloads")
+    payloads = target_payloads if isinstance(target_payloads, Mapping) else {}
+    target_results = job.get("target_results")
+    if isinstance(target_results, Mapping):
+        for key, value in target_results.items():
+            if not isinstance(value, Mapping) or value.get("protocol") is None:
+                continue
+            status = TargetJobStatus.model_validate(value)
+            payload = payloads.get(key)
+            registration_id = (
+                str(payload.get("registration_id") or "") if isinstance(payload, Mapping) else ""
+            )
+            yield str(key).split(":", 1)[0], registration_id, status
+
+    eager = job.get("eager_archive")
+    batches = eager.get("batches") if isinstance(eager, Mapping) else None
+    if not isinstance(batches, Mapping):
+        return
+    for batch in batches.values():
+        if not isinstance(batch, Mapping):
+            continue
+        value = batch.get("target_result")
+        if not isinstance(value, Mapping) or value.get("protocol") is None:
+            continue
+        yield (
+            str(batch.get("group") or ""),
+            str(batch.get("registration_id") or ""),
+            TargetJobStatus.model_validate(value),
+        )
+
+
+def _target_process_evidence(
+    job: Mapping[str, Any],
+    relative_path: str,
+) -> tuple[Mapping[str, Any], ...]:
+    matches = []
+    for group_name, registration_id, status in _target_terminal_records(job):
+        if status.state != "succeeded" or status.execution_evidence is None:
+            continue
+        for output in status.outputs:
+            accepted_path = f"{group_name}/{output.path}" if group_name else output.path
+            if accepted_path == relative_path:
+                matches.append((registration_id, status, output))
+    if len(matches) > 1:
+        raise RuntimeError(f"multiple transform target results claim output {relative_path}")
+    if not matches:
+        return ()
+
+    registration_id, status, output = matches[0]
+    execution = status.execution_evidence
+    assert execution is not None
+    terminal_payload = status.model_dump(mode="json", by_alias=True, exclude_none=True)
+    reference = {
+        "protocol": status.protocol,
+        "registration_id": registration_id,
+        "job_id": status.job_id,
+        "attempt": status.attempt,
+        "request_sha256": status.request_sha256,
+        "plan_sha256": status.plan_sha256,
+        "terminal_status_sha256": canonical_json_sha256(terminal_payload),
+        "target_implementation_id": execution.target.implementation_id,
+        "target_contract_sha256": execution.target.contract_sha256,
+        "operation_id": execution.operation.id,
+        "operation_contract_sha256": execution.operation.contract_sha256,
+        "output": output.model_dump(mode="json", by_alias=True, exclude_none=True),
+        "tools": [item.model_dump(mode="json") for item in execution.tools],
+    }
+    return (
+        {
+            "id": f"urn:uuid:{uuid.uuid4()}",
+            "basis": "direct_process_record",
+            "asserted_by_agent_id": software_agent_id(MUNCHY_PROVENANCE_AGENT_NAME),
+            "confidence": "high",
+            "reference": {
+                "type": "json",
+                "data": reference,
+                "schema": MUNCHY_TARGET_EXECUTION_REFERENCE_SCHEMA,
+            },
+            "description": (
+                "Munchy verified the exact terminal transform-target result and output identity."
+            ),
+        },
+    )
+
+
 def _load_munchy_output_provenance(
     job: dict[str, Any], archive_dir: Path, state: Mapping[str, Any]
 ) -> tuple[ProvenanceArchive | None, tuple[FileProvenanceBinding, ...], dict[str, bytes]]:
@@ -806,6 +901,14 @@ def munchy_output_provenance(
                     agent_version=version,
                 )
             else:
+                evidence = _target_process_evidence(
+                    job,
+                    rel_path,
+                )
+                if not evidence:
+                    raise RuntimeError(
+                        f"Munchy transformed output has no exact target evidence: {rel_path}"
+                    )
                 result = append_replacement_transformation(
                     source_journal,
                     artifact,
@@ -816,6 +919,7 @@ def munchy_output_provenance(
                     event_label="Munchy canonical archive transformation",
                     started_at=started_at,
                     ended_at=ended_at,
+                    evidence=evidence,
                 )
             summary = validate_journal(result)
             candidates[summary.journal_id] = result
@@ -870,6 +974,10 @@ def munchy_output_provenance(
             started_at=started_at,
             ended_at=ended_at,
             derivation_kind="aggregation" if len(source_journals) > 1 else "extraction",
+            evidence=_target_process_evidence(
+                job,
+                rel_path,
+            ),
         )
         summary = validate_journal(result)
         candidates[summary.journal_id] = result
@@ -1891,7 +1999,7 @@ def riverhog_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
     local_artifact_paths: set[str] = set()
     if riverhog_config_enabled(job):
         archive_dir = (
-            runtime_config.GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+            runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
         )
         local_artifact_paths = {
             rel_path
@@ -1901,7 +2009,7 @@ def riverhog_handoff_progress(job: dict[str, Any]) -> dict[str, Any] | None:
         local_artifacts_total = len(local_artifact_paths)
     else:
         archive_dir = (
-            runtime_config.GPU_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
+            runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / str(job.get("job_id") or "") / "archive"
         )
     registered_artifact_paths = {str(path) for path in files if isinstance(path, str)}
     known_artifact_paths = registered_artifact_paths | local_artifact_paths

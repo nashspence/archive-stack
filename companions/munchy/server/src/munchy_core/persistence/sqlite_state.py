@@ -548,10 +548,10 @@ def merge_eager_archive_state(
             merged_batches[batch_id] = current_item
     merged["batches"] = merged_batches
 
-    current_results = dict_or_empty(current_eager.get("gpu_results"))
-    payload_results = dict_or_empty(payload_eager.get("gpu_results"))
+    current_results = dict_or_empty(current_eager.get("target_results"))
+    payload_results = dict_or_empty(payload_eager.get("target_results"))
     if current_results or payload_results:
-        merged["gpu_results"] = {**current_results, **payload_results}
+        merged["target_results"] = {**current_results, **payload_results}
 
     merged["next_batch_number"] = max(
         int(current_eager.get("next_batch_number") or 1),
@@ -572,7 +572,7 @@ def merge_handoff_adapter_state(
     return adapter.merge_state(current, incoming)
 
 
-GPU_RESULT_STORAGE_KEYS = {
+TARGET_RESULT_STORAGE_KEYS = {
     "job_id",
     "state",
     "profile",
@@ -586,11 +586,29 @@ GPU_RESULT_STORAGE_KEYS = {
     "error_code",
 }
 
+TARGET_STATUS_STORAGE_KEYS = {
+    "protocol",
+    "job_id",
+    "attempt",
+    "request_sha256",
+    "plan_sha256",
+    "state",
+    "progress",
+    "outputs",
+    "execution_evidence",
+    "failure",
+    "started_at",
+    "finished_at",
+    "updated_at",
+}
 
-def compact_gpu_result_for_storage(value: Any) -> Any:
+
+def compact_target_result_for_storage(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
-    compact = {key: value[key] for key in GPU_RESULT_STORAGE_KEYS if key in value}
+    if value.get("protocol") == "munchy-transform-target/v1":
+        return {key: value[key] for key in TARGET_STATUS_STORAGE_KEYS if key in value}
+    compact = {key: value[key] for key in TARGET_RESULT_STORAGE_KEYS if key in value}
     items = value.get("items")
     if isinstance(items, dict):
         item_counts: dict[str, int] = {}
@@ -610,12 +628,12 @@ def compact_eager_archive_for_storage(eager: Any) -> None:
     batches = eager.get("batches")
     if isinstance(batches, dict):
         for batch in batches.values():
-            if isinstance(batch, dict) and isinstance(batch.get("gpu_result"), dict):
-                batch["gpu_result"] = compact_gpu_result_for_storage(batch["gpu_result"])
-    gpu_results = eager.get("gpu_results")
-    if isinstance(gpu_results, dict):
-        for batch_id, result in list(gpu_results.items()):
-            gpu_results[batch_id] = compact_gpu_result_for_storage(result)
+            if isinstance(batch, dict) and isinstance(batch.get("target_result"), dict):
+                batch["target_result"] = compact_target_result_for_storage(batch["target_result"])
+    target_results = eager.get("target_results")
+    if isinstance(target_results, dict):
+        for batch_id, result in list(target_results.items()):
+            target_results[batch_id] = compact_target_result_for_storage(result)
 
 
 def compact_job_for_storage(payload: dict[str, Any]) -> dict[str, Any]:

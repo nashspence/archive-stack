@@ -10,6 +10,7 @@ import pytest
 from munchy_target_support import source_artifacts
 from munchy_target_support.source_artifact_bridge import (
     _allow_conversion_only_container,
+    _target_execution_with_output,
     build_preserve_source_artifacts,
 )
 
@@ -74,6 +75,42 @@ def test_source_artifact_bundle_preserves_media_inventory(tmp_path: Path) -> Non
 
     assert artifacts
     assert any(artifact.kind == "source_ffprobe" for artifact in artifacts)
+
+
+def test_transform_source_evidence_binds_exact_execution_and_output(tmp_path: Path) -> None:
+    output = tmp_path / "camera" / "clip.mkv"
+    output.parent.mkdir()
+    output.write_bytes(b"canonical archive output")
+
+    evidence = _target_execution_with_output(
+        {
+            "target_evidence": {
+                "protocol": "munchy-transform-target/v1",
+                "job_id": "camera-archive",
+                "request_sha256": "a" * 64,
+                "plan_sha256": "b" * 64,
+                "target": {"implementation_id": "example.target/v1"},
+            }
+        },
+        output,
+        {
+            "id": "output-camera",
+            "role": "munchy.video.archive/v1",
+            "path": "camera/clip.mkv",
+            "derived_from": ["input-camera"],
+        },
+    )
+
+    assert evidence["request_sha256"] == "a" * 64
+    assert evidence["plan_sha256"] == "b" * 64
+    assert evidence["output"] == {
+        "id": "output-camera",
+        "role": "munchy.video.archive/v1",
+        "path": "camera/clip.mkv",
+        "bytes": len(b"canonical archive output"),
+        "sha256": source_artifacts._sha256_path(output),
+        "derived_from": ["input-camera"],
+    }
 
 
 def test_preserve_source_artifacts_reports_no_additional_artifacts(
@@ -250,16 +287,15 @@ def test_source_artifact_bridge_accepts_service_encode_profile_shape() -> None:
         "schema_version": 1,
         "target": "munchy-av1-nvenc",
         "name": "camera-preview",
+        "target_options": {"preset": "p7", "tune": "uhq"},
         "archive": {
-            "codec": "av1_nvenc",
+            "codec": "av1",
             "container": "webm",
             "quality": 49,
             "max_height": 720,
             "fps_mode": "passthrough",
             "scale_flags": "lanczos",
             "pix_fmt": "p010le",
-            "preset": "p7",
-            "tune": "uhq",
             "audio": {
                 "codec": "opus",
                 "bitrate": "28k",

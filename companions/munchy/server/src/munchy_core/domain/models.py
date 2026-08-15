@@ -52,7 +52,7 @@ DEFAULT_REVIEW_CLIP_MIN_SECONDS = 6
 DEFAULT_REVIEW_CLIP_MAX_SECONDS = 9
 
 
-GPU_TARGET_TASKS = frozenset({"archive_video", "qcut_video", "audio_review"})
+TRANSFORM_TARGET_TASKS = frozenset({"archive_video", "qcut_video", "archive_audio", "audio_review"})
 
 
 LifecycleEventType = Literal[
@@ -70,8 +70,8 @@ def default_tasks() -> list[TaskName]:
     return list(DEFAULT_TASKS)
 
 
-def tasks_require_gpu(tasks: Sequence[Any]) -> bool:
-    return any(str(task) in GPU_TARGET_TASKS for task in tasks)
+def tasks_require_transform_target(tasks: Sequence[Any]) -> bool:
+    return any(str(task) in TRANSFORM_TARGET_TASKS for task in tasks)
 
 
 SAFE_GROUP_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")

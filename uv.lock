@@ -1269,6 +1269,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "http-api-contracts" },
     { name = "httpx" },
+    { name = "jsonschema" },
     { name = "lifecycle-events" },
     { name = "munchy-api-client" },
     { name = "munchy-config" },
@@ -1291,6 +1292,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.111,<1.0" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "jsonschema", specifier = ">=4.25,<5.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "munchy-api-client", editable = "packages/munchy-api-client" },
     { name = "munchy-config", editable = "packages/munchy-config" },
@@ -1311,14 +1313,20 @@ name = "munchy-target-support"
 version = "0.1.0"
 source = { editable = "packages/munchy-target-support" }
 dependencies = [
+    { name = "httpx" },
     { name = "munchy-workflows" },
+    { name = "pydantic" },
+    { name = "rfc8785" },
     { name = "time-formats" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "munchy-workflows", editable = "packages/munchy-workflows" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "rfc8785", specifier = ">=0.1.4,<0.2" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.0,<1.0" },
 ]
@@ -1823,6 +1831,15 @@ dependencies = [
     { name = "tomlkit" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/05/35/298d9410b3635107ce586725cdfbca4c219c08d77a3511551f5e479a78db/reuse-6.2.0.tar.gz", hash = "sha256:4feae057a2334c9a513e6933cdb9be819d8b822f3b5b435a36138bd218897d23", size = 1615611, upload-time = "2025-10-27T15:25:46.336Z" }
+
+[[package]]
+name = "rfc8785"
+version = "0.1.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/2f/fa1d2e740c490191b572d33dbca5daa180cb423c24396b856f5886371d8b/rfc8785-0.1.4.tar.gz", hash = "sha256:e545841329fe0eee4f6a3b44e7034343100c12b4ec566dc06ca9735681deb4da", size = 14321, upload-time = "2024-09-27T16:33:31.206Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/78/119878110660b2ad709888c8a1614fce7e2fab39080ab960656dc8605bf6/rfc8785-0.1.4-py3-none-any.whl", hash = "sha256:520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48", size = 9240, upload-time = "2024-09-27T16:33:29.683Z" },
+]
 
 [[package]]
 name = "rich"

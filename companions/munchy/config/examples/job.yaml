@@ -33,16 +33,17 @@ job:
 profiles:
   example-camera:
     name: example-camera
+    target_options:
+      preset: p7
+      tune: uhq
     archive:
-      codec: av1_nvenc
+      codec: av1
       container: webm
       quality: 38
       max_height: 720
       fps_mode: passthrough
       scale_flags: lanczos
       pix_fmt: p010le
-      preset: p7
-      tune: uhq
       audio:
         codec: opus
         bitrate: 28k

@@ -24,7 +24,7 @@ services:
               capabilities: [gpu]
 
     ports:
-      - "${GPU_TARGET_BIND_ADDR:-127.0.0.1}:${GPU_TARGET_PORT:-8000}:8000"
+      - "${MUNCHY_AV1_NVENC_BIND_ADDR:-127.0.0.1}:${MUNCHY_AV1_NVENC_PORT:-8000}:8000"
 
     environment:
       PYTHONUNBUFFERED: "1"
@@ -52,7 +52,9 @@ services:
       TZ: ${TZ:-UTC}
 
     volumes:
-      - ${MUNCHY_AV1_NVENC_DATA_DIR:-./runtime/data}:/data
+      - ${MUNCHY_TRANSFORM_RUNTIME_HOST_DIR:-../../runtime/transform-targets}/input:/data/input:ro
+      - ${MUNCHY_TRANSFORM_RUNTIME_HOST_DIR:-../../runtime/transform-targets}/output:/data/output
+      - ${MUNCHY_TRANSFORM_RUNTIME_HOST_DIR:-../../runtime/transform-targets}/jobs:/data/jobs
 
     restart: "no"
     healthcheck:

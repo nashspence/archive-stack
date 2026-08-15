@@ -18,6 +18,7 @@ from typing import Any, cast
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
+from munchy_target_support.operations import REVIEW_PLAN_ROLE
 from munchy_target_support.source_artifact_bridge import (
     build_preserve_source_artifacts,
 )
@@ -42,7 +43,7 @@ def ensure_dirs() -> None:
         runtime_config.STATE_DIR,
         runtime_config.WORK_DIR,
         runtime_config.TUSD_DIR,
-        runtime_config.GPU_RUNTIME_DIR,
+        runtime_config.TRANSFORM_RUNTIME_DIR,
     ):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -66,7 +67,7 @@ def opaque_local_id(value: str) -> str:
 
 
 def shared_input_upload_root(upload_id: str) -> Path:
-    root = (runtime_config.GPU_RUNTIME_DIR / "input-uploads").resolve()
+    root = (runtime_config.TRANSFORM_RUNTIME_DIR / "input-uploads").resolve()
     candidate = (root / opaque_local_id(upload_id)).resolve()
     if candidate.parent != root:
         raise RuntimeError("input upload path escaped its configured root")
@@ -185,8 +186,8 @@ def shared_review_plan_path(upload_id: str, group_name: str, task_name: str) -> 
     return shared_input_upload_root(upload_id) / f".munchy-{task_name}-{group_name}-plan.json"
 
 
-def gpu_runtime_container_path(path: Path) -> str:
-    rel = path.resolve().relative_to(runtime_config.GPU_RUNTIME_DIR)
+def target_runtime_container_path(path: Path) -> str:
+    rel = path.resolve().relative_to(runtime_config.TRANSFORM_RUNTIME_DIR)
     return f"/data/{rel.as_posix()}"
 
 
@@ -1200,24 +1201,41 @@ def store_shared_review_plan(
         part.unlink(missing_ok=True)
 
 
-def remember_review_plans_from_gpu_result(
+def remember_review_plans_from_target_result(
     job: dict[str, Any],
     group_name: str,
-    gpu_result: dict[str, Any],
+    target_result: dict[str, Any],
+    *,
+    accepted_root: Path,
 ) -> None:
     upload_id = str(job.get("input_upload_id") or "")
     if not upload_id:
         return
-    items = gpu_result.get("items")
-    if not isinstance(items, dict):
+    evidence = target_result.get("execution_evidence")
+    if not isinstance(evidence, dict):
         return
-    for task_name in ("qcut_video", "audio_review"):
-        item = items.get(task_name)
-        if not isinstance(item, dict):
-            continue
-        plan = item.get("plan")
-        if isinstance(plan, dict):
-            store_shared_review_plan(upload_id, group_name, task_name, plan)
+    operation = evidence.get("operation")
+    operation_id = str(operation.get("id") or "") if isinstance(operation, Mapping) else ""
+    task_name = {
+        "munchy.video.review/v1": "qcut_video",
+        "munchy.audio.review/v1": "audio_review",
+    }.get(operation_id)
+    if task_name is None:
+        return
+    outputs = target_result.get("outputs")
+    plans = [
+        item
+        for item in (outputs if isinstance(outputs, list) else [])
+        if isinstance(item, Mapping)
+        if item.get("role") == REVIEW_PLAN_ROLE
+    ]
+    if len(plans) != 1:
+        raise RuntimeError("review target result must publish exactly one review-plan artifact")
+    path = accepted_root.joinpath(*PurePosixPath(str(plans[0]["path"])).parts)
+    plan = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(plan, dict):
+        raise RuntimeError("accepted review-plan artifact must contain a JSON object")
+    store_shared_review_plan(upload_id, group_name, task_name, plan)
 
 
 def materialize_upload(upload: dict[str, Any], dest_root: Path) -> None:

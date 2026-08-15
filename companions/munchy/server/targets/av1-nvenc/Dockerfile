@@ -117,11 +117,13 @@ RUN uv sync --frozen --package munchy-av1-nvenc-target --no-dev --no-editable
 
 FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3
 
+ARG SOURCE_REVISION=unknown
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
     PIP_ROOT_USER_ACTION=ignore \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    MUNCHY_TARGET_SOURCE_REVISION=${SOURCE_REVISION} \
     PATH=/opt/venv/bin:$PATH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -137,7 +139,6 @@ COPY --from=python-build /opt/venv /opt/venv
 
 ARG BUILD_CREATED=1970-01-01T00:00:00Z
 ARG RELEASE_VERSION=development
-ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="Munchy AV1 NVENC Target" \
       org.opencontainers.image.licenses="CAL-1.0" \
       org.opencontainers.image.source="https://github.com/nashspence/riverhog" \

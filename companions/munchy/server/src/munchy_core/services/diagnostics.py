@@ -106,10 +106,10 @@ def create_job_diagnostic(
                     _add_bytes(archive, "error.txt", (error_text + "\n").encode("utf-8"))
                 _add_bytes(archive, "job-state.json", _json_bytes(job))
                 for key in (
-                    "gpu_statuses",
-                    "gpu_payloads",
-                    "gpu_result",
-                    "gpu_results",
+                    "target_statuses",
+                    "target_payloads",
+                    "target_result",
+                    "target_results",
                     "eager_archive",
                 ):
                     value = job.get(key)

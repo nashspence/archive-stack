@@ -64,6 +64,24 @@ def _allow_conversion_only_container(profile: Mapping[str, Any] | None) -> bool:
     return value
 
 
+def _target_execution_with_output(
+    profile: Mapping[str, Any],
+    archive_path: pathlib.Path,
+    target_output: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    target_evidence = profile.get("target_evidence")
+    if not isinstance(target_evidence, Mapping):
+        return {}
+    result = dict(target_evidence)
+    if not isinstance(target_output, Mapping):
+        raise ValueError("transform-target source evidence requires an output identity")
+    output_identity = dict(target_output)
+    output_identity["bytes"] = archive_path.stat().st_size
+    output_identity["sha256"] = source_artifacts._sha256_path(archive_path)
+    result["output"] = output_identity
+    return result
+
+
 def _source_sidecar_artifacts(
     sidecars: Sequence[Mapping[str, Any]] | None,
 ) -> list[source_artifacts.SourceArtifact]:
@@ -212,9 +230,13 @@ def build_strict_source_artifacts(
     encode_command: Sequence[str],
     encode_profile: Mapping[str, Any] | None,
     source_sidecars: Sequence[Mapping[str, Any]] | None = None,
+    target_output: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     profile = dict(encode_profile or {})
-    drop_policy = source_artifacts.SourceArtifactDropPolicy(artifact_drop_reason_map(profile))
+    source_profile = {"source": profile["source"]} if "source" in profile else {}
+    drop_policy = source_artifacts.SourceArtifactDropPolicy(
+        artifact_drop_reason_map(source_profile)
+    )
     allow_conversion_only_container = _allow_conversion_only_container(profile)
     work_dir = archive_mkv.parent / f".{archive_mkv.name}.source-artifacts-work"
     bundle_path = pathlib.Path(source_artifacts._source_artifacts_path(str(archive_mkv)))
@@ -286,6 +308,10 @@ def build_strict_source_artifacts(
         )
         archive = _archive_profile(profile)
         audio = _audio_profile(profile)
+        target_execution = _target_execution_with_output(profile, archive_mkv, target_output)
+        effective_target_options = profile.get("effective_target_options")
+        if not isinstance(effective_target_options, Mapping):
+            effective_target_options = {}
         stream_transforms = source_artifacts._stream_transform_records(
             stream_infos,
             exports,
@@ -306,9 +332,15 @@ def build_strict_source_artifacts(
             global_video_kbps=0,
             audio_kbps=_bitrate_kbps(audio.get("bitrate"), 128),
             svt_lp=0,
-            video_codec=str(archive.get("codec") or "av1_nvenc"),
+            video_codec=str(archive.get("codec") or "av1"),
             video_encoder={
-                key: value for key, value in archive.items() if key != "audio" and value is not None
+                "transform_target": target_execution,
+                "effective_target_options": dict(effective_target_options),
+                "portable_intent": {
+                    key: value
+                    for key, value in archive.items()
+                    if key != "audio" and value is not None
+                },
             },
             audio_codec=str(audio.get("codec") or "libopus"),
             audio_encoder={key: value for key, value in audio.items() if value is not None},

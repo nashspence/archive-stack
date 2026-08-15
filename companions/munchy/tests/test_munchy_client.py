@@ -477,7 +477,7 @@ def test_rich_renderer_overlays_transient_issue_without_replacing_progress() -> 
     renderer.update(
         {
             "state": "running",
-            "phase": "gpu:camera",
+            "phase": "transform_target:camera",
             "upload_progress": {
                 "files_uploaded": 5,
                 "files_total": 10,
@@ -499,7 +499,7 @@ def test_rich_renderer_overlays_transient_issue_without_replacing_progress() -> 
     )
 
     assert renderer.current_job["state"] == "running"
-    assert renderer.current_job["phase"] == "gpu:camera"
+    assert renderer.current_job["phase"] == "transform_target:camera"
     assert renderer.current_job["upload_progress"]["files_uploaded"] == 5
     assert renderer.transient_issue is not None
     assert renderer.transient_issue["label"] == "remote job status"
@@ -513,7 +513,7 @@ def test_rich_renderer_reserves_single_line_for_transient_issues() -> None:
     renderer = RichProgressRenderer(include_job=True, title="Test")
     base_job = {
         "state": "running",
-        "phase": "gpu:camera",
+        "phase": "transform_target:camera",
         "upload_progress": {
             "files_uploaded": 5,
             "files_total": 10,
@@ -644,7 +644,7 @@ def test_format_job_status_line_includes_cleanup_completion() -> None:
     line = format_job_status_line(
         {
             "state": "failed",
-            "phase": "gpu",
+            "phase": "transform_target",
             "cleanup_completed_at": "2026-01-01T00:00:00Z",
             "cleanup_removed": ["job-work:job-1", "input-upload:upload-1"],
         }
@@ -675,7 +675,7 @@ def test_format_job_failure_is_compact_and_includes_error_details() -> None:
             "state": "failed",
             "phase": "handoff",
             "error": "rclone failed after many retries",
-            "gpu_statuses": {
+            "target_statuses": {
                 "batch-1": {
                     "state": "failed",
                     "error": "ffmpeg failed for camera/clip.mp4",
@@ -692,7 +692,7 @@ def test_format_job_failure_is_compact_and_includes_error_details() -> None:
     assert "- identity: camera-archive · 20260727T123456Z" in failure
     assert "- status: job: failed" in failure
     assert "- error: rclone failed after many retries" in failure
-    assert "- gpu statuses.batch-1.error: ffmpeg failed for camera/clip.mp4" in failure
+    assert "- target statuses.batch-1.error: ffmpeg failed for camera/clip.mp4" in failure
     assert "eager_archive" not in failure
     assert len(failure) < 700
 
@@ -704,7 +704,7 @@ def test_compact_job_failure_is_single_line_and_prefers_root_error() -> None:
             "state": "failed",
             "phase": "routing",
             "error": "routing failed for camera/clip.wav: no matching route",
-            "gpu_statuses": {"large": ["payload"] * 100},
+            "target_statuses": {"large": ["payload"] * 100},
         }
     )
 
@@ -1046,7 +1046,7 @@ def test_munchy_http_error_formats_insufficient_storage_concisely() -> None:
             "code": "insufficient_storage",
             "message": "storage capacity is insufficient",
             "details": {
-              "label": "source upload spool, future gpu scratch",
+              "label": "source upload spool, future transform-target scratch",
               "required_bytes": 2147483648,
               "free_bytes": 1073741824,
               "reserved_bytes": 536870912
@@ -1056,7 +1056,9 @@ def test_munchy_http_error_formats_insufficient_storage_concisely() -> None:
         """,
     )
 
-    assert "insufficient storage for source upload spool, future gpu scratch" in str(error)
+    assert "insufficient storage for source upload spool, future transform-target scratch" in str(
+        error
+    )
     assert "need 2.00 GiB free" in str(error)
     assert "have 1.00 GiB" in str(error)
     assert "512.00 MiB reserved by active uploads" in str(error)

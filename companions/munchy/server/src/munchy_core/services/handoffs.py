@@ -130,7 +130,7 @@ def handoff_loop() -> None:
                 if execution_runtime.handoff_stop.is_set():
                     return
                 archive_dir = (
-                    runtime_config.GPU_RUNTIME_DIR
+                    runtime_config.TRANSFORM_RUNTIME_DIR
                     / "jobs"
                     / str(job.get("job_id") or "")
                     / "archive"
@@ -160,7 +160,7 @@ def handoff_source(job: Mapping[str, Any]) -> tuple[Path, str, str]:
     source_kind = "review" if workflow_mode == "review" else "collection_archive"
     source_label = "review" if source_kind == "review" else "collection archive"
     source_dir = (
-        runtime_config.GPU_RUNTIME_DIR
+        runtime_config.TRANSFORM_RUNTIME_DIR
         / "jobs"
         / job_id
         / ("review" if source_kind == "review" else "archive")
