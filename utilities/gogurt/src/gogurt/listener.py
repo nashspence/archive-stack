@@ -9,6 +9,7 @@ import queue
 import shutil
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import threading
@@ -59,6 +60,9 @@ LISTENER_LOG_BYTES = 1_048_576
 LISTENER_LOG_BACKUPS = 3
 LISTENER_MOUNT_ATTENTION_LIMIT = 20
 LISTENER_DIAGNOSTIC_LIMIT = 512
+LISTENER_STATUS_DB_TIMEOUT_SECONDS = 0.25
+LISTENER_ACTION_TERMINATE_SECONDS = 2.0
+LISTENER_ACTION_KILL_SECONDS = 2.0
 LISTENER_OPERATIONS = ("install", "status", "start", "stop", "restart", "uninstall")
 
 
@@ -249,6 +253,15 @@ def _safe_diagnostic(scope: str, exc: BaseException) -> str:
     return value[: LISTENER_DIAGNOSTIC_LIMIT - 1] + "…"
 
 
+def _combine_diagnostics(*values: str | None) -> str | None:
+    combined = "; ".join(value for value in values if value)
+    if not combined:
+        return None
+    if len(combined) <= LISTENER_DIAGNOSTIC_LIMIT:
+        return combined
+    return combined[: LISTENER_DIAGNOSTIC_LIMIT - 1] + "…"
+
+
 def _secure_listener_state(paths: ListenerPaths) -> None:
     ensure_private_directory(paths.state_dir)
     ensure_private_files(
@@ -289,10 +302,10 @@ class ListenerStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, *, timeout_seconds: float = 30) -> sqlite3.Connection:
         ensure_private_directory(self.path.parent)
         ensure_private_file(self.path)
-        connection = sqlite3.connect(self.path, timeout=30)
+        connection = sqlite3.connect(self.path, timeout=timeout_seconds)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         ensure_private_files(self.path.parent.glob(f"{self.path.name}-*"))
@@ -534,11 +547,29 @@ class ListenerStore:
             connection.commit()
         return state
 
-    def summary(self) -> dict[str, object]:
-        if not self.path.is_file():
-            return {"counts": {}, "attention": []}
+    def mark_running_uncertain(self, dispatch_id: str, *, error: str, now: float) -> None:
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE dispatches
+                SET state = 'uncertain', completed_at = ?, next_retry_at = NULL,
+                    exit_code = NULL, error = ?
+                WHERE dispatch_id = ? AND state = 'running'
+                """,
+                (now, error, dispatch_id),
+            )
+            connection.commit()
+
+    def summary(self, *, timeout_seconds: float = 30) -> dict[str, object]:
         try:
-            with closing(self._connect()) as connection:
+            info = self.path.lstat()
+        except FileNotFoundError:
+            return {"counts": {}, "attention": []}
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise OSError(f"Gogurt listener state is not a regular database: {self.path}")
+        try:
+            with closing(self._connect(timeout_seconds=timeout_seconds)) as connection:
                 counts = {
                     str(row["state"]): int(row["count"])
                     for row in connection.execute(
@@ -647,7 +678,9 @@ class ListenerRuntime:
         self.dispatch_queue: queue.Queue[str] = queue.Queue()
         self._queued: set[str] = set()
         self._queue_lock = threading.Lock()
-        self._active_lock = threading.Lock()
+        # A process-control signal may invoke request_stop while the main
+        # thread is sampling active custody for a heartbeat.
+        self._active_lock = threading.RLock()
         self._active_dispatch: str | None = None
         self._active_process: subprocess.Popen[bytes] | None = None
         self._health_lock = threading.Lock()
@@ -662,7 +695,53 @@ class ListenerRuntime:
         with self._active_lock:
             process = self._active_process
         if process is not None and process.poll() is None:
-            process.terminate()
+            try:
+                process.terminate()
+            except OSError as exc:
+                self.logger.warning("action terminate=%s", _safe_diagnostic("failed", exc))
+
+    def _settle_worker(self, worker: threading.Thread) -> None:
+        worker.join(timeout=LISTENER_ACTION_TERMINATE_SECONDS)
+        kill_diagnostic: str | None = None
+        with self._active_lock:
+            process = self._active_process
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+                process.wait(timeout=LISTENER_ACTION_KILL_SECONDS)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                kill_diagnostic = _safe_diagnostic("force action stop", exc)
+                self.logger.error("action=%s", kill_diagnostic)
+        if worker.is_alive():
+            worker.join(timeout=LISTENER_ACTION_KILL_SECONDS)
+        with self._active_lock:
+            dispatch_id = self._active_dispatch
+            process = self._active_process
+        process_live = process is not None and process.poll() is None
+        if not worker.is_alive() and not process_live:
+            return
+        process_state = "live child process" if process_live else "unsettled dispatch worker"
+        diagnostic = _combine_diagnostics(
+            f"listener shutdown: {process_state}",
+            kill_diagnostic,
+        )
+        assert diagnostic is not None
+        if dispatch_id is not None:
+            try:
+                self.store.mark_running_uncertain(
+                    dispatch_id,
+                    error="listener shutdown could not prove action custody settlement",
+                    now=self.clock(),
+                )
+            except Exception as exc:
+                diagnostic = _combine_diagnostics(
+                    diagnostic,
+                    _safe_diagnostic("mark action custody uncertain", exc),
+                )
+                assert diagnostic is not None
+        with self._health_lock:
+            self._runtime_diagnostic = diagnostic
+        raise ListenerError(diagnostic)
 
     def _planner(self, mount_point: Path) -> Mapping[str, object]:
         try:
@@ -752,30 +831,43 @@ class ListenerRuntime:
             self._heartbeat()
             return_code: int | None = None
             error: str | None = None
+            process_started = False
+            process: subprocess.Popen[bytes] | None = None
             try:
-                command = revalidate_gogurt_action(plan)
-                process = subprocess.Popen(
-                    command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                with self._active_lock:
-                    self._active_process = process
-                return_code = process.wait()
+                if self.stop_event.is_set():
+                    error = "listener stopped before the action process acquired custody"
+                else:
+                    command = revalidate_gogurt_action(plan)
+                    process = subprocess.Popen(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    process_started = True
+                    with self._active_lock:
+                        self._active_process = process
+                        stop_requested = self.stop_event.is_set()
+                    if stop_requested and process.poll() is None:
+                        process.terminate()
+                    return_code = process.wait()
             except (ConfigError, OSError, ValueError) as exc:
                 error = str(exc)
-            finally:
-                with self._active_lock:
-                    self._active_process = None
-                    self._active_dispatch = None
             state = self.store.finish_dispatch(
                 dispatch_id,
                 return_code=return_code,
                 error=error,
-                uncertain=self.stop_event.is_set() and (return_code != 0 or error is not None),
+                uncertain=(
+                    process_started
+                    and self.stop_event.is_set()
+                    and (return_code != 0 or error is not None)
+                ),
                 now=self.clock(),
             )
+            with self._active_lock:
+                if process is None or process.poll() is not None:
+                    self._active_process = None
+                self._active_dispatch = None
             self.logger.info(
                 "dispatch=%s state=%s exit=%s error=%s",
                 dispatch_id,
@@ -848,7 +940,7 @@ class ListenerRuntime:
                 self.stop_event.wait(self.config.interval_seconds)
         finally:
             self.request_stop()
-            worker.join(timeout=10)
+            self._settle_worker(worker)
             try:
                 self._heartbeat()
             except Exception as heartbeat_exc:
@@ -925,33 +1017,46 @@ def run_listener(config_file: Path) -> None:
         runtime.logger.info("listener stopped pid=%s", os.getpid())
 
 
-def _read_heartbeat(path: Path) -> dict[str, object] | None:
+def _read_heartbeat_result(path: Path) -> tuple[dict[str, object] | None, str | None]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, _safe_diagnostic("listener heartbeat", exc)
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        return None, "listener heartbeat: path is not a regular file"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, UnicodeError):
-        return None
+    except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+        return None, _safe_diagnostic("listener heartbeat", exc)
     if not isinstance(value, dict):
-        return None
+        return None, "listener heartbeat: payload is not an object"
     if value.get("schema") != LISTENER_HEARTBEAT_SCHEMA:
-        return None
+        return None, "listener heartbeat: schema is invalid"
     if value.get("version") != _package_version():
-        return None
+        return None, "listener heartbeat: version differs from the installed listener"
     configuration = value.get("configuration")
     if not isinstance(configuration, dict) or configuration.get("status") not in {
         "valid",
         "failed",
     }:
-        return None
+        return None, "listener heartbeat: configuration status is invalid"
     runtime = value.get("runtime")
     if not isinstance(runtime, dict) or runtime.get("status") not in {
         "running",
         "failed",
     }:
-        return None
+        return None, "listener heartbeat: runtime status is invalid"
     mount_attention = value.get("mount_attention")
     if not isinstance(mount_attention, list):
-        return None
-    return value
+        return None, "listener heartbeat: mount attention is invalid"
+    return value, None
+
+
+def _read_heartbeat(path: Path) -> dict[str, object] | None:
+    heartbeat, _diagnostic = _read_heartbeat_result(path)
+    return heartbeat
 
 
 def listener_status(
@@ -963,7 +1068,7 @@ def listener_status(
     resolved_paths = paths or default_listener_paths()
     native_adapter = adapter or listener_adapter()
     native = native_adapter.status(resolved_paths)
-    heartbeat = _read_heartbeat(resolved_paths.heartbeat_file)
+    heartbeat, heartbeat_file_diagnostic = _read_heartbeat_result(resolved_paths.heartbeat_file)
     config: ListenerConfig | None = None
     config_error: str | None = None
     if resolved_paths.config_file.is_file():
@@ -984,8 +1089,9 @@ def listener_status(
                 str(heartbeat["heartbeat_at"]).replace("Z", "+00:00")
             ).timestamp()
             heartbeat_age = max(0.0, current - heartbeat_time)
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as exc:
             heartbeat = None
+            heartbeat_file_diagnostic = _safe_diagnostic("listener heartbeat time", exc)
     heartbeat_diagnostic: str | None = None
     runtime_diagnostic: str | None = None
     mount_attention: list[object] = []
@@ -1007,7 +1113,32 @@ def listener_status(
                 else "listener runtime: dispatch worker reported failure"
             )
         mount_attention = cast(list[object], heartbeat["mount_attention"])
-    diagnostic = config_error or runtime_diagnostic or heartbeat_diagnostic
+    heartbeat_process_live = False
+    if heartbeat is not None:
+        heartbeat_pid = heartbeat.get("pid")
+        heartbeat_process_live = (
+            isinstance(heartbeat_pid, int)
+            and heartbeat_pid > 0
+            and _process_is_running(heartbeat_pid)
+        )
+        if not heartbeat_process_live:
+            heartbeat = None
+            heartbeat_age = None
+    state_error: str | None = None
+    try:
+        state = ListenerStore(resolved_paths.database_file).summary(
+            timeout_seconds=LISTENER_STATUS_DB_TIMEOUT_SECONDS
+        )
+    except (OSError, sqlite3.Error, UnicodeError, ValueError) as exc:
+        state = {"counts": {}, "attention": []}
+        state_error = _safe_diagnostic("listener state", exc)
+    diagnostic = _combine_diagnostics(
+        config_error,
+        runtime_diagnostic,
+        heartbeat_diagnostic,
+        heartbeat_file_diagnostic,
+        state_error,
+    )
     if not native.installed:
         health = "absent"
     elif not native.running:
@@ -1020,7 +1151,6 @@ def listener_status(
         interval = config.interval_seconds if config is not None else 2.0
         healthy = heartbeat_age is not None and heartbeat_age <= max(10, interval * 3)
         health = "healthy" if healthy else "stale"
-    state = ListenerStore(resolved_paths.database_file).summary()
     return {
         "schema": LISTENER_STATUS_SCHEMA,
         "version": _package_version(),
@@ -1071,6 +1201,38 @@ def _wait_for_health(
         time.sleep(0.2)
         status = listener_status(paths=paths, adapter=adapter)
     raise ListenerError(f"Gogurt listener did not reach {sorted(expected)}: {status['health']}")
+
+
+def _wait_for_native_absence(
+    *,
+    paths: ListenerPaths,
+    adapter: ListenerAdapter,
+    terminated_pid: int | None,
+    timeout_seconds: float = 20,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    native = adapter.status(paths)
+    runtime_released = False
+    while True:
+        runtime_released = True
+        if paths.lock_file.is_file():
+            try:
+                with ListenerLock(paths.lock_file):
+                    pass
+            except ListenerError:
+                runtime_released = False
+        process_released = terminated_pid is None or not _process_is_running(terminated_pid)
+        if not native.installed and runtime_released and process_released:
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.2)
+        native = adapter.status(paths)
+    raise ListenerError(
+        "Gogurt listener native uninstall did not settle: "
+        f"installed={native.installed} runtime_released={runtime_released} "
+        f"process_released={process_released}"
+    )
 
 
 def _heartbeat_pid(paths: ListenerPaths) -> int | None:
@@ -1167,8 +1329,8 @@ def install_listener(
             # probes can open concurrent database connections.
             ListenerStore(resolved_paths.database_file).create()
             native_adapter.register(
-                paths=resolved_paths,
-                command=_service_command(config, resolved_paths.config_file),
+                resolved_paths,
+                _service_command(config, resolved_paths.config_file),
             )
             if wait_for_health:
                 return _wait_for_health(
@@ -1178,11 +1340,11 @@ def install_listener(
                     previous_pid=previous_pid,
                 )
             return listener_status(paths=resolved_paths, adapter=native_adapter)
-        except Exception as exc:
+        except BaseException as exc:
             rollback_errors: list[str] = []
             try:
                 failed_pid = _heartbeat_pid(resolved_paths)
-            except Exception as rollback_exc:
+            except BaseException as rollback_exc:
                 failed_pid = None
                 rollback_errors.append(_safe_diagnostic("read failed listener pid", rollback_exc))
             try:
@@ -1193,12 +1355,12 @@ def install_listener(
                     adapter=native_adapter,
                     terminated_pid=failed_pid,
                 )
-            except Exception as rollback_exc:
+            except BaseException as rollback_exc:
                 rollback_errors.append(_safe_diagnostic("remove failed registration", rollback_exc))
             if previous is None:
                 try:
                     resolved_paths.config_file.unlink(missing_ok=True)
-                except Exception as rollback_exc:
+                except BaseException as rollback_exc:
                     rollback_errors.append(_safe_diagnostic("remove config", rollback_exc))
             else:
                 assert previous_content is not None
@@ -1218,7 +1380,7 @@ def install_listener(
                         adapter=native_adapter,
                         previous_pid=failed_pid,
                     )
-                except Exception as rollback_exc:
+                except BaseException as rollback_exc:
                     rollback_errors.append(
                         _safe_diagnostic("restore prior healthy listener", rollback_exc)
                     )
@@ -1297,17 +1459,28 @@ def uninstall_listener(
     resolved_paths = paths or default_listener_paths()
     native_adapter = adapter or listener_adapter()
     previous_pid = _heartbeat_pid(resolved_paths)
-    native_adapter.unregister(resolved_paths)
-    status = _wait_for_health(
-        frozenset({"absent"}),
-        paths=resolved_paths,
-        adapter=native_adapter,
-        terminated_pid=previous_pid,
-    )
-    if resolved_paths.state_dir.is_dir():
-        shutil.rmtree(resolved_paths.state_dir)
-    return status | {
-        "heartbeat": None,
-        "heartbeat_age_seconds": None,
-        "dispatches": {"counts": {}, "attention": []},
-    }
+    cleanup_errors: list[str] = []
+    try:
+        native_adapter.unregister(resolved_paths)
+    except Exception as exc:
+        cleanup_errors.append(_safe_diagnostic("remove native registration", exc))
+    settled = False
+    try:
+        _wait_for_native_absence(
+            paths=resolved_paths,
+            adapter=native_adapter,
+            terminated_pid=previous_pid,
+        )
+        settled = True
+    except Exception as exc:
+        cleanup_errors.append(_safe_diagnostic("settle native listener", exc))
+    if settled and resolved_paths.state_dir.is_dir():
+        try:
+            shutil.rmtree(resolved_paths.state_dir)
+        except Exception as exc:
+            cleanup_errors.append(_safe_diagnostic("remove listener state", exc))
+    if cleanup_errors:
+        detail = _combine_diagnostics(*cleanup_errors)
+        assert detail is not None
+        raise ListenerError(f"Gogurt listener uninstall failed: {detail}")
+    return listener_status(paths=resolved_paths, adapter=native_adapter)

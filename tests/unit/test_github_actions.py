@@ -147,14 +147,18 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
     assert client_platforms["strategy"] == {
         "fail-fast": "false",
         "matrix": {
-            "os": ["ubuntu-24.04", "macos-15", "windows-2025"],
+            "include": [
+                {"os": "ubuntu-24.04", "listener_repetitions": "1"},
+                {"os": "macos-15", "listener_repetitions": "3"},
+                {"os": "windows-2025", "listener_repetitions": "1"},
+            ],
         },
     }
     assert client_platforms["runs-on"] == "${{ matrix.os }}"
     assert client_platforms["env"] == {"MISE_AUTO_INSTALL": "0"}
     assert [
         step["uses"].split("@", 1)[0] for step in client_platforms["steps"] if "uses" in step
-    ] == ["actions/checkout", "jdx/mise-action"]
+    ] == ["actions/checkout", "jdx/mise-action", "actions/upload-artifact"]
     assert client_platforms["steps"][0]["with"]["persist-credentials"] == "false"
     assert client_platforms["steps"][1]["with"] == {"install_args": "python uv age"}
     assert [step["run"] for step in client_platforms["steps"] if "run" in step] == [
@@ -164,8 +168,18 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
         "utilities/gogurt/tests "
         "tests/platform/test_end_user_artifacts.py",
         "mise x python uv age -- uv run --locked --all-packages --group dev "
-        "python scripts/qualify_installation.py --version 1.0.0 --listener-lifecycle",
+        "python scripts/qualify_installation.py --version 1.0.0 --listener-lifecycle "
+        "--listener-lifecycle-repetitions ${{ matrix.listener_repetitions }} "
+        '--gogurt-evidence-dir "${{ runner.temp }}/gogurt-failure-evidence"',
     ]
+    evidence_step = client_platforms["steps"][-1]
+    assert evidence_step["if"] == "failure()"
+    assert evidence_step["with"] == {
+        "name": "gogurt-lifecycle-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}",
+        "path": "${{ runner.temp }}/gogurt-failure-evidence",
+        "if-no-files-found": "warn",
+        "retention-days": "14",
+    }
     assert "secrets." not in text
 
 
@@ -291,8 +305,8 @@ def test_release_required_check_names_are_derived_from_stable_job_names() -> Non
             for target in images["strategy"]["matrix"]["target"]
         ),
         *(
-            client_platforms["name"].replace("${{ matrix.os }}", os_name)
-            for os_name in client_platforms["strategy"]["matrix"]["os"]
+            client_platforms["name"].replace("${{ matrix.os }}", entry["os"])
+            for entry in client_platforms["strategy"]["matrix"]["include"]
         ),
         "Analyze (actions)",
         "Analyze (python)",

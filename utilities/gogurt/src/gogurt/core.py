@@ -195,6 +195,10 @@ def _route_command(route_name: str, route: Mapping[str, Any]) -> tuple[str, ...]
         raise ConfigError(
             f"gogurt route {route_name!r}.command must contain one {{mount_point}} token"
         )
+    if command[0] == "{mount_point}":
+        raise ConfigError(
+            f"gogurt route {route_name!r}.command cannot use {{mount_point}} as its executable"
+        )
     if "{python}" in command[1:]:
         raise ConfigError(
             f"gogurt route {route_name!r}.command may use {{python}} only as its executable"
