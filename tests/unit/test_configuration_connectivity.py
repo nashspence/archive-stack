@@ -172,7 +172,9 @@ def _classification(name: str) -> str:
         "state_db",
         "targets",
         "url",
-    } or normalized.endswith(("_path", "_dir", "_url", "_source", "_projection")):
+    } or normalized.endswith(
+        ("_path", "_dir", "_url", "_source", "_projection", "_registry", "_revision")
+    ):
         return "identity"
     return "runtime"
 
@@ -203,7 +205,7 @@ def test_jeb_configuration_model_fields_have_production_consumers() -> None:
 def test_direct_environment_settings_have_explicit_test_witnesses() -> None:
     settings = _called_environment_settings()
 
-    assert len(settings) == 205
+    assert len(settings) == 206
     assert settings - _test_string_literals() == set()
     assert Counter(
         (name.split("_", 1)[0].casefold(), _classification(name)) for name in settings
@@ -217,7 +219,7 @@ def test_direct_environment_settings_have_explicit_test_witnesses() -> None:
             ("jeb", "identity"): 12,
             ("jeb", "runtime"): 23,
             ("munchy", "credential"): 3,
-            ("munchy", "identity"): 11,
+            ("munchy", "identity"): 12,
             ("munchy", "runtime"): 62,
             ("mango", "runtime"): 1,
             ("vcrunch", "runtime"): 1,
@@ -295,8 +297,8 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
         },
         "munchy": {
             "credential": 3,
-            "identity": 11,
-            "runtime": 52,
+            "identity": 10,
+            "runtime": 53,
             "build-only": 0,
             "workflow-only": 0,
             "test-only": 0,

@@ -14,6 +14,7 @@ import munchy_core.domain.models as domain_models
 import munchy_core.persistence.sqlite_state as state_store
 import munchy_core.runtime.execution as execution_runtime
 import munchy_core.services.handoffs as handoff_service
+import munchy_core.services.media as media_service
 import munchy_core.services.processing as processing_service
 import munchy_core.services.routing as routing_service
 import munchy_core.services.scheduling as scheduling_service
@@ -22,9 +23,19 @@ import munchy_core.services.uploads as upload_service
 log = logging.getLogger("munchy.server")
 
 
+def target_custody_is_quarantined(job: dict[str, Any]) -> bool:
+    unconfirmed = job.get("target_cancellation_unconfirmed")
+    return isinstance(unconfirmed, dict) and bool(unconfirmed)
+
+
 def remove_job_local_work(job: dict[str, Any]) -> list[str]:
+    if target_custody_is_quarantined(job):
+        job.setdefault("target_custody_quarantined_at", utc_timestamp_now())
+        return []
     removed: list[str] = []
-    for root in routing_service.gpu_job_work_roots(job):
+    roots = set(routing_service.target_job_work_roots(job))
+    roots.update(media_service.target_workspace_roots(job))
+    for root in sorted(roots):
         if not root.exists():
             continue
         shutil.rmtree(root, ignore_errors=True)
@@ -116,6 +127,9 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
     if job.get("state") not in domain_models.TERMINAL_JOB_STATES:
         return False
     changed = snapshot_terminal_progress(job)
+    if target_custody_is_quarantined(job):
+        job.setdefault("target_custody_quarantined_at", utc_timestamp_now())
+        return changed
 
     for result_key in ("handoff_receipt",):
         compact = compact_command_result(job.get(result_key))
@@ -125,10 +139,10 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
 
     for key in (
         "eager_archive",
-        "gpu_payloads",
-        "gpu_result",
-        "gpu_results",
-        "gpu_statuses",
+        "target_payloads",
+        "target_result",
+        "target_results",
+        "target_statuses",
         "group_results",
         "handoff_checkpoint",
         "handoff_adapter_state",
@@ -150,10 +164,10 @@ def compact_terminal_job_state(job: dict[str, Any]) -> bool:
 RESUMABLE_RUNTIME_JOB_KEYS = (
     *state_store.TERMINAL_CLEANUP_JOB_KEYS,
     "eager_archive",
-    "gpu_payloads",
-    "gpu_result",
-    "gpu_results",
-    "gpu_statuses",
+    "target_payloads",
+    "target_result",
+    "target_results",
+    "target_statuses",
     "group_results",
     "upload_progress",
     "routing_result",
@@ -163,6 +177,9 @@ RESUMABLE_RUNTIME_JOB_KEYS = (
     "handoff_receipt",
     "terminal_progress",
     "terminal_state_compacted_at",
+    "target_cancellation_unconfirmed",
+    "target_custody_quarantined_at",
+    "target_custody_reconciled_at",
 )
 
 
@@ -173,6 +190,9 @@ def reset_resumable_job_runtime_state(job: dict[str, Any]) -> None:
 
 def cleanup_terminal_job(job: dict[str, Any]) -> list[str]:
     snapshot_terminal_progress(job)
+    if target_custody_is_quarantined(job):
+        job.setdefault("target_custody_quarantined_at", utc_timestamp_now())
+        return []
     removed = remove_job_local_work(job)
     job_id = str(job.get("job_id") or "")
     upload_id = str(job.get("input_upload_id") or "")

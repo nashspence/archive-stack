@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "munchy-av1-nvenc-target"
 version = "0.1.0"
-description = "Munchy AV1 NVENC execution target."
+description = "Munchy AV1 NVENC transform target."
 requires-python = ">=3.12"
 license = "CAL-1.0"
 license-files = ["LICENSE"]

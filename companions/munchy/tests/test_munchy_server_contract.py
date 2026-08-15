@@ -28,6 +28,31 @@ from munchy_api_client.client import (
     SubmissionUploadRequest,
 )
 from munchy_target_support.metadata_projection import project_immich_metadata
+from munchy_target_support.operations import (
+    AUDIO_ARCHIVE_OPERATION,
+    AUDIO_REVIEW_OPERATION,
+    VIDEO_ARCHIVE_OPERATION,
+    VIDEO_REVIEW_OPERATION,
+    operation_contract,
+)
+from munchy_target_support.protocol import (
+    Artifact,
+    JsonSchemaDocument,
+    TargetCancelRequest,
+    TargetContract,
+    TargetContractPayload,
+    TargetExecutionEvidence,
+    TargetFailure,
+    TargetJobRequest,
+    TargetJobRequestPayload,
+    TargetJobStatus,
+    TargetOperationSupport,
+    TargetPreflightRequest,
+    TargetPreflightResponse,
+    TargetProgress,
+    TransformPlan,
+    TransformPlanPayload,
+)
 from munchy_target_support.uvicorn_logging import DropHealthAccessLogFilter
 from riverhog_api_client import Conflict, NotFound
 from riverhog_provenance import (
@@ -68,6 +93,155 @@ SERVER_MODULES = {
     "template_service": "munchy_core.services.templates",
     "upload_service": "munchy_core.services.uploads",
 }
+
+_FIXTURE_TARGET_OPTIONS_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "additionalProperties": True,
+}
+
+
+class FixtureTransformTargetPlatform:
+    """Hardware-free execution platform for server contract tests."""
+
+    def registration_ids(self) -> tuple[str, ...]:
+        return ("munchy-audio", "munchy-av1-nvenc")
+
+    def workspace_root(self, registration_id: str) -> Path:
+        assert registration_id in self.registration_ids()
+        return Path(os.environ["MUNCHY_TRANSFORM_RUNTIME_DIR"])
+
+    def contract(self, registration_id: str) -> TargetContract:
+        operations = {
+            "munchy-av1-nvenc": (
+                VIDEO_ARCHIVE_OPERATION,
+                VIDEO_REVIEW_OPERATION,
+                AUDIO_REVIEW_OPERATION,
+            ),
+            "munchy-audio": (AUDIO_ARCHIVE_OPERATION,),
+        }[registration_id]
+        options = JsonSchemaDocument.from_schema(
+            "fixture.target.options/v1",
+            _FIXTURE_TARGET_OPTIONS_SCHEMA,
+        )
+        return TargetContract.seal(
+            TargetContractPayload(
+                implementation_id=f"fixture.{registration_id}/v1",
+                implementation_version="1.0.0",
+                source_revision="fixture",
+                operations=tuple(
+                    TargetOperationSupport(
+                        operation_id=operation_id,
+                        operation_contract_sha256=operation_contract(operation_id).contract_sha256,
+                        options_schema=options,
+                    )
+                    for operation_id in operations
+                ),
+            )
+        )
+
+    def resource_request(
+        self,
+        registration_id: str,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        return None
+
+    def preflight(
+        self,
+        registration_id: str,
+        request: TargetPreflightRequest,
+    ) -> TargetPreflightResponse:
+        target = self.contract(registration_id)
+        return TargetPreflightResponse(
+            target=target,
+            plan=TransformPlan.seal(
+                TransformPlanPayload(
+                    operation_id=request.operation_id,
+                    operation_contract_sha256=request.operation_contract_sha256,
+                    workspace_id=request.workspace_id,
+                    inputs=request.inputs,
+                    intent=request.intent,
+                    target_options=request.target_options,
+                    target_implementation_id=target.implementation_id,
+                    target_contract_sha256=target.contract_sha256,
+                    effective_intent=request.intent,
+                    effective_target_options=request.target_options,
+                )
+            ),
+        )
+
+    def put_job(self, registration_id: str, request: TargetJobRequest) -> TargetJobStatus:
+        raise AssertionError(f"unexpected target job: {registration_id} {request.job_id}")
+
+    def status(self, registration_id: str, job_id: str) -> TargetJobStatus:
+        raise AssertionError(f"unexpected target status: {registration_id} {job_id}")
+
+    def cancel(
+        self,
+        registration_id: str,
+        job_id: str,
+        request: TargetCancelRequest,
+    ) -> TargetJobStatus:
+        raise AssertionError(
+            f"unexpected target cancellation: {registration_id} {job_id} {request.reason}"
+        )
+
+
+def fixture_failed_target_status(message: str) -> dict[str, object]:
+    request = fixture_target_request()
+    target = FixtureTransformTargetPlatform().contract("munchy-av1-nvenc")
+    return TargetJobStatus(
+        job_id=request.job_id,
+        attempt=request.attempt,
+        request_sha256=request.request_sha256,
+        plan_sha256=request.plan.plan_sha256,
+        state="failed",
+        progress=TargetProgress(phase="failed", completed=0, total=1),
+        execution_evidence=TargetExecutionEvidence(
+            target=target,
+            operation=operation_contract(VIDEO_ARCHIVE_OPERATION),
+            effective_intent=request.plan.effective_intent,
+            effective_target_options=request.plan.effective_target_options,
+        ),
+        failure=TargetFailure(
+            code="target_execution_failed",
+            message=message,
+            retryable=False,
+        ),
+        finished_at=utc_timestamp_now(),
+        updated_at=utc_timestamp_now(),
+    ).model_dump(mode="json", exclude_none=True)
+
+
+def fixture_target_request() -> TargetJobRequest:
+    target = FixtureTransformTargetPlatform().contract("munchy-av1-nvenc")
+    operation = operation_contract(VIDEO_ARCHIVE_OPERATION)
+    intent = {"archive": {"codec": "av1", "container": "mkv"}}
+    plan = TransformPlan.seal(
+        TransformPlanPayload(
+            operation_id=operation.id,
+            operation_contract_sha256=operation.contract_sha256,
+            workspace_id="target-1",
+            inputs=(
+                Artifact(
+                    id="source",
+                    role="munchy.source/v1",
+                    path="clip.mp4",
+                    bytes=1,
+                    sha256="a" * 64,
+                ),
+            ),
+            intent=intent,
+            target_options={},
+            target_implementation_id=target.implementation_id,
+            target_contract_sha256=target.contract_sha256,
+            effective_intent=intent,
+            effective_target_options={},
+        )
+    )
+    return TargetJobRequest.seal(TargetJobRequestPayload(job_id="target-1", plan=plan))
 
 
 def omitted_test_provenance() -> dict[str, str]:
@@ -120,7 +294,7 @@ def load_server(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-u
     monkeypatch.setenv("MUNCHY_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("MUNCHY_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setenv("MUNCHY_TUSD_DIR", str(tmp_path / "tusd"))
-    monkeypatch.setenv("MUNCHY_GPU_RUNTIME_DIR", str(tmp_path / "gpu-runtime"))
+    monkeypatch.setenv("MUNCHY_TRANSFORM_RUNTIME_DIR", str(tmp_path / "transform-runtime"))
     for module_name in tuple(sys.modules):
         if module_name != "munchy_api.app" and not module_name.startswith("munchy_core."):
             continue
@@ -132,6 +306,7 @@ def load_server(tmp_path: Path, monkeypatch) -> ModuleType:  # type: ignore[no-u
     server = importlib.import_module("munchy_api.app")
     for alias, module_name in SERVER_MODULES.items():
         setattr(server, alias, importlib.import_module(module_name))
+    server.media_service.register_transform_target_platform(FixtureTransformTargetPlatform())
     server.persistence.initialize_persistence()
     return server
 
@@ -190,12 +365,12 @@ def test_nondefault_runtime_settings_reach_munchy_configuration(
         "MUNCHY_TUSD_PUBLIC_URL_TTL_SECONDS": "123",
         "MUNCHY_TUSD_HOOK_SECRET": "hook-secret",
         "MUNCHY_ADMIN_TOKEN": "admin-token",
-        "MUNCHY_GPU_TARGET": "gpu-target",
-        "MUNCHY_GPU_LEASE_TTL_S": "321",
-        "MUNCHY_GPU_WAIT_S": "12",
-        "MUNCHY_GPU_REPOST_SECONDS": "4.5",
+        "MUNCHY_RESOURCE_LEASE_TTL_SECONDS": "321",
+        "MUNCHY_RESOURCE_WAIT_SECONDS": "12",
+        "MUNCHY_TARGET_REPOST_SECONDS": "4.5",
+        "MUNCHY_TARGET_CANCEL_TIMEOUT_SECONDS": "6.5",
         "MUNCHY_MIN_FREE_BYTES": "456",
-        "MUNCHY_GPU_SCRATCH_MULTIPLIER": "2.25",
+        "MUNCHY_TRANSFORM_SCRATCH_MULTIPLIER": "2.25",
         "MUNCHY_EAGER_ARCHIVE_SCRATCH_MULTIPLIER": "0.75",
         "MUNCHY_REVIEW_SCRATCH_EXTRA_MULTIPLIER": "0.45",
         "MUNCHY_BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER": "1.75",
@@ -238,12 +413,12 @@ def test_nondefault_runtime_settings_reach_munchy_configuration(
     assert runtime.TUSD_PUBLIC_URL_TTL_SECONDS == 123
     assert runtime.TUSD_HOOK_SECRET == "hook-secret"
     assert runtime.ADMIN_TOKEN == "admin-token"
-    assert runtime.GPU_TARGET == "gpu-target"
-    assert runtime.GPU_LEASE_TTL_S == 321
-    assert runtime.GPU_WAIT_S == 12
-    assert runtime.GPU_REPOST_SECONDS == 4.5
+    assert runtime.RESOURCE_LEASE_TTL_SECONDS == 321
+    assert runtime.RESOURCE_WAIT_SECONDS == 12
+    assert runtime.TARGET_REPOST_SECONDS == 4.5
+    assert runtime.TARGET_CANCEL_TIMEOUT_SECONDS == 6.5
     assert runtime.MIN_FREE_BYTES == 456
-    assert runtime.GPU_SCRATCH_MULTIPLIER == 2.25
+    assert runtime.TRANSFORM_SCRATCH_MULTIPLIER == 2.25
     assert runtime.EAGER_ARCHIVE_SCRATCH_MULTIPLIER == 0.75
     assert runtime.REVIEW_SCRATCH_EXTRA_MULTIPLIER == 0.45
     assert runtime.BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER == 1.75
@@ -281,7 +456,7 @@ def test_external_submission_identity_maps_to_confined_provenance_path(
     upload_root = server.upload_service.shared_input_upload_root("../../outside")
     journal_path = server.upload_service.input_provenance_journal_path("../../outside", journal_id)
 
-    configured_root = (server.runtime_config.GPU_RUNTIME_DIR / "input-uploads").resolve()
+    configured_root = (server.runtime_config.TRANSFORM_RUNTIME_DIR / "input-uploads").resolve()
     assert upload_root.parent == configured_root
     assert upload_root.name == hashlib.sha256(b"../../outside").hexdigest()
     assert journal_path.parent == upload_root / ".riverhog" / "provenance" / "journals"
@@ -2689,7 +2864,7 @@ def test_audio_container_metadata_args_write_capture_date_and_gps(
     ]
 
 
-def test_gpu_payload_carries_required_projected_container_metadata(
+def test_target_payload_carries_required_projected_container_metadata(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2720,7 +2895,7 @@ def test_gpu_payload_carries_required_projected_container_metadata(
         "sha256": "a" * 64,
     }
 
-    container_metadata, changed = server.routing_service.container_metadata_for_gpu_payload(
+    container_metadata, changed = server.routing_service.container_metadata_for_target_payload(
         {"job_id": "job-1"},
         {"input_upload_id": "upload-1", "files": [file_state]},
         [file_state],
@@ -2728,7 +2903,13 @@ def test_gpu_payload_carries_required_projected_container_metadata(
         group_config=group_config,
         tasks=["archive_video"],
     )
-    payload = server.processing_service.build_eager_gpu_payload(
+    eager_input = (
+        server.runtime_config.TRANSFORM_RUNTIME_DIR
+        / "jobs/job-1/eager-input/batch-1/camera/IMG_0001.MOV"
+    )
+    eager_input.parent.mkdir(parents=True)
+    eager_input.write_bytes(b"video")
+    payload = server.processing_service.build_eager_target_payload(
         {"job_id": "job-1", "template_id": "phone-archive"},
         batch_id="batch-1",
         group_name="camera",
@@ -2738,16 +2919,18 @@ def test_gpu_payload_carries_required_projected_container_metadata(
     )
 
     assert changed is False
-    assert payload["max_parallel_encodes"] == 3
-    assert payload["container_metadata_required"] is True
-    assert payload["container_metadata"]["IMG_0001.MOV"]["device"] == {
+    plan = payload["request"]["plan"]
+    source_id = next(item["id"] for item in plan["inputs"] if item["path"] == "IMG_0001.MOV")
+    assert plan["effective_target_options"]["max_parallel_encodes"] == 3
+    assert plan["intent"]["container_metadata_required"] is True
+    assert plan["intent"]["container_metadata"][source_id]["device"] == {
         "make": "Apple",
         "model": "iPhone SE (2nd generation)",
     }
-    assert payload["container_metadata"]["IMG_0001.MOV"]["creators"] == ["Example Operator"]
+    assert plan["intent"]["container_metadata"][source_id]["creators"] == ["Example Operator"]
 
 
-def test_eager_gpu_projection_reads_materialized_original_name(
+def test_eager_target_projection_reads_materialized_original_name(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -2811,10 +2994,12 @@ def test_eager_gpu_projection_reads_materialized_original_name(
 
     monkeypatch.setattr(server.routing_service, "exiftool_for_routing", fake_exiftool)
     monkeypatch.setattr(
-        server.media_service, "start_gpu_job", lambda payload: payloads.append(payload)
+        server.media_service,
+        "start_target_job",
+        lambda _registration_id, payload: payloads.append(payload),
     )
 
-    updated = server.processing_service.start_eager_gpu_batch(
+    updated = server.processing_service.start_eager_target_batch(
         job,
         upload,
         group_name="camera",
@@ -2828,9 +3013,12 @@ def test_eager_gpu_projection_reads_materialized_original_name(
     assert exiftool_paths[0] != tusd_source
     assert exiftool_paths[0].name == "Back Yard_00_20260630123456.mp4"
     assert "eager-input" in exiftool_paths[0].parts
-    assert (
-        payloads[0]["container_metadata"]["Back Yard_00_20260630123456.mp4"]["capture_date"]
-        == "2026-06-30T12:34:56-07:00"
+    plan = payloads[0]["request"]["plan"]
+    source_id = next(
+        item["id"] for item in plan["inputs"] if item["path"] == "Back Yard_00_20260630123456.mp4"
+    )
+    assert plan["intent"]["container_metadata"][source_id]["capture_date"] == (
+        "2026-06-30T12:34:56-07:00"
     )
     assert updated["files"][0]["metadata_projection_metadata"]["capture_date"] == (
         "2026-06-30T12:34:56-07:00"
@@ -2920,13 +3108,15 @@ def test_eager_projection_does_not_block_upload_setup(
         return f"{server.runtime_config.TUSD_PUBLIC_BASE_URL}/{target_path}"
 
     monkeypatch.setattr(server.routing_service, "exiftool_for_routing", fake_exiftool)
-    monkeypatch.setattr(server.media_service, "start_gpu_job", lambda _payload: None)
+    monkeypatch.setattr(
+        server.media_service, "start_target_job", lambda _registration_id, _payload: None
+    )
     monkeypatch.setattr(server.upload_service, "create_tusd_upload", fake_create_tusd_upload)
     monkeypatch.setattr(server.upload_service, "head_tusd_upload", lambda _url: 0)
 
     def capture_metadata() -> None:
         try:
-            server.processing_service.start_eager_gpu_batch(
+            server.processing_service.start_eager_target_batch(
                 job,
                 upload,
                 group_name="camera",
@@ -2969,7 +3159,7 @@ def test_eager_projection_does_not_block_upload_setup(
 
     stored = server.processing_service.consume_input_upload_files(upload_id, {source_path})
     server.cleanup_service.shutil.rmtree(
-        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "eager-input"
+        server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1" / "eager-input"
     )
     archive_dir = tmp_path / "archive"
     output = server.routing_service.archive_output_for_upload_file(
@@ -3845,16 +4035,16 @@ def test_completed_structured_file_fails_when_no_route_matches(
         )
 
 
-def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
+def test_archive_admission_uses_eager_batch_peak_for_transform_scratch(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
     monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_BATCH_FILES", 2)
     monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_PIPELINE_BATCHES", 2)
-    monkeypatch.setattr(server.runtime_config, "GPU_SCRATCH_MULTIPLIER", 2.5)
+    monkeypatch.setattr(server.runtime_config, "TRANSFORM_SCRATCH_MULTIPLIER", 2.5)
     monkeypatch.setattr(server.runtime_config, "EAGER_ARCHIVE_SCRATCH_MULTIPLIER", 0.5)
-    monkeypatch.setattr(server.admission_service, "gpu_input_copy_multiplier", lambda: 0.0)
+    monkeypatch.setattr(server.admission_service, "target_input_copy_multiplier", lambda: 0.0)
     files = [
         server.domain_models.InputFileSpec(
             path=f"camera/{index}.mp4",
@@ -3875,15 +4065,15 @@ def test_archive_admission_uses_eager_batch_peak_for_gpu_scratch(
         },
     )
 
-    required = server.admission_service.gpu_scratch_admission_required_bytes(files, hint)
+    required = server.admission_service.target_scratch_admission_required_bytes(files, hint)
 
     assert required == int((100 + 90 + 80 + 70) * 0.5)
-    assert required < server.admission_service.gpu_scratch_required_bytes(
+    assert required < server.admission_service.target_scratch_required_bytes(
         sum(item.bytes for item in files), hint
     )
 
 
-def test_audio_archive_hint_does_not_reserve_gpu_scratch(
+def test_audio_archive_hint_reserves_only_bounded_local_transform_scratch(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -3904,12 +4094,12 @@ def test_audio_archive_hint_does_not_reserve_gpu_scratch(
     )
 
     assert hint.groups["voice"].tasks == ["archive_audio"]
-    assert server.admission_service.storage_hint_has_gpu_work(hint) is False
-    assert server.admission_service.gpu_scratch_required_bytes(100, hint) == 0
-    assert server.admission_service.gpu_scratch_admission_required_bytes(files, hint) == 0
+    assert server.admission_service.storage_hint_has_target_work(hint) is True
+    assert server.admission_service.target_scratch_required_bytes(100, hint) == 50
+    assert server.admission_service.target_scratch_admission_required_bytes(files, hint) == 50
 
 
-def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
+def test_eager_archive_audio_uses_the_in_process_transform_target(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -3928,6 +4118,13 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
     upload = server.upload_service.save_input_upload_raw(
         {
             "input_upload_id": upload_id,
+            "storage_hint": {
+                "workflow_mode": "collection_archive",
+                "handoff_destination": "riverhog",
+                "output_mode": "audio",
+                "tasks": ["archive_audio"],
+                "groups": {"voice": {"output_mode": "audio", "tasks": ["archive_audio"]}},
+            },
             "files": [
                 {
                     "path": "voice/R-00001_2606291200_REC.MP3",
@@ -3946,49 +4143,30 @@ def test_eager_archive_audio_group_encodes_and_consumes_uploaded_files(
         "template_id": "voice-archive",
     }
     server.state_store.save_job(job)
-    archive_dir = tmp_path / "archive"
-    calls: list[tuple[Path, Path]] = []
-
-    def fake_run_archive_audio_group(
-        *,
-        input_root: Path,
-        output_root: Path,
-        group_config: dict[str, object],
-    ) -> dict[str, object]:
-        calls.append((input_root, output_root))
-        assert (input_root / "R-00001_2606291200_REC.MP3").read_bytes() == b"mp3"
-        output_root.mkdir(parents=True, exist_ok=True)
-        (output_root / "R-00001_2606291200_REC.opus").write_bytes(b"opus")
-        return {"status": "succeeded", "count": 1, "items": []}
-
+    payloads: list[dict[str, object]] = []
     monkeypatch.setattr(
-        server.media_service, "run_archive_audio_group", fake_run_archive_audio_group
+        server.media_service,
+        "start_target_job",
+        lambda _registration_id, payload: payloads.append(payload),
     )
 
     assert server.processing_service.eager_archive_group_names({"voice": group_config}) == {"voice"}
-    updated = server.processing_service.start_eager_audio_batch(
+    updated = server.processing_service.start_eager_target_batch(
         job,
         upload,
         group_name="voice",
         group_config=group_config,
         file_states=upload["files"],
-        archive_dir=archive_dir,
+        archive_dir=tmp_path / "archive",
+        space_checked=True,
     )
 
     stored_job = server.state_store.load_job("job-voice")
-    stored_upload = server.upload_service.load_input_upload(upload_id)
-    progress = server.processing_service.encode_progress_for_job(stored_job)
-    assert calls
-    assert (archive_dir / "voice" / "R-00001_2606291200_REC.opus").read_bytes() == b"opus"
-    assert updated["files"][0]["consumed_at"]
-    assert stored_upload["files"][0]["consumed_at"]
-    assert not source_data.exists()
-    assert progress is not None
-    assert progress["mode"] == "eager_archive"
-    assert progress["groups"] == ["voice"]
-    assert progress["files_total"] == 1
-    assert progress["files_encoded"] == 1
-    assert progress["percent_files"] == 100.0
+    batch = next(iter(stored_job["eager_archive"]["batches"].values()))
+    assert updated["files"][0]["path"] == "voice/R-00001_2606291200_REC.MP3"
+    assert batch["executor"] == "transform_target"
+    assert payloads[0]["registration_id"] == "munchy-audio"
+    assert payloads[0]["request"]["plan"]["operation_id"] == "munchy.audio.archive/v1"
 
 
 def test_archive_audio_group_encodes_opus_and_writes_source_artifacts(
@@ -4492,6 +4670,35 @@ def test_munchy_continues_source_history_and_registers_it_before_the_output(
     output = archive_dir / "video" / "source.mkv"
     output.parent.mkdir(parents=True)
     output.write_bytes(b"canonical transformed container")
+    output_sha256 = hashlib.sha256(output.read_bytes()).hexdigest()
+    target_contract = FixtureTransformTargetPlatform().contract("munchy-av1-nvenc")
+    target_status = TargetJobStatus(
+        job_id="captured-job-video-archive",
+        attempt=1,
+        request_sha256="c" * 64,
+        plan_sha256="d" * 64,
+        state="succeeded",
+        progress=TargetProgress(phase="succeeded", completed=1, total=1),
+        outputs=(
+            Artifact(
+                id="canonical-video",
+                role="munchy.video.archive/v1",
+                path="source.mkv",
+                bytes=output.stat().st_size,
+                sha256=output_sha256,
+                derived_from=("source-file",),
+            ),
+        ),
+        execution_evidence=TargetExecutionEvidence(
+            target=target_contract,
+            operation=operation_contract(VIDEO_ARCHIVE_OPERATION),
+            effective_intent={"archive": {"codec": "av1", "container": "matroska"}},
+            effective_target_options={"preset": "p7"},
+        ),
+        started_at="2026-08-10T01:00:00.000000Z",
+        finished_at="2026-08-10T01:01:00.000000Z",
+        updated_at="2026-08-10T01:01:00.000000Z",
+    )
     job = {
         "job_id": "captured-job",
         "input_upload_id": upload_id,
@@ -4504,6 +4711,12 @@ def test_munchy_continues_source_history_and_registers_it_before_the_output(
         },
         "handoff": {"destination": "riverhog", "options": {}},
         "handoff_adapter_state": {"collection_id": 41, "files": {}},
+        "target_payloads": {"video:archive_video": {"registration_id": "munchy-av1-nvenc"}},
+        "target_results": {
+            "video:archive_video": target_status.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            )
+        },
     }
     server.state_store.save_job(job)
 
@@ -4519,7 +4732,12 @@ def test_munchy_continues_source_history_and_registers_it_before_the_output(
     assert current.journal_id == source_summary.journal_id
     assert current.primary_lineage_id == source_summary.primary_lineage_id
     assert current.current_path == "video/source.mkv"
-    assert current.current_sha256 == hashlib.sha256(output.read_bytes()).hexdigest()
+    assert current.current_sha256 == output_sha256
+    assert target_status.request_sha256.encode() in continued
+    assert target_status.plan_sha256.encode() in continued
+    assert target_contract.contract_sha256.encode() in continued
+    assert output_sha256.encode() in continued
+    assert b"munchy-av1-nvenc" in continued
 
     calls: list[str] = []
 
@@ -4566,7 +4784,7 @@ def test_riverhog_resume_validation_requires_exact_remote_source_identities(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
-    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1" / "archive"
     source = archive_dir / "video" / "source.mkv"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"canonical output")
@@ -4960,7 +5178,7 @@ def test_retry_handoff_transient_failure_does_not_emit_event(
     assert event_calls == []
 
 
-def test_eager_gpu_transient_failure_does_not_emit_event(
+def test_eager_target_transient_failure_does_not_emit_event(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -4973,29 +5191,35 @@ def test_eager_gpu_transient_failure_does_not_emit_event(
         lambda *args, **kwargs: event_calls.append(dict(kwargs)),
     )
 
-    def fail_gpu_request(method: str, path: str, payload=None):  # type: ignore[no-untyped-def]
+    def fail_target_status(registration_id: str, job_id: str):  # type: ignore[no-untyped-def]
+        assert registration_id == "munchy-av1-nvenc"
+        assert job_id == "target-1"
         raise RuntimeError("Server disconnected without sending a response.")
 
-    monkeypatch.setattr(server.media_service, "gpu_target_request", fail_gpu_request)
+    monkeypatch.setattr(server.media_service, "target_job_status", fail_target_status)
     monkeypatch.setattr(
         server.processing_service,
-        "submit_eager_gpu_job",
-        lambda job, batch, force=False: submit_calls.append(str(batch["gpu_job_id"])),
+        "submit_eager_target_job",
+        lambda job, batch, force=False: submit_calls.append(str(batch["target_job_id"])),
     )
     job = {"job_id": "job-1"}
     upload = {"input_upload_id": "upload-1"}
     batch = {
         "batch_id": "batch-1",
-        "gpu_job_id": "gpu-1",
-        "payload": {"job_id": "gpu-1"},
+        "registration_id": "munchy-av1-nvenc",
+        "target_job_id": "target-1",
+        "payload": {
+            "registration_id": "munchy-av1-nvenc",
+            "request": {"job_id": "target-1"},
+        },
     }
 
-    result = server.processing_service.poll_eager_gpu_batch(
+    result = server.processing_service.poll_eager_target_batch(
         job, upload, batch, {}, tmp_path / "archive"
     )
 
     assert result is upload
-    assert submit_calls == ["gpu-1"]
+    assert submit_calls == ["target-1"]
     assert event_calls == []
 
 
@@ -5011,8 +5235,8 @@ def test_terminal_encoding_failure_with_retained_input_reports_error(
     events: list[dict[str, object]] = []
     monkeypatch.setattr(
         server.media_service,
-        "gpu_target_request",
-        lambda *args, **kwargs: {"state": "failed", "error": "encoder refused"},
+        "target_job_status",
+        lambda *args, **kwargs: fixture_failed_target_status("encoder refused"),
     )
     monkeypatch.setattr(
         server.event_service,
@@ -5021,12 +5245,20 @@ def test_terminal_encoding_failure_with_retained_input_reports_error(
     )
 
     with pytest.raises(server.domain_errors.EncodingFailed, match="encoder refused"):
-        server.media_service.wait_gpu_job("gpu-1", gpu_payload={}, job=job)
+        request = fixture_target_request()
+        server.media_service.wait_target_job(
+            "munchy-av1-nvenc",
+            "target-1",
+            target_payload={
+                "request": request.model_dump(mode="json", by_alias=True, exclude_none=True)
+            },
+            job=job,
+        )
 
     assert events == [
         {
             "component": "encoding",
-            "error": "gpu job failed: encoder refused",
+            "error": "transform target job failed: encoder refused",
             "severity": "error",
         }
     ]
@@ -5156,7 +5388,7 @@ def test_resume_job_preserves_fully_uploaded_riverhog_session(
             },
         },
     }
-    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1" / "archive"
     archive_dir.mkdir(parents=True)
     (archive_dir / "ready.bin").write_bytes(b"ready")
     server.state_store.save_job(
@@ -5216,7 +5448,7 @@ def test_resume_job_uses_retained_handoff_checkpoint_without_input_upload(
         "cancel_riverhog_upload_session",
         lambda job, reason: canceled.append(f"{job['job_id']}:{reason}"),
     )
-    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1" / "archive"
     archive_dir.mkdir(parents=True)
     (archive_dir / "camera.webm").write_bytes(b"archive")
     server.state_store.save_job(
@@ -5309,7 +5541,7 @@ def test_run_job_resumes_directly_from_handoff_checkpoint(
         return {"returncode": 0}
 
     monkeypatch.setattr(server.handoff_service, "advance_handoff", advance_handoff)
-    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1" / "archive"
     archive_dir.mkdir(parents=True)
     (archive_dir / "camera.webm").write_bytes(b"archive")
     server.state_store.save_job(
@@ -5413,7 +5645,7 @@ def test_cancel_job_with_cleanup_removes_local_work_and_input_upload(
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     server.upload_service.save_input_upload(
@@ -5524,7 +5756,7 @@ def test_finalize_canceled_job_persists_terminal_state_before_cleanup_failures(
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     server.upload_service.save_input_upload(
@@ -5593,7 +5825,7 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     server.upload_service.save_input_upload(
@@ -5615,7 +5847,7 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
         {
             "job_id": "job-1",
             "state": "failed",
-            "phase": "gpu",
+            "phase": "transform_target",
             "finished_at": "2026-01-01T00:00:00Z",
             "input_upload_id": "upload-1",
             "upload_progress": {"files_total": 1, "files_uploaded": 1},
@@ -5637,20 +5869,22 @@ def test_failed_job_with_cleanup_removes_local_work_and_input_upload(
     assert job["upload_progress"] == {"files_total": 1, "files_uploaded": 1}
 
 
-def test_terminal_cleanup_removes_eager_batch_gpu_work_roots(
+def test_terminal_cleanup_removes_eager_batch_target_work_roots(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
-    computed_id = server.routing_service.gpu_eager_batch_job_id("job-1", "batch-2")
+    computed_id = server.routing_service.target_eager_batch_job_id("job-1", "batch-2")
     roots = [
-        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1",
-        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "explicit-eager-gpu-job",
-        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "payload-eager-gpu-job",
-        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / computed_id,
-        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1__eager__orphaned-batch__abcdef0123",
+        server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1",
+        server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "explicit-eager-target-job",
+        server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "payload-eager-target-job",
+        server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / computed_id,
+        server.runtime_config.TRANSFORM_RUNTIME_DIR
+        / "jobs"
+        / "job-1__eager__orphaned-batch__abcdef0123",
     ]
     for root in roots:
         root.mkdir(parents=True)
@@ -5658,14 +5892,17 @@ def test_terminal_cleanup_removes_eager_batch_gpu_work_roots(
     job = {
         "job_id": "job-1",
         "state": "failed",
-        "phase": "gpu",
         "handoff": {"destination": "command", "options": {}},
+        "phase": "transform_target",
         "eager_archive": {
             "batches": {
                 "batch-1": {
                     "batch_id": "batch-1",
-                    "gpu_job_id": "explicit-eager-gpu-job",
-                    "payload": {"job_id": "payload-eager-gpu-job"},
+                    "target_job_id": "explicit-eager-target-job",
+                    "payload": {
+                        "registration_id": "munchy-av1-nvenc",
+                        "request": {"job_id": "payload-eager-target-job"},
+                    },
                 },
                 "batch-2": {"batch_id": "batch-2"},
             }
@@ -5678,6 +5915,100 @@ def test_terminal_cleanup_removes_eager_batch_gpu_work_roots(
     for root in roots:
         assert not root.exists()
         assert str(root) in removed
+
+
+def test_terminal_cleanup_quarantines_unconfirmed_target_custody_until_broker_stop(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    workspace_id = "target-job"
+    input_root = server.runtime_config.TRANSFORM_RUNTIME_DIR / "input" / workspace_id
+    output_root = server.runtime_config.TRANSFORM_RUNTIME_DIR / "output" / workspace_id
+    jobs_root = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / workspace_id
+    for root in (input_root, output_root, jobs_root):
+        root.mkdir(parents=True)
+        (root / "custody.txt").write_text("retained", encoding="utf-8")
+    job = {
+        "job_id": "job-1",
+        "state": "failed",
+        "handoff": {"destination": "command", "options": {}},
+        "target_payloads": {
+            "archive_video": {
+                "registration_id": "munchy-av1-nvenc",
+                "request": {"job_id": workspace_id},
+            }
+        },
+        "target_cancellation_unconfirmed": {
+            workspace_id: {
+                "registration_id": "munchy-av1-nvenc",
+                "recorded_at": utc_timestamp_now(),
+            }
+        },
+        "resource_leases": {"munchy-av1-nvenc": {"token": "lease-token"}},
+    }
+
+    assert server.cleanup_service.cleanup_terminal_job(job) == []
+    assert all(root.is_dir() for root in (input_root, output_root, jobs_root))
+    assert "cleanup_completed_at" not in job
+    assert server.cleanup_service.compact_terminal_job_state(job) is False
+    assert "target_payloads" in job
+
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def confirm_stop(
+        _registration_id: str,
+        _method: str,
+        path: str,
+        payload: dict[str, object] | None,
+    ) -> dict[str, object]:
+        assert payload is not None
+        requests.append((path, payload))
+        return {"released": True, "stopped": True}
+
+    monkeypatch.setattr(server.media_service, "resource_request", confirm_stop)
+    server.media_service.release_job_target_resource(
+        job,
+        "munchy-av1-nvenc",
+        "lease-token",
+        stop=True,
+    )
+
+    assert requests == [("/release", {"lease_token": "lease-token", "stop": True})]
+    assert "target_cancellation_unconfirmed" not in job
+    removed = server.cleanup_service.cleanup_terminal_job(job)
+    assert set(removed) == {str(input_root), str(output_root), str(jobs_root)}
+    assert all(not root.exists() for root in (input_root, output_root, jobs_root))
+
+
+def test_target_custody_remains_quarantined_without_explicit_broker_stop_confirmation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    server = load_server(tmp_path, monkeypatch)
+    server.upload_service.ensure_dirs()
+    job = {
+        "job_id": "job-1",
+        "state": "failed",
+        "target_cancellation_unconfirmed": {"target-job": {"registration_id": "munchy-av1-nvenc"}},
+        "resource_leases": {"munchy-av1-nvenc": {"token": "lease-token"}},
+    }
+    monkeypatch.setattr(
+        server.media_service,
+        "resource_request",
+        lambda *_args, **_kwargs: {"released": True, "stopped": False},
+    )
+
+    server.media_service.release_job_target_resource(
+        job,
+        "munchy-av1-nvenc",
+        "lease-token",
+        stop=True,
+    )
+
+    assert "target_cancellation_unconfirmed" in job
+    assert "resource_leases" in job
 
 
 def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
@@ -5694,7 +6025,7 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     server.upload_service.save_input_upload(
@@ -5716,7 +6047,7 @@ def test_cleanup_once_removes_old_failed_job_work_and_input_upload(
         {
             "job_id": "job-1",
             "state": "failed",
-            "phase": "gpu",
+            "phase": "transform_target",
             "finished_at": "2026-01-01T00:00:00Z",
             "input_upload_id": "upload-1",
             "groups": {"camera": {}},
@@ -5786,7 +6117,7 @@ def test_cleanup_once_repairs_stale_cancel_requested_job(
     shared_root.mkdir(parents=True)
     (shared_root / "camera").mkdir()
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
-    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     server.upload_service.save_input_upload(
@@ -5846,7 +6177,12 @@ def test_cancel_cleanup_snapshots_partial_encode_totals_before_input_deletion(
     (shared_root / "camera" / "a.mp4").write_bytes(b"a")
     (shared_root / "camera" / "b.mp4").write_bytes(b"a")
     output = (
-        server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive" / "camera" / "a.webm"
+        server.runtime_config.TRANSFORM_RUNTIME_DIR
+        / "jobs"
+        / "job-1"
+        / "archive"
+        / "camera"
+        / "a.webm"
     )
     output.parent.mkdir(parents=True)
     output.write_bytes(b"encoded")
@@ -5928,7 +6264,7 @@ def test_compact_job_response_includes_cleanup_metadata(
         "cleanup_completed_at": "2026-01-01T00:00:00Z",
         "input_upload_deleted_at": "2026-01-01T00:00:00Z",
         "local_work_cleaned_at": "2026-01-01T00:00:00Z",
-        "local_work_removed": ["/gpu/jobs/job-1"],
+        "local_work_removed": ["/transform-target/jobs/job-1"],
         "eager_archive": {"large": ["payload"]},
     }
 
@@ -5937,7 +6273,7 @@ def test_compact_job_response_includes_cleanup_metadata(
     assert compact["cleanup_removed"] == ["input-upload:upload-1"]
     assert compact["cleanup_completed_at"] == "2026-01-01T00:00:00Z"
     assert compact["input_upload_deleted_at"] == "2026-01-01T00:00:00Z"
-    assert compact["local_work_removed"] == ["/gpu/jobs/job-1"]
+    assert compact["local_work_removed"] == ["/transform-target/jobs/job-1"]
     assert "eager_archive" not in compact
 
 
@@ -6011,7 +6347,7 @@ def test_cleanup_terminal_job_preserves_repeat_cleanup_summary(
         "state": "canceled",
         "phase": "canceled",
         "handoff": {"destination": "command", "options": {}},
-        "cleanup_removed": [f"/gpu/jobs/job-1-{index}" for index in range(12)],
+        "cleanup_removed": [f"/transform-target/jobs/job-1-{index}" for index in range(12)],
         "cleanup_completed_at": "2026-01-01T00:00:00Z",
     }
     server.cleanup_service.compact_terminal_job_state(job)
@@ -6063,15 +6399,15 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
                     "started_at": "2026-01-01T00:00:00Z",
                     "finished_at": "2026-01-01T00:00:10Z",
                     "payload": {"large": "payload"},
-                    "gpu_result": {"large": "result"},
+                    "target_result": {"large": "result"},
                 }
             },
-            "gpu_results": {"batch-1": {"large": "result"}},
+            "target_results": {"batch-1": {"large": "result"}},
         },
-        "gpu_payloads": {"camera": {"large": "payload"}},
-        "gpu_result": {"large": "result"},
-        "gpu_results": {"camera": {"large": "result"}},
-        "gpu_statuses": {"gpu-job": {"state": "succeeded"}},
+        "target_payloads": {"camera": {"large": "payload"}},
+        "target_result": {"large": "result"},
+        "target_results": {"camera": {"large": "result"}},
+        "target_statuses": {"target-job": {"state": "succeeded"}},
         "group_results": {"camera": {"large": "result"}},
         "cleanup_removed": [f"/tmp/work-{index}" for index in range(12)],
         "local_work_removed": [f"/tmp/work-{index}" for index in range(12)],
@@ -6114,10 +6450,10 @@ def test_compact_terminal_job_state_keeps_summaries_and_drops_heavy_payloads(
     assert job["terminal_state_compacted_at"]
     for key in (
         "eager_archive",
-        "gpu_payloads",
-        "gpu_result",
-        "gpu_results",
-        "gpu_statuses",
+        "target_payloads",
+        "target_result",
+        "target_results",
+        "target_statuses",
         "group_results",
         "handoff_adapter_state",
     ):
@@ -6134,18 +6470,18 @@ def test_failed_job_diagnostic_preserves_pre_compaction_state(
     job = {
         "job_id": "job-1",
         "state": "failed",
-        "phase": "gpu",
+        "phase": "transform_target",
         "handoff": {"destination": "command", "options": {}},
-        "error": "gpu job failed: bad encode",
+        "error": "transform target job failed: bad encode",
         "eager_archive": {"files": {"camera/a.mp4": {"state": "failed"}}},
-        "gpu_payloads": {"camera": {"input_dir": "/data/input"}},
-        "gpu_results": {"camera": {"state": "failed"}},
+        "target_payloads": {"camera": {"input_dir": "/data/input"}},
+        "target_results": {"camera": {"state": "failed"}},
     }
 
     diagnostic = server.diagnostic_service.create_job_diagnostic(
         job,
         reason="encoding_failed",
-        error=server.domain_errors.EncodingFailed("gpu job failed: bad encode"),
+        error=server.domain_errors.EncodingFailed("transform target job failed: bad encode"),
     )
     server.cleanup_service.compact_terminal_job_state(job)
 
@@ -6161,10 +6497,10 @@ def test_failed_job_diagnostic_preserves_pre_compaction_state(
         state_file = archive.extractfile("job-state.json")
         assert error_file is not None
         assert state_file is not None
-        assert error_file.read().decode("utf-8") == "gpu job failed: bad encode\n"
+        assert error_file.read().decode("utf-8") == "transform target job failed: bad encode\n"
         full_state = json.loads(state_file.read())
     assert full_state["eager_archive"]["files"]["camera/a.mp4"]["state"] == "failed"
-    assert full_state["gpu_payloads"]["camera"]["input_dir"] == "/data/input"
+    assert full_state["target_payloads"]["camera"]["input_dir"] == "/data/input"
     assert "eager_archive" not in job
     assert diagnostic["reason"] == "encoding_failed"
 
@@ -7232,7 +7568,7 @@ def test_shared_input_file_rejects_a_symlink_escape(
         )
 
 
-def test_run_job_points_gpu_payload_at_shared_input_tree(
+def test_run_job_publishes_exact_artifacts_to_target_workspace(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -7288,15 +7624,31 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
         }
     )
     payloads: list[dict[str, object]] = []
-    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
     monkeypatch.setattr(
-        server.media_service, "start_gpu_job", lambda payload: payloads.append(payload)
+        server.media_service, "acquire_target_resource", lambda _job, _registration_id: "token"
     )
     monkeypatch.setattr(
         server.media_service,
-        "wait_gpu_job",
-        lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
+        "release_job_target_resource",
+        lambda _job, _registration_id, _token, **_kwargs: None,
+    )
+
+    def record_target_payload(_registration_id, payload):  # type: ignore[no-untyped-def]
+        workspace_id = payload["request"]["job_id"]
+        source = server.runtime_config.TRANSFORM_RUNTIME_DIR / "input" / workspace_id / "a.mp4"
+        assert source.read_bytes() == b"video"
+        payloads.append(payload)
+
+    monkeypatch.setattr(server.media_service, "start_target_job", record_target_payload)
+    monkeypatch.setattr(
+        server.media_service,
+        "wait_target_job",
+        lambda _registration_id, target_job_id, *, target_payload, job: {"state": "succeeded"},
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "accept_target_outputs",
+        lambda _registration_id, _result, _destination: (),
     )
     monkeypatch.setattr(
         server.external, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0}
@@ -7308,10 +7660,10 @@ def test_run_job_points_gpu_payload_at_shared_input_tree(
     server.job_service.run_job("job-1")
 
     assert len(payloads) == 1
-    assert payloads[0]["max_parallel_encodes"] == 4
-    assert str(payloads[0]["input_dir"]).startswith("/data/input-uploads/")
-    assert str(payloads[0]["input_dir"]).endswith("/camera")
-    assert "/jobs/job-1/input" not in str(payloads[0]["input_dir"])
+    assert payloads[0]["registration_id"] == "munchy-av1-nvenc"
+    plan = payloads[0]["request"]["plan"]
+    assert plan["target_options"]["max_parallel_encodes"] == 4
+    assert [(item["path"], item["bytes"]) for item in plan["inputs"]] == [("a.mp4", 5)]
     job = server.state_store.load_job("job-1")
     assert job["state"] == "succeeded"
     assert server.state_store.read_state("input-upload", "upload-1") is None
@@ -7387,13 +7739,26 @@ def test_successful_job_keeps_shared_input_upload_for_unfinished_sibling(
             **common_job,
         }
     )
-    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
-    monkeypatch.setattr(server.media_service, "start_gpu_job", lambda payload: None)
+    monkeypatch.setattr(
+        server.media_service, "acquire_target_resource", lambda _job, _registration_id: "token"
+    )
     monkeypatch.setattr(
         server.media_service,
-        "wait_gpu_job",
-        lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
+        "release_job_target_resource",
+        lambda _job, _registration_id, _token, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        server.media_service, "start_target_job", lambda _registration_id, _payload: None
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "wait_target_job",
+        lambda _registration_id, target_job_id, *, target_payload, job: {"state": "succeeded"},
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "accept_target_outputs",
+        lambda _registration_id, _result, _destination: (),
     )
     monkeypatch.setattr(
         server.external, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0}
@@ -7469,15 +7834,31 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
             "handoff": {"destination": "riverhog", "options": {}},
         }
     )
-    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
-    monkeypatch.setattr(server.media_service, "start_gpu_job", lambda payload: None)
+    monkeypatch.setattr(
+        server.media_service, "acquire_target_resource", lambda _job, _registration_id: "token"
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "release_job_target_resource",
+        lambda _job, _registration_id, _token, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        server.media_service, "start_target_job", lambda _registration_id, _payload: None
+    )
 
-    def wait_gpu_job(gpu_job_id, *, gpu_payload, job):  # type: ignore[no-untyped-def]
-        (server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive").mkdir(parents=True)
+    def wait_target_job(_registration_id, target_job_id, *, target_payload, job):  # type: ignore[no-untyped-def]
+        (server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1" / "archive").mkdir(
+            parents=True,
+            exist_ok=True,
+        )
         return {"state": "succeeded"}
 
-    monkeypatch.setattr(server.media_service, "wait_gpu_job", wait_gpu_job)
+    monkeypatch.setattr(server.media_service, "wait_target_job", wait_target_job)
+    monkeypatch.setattr(
+        server.media_service,
+        "accept_target_outputs",
+        lambda _registration_id, _result, _destination: (),
+    )
     monkeypatch.setattr(
         server.external, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0}
     )
@@ -7503,7 +7884,7 @@ def test_successful_riverhog_handoff_cleans_job_work_and_input_upload(
     assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not server.upload_service.shared_input_upload_root("upload-1").exists()
-    assert not (server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1").exists()
+    assert not (server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1").exists()
 
 
 def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
@@ -7514,7 +7895,7 @@ def test_riverhog_handoff_uses_session_uploads_and_removes_local_artifacts(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
-    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1" / "archive"
     video = archive_dir / "camera" / "a.webm"
     sidecar = archive_dir / "camera" / "a.webm.source-artifacts.tar.zst"
     video.parent.mkdir(parents=True)
@@ -7727,7 +8108,7 @@ def test_riverhog_handoff_resumes_archive_units_after_session_completion(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
-    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1" / "archive"
     source = archive_dir / "camera" / "a.webm"
     source.parent.mkdir(parents=True)
     source.write_bytes(b"video")
@@ -7843,7 +8224,7 @@ def test_riverhog_handoff_resumes_when_registration_races_archive_upload(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
-    archive_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1" / "archive"
+    archive_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1" / "archive"
     archive_dir.mkdir(parents=True)
     job = {
         "job_id": "job-1",
@@ -8128,7 +8509,7 @@ def test_handoff_retry_refreshes_persisted_job_state(
     assert stale_job["handoff_adapter_state"]["files"]["camera/a.webm"]["state"] == "deleted"
 
 
-def test_save_job_compacts_gpu_results_before_persisting(
+def test_save_job_compacts_target_results_before_persisting(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -8146,8 +8527,8 @@ def test_save_job_compacts_gpu_results_before_persisting(
                 "batches": {
                     "batch-1": {
                         "state": "succeeded",
-                        "gpu_result": {
-                            "job_id": "gpu-job-1",
+                        "target_result": {
+                            "job_id": "target-job-1",
                             "state": "succeeded",
                             "profile": "camera-archive",
                             "items": {
@@ -8163,9 +8544,9 @@ def test_save_job_compacts_gpu_results_before_persisting(
                         },
                     }
                 },
-                "gpu_results": {
+                "target_results": {
                     "batch-1": {
-                        "job_id": "gpu-job-1",
+                        "job_id": "target-job-1",
                         "state": "succeeded",
                         "items": {"archive_video": [{"command": ["ffmpeg"]}]},
                     }
@@ -8175,16 +8556,16 @@ def test_save_job_compacts_gpu_results_before_persisting(
     )
 
     stored = server.state_store.load_job("job-1")
-    batch_result = stored["eager_archive"]["batches"]["batch-1"]["gpu_result"]
-    stored_result = stored["eager_archive"]["gpu_results"]["batch-1"]
+    batch_result = stored["eager_archive"]["batches"]["batch-1"]["target_result"]
+    stored_result = stored["eager_archive"]["target_results"]["batch-1"]
     assert batch_result == {
-        "job_id": "gpu-job-1",
+        "job_id": "target-job-1",
         "state": "succeeded",
         "profile": "camera-archive",
         "item_counts": {"archive_video": 1},
     }
     assert stored_result == {
-        "job_id": "gpu-job-1",
+        "job_id": "target-job-1",
         "state": "succeeded",
         "item_counts": {"archive_video": 1},
     }
@@ -8217,7 +8598,7 @@ def test_save_job_merges_newer_eager_archive_state(
                         "finished_at": "2026-01-01T00:00:03Z",
                     }
                 },
-                "gpu_results": {"batch-1": {"state": "succeeded"}},
+                "target_results": {"batch-1": {"state": "succeeded"}},
             },
         }
     )
@@ -8261,7 +8642,7 @@ def test_save_job_merges_newer_eager_archive_state(
     assert eager["files"]["camera/b.mp4"]["state"] == "encoding"
     assert eager["batches"]["batch-1"]["state"] == "succeeded"
     assert eager["batches"]["batch-2"]["state"] == "running"
-    assert eager["gpu_results"] == {"batch-1": {"state": "succeeded"}}
+    assert eager["target_results"] == {"batch-1": {"state": "succeeded"}}
 
 
 def test_save_job_does_not_resurrect_terminal_job_from_stale_worker_state(
@@ -8713,7 +9094,7 @@ def test_repeated_cleanup_updates_empty_cleanup_summary(
     server = load_server(tmp_path, monkeypatch)
     server.upload_service.ensure_dirs()
     server.persistence.initialize_persistence()
-    work_dir = server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1"
+    work_dir = server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1"
     work_dir.mkdir(parents=True)
     (work_dir / "scratch.txt").write_text("scratch", encoding="utf-8")
     job = {
@@ -8788,14 +9169,22 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
             },
         }
     )
-    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
-    monkeypatch.setattr(server.media_service, "start_gpu_job", lambda payload: None)
+    monkeypatch.setattr(
+        server.media_service, "acquire_target_resource", lambda _job, _registration_id: "token"
+    )
     monkeypatch.setattr(
         server.media_service,
-        "wait_gpu_job",
-        lambda gpu_job_id, *, gpu_payload, job: (_ for _ in ()).throw(
-            server.domain_errors.EncodingFailed("gpu job failed: bad encode")
+        "release_job_target_resource",
+        lambda _job, _registration_id, _token, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        server.media_service, "start_target_job", lambda _registration_id, _payload: None
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "wait_target_job",
+        lambda _registration_id, target_job_id, *, target_payload, job: (_ for _ in ()).throw(
+            server.domain_errors.EncodingFailed("transform target job failed: bad encode")
         ),
     )
     monkeypatch.setattr(server.event_service, "emit_job_event", lambda *args, **kwargs: None)
@@ -8805,13 +9194,13 @@ def test_encoding_failure_cleans_job_work_and_input_upload(
 
     job = server.state_store.load_job("job-1")
     assert job["state"] == "failed"
-    assert job["error"] == "gpu job failed: bad encode"
+    assert job["error"] == "transform target job failed: bad encode"
     assert job["cleanup_completed_at"]
     assert "input-upload:upload-1" in job["cleanup_removed"]
     assert server.state_store.read_state("input-upload", "upload-1") is None
     assert not data_path.exists()
     assert not server.upload_service.shared_input_upload_root("upload-1").exists()
-    assert not (server.runtime_config.GPU_RUNTIME_DIR / "jobs" / "job-1").exists()
+    assert not (server.runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / "job-1").exists()
 
 
 def test_run_job_reuses_stored_shared_review_plan(
@@ -8824,11 +9213,12 @@ def test_run_job_reuses_stored_shared_review_plan(
     data_path = server.upload_service.tusd_data_path("upload-a")
     data_path.parent.mkdir(parents=True, exist_ok=True)
     data_path.write_bytes(b"video")
+    source_id = f"input-{hashlib.sha256(b'a.mp4').hexdigest()[:24]}"
     plan = {
         "kind": "munchy.qcut-plan",
         "version": 1,
-        "clips": [{"index": 1, "source": "/data/input-uploads/upload/camera/a.mp4"}],
-        "files": [{"path": "/data/input-uploads/upload/camera/a.mp4"}],
+        "clips": [{"index": 1, "source_artifact_id": source_id}],
+        "files": [{"artifact_id": source_id}],
     }
     server.upload_service.store_shared_review_plan("upload-1", "camera", "qcut_video", plan)
     server.upload_service.save_input_upload(
@@ -8881,15 +9271,28 @@ def test_run_job_reuses_stored_shared_review_plan(
         }
     )
     payloads: list[dict[str, object]] = []
-    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
     monkeypatch.setattr(
-        server.media_service, "start_gpu_job", lambda payload: payloads.append(payload)
+        server.media_service, "acquire_target_resource", lambda _job, _registration_id: "token"
     )
     monkeypatch.setattr(
         server.media_service,
-        "wait_gpu_job",
-        lambda gpu_job_id, *, gpu_payload, job: {"state": "succeeded"},
+        "release_job_target_resource",
+        lambda _job, _registration_id, _token, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "start_target_job",
+        lambda _registration_id, payload: payloads.append(payload),
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "wait_target_job",
+        lambda _registration_id, target_job_id, *, target_payload, job: {"state": "succeeded"},
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "accept_target_outputs",
+        lambda _registration_id, _result, _destination: (),
     )
     monkeypatch.setattr(
         server.external, "run_external_handoff", lambda *args, **kwargs: {"returncode": 0}
@@ -8899,9 +9302,10 @@ def test_run_job_reuses_stored_shared_review_plan(
 
     server.job_service.run_job("job-2")
 
-    assert payloads[0]["review_plans"]["qcut_video"]["kind"] == "munchy.qcut-plan"  # type: ignore[index]
-    assert payloads[0]["review_plans"]["qcut_video"]["shared_plan"]["input_upload_id"] == "upload-1"  # type: ignore[index]
-    assert payloads[0]["review_clip_plan"] == {
+    intent = payloads[0]["request"]["plan"]["intent"]
+    assert intent["review_plan"]["kind"] == "munchy.qcut-plan"
+    assert intent["review_plan"]["shared_plan"]["input_upload_id"] == "upload-1"
+    assert intent["review_clip"] == {
         "target_seconds": 90,
         "min_seconds": 4,
         "max_seconds": 7,
@@ -8976,7 +9380,7 @@ def test_run_job_runs_review_sweep_as_one_job(
                         "target": "munchy-av1-nvenc",
                         "name": "base",
                         "archive": {
-                            "codec": "av1_nvenc",
+                            "codec": "av1",
                             "container": "webm",
                             "quality": 40,
                         },
@@ -8989,24 +9393,22 @@ def test_run_job_runs_review_sweep_as_one_job(
     payloads: list[dict[str, object]] = []
     uploads: list[tuple[str, str, bool]] = []
     events: list[str] = []
-    monkeypatch.setattr(server.media_service, "acquire_job_gpu", lambda job: "token")
-    monkeypatch.setattr(server.media_service, "release_job_gpu", lambda job, token: None)
     monkeypatch.setattr(
-        server.media_service, "start_gpu_job", lambda payload: payloads.append(payload)
+        server.media_service, "acquire_target_resource", lambda _job, _registration_id: "token"
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "release_job_target_resource",
+        lambda _job, _registration_id, _token, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        server.media_service,
+        "start_target_job",
+        lambda _registration_id, payload: payloads.append(payload),
     )
 
-    def fake_wait_gpu_job(gpu_job_id, *, gpu_payload, job):  # type: ignore[no-untyped-def]
-        return {
-            "state": "succeeded",
-            "items": {
-                "qcut_video": {
-                    "plan": {
-                        "kind": "munchy.qcut-plan",
-                        "files": [{"path": gpu_payload["input_dir"]}],
-                    }
-                }
-            },
-        }
+    def fake_wait_target_job(_registration_id, target_job_id, *, target_payload, job):  # type: ignore[no-untyped-def]
+        return {"state": "succeeded"}
 
     def fake_run_external_handoff(job, source_dir, **kwargs):  # type: ignore[no-untyped-def]
         review = job["review"]
@@ -9022,7 +9424,12 @@ def test_run_job_runs_review_sweep_as_one_job(
         )
         return {"status": "uploaded", "source": str(source_dir)}
 
-    monkeypatch.setattr(server.media_service, "wait_gpu_job", fake_wait_gpu_job)
+    monkeypatch.setattr(server.media_service, "wait_target_job", fake_wait_target_job)
+    monkeypatch.setattr(
+        server.media_service,
+        "accept_target_outputs",
+        lambda _registration_id, _result, _destination: (),
+    )
     monkeypatch.setattr(server.external, "run_external_handoff", fake_run_external_handoff)
     monkeypatch.setattr(
         server.event_service,
@@ -9034,10 +9441,14 @@ def test_run_job_runs_review_sweep_as_one_job(
     server.job_service.run_job("job-1")
 
     assert len(payloads) == 2
-    assert [payload["encode_profile"]["archive"]["quality"] for payload in payloads] == [24, 28]
-    assert "review_plans" not in payloads[0]
-    second_plan = payloads[1]["review_plans"]["qcut_video"]  # type: ignore[index]
-    assert second_plan["kind"] == "munchy.qcut-plan"
+    assert [payload["request"]["plan"]["intent"]["archive"]["quality"] for payload in payloads] == [
+        24,
+        28,
+    ]
+    assert all(
+        payload["request"]["plan"]["operation_id"] == "munchy.video.review/v1"
+        for payload in payloads
+    )
     assert uploads == [
         ("video-4k", "q24", False),
         ("video-4k", "q28", False),
@@ -9154,7 +9565,7 @@ def test_eager_group_pipeline_capacity_respects_group_limit(
             "batches": {
                 "batch-1": {
                     "state": "running",
-                    "executor": "gpu",
+                    "executor": "transform_target",
                     "group": "camera",
                     "started_at": "2026-06-05T00:00:00Z",
                 }
@@ -9198,8 +9609,8 @@ def test_eager_group_pipeline_capacity_counts_mixed_executors_globally(
         "job_id": "job-1",
         "eager_archive": {
             "batches": {
-                "batch-1": {"state": "running", "executor": "gpu", "group": "camera"},
-                "batch-2": {"state": "running", "executor": "gpu", "group": "camera"},
+                "batch-1": {"state": "running", "executor": "transform_target", "group": "camera"},
+                "batch-2": {"state": "running", "executor": "transform_target", "group": "camera"},
                 "batch-3": {
                     "state": "running",
                     "executor": "local_audio",
@@ -9229,7 +9640,7 @@ def test_eager_archive_pipeline_phase_uses_single_group_limit(
         "job_id": "job-1",
         "eager_archive": {
             "batches": {
-                "batch-1": {"state": "running", "executor": "gpu", "group": "camera"},
+                "batch-1": {"state": "running", "executor": "transform_target", "group": "camera"},
             }
         },
     }
@@ -9253,7 +9664,7 @@ def test_eager_archive_pipeline_phase_uses_global_limit_for_mixed_groups(
         "job_id": "job-1",
         "eager_archive": {
             "batches": {
-                "batch-1": {"state": "running", "executor": "gpu", "group": "camera"},
+                "batch-1": {"state": "running", "executor": "transform_target", "group": "camera"},
                 "batch-2": {"state": "running", "executor": "local_audio", "group": "voice"},
             }
         },
@@ -9264,7 +9675,7 @@ def test_eager_archive_pipeline_phase_uses_global_limit_for_mixed_groups(
     ) == ("eager_archive:pipeline=2/3")
 
 
-def test_ready_eager_files_limits_audio_batches_to_worker_count(
+def test_ready_eager_files_uses_the_common_transform_batch_bound_for_audio(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -9317,6 +9728,7 @@ def test_ready_eager_files_limits_audio_batches_to_worker_count(
     assert [file_state["path"] for file_state in files] == [
         "voice/a.mp3",
         "voice/b.mp3",
+        "voice/c.mp3",
     ]
 
 
@@ -9588,7 +10000,7 @@ def test_eager_encode_progress_ignores_sidecar_evidence_files(
     assert progress["completed"] is True
 
 
-def test_job_response_includes_review_clip_progress_from_gpu_status(
+def test_job_response_includes_review_clip_progress_from_target_status(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -9600,27 +10012,22 @@ def test_job_response_includes_review_clip_progress_from_gpu_status(
         "state": "running",
         "phase": "review",
         "handoff": {"destination": "command", "options": {}},
-        "gpu_statuses": {
-            "gpu-job-1": {
+        "target_statuses": {
+            "transform-job-1": {
                 "state": "running",
-                "items": {
-                    "qcut_video": {
-                        "status": "running",
-                        "progress": {
-                            "mode": "qcut_video",
-                            "task": "qcut_video",
-                            "phase": "encoding_clips",
-                            "clips_total": 40,
-                            "clips_done": 10,
-                            "clips_running": 2,
-                            "clips_failed": 0,
-                            "percent_clips": 25.0,
-                            "output_bytes": 1048576,
-                            "active_output_bytes": 262144,
-                            "output_rate_bytes_per_second": 131072,
-                            "started_at": "2026-06-05T00:00:00Z",
-                        },
-                    }
+                "progress": {
+                    "mode": "qcut_video",
+                    "task": "qcut_video",
+                    "phase": "encoding_clips",
+                    "clips_total": 40,
+                    "clips_done": 10,
+                    "clips_running": 2,
+                    "clips_failed": 0,
+                    "percent_clips": 25.0,
+                    "output_bytes": 1048576,
+                    "active_output_bytes": 262144,
+                    "output_rate_bytes_per_second": 131072,
+                    "started_at": "2026-06-05T00:00:00Z",
                 },
             }
         },
@@ -9675,9 +10082,9 @@ def test_compact_job_response_keeps_operational_fields_only(
         "eager_archive": {
             "files": {},
             "batches": {"batch-1": {"state": "running"}},
-            "gpu_results": {"batch-0": {"large": ["payload"]}},
+            "target_results": {"batch-0": {"large": ["payload"]}},
         },
-        "gpu_result": {"large": ["payload"]},
+        "target_result": {"large": ["payload"]},
     }
 
     compact = server.processing_service.compact_job_response(job)
@@ -9687,7 +10094,7 @@ def test_compact_job_response_keeps_operational_fields_only(
     assert compact["phase"] == "eager_archive:pipeline=1/3"
     assert compact["upload_progress"]["files_total"] == 1
     assert "eager_archive" not in compact
-    assert "gpu_result" not in compact
+    assert "target_result" not in compact
 
 
 def test_list_jobs_returns_recent_compact_jobs(
@@ -9704,7 +10111,7 @@ def test_list_jobs_returns_recent_compact_jobs(
             "phase": "done",
             "updated_at": "2026-01-01T00:00:00Z",
             "handoff": {"destination": "command", "options": {}},
-            "eager_archive": {"gpu_results": {"large": ["payload"]}},
+            "eager_archive": {"target_results": {"large": ["payload"]}},
         }
     )
     server.state_store.save_job(
@@ -9953,7 +10360,7 @@ def test_compact_job_read_uses_persisted_progress_snapshot(
     assert compact["handoff_progress"] == persisted_handoff
 
 
-def test_acquire_job_gpu_reuses_persisted_lease_token(
+def test_acquire_target_resource_reuses_persisted_lease_token(
     tmp_path: Path,
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
@@ -9962,26 +10369,33 @@ def test_acquire_job_gpu_reuses_persisted_lease_token(
     server.persistence.initialize_persistence()
     requests: list[dict[str, object]] = []
 
-    def fake_manager_request(
+    def fake_resource_request(
+        registration_id: str,
         method: str,
         path: str,
         payload: dict[str, object] | None = None,
     ) -> dict[str, object]:
+        assert registration_id == "munchy-av1-nvenc"
         assert method == "POST"
         assert path == "/acquire"
         assert payload is not None
         requests.append(dict(payload))
         return {"lease_token": payload["lease_token"], "queued": False}
 
-    monkeypatch.setattr(server.media_service, "manager_request", fake_manager_request)
-    job = {"job_id": "job-1", "gpu_lease_token": "saved-token"}
+    monkeypatch.setattr(server.media_service, "resource_request", fake_resource_request)
+    job = {
+        "job_id": "job-1",
+        "resource_leases": {
+            "munchy-av1-nvenc": {"token": "saved-token"},
+        },
+    }
     server.state_store.save_job(job)
 
-    token = server.media_service.acquire_job_gpu(job)
+    token = server.media_service.acquire_target_resource(job, "munchy-av1-nvenc")
 
     assert token == "saved-token"
     assert requests[0]["lease_token"] == "saved-token"
-    assert job["gpu_lease_token"] == "saved-token"
+    assert job["resource_leases"]["munchy-av1-nvenc"]["token"] == "saved-token"
 
 
 def test_munchy_tus_paths_resolve_under_the_configured_upload_root(

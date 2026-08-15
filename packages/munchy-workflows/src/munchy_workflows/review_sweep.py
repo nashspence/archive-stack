@@ -249,7 +249,7 @@ def default_encode_profile_for_output_mode(output_mode: str) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "target": "munchy-av1-nvenc",
-        "archive": {"codec": "av1_nvenc", "container": "mkv"},
+        "archive": {"codec": "av1", "container": "mkv"},
     }
 
 

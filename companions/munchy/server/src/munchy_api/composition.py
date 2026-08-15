@@ -23,7 +23,8 @@ class MunchyAdapters:
 def configure_adapters() -> MunchyAdapters:
     import munchy_core.services.handoffs as handoff_service
     import munchy_core.services.media as media_service
-    from munchy_core.adapters import external, gpu, riverhog
+    from munchy_core.adapters import external, riverhog, transform_targets
+    from munchy_core.runtime import config as runtime_config
 
     handoff_service.register_handoff_adapter(
         external.ExternalHandoffAdapter("command"),
@@ -33,7 +34,20 @@ def configure_adapters() -> MunchyAdapters:
         external.ExternalHandoffAdapter("rclone"),
         option_model=external.RcloneHandoffOptions,
     )
-    media_service.register_gpu_platform(gpu.HttpGpuPlatform())
+    local_audio = media_service.LocalAudioTransformTarget(runtime_config.TRANSFORM_RUNTIME_DIR)
+    local_audio_contract = local_audio.contract()
+    media_service.register_transform_target_platform(
+        transform_targets.HttpTransformTargetPlatform(
+            in_process={
+                "munchy-audio": transform_targets.InProcessTargetRegistration(
+                    registration_id="munchy-audio",
+                    target=local_audio,
+                    workspace_root=runtime_config.TRANSFORM_RUNTIME_DIR,
+                    expected_target_contract_sha256=local_audio_contract.contract_sha256,
+                )
+            }
+        )
+    )
     riverhog_adapter = riverhog.RiverhogHandoffAdapter()
     handoff_service.register_handoff_adapter(
         riverhog_adapter,

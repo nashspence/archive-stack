@@ -63,27 +63,27 @@ APPLICATION_AUTH_REQUIRED = os.getenv(
 ).strip().casefold() in {"1", "true", "yes", "on"}
 
 
-GPU_RUNTIME_DIR = Path(
-    os.getenv("MUNCHY_GPU_RUNTIME_DIR", "/gpu-runtime/munchy-av1-nvenc")
+TRANSFORM_RUNTIME_DIR = Path(
+    os.getenv("MUNCHY_TRANSFORM_RUNTIME_DIR", "/transform-runtime")
 ).resolve()
 
 
-GPU_TARGET = os.getenv("MUNCHY_GPU_TARGET", "munchy-av1-nvenc")
+RESOURCE_LEASE_TTL_SECONDS = int(os.getenv("MUNCHY_RESOURCE_LEASE_TTL_SECONDS", "28800"))
 
 
-GPU_LEASE_TTL_S = int(os.getenv("MUNCHY_GPU_LEASE_TTL_S", "28800"))
+RESOURCE_WAIT_SECONDS = int(os.getenv("MUNCHY_RESOURCE_WAIT_SECONDS", "300"))
 
 
-GPU_WAIT_S = int(os.getenv("MUNCHY_GPU_WAIT_S", "300"))
+TARGET_REPOST_SECONDS = float(os.getenv("MUNCHY_TARGET_REPOST_SECONDS", "120"))
 
 
-GPU_REPOST_SECONDS = float(os.getenv("MUNCHY_GPU_REPOST_SECONDS", "120"))
+TARGET_CANCEL_TIMEOUT_SECONDS = float(os.getenv("MUNCHY_TARGET_CANCEL_TIMEOUT_SECONDS", "120"))
 
 
 MIN_FREE_BYTES = int(os.getenv("MUNCHY_MIN_FREE_BYTES", str(10 * 1024 * 1024 * 1024)))
 
 
-GPU_SCRATCH_MULTIPLIER = float(os.getenv("MUNCHY_GPU_SCRATCH_MULTIPLIER", "2.5"))
+TRANSFORM_SCRATCH_MULTIPLIER = float(os.getenv("MUNCHY_TRANSFORM_SCRATCH_MULTIPLIER", "2.5"))
 
 
 EAGER_ARCHIVE_SCRATCH_MULTIPLIER = float(

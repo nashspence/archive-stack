@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import contextvars
+import functools
 import hashlib
 import importlib.metadata
 import json
@@ -16,12 +18,11 @@ import subprocess
 import tempfile
 import threading
 import time
-import uuid
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Literal, cast
 
 import uvicorn
@@ -30,15 +31,59 @@ from munchy_target_support.metadata_projection import (
     ProjectionMetadata,
     ffmpeg_container_metadata_args,
 )
+from munchy_target_support.operations import (
+    AUDIO_REVIEW_OPERATION,
+    AUDIO_REVIEW_ROLE,
+    REVIEW_PLAN_ROLE,
+    SOURCE_ARTIFACTS_ROLE,
+    SOURCE_ROLE,
+    VIDEO_ARCHIVE_OPERATION,
+    VIDEO_ARCHIVE_ROLE,
+    VIDEO_REVIEW_OPERATION,
+    VIDEO_REVIEW_ROLE,
+    OperationIntent,
+    ReviewClipIntent,
+    operation_contract,
+    validate_operation_intent,
+)
+from munchy_target_support.protocol import (
+    Artifact,
+    ExecutionToolEvidence,
+    JsonSchemaDocument,
+    TargetCancelRequest,
+    TargetContract,
+    TargetContractPayload,
+    TargetExecutionEvidence,
+    TargetFailure,
+    TargetJobRequest,
+    TargetJobState,
+    TargetJobStatus,
+    TargetOperationSupport,
+    TargetPreflightRequest,
+    TargetPreflightResponse,
+    TargetProgress,
+    TransformPlan,
+    TransformPlanPayload,
+    canonical_json_bytes,
+    validate_artifacts_against_operation,
+)
 from munchy_target_support.source_artifact_bridge import build_strict_source_artifacts
 from munchy_target_support.uvicorn_logging import uvicorn_log_config_without_health_access_logs
+from munchy_target_support.workspace import (
+    file_sha256 as workspace_file_sha256,
+)
+from munchy_target_support.workspace import (
+    publish_file_atomically,
+    verify_artifacts,
+    workspace_area_root,
+    workspace_artifact_path,
+)
 from munchy_workflows.profiles import (
     ArchiveAudioProfile,
     ArchiveContainer,
     ArchiveEncodeProfile,
-    EncodeProfile,
 )
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from time_formats import parse_utc_timestamp, utc_timestamp_now
 
 LOGGING = {
@@ -70,7 +115,12 @@ logging.config.dictConfig(LOGGING)
 log = logging.getLogger("munchy_av1")
 
 
-TaskName = Literal["archive_video", "qcut_video", "audio_review"]
+IMPLEMENTATION_ID = "munchy.av1-nvenc/v1"
+SUPPORTED_OPERATIONS = (
+    VIDEO_ARCHIVE_OPERATION,
+    VIDEO_REVIEW_OPERATION,
+    AUDIO_REVIEW_OPERATION,
+)
 
 DATA_DIR = Path(os.getenv("MUNCHY_DATA_DIR", "/data")).resolve()
 SOURCE_ARTIFACTS_SUFFIX = ".source-artifacts.tar.zst"
@@ -127,6 +177,13 @@ CUVID_DECODERS = {
 
 jobs_lock = threading.Lock()
 jobs: dict[str, dict[str, Any]] = {}
+processes_lock = threading.Lock()
+job_cancel_events: dict[str, threading.Event] = {}
+active_processes: dict[str, set[subprocess.Popen[bytes]]] = {}
+current_job_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "munchy_target_job_id",
+    default=None,
+)
 encode_semaphore = threading.Semaphore(MAX_PARALLEL_ENCODES)
 ffmpeg_filter_lock = threading.Lock()
 ffmpeg_filter_cache: set[str] | None = None
@@ -136,45 +193,234 @@ class InputVanishedDuringJob(RuntimeError):
     pass
 
 
-class ReviewClipPlanConfig(BaseModel):
-    target_seconds: int = Field(default=QCUT_TARGET_SECONDS, ge=1)
-    min_seconds: int = Field(default=QCUT_MIN_SECONDS, ge=1)
-    max_seconds: int = Field(default=QCUT_MAX_SECONDS, ge=1)
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> ReviewClipPlanConfig:
-        if self.min_seconds > self.max_seconds:
-            raise ValueError("review_clip_plan.min_seconds must be <= max_seconds")
-        return self
+class TargetJobCanceled(RuntimeError):
+    pass
 
 
-def default_tasks() -> list[TaskName]:
-    return ["archive_video"]
+def job_cancel_event(job_id: str) -> threading.Event:
+    with processes_lock:
+        return job_cancel_events.setdefault(job_id, threading.Event())
 
 
-class JobRequest(BaseModel):
-    job_id: str | None = Field(default=None, min_length=1, max_length=180)
-    input_dir: Path
-    archive_dir: Path
-    review_dir: Path | None = None
-    profile: str = "av1-nvenc-high"
-    encode_profile: EncodeProfile | None = None
+def raise_if_target_job_canceled() -> None:
+    job_id = current_job_id.get()
+    if job_id is not None and job_cancel_event(job_id).is_set():
+        raise TargetJobCanceled(f"target job canceled: {job_id}")
+
+
+def submit_with_job_context(
+    pool: ThreadPoolExecutor,
+    function: Callable[..., Any],
+    /,
+    *args: Any,
+    **kwargs: Any,
+):  # type: ignore[no-untyped-def]
+    context = contextvars.copy_context()
+    return pool.submit(context.run, function, *args, **kwargs)
+
+
+def stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+class NvencTargetOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    preset: str | None = Field(default=None, min_length=2, max_length=8)
+    tune: Literal["hq", "ll", "ull", "lossless", "uhq"] | None = None
+    lookahead_level: int | None = Field(default=None, ge=0, le=3)
+    split_encode_mode: str | None = Field(default=None, min_length=1, max_length=32)
     max_parallel_encodes: int | None = Field(default=None, ge=1, le=64)
-    tasks: list[TaskName] = Field(default_factory=default_tasks)
-    run_id: str | None = None
-    review_clip_plan: ReviewClipPlanConfig = Field(default_factory=ReviewClipPlanConfig)
-    review_plans: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    container_metadata: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    container_metadata_required: bool = True
-    source_artifacts_sidecars: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
-    dry_run: bool = False
 
-    @field_validator("tasks")
+    @field_validator("preset")
     @classmethod
-    def require_tasks(cls, value: list[TaskName]) -> list[TaskName]:
-        if not value:
-            raise ValueError("at least one task is required")
-        return value
+    def validate_preset(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        lowered = value.strip().lower()
+        if lowered not in {"p1", "p2", "p3", "p4", "p5", "p6", "p7"}:
+            raise ValueError("preset must be p1 through p7")
+        return lowered
+
+
+def resolved_review_clip_plan(value: ReviewClipIntent | None) -> ReviewClipIntent:
+    return ReviewClipIntent(
+        target_seconds=value.target_seconds
+        if value is not None and value.target_seconds is not None
+        else QCUT_TARGET_SECONDS,
+        min_seconds=value.min_seconds
+        if value is not None and value.min_seconds is not None
+        else QCUT_MIN_SECONDS,
+        max_seconds=value.max_seconds
+        if value is not None and value.max_seconds is not None
+        else QCUT_MAX_SECONDS,
+    )
+
+
+def effective_target_options(
+    archive: ArchiveEncodeProfile,
+    requested: Mapping[str, Any],
+) -> dict[str, Any]:
+    configured = NvencTargetOptions.model_validate(requested)
+    return {
+        "preset": configured.preset or ARCHIVE_PRESET,
+        "tune": configured.tune or ARCHIVE_TUNE,
+        "lookahead_level": configured.lookahead_level
+        if configured.lookahead_level is not None
+        else int(ARCHIVE_LOOKAHEAD_LEVEL),
+        "split_encode_mode": configured.split_encode_mode or ARCHIVE_SPLIT_ENCODE_MODE,
+        "video_decode_mode": VIDEO_DECODE_MODE,
+        "video_scale_mode": VIDEO_SCALE_MODE,
+        "pixel_format": archive.pix_fmt or ARCHIVE_PIX_FMT,
+        "quality": archive.quality if archive.quality is not None else int(ARCHIVE_CQ),
+        "max_parallel_encodes": configured.max_parallel_encodes or MAX_PARALLEL_ENCODES,
+    }
+
+
+def _command_version(command: str, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            [command, *args],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    output = (result.stdout or result.stderr).strip().splitlines()
+    return output[0].strip() if output else "unavailable"
+
+
+@functools.lru_cache(maxsize=1)
+def target_contract() -> TargetContract:
+    options_schema = NvencTargetOptions.model_json_schema()
+    options_document = JsonSchemaDocument.from_schema(
+        "munchy.av1-nvenc.options/v1",
+        options_schema,
+    )
+    return TargetContract.seal(
+        TargetContractPayload(
+            implementation_id=IMPLEMENTATION_ID,
+            implementation_version=importlib.metadata.version("munchy-av1-nvenc-target"),
+            source_revision=os.getenv("MUNCHY_TARGET_SOURCE_REVISION", "unknown").strip()
+            or "unknown",
+            operations=tuple(
+                TargetOperationSupport(
+                    operation_id=operation_id,
+                    operation_contract_sha256=operation_contract(operation_id).contract_sha256,
+                    options_schema=options_document,
+                )
+                for operation_id in SUPPORTED_OPERATIONS
+            ),
+        )
+    )
+
+
+def preflight_target(request: TargetPreflightRequest) -> TargetPreflightResponse:
+    if request.operation_id not in SUPPORTED_OPERATIONS:
+        raise ValueError(f"unsupported operation: {request.operation_id}")
+    operation = operation_contract(request.operation_id)
+    if request.operation_contract_sha256 != operation.contract_sha256:
+        raise ValueError("operation contract digest mismatch")
+    validate_artifacts_against_operation(operation, inputs=request.inputs)
+    verify_artifacts(DATA_DIR, "input", request.workspace_id, request.inputs)
+    intent = validate_operation_intent(request.operation_id, request.intent)
+    if intent.archive.codec != "av1":
+        raise ValueError("munchy-av1-nvenc requires portable codec av1")
+    if request.operation_id == VIDEO_ARCHIVE_OPERATION:
+        projected = [
+            PurePosixPath(artifact.path)
+            .with_suffix(archive_container_suffix(intent.archive))
+            .as_posix()
+            for artifact in request.inputs
+            if artifact.role == SOURCE_ROLE
+        ]
+        if len(projected) != len(set(projected)):
+            raise ValueError("archive inputs project to duplicate output paths")
+    input_by_id = {artifact.id: artifact for artifact in request.inputs}
+    for source_id, sidecars in intent.source_artifact_sidecars.items():
+        source = input_by_id.get(source_id)
+        if source is None or source.role != SOURCE_ROLE:
+            raise ValueError(f"source artifact association is invalid: {source_id}")
+        for sidecar in sidecars:
+            artifact = input_by_id.get(sidecar.artifact_id)
+            if artifact is None or artifact.role != SOURCE_ARTIFACTS_ROLE:
+                raise ValueError(
+                    f"source-artifacts sidecar association is invalid: {sidecar.artifact_id}"
+                )
+    unknown_metadata = sorted(set(intent.container_metadata) - set(input_by_id))
+    if unknown_metadata:
+        raise ValueError(
+            "container metadata references unknown artifact(s): " + ", ".join(unknown_metadata)
+        )
+    options = effective_target_options(intent.archive, request.target_options)
+    effective_intent = intent.model_dump(mode="json", exclude_none=True)
+    if request.operation_id in {VIDEO_REVIEW_OPERATION, AUDIO_REVIEW_OPERATION}:
+        effective_intent["review_clip"] = resolved_review_clip_plan(
+            getattr(intent, "review_clip", None)
+        ).model_dump(mode="json", exclude_none=True)
+    contract = target_contract()
+    plan = TransformPlan.seal(
+        TransformPlanPayload(
+            operation_id=request.operation_id,
+            operation_contract_sha256=request.operation_contract_sha256,
+            workspace_id=request.workspace_id,
+            inputs=request.inputs,
+            intent=request.intent,
+            target_options=request.target_options,
+            target_implementation_id=contract.implementation_id,
+            target_contract_sha256=contract.contract_sha256,
+            effective_intent=effective_intent,
+            effective_target_options=options,
+        )
+    )
+    return TargetPreflightResponse(
+        target=contract,
+        plan=plan,
+    )
+
+
+def status_contract(
+    request: TargetJobRequest,
+    *,
+    state: TargetJobState,
+    progress: TargetProgress | None = None,
+    outputs: tuple[Artifact, ...] = (),
+    execution_evidence: TargetExecutionEvidence | None = None,
+    failure: TargetFailure | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+) -> dict[str, Any]:
+    source_total = sum(artifact.role == SOURCE_ROLE for artifact in request.plan.inputs)
+    if progress is None:
+        progress = TargetProgress(
+            phase=state,
+            completed=source_total if state == "succeeded" else 0,
+            total=source_total,
+        )
+    payload = {
+        "protocol": request.protocol,
+        "job_id": request.job_id,
+        "attempt": request.attempt,
+        "request_sha256": request.request_sha256,
+        "plan_sha256": request.plan.plan_sha256,
+        "state": state,
+        "progress": progress,
+        "outputs": [item.model_dump(mode="json", exclude_none=True) for item in outputs],
+        "execution_evidence": execution_evidence,
+        "failure": failure,
+        "started_at": started_at,
+        "finished_at": finished_at,
+    }
+    return TargetJobStatus.model_validate(payload).model_dump(mode="json", exclude_none=True)
 
 
 def ensure_under_data_dir(path: Path, *, name: str) -> Path:
@@ -192,14 +438,44 @@ def status_path(job_id: str) -> Path:
     )
 
 
+def request_path(job_id: str) -> Path:
+    return status_path(job_id).with_name("request.json")
+
+
+def write_request(request: TargetJobRequest) -> None:
+    path = request_path(request.job_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.part")
+    try:
+        temporary.write_text(
+            request.model_dump_json(by_alias=True, exclude_none=True, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def load_request(job_id: str) -> TargetJobRequest:
+    path = request_path(job_id)
+    if not path.is_file():
+        raise HTTPException(status_code=409, detail=f"job request is unavailable: {job_id}")
+    return TargetJobRequest.model_validate_json(path.read_text(encoding="utf-8"))
+
+
 def write_status(job_id: str, payload: dict[str, Any]) -> None:
     payload = dict(payload)
     payload["updated_at"] = utc_timestamp_now()
     path = status_path(job_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     with jobs_lock:
-        jobs[job_id] = payload
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.part")
+        try:
+            temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+            os.replace(temporary, path)
+            jobs[job_id] = payload
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def load_status(job_id: str) -> dict[str, Any]:
@@ -225,15 +501,15 @@ def mark_interrupted_jobs_on_startup() -> None:
         except Exception:
             log.exception("failed to read job status during startup recovery: %s", path)
             continue
-        if payload.get("state") not in {"queued", "running"}:
+        if payload.get("state") not in {"queued", "running", "canceling"}:
             continue
         job_id = str(payload.get("job_id") or path.parent.name)
         payload["job_id"] = job_id
-        payload["state"] = "failed"
-        payload["error_code"] = "target_restarted"
-        payload["error"] = "gpu target restarted before job completed"
-        payload["finished_at"] = utc_timestamp_now()
-        log.warning("marking interrupted gpu job as failed after startup: %s", job_id)
+        payload["state"] = "interrupted"
+        payload["progress"] = {**dict(payload.get("progress") or {}), "phase": "interrupted"}
+        payload.pop("failure", None)
+        payload.pop("finished_at", None)
+        log.warning("marking target job interrupted after startup: %s", job_id)
         write_status(job_id, payload)
 
 
@@ -257,6 +533,7 @@ def run_command(
     dry_run: bool = False,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
+    raise_if_target_job_canceled()
     rendered = shlex.join(cmd)
     log.info("%s: %s", action, rendered)
     started = time.monotonic()
@@ -271,20 +548,43 @@ def run_command(
         }
     timeout = None if FFMPEG_TIMEOUT_SECONDS <= 0 else FFMPEG_TIMEOUT_SECONDS
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
+        process = subprocess.Popen(
+            cmd,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            env=dict(env) if env is not None else None,
+        )
+        job_id = current_job_id.get()
+        if job_id is not None:
+            with processes_lock:
+                active_processes.setdefault(job_id, set()).add(process)
+        deadline = time.monotonic() + timeout if timeout is not None else None
         try:
-            proc = subprocess.run(
-                cmd,
-                check=False,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                timeout=timeout,
-                env=dict(env) if env is not None else None,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stdout_tail = tail_binary_file(stdout_file, 4000)
-            stderr_tail = tail_binary_file(stderr_file, 4000)
-            detail = (stderr_tail or stdout_tail or rendered)[-2000:]
-            raise RuntimeError(f"{action} timed out after {timeout}s: {detail}") from exc
+            while True:
+                try:
+                    returncode = process.wait(timeout=0.25)
+                    break
+                except subprocess.TimeoutExpired:
+                    if job_id is not None and job_cancel_event(job_id).is_set():
+                        stop_process(process)
+                        raise TargetJobCanceled(f"target job canceled: {job_id}") from None
+                    if deadline is not None and time.monotonic() >= deadline:
+                        stop_process(process)
+                        stdout_tail = tail_binary_file(stdout_file, 4000)
+                        stderr_tail = tail_binary_file(stderr_file, 4000)
+                        detail = (stderr_tail or stdout_tail or rendered)[-2000:]
+                        raise RuntimeError(
+                            f"{action} timed out after {timeout}s: {detail}"
+                        ) from None
+        finally:
+            if job_id is not None:
+                with processes_lock:
+                    active_processes.get(job_id, set()).discard(process)
+        raise_if_target_job_canceled()
+        proc = subprocess.CompletedProcess(
+            cmd,
+            returncode,
+        )
         stdout_tail = tail_binary_file(stdout_file, 4000)
         stderr_tail = tail_binary_file(stderr_file, 4000)
     result = {
@@ -1003,15 +1303,17 @@ def plan_review_clips(
 def archive_video_encode_args(
     archive: ArchiveEncodeProfile,
     *,
+    target_options: Mapping[str, Any] | None = None,
     hardware_frames: bool = False,
 ) -> list[str]:
+    options = dict(target_options or {})
     args = [
         "-c:v",
         "av1_nvenc",
         "-preset",
-        archive.preset or ARCHIVE_PRESET,
+        str(options.get("preset") or ARCHIVE_PRESET),
         "-tune",
-        archive.tune or ARCHIVE_TUNE,
+        str(options.get("tune") or ARCHIVE_TUNE),
         "-rc",
         "vbr",
         "-cq",
@@ -1027,11 +1329,11 @@ def archive_video_encode_args(
         "-rc-lookahead",
         "32",
         "-lookahead_level",
-        ARCHIVE_LOOKAHEAD_LEVEL,
+        str(options.get("lookahead_level", ARCHIVE_LOOKAHEAD_LEVEL)),
         "-b_ref_mode",
         "middle",
         "-split_encode_mode",
-        ARCHIVE_SPLIT_ENCODE_MODE,
+        str(options.get("split_encode_mode") or ARCHIVE_SPLIT_ENCODE_MODE),
         "-fps_mode",
         "passthrough",
     ]
@@ -1068,6 +1370,7 @@ def av1_archive_command(
     dest: Path,
     archive: ArchiveEncodeProfile,
     *,
+    target_options: Mapping[str, Any] | None = None,
     metadata: ProjectionMetadata | None = None,
 ) -> list[str]:
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1100,7 +1403,11 @@ def av1_archive_command(
         "0:a?",
         "-map_metadata",
         "0",
-        *archive_video_encode_args(archive, hardware_frames=hardware_frames),
+        *archive_video_encode_args(
+            archive,
+            target_options=target_options,
+            hardware_frames=hardware_frames,
+        ),
         "-c:a",
         "libopus",
         *archive_audio_encode_args(archive.audio),
@@ -1127,6 +1434,7 @@ def qcut_video_command(
     start: float,
     length: float,
     archive: ArchiveEncodeProfile,
+    target_options: Mapping[str, Any] | None = None,
 ) -> list[str]:
     dest.parent.mkdir(parents=True, exist_ok=True)
     decoder_args = archive_decoder_args(source)
@@ -1167,7 +1475,11 @@ def qcut_video_command(
         "0:a?",
         "-map_metadata",
         "0",
-        *archive_video_encode_args(archive, hardware_frames=hardware_frames),
+        *archive_video_encode_args(
+            archive,
+            target_options=target_options,
+            hardware_frames=hardware_frames,
+        ),
         "-c:a",
         "libopus",
         *archive_audio_encode_args(archive.audio),
@@ -1221,6 +1533,7 @@ def run_encode_item(
     source_artifacts_source: Path | None = None,
     source_artifacts_profile: dict[str, Any] | None = None,
     source_artifacts_sidecars: list[dict[str, Any]] | None = None,
+    source_artifacts_target_output: Mapping[str, Any] | None = None,
     on_start: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     with encode_semaphore:
@@ -1257,6 +1570,7 @@ def run_encode_item(
             encode_command=result["command"],
             encode_profile=source_artifacts_profile,
             source_sidecars=source_artifacts_sidecars,
+            target_output=source_artifacts_target_output,
         )
     payload["bytes"] = output_path.stat().st_size if output_path.exists() else 0
     if output_path.exists():
@@ -1296,6 +1610,7 @@ def run_batch(
     validate_archive: ArchiveEncodeProfile | None = None,
     source_artifacts: bool = False,
     source_artifacts_profile: dict[str, Any] | None = None,
+    source_artifacts_target_outputs: Mapping[str, Mapping[str, Any]] | None = None,
     source_artifacts_sidecars: Mapping[str, list[dict[str, Any]]] | None = None,
     container_metadata: Mapping[str, dict[str, Any]] | None = None,
     container_metadata_required: bool = True,
@@ -1315,7 +1630,8 @@ def run_batch(
             )
             cmd = command_builder(source, dest, metadata)
             futures[
-                pool.submit(
+                submit_with_job_context(
+                    pool,
                     run_encode_item,
                     cmd,
                     output_path=dest,
@@ -1327,6 +1643,13 @@ def run_batch(
                         source_artifacts_sidecars.get(rel_path, [])
                         if source_artifacts_sidecars
                         else []
+                    ),
+                    source_artifacts_target_output=(
+                        source_artifacts_target_outputs.get(
+                            dest.relative_to(output_root).as_posix()
+                        )
+                        if source_artifacts_target_outputs
+                        else None
                     ),
                 )
             ] = source
@@ -1490,9 +1813,10 @@ def run_qcut_video(
     review_dir: Path,
     *,
     archive: ArchiveEncodeProfile,
+    target_options: Mapping[str, Any] | None,
     dry_run: bool,
     review_plan: dict[str, Any] | None = None,
-    clip_plan: ReviewClipPlanConfig | None = None,
+    clip_plan: ReviewClipIntent | None = None,
     max_parallel_encodes: int | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
@@ -1501,15 +1825,15 @@ def run_qcut_video(
         return {"status": "skipped", "reason": "no video sources"}
     work_dir = review_dir / ".qcut_work" / "video"
     work_dir.mkdir(parents=True, exist_ok=True)
-    resolved_clip_plan = clip_plan or ReviewClipPlanConfig()
+    resolved_clip_plan = resolved_review_clip_plan(clip_plan)
     plan = (
         normalize_supplied_review_plan(review_plan, input_dir=input_dir)
         if review_plan is not None
         else plan_review_clips(
             sources,
-            target_sec=resolved_clip_plan.target_seconds,
-            min_sec=resolved_clip_plan.min_seconds,
-            max_sec=resolved_clip_plan.max_seconds,
+            target_sec=int(resolved_clip_plan.target_seconds or QCUT_TARGET_SECONDS),
+            min_sec=int(resolved_clip_plan.min_seconds or QCUT_MIN_SECONDS),
+            max_sec=int(resolved_clip_plan.max_seconds or QCUT_MAX_SECONDS),
         )
     )
     clip_outputs: list[Path] = []
@@ -1576,6 +1900,7 @@ def run_qcut_video(
             start=float(clip["start"]),
             length=float(clip["length"]),
             archive=archive,
+            target_options=target_options,
         )
         mark_started(output)
         try:
@@ -1598,7 +1923,7 @@ def run_qcut_video(
         for clip in plan["clips"]:
             output = work_dir / f"clip{int(clip['index']):03d}{archive_container_suffix(archive)}"
             clip_outputs.append(output)
-            futures[pool.submit(encode_clip, clip)] = clip
+            futures[submit_with_job_context(pool, encode_clip, clip)] = clip
         for future in as_completed(futures):
             try:
                 item = future.result()
@@ -1661,7 +1986,7 @@ def run_audio_review(
     archive: ArchiveEncodeProfile,
     dry_run: bool,
     review_plan: dict[str, Any] | None = None,
-    clip_plan: ReviewClipPlanConfig | None = None,
+    clip_plan: ReviewClipIntent | None = None,
     max_parallel_encodes: int | None = None,
 ) -> dict[str, Any]:
     sources = iter_files(input_dir, AUDIO_EXTENSIONS)
@@ -1673,15 +1998,15 @@ def run_audio_review(
         return {"status": "skipped", "reason": "no audio sources"}
     work_dir = review_dir / ".qcut_work" / "audio"
     work_dir.mkdir(parents=True, exist_ok=True)
-    resolved_clip_plan = clip_plan or ReviewClipPlanConfig()
+    resolved_clip_plan = resolved_review_clip_plan(clip_plan)
     plan = (
         normalize_supplied_review_plan(review_plan, input_dir=input_dir)
         if review_plan is not None
         else plan_review_clips(
             sources,
-            target_sec=resolved_clip_plan.target_seconds,
-            min_sec=resolved_clip_plan.min_seconds,
-            max_sec=resolved_clip_plan.max_seconds,
+            target_sec=int(resolved_clip_plan.target_seconds or QCUT_TARGET_SECONDS),
+            min_sec=int(resolved_clip_plan.min_seconds or QCUT_MIN_SECONDS),
+            max_sec=int(resolved_clip_plan.max_seconds or QCUT_MAX_SECONDS),
         )
     )
     clip_outputs: list[Path] = []
@@ -1701,7 +2026,8 @@ def run_audio_review(
                 archive=archive,
             )
             futures[
-                pool.submit(
+                submit_with_job_context(
+                    pool,
                     run_encode_item,
                     cmd,
                     output_path=output,
@@ -1737,110 +2063,467 @@ def run_audio_review(
     return result
 
 
-def run_job(job_id: str, req: JobRequest) -> None:
-    archive_profile = (
-        req.encode_profile.archive if req.encode_profile is not None else ArchiveEncodeProfile()
+def _target_execution_evidence(request: TargetJobRequest) -> TargetExecutionEvidence:
+    return TargetExecutionEvidence(
+        target=target_contract(),
+        operation=operation_contract(request.plan.operation_id),
+        effective_intent=request.plan.effective_intent,
+        effective_target_options=request.plan.effective_target_options,
+        tools=(
+            ExecutionToolEvidence(
+                name="ffmpeg",
+                version=_command_version("ffmpeg", "-version"),
+            ),
+            ExecutionToolEvidence(
+                name="nvidia-driver",
+                version=_command_version(
+                    "nvidia-smi",
+                    "--query-gpu=driver_version",
+                    "--format=csv,noheader",
+                ),
+            ),
+        ),
     )
-    encode_profile_dump = (
-        req.encode_profile.server_payload() if req.encode_profile is not None else None
-    )
-    max_parallel_encodes = resolve_max_parallel_encodes(req.max_parallel_encodes)
-    status: dict[str, Any] = {
-        "job_id": job_id,
-        "state": "running",
-        "profile": req.profile,
-        "encode_profile": encode_profile_dump,
-        "max_parallel_encodes": max_parallel_encodes,
-        "tasks": req.tasks,
-        "started_at": utc_timestamp_now(),
-        "input_dir": str(req.input_dir),
-        "archive_dir": str(req.archive_dir),
-        "review_dir": str(req.review_dir) if req.review_dir is not None else None,
-        "items": {},
+
+
+def _input_paths(request: TargetJobRequest) -> dict[str, Path]:
+    return {
+        artifact.id: workspace_artifact_path(
+            DATA_DIR,
+            "input",
+            request.job_id,
+            artifact.path,
+        )
+        for artifact in request.plan.inputs
     }
+
+
+def _container_metadata_by_path(
+    intent: OperationIntent,
+    request: TargetJobRequest,
+) -> dict[str, dict[str, Any]]:
+    by_id = {artifact.id: artifact for artifact in request.plan.inputs}
+    return {
+        by_id[artifact_id].path: dict(metadata)
+        for artifact_id, metadata in intent.container_metadata.items()
+    }
+
+
+def _source_sidecars_by_path(
+    intent: OperationIntent,
+    request: TargetJobRequest,
+) -> dict[str, list[dict[str, Any]]]:
+    by_id = {artifact.id: artifact for artifact in request.plan.inputs}
+    paths = _input_paths(request)
+    result: dict[str, list[dict[str, Any]]] = {}
+    for source_id, sidecars in intent.source_artifact_sidecars.items():
+        result[by_id[source_id].path] = [
+            {
+                "id": sidecar.sidecar_id,
+                "format": sidecar.format,
+                "path": str(paths[sidecar.artifact_id]),
+                "arcname": sidecar.arcname,
+                "source_rel_path": sidecar.source_rel_path,
+            }
+            for sidecar in sidecars
+        ]
+    return result
+
+
+def _expanded_review_plan(
+    plan: dict[str, Any] | None,
+    request: TargetJobRequest,
+) -> dict[str, Any] | None:
+    if plan is None:
+        return None
+    paths = _input_paths(request)
+    expanded = json.loads(json.dumps(plan))
+    for file_info in expanded.get("files") or []:
+        artifact_id = str(file_info.pop("artifact_id", ""))
+        if artifact_id not in paths:
+            raise RuntimeError(f"review plan references unknown input artifact: {artifact_id}")
+        file_info["path"] = str(paths[artifact_id])
+    for clip in expanded.get("clips") or []:
+        artifact_id = str(clip.pop("source_artifact_id", ""))
+        if artifact_id not in paths:
+            raise RuntimeError(f"review clip references unknown input artifact: {artifact_id}")
+        clip["source"] = str(paths[artifact_id])
+    return cast(dict[str, Any], expanded)
+
+
+def _portable_review_plan(plan: object, request: TargetJobRequest) -> dict[str, Any]:
+    if not isinstance(plan, dict):
+        raise RuntimeError("review operation did not publish its plan")
+    input_paths = _input_paths(request)
+    artifact_by_path = {
+        str(path.resolve()): artifact_id for artifact_id, path in input_paths.items()
+    }
+    portable = json.loads(json.dumps(plan))
+    for file_info in portable.get("files") or []:
+        source = str(Path(str(file_info.pop("path", ""))).resolve())
+        try:
+            file_info["artifact_id"] = artifact_by_path[source]
+        except KeyError as exc:
+            raise RuntimeError(f"review plan file is not a declared input: {source}") from exc
+    for clip in portable.get("clips") or []:
+        source = str(Path(str(clip.pop("source", ""))).resolve())
+        try:
+            clip["source_artifact_id"] = artifact_by_path[source]
+        except KeyError as exc:
+            raise RuntimeError(f"review plan clip is not a declared input: {source}") from exc
+    return cast(dict[str, Any], portable)
+
+
+def _publish_review_plan_fixture(
+    result: object,
+    request: TargetJobRequest,
+    staging_root: Path,
+) -> None:
+    if request.plan.operation_id not in {VIDEO_REVIEW_OPERATION, AUDIO_REVIEW_OPERATION}:
+        return
+    if not isinstance(result, dict):
+        raise RuntimeError("review operation result is not an object")
+    destination = staging_root / ".munchy" / "review-plan.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(
+        canonical_json_bytes(_portable_review_plan(result.get("plan"), request))
+    )
+
+
+def _target_progress(
+    request: TargetJobRequest,
+    state: TargetJobState,
+    raw: Mapping[str, Any] | None = None,
+) -> TargetProgress:
+    source_total = sum(artifact.role == SOURCE_ROLE for artifact in request.plan.inputs)
+    source = raw or {}
+    if "clips_total" in source:
+        total = int(source.get("clips_total") or 0)
+        completed = int(source.get("clips_done") or 0)
+    else:
+        total = source_total
+        completed = source_total if state == "succeeded" else 0
+    return TargetProgress(
+        phase=str(source.get("phase") or state),
+        completed=completed,
+        total=total,
+    )
+
+
+def _output_role(operation_id: str) -> str:
+    return {
+        VIDEO_ARCHIVE_OPERATION: VIDEO_ARCHIVE_ROLE,
+        VIDEO_REVIEW_OPERATION: VIDEO_REVIEW_ROLE,
+        AUDIO_REVIEW_OPERATION: AUDIO_REVIEW_ROLE,
+    }[operation_id]
+
+
+def _output_artifact_id(relative_path: str) -> str:
+    return f"output-{hashlib.sha256(relative_path.encode()).hexdigest()[:24]}"
+
+
+def _archive_output_derivation(
+    request: TargetJobRequest,
+    relative_path: str,
+    role: str,
+) -> tuple[str, ...]:
+    intent = validate_operation_intent(
+        request.plan.operation_id,
+        request.plan.effective_intent,
+    )
+    primary_path = relative_path.removesuffix(SOURCE_ARTIFACTS_SUFFIX)
+    matches = [
+        artifact
+        for artifact in request.plan.inputs
+        if artifact.role == SOURCE_ROLE
+        and PurePosixPath(artifact.path)
+        .with_suffix(archive_container_suffix(intent.archive))
+        .as_posix()
+        == primary_path
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"archive output does not identify exactly one source: {relative_path}")
+    derived_from = [matches[0].id]
+    if role == SOURCE_ARTIFACTS_ROLE:
+        derived_from.extend(
+            sidecar.artifact_id
+            for sidecar in intent.source_artifact_sidecars.get(matches[0].id, ())
+        )
+    return tuple(sorted(derived_from))
+
+
+def _output_derivation(
+    request: TargetJobRequest,
+    relative_path: str,
+    role: str,
+) -> tuple[str, ...]:
+    if request.plan.operation_id == VIDEO_ARCHIVE_OPERATION:
+        return _archive_output_derivation(request, relative_path, role)
+    return tuple(artifact.id for artifact in request.plan.inputs if artifact.role == SOURCE_ROLE)
+
+
+def _source_artifact_target_outputs(
+    request: TargetJobRequest,
+) -> dict[str, dict[str, Any]]:
+    intent = validate_operation_intent(
+        request.plan.operation_id,
+        request.plan.effective_intent,
+    )
+    result: dict[str, dict[str, Any]] = {}
+    for source in request.plan.inputs:
+        if source.role != SOURCE_ROLE:
+            continue
+        relative = (
+            PurePosixPath(source.path)
+            .with_suffix(archive_container_suffix(intent.archive))
+            .as_posix()
+        )
+        result[relative] = {
+            "id": _output_artifact_id(relative),
+            "role": VIDEO_ARCHIVE_ROLE,
+            "path": relative,
+            "derived_from": list(_archive_output_derivation(request, relative, VIDEO_ARCHIVE_ROLE)),
+        }
+    return result
+
+
+def _publish_outputs(
+    request: TargetJobRequest,
+    staging_root: Path,
+) -> tuple[Artifact, ...]:
+    outputs: list[Artifact] = []
+    for source in sorted(path for path in staging_root.rglob("*") if path.is_file()):
+        relative = source.relative_to(staging_root).as_posix()
+        role = (
+            REVIEW_PLAN_ROLE
+            if relative == ".munchy/review-plan.json"
+            else (
+                SOURCE_ARTIFACTS_ROLE
+                if source.name.endswith(SOURCE_ARTIFACTS_SUFFIX)
+                else _output_role(request.plan.operation_id)
+            )
+        )
+        artifact = Artifact(
+            id=_output_artifact_id(relative),
+            role=role,
+            path=relative,
+            bytes=source.stat().st_size,
+            sha256=workspace_file_sha256(source),
+            derived_from=_output_derivation(request, relative, role),
+        )
+        destination = workspace_artifact_path(
+            DATA_DIR,
+            "output",
+            request.job_id,
+            artifact.path,
+        )
+        publish_file_atomically(source, destination)
+        outputs.append(artifact)
+    result = tuple(outputs)
+    validate_artifacts_against_operation(
+        operation_contract(request.plan.operation_id),
+        inputs=request.plan.inputs,
+        outputs=result,
+    )
+    verify_artifacts(DATA_DIR, "output", request.job_id, result)
+    return result
+
+
+def run_job(job_id: str, request: TargetJobRequest) -> None:
+    context_token = current_job_id.set(job_id)
+    job_cancel_event(job_id).clear()
+    started_at = utc_timestamp_now()
+    status = status_contract(request, state="running", started_at=started_at)
     write_status(job_id, status)
     status_lock = threading.Lock()
 
-    def update_task_progress(task: str, progress: dict[str, Any]) -> None:
+    def update_progress(progress: dict[str, Any]) -> None:
+        nonlocal status
         with status_lock:
-            existing = status.setdefault("items", {}).get(task)
-            item = dict(existing) if isinstance(existing, dict) else {}
-            item["status"] = "running"
-            item["progress"] = progress
-            status["items"][task] = item
+            status = status_contract(
+                request,
+                state="running",
+                progress=_target_progress(request, "running", progress),
+                started_at=started_at,
+            )
             write_status(job_id, status)
 
     try:
-        video_sources = iter_files(req.input_dir, VIDEO_EXTENSIONS)
-        if "archive_video" in req.tasks:
-            status["items"]["archive_video"] = run_batch(
+        preflight = preflight_target(
+            TargetPreflightRequest(
+                operation_id=request.plan.operation_id,
+                operation_contract_sha256=request.plan.operation_contract_sha256,
+                workspace_id=request.plan.workspace_id,
+                inputs=request.plan.inputs,
+                intent=request.plan.intent,
+                target_options=request.plan.target_options,
+            )
+        )
+        if preflight.plan != request.plan:
+            raise RuntimeError("job plan does not match target preflight")
+        intent = validate_operation_intent(
+            request.plan.operation_id,
+            request.plan.effective_intent,
+        )
+        target_options = dict(request.plan.effective_target_options)
+        archive_profile = intent.archive
+        max_parallel_encodes = resolve_max_parallel_encodes(
+            cast(int | None, target_options.get("max_parallel_encodes"))
+        )
+        input_root = workspace_area_root(DATA_DIR, "input", request.job_id)
+        staging_root = status_path(job_id).parent / f"attempt-{request.attempt}-output"
+        shutil.rmtree(staging_root, ignore_errors=True)
+        staging_root.mkdir(parents=True)
+        output_root = workspace_area_root(DATA_DIR, "output", request.job_id)
+        shutil.rmtree(output_root, ignore_errors=True)
+        source_artifacts_profile = {
+            "archive": archive_profile.model_dump(mode="json", exclude_none=True),
+            "target_evidence": {
+                "protocol": request.protocol,
+                "job_id": request.job_id,
+                "attempt": request.attempt,
+                "request_sha256": request.request_sha256,
+                "plan_sha256": request.plan.plan_sha256,
+                "target": target_contract().model_dump(
+                    mode="json", by_alias=True, exclude_none=True
+                ),
+                "operation": operation_contract(request.plan.operation_id).model_dump(
+                    mode="json", by_alias=True, exclude_none=True
+                ),
+                "effective_intent": request.plan.effective_intent,
+                "effective_target_options": request.plan.effective_target_options,
+            },
+            "effective_target_options": target_options,
+        }
+        if intent.source is not None:
+            source_artifacts_profile["source"] = intent.source.model_dump(
+                mode="json", exclude_none=True
+            )
+        video_sources = iter_files(input_root, VIDEO_EXTENSIONS)
+        review_plan = _expanded_review_plan(
+            cast(dict[str, Any] | None, getattr(intent, "review_plan", None)),
+            request,
+        )
+        result: object
+        if request.plan.operation_id == VIDEO_ARCHIVE_OPERATION:
+            result = run_batch(
                 sources=video_sources,
-                input_root=req.input_dir,
-                output_root=req.archive_dir,
+                input_root=input_root,
+                output_root=staging_root,
                 suffix=archive_container_suffix(archive_profile),
                 command_builder=lambda source, dest, metadata: av1_archive_command(
                     source,
                     dest,
                     archive_profile,
+                    target_options=target_options,
                     metadata=metadata,
                 ),
                 label="archive video encode",
-                dry_run=req.dry_run,
+                dry_run=False,
                 validate_archive=archive_profile,
                 source_artifacts=True,
-                source_artifacts_profile=encode_profile_dump,
-                source_artifacts_sidecars=req.source_artifacts_sidecars,
-                container_metadata=req.container_metadata,
-                container_metadata_required=req.container_metadata_required,
+                source_artifacts_profile=source_artifacts_profile,
+                source_artifacts_target_outputs=_source_artifact_target_outputs(request),
+                source_artifacts_sidecars=_source_sidecars_by_path(intent, request),
+                container_metadata=_container_metadata_by_path(intent, request),
+                container_metadata_required=intent.container_metadata_required,
                 max_parallel_encodes=max_parallel_encodes,
             )
-            write_status(job_id, status)
-        if "qcut_video" in req.tasks:
-            if req.review_dir is None:
-                raise RuntimeError("qcut_video requires review_dir")
-            status["items"]["qcut_video"] = run_qcut_video(
-                req.input_dir,
-                req.review_dir / "video",
+        elif request.plan.operation_id == VIDEO_REVIEW_OPERATION:
+            result = run_qcut_video(
+                input_root,
+                staging_root,
                 archive=archive_profile,
-                dry_run=req.dry_run,
-                review_plan=req.review_plans.get("qcut_video"),
-                clip_plan=req.review_clip_plan,
+                target_options=target_options,
+                dry_run=False,
+                review_plan=review_plan,
+                clip_plan=cast(ReviewClipIntent | None, getattr(intent, "review_clip", None)),
                 max_parallel_encodes=max_parallel_encodes,
-                progress_callback=lambda progress: update_task_progress(
-                    "qcut_video",
-                    progress,
+                progress_callback=update_progress,
+            )
+        elif request.plan.operation_id == AUDIO_REVIEW_OPERATION:
+            result = run_audio_review(
+                input_root,
+                staging_root,
+                archive=archive_profile,
+                dry_run=False,
+                review_plan=review_plan,
+                clip_plan=cast(ReviewClipIntent | None, getattr(intent, "review_clip", None)),
+                max_parallel_encodes=max_parallel_encodes,
+            )
+        else:  # pragma: no cover - preflight owns the closed operation set
+            raise RuntimeError(f"unsupported operation: {request.plan.operation_id}")
+        raise_if_target_job_canceled()
+        _publish_review_plan_fixture(result, request, staging_root)
+        outputs = _publish_outputs(request, staging_root)
+        terminal_progress = dict(result.get("progress") or {}) if isinstance(result, dict) else {}
+        write_status(
+            job_id,
+            status_contract(
+                request,
+                state="succeeded",
+                progress=_target_progress(request, "succeeded", terminal_progress),
+                outputs=outputs,
+                execution_evidence=_target_execution_evidence(request),
+                started_at=started_at,
+                finished_at=utc_timestamp_now(),
+            ),
+        )
+    except TargetJobCanceled as exc:
+        log.info("target job %s canceled", job_id)
+        write_status(
+            job_id,
+            status_contract(
+                request,
+                state="canceled",
+                execution_evidence=_target_execution_evidence(request),
+                failure=TargetFailure(
+                    code="job_canceled",
+                    message=str(exc),
+                    retryable=False,
                 ),
-            )
-            write_status(job_id, status)
-        if "audio_review" in req.tasks:
-            if req.review_dir is None:
-                raise RuntimeError("audio_review requires review_dir")
-            status["items"]["audio_review"] = run_audio_review(
-                req.input_dir,
-                req.review_dir / "audio",
-                archive=archive_profile,
-                dry_run=req.dry_run,
-                review_plan=req.review_plans.get("audio_review"),
-                clip_plan=req.review_clip_plan,
-                max_parallel_encodes=max_parallel_encodes,
-            )
-            write_status(job_id, status)
-        status["state"] = "succeeded"
-        status["finished_at"] = utc_timestamp_now()
-        write_status(job_id, status)
+                started_at=started_at,
+                finished_at=utc_timestamp_now(),
+            ),
+        )
     except InputVanishedDuringJob as exc:
         log.warning("job %s input vanished while finishing: %s", job_id, exc)
-        status["state"] = "failed"
-        status["error_code"] = "input_vanished"
-        status["error"] = str(exc)
-        status["finished_at"] = utc_timestamp_now()
-        write_status(job_id, status)
+        write_status(
+            job_id,
+            status_contract(
+                request,
+                state="failed",
+                execution_evidence=_target_execution_evidence(request),
+                failure=TargetFailure(
+                    code="input_vanished",
+                    message=str(exc),
+                    retryable=True,
+                ),
+                started_at=started_at,
+                finished_at=utc_timestamp_now(),
+            ),
+        )
     except Exception as exc:
         log.exception("job %s failed", job_id)
-        status["state"] = "failed"
-        status["error"] = str(exc)
-        status["finished_at"] = utc_timestamp_now()
-        write_status(job_id, status)
+        write_status(
+            job_id,
+            status_contract(
+                request,
+                state="failed",
+                execution_evidence=_target_execution_evidence(request),
+                failure=TargetFailure(
+                    code="target_execution_failed",
+                    message=str(exc),
+                    retryable=False,
+                ),
+                started_at=started_at,
+                finished_at=utc_timestamp_now(),
+            ),
+        )
+    finally:
+        current_job_id.reset(context_token)
+        with processes_lock:
+            active_processes.pop(job_id, None)
 
 
 @app.get("/health/live")
@@ -1850,8 +2533,14 @@ def health_live() -> dict[str, str]:
 
 @app.get("/health/ready")
 def health_ready() -> dict[str, Any]:
+    contract = target_contract()
     return {
         "status": "ok",
+        "implementation_id": contract.implementation_id,
+        "protocol": contract.protocol,
+        "target_contract_sha256": contract.contract_sha256,
+        "implementation_version": contract.implementation_version,
+        "source_revision": contract.source_revision,
         "data_dir": str(DATA_DIR),
         "max_parallel_encodes": MAX_PARALLEL_ENCODES,
         "video_decode_mode": VIDEO_DECODE_MODE,
@@ -1861,44 +2550,106 @@ def health_ready() -> dict[str, Any]:
     }
 
 
-@app.post("/v1/jobs", status_code=202)
-def create_job(req: JobRequest, background_tasks: BackgroundTasks) -> dict[str, Any]:
-    req.input_dir = ensure_under_data_dir(req.input_dir, name="input_dir")
-    req.archive_dir = ensure_under_data_dir(req.archive_dir, name="archive_dir")
-    if req.review_dir is not None:
-        req.review_dir = ensure_under_data_dir(req.review_dir, name="review_dir")
-    if not req.input_dir.is_dir():
-        raise HTTPException(status_code=400, detail=f"input_dir is missing: {req.input_dir}")
-    job_id = req.job_id or uuid.uuid4().hex
-    with jobs_lock:
-        existing = jobs.get(job_id)
-    if existing and existing.get("state") in {"queued", "running"}:
-        raise HTTPException(status_code=409, detail=f"job already active: {job_id}")
-    initial = {
-        "job_id": job_id,
-        "state": "queued",
-        "queued_at": utc_timestamp_now(),
-        "profile": req.profile,
-        "encode_profile": req.encode_profile.server_payload()
-        if req.encode_profile is not None
-        else None,
-        "tasks": req.tasks,
-    }
+@app.get("/v1/target", response_model=TargetContract)
+def get_target() -> TargetContract:
+    return target_contract()
+
+
+@app.post("/v1/preflight", response_model=TargetPreflightResponse)
+def preflight(req: TargetPreflightRequest) -> TargetPreflightResponse:
+    try:
+        return preflight_target(req)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.put("/v1/jobs/{job_id}", response_model=TargetJobStatus, status_code=202)
+def put_job(
+    job_id: str,
+    req: TargetJobRequest,
+    background_tasks: BackgroundTasks,
+) -> TargetJobStatus:
+    if job_id != req.job_id:
+        raise HTTPException(status_code=409, detail="job path ID does not match request job_id")
+    try:
+        preflight = preflight_target(
+            TargetPreflightRequest(
+                operation_id=req.plan.operation_id,
+                operation_contract_sha256=req.plan.operation_contract_sha256,
+                workspace_id=req.plan.workspace_id,
+                inputs=req.plan.inputs,
+                intent=req.plan.intent,
+                target_options=req.plan.target_options,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if preflight.plan != req.plan:
+        raise HTTPException(status_code=409, detail="request plan does not match target preflight")
+    try:
+        existing = TargetJobStatus.model_validate(load_status(job_id))
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        existing = None
+    if existing is not None:
+        if existing.request_sha256 == req.request_sha256:
+            return existing
+        resumable = (
+            existing.state == "interrupted"
+            and req.attempt == existing.attempt + 1
+            and req.plan.plan_sha256 == existing.plan_sha256
+        )
+        if not resumable:
+            raise HTTPException(
+                status_code=409,
+                detail="job ID is bound to an immutable request or terminal attempt",
+            )
+    elif req.attempt != 1:
+        raise HTTPException(status_code=409, detail="a new job must begin with attempt 1")
+    write_request(req)
+    initial = status_contract(req, state="queued")
     write_status(job_id, initial)
-    req.job_id = job_id
     background_tasks.add_task(run_job, job_id, req)
-    return initial
+    return TargetJobStatus.model_validate(initial)
 
 
-@app.get("/v1/jobs/{job_id}")
-def get_job(job_id: str) -> dict[str, Any]:
-    return load_status(job_id)
+@app.get("/v1/jobs/{job_id}", response_model=TargetJobStatus)
+def get_job(job_id: str) -> TargetJobStatus:
+    return TargetJobStatus.model_validate(load_status(job_id))
+
+
+@app.post("/v1/jobs/{job_id}/cancel", response_model=TargetJobStatus, status_code=202)
+def cancel_job(job_id: str, req: TargetCancelRequest) -> TargetJobStatus:
+    status = load_status(job_id)
+    if status.get("state") in {"succeeded", "failed", "canceled"}:
+        return TargetJobStatus.model_validate(status)
+    job_cancel_event(job_id).set()
+    if status.get("state") == "interrupted":
+        request = load_request(job_id)
+        status = status_contract(
+            request,
+            state="canceled",
+            execution_evidence=_target_execution_evidence(request),
+            failure=TargetFailure(code="job_canceled", message=req.reason, retryable=False),
+            started_at=status.get("started_at"),
+            finished_at=utc_timestamp_now(),
+        )
+    else:
+        status["state"] = "canceling"
+        status["progress"] = {**dict(status.get("progress") or {}), "phase": "canceling"}
+    write_status(job_id, status)
+    with processes_lock:
+        processes = tuple(active_processes.get(job_id, ()))
+    for process in processes:
+        stop_process(process)
+    return TargetJobStatus.model_validate(load_status(job_id))
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="munchy-av1-nvenc",
-        description="Run the Munchy NVIDIA AV1 execution target.",
+        description="Run the Munchy NVIDIA AV1 transform target.",
     )
     parser.add_argument(
         "--version",

@@ -577,57 +577,59 @@ def grouped_task_union(groups: dict[str, dict[str, Any]]) -> list[domain_models.
     return tasks
 
 
-def gpu_group_job_id(job_id: str, group_name: str) -> str:
+def target_group_job_id(job_id: str, group_name: str) -> str:
     digest = hashlib.sha256(f"{job_id}/{group_name}".encode()).hexdigest()[:10]
     safe_group = group_name[:48]
     suffix = f"__{safe_group}__{digest}"
     return f"{job_id[: max(1, 180 - len(suffix))]}{suffix}"
 
 
-def gpu_eager_batch_job_id(job_id: str, batch_id: str) -> str:
+def target_eager_batch_job_id(job_id: str, batch_id: str) -> str:
     digest = hashlib.sha256(f"{job_id}/eager/{batch_id}".encode()).hexdigest()[:10]
     safe_batch = batch_id[:48]
     suffix = f"__eager__{safe_batch}__{digest}"
     return f"{job_id[: max(1, 180 - len(suffix))]}{suffix}"
 
 
-def gpu_job_work_roots(job: dict[str, Any]) -> list[Path]:
+def target_job_work_roots(job: dict[str, Any]) -> list[Path]:
     job_id = str(job["job_id"])
     roots: list[Path] = []
     seen: set[Path] = set()
 
-    def add_gpu_job_root(gpu_job_id: str) -> None:
-        if not gpu_job_id:
+    def add_target_job_root(target_job_id: str) -> None:
+        if not target_job_id:
             return
-        root = runtime_config.GPU_RUNTIME_DIR / "jobs" / gpu_job_id
+        root = runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / target_job_id
         if root in seen:
             return
         seen.add(root)
         roots.append(root)
 
-    add_gpu_job_root(job_id)
-    jobs_root = runtime_config.GPU_RUNTIME_DIR / "jobs"
+    add_target_job_root(job_id)
+    jobs_root = runtime_config.TRANSFORM_RUNTIME_DIR / "jobs"
     if jobs_root.exists():
         for root in jobs_root.iterdir():
             if root.name.startswith(f"{job_id}__"):
-                add_gpu_job_root(root.name)
+                add_target_job_root(root.name)
     groups = job.get("groups")
     if isinstance(groups, dict):
         for group_name in groups:
-            add_gpu_job_root(gpu_group_job_id(job_id, str(group_name)))
+            add_target_job_root(target_group_job_id(job_id, str(group_name)))
     eager = job.get("eager_archive")
     batches = eager.get("batches") if isinstance(eager, dict) else None
     if isinstance(batches, dict):
         for batch_key, batch in batches.items():
             if not isinstance(batch, dict):
                 continue
-            gpu_job_id = str(batch.get("gpu_job_id") or "")
-            add_gpu_job_root(gpu_job_id)
+            target_job_id = str(batch.get("target_job_id") or "")
+            add_target_job_root(target_job_id)
             payload = batch.get("payload")
             if isinstance(payload, dict):
-                add_gpu_job_root(str(payload.get("job_id") or ""))
+                request = payload.get("request")
+                if isinstance(request, dict):
+                    add_target_job_root(str(request.get("job_id") or ""))
             batch_id = str(batch.get("batch_id") or batch_key)
-            add_gpu_job_root(gpu_eager_batch_job_id(job_id, batch_id))
+            add_target_job_root(target_eager_batch_job_id(job_id, batch_id))
     return roots
 
 
@@ -669,9 +671,9 @@ def eager_archive_executor(group_config: dict[str, Any]) -> str | None:
     )
     tasks = set(str(task) for task in group_config.get("tasks") or [])
     if output_mode == "video" and tasks == {"archive_video"}:
-        return "gpu"
+        return "transform_target"
     if output_mode == "audio" and tasks == {"archive_audio"}:
-        return "local_audio"
+        return "transform_target"
     return None
 
 
@@ -1257,7 +1259,7 @@ def projection_metadata_satisfies_config(
     return True
 
 
-def container_metadata_for_gpu_payload(
+def container_metadata_for_target_payload(
     job: dict[str, Any],
     upload: dict[str, Any],
     file_states: list[dict[str, Any]],
@@ -1267,7 +1269,7 @@ def container_metadata_for_gpu_payload(
     tasks: Sequence[str],
     source_paths_by_path: Mapping[str, Path] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
-    if not gpu_tasks_require_container_metadata(tasks, group_config):
+    if not target_tasks_require_container_metadata(tasks, group_config):
         return {}, False
     metadata_by_rel_path: dict[str, dict[str, Any]] = {}
     changed = False
@@ -1292,12 +1294,12 @@ def container_metadata_for_gpu_payload(
     return metadata_by_rel_path, changed
 
 
-def gpu_tasks_require_container_metadata(
+def target_tasks_require_container_metadata(
     tasks: Sequence[str],
     group_config: dict[str, Any],
 ) -> bool:
-    return "archive_video" in {str(task) for task in tasks} and metadata_projection_enabled(
-        group_config
+    return bool({"archive_video", "archive_audio"} & {str(task) for task in tasks}) and (
+        metadata_projection_enabled(group_config)
     )
 
 

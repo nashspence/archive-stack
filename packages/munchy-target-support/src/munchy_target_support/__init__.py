@@ -1,1 +1,1 @@
-"""Shared support for Munchy execution targets and their coordinator."""
+"""Shared support for Munchy transform targets and their coordinator."""

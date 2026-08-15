@@ -115,8 +115,9 @@ class QcutPlannerTests(unittest.TestCase):
                         Path(tmp) / "input",
                         Path(tmp) / "review",
                         archive=None,
+                        target_options={},
                         dry_run=True,
-                        clip_plan=av1.ReviewClipPlanConfig(
+                        clip_plan=av1.ReviewClipIntent(
                             target_seconds=90,
                             min_seconds=4,
                             max_seconds=7,
@@ -148,8 +149,8 @@ class QcutPlannerTests(unittest.TestCase):
             def __exit__(self, *args: object) -> None:
                 return None
 
-            def submit(self, fn: object, clip: dict[str, object]) -> ImmediateFuture:
-                return ImmediateFuture(fn(clip))  # type: ignore[operator]
+            def submit(self, fn: object, *args: object, **kwargs: object) -> ImmediateFuture:
+                return ImmediateFuture(fn(*args, **kwargs))  # type: ignore[operator]
 
         original_max_parallel_encodes = av1.MAX_PARALLEL_ENCODES
         original_thread_pool_executor = av1.ThreadPoolExecutor
@@ -200,6 +201,7 @@ class QcutPlannerTests(unittest.TestCase):
                     Path(tmp) / "input",
                     Path(tmp) / "review",
                     archive=av1.ArchiveEncodeProfile(),
+                    target_options={},
                     dry_run=True,
                     max_parallel_encodes=2,
                 )

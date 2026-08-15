@@ -116,36 +116,46 @@ def storage_hint_group_configs(
     ]
 
 
-def storage_hint_has_gpu_work(hint: domain_models.InputUploadStorageHint) -> bool:
+def storage_hint_has_target_work(hint: domain_models.InputUploadStorageHint) -> bool:
     return any(
-        domain_models.tasks_require_gpu(group.tasks) for group in storage_hint_group_configs(hint)
+        domain_models.tasks_require_transform_target(group.tasks)
+        for group in storage_hint_group_configs(hint)
     )
 
 
 def storage_hint_scratch_extra_multiplier(hint: domain_models.InputUploadStorageHint) -> float:
-    if not storage_hint_has_gpu_work(hint):
+    if not storage_hint_has_target_work(hint):
         return 0.0
+    task_sets = [
+        {str(task) for task in group.tasks}
+        for group in storage_hint_group_configs(hint)
+        if group.tasks
+    ]
+    if task_sets and all(tasks == {"archive_audio"} for tasks in task_sets):
+        return runtime_config.EAGER_ARCHIVE_SCRATCH_MULTIPLIER
     if hint.workflow_mode == "review":
         return runtime_config.REVIEW_SCRATCH_EXTRA_MULTIPLIER
     if hint.workflow_mode == "collection_archive" and hint.handoff_destination != "riverhog":
         return runtime_config.BUFFERED_HANDOFF_SCRATCH_EXTRA_MULTIPLIER
-    return runtime_config.GPU_SCRATCH_MULTIPLIER
+    return runtime_config.TRANSFORM_SCRATCH_MULTIPLIER
 
 
-def gpu_input_copy_multiplier() -> float:
+def target_input_copy_multiplier() -> float:
     return (
         0.0
         if upload_service.path_device(runtime_config.TUSD_DIR)
-        == upload_service.path_device(runtime_config.GPU_RUNTIME_DIR)
+        == upload_service.path_device(runtime_config.TRANSFORM_RUNTIME_DIR)
         else 1.0
     )
 
 
-def gpu_scratch_required_bytes(total_bytes: int, hint: domain_models.InputUploadStorageHint) -> int:
+def target_scratch_required_bytes(
+    total_bytes: int, hint: domain_models.InputUploadStorageHint
+) -> int:
     multiplier = storage_hint_scratch_extra_multiplier(hint)
     if multiplier <= 0:
         return 0
-    return int(total_bytes * (gpu_input_copy_multiplier() + multiplier))
+    return int(total_bytes * (target_input_copy_multiplier() + multiplier))
 
 
 def storage_group_hint_for_path(
@@ -169,9 +179,11 @@ def storage_group_hint_for_path(
 
 
 def storage_group_hint_is_eager_archive_only(group: domain_models.StorageGroupHint) -> bool:
-    if domain_models.normalize_output_mode(str(group.output_mode or "video")) != "video":
-        return False
-    return set(str(task) for task in group.tasks) == {"archive_video"}
+    output_mode = domain_models.normalize_output_mode(str(group.output_mode or "video"))
+    tasks = set(str(task) for task in group.tasks)
+    return (output_mode == "video" and tasks == {"archive_video"}) or (
+        output_mode == "audio" and tasks == {"archive_audio"}
+    )
 
 
 def eager_archive_admission_bytes(
@@ -188,7 +200,7 @@ def eager_archive_admission_bytes(
     return sum(largest)
 
 
-def gpu_scratch_admission_required_bytes(
+def target_scratch_admission_required_bytes(
     files: Sequence[domain_models.PreflightInputFileSpec],
     hint: domain_models.InputUploadStorageHint,
 ) -> int:
@@ -200,24 +212,24 @@ def gpu_scratch_admission_required_bytes(
         or hint.handoff_destination != "riverhog"
         or hint.structured_routing
     ):
-        return gpu_scratch_required_bytes(sum(item.bytes for item in files), hint)
+        return target_scratch_required_bytes(sum(item.bytes for item in files), hint)
 
     eager_files: list[domain_models.PreflightInputFileSpec] = []
-    non_eager_gpu_bytes = 0
+    non_eager_target_bytes = 0
     for item in files:
         group = storage_group_hint_for_path(item.path, hint)
-        if not domain_models.tasks_require_gpu(group.tasks):
+        if not domain_models.tasks_require_transform_target(group.tasks):
             continue
         if storage_group_hint_is_eager_archive_only(group):
             eager_files.append(item)
         else:
-            non_eager_gpu_bytes += int(item.bytes)
+            non_eager_target_bytes += int(item.bytes)
 
     eager_required = int(
         eager_archive_admission_bytes(eager_files)
-        * (gpu_input_copy_multiplier() + runtime_config.EAGER_ARCHIVE_SCRATCH_MULTIPLIER)
+        * (target_input_copy_multiplier() + runtime_config.EAGER_ARCHIVE_SCRATCH_MULTIPLIER)
     )
-    non_eager_required = int(non_eager_gpu_bytes * (gpu_input_copy_multiplier() + multiplier))
+    non_eager_required = int(non_eager_target_bytes * (target_input_copy_multiplier() + multiplier))
     return eager_required + non_eager_required
 
 
@@ -242,11 +254,16 @@ def require_input_upload_capacity(
     total_bytes = sum(item.bytes for item in files)
     reserved_spool_bytes = sum(input_upload_remaining_bytes(upload) for upload in active_uploads)
     spool_required = reserved_spool_bytes + total_bytes
-    gpu_required = gpu_scratch_admission_required_bytes(files, storage_hint)
+    target_required = target_scratch_admission_required_bytes(files, storage_hint)
 
     requirements = [
         ("source upload spool", runtime_config.TUSD_DIR, spool_required, reserved_spool_bytes),
-        ("future gpu scratch", runtime_config.GPU_RUNTIME_DIR, gpu_required, 0),
+        (
+            "future transform-target scratch",
+            runtime_config.TRANSFORM_RUNTIME_DIR,
+            target_required,
+            0,
+        ),
     ]
     by_device: dict[int, dict[str, Any]] = {}
     for label, path, required, reserved in requirements:
