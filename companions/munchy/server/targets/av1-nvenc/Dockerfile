@@ -1,4 +1,4 @@
-FROM jdxcode/mise:2026.7.13@sha256:7fe9145156e33f95f7712632dbadb418592ed0f60fb46e5bcc8c113d372ad8a3 AS mise
+FROM jdxcode/mise:2026.8.3@sha256:92dbc3f2573926d8974e4641ad8449f16c323130b9f41c39aff19b7b2f500ef6 AS mise
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS locked-tools
 
@@ -12,7 +12,7 @@ RUN mise trust mise.toml \
     && test "$(/opt/riverhog-tools/bin/uv --version)" = "$(mise exec uv -- uv --version)"
 
 
-FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS ffmpeg-build
+FROM nvidia/cuda:13.3.1-devel-ubuntu24.04@sha256:4ff859525f99de5782aa73607ce24219b07dddd48d12b97c1c301d7e1cfb0a87 AS ffmpeg-build
 
 ARG SOURCE_DATE_EPOCH=0
 ARG FFMPEG_REF=8885116f4dbe10527d4e7a14dc691b07e3915d55
@@ -115,7 +115,7 @@ COPY packages/tus-transport packages/tus-transport
 RUN uv sync --frozen --package munchy-av1-nvenc-target --no-dev --no-editable
 
 
-FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3
+FROM nvidia/cuda:13.3.1-runtime-ubuntu24.04@sha256:63da350831208559df18c7b8f3e0d5d1c984eaa815cdde690aacd6606cd0cb11
 
 ARG SOURCE_REVISION=unknown
 ENV DEBIAN_FRONTEND=noninteractive \
