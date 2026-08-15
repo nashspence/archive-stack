@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import signal
 import sqlite3
 import stat
 import sys
@@ -335,6 +336,74 @@ def test_controlled_stop_does_not_replay_interrupted_custody(tmp_path: Path) -> 
     assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
 
 
+def test_process_signal_can_stop_while_heartbeat_samples_action_custody(
+    tmp_path: Path,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    runtime = ListenerRuntime(config, paths, discover=lambda: [])
+    settled = threading.Event()
+
+    def interrupt_heartbeat_sample() -> None:
+        # Python invokes a process-control signal handler on the interrupted
+        # main-thread stack. Model that exact re-entry while heartbeat holds
+        # the custody lock, without sending a real signal to the test runner.
+        with runtime._active_lock:
+            runtime.request_stop()
+        settled.set()
+
+    thread = threading.Thread(target=interrupt_heartbeat_sample, daemon=True)
+    thread.start()
+    thread.join(timeout=1)
+
+    assert settled.is_set()
+    assert runtime.stop_event.is_set()
+
+
+def test_shutdown_force_settles_an_action_that_ignores_termination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, mount, pid_file = _fixture(tmp_path)
+    action = Path(load_gogurt_actions(config.routes_file)[0].command[1])
+    action.write_text(
+        "from pathlib import Path\n"
+        "import os,signal,sys,time\n"
+        "signal.signal(signal.SIGTERM, lambda *_args: None)\n"
+        "Path(sys.argv[2]).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "while True:\n"
+        "    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(listener_module, "LISTENER_ACTION_TERMINATE_SECONDS", 0.1)
+    monkeypatch.setattr(listener_module, "LISTENER_ACTION_KILL_SECONDS", 0.5)
+    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            runtime.run()
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not pid_file.is_file() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert pid_file.is_file()
+    action_pid = int(pid_file.read_text(encoding="utf-8"))
+    try:
+        runtime.request_stop()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert failures == []
+        assert listener_module._process_is_running(action_pid) is False
+        assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
+    finally:
+        if listener_module._process_is_running(action_pid):
+            os.kill(action_pid, signal.SIGKILL)
+
+
 def test_listener_lock_prevents_concurrent_runtime_ownership(tmp_path: Path) -> None:
     path = tmp_path / "listener.lock"
     with ListenerLock(path):
@@ -575,6 +644,53 @@ def test_install_rejects_missing_static_action_before_registration(tmp_path: Pat
     assert adapter.register_calls == 0
     assert adapter.stop_calls == 0
     assert not paths.config_file.exists()
+
+
+def test_impossible_mount_executable_is_rejected_before_and_after_registration(
+    tmp_path: Path,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    config.routes_file.write_text(
+        "schema_version: 1\n"
+        "kind: gogurt.routes\n"
+        "routes:\n"
+        "  camera:\n"
+        "    command:\n"
+        '      - "{mount_point}"\n',
+        encoding="utf-8",
+    )
+    executable = tmp_path / "installed" / "gogurt"
+    executable.parent.mkdir()
+    executable.write_text("fixture", encoding="utf-8")
+    executable.chmod(0o755)
+    adapter = FakeAdapter()
+
+    with pytest.raises(ConfigError, match="cannot use .*mount_point.* as its executable"):
+        install_listener(
+            config.routes_file,
+            actions_dir=None,
+            executable=executable,
+            paths=paths,
+            adapter=adapter,
+            wait_for_health=False,
+        )
+    assert adapter.register_calls == 0
+
+    persisted = ListenerConfig(
+        executable=executable.resolve(),
+        routes_file=config.routes_file,
+        actions_dir=None,
+        marker_name=".gogurt",
+        interval_seconds=0.1,
+        state_dir=paths.state_dir,
+    )
+    persisted.write(paths.config_file)
+    runtime = ListenerRuntime(persisted, paths, discover=lambda: [])
+    runtime.store.create()
+    runtime.run_once()
+    heartbeat = json.loads(paths.heartbeat_file.read_text(encoding="utf-8"))
+    assert heartbeat["configuration"]["status"] == "failed"
+    assert "cannot use" in heartbeat["configuration"]["diagnostic"]
 
 
 def test_missing_installed_static_action_reports_failed_health_without_dispatch(
@@ -965,6 +1081,92 @@ def test_unhealthy_replacement_restores_proven_healthy_listener(
     assert healthy_checks == 2
 
 
+def test_interrupted_first_install_rolls_back_then_propagates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    executable = tmp_path / "installed" / "gogurt"
+    executable.parent.mkdir()
+    executable.write_text("fixture", encoding="utf-8")
+    executable.chmod(0o755)
+    adapter = FakeAdapter()
+
+    def interrupt_registration(_paths: ListenerPaths, _command: Sequence[str]) -> None:
+        adapter.register_calls += 1
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(adapter, "register", interrupt_registration)
+
+    with pytest.raises(KeyboardInterrupt):
+        install_listener(
+            config.routes_file,
+            actions_dir=None,
+            executable=executable,
+            paths=paths,
+            adapter=adapter,
+            wait_for_health=False,
+        )
+
+    assert adapter.unregister_calls == 1
+    assert adapter.installed is False
+    assert not paths.config_file.exists()
+
+
+def test_interrupted_replacement_restores_prior_health_then_propagates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    executable = tmp_path / "installed" / "gogurt"
+    executable.parent.mkdir()
+    executable.write_text("fixture", encoding="utf-8")
+    executable.chmod(0o755)
+    adapter = FakeAdapter()
+    install_listener(
+        config.routes_file,
+        actions_dir=None,
+        interval_seconds=0.1,
+        executable=executable,
+        paths=paths,
+        adapter=adapter,
+        wait_for_health=False,
+    )
+    previous_content = paths.config_file.read_bytes()
+    original_register = adapter.register
+    health_checks: list[frozenset[str]] = []
+
+    def interrupt_replacement(paths_value: ListenerPaths, command: Sequence[str]) -> None:
+        if adapter.register_calls == 1:
+            adapter.register_calls += 1
+            raise KeyboardInterrupt
+        original_register(paths_value, command)
+
+    def instant_health(expected: frozenset[str], **_kwargs: object) -> dict[str, object]:
+        health_checks.append(expected)
+        return {"health": sorted(expected)[0]}
+
+    monkeypatch.setattr(adapter, "register", interrupt_replacement)
+    monkeypatch.setattr(listener_module, "_wait_for_health", instant_health)
+
+    with pytest.raises(KeyboardInterrupt):
+        install_listener(
+            config.routes_file,
+            actions_dir=None,
+            interval_seconds=0.2,
+            executable=executable,
+            paths=paths,
+            adapter=adapter,
+            wait_for_health=False,
+        )
+
+    assert paths.config_file.read_bytes() == previous_content
+    assert adapter.installed is True
+    assert adapter.running is True
+    assert adapter.register_calls == 3
+    assert health_checks[-1] == frozenset({"healthy"})
+
+
 def test_global_route_failure_reports_failed_then_recovers_and_dispatches(
     tmp_path: Path,
 ) -> None:
@@ -1067,7 +1269,7 @@ def test_listener_status_reports_health_and_dispatch_attention(tmp_path: Path) -
     heartbeat = {
         "schema": "gogurt-listener-heartbeat/v1",
         "version": importlib.metadata.version("gogurt"),
-        "pid": 123,
+        "pid": os.getpid(),
         "started_at": "2026-08-14T00:00:00Z",
         "heartbeat_at": "2026-08-14T00:00:10Z",
         "queue_depth": 0,
@@ -1090,6 +1292,155 @@ def test_listener_status_reports_health_and_dispatch_attention(tmp_path: Path) -
     assert status["health"] == "healthy"
     assert status["installed"] is True
     assert status["running"] is True
+
+
+def test_listener_status_reports_corrupt_state_without_crashing(tmp_path: Path) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    paths.state_dir.mkdir(parents=True)
+    config.write(paths.config_file)
+    paths.database_file.write_bytes(b"not a sqlite database")
+    paths.heartbeat_file.write_text(
+        json.dumps(
+            {
+                "schema": "gogurt-listener-heartbeat/v1",
+                "version": importlib.metadata.version("gogurt"),
+                "pid": os.getpid(),
+                "started_at": "2026-08-14T00:00:00Z",
+                "heartbeat_at": "2026-08-14T00:00:10Z",
+                "queue_depth": 0,
+                "active_dispatch": None,
+                "dispatches": {"counts": {}, "attention": []},
+                "configuration": {"status": "valid", "diagnostic": None},
+                "runtime": {"status": "running", "diagnostic": None},
+                "mount_attention": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+
+    status = listener_status(
+        paths=paths,
+        adapter=adapter,
+        now=datetime_timestamp("2026-08-14T00:00:11Z"),
+    )
+
+    assert status["health"] == "failed"
+    assert status["dispatches"] == {"counts": {}, "attention": []}
+    assert "listener state" in str(status["diagnostic"])
+
+
+def test_listener_status_bounds_a_locked_state_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    config.write(paths.config_file)
+    paths.database_file.touch()
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+    observed_timeouts: list[float] = []
+
+    def locked_connect(
+        _store: ListenerStore,
+        *,
+        timeout_seconds: float = 30,
+    ) -> sqlite3.Connection:
+        observed_timeouts.append(timeout_seconds)
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(ListenerStore, "_connect", locked_connect)
+
+    status = listener_status(paths=paths, adapter=adapter)
+
+    assert status["health"] == "failed"
+    assert "database is locked" in str(status["diagnostic"])
+    assert observed_timeouts == [listener_module.LISTENER_STATUS_DB_TIMEOUT_SECONDS]
+
+
+def test_listener_status_reports_unreadable_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    config.write(paths.config_file)
+    paths.heartbeat_file.touch()
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+    real_read_text = Path.read_text
+
+    def unreadable(path: Path, *args: object, **kwargs: object) -> str:
+        if path == paths.heartbeat_file:
+            raise PermissionError("heartbeat is unreadable")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+
+    status = listener_status(paths=paths, adapter=adapter)
+
+    assert status["health"] == "failed"
+    assert "heartbeat is unreadable" in str(status["diagnostic"])
+
+
+def test_restarted_native_process_cannot_reuse_a_predecessor_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    paths.state_dir.mkdir(parents=True)
+    config.write(paths.config_file)
+    paths.heartbeat_file.write_text(
+        json.dumps(
+            {
+                "schema": "gogurt-listener-heartbeat/v1",
+                "version": importlib.metadata.version("gogurt"),
+                "pid": 4321,
+                "started_at": "2026-08-14T00:00:00Z",
+                "heartbeat_at": "2026-08-14T00:00:10Z",
+                "queue_depth": 0,
+                "active_dispatch": None,
+                "dispatches": {"counts": {"uncertain": 1}, "attention": []},
+                "configuration": {"status": "valid", "diagnostic": None},
+                "runtime": {"status": "running", "diagnostic": None},
+                "mount_attention": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+    monkeypatch.setattr(listener_module, "_process_is_running", lambda _pid: False)
+
+    status = listener_status(
+        paths=paths,
+        adapter=adapter,
+        now=datetime_timestamp("2026-08-14T00:00:11Z"),
+    )
+
+    assert status["health"] == "starting"
+    assert status["heartbeat"] is None
+
+
+def test_uninstall_removes_corrupt_state_without_reading_it(tmp_path: Path) -> None:
+    _config, paths, _mount, _counter = _fixture(tmp_path)
+    paths.state_dir.mkdir(parents=True)
+    paths.database_file.write_bytes(b"not a sqlite database")
+    paths.heartbeat_file.write_bytes(b"not json")
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+
+    status = uninstall_listener(paths=paths, adapter=adapter)
+
+    assert status["health"] == "absent"
+    assert status["installed"] is False
+    assert adapter.unregister_calls == 1
+    assert not paths.state_dir.exists()
 
 
 def test_listener_status_tolerates_native_startup_before_schema_commit(tmp_path: Path) -> None:

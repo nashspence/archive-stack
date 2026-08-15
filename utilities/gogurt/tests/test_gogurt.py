@@ -178,6 +178,24 @@ def test_route_command_requires_one_mount_point(tmp_path: Path) -> None:
         load_gogurt_actions(config)
 
 
+def test_route_command_rejects_mount_directory_as_the_executable(tmp_path: Path) -> None:
+    config = tmp_path / "gogurt-routes.yaml"
+    config.write_text(
+        (
+            "schema_version: 1\n"
+            "kind: gogurt.routes\n"
+            "routes:\n"
+            "  camera:\n"
+            "    command:\n"
+            '      - "{mount_point}"\n'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="cannot use .*mount_point.* as its executable"):
+        load_gogurt_actions(config)
+
+
 def test_write_gogurt_marker_refuses_to_replace_different_route(tmp_path: Path) -> None:
     marker = write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
 

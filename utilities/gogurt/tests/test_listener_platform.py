@@ -53,6 +53,29 @@ def test_windows_existing_private_file_is_validated_without_reopening(
     filesystem_module.ensure_private_file(sidecar)
 
 
+def test_vanished_sqlite_sidecar_does_not_abort_remaining_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vanished = tmp_path / "listener.sqlite3-shm"
+    remaining = tmp_path / "listener.sqlite3-wal"
+    vanished.touch()
+    remaining.touch()
+    observed: list[Path] = []
+
+    def validate(path: Path) -> None:
+        observed.append(path)
+        if path == vanished:
+            vanished.unlink()
+            raise FileNotFoundError(vanished)
+
+    monkeypatch.setattr(filesystem_module, "ensure_private_file", validate)
+
+    filesystem_module.ensure_private_files([vanished, remaining])
+
+    assert observed == [vanished, remaining]
+
+
 def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> None:
     linux = default_listener_paths(
         platform="linux",
@@ -149,6 +172,8 @@ def test_systemd_registration_enables_login_resume_and_cleans_up(tmp_path: Path)
 class RecordingLaunchdAdapter(LaunchdUserAdapter):
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
+        self.loaded = False
+        self.running = False
 
     @staticmethod
     def _domain() -> str:
@@ -160,9 +185,32 @@ class RecordingLaunchdAdapter(LaunchdUserAdapter):
         *,
         allowed: frozenset[int] = frozenset({0}),
     ) -> subprocess.CompletedProcess[str]:
-        del allowed
         self.commands.append(list(command))
-        return subprocess.CompletedProcess(list(command), 0, "", "")
+        operation = command[1]
+        if operation == "bootout":
+            self.loaded = False
+            self.running = False
+            return subprocess.CompletedProcess(list(command), 0, "", "")
+        if operation == "bootstrap":
+            self.loaded = True
+            self.running = True
+            return subprocess.CompletedProcess(list(command), 0, "", "")
+        if operation == "kickstart":
+            self.running = True
+            return subprocess.CompletedProcess(list(command), 0, "", "")
+        if operation == "print" and self.loaded:
+            state = "running" if self.running else "waiting"
+            pid = "\n\tpid = 4321" if self.running else ""
+            return subprocess.CompletedProcess(
+                list(command),
+                0,
+                f"gui/501/{LISTENER_LABEL} = {{\n\tstate = {state}{pid}\n}}\n",
+                "",
+            )
+        completed = subprocess.CompletedProcess(list(command), 3, "", "not loaded")
+        if completed.returncode not in allowed:
+            raise ListenerPlatformError("launchd query failed")
+        return completed
 
 
 def test_launchd_registration_bootstraps_and_removes_the_agent(tmp_path: Path) -> None:
@@ -174,6 +222,35 @@ def test_launchd_registration_bootstraps_and_removes_the_agent(tmp_path: Path) -
     adapter.register(paths, command)
     assert registration.is_file()
     assert ["launchctl", "bootstrap", "gui/501", str(registration)] in adapter.commands
+    assert adapter.status(paths) == NativeListenerStatus(
+        installed=True,
+        enabled=True,
+        running=True,
+    )
+
+    adapter.running = False
+    assert adapter.status(paths) == NativeListenerStatus(
+        installed=True,
+        enabled=True,
+        running=False,
+    )
+    adapter.start(paths)
+    assert adapter.commands[-1] == [
+        "launchctl",
+        "kickstart",
+        f"gui/501/{LISTENER_LABEL}",
+    ]
+    assert adapter.running is True
+
+    adapter.loaded = False
+    adapter.running = False
+    adapter.start(paths)
+    assert adapter.commands[-1] == [
+        "launchctl",
+        "bootstrap",
+        "gui/501",
+        str(registration),
+    ]
 
     adapter.unregister(paths)
     assert not registration.exists()
