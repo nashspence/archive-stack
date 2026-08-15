@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -232,6 +233,25 @@ class LaunchdUserAdapter(_CommandAdapter):
     def _target(self) -> str:
         return f"{self._domain()}/{LISTENER_LABEL}"
 
+    def _print(self) -> subprocess.CompletedProcess[str]:
+        return self._run(
+            ["launchctl", "print", self._target()],
+            allowed=frozenset({0, 3, 113}),
+        )
+
+    @staticmethod
+    def _is_running(completed: subprocess.CompletedProcess[str]) -> bool:
+        if completed.returncode != 0:
+            return False
+        state = re.search(r"(?m)^\s*state\s*=\s*([^\s]+)\s*$", completed.stdout)
+        pid = re.search(r"(?m)^\s*pid\s*=\s*([0-9]+)\s*$", completed.stdout)
+        return (
+            state is not None
+            and state.group(1).casefold() == "running"
+            and pid is not None
+            and int(pid.group(1)) > 0
+        )
+
     def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
         registration = self._require_registration(paths)
         _write_private(registration, render_launchd_plist(command))
@@ -246,21 +266,18 @@ class LaunchdUserAdapter(_CommandAdapter):
         installed = registration.is_file()
         if not installed:
             return NativeListenerStatus(installed=False, enabled=False, running=False)
-        running = (
-            self._run(
-                ["launchctl", "print", self._target()],
-                allowed=frozenset({0, 3, 113}),
-            ).returncode
-            == 0
-        )
+        running = self._is_running(self._print())
         return NativeListenerStatus(installed=True, enabled=True, running=running)
 
     def start(self, paths: ListenerPaths) -> None:
         registration = self._require_registration(paths)
         if not registration.is_file():
             raise ListenerPlatformError("Gogurt listener is not installed")
-        if not self.status(paths).running:
+        state = self._print()
+        if state.returncode != 0:
             self._run(["launchctl", "bootstrap", self._domain(), str(registration)])
+        elif not self._is_running(state):
+            self._run(["launchctl", "kickstart", self._target()])
 
     def stop(self, paths: ListenerPaths) -> None:
         registration = self._require_registration(paths)

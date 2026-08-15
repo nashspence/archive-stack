@@ -328,6 +328,8 @@ def _run_gogurt(
     scratch: Path,
     environment: dict[str, str],
     listener_lifecycle: bool,
+    listener_lifecycle_repetitions: int,
+    gogurt_evidence_dir: Path | None,
 ) -> str:
     examples = scratch / "gogurt-examples"
     shutil.copytree(source_root / "utilities/gogurt/config/examples", examples)
@@ -351,11 +353,20 @@ def _run_gogurt(
         raise QualificationError("installed Gogurt did not execute its portable foreground plan")
     if not listener_lifecycle:
         return "portable-foreground-dry-run"
-    _run_gogurt_listener_lifecycle(
-        executable,
-        scratch=scratch,
-        environment=environment,
-    )
+    for repetition in range(1, listener_lifecycle_repetitions + 1):
+        lifecycle_scratch = scratch / f"gogurt-listener-{repetition}"
+        lifecycle_scratch.mkdir()
+        evidence_dir = (
+            gogurt_evidence_dir / f"repetition-{repetition}"
+            if gogurt_evidence_dir is not None
+            else None
+        )
+        _run_gogurt_listener_lifecycle(
+            executable,
+            scratch=lifecycle_scratch,
+            environment=environment,
+            evidence_dir=evidence_dir,
+        )
     return "native-listener-lifecycle"
 
 
@@ -503,11 +514,70 @@ def _wait_for_listener(
     return status
 
 
+def _retain_gogurt_failure_evidence(
+    executable: Path,
+    *,
+    state_dir: Path,
+    scratch: Path,
+    environment: dict[str, str],
+    evidence_dir: Path | None,
+    failure: BaseException,
+    phase: str,
+) -> None:
+    if evidence_dir is None:
+        return
+    try:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        diagnostic = " ".join(f"{type(failure).__name__}: {failure}".splitlines())[:4096]
+        (evidence_dir / f"{phase}-failure.txt").write_text(
+            diagnostic + "\n",
+            encoding="utf-8",
+        )
+        status = subprocess.run(
+            [str(executable), "listener", "status", "--json"],
+            cwd=scratch,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        status_payload = {
+            "returncode": status.returncode,
+            "stdout": status.stdout[-65536:],
+            "stderr": status.stderr[-65536:],
+        }
+        (evidence_dir / f"{phase}-status.json").write_text(
+            json.dumps(status_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        for source in sorted(state_dir.glob("listener.log*")):
+            if source.is_symlink():
+                continue
+            info = source.stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024:
+                continue
+            shutil.copy2(source, evidence_dir / source.name)
+    except (OSError, subprocess.SubprocessError, ValueError) as evidence_error:
+        try:
+            evidence_dir.mkdir(parents=True, exist_ok=True)
+            diagnostic = " ".join(
+                f"{type(evidence_error).__name__}: {evidence_error}".splitlines()
+            )[:4096]
+            (evidence_dir / f"{phase}-evidence-error.txt").write_text(
+                diagnostic + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            return
+
+
 def _run_gogurt_listener_lifecycle(
     executable: Path,
     *,
     scratch: Path,
     environment: dict[str, str],
+    evidence_dir: Path | None,
 ) -> None:
     initial = _listener_status(
         executable,
@@ -516,6 +586,7 @@ def _run_gogurt_listener_lifecycle(
     )
     if initial.get("installed") is not False:
         raise QualificationError("listener qualification would replace an existing installation")
+    state_dir = Path(str(initial["state_dir"]))
 
     action = scratch / "gogurt-listener-action.py"
     action.write_text(
@@ -720,16 +791,39 @@ def _run_gogurt_listener_lifecycle(
                 scratch=scratch,
                 environment=environment,
             )
+    except BaseException as exc:
+        _retain_gogurt_failure_evidence(
+            executable,
+            state_dir=state_dir,
+            scratch=scratch,
+            environment=environment,
+            evidence_dir=evidence_dir,
+            failure=exc,
+            phase="lifecycle",
+        )
+        raise
     finally:
         if installed:
-            removed = json.loads(
-                _run(
-                    [str(executable), "listener", "uninstall", "--json"],
-                    cwd=scratch,
-                    env=environment,
-                    capture=True,
-                ).stdout
-            )
+            try:
+                removed = json.loads(
+                    _run(
+                        [str(executable), "listener", "uninstall", "--json"],
+                        cwd=scratch,
+                        env=environment,
+                        capture=True,
+                    ).stdout
+                )
+            except BaseException as exc:
+                _retain_gogurt_failure_evidence(
+                    executable,
+                    state_dir=state_dir,
+                    scratch=scratch,
+                    environment=environment,
+                    evidence_dir=evidence_dir,
+                    failure=exc,
+                    phase="uninstall",
+                )
+                raise
             if removed.get("installed") is not False or removed.get("health") != "absent":
                 raise QualificationError("Gogurt listener uninstall left native registration")
             if Path(str(removed["state_dir"])).exists():
@@ -883,6 +977,8 @@ def _qualify_component(
     base_url: str,
     all_project_names: set[str],
     listener_lifecycle: bool,
+    listener_lifecycle_repetitions: int,
+    gogurt_evidence_dir: Path | None,
 ) -> dict[str, Any]:
     root = str(component["root"])
     environment = _tool_environment(scratch, root)
@@ -955,6 +1051,8 @@ def _qualify_component(
             scratch=scratch,
             environment=environment,
             listener_lifecycle=listener_lifecycle,
+            listener_lifecycle_repetitions=listener_lifecycle_repetitions,
+            gogurt_evidence_dir=gogurt_evidence_dir,
         )
     else:
         operation = _run_recovery(
@@ -992,7 +1090,16 @@ def _qualify_component(
     }
 
 
-def qualify(root: Path, *, version: str, listener_lifecycle: bool = False) -> dict[str, Any]:
+def qualify(
+    root: Path,
+    *,
+    version: str,
+    listener_lifecycle: bool = False,
+    listener_lifecycle_repetitions: int = 1,
+    gogurt_evidence_dir: Path | None = None,
+) -> dict[str, Any]:
+    if listener_lifecycle_repetitions < 1:
+        raise QualificationError("listener lifecycle repetitions must be at least one")
     release._ensure_clean(root)
     source_sha = release._source_sha(root)
     actual_uv = _run(["uv", "--version"], cwd=root, capture=True).stdout.split()[1]
@@ -1028,6 +1135,8 @@ def qualify(root: Path, *, version: str, listener_lifecycle: bool = False) -> di
                     base_url=base_url,
                     all_project_names=all_project_names,
                     listener_lifecycle=listener_lifecycle,
+                    listener_lifecycle_repetitions=listener_lifecycle_repetitions,
+                    gogurt_evidence_dir=gogurt_evidence_dir,
                 )
                 for component in manifest["components"]
             ]
@@ -1046,6 +1155,7 @@ def qualify(root: Path, *, version: str, listener_lifecycle: bool = False) -> di
         "staged_http": "passed",
         "published": False,
         "listener_lifecycle": listener_lifecycle,
+        "listener_lifecycle_repetitions": listener_lifecycle_repetitions,
     }
 
 
@@ -1058,6 +1168,17 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exercise the real per-user service manager and a disposable mounted volume.",
     )
+    parser.add_argument(
+        "--listener-lifecycle-repetitions",
+        type=int,
+        default=1,
+        help="Run isolated listener lifecycles repeatedly from the same candidate artifacts.",
+    )
+    parser.add_argument(
+        "--gogurt-evidence-dir",
+        type=Path,
+        help="Retain bounded dummy lifecycle status and logs when Gogurt qualification fails.",
+    )
     return parser
 
 
@@ -1068,6 +1189,8 @@ def main(argv: list[str] | None = None) -> int:
             ROOT,
             version=args.version,
             listener_lifecycle=args.listener_lifecycle,
+            listener_lifecycle_repetitions=args.listener_lifecycle_repetitions,
+            gogurt_evidence_dir=args.gogurt_evidence_dir,
         )
     except (
         OSError,
