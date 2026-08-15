@@ -31,6 +31,15 @@ jobs:
           tar -xzf /tmp/issue-522-seed.tar.gz
           rm -rf .issue-522-seed .issue-522-seed.tar.gz
 
+      - name: Persist expanded seed
+        shell: bash
+        run: |
+          git config user.name "OpenAI architectural handoff"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Expand #522 collection-boundary implementation seed"
+          git push origin HEAD:issue-522-collection-boundary
+
       - name: Apply collection-boundary hard cut
         run: python scripts/issue_522_apply.py
 
