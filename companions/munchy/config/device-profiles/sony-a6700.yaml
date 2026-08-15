@@ -19,12 +19,13 @@ section:
   profiles:
     video-av1-webm:
       name: video-av1-webm
-      archive:
-        codec: av1_nvenc
-        container: webm
-        quality: 56
+      target_options:
         preset: p7
         tune: uhq
+      archive:
+        codec: av1
+        container: webm
+        quality: 56
         pix_fmt: p010le
         fps_mode: passthrough
         scale_flags: lanczos

@@ -266,7 +266,7 @@ def test_munchy_profile_validate(tmp_path) -> None:  # type: ignore[no-untyped-d
 target: munchy-av1-nvenc
 name: camera
 archive:
-  codec: av1_nvenc
+  codec: av1
   container: webm
   quality: 52
 """.strip(),
@@ -286,7 +286,7 @@ def test_munchy_profile_validate_json(tmp_path) -> None:  # type: ignore[no-unty
 target: munchy-av1-nvenc
 name: camera
 archive:
-  codec: av1_nvenc
+  codec: av1
   container: webm
   quality: 52
 """.strip(),
@@ -341,7 +341,7 @@ profiles:
     target: munchy-av1-nvenc
     name: camera
     archive:
-      codec: av1_nvenc
+      codec: av1
       container: webm
       quality: 38
 """.strip(),
@@ -1386,7 +1386,7 @@ profiles:
     target: munchy-av1-nvenc
     name: video
     archive:
-      codec: av1_nvenc
+      codec: av1
       container: webm
       quality: 40
 

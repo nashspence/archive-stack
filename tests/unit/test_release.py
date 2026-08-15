@@ -55,8 +55,8 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 5,
         "deployed_implementation": 5,
-        "reusable_library": 13,
-        "internal_build_unit": 8,
+        "reusable_library": 14,
+        "internal_build_unit": 7,
     }
     assert {project.name for project in projects} >= {
         "jeb-client",

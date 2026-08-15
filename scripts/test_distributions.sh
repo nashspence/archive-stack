@@ -174,6 +174,11 @@ smoke_workspace_distribution \
   'munchy_av1_nvenc_target-*.whl' \
   'import importlib.metadata as m; import munchy_av1_nvenc.main; m.version("munchy-av1-nvenc-target")'
 smoke_workspace_distribution \
+  munchy-target-support \
+  'munchy_target_support-*.whl' \
+  'import importlib.metadata as m; from munchy_target_support.operations import operation_contract; from munchy_target_support.protocol import TARGET_PROTOCOL; assert TARGET_PROTOCOL == "munchy-transform-target/v1"; operation_contract("munchy.video.archive/v1"); m.version("munchy-target-support")' \
+  munchy-target-conformance
+smoke_workspace_distribution \
   gogurt \
   'gogurt-*.whl' \
   'import importlib.metadata as m; import gogurt.cli; m.version("gogurt")' \

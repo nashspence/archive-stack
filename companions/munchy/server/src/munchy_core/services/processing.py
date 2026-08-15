@@ -13,6 +13,8 @@ from typing import Any, cast
 from lifecycle_events.repeats import (
     next_event_repeat_at,
 )
+from munchy_target_support.protocol import TargetJobStatus
+from munchy_workflows.profiles import EncodeProfile
 from munchy_workflows.review_sweep import (
     default_encode_profile_for_output_mode,
     review_sweep_variants,
@@ -48,9 +50,6 @@ def eager_archive_group_names(groups: dict[str, dict[str, Any]]) -> set[str]:
 
 
 def eager_archive_batch_limit(group_config: dict[str, Any]) -> int:
-    executor = routing_service.eager_archive_executor(group_config)
-    if executor == "local_audio":
-        return runtime_config.AUDIO_ARCHIVE_MAX_PARALLEL
     return runtime_config.EAGER_ARCHIVE_BATCH_FILES
 
 
@@ -261,7 +260,7 @@ def run_review_sweep_job(
     input_upload: dict[str, Any],
     groups: dict[str, dict[str, Any]],
     input_dir: Path,
-    gpu_job_root: Path,
+    target_job_root: Path,
     review_dir: Path,
 ) -> None:
     sweep = review_sweep_config(job)
@@ -307,7 +306,7 @@ def run_review_sweep_job(
     job["phase"] = "review_sweep"
     state_store.save_job(job)
 
-    token = media_service.acquire_job_gpu(job)
+    target_tokens: dict[str, str] = {}
     notified_handoff = False
     completed = len(result.get("variants") or [])
     try:
@@ -316,7 +315,7 @@ def run_review_sweep_job(
             group_config = groups[group_name]
             tasks = cast(list[domain_models.TaskName], list(route["tasks"]))
             route_input_root = (
-                gpu_job_root / "review-sweep-input" / upload_service.opaque_local_id(route_id)
+                target_job_root / "review-sweep-input" / upload_service.opaque_local_id(route_id)
             )
             prepare_review_sweep_route_input(
                 upload=input_upload,
@@ -335,7 +334,7 @@ def run_review_sweep_job(
                 ):
                     continue
                 variant_archive_dir = (
-                    gpu_job_root
+                    target_job_root
                     / "review-sweep-archive"
                     / upload_service.opaque_local_id(route_id)
                     / upload_service.opaque_local_id(profile_id)
@@ -345,32 +344,36 @@ def run_review_sweep_job(
                     / upload_service.opaque_local_id(route_id)
                     / upload_service.opaque_local_id(profile_id)
                 )
-                gpu_job_id = routing_service.gpu_group_job_id(job_id, f"{route_id}-{profile_id}")
-                gpu_payload = {
-                    "job_id": gpu_job_id,
-                    "input_dir": upload_service.gpu_runtime_container_path(
-                        route_input_root / group_name
-                    ),
-                    "archive_dir": upload_service.gpu_runtime_container_path(variant_archive_dir),
-                    "review_dir": upload_service.gpu_runtime_container_path(variant_review_dir),
+                target_job_id = routing_service.target_group_job_id(
+                    job_id, f"{route_id}-{profile_id}"
+                )
+                profile = EncodeProfile.model_validate(variant["encode_profile"])
+                registration_id = profile.target
+                if registration_id not in target_tokens:
+                    target_tokens[registration_id] = media_service.acquire_target_resource(
+                        job, registration_id
+                    )
+                target_payload: dict[str, Any] = {
+                    "job_id": target_job_id,
+                    "registration_id": registration_id,
+                    "input_dir": str(route_input_root / group_name),
                     "profile": profile_id,
-                    "tasks": tasks,
                     "run_id": job.get("run_id"),
                     "container_metadata_required": (
-                        routing_service.gpu_tasks_require_container_metadata(
+                        routing_service.target_tasks_require_container_metadata(
                             tasks,
                             group_config,
                         )
                     ),
-                    "encode_profile": variant["encode_profile"],
+                    "encode_profile": profile.server_payload(),
                 }
                 if group_config.get("max_parallel_encodes") is not None:
-                    gpu_payload["max_parallel_encodes"] = group_config["max_parallel_encodes"]
+                    target_payload["max_parallel_encodes"] = group_config["max_parallel_encodes"]
                 review_clip_plan = state_store.dict_or_empty(
                     state_store.dict_or_empty(job.get("review")).get("clip_plan")
                 )
                 if review_clip_plan:
-                    gpu_payload["review_clip_plan"] = copy.deepcopy(review_clip_plan)
+                    target_payload["review_clip_plan"] = copy.deepcopy(review_clip_plan)
                 for task_name in ("qcut_video", "audio_review"):
                     if task_name not in tasks:
                         continue
@@ -380,16 +383,44 @@ def run_review_sweep_job(
                         task_name,
                     )
                     if review_plan is not None:
-                        gpu_payload.setdefault("review_plans", {})[task_name] = review_plan
-                job["phase"] = f"review_sweep:{route_id}:{profile_id}"
-                job.setdefault("gpu_payloads", {})[variant_key] = gpu_payload
-                state_store.save_job(job)
-                media_service.start_gpu_job(gpu_payload)
-                gpu_result = media_service.wait_gpu_job(
-                    gpu_job_id, gpu_payload=gpu_payload, job=job
-                )
-                job.setdefault("gpu_results", {})[variant_key] = gpu_result
-                upload_service.remember_review_plans_from_gpu_result(job, route_id, gpu_result)
+                        target_payload.setdefault("review_plans", {})[task_name] = review_plan
+                target_results: dict[str, Any] = {}
+                for task in tasks:
+                    operation_key = f"{variant_key}/{task}"
+                    operation_payload = media_service.prepare_target_operation_payload(
+                        target_payload,
+                        str(task),
+                    )
+                    operation_job_id = str(operation_payload["request"]["job_id"])
+                    job["phase"] = f"review_sweep:{route_id}:{profile_id}:{task}"
+                    job.setdefault("target_payloads", {})[operation_key] = operation_payload
+                    state_store.save_job(job)
+                    media_service.start_target_job(registration_id, operation_payload)
+                    target_result = media_service.wait_target_job(
+                        registration_id,
+                        operation_job_id,
+                        target_payload=operation_payload,
+                        job=job,
+                    )
+                    destination = variant_archive_dir
+                    if task == "qcut_video":
+                        destination = variant_review_dir / "video"
+                    elif task == "audio_review":
+                        destination = variant_review_dir / "audio"
+                    media_service.accept_target_outputs(
+                        registration_id,
+                        target_result,
+                        destination,
+                    )
+                    target_results[str(task)] = target_result
+                    job.setdefault("target_results", {})[operation_key] = target_result
+                    upload_service.remember_review_plans_from_target_result(
+                        job,
+                        route_id,
+                        target_result,
+                        accepted_root=destination,
+                    )
+                target_result = {"state": "succeeded", "operations": target_results}
                 state_store.save_job(job)
 
                 if not notified_handoff:
@@ -437,7 +468,13 @@ def run_review_sweep_job(
                 job["phase"] = f"review_sweep:{completed}/{total_variants}"
                 state_store.save_job(job)
     finally:
-        media_service.release_job_gpu(job, token)
+        for registration_id, token in target_tokens.items():
+            unconfirmed = job.get("target_cancellation_unconfirmed")
+            stop_target = isinstance(unconfirmed, dict) and any(
+                isinstance(item, dict) and item.get("registration_id") == registration_id
+                for item in unconfirmed.values()
+            )
+            media_service.release_job_target_resource(job, registration_id, token, stop=stop_target)
 
     result = review_sweep_result_state(job)
     result["finished_at"] = utc_timestamp_now()
@@ -798,23 +835,16 @@ def safe_file_size(path: str | Path | None) -> int:
 
 
 def review_encode_progress_for_job(job: dict[str, Any]) -> dict[str, Any] | None:
-    statuses = job.get("gpu_statuses")
+    statuses = job.get("target_statuses")
     if not isinstance(statuses, dict):
         return None
     progress_items: list[dict[str, Any]] = []
     for status in statuses.values():
         if not isinstance(status, dict):
             continue
-        items = status.get("items")
-        if not isinstance(items, dict):
-            continue
-        for task_name in ("qcut_video", "audio_review"):
-            item = items.get(task_name)
-            if not isinstance(item, dict):
-                continue
-            progress = item.get("progress")
-            if isinstance(progress, dict):
-                progress_items.append(progress)
+        progress = status.get("progress")
+        if isinstance(progress, dict) and progress:
+            progress_items.append(progress)
     if not progress_items:
         return None
 
@@ -1176,9 +1206,9 @@ def eager_batch_executor(batch: dict[str, Any]) -> str:
     executor = str(batch.get("executor") or "")
     if executor:
         return executor
-    if batch.get("gpu_job_id"):
-        return "gpu"
-    return "gpu"
+    if batch.get("target_job_id"):
+        return "transform_target"
+    return "transform_target"
 
 
 def running_eager_batch(
@@ -1250,10 +1280,10 @@ def next_eager_batch_id(job: dict[str, Any], group_name: str, paths: list[str]) 
 
 
 def eager_batch_input_root(job_id: str, batch_id: str) -> Path:
-    return runtime_config.GPU_RUNTIME_DIR / "jobs" / job_id / "eager-input" / batch_id
+    return runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / job_id / "eager-input" / batch_id
 
 
-def build_eager_gpu_payload(
+def build_eager_target_payload(
     job: dict[str, Any],
     *,
     batch_id: str,
@@ -1264,42 +1294,48 @@ def build_eager_gpu_payload(
     source_artifacts_sidecars: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
-    gpu_job_id = routing_service.gpu_eager_batch_job_id(job_id, batch_id)
+    target_job_id = routing_service.target_eager_batch_job_id(job_id, batch_id)
+    profile = media_service.target_profile_for_group(group_config)
     payload = {
-        "job_id": gpu_job_id,
-        "input_dir": f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}",
-        "archive_dir": f"/data/jobs/{job_id}/archive/{group_name}",
-        "review_dir": f"/data/jobs/{job_id}/review/{group_name}",
+        "job_id": target_job_id,
+        "registration_id": profile.target,
+        "input_dir": str(eager_batch_input_root(job_id, batch_id) / group_name),
         "profile": group_config.get("profile", "av1-nvenc-high"),
-        "tasks": tasks,
+        "encode_profile": profile.server_payload(),
         "run_id": job.get("run_id"),
-        "container_metadata_required": routing_service.gpu_tasks_require_container_metadata(
+        "container_metadata_required": routing_service.target_tasks_require_container_metadata(
             tasks, group_config
         ),
     }
-    if group_config.get("encode_profile") is not None:
-        payload["encode_profile"] = group_config["encode_profile"]
     if group_config.get("max_parallel_encodes") is not None:
         payload["max_parallel_encodes"] = group_config["max_parallel_encodes"]
     if container_metadata:
         payload["container_metadata"] = container_metadata
     if source_artifacts_sidecars:
         payload["source_artifacts_sidecars"] = source_artifacts_sidecars
-    return payload
+    if len(tasks) != 1:
+        raise RuntimeError("an eager transform batch must contain exactly one operation")
+    return media_service.prepare_target_operation_payload(payload, str(tasks[0]))
 
 
-def finish_eager_gpu_batch(
+def finish_eager_target_batch(
     job: dict[str, Any],
     upload: dict[str, Any],
     batch: dict[str, Any],
     groups: dict[str, dict[str, Any]],
     archive_dir: Path,
-    gpu_result: dict[str, Any],
+    target_result: dict[str, Any],
 ) -> dict[str, Any]:
     group_name = str(batch["group"])
     group_config = groups[group_name]
     paths = set(str(path) for path in batch.get("paths") or [])
     evidence_paths = set(str(path) for path in batch.get("evidence_paths") or [])
+    registration_id = str(batch["registration_id"])
+    media_service.accept_target_outputs(
+        registration_id,
+        target_result,
+        archive_dir / group_name,
+    )
     for file_state in upload_service.primary_upload_files_for_groups(upload, {group_name}):
         rel_path = str(file_state["path"])
         if rel_path not in paths:
@@ -1314,8 +1350,10 @@ def finish_eager_gpu_batch(
         )
     batch["state"] = "succeeded"
     batch["finished_at"] = utc_timestamp_now()
-    batch["gpu_result"] = gpu_result
-    eager_archive_state(job).setdefault("gpu_results", {})[str(batch["batch_id"])] = gpu_result
+    batch["target_result"] = target_result
+    eager_archive_state(job).setdefault("target_results", {})[str(batch["batch_id"])] = (
+        target_result
+    )
     shutil.rmtree(
         eager_batch_input_root(str(job["job_id"]), str(batch["batch_id"])),
         ignore_errors=True,
@@ -1325,7 +1363,7 @@ def finish_eager_gpu_batch(
     return upload
 
 
-def submit_eager_gpu_job(
+def submit_eager_target_job(
     job: dict[str, Any],
     batch: dict[str, Any],
     *,
@@ -1339,17 +1377,18 @@ def submit_eager_gpu_job(
         not force
         and last_submitted is not None
         and (datetime.now(UTC) - last_submitted).total_seconds()
-        < max(30.0, runtime_config.GPU_REPOST_SECONDS)
+        < max(30.0, runtime_config.TARGET_REPOST_SECONDS)
     ):
         return False
-    media_service.start_gpu_job(payload)
+    registration_id = str(batch.get("registration_id") or payload.get("registration_id") or "")
+    media_service.start_target_job(registration_id, payload)
     batch["last_submitted_at"] = utc_timestamp_now()
     batch["submit_count"] = int(batch.get("submit_count") or 0) + 1
     state_store.save_job(job)
     return True
 
 
-def prepare_eager_gpu_batch_input(
+def prepare_eager_target_batch_input(
     job: dict[str, Any],
     upload_id: str,
     *,
@@ -1384,7 +1423,7 @@ def prepare_eager_gpu_batch_input(
             for file_state in [*file_states, *evidence_file_states]
         }
     container_metadata, container_metadata_changed = (
-        routing_service.container_metadata_for_gpu_payload(
+        routing_service.container_metadata_for_target_payload(
             job,
             upload,
             file_states,
@@ -1410,7 +1449,7 @@ def prepare_eager_gpu_batch_input(
         materialized_group_root=batch_root / group_name,
         container_group_root=Path(f"/data/jobs/{job_id}/eager-input/{batch_id}/{group_name}"),
     )
-    payload = build_eager_gpu_payload(
+    payload = build_eager_target_payload(
         job,
         batch_id=batch_id,
         group_name=group_name,
@@ -1422,7 +1461,7 @@ def prepare_eager_gpu_batch_input(
     return upload, file_states, evidence_file_states, payload
 
 
-def start_eager_gpu_batch(
+def start_eager_target_batch(
     job: dict[str, Any],
     upload: dict[str, Any],
     *,
@@ -1440,17 +1479,22 @@ def start_eager_gpu_batch(
         int(file_state["bytes"]) for file_state in [*file_states, *evidence_file_states]
     )
     storage_hint = upload_service.input_upload_storage_hint(upload)
-    required_gpu_free = (
-        admission_service.gpu_scratch_required_bytes(batch_bytes, storage_hint)
+    required_target_free = (
+        admission_service.target_scratch_required_bytes(batch_bytes, storage_hint)
         + runtime_config.MIN_FREE_BYTES
     )
     if not space_checked:
         admission_service.wait_for_free_space(
-            job, runtime_config.GPU_RUNTIME_DIR, required_gpu_free, label="gpu eager scratch"
+            job,
+            runtime_config.TRANSFORM_RUNTIME_DIR,
+            required_target_free,
+            label="transform-target eager scratch",
         )
 
-    tasks: list[domain_models.TaskName] = ["archive_video"]
-    upload, file_states, evidence_file_states, payload = prepare_eager_gpu_batch_input(
+    tasks = cast(list[domain_models.TaskName], list(group_config.get("tasks") or []))
+    if len(tasks) != 1 or tasks[0] not in {"archive_video", "archive_audio"}:
+        raise RuntimeError("eager transform batches require one archive operation")
+    upload, file_states, evidence_file_states, payload = prepare_eager_target_batch_input(
         job,
         str(upload["input_upload_id"]),
         paths=paths,
@@ -1463,11 +1507,12 @@ def start_eager_gpu_batch(
     batch = {
         "batch_id": batch_id,
         "state": "running",
-        "executor": "gpu",
+        "executor": "transform_target",
         "group": group_name,
         "paths": paths,
         "evidence_paths": evidence_paths,
-        "gpu_job_id": payload["job_id"],
+        "target_job_id": payload["request"]["job_id"],
+        "registration_id": payload["registration_id"],
         "payload": payload,
         "started_at": utc_timestamp_now(),
     }
@@ -1489,136 +1534,13 @@ def start_eager_gpu_batch(
     state_store.save_job(job)
 
     try:
-        submit_eager_gpu_job(job, batch, force=True)
+        submit_eager_target_job(job, batch, force=True)
     except Exception as exc:
-        log.warning("gpu target eager submit failed; retrying: %s", exc)
+        log.warning("transform target eager submit failed; retrying: %s", exc)
     return upload
 
 
-def start_eager_audio_batch(
-    job: dict[str, Any],
-    upload: dict[str, Any],
-    *,
-    group_name: str,
-    group_config: dict[str, Any],
-    file_states: list[dict[str, Any]],
-    archive_dir: Path,
-) -> dict[str, Any]:
-    job_id = str(job["job_id"])
-    paths = [str(file_state["path"]) for file_state in file_states]
-    batch_id = next_eager_batch_id(job, group_name, paths)
-    batch_root = eager_batch_input_root(job_id, batch_id)
-    upload_id = str(upload["input_upload_id"])
-    with execution_runtime.input_upload_state_lock(upload_id):
-        upload = upload_service.load_input_upload(upload_id)
-        files_by_path = {
-            str(file_state["path"]): file_state for file_state in upload.get("files", [])
-        }
-        try:
-            file_states = [files_by_path[path] for path in paths]
-        except KeyError as exc:
-            raise RuntimeError(f"unknown eager input file: {exc.args[0]}") from exc
-        evidence_file_states = upload_service.sidecar_evidence_files_for_primaries(
-            upload, file_states
-        )
-        if batch_root.exists():
-            shutil.rmtree(batch_root, ignore_errors=True)
-        batch_root.mkdir(parents=True, exist_ok=True)
-        for file_state in [*file_states, *evidence_file_states]:
-            upload_service.materialize_upload_file(file_state, batch_root)
-        source_paths_by_path = {
-            str(file_state["path"]): batch_root
-            / upload_service.materialized_input_rel_path(file_state)
-            for file_state in [*file_states, *evidence_file_states]
-        }
-    upload_changed = False
-    for file_state in file_states:
-        if routing_service.ensure_file_projection_metadata(
-            upload,
-            file_state,
-            job=job,
-            group_config=group_config,
-            source_path=source_paths_by_path[str(file_state["path"])],
-            sidecar_source_paths_by_path=source_paths_by_path,
-        ):
-            upload_changed = True
-    upload = upload_service.merge_input_upload_projection_metadata(
-        upload_id,
-        file_states if upload_changed else (),
-    )
-    current_by_path = {
-        str(file_state["path"]): file_state for file_state in upload.get("files", [])
-    }
-    file_states = [current_by_path[path] for path in paths]
-
-    batch: dict[str, Any] = {
-        "batch_id": batch_id,
-        "state": "running",
-        "executor": "local_audio",
-        "group": group_name,
-        "paths": paths,
-        "started_at": utc_timestamp_now(),
-    }
-    eager_archive_state(job).setdefault("batches", {})[batch_id] = batch
-    for file_state in file_states:
-        mark_eager_file_encoding(
-            job,
-            file_state,
-            group_name=group_name,
-            group_config=group_config,
-            archive_dir=archive_dir,
-            batch_id=batch_id,
-        )
-    job["phase"] = f"eager_archive:{group_name}"
-    state_store.save_job(job)
-
-    try:
-        result = media_service.run_archive_audio_group(
-            input_root=batch_root / group_name,
-            output_root=archive_dir / group_name,
-            group_config=group_config,
-        )
-    except Exception as exc:
-        error = str(exc)
-        batch["state"] = "failed"
-        batch["failed_at"] = utc_timestamp_now()
-        batch["error"] = error
-        for file_state in file_states:
-            mark_eager_file_failed(
-                job,
-                file_state,
-                group_name=group_name,
-                group_config=group_config,
-                archive_dir=archive_dir,
-                batch_id=batch_id,
-                error=error,
-            )
-        state_store.save_job(job)
-        event_service.emit_job_issue(job, component="encoding", error=error, severity="error")
-        raise domain_errors.EncodingFailed(error) from exc
-
-    batch["state"] = "succeeded"
-    batch["finished_at"] = utc_timestamp_now()
-    batch["archive_audio_result"] = {
-        "status": result.get("status"),
-        "count": result.get("count"),
-    }
-    for file_state in file_states:
-        mark_eager_file_encoded(
-            job,
-            file_state,
-            group_name=group_name,
-            group_config=group_config,
-            archive_dir=archive_dir,
-            batch_id=batch_id,
-        )
-    shutil.rmtree(batch_root, ignore_errors=True)
-    upload = consume_input_upload_files(str(job["input_upload_id"]), set(paths))
-    state_store.save_job(job)
-    return upload
-
-
-def poll_eager_gpu_batch(
+def poll_eager_target_batch(
     job: dict[str, Any],
     upload: dict[str, Any],
     batch: dict[str, Any],
@@ -1628,34 +1550,39 @@ def poll_eager_gpu_batch(
     payload = batch.get("payload")
     if not isinstance(payload, dict):
         raise RuntimeError(f"eager batch is missing payload: {batch.get('batch_id')}")
-    gpu_job_id = str(batch.get("gpu_job_id") or payload.get("job_id"))
+    request = state_store.dict_or_empty(payload.get("request"))
+    target_job_id = str(batch.get("target_job_id") or request.get("job_id"))
     try:
-        status = media_service.gpu_target_request("GET", f"/v1/jobs/{gpu_job_id}")
+        registration_id = str(batch.get("registration_id") or payload.get("registration_id") or "")
+        status = media_service.target_job_status(registration_id, target_job_id)
     except Exception as exc:
         log.warning(
-            "gpu target status check failed for eager batch %s; retrying: %s",
-            gpu_job_id,
+            "transform target status check failed for eager batch %s; retrying: %s",
+            target_job_id,
             exc,
         )
         try:
-            submit_eager_gpu_job(job, batch, force=True)
+            submit_eager_target_job(job, batch, force=True)
         except Exception as start_exc:
-            log.warning("gpu target eager re-submit failed; retrying: %s", start_exc)
+            log.warning("transform target eager re-submit failed; retrying: %s", start_exc)
         return upload
 
     state = str(status.get("state") or "")
-    batch["gpu_state"] = state
+    batch["target_state"] = state
     batch["last_polled_at"] = utc_timestamp_now()
     if state == "succeeded":
-        return finish_eager_gpu_batch(job, upload, batch, groups, archive_dir, status)
-    if state == "failed":
-        if status.get("error_code") == "target_restarted":
-            log.warning("gpu target restarted during eager batch %s; re-submitting job", gpu_job_id)
-            submit_eager_gpu_job(job, batch, force=True)
-            return upload
-        error = f"gpu eager batch failed: {status.get('error')}"
+        return finish_eager_target_batch(job, upload, batch, groups, archive_dir, status)
+    if state in {"failed", "canceled"}:
+        parsed = TargetJobStatus.model_validate(status)
+        message = parsed.failure.message if parsed.failure is not None else state
+        error = f"transform target eager batch {state}: {message}"
         event_service.emit_job_issue(job, component="encoding", error=error, severity="error")
         raise domain_errors.EncodingFailed(error)
+    if state == "interrupted":
+        media_service.resume_target_job(registration_id, payload)
+        batch["target_job_id"] = payload["request"]["job_id"]
+        state_store.save_job(job)
+        return upload
     state_store.save_job(job)
     return upload
 
@@ -1668,7 +1595,7 @@ def run_eager_archive_groups(
     archive_dir: Path,
 ) -> dict[str, Any]:
     job_id = str(job["job_id"])
-    token = ""
+    target_tokens: dict[str, str] = {}
     try:
         while True:
             state_store.raise_if_job_canceled(job_id)
@@ -1677,11 +1604,31 @@ def run_eager_archive_groups(
             upload_service.cleanup_consumed_shared_input_files(upload, eager_groups)
             upload, _ = mark_existing_eager_outputs(job, upload, groups, eager_groups, archive_dir)
             claim_running_eager_batch_files(job, upload, groups, archive_dir)
-            running_gpu = running_eager_batches(job, executor="gpu")
-            if running_gpu and not token:
-                token = media_service.acquire_job_gpu(job)
-            for batch in running_gpu:
-                upload = poll_eager_gpu_batch(job, upload, batch, groups, archive_dir)
+            running_targets = running_eager_batches(job, executor="transform_target")
+            for batch in running_targets:
+                payload = batch.get("payload")
+                if not isinstance(payload, dict):
+                    raise RuntimeError(f"eager batch is missing payload: {batch.get('batch_id')}")
+                registration_id = str(
+                    batch.get("registration_id") or payload.get("registration_id") or ""
+                )
+                if registration_id not in target_tokens:
+                    target_tokens[registration_id] = media_service.acquire_target_resource(
+                        job, registration_id
+                    )
+                upload = poll_eager_target_batch(job, upload, batch, groups, archive_dir)
+            active_registration_ids = {
+                str(
+                    batch.get("registration_id")
+                    or state_store.dict_or_empty(batch.get("payload")).get("registration_id")
+                    or ""
+                )
+                for batch in running_eager_batches(job, executor="transform_target")
+            }
+            for registration_id in set(target_tokens) - active_registration_ids:
+                media_service.release_job_target_resource(
+                    job, registration_id, target_tokens.pop(registration_id)
+                )
             if eager_groups_complete(job, upload, eager_groups):
                 eager = eager_archive_state(job)
                 eager["completed_at"] = eager.get("completed_at") or utc_timestamp_now()
@@ -1715,21 +1662,24 @@ def run_eager_archive_groups(
                 if executor is None:
                     raise RuntimeError(f"group {group_name} is not eager-archive eligible")
                 batch_bytes = sum(int(file_state["bytes"]) for file_state in file_states)
-                if executor == "gpu":
+                if executor == "transform_target":
                     storage_hint = upload_service.input_upload_storage_hint(upload)
-                    required_gpu_free = (
-                        admission_service.gpu_scratch_required_bytes(batch_bytes, storage_hint)
+                    required_target_free = (
+                        admission_service.target_scratch_required_bytes(batch_bytes, storage_hint)
                         + runtime_config.MIN_FREE_BYTES
                     )
                     admission_service.wait_for_free_space(
                         job,
-                        runtime_config.GPU_RUNTIME_DIR,
-                        required_gpu_free,
-                        label="gpu eager scratch",
+                        runtime_config.TRANSFORM_RUNTIME_DIR,
+                        required_target_free,
+                        label="transform-target eager scratch",
                     )
-                    if not token:
-                        token = media_service.acquire_job_gpu(job)
-                    upload = start_eager_gpu_batch(
+                    registration_id = media_service.target_profile_for_group(group_config).target
+                    if registration_id not in target_tokens:
+                        target_tokens[registration_id] = media_service.acquire_target_resource(
+                            job, registration_id
+                        )
+                    upload = start_eager_target_batch(
                         job,
                         upload,
                         group_name=group_name,
@@ -1737,22 +1687,6 @@ def run_eager_archive_groups(
                         file_states=file_states,
                         archive_dir=archive_dir,
                         space_checked=True,
-                    )
-                    continue
-                if executor == "local_audio":
-                    admission_service.wait_for_free_space(
-                        job,
-                        runtime_config.GPU_RUNTIME_DIR,
-                        batch_bytes + runtime_config.MIN_FREE_BYTES,
-                        label="eager archive scratch",
-                    )
-                    upload = start_eager_audio_batch(
-                        job,
-                        upload,
-                        group_name=group_name,
-                        group_config=group_config,
-                        file_states=file_states,
-                        archive_dir=archive_dir,
                     )
                     continue
                 raise RuntimeError(f"unsupported eager archive executor: {executor}")
@@ -1766,9 +1700,9 @@ def run_eager_archive_groups(
                 )
                 continue
 
-            if token:
-                media_service.release_job_gpu(job, token)
-                token = ""
+            for registration_id, token in tuple(target_tokens.items()):
+                media_service.release_job_target_resource(job, registration_id, token)
+                target_tokens.pop(registration_id, None)
             progress = upload_service.upload_group_progress(upload, eager_groups)
             job["upload_progress"] = progress
             job["phase"] = (
@@ -1778,5 +1712,23 @@ def run_eager_archive_groups(
             emit_upload_stalled(job, upload, progress)
             handoff_service.retry_sleep(runtime_config.EAGER_ARCHIVE_WAIT_SECONDS, job_id=job_id)
     finally:
-        if token:
-            media_service.release_job_gpu(job, token)
+        for batch in running_eager_batches(job, executor="transform_target"):
+            payload = state_store.dict_or_empty(batch.get("payload"))
+            request = state_store.dict_or_empty(payload.get("request"))
+            registration_id = str(
+                batch.get("registration_id") or payload.get("registration_id") or ""
+            )
+            target_job_id = str(batch.get("target_job_id") or request.get("job_id") or "")
+            if registration_id and target_job_id:
+                media_service.cancel_and_reconcile_target_job(
+                    registration_id,
+                    target_job_id,
+                    job=job,
+                )
+        for registration_id, token in target_tokens.items():
+            unconfirmed = job.get("target_cancellation_unconfirmed")
+            stop_target = isinstance(unconfirmed, dict) and any(
+                isinstance(item, dict) and item.get("registration_id") == registration_id
+                for item in unconfirmed.values()
+            )
+            media_service.release_job_target_resource(job, registration_id, token, stop=stop_target)

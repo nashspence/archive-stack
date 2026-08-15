@@ -14,6 +14,7 @@ from typing import Any
 from lifecycle_events import (
     normalize_event_context,
 )
+from munchy_workflows.profiles import EncodeProfile
 from pydantic import ValidationError
 from time_formats import (
     utc_timestamp_now,
@@ -46,6 +47,41 @@ from munchy_core.persistence.application_keys import (
 )
 
 log = logging.getLogger("munchy.server")
+
+
+def preflight_job_transform_targets(req: domain_models.CreateJobRequest) -> None:
+    groups = (
+        list(req.groups.values())
+        if req.groups
+        else [
+            domain_models.GroupConfig(
+                output_mode=req.output_mode,
+                tasks=req.tasks,
+                encode_profile=req.encode_profile,
+            )
+        ]
+    )
+    checked: set[tuple[str, tuple[str, ...], str]] = set()
+    for group in groups:
+        tasks = tuple(
+            str(task) for task in group.tasks if str(task) in domain_models.TRANSFORM_TARGET_TASKS
+        )
+        if not tasks:
+            continue
+        profile = group.encode_profile or EncodeProfile()
+        key = (profile.target, tasks, profile.model_dump_json(exclude_none=True))
+        if key in checked:
+            continue
+        checked.add(key)
+        try:
+            media_service.preflight_transform_target(profile, tasks)
+        except RuntimeError as exc:
+            detail = str(exc)
+            status_code = 422 if "not registered" in detail or "mismatch" in detail else 503
+            raise ServiceError(
+                status_code=status_code,
+                detail=f"transform target preflight failed: {detail}",
+            ) from exc
 
 
 def submission_request_digest(req: domain_models.SubmissionSpec) -> str:
@@ -81,6 +117,7 @@ def resolved_submission(
         job_request = domain_models.CreateJobRequest.model_validate(raw_job)
     except ValidationError as exc:
         raise ServiceError(status_code=400, detail=str(exc)) from exc
+    preflight_job_transform_targets(job_request)
     storage_hint = admission_service.storage_hint_for_job_request(job_request)
     try:
         domain_models.PreflightInputUploadRequest(
@@ -363,16 +400,16 @@ def run_job(job_id: str) -> None:
 
         input_upload = upload_service.load_input_upload(str(job["input_upload_id"]))
         storage_hint = upload_service.input_upload_storage_hint(input_upload)
-        gpu_job_root = runtime_config.GPU_RUNTIME_DIR / "jobs" / job_id
-        input_dir = gpu_job_root / "input"
-        archive_dir = gpu_job_root / "archive"
-        review_dir = gpu_job_root / "review"
+        target_job_root = runtime_config.TRANSFORM_RUNTIME_DIR / "jobs" / job_id
+        input_dir = target_job_root / "input"
+        archive_dir = target_job_root / "archive"
+        review_dir = target_job_root / "review"
 
         groups = processing_service.ensure_job_groups(job, input_upload)
 
         group_results = job.setdefault("group_results", {})
-        gpu_payloads = job.setdefault("gpu_payloads", {})
-        gpu_results = job.setdefault("gpu_results", {})
+        target_payloads = job.setdefault("target_payloads", {})
+        target_results = job.setdefault("target_results", {})
         review_clip_plan = state_store.dict_or_empty(
             state_store.dict_or_empty(job.get("review")).get("clip_plan")
         )
@@ -397,7 +434,7 @@ def run_job(job_id: str) -> None:
             non_eager_groups = upload_service.upload_group_names_with_files(
                 input_upload, non_eager_groups
             )
-        input_dir = gpu_job_root / "input"
+        input_dir = target_job_root / "input"
         if non_eager_groups:
             input_upload = wait_for_upload_groups(
                 job,
@@ -410,12 +447,15 @@ def run_job(job_id: str) -> None:
             )
         if non_eager_groups:
             non_eager_bytes = upload_service.upload_bytes_for_groups(input_upload, non_eager_groups)
-            required_gpu_free = (
-                admission_service.gpu_scratch_required_bytes(non_eager_bytes, storage_hint)
+            required_target_free = (
+                admission_service.target_scratch_required_bytes(non_eager_bytes, storage_hint)
                 + runtime_config.MIN_FREE_BYTES
             )
             admission_service.wait_for_free_space(
-                job, runtime_config.GPU_RUNTIME_DIR, required_gpu_free, label="gpu scratch"
+                job,
+                runtime_config.TRANSFORM_RUNTIME_DIR,
+                required_target_free,
+                label="transform-target scratch",
             )
             job["phase"] = "preparing_input"
             state_store.save_job(job)
@@ -432,7 +472,7 @@ def run_job(job_id: str) -> None:
                 input_upload=input_upload,
                 groups=groups,
                 input_dir=input_dir,
-                gpu_job_root=gpu_job_root,
+                target_job_root=target_job_root,
                 review_dir=review_dir,
             )
             state_store.raise_if_job_canceled(job_id)
@@ -447,7 +487,7 @@ def run_job(job_id: str) -> None:
             event_service.emit_job_event(job, "job.succeeded", "Munchy job completed successfully.")
             return
 
-        gpu_work: list[tuple[str, dict[str, Any], list[domain_models.TaskName]]] = []
+        target_work: list[tuple[str, dict[str, Any], list[domain_models.TaskName]]] = []
         for group_name, group_config in groups.items():
             if str(group_name) in eager_groups:
                 continue
@@ -498,55 +538,21 @@ def run_job(job_id: str) -> None:
             tasks = list(group_config.get("tasks") or [])
             if group_output_mode == "preserve":
                 tasks = [task for task in tasks if task not in {"archive_video", "archive_audio"}]
-            if "archive_audio" in tasks and not group_results.get(group_name, {}).get(
-                "archive_audio"
-            ):
-                job["phase"] = f"archive_audio:{group_name}"
-                state_store.save_job(job)
-                audio_file_states = upload_service.mutable_primary_upload_files_for_groups(
-                    input_upload,
-                    {group_name},
-                )
-                audio_rel_paths = {
-                    upload_service.upload_file_group_rel_for_state(
-                        file_state, group_name
-                    ).as_posix()
-                    for file_state in audio_file_states
-                }
-                group_results[group_name] = {
-                    **group_results.get(group_name, {}),
-                    "archive_audio": media_service.run_archive_audio_group(
-                        input_root=input_dir / group_name,
-                        output_root=archive_dir / group_name,
-                        group_config=group_config,
-                        source_rel_paths=audio_rel_paths,
-                        source_artifacts_sidecars=upload_service.source_artifacts_sidecar_entries(
-                            input_upload,
-                            audio_file_states,
-                            group_name=group_name,
-                            materialized_group_root=input_dir / group_name,
-                        ),
-                        provenance_by_rel_path={
-                            upload_service.upload_file_group_rel_for_state(
-                                file_state, group_name
-                            ).as_posix(): routing_service.file_state_provenance_facts(file_state)
-                            for file_state in audio_file_states
-                        },
-                    ),
-                    "archive_audio_at": utc_timestamp_now(),
-                }
-                state_store.save_job(job)
-                state_store.raise_if_job_canceled(job_id)
-            gpu_target_tasks = [
-                task for task in tasks if str(task) in domain_models.GPU_TARGET_TASKS
+            target_tasks = [
+                task for task in tasks if str(task) in domain_models.TRANSFORM_TARGET_TASKS
             ]
-            if gpu_target_tasks and group_name not in gpu_results:
-                gpu_work.append((str(group_name), group_config, gpu_target_tasks))
+            missing_target_tasks = [
+                task for task in target_tasks if f"{group_name}:{task}" not in target_results
+            ]
+            if missing_target_tasks:
+                target_work.append((str(group_name), group_config, missing_target_tasks))
 
-        if gpu_work:
-            token = media_service.acquire_job_gpu(job)
-            try:
-                for group_name, group_config, tasks in gpu_work:
+        if target_work:
+            for group_name, group_config, tasks in target_work:
+                profile = media_service.target_profile_for_group(group_config)
+                registration_id = profile.target
+                token = media_service.acquire_target_resource(job, registration_id)
+                try:
                     state_store.raise_if_job_canceled(job_id)
                     input_upload_id = str(input_upload["input_upload_id"])
                     with execution_runtime.input_upload_state_lock(input_upload_id):
@@ -556,7 +562,7 @@ def run_job(job_id: str) -> None:
                             {group_name},
                         )
                     container_metadata, container_metadata_changed = (
-                        routing_service.container_metadata_for_gpu_payload(
+                        routing_service.container_metadata_for_target_payload(
                             job,
                             input_upload,
                             group_file_states,
@@ -569,51 +575,39 @@ def run_job(job_id: str) -> None:
                         input_upload_id,
                         group_file_states if container_metadata_changed else (),
                     )
-                    gpu_job_id = routing_service.gpu_group_job_id(job_id, group_name)
-                    job["phase"] = f"gpu:{group_name}"
-                    state_store.save_job(job)
-                    gpu_payload = {
-                        "job_id": gpu_job_id,
-                        "input_dir": upload_service.gpu_runtime_container_path(
-                            input_dir / group_name
-                        ),
-                        "archive_dir": upload_service.gpu_runtime_container_path(
-                            archive_dir / group_name
-                        ),
-                        "review_dir": upload_service.gpu_runtime_container_path(
-                            review_dir / group_name
-                        ),
-                        "profile": group_config.get("profile", "av1-nvenc-high"),
-                        "tasks": tasks,
+                    base_target_job_id = routing_service.target_group_job_id(job_id, group_name)
+                    base_target_payload: dict[str, Any] = {
+                        "job_id": base_target_job_id,
+                        "registration_id": registration_id,
+                        "input_dir": str(input_dir / group_name),
+                        "profile": group_config.get("profile") or profile.name or "default",
+                        "encode_profile": profile.server_payload(),
                         "run_id": job.get("run_id"),
                         "container_metadata_required": (
-                            routing_service.gpu_tasks_require_container_metadata(
+                            routing_service.target_tasks_require_container_metadata(
                                 tasks,
                                 group_config,
                             )
                         ),
                     }
-                    if group_config.get("encode_profile") is not None:
-                        gpu_payload["encode_profile"] = group_config["encode_profile"]
                     if group_config.get("max_parallel_encodes") is not None:
-                        gpu_payload["max_parallel_encodes"] = group_config["max_parallel_encodes"]
+                        base_target_payload["max_parallel_encodes"] = group_config[
+                            "max_parallel_encodes"
+                        ]
                     if review_clip_plan and any(
                         task in tasks for task in ("qcut_video", "audio_review")
                     ):
-                        gpu_payload["review_clip_plan"] = copy.deepcopy(review_clip_plan)
+                        base_target_payload["review_clip_plan"] = copy.deepcopy(review_clip_plan)
                     if container_metadata:
-                        gpu_payload["container_metadata"] = container_metadata
+                        base_target_payload["container_metadata"] = container_metadata
                     source_artifacts_sidecars = upload_service.source_artifacts_sidecar_entries(
                         input_upload,
                         group_file_states,
                         group_name=group_name,
                         materialized_group_root=input_dir / group_name,
-                        container_group_root=upload_service.gpu_runtime_container_path(
-                            input_dir / group_name
-                        ),
                     )
                     if source_artifacts_sidecars:
-                        gpu_payload["source_artifacts_sidecars"] = source_artifacts_sidecars
+                        base_target_payload["source_artifacts_sidecars"] = source_artifacts_sidecars
                     for task_name in ("qcut_video", "audio_review"):
                         if task_name not in tasks:
                             continue
@@ -623,27 +617,64 @@ def run_job(job_id: str) -> None:
                             task_name,
                         )
                         if review_plan is not None:
-                            gpu_payload.setdefault("review_plans", {})[task_name] = review_plan
-                    gpu_payloads[group_name] = gpu_payload
-                    state_store.save_job(job)
-                    media_service.start_gpu_job(gpu_payload)
-                    gpu_results[group_name] = media_service.wait_gpu_job(
-                        gpu_job_id,
-                        gpu_payload=gpu_payload,
-                        job=job,
-                    )
-                    upload_service.remember_review_plans_from_gpu_result(
-                        job,
-                        group_name,
-                        gpu_results[group_name],
-                    )
+                            base_target_payload.setdefault("review_plans", {})[task_name] = (
+                                review_plan
+                            )
+                    for task in tasks:
+                        result_key = f"{group_name}:{task}"
+                        job["phase"] = f"transform_target:{group_name}:{task}"
+                        target_payload = media_service.prepare_target_operation_payload(
+                            base_target_payload,
+                            str(task),
+                        )
+                        request = target_payload["request"]
+                        target_job_id = str(request["job_id"])
+                        target_payloads[result_key] = target_payload
+                        state_store.save_job(job)
+                        media_service.start_target_job(registration_id, target_payload)
+                        target_result = media_service.wait_target_job(
+                            registration_id,
+                            target_job_id,
+                            target_payload=target_payload,
+                            job=job,
+                        )
+                        destination = archive_dir / group_name
+                        if task == "qcut_video":
+                            destination = review_dir / group_name / "video"
+                        elif task == "audio_review":
+                            destination = review_dir / group_name / "audio"
+                        media_service.accept_target_outputs(
+                            registration_id,
+                            target_result,
+                            destination,
+                        )
+                        target_results[result_key] = target_result
+                        upload_service.remember_review_plans_from_target_result(
+                            job,
+                            group_name,
+                            target_result,
+                            accepted_root=destination,
+                        )
                     if len(groups) == 1:
-                        job["gpu_result"] = gpu_results[group_name]
+                        job["target_result"] = {
+                            "state": "succeeded",
+                            "operations": target_results,
+                        }
                     else:
-                        job["gpu_result"] = {"state": "succeeded", "groups": gpu_results}
+                        job["target_result"] = {"state": "succeeded", "groups": target_results}
                     state_store.save_job(job)
-            finally:
-                media_service.release_job_gpu(job, token)
+                finally:
+                    unconfirmed = job.get("target_cancellation_unconfirmed")
+                    stop_target = isinstance(unconfirmed, dict) and any(
+                        isinstance(item, dict) and item.get("registration_id") == registration_id
+                        for item in unconfirmed.values()
+                    )
+                    media_service.release_job_target_resource(
+                        job,
+                        registration_id,
+                        token,
+                        stop=stop_target,
+                    )
         state_store.raise_if_job_canceled(job_id)
         input_upload = upload_service.load_input_upload(str(job["input_upload_id"]))
         job["phase"] = "metadata_projection"
@@ -933,6 +964,7 @@ def create_job_state_from_request(
     initiated_by_app: str = "munchy",
     initiated_by_key_id: str | None = None,
 ) -> dict[str, Any]:
+    preflight_job_transform_targets(req)
     if req.input_upload_id is None:
         raise ServiceError(status_code=400, detail="input_upload_id is required")
     input_upload = upload_service.load_input_upload(req.input_upload_id)

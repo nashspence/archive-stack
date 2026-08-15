@@ -6,15 +6,24 @@ from pathlib import Path
 from typing import Any, Final, Literal, Self, cast
 
 from config_validation import ConfigError, load_yaml_config
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
-MUNCHY_PROFILE_TARGET: Final[Literal["munchy-av1-nvenc"]] = "munchy-av1-nvenc"
-MUNCHY_AUDIO_PROFILE_TARGET: Final[Literal["munchy-audio"]] = "munchy-audio"
+DEFAULT_VIDEO_TARGET: Final = "munchy-av1-nvenc"
+LOCAL_AUDIO_TARGET: Final = "munchy-audio"
 ArchiveContainer = Literal["mkv", "webm", "opus"]
-ArchiveCodec = Literal["av1_nvenc", "opus"]
+ArchiveCodec = Literal["av1", "opus"]
 SUPPORTED_ARCHIVE_CONTAINERS = ("mkv", "webm", "opus")
 _ATOM_NAME_RE = r"[0-9a-z_]{1,16}"
 _ATOM_OFFSET_RE = r"(?:0x[0-9a-f]+|[0-9]+)"
+_TARGET_ID_RE = r"[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?"
 
 
 class ProfileError(ValueError):
@@ -115,7 +124,7 @@ class ArchiveAudioProfile(BaseModel):
 class ArchiveEncodeProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    codec: ArchiveCodec = "av1_nvenc"
+    codec: ArchiveCodec = "av1"
     container: ArchiveContainer = "mkv"
     quality: int | None = Field(default=None, ge=0, le=63)
     max_height: int | None = Field(default=None, ge=2, le=4320)
@@ -129,25 +138,13 @@ class ArchiveEncodeProfile(BaseModel):
         "spline",
     ] = "lanczos"
     pix_fmt: Literal["p010le", "yuv420p"] | None = None
-    preset: str | None = Field(default=None, min_length=2, max_length=8)
-    tune: Literal["hq", "ll", "ull", "lossless", "uhq"] | None = None
     audio: ArchiveAudioProfile = Field(default_factory=ArchiveAudioProfile)
-
-    @field_validator("preset")
-    @classmethod
-    def validate_preset(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        lowered = value.strip().lower()
-        if lowered not in {"p1", "p2", "p3", "p4", "p5", "p6", "p7"}:
-            raise ValueError("preset must be p1 through p7")
-        return lowered
 
     @model_validator(mode="after")
     def validate_codec_container(self) -> Self:
-        if self.codec == "av1_nvenc":
+        if self.codec == "av1":
             if self.container not in {"mkv", "webm"}:
-                raise ValueError("av1_nvenc archive container must be mkv or webm")
+                raise ValueError("av1 archive container must be mkv or webm")
             return self
         if self.codec == "opus":
             if self.container == "mkv" and "container" not in self.model_fields_set:
@@ -162,10 +159,11 @@ class EncodeProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal[1] = 1
-    target: Literal["munchy-av1-nvenc", "munchy-audio"] = MUNCHY_PROFILE_TARGET
+    target: str = Field(default=DEFAULT_VIDEO_TARGET, pattern=f"^{_TARGET_ID_RE}$")
     name: str | None = Field(default=None, min_length=1, max_length=120)
     source: SourcePreservationProfile | None = None
     archive: ArchiveEncodeProfile = Field(default_factory=ArchiveEncodeProfile)
+    target_options: dict[str, JsonValue] = Field(default_factory=dict)
 
     def server_payload(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True, mode="json")
@@ -185,15 +183,17 @@ class EncodeProfile(BaseModel):
             return data
         archive = data.get("archive")
         if isinstance(archive, Mapping) and archive.get("codec") == "opus":
-            data["target"] = MUNCHY_AUDIO_PROFILE_TARGET
+            data["target"] = LOCAL_AUDIO_TARGET
         return data
 
     @model_validator(mode="after")
     def validate_target_archive_codec(self) -> Self:
-        if self.target == MUNCHY_PROFILE_TARGET and self.archive.codec != "av1_nvenc":
-            raise ValueError("munchy-av1-nvenc profiles require archive.codec = av1_nvenc")
-        if self.target == MUNCHY_AUDIO_PROFILE_TARGET and self.archive.codec != "opus":
+        if self.target == LOCAL_AUDIO_TARGET and self.archive.codec != "opus":
             raise ValueError("munchy-audio profiles require archive.codec = opus")
+        if self.target == LOCAL_AUDIO_TARGET and self.target_options:
+            raise ValueError("munchy-audio profiles do not accept target_options")
+        if self.target != LOCAL_AUDIO_TARGET and self.archive.codec != "av1":
+            raise ValueError("video transform-target profiles require archive.codec = av1")
         return self
 
 

@@ -10,7 +10,7 @@ def test_review_sweep_axes_generate_encode_profile_variants() -> None:
         "target": "munchy-av1-nvenc",
         "name": "camera-base",
         "archive": {
-            "codec": "av1_nvenc",
+            "codec": "av1",
             "container": "webm",
             "quality": 40,
             "audio": {"bitrate": "96k"},
@@ -86,7 +86,7 @@ def test_review_sweep_rejects_duplicate_variant_ids() -> None:
     base_profile = {
         "schema_version": 1,
         "target": "munchy-av1-nvenc",
-        "archive": {"codec": "av1_nvenc", "container": "webm"},
+        "archive": {"codec": "av1", "container": "webm"},
     }
 
     with pytest.raises(ValueError, match="duplicate review sweep profile_id"):
@@ -107,7 +107,7 @@ def test_review_sweep_explicit_variant_profile_id_controls_profile_name() -> Non
         "schema_version": 1,
         "target": "munchy-av1-nvenc",
         "name": "base",
-        "archive": {"codec": "av1_nvenc", "container": "webm", "quality": 36},
+        "archive": {"codec": "av1", "container": "webm", "quality": 36},
     }
 
     variants = review_sweep_variants(

@@ -6,7 +6,7 @@ from typing import Any
 
 from munchy_api import app as munchy_app
 from munchy_av1_nvenc import main as av1
-from munchy_core.adapters import external, gpu, riverhog
+from munchy_core.adapters import external, riverhog, transform_targets
 
 
 def test_av1_target_nondefault_environment_reaches_runtime(
@@ -31,6 +31,7 @@ def test_av1_target_nondefault_environment_reaches_runtime(
         "MUNCHY_QCUT_TARGET_SECONDS": "240",
         "MUNCHY_QCUT_MIN_SECONDS": "4",
         "MUNCHY_QCUT_MAX_SECONDS": "12",
+        "MUNCHY_TARGET_SOURCE_REVISION": "target-revision-test",
     }
     with monkeypatch.context() as environment:
         for name, value in settings.items():
@@ -54,10 +55,14 @@ def test_av1_target_nondefault_environment_reaches_runtime(
         assert runtime.QCUT_TARGET_SECONDS == 240
         assert runtime.QCUT_MIN_SECONDS == 4
         assert runtime.QCUT_MAX_SECONDS == 12
+        assert runtime.target_contract().source_revision == "target-revision-test"
     importlib.reload(av1)
 
 
-def test_munchy_adapter_nondefault_environment_reaches_runtime(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_munchy_adapter_nondefault_environment_reaches_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
     settings = {
         "MUNCHY_HANDOFF_ATTEMPTS": "9",
         "MUNCHY_EXTERNAL_HANDOFF_ENABLED": "true",
@@ -66,15 +71,21 @@ def test_munchy_adapter_nondefault_environment_reaches_runtime(monkeypatch) -> N
         "MUNCHY_RIVERHOG_HANDOFF_ENABLED": "true",
         "MUNCHY_RIVERHOG_FINALIZE_POLL_SECONDS": "7.5",
         "MUNCHY_UPSTREAM_EVENT_POLL_SECONDS": "8.5",
-        "MUNCHY_GPU_MANAGER_URL": "https://gpu-manager.example.test/",
-        "MUNCHY_GPU_TARGET_URL": "https://gpu-target.example.test/",
+        "MUNCHY_TARGET_REGISTRY": (
+            '{"external-target":{"endpoint":"https://target.example.test/",'
+            f'"workspace_root":"{tmp_path / "target-workspace"}",'
+            '"expected_protocol":"munchy-transform-target/v1",'
+            f'"expected_target_contract_sha256":"{"a" * 64}",'
+            '"resource_broker":{"endpoint":"https://broker.example.test/",'
+            '"resource":"external-encoder"}}}'
+        ),
     }
     with monkeypatch.context() as environment:
         for name, value in settings.items():
             environment.setenv(name, value)
         external_runtime = importlib.reload(external)
         riverhog_runtime = importlib.reload(riverhog)
-        gpu_runtime = gpu.HttpGpuPlatform()
+        target_runtime = transform_targets.HttpTransformTargetPlatform()
 
         assert external_runtime.HANDOFF_ATTEMPTS == 9
         assert external_runtime.EXTERNAL_HANDOFF_ENABLED is True
@@ -83,8 +94,13 @@ def test_munchy_adapter_nondefault_environment_reaches_runtime(monkeypatch) -> N
         assert riverhog_runtime.RIVERHOG_HANDOFF_ENABLED is True
         assert riverhog_runtime.RIVERHOG_FINALIZE_POLL_SECONDS == 7.5
         assert riverhog_runtime.UPSTREAM_EVENT_POLL_SECONDS == 8.5
-        assert gpu_runtime.manager_url == "https://gpu-manager.example.test"
-        assert gpu_runtime.target_url == "https://gpu-target.example.test"
+        registration = target_runtime.registration("external-target")
+        assert registration.endpoint == "https://target.example.test"
+        assert registration.workspace_root == (tmp_path / "target-workspace").resolve()
+        assert registration.expected_target_contract_sha256 == "a" * 64
+        assert registration.resource_broker is not None
+        assert registration.resource_broker.endpoint == "https://broker.example.test"
+        assert registration.resource_broker.resource == "external-encoder"
     importlib.reload(external)
     importlib.reload(riverhog)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
@@ -285,8 +286,11 @@ def _plain_profiles(path: Path, profiles: Mapping[str, EncodeProfile]) -> str:
         lines.append(f"  archive: {archive.codec} quality={_quality(archive.quality)}")
         if archive.max_height is not None:
             lines.append(f"  max_height: {archive.max_height}")
-        if archive.preset:
-            lines.append(f"  preset: {archive.preset}")
+        if profile.target_options:
+            lines.append(
+                "  target_options: "
+                + json.dumps(profile.target_options, sort_keys=True, separators=(",", ":"))
+            )
         audio = archive.audio
         audio_bits: list[str] = [audio.codec]
         if audio.bitrate:
@@ -301,7 +305,9 @@ def format_profiles(path: Path, profiles: Mapping[str, EncodeProfile]) -> Any:
     if not _rich_enabled():
         return _plain_profiles(path, profiles)
 
-    table = _quiet_table("Profile", "Target", "Container", "Quality", "Height", "Preset", "Audio")
+    table = _quiet_table(
+        "Profile", "Target", "Container", "Quality", "Height", "Target options", "Audio"
+    )
     for name, profile in profiles.items():
         archive = profile.archive
         audio = archive.audio
@@ -314,7 +320,11 @@ def format_profiles(path: Path, profiles: Mapping[str, EncodeProfile]) -> Any:
             archive.container,
             _quality(archive.quality),
             "" if archive.max_height is None else str(archive.max_height),
-            archive.preset or "",
+            (
+                json.dumps(profile.target_options, sort_keys=True, separators=(",", ":"))
+                if profile.target_options
+                else ""
+            ),
             audio_summary,
         )
     title = RichText("profiles ", style="bold")
