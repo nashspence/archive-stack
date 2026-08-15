@@ -24,6 +24,7 @@ dependencies = [
   "httpx[http2]>=0.27,<1.0",
   "lifecycle-events>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
+  "riverhog-provenance>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
@@ -31,6 +32,7 @@ file-download = { workspace = true }
 http-api-contracts = { workspace = true }
 lifecycle-events = { workspace = true }
 riverhog-protocol = { workspace = true }
+riverhog-provenance = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riverhog_api_client"]

@@ -62,6 +62,8 @@ class CollectionSummaryOut(RiverhogModel):
     id: int
     created_at: str
     tags: list[str]
+    content_etag: str = Field(pattern=r"^[0-9a-f]{64}$")
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     files: int
     bytes: int
     remote_storage_bytes: int
@@ -100,12 +102,14 @@ class CollectionDeletionPlanOut(RiverhogModel):
     upload_file_count: int
     record_etag: str
     metadata_rows: dict[str, int]
+    retirement_claim: dict[str, Any] | None = None
     blockers: list[str]
     billing_note: str
 
 
 class DeleteCollectionRequest(RiverhogModel):
     challenge: str
+    retirement_claim_id: str | None = Field(default=None, min_length=1, max_length=64)
     event_context: dict[str, Any] | None = None
 
 

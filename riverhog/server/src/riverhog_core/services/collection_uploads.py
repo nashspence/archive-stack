@@ -2263,10 +2263,19 @@ def _finalized_payload(
     )
     tags = sorted(current.tag_id for current in collection.tags)
     stored_bytes = sum(current.stored_bytes for current in copy.objects) if copy else 0
+    manifest = (
+        next((current for current in copy.objects if current.object_id == "manifest"), None)
+        if copy
+        else None
+    )
+    if manifest is None or not manifest.sha256:
+        raise RuntimeError("finalized collection has no immutable manifest identity")
     summary = {
         "id": collection.id,
         "created_at": collection.created_at,
         "tags": tags,
+        "content_etag": collection.content_etag,
+        "manifest_sha256": manifest.sha256,
         "files": len(collection.files),
         "bytes": sum(current.bytes for current in collection.files),
         "remote_storage_bytes": stored_bytes,
@@ -2279,6 +2288,8 @@ def _finalized_payload(
         "ingest_source": collection.ingest_source,
         "provenance_mode": collection.provenance_mode,
         "provenance_etag": collection.provenance_etag,
+        "content_etag": collection.content_etag,
+        "manifest_sha256": manifest.sha256,
         "archive_store": copy.store if copy else store_name,
         "state": "finalized",
         "layout": None,

@@ -64,3 +64,21 @@ Workspace dependency and import checks enforce the implementation-owner boundari
 - [`utilities`](../utilities/) contains portable operator and event tools.
 - [`packages`](../packages/) contains focused reusable libraries and protocol, client,
   configuration, event, transport, and CLI primitives.
+
+## Collection workflow model
+
+Finalized Riverhog collections are the only durable payload units. Minimal protocol
+adapters create collections and retain only bounded transient custody until the
+finalized root receipt. Jeb is a payload-free, tag-targeted transformation
+controller. It freezes exact immutable input roots, owns fenced claims, verifies
+derived collections from Riverhog, and separately orchestrates optional retirement.
+Munchy is a content-aware collection transform executor: one finalized collection
+set and one sealed intent produce exactly one finalized collection on success.
+Targets own any bounded encrypted or ephemeral payload workspace.
+
+Tags select work but are never transform identity. Processing claims bind exact
+manifest and content identities. Scoped transform capabilities never expose archive
+passphrases, broad S3 credentials, archive-key selection, or deletion. Every derived
+collection carries immutable input-root, plan, execution, disposition, and
+provenance evidence. Active or retiring claims participate in Riverhog deletion
+safety.

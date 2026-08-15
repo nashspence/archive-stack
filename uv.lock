@@ -875,7 +875,9 @@ dependencies = [
     { name = "media-preflight" },
     { name = "munchy-api-client" },
     { name = "pydantic" },
+    { name = "riverhog-api-client" },
     { name = "riverhog-cli-support" },
+    { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
     { name = "sqlalchemy" },
     { name = "starlette" },
@@ -897,7 +899,9 @@ requires-dist = [
     { name = "media-preflight", editable = "packages/media-preflight" },
     { name = "munchy-api-client", editable = "packages/munchy-api-client" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
+    { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
     { name = "starlette", specifier = ">=0.37,<2.0" },
@@ -1875,6 +1879,7 @@ dependencies = [
     { name = "httpx", extra = ["http2"] },
     { name = "lifecycle-events" },
     { name = "riverhog-protocol" },
+    { name = "riverhog-provenance" },
 ]
 
 [package.metadata]
@@ -1884,6 +1889,7 @@ requires-dist = [
     { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
 ]
 
 [[package]]

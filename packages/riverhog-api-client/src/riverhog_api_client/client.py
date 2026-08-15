@@ -816,10 +816,21 @@ class ApiClient(_HttpApiClient):
             f"/v1/collections/{collection_id}/provenance/verify",
         )
 
-    def plan_collection_deletion(self, collection_id: int) -> dict[str, Any]:
+    def plan_collection_deletion(
+        self,
+        collection_id: int,
+        *,
+        retirement_claim_id: str | None = None,
+    ) -> dict[str, Any]:
+        params = (
+            {"retirement_claim_id": retirement_claim_id}
+            if retirement_claim_id is not None
+            else None
+        )
         return self._json(
             "POST",
             f"/v1/collections/{str(collection_id)}/deletion-plan",
+            params=params,
         )
 
     def delete_collection(
@@ -827,9 +838,12 @@ class ApiClient(_HttpApiClient):
         collection_id: int,
         *,
         challenge: str,
+        retirement_claim_id: str | None = None,
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"challenge": challenge}
+        if retirement_claim_id is not None:
+            payload["retirement_claim_id"] = retirement_claim_id
         if event_context is not None:
             payload["event_context"] = dict(event_context)
         return self._json(

@@ -54,6 +54,7 @@ def create_or_resume_processing_claim(
 @router.get(
     "/collection-processing-claims",
     response_model=ProcessingClaimPageOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def list_processing_claims(
     container: ContainerDep,
@@ -81,6 +82,7 @@ def list_processing_claims(
 @router.get(
     "/collection-processing-claims/{claim_id}",
     response_model=ProcessingClaimOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def get_processing_claim(
     claim_id: str,
@@ -160,6 +162,7 @@ def settle_processing_claim(
 @router.post(
     "/collection-processing-claims/{claim_id}/retirement",
     response_model=ProcessingClaimOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def begin_processing_claim_retirement(
     claim_id: str,
@@ -179,6 +182,7 @@ def begin_processing_claim_retirement(
 @router.post(
     "/collection-processing-claims/{claim_id}/release",
     response_model=ProcessingClaimOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def release_processing_claim(
     claim_id: str,
@@ -198,6 +202,7 @@ def release_processing_claim(
 @router.get(
     "/collections/{collection_id}/derivation",
     response_model=CollectionDerivationOut,
+    openapi_extra=operation_interface("client-only-primitive"),
 )
 def get_collection_derivation(
     collection_id: int,

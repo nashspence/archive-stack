@@ -38,3 +38,13 @@ __all__ = [
     "put_collection_upload_unit",
     "upload_collection_units",
 ]
+
+from riverhog_api_client.producer import CollectionProducer, ProducedCollection, ProducerFile
+from riverhog_api_client.workflows import CollectionWorkflowClient
+
+__all__ += [
+    "CollectionProducer",
+    "CollectionWorkflowClient",
+    "ProducedCollection",
+    "ProducerFile",
+]

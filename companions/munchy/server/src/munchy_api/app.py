@@ -65,6 +65,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from state_schema import StateSchemaError
 from time_formats import utc_timestamp_now
 
+from munchy_api.collection_transforms import router as collection_transform_router
 from munchy_api.composition import configure_adapters
 from munchy_api.schemas import (
     AppKeyPageResponse,
@@ -916,6 +917,7 @@ def cancel_job(job_id: str, cleanup: bool = False) -> dict[str, Any]:
     return job
 
 
+app.include_router(collection_transform_router, prefix="/v1")
 app.openapi_schema = apply_openapi_error_contract(app.openapi())
 
 

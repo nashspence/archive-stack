@@ -11,3 +11,13 @@ __all__ = [
     "SubmissionUploadRequest",
     "submission_preflight_request",
 ]
+
+from munchy_api_client.collection_transforms import (
+    MunchyCollectionTransformClient,
+    MunchyCollectionTransformError,
+)
+
+__all__ += [
+    "MunchyCollectionTransformClient",
+    "MunchyCollectionTransformError",
+]

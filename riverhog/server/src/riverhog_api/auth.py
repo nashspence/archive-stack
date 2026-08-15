@@ -14,6 +14,7 @@ from riverhog_core.app_permissions import (
     COLLECTION_TAGS_MANAGE,
     COLLECTIONS_CREATE,
     COLLECTIONS_DELETE,
+    COLLECTION_TRANSFORMS_MANAGE,
     EVENTS_READ,
     KEYS_MANAGE,
     PROVENANCE_EXPORT,
@@ -53,7 +54,10 @@ def authenticate_token(token: str, container: ServiceContainer) -> ApplicationPr
             ),
             unrestricted_delegation=True,
         )
-    return container.app_keys.authenticate(supplied)
+    principal = container.app_keys.authenticate(supplied)
+    if principal is not None:
+        return principal
+    return container.collection_workflows.authenticate_capability(supplied)
 
 
 def require_application(
@@ -92,6 +96,12 @@ RetrievalManager = Annotated[
 CollectionCreator = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(COLLECTIONS_CREATE))),
+]
+CollectionTransformManager = Annotated[
+    ApplicationPrincipal,
+    Depends(
+        cast(Callable[..., object], require_permission(COLLECTION_TRANSFORMS_MANAGE))
+    ),
 ]
 CollectionTagManager = Annotated[
     ApplicationPrincipal,
@@ -147,6 +157,7 @@ __all__ = [
     "CollectionCreator",
     "CollectionDeleter",
     "CollectionTagManager",
+    "CollectionTransformManager",
     "EventsReader",
     "KeyManager",
     "QuotaManager",

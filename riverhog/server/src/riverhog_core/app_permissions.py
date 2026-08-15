@@ -11,6 +11,7 @@ ALL_RESOURCES = "*"
 CATALOG_READ = "catalog:read"
 RETRIEVAL_MANAGE = "retrieval:manage"
 COLLECTIONS_CREATE = "collections:create"
+COLLECTION_TRANSFORMS_MANAGE = "collection-transforms:manage"
 COLLECTION_TAGS_MANAGE = "collection-tags:manage"
 TAGS_CREATE = "tags:create"
 TAGS_DELETE = "tags:delete"
@@ -32,6 +33,7 @@ APPLICATION_PERMISSIONS = frozenset(
         CATALOG_READ,
         RETRIEVAL_MANAGE,
         COLLECTIONS_CREATE,
+        COLLECTION_TRANSFORMS_MANAGE,
         COLLECTION_TAGS_MANAGE,
         TAGS_CREATE,
         TAGS_DELETE,
@@ -199,6 +201,7 @@ __all__ = [
     "ApplicationPrincipal",
     "CATALOG_READ",
     "COLLECTIONS_CREATE",
+    "COLLECTION_TRANSFORMS_MANAGE",
     "COLLECTIONS_DELETE",
     "COLLECTION_PREFIX",
     "COLLECTION_SCOPED_PERMISSIONS",
