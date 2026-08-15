@@ -1,9 +1,6 @@
 name: issue-522-build
 
 on:
-  push:
-    branches:
-      - issue-522-collection-boundary
   workflow_dispatch:
 
 permissions:
@@ -29,8 +26,10 @@ jobs:
 
       - name: Expand architectural seed
         run: |
-          tar -xzf .issue-522-seed.tar.gz
-          rm .issue-522-seed.tar.gz
+          cat .issue-522-seed/part-* | base64 -d > /tmp/issue-522-seed.tar.gz
+          echo "cb3fcf40f4cbe58fa84120dc8a5d4c1611cb62b7949060ad635d173f8736cea6  /tmp/issue-522-seed.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/issue-522-seed.tar.gz
+          rm -rf .issue-522-seed .issue-522-seed.tar.gz
 
       - name: Apply collection-boundary hard cut
         run: python scripts/issue_522_apply.py
