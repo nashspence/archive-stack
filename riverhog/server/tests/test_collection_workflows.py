@@ -121,20 +121,20 @@ def test_claim_capability_settlement_and_deletion_blocker(tmp_path) -> None:  # 
         session.add_all(
             [
                 TagRecord(
-                    id="intake/camera",
+                    id="intake-camera",
                     created_by_app="test",
                     created_by_key_id=None,
                     created_at=NOW,
                 ),
                 TagRecord(
-                    id="archive/camera",
+                    id="archive-camera",
                     created_by_app="test",
                     created_by_key_id=None,
                     created_at=NOW,
                 ),
             ]
         )
-        _collection(session, 1, creator="ftp", tag="intake/camera", root="a" * 64)
+        _collection(session, 1, creator="ftp", tag="intake-camera", root="a" * 64)
 
     service = SqlAlchemyCollectionWorkflowService(
         cast(Any, object()),
@@ -148,7 +148,7 @@ def test_claim_capability_settlement_and_deletion_blocker(tmp_path) -> None:  # 
         operation_id="archive-video/v1",
         operation_sha256="c" * 64,
         effective_intent={"container": "mkv"},
-        output_tags=["archive/camera"],
+        output_tags=["archive-camera"],
         retirement_policy="retire-after-verified-output",
         retirement_grace_seconds=0,
         principal=_principal(),
@@ -191,7 +191,7 @@ def test_claim_capability_settlement_and_deletion_blocker(tmp_path) -> None:  # 
             session,
             2,
             creator=f"transform:{claim_id}",
-            tag="archive/camera",
+            tag="archive-camera",
             root="6" * 64,
         )
         session.add(
