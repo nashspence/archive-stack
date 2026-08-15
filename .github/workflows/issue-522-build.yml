@@ -61,6 +61,12 @@ jobs:
       - name: Refresh exact workspace lock
         run: uv lock
 
+      - name: Format and apply safe lint fixes
+        shell: bash
+        run: |
+          uv run --locked --all-packages --group dev python -m ruff check --fix . || true
+          uv run --locked --all-packages --group dev python -m ruff format .
+
       - name: Compile changed Python surfaces
         run: >-
           python -m compileall -q
@@ -76,7 +82,7 @@ jobs:
         run: >-
           uv run --locked --all-packages --group dev
           python -m pytest -q --import-mode=importlib
-          packages/riverhog-protocol/tests/test_collection_workflows.py
+          packages/riverhog-protocol/tests/test_collection_workflow_contracts.py
           riverhog/server/tests/test_collection_workflows.py
           companions/jeb/tests/test_collection_controller.py
           companions/munchy/tests/test_collection_transforms.py
@@ -131,6 +137,8 @@ jobs:
           tar \
             --exclude=.git \
             --exclude=.venv \
+            --exclude=.pytest_cache \
+            --exclude=.ruff_cache \
             --exclude='**/__pycache__' \
             --exclude='*.pyc' \
             --exclude=.issue-522-applied \
