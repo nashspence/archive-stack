@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping, Sequence, cast
+from typing import Literal, cast
 
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
 
@@ -250,14 +251,18 @@ class ProducerEvidence:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> ProducerEvidence:
-        if set(value) != {
-            "format",
-            "producer_app",
-            "adapter",
-            "source_event_id",
-            "ingest_source",
-            "source_context",
-        } or value.get("format") != PRODUCER_EVIDENCE_FORMAT:
+        if (
+            set(value)
+            != {
+                "format",
+                "producer_app",
+                "adapter",
+                "source_event_id",
+                "ingest_source",
+                "source_context",
+            }
+            or value.get("format") != PRODUCER_EVIDENCE_FORMAT
+        ):
             raise ValueError("producer evidence fields are invalid")
         adapter = value.get("adapter")
         if not isinstance(adapter, Mapping) or set(adapter) != {"id", "version"}:
@@ -375,16 +380,20 @@ class TransformIntent:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> TransformIntent:
-        if set(value) != {
-            "format",
-            "transform_id",
-            "recipe",
-            "operation",
-            "inputs",
-            "effective_intent",
-            "output_tags",
-            "retirement",
-        } or value.get("format") != TRANSFORM_INTENT_FORMAT:
+        if (
+            set(value)
+            != {
+                "format",
+                "transform_id",
+                "recipe",
+                "operation",
+                "inputs",
+                "effective_intent",
+                "output_tags",
+                "retirement",
+            }
+            or value.get("format") != TRANSFORM_INTENT_FORMAT
+        ):
             raise ValueError("transform intent fields are invalid")
         recipe = value.get("recipe")
         operation = value.get("operation")
@@ -574,18 +583,22 @@ class CollectionDerivation:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> CollectionDerivation:
-        if set(value) != {
-            "format",
-            "transform_id",
-            "claim",
-            "recipe",
-            "operation",
-            "inputs",
-            "output_tags",
-            "plan_sha256",
-            "execution_sha256",
-            "dispositions",
-        } or value.get("format") != DERIVATION_FORMAT:
+        if (
+            set(value)
+            != {
+                "format",
+                "transform_id",
+                "claim",
+                "recipe",
+                "operation",
+                "inputs",
+                "output_tags",
+                "plan_sha256",
+                "execution_sha256",
+                "dispositions",
+            }
+            or value.get("format") != DERIVATION_FORMAT
+        ):
             raise ValueError("collection derivation fields are invalid")
         claim = value.get("claim")
         recipe = value.get("recipe")

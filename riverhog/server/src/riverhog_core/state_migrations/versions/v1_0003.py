@@ -45,7 +45,6 @@ def upgrade() -> None:
     _create_collection_workflow_schema()
 
 
-
 def _create_collection_workflow_schema() -> None:
     collection_id = BigInteger().with_variant(Integer, "sqlite")
     op.create_table(

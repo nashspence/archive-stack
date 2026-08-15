@@ -18,7 +18,6 @@ import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from riverhog_api_client import ApiClient
 from riverhog_api_client.producer import CollectionProducer, ProducerFile
@@ -106,9 +105,7 @@ class FtpLandingAdapter:
                 )
                 for row in rows
             )
-            batches.append(
-                ClaimedBatch(source, str(payload["batch_id"]), batch_root, files)
-            )
+            batches.append(ClaimedBatch(source, str(payload["batch_id"]), batch_root, files))
         return batches
 
     def _eligible(self, source: SourceConfig) -> list[tuple[Path, str, int, int, int]]:
@@ -141,16 +138,16 @@ class FtpLandingAdapter:
         selected: list[tuple[Path, str, int, int, int]] = []
         total = 0
         for row in self._eligible(source):
-            if selected and (len(selected) >= source.max_files or total + row[2] > source.max_bytes):
+            if selected and (
+                len(selected) >= source.max_files or total + row[2] > source.max_bytes
+            ):
                 break
             selected.append(row)
             total += row[2]
         if not selected:
             return None
         identity = "\n".join(f"{row[1]}\0{row[2]}\0{row[3]}\0{row[4]}" for row in selected)
-        batch_id = hashlib.sha256(
-            f"{source.id}\0{identity}".encode("utf-8")
-        ).hexdigest()
+        batch_id = hashlib.sha256(f"{source.id}\0{identity}".encode()).hexdigest()
         batch_root = self._claims_root(source) / batch_id
         payload_root = batch_root / "payload"
         payload_root.mkdir(parents=True, exist_ok=False)

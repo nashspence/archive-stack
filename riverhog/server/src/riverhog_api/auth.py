@@ -12,9 +12,9 @@ from riverhog_core.app_permissions import (
     ARCHIVES_READ,
     CATALOG_READ,
     COLLECTION_TAGS_MANAGE,
+    COLLECTION_TRANSFORMS_MANAGE,
     COLLECTIONS_CREATE,
     COLLECTIONS_DELETE,
-    COLLECTION_TRANSFORMS_MANAGE,
     EVENTS_READ,
     KEYS_MANAGE,
     PROVENANCE_EXPORT,
@@ -99,9 +99,7 @@ CollectionCreator = Annotated[
 ]
 CollectionTransformManager = Annotated[
     ApplicationPrincipal,
-    Depends(
-        cast(Callable[..., object], require_permission(COLLECTION_TRANSFORMS_MANAGE))
-    ),
+    Depends(cast(Callable[..., object], require_permission(COLLECTION_TRANSFORMS_MANAGE))),
 ]
 CollectionTagManager = Annotated[
     ApplicationPrincipal,

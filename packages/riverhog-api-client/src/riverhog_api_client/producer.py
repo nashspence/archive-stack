@@ -149,10 +149,10 @@ class CollectionProducer:
         if len(paths) != len(set(paths)):
             raise ValueError("producer collection paths must be unique")
 
-        normalized_journals = {str(key): bytes(value) for key, value in (provenance_journals or {}).items()}
-        source_provenance = [
-            _provenance(item.provenance, default=omitted) for item in files
-        ]
+        normalized_journals = {
+            str(key): bytes(value) for key, value in (provenance_journals or {}).items()
+        }
+        source_provenance = [_provenance(item.provenance, default=omitted) for item in files]
         captured = bool(normalized_journals) or any(
             current.get("status") == "captured" for current in source_provenance
         )
@@ -235,7 +235,9 @@ class CollectionProducer:
                 source_path = str(row.get("path") or "")
                 source = sources.get(source_path)
                 if source is None:
-                    raise RuntimeError(f"Riverhog requested an unknown producer path: {source_path}")
+                    raise RuntimeError(
+                        f"Riverhog requested an unknown producer path: {source_path}"
+                    )
                 chunks.append(
                     source.read_range(int(row.get("offset") or 0), int(row.get("bytes") or 0))
                 )
@@ -383,13 +385,9 @@ def _provenance_etag(
                 bytes=source.bytes,
                 sha256=source.sha256,
                 status=cast(ProvenanceStatus, status),
-                journal_id=(
-                    str(source.provenance["journal_id"]) if status == "captured" else None
-                ),
+                journal_id=(str(source.provenance["journal_id"]) if status == "captured" else None),
                 current_state_id=(
-                    str(source.provenance["current_state_id"])
-                    if status == "captured"
-                    else None
+                    str(source.provenance["current_state_id"]) if status == "captured" else None
                 ),
                 omission_reason=(
                     str(source.provenance["omission_reason"]) if status == "omitted" else None

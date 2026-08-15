@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import munchy_core.services.collection_transforms as module
 from munchy_core.services.collection_transforms import (

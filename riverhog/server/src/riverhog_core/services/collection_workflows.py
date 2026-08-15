@@ -7,7 +7,6 @@ import json
 import secrets
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
-from typing import Any, cast
 
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
@@ -99,7 +98,9 @@ class SqlAlchemyCollectionWorkflowService:
         if len(normalized_ids) != len(input_collection_ids):
             raise BadRequest("input collections must be unique")
         with session_scope(self._session_factory) as session:
-            roots = tuple(_collection_root(session, collection_id) for collection_id in normalized_ids)
+            roots = tuple(
+                _collection_root(session, collection_id) for collection_id in normalized_ids
+            )
             _require_output_tags(session, output_tags)
             try:
                 intent = TransformIntent.seal(
@@ -129,9 +130,9 @@ class SqlAlchemyCollectionWorkflowService:
                     claim.expires_at = expires_at
                     claim.updated_at = now
                     _revoke_capabilities(session, claim.id, now=now)
-                elif claim.state == "active" and parse_utc_timestamp(expires_at) > parse_utc_timestamp(
-                    claim.expires_at
-                ):
+                elif claim.state == "active" and parse_utc_timestamp(
+                    expires_at
+                ) > parse_utc_timestamp(claim.expires_at):
                     claim.expires_at = expires_at
                     claim.updated_at = now
                 return _claim_payload(session, claim)
@@ -201,9 +202,13 @@ class SqlAlchemyCollectionWorkflowService:
         if state:
             filters.append(CollectionProcessingClaimRecord.state == state)
         direction = desc if order == "desc" else asc
-        statement = select(CollectionProcessingClaimRecord).where(*filters).order_by(
-            direction(_CLAIM_SORT_FIELDS[sort]),
-            asc(CollectionProcessingClaimRecord.id),
+        statement = (
+            select(CollectionProcessingClaimRecord)
+            .where(*filters)
+            .order_by(
+                direction(_CLAIM_SORT_FIELDS[sort]),
+                asc(CollectionProcessingClaimRecord.id),
+            )
         )
         with session_scope(self._session_factory) as session:
             total = int(
@@ -221,9 +226,7 @@ class SqlAlchemyCollectionWorkflowService:
                 "page": 1 if all_items else page,
                 "per_page": total if all_items else per_page,
                 "total": total,
-                "pages": (1 if total else 0)
-                if all_items
-                else (total + per_page - 1) // per_page,
+                "pages": (1 if total else 0) if all_items else (total + per_page - 1) // per_page,
                 "sort": sort,
                 "order": order,
                 "filters": {"state": state},
@@ -458,14 +461,19 @@ class SqlAlchemyCollectionWorkflowService:
             _require_fence(claim, fence)
             if claim.state == "retiring":
                 return _claim_payload(session, claim)
-            if claim.state != "settled" or claim.retirement_policy != "retire-after-verified-output":
+            if (
+                claim.state != "settled"
+                or claim.retirement_policy != "retire-after-verified-output"
+            ):
                 raise Conflict("collection processing claim is not eligible for retirement")
             if claim.settled_at is None or claim.output_collection_id is None:
                 raise InvalidState("settled claim has no settlement identity")
             derivation_record = session.get(CollectionDerivationRecord, claim.output_collection_id)
             if derivation_record is None:
                 raise InvalidState("settled claim has no verified derivation record")
-            derivation = CollectionDerivation.from_mapping(json.loads(derivation_record.document_json))
+            derivation = CollectionDerivation.from_mapping(
+                json.loads(derivation_record.document_json)
+            )
             unsafe = [
                 item.input_path
                 for item in derivation.dispositions
@@ -481,7 +489,9 @@ class SqlAlchemyCollectionWorkflowService:
                 seconds=claim.retirement_grace_seconds
             )
             if utc_now() < eligible_at:
-                raise Conflict("collection processing claim retirement grace period has not elapsed")
+                raise Conflict(
+                    "collection processing claim retirement grace period has not elapsed"
+                )
             claim.state = "retiring"
             claim.updated_at = utc_timestamp_now()
             return _claim_payload(session, claim)
@@ -717,9 +727,7 @@ def processing_claim_blockers(
             CollectionProcessingClaimInputRecord.collection_id == collection_id,
             or_(
                 CollectionProcessingClaimRecord.state.in_(("settled", "retiring")),
-                (
-                    CollectionProcessingClaimRecord.state == "active"
-                )
+                (CollectionProcessingClaimRecord.state == "active")
                 & (CollectionProcessingClaimRecord.expires_at > now),
             ),
         )

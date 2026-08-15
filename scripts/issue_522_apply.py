@@ -54,17 +54,17 @@ def patch_exports() -> None:
     append_once(
         "packages/riverhog-protocol/src/riverhog_protocol/__init__.py",
         "CollectionRootIdentity",
-        '''from riverhog_protocol.collection_workflows import (\n    DERIVATION_EVIDENCE_PATH,\n    PRODUCER_EVIDENCE_PATH,\n    ArtifactDisposition,\n    CollectionDerivation,\n    CollectionRootIdentity,\n    OperationIdentity,\n    ProducerEvidence,\n    RecipeIdentity,\n    TransformIntent,\n    canonical_json_bytes,\n    canonical_json_sha256,\n)\n\n__all__ += [\n    "ArtifactDisposition",\n    "CollectionDerivation",\n    "CollectionRootIdentity",\n    "DERIVATION_EVIDENCE_PATH",\n    "OperationIdentity",\n    "PRODUCER_EVIDENCE_PATH",\n    "ProducerEvidence",\n    "RecipeIdentity",\n    "TransformIntent",\n    "canonical_json_bytes",\n    "canonical_json_sha256",\n]''',
+        """from riverhog_protocol.collection_workflows import (\n    DERIVATION_EVIDENCE_PATH,\n    PRODUCER_EVIDENCE_PATH,\n    ArtifactDisposition,\n    CollectionDerivation,\n    CollectionRootIdentity,\n    OperationIdentity,\n    ProducerEvidence,\n    RecipeIdentity,\n    TransformIntent,\n    canonical_json_bytes,\n    canonical_json_sha256,\n)\n\n__all__ += [\n    "ArtifactDisposition",\n    "CollectionDerivation",\n    "CollectionRootIdentity",\n    "DERIVATION_EVIDENCE_PATH",\n    "OperationIdentity",\n    "PRODUCER_EVIDENCE_PATH",\n    "ProducerEvidence",\n    "RecipeIdentity",\n    "TransformIntent",\n    "canonical_json_bytes",\n    "canonical_json_sha256",\n]""",
     )
     append_once(
         "packages/riverhog-api-client/src/riverhog_api_client/__init__.py",
         "CollectionWorkflowClient",
-        '''from riverhog_api_client.producer import CollectionProducer, ProducedCollection, ProducerFile\nfrom riverhog_api_client.workflows import CollectionWorkflowClient\n\n__all__ += [\n    "CollectionProducer",\n    "CollectionWorkflowClient",\n    "ProducedCollection",\n    "ProducerFile",\n]''',
+        """from riverhog_api_client.producer import CollectionProducer, ProducedCollection, ProducerFile\nfrom riverhog_api_client.workflows import CollectionWorkflowClient\n\n__all__ += [\n    "CollectionProducer",\n    "CollectionWorkflowClient",\n    "ProducedCollection",\n    "ProducerFile",\n]""",
     )
     append_once(
         "packages/munchy-api-client/src/munchy_api_client/__init__.py",
         "MunchyCollectionTransformClient",
-        '''from munchy_api_client.collection_transforms import (\n    MunchyCollectionTransformClient,\n    MunchyCollectionTransformError,\n)\n\n__all__ += [\n    "MunchyCollectionTransformClient",\n    "MunchyCollectionTransformError",\n]''',
+        """from munchy_api_client.collection_transforms import (\n    MunchyCollectionTransformClient,\n    MunchyCollectionTransformError,\n)\n\n__all__ += [\n    "MunchyCollectionTransformClient",\n    "MunchyCollectionTransformError",\n]""",
     )
 
 
@@ -105,7 +105,7 @@ def patch_catalog_schema() -> None:
     append_once(
         "riverhog/server/src/riverhog_core/catalog_base.py",
         "catalog_workflow_models",
-        '''# Load the hard-cut collection workflow tables into the one current v1 metadata.\nfrom riverhog_core import catalog_workflow_models as _catalog_workflow_models  # noqa: E402,F401''',
+        """# Load the hard-cut collection workflow tables into the one current v1 metadata.\nfrom riverhog_core import catalog_workflow_models as _catalog_workflow_models  # noqa: E402,F401""",
     )
     path = "riverhog/server/src/riverhog_core/state_migrations/versions/v1_0003.py"
     replace_once(
@@ -120,10 +120,10 @@ def patch_catalog_schema() -> None:
     )
     replace_once(
         path,
-        '''        connection.execute(\n            text(\n                "UPDATE retrieval_jobs "\n                "SET plan_etag = :plan_etag, constraints_json = :constraints_json "\n                "WHERE id = :job_id"\n            ),\n            {\n                "job_id": str(row["id"]),\n                "plan_etag": str(plan["etag"]),\n                "constraints_json": json.dumps(plan, sort_keys=True, separators=(",", ":")),\n            },\n        )\n''',
-        '''        connection.execute(\n            text(\n                "UPDATE retrieval_jobs "\n                "SET plan_etag = :plan_etag, constraints_json = :constraints_json "\n                "WHERE id = :job_id"\n            ),\n            {\n                "job_id": str(row["id"]),\n                "plan_etag": str(plan["etag"]),\n                "constraints_json": json.dumps(plan, sort_keys=True, separators=(",", ":")),\n            },\n        )\n    _create_collection_workflow_schema()\n''',
+        """        connection.execute(\n            text(\n                "UPDATE retrieval_jobs "\n                "SET plan_etag = :plan_etag, constraints_json = :constraints_json "\n                "WHERE id = :job_id"\n            ),\n            {\n                "job_id": str(row["id"]),\n                "plan_etag": str(plan["etag"]),\n                "constraints_json": json.dumps(plan, sort_keys=True, separators=(",", ":")),\n            },\n        )\n""",
+        """        connection.execute(\n            text(\n                "UPDATE retrieval_jobs "\n                "SET plan_etag = :plan_etag, constraints_json = :constraints_json "\n                "WHERE id = :job_id"\n            ),\n            {\n                "job_id": str(row["id"]),\n                "plan_etag": str(plan["etag"]),\n                "constraints_json": json.dumps(plan, sort_keys=True, separators=(",", ":")),\n            },\n        )\n    _create_collection_workflow_schema()\n""",
     )
-    insert = r'''
+    insert = r"""
 
 def _create_collection_workflow_schema() -> None:
     collection_id = BigInteger().with_variant(Integer, "sqlite")
@@ -256,8 +256,10 @@ def _create_collection_workflow_schema() -> None:
         "collection_derivations",
         ["claim_id", "collection_id"],
     )
-'''
-    replace_once(path, "\ndef _normalize_retrieval_plan", insert + "\n\ndef _normalize_retrieval_plan")
+"""
+    replace_once(
+        path, "\ndef _normalize_retrieval_plan", insert + "\n\ndef _normalize_retrieval_plan"
+    )
 
 
 def patch_permissions_and_auth() -> None:
@@ -287,12 +289,12 @@ def patch_permissions_and_auth() -> None:
     replace_once(
         path,
         "    return container.app_keys.authenticate(supplied)\n",
-        '''    principal = container.app_keys.authenticate(supplied)\n    if principal is not None:\n        return principal\n    return container.collection_workflows.authenticate_capability(supplied)\n''',
+        """    principal = container.app_keys.authenticate(supplied)\n    if principal is not None:\n        return principal\n    return container.collection_workflows.authenticate_capability(supplied)\n""",
     )
     replace_once(
         path,
-        '''CollectionCreator = Annotated[\n    ApplicationPrincipal,\n    Depends(cast(Callable[..., object], require_permission(COLLECTIONS_CREATE))),\n]\n''',
-        '''CollectionCreator = Annotated[\n    ApplicationPrincipal,\n    Depends(cast(Callable[..., object], require_permission(COLLECTIONS_CREATE))),\n]\nCollectionTransformManager = Annotated[\n    ApplicationPrincipal,\n    Depends(\n        cast(Callable[..., object], require_permission(COLLECTION_TRANSFORMS_MANAGE))\n    ),\n]\n''',
+        """CollectionCreator = Annotated[\n    ApplicationPrincipal,\n    Depends(cast(Callable[..., object], require_permission(COLLECTIONS_CREATE))),\n]\n""",
+        """CollectionCreator = Annotated[\n    ApplicationPrincipal,\n    Depends(cast(Callable[..., object], require_permission(COLLECTIONS_CREATE))),\n]\nCollectionTransformManager = Annotated[\n    ApplicationPrincipal,\n    Depends(\n        cast(Callable[..., object], require_permission(COLLECTION_TRANSFORMS_MANAGE))\n    ),\n]\n""",
     )
     replace_once(
         path,
@@ -316,7 +318,7 @@ def patch_container_and_apps() -> None:
     replace_once(
         path,
         "        provenance=SqlAlchemyProvenanceService(config, session_factory=session_factory),\n",
-        '''        collection_workflows=SqlAlchemyCollectionWorkflowService(\n            config, session_factory=session_factory\n        ),\n        provenance=SqlAlchemyProvenanceService(config, session_factory=session_factory),\n''',
+        """        collection_workflows=SqlAlchemyCollectionWorkflowService(\n            config, session_factory=session_factory\n        ),\n        provenance=SqlAlchemyProvenanceService(config, session_factory=session_factory),\n""",
     )
 
     path = "riverhog/server/src/riverhog_api/app.py"
@@ -365,56 +367,56 @@ def patch_collection_identities() -> None:
     path = "riverhog/server/src/riverhog_core/domain/models.py"
     replace_once(
         path,
-        '''class CollectionSummary:\n    id: CollectionId\n    created_at: str\n    tags: tuple[str, ...]\n    files: int\n    bytes: int\n''',
-        '''class CollectionSummary:\n    id: CollectionId\n    created_at: str\n    tags: tuple[str, ...]\n    content_etag: str\n    manifest_sha256: str\n    files: int\n    bytes: int\n''',
+        """class CollectionSummary:\n    id: CollectionId\n    created_at: str\n    tags: tuple[str, ...]\n    files: int\n    bytes: int\n""",
+        """class CollectionSummary:\n    id: CollectionId\n    created_at: str\n    tags: tuple[str, ...]\n    content_etag: str\n    manifest_sha256: str\n    files: int\n    bytes: int\n""",
     )
 
     path = "riverhog/server/src/riverhog_core/services/collections.py"
     replace_once(
         path,
-        '''        tags=tuple(sorted(current.tag_id for current in collection.tags)),\n        files=int(row.files),\n''',
-        '''        tags=tuple(sorted(current.tag_id for current in collection.tags)),\n        content_etag=collection.content_etag,\n        manifest_sha256=_manifest_identity(copies),\n        files=int(row.files),\n''',
+        """        tags=tuple(sorted(current.tag_id for current in collection.tags)),\n        files=int(row.files),\n""",
+        """        tags=tuple(sorted(current.tag_id for current in collection.tags)),\n        content_etag=collection.content_etag,\n        manifest_sha256=_manifest_identity(copies),\n        files=int(row.files),\n""",
     )
     append_once(
         path,
         "def _manifest_identity",
-        '''def _manifest_identity(copies: tuple[ArchiveCopyStatus, ...]) -> str:\n    identities = {\n        current.collection_manifest.sha256\n        for current in copies\n        if current.collection_manifest is not None and current.collection_manifest.sha256\n    }\n    if len(identities) != 1:\n        raise RuntimeError("finalized collection has no unambiguous immutable manifest identity")\n    return str(next(iter(identities)))''',
+        """def _manifest_identity(copies: tuple[ArchiveCopyStatus, ...]) -> str:\n    identities = {\n        current.collection_manifest.sha256\n        for current in copies\n        if current.collection_manifest is not None and current.collection_manifest.sha256\n    }\n    if len(identities) != 1:\n        raise RuntimeError("finalized collection has no unambiguous immutable manifest identity")\n    return str(next(iter(identities)))""",
     )
 
     path = "riverhog/server/src/riverhog_api/mappers.py"
     replace_once(
         path,
-        '''        "tags": list(summary.tags),\n        "files": summary.files,\n''',
-        '''        "tags": list(summary.tags),\n        "content_etag": summary.content_etag,\n        "manifest_sha256": summary.manifest_sha256,\n        "files": summary.files,\n''',
+        """        "tags": list(summary.tags),\n        "files": summary.files,\n""",
+        """        "tags": list(summary.tags),\n        "content_etag": summary.content_etag,\n        "manifest_sha256": summary.manifest_sha256,\n        "files": summary.files,\n""",
     )
 
     path = "riverhog/server/src/riverhog_api/schemas/collections.py"
     replace_once(
         path,
-        '''class CollectionSummaryOut(RiverhogModel):\n    id: int\n    created_at: str\n    tags: list[str]\n    files: int\n''',
-        '''class CollectionSummaryOut(RiverhogModel):\n    id: int\n    created_at: str\n    tags: list[str]\n    content_etag: str = Field(pattern=r"^[0-9a-f]{64}$")\n    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")\n    files: int\n''',
+        """class CollectionSummaryOut(RiverhogModel):\n    id: int\n    created_at: str\n    tags: list[str]\n    files: int\n""",
+        """class CollectionSummaryOut(RiverhogModel):\n    id: int\n    created_at: str\n    tags: list[str]\n    content_etag: str = Field(pattern=r"^[0-9a-f]{64}$")\n    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")\n    files: int\n""",
     )
     replace_once(
         path,
-        '''class DeleteCollectionRequest(RiverhogModel):\n    challenge: str\n    event_context: dict[str, Any] | None = None\n''',
-        '''class DeleteCollectionRequest(RiverhogModel):\n    challenge: str\n    retirement_claim_id: str | None = Field(default=None, min_length=1, max_length=64)\n    event_context: dict[str, Any] | None = None\n''',
+        """class DeleteCollectionRequest(RiverhogModel):\n    challenge: str\n    event_context: dict[str, Any] | None = None\n""",
+        """class DeleteCollectionRequest(RiverhogModel):\n    challenge: str\n    retirement_claim_id: str | None = Field(default=None, min_length=1, max_length=64)\n    event_context: dict[str, Any] | None = None\n""",
     )
     replace_once(
         path,
-        '''    metadata_rows: dict[str, int]\n    blockers: list[str]\n''',
-        '''    metadata_rows: dict[str, int]\n    retirement_claim: dict[str, Any] | None = None\n    blockers: list[str]\n''',
+        """    metadata_rows: dict[str, int]\n    blockers: list[str]\n""",
+        """    metadata_rows: dict[str, int]\n    retirement_claim: dict[str, Any] | None = None\n    blockers: list[str]\n""",
     )
 
     path = "riverhog/server/src/riverhog_core/services/collection_uploads.py"
     replace_once(
         path,
-        '''    summary = {\n        "id": collection.id,\n        "created_at": collection.created_at,\n        "tags": tags,\n        "files": len(collection.files),\n''',
-        '''    manifest = (\n        next((current for current in copy.objects if current.object_id == "manifest"), None)\n        if copy\n        else None\n    )\n    if manifest is None or not manifest.sha256:\n        raise RuntimeError("finalized collection has no immutable manifest identity")\n    summary = {\n        "id": collection.id,\n        "created_at": collection.created_at,\n        "tags": tags,\n        "content_etag": collection.content_etag,\n        "manifest_sha256": manifest.sha256,\n        "files": len(collection.files),\n''',
+        """    summary = {\n        "id": collection.id,\n        "created_at": collection.created_at,\n        "tags": tags,\n        "files": len(collection.files),\n""",
+        """    manifest = (\n        next((current for current in copy.objects if current.object_id == "manifest"), None)\n        if copy\n        else None\n    )\n    if manifest is None or not manifest.sha256:\n        raise RuntimeError("finalized collection has no immutable manifest identity")\n    summary = {\n        "id": collection.id,\n        "created_at": collection.created_at,\n        "tags": tags,\n        "content_etag": collection.content_etag,\n        "manifest_sha256": manifest.sha256,\n        "files": len(collection.files),\n""",
     )
     replace_once(
         path,
-        '''        "provenance_etag": collection.provenance_etag,\n        "archive_store": copy.store if copy else store_name,\n''',
-        '''        "provenance_etag": collection.provenance_etag,\n        "content_etag": collection.content_etag,\n        "manifest_sha256": manifest.sha256,\n        "archive_store": copy.store if copy else store_name,\n''',
+        """        "provenance_etag": collection.provenance_etag,\n        "archive_store": copy.store if copy else store_name,\n""",
+        """        "provenance_etag": collection.provenance_etag,\n        "content_etag": collection.content_etag,\n        "manifest_sha256": manifest.sha256,\n        "archive_store": copy.store if copy else store_name,\n""",
     )
 
 
@@ -423,27 +425,27 @@ def patch_deletion() -> None:
     replace_once(
         path,
         "from riverhog_core.services.lifecycle_events import (\n",
-        '''from riverhog_core.services.collection_workflows import (\n    processing_claim_blockers,\n    require_retirement_exemption,\n)\nfrom riverhog_core.services.lifecycle_events import (\n''',
+        """from riverhog_core.services.collection_workflows import (\n    processing_claim_blockers,\n    require_retirement_exemption,\n)\nfrom riverhog_core.services.lifecycle_events import (\n""",
     )
     replace_once(
         path,
-        '''    def plan(self, collection_id: int) -> dict[str, object]:\n        normalized_id = _normalize_collection_id_or_raise(collection_id)\n        with session_scope(self._session_factory) as session:\n            active = session.get(CollectionDeletionRecord, normalized_id)\n            if active is not None:\n                return _public_plan(cast(dict[str, object], json.loads(active.plan_json)))\n            expires = (utc_now() + PLAN_TTL).replace(microsecond=0)\n            plan = _build_plan(session, collection_id=normalized_id, expires_at=expires)\n            plan["challenge"] = (\n                None if plan["blockers"] else plan_challenge(_CHALLENGE_PREFIX, plan, expires)\n            )\n            return plan\n''',
-        '''    def plan(\n        self,\n        collection_id: int,\n        *,\n        principal: ApplicationPrincipal | None = None,\n        retirement_claim_id: str | None = None,\n    ) -> dict[str, object]:\n        normalized_id = _normalize_collection_id_or_raise(collection_id)\n        with session_scope(self._session_factory) as session:\n            active = session.get(CollectionDeletionRecord, normalized_id)\n            if active is not None:\n                return _public_plan(cast(dict[str, object], json.loads(active.plan_json)))\n            retirement = None\n            if retirement_claim_id is not None:\n                if principal is None:\n                    raise Conflict("retirement deletion requires an authenticated claim owner")\n                retirement = require_retirement_exemption(\n                    session,\n                    claim_id=retirement_claim_id,\n                    collection_id=normalized_id,\n                    principal=principal,\n                )\n            expires = (utc_now() + PLAN_TTL).replace(microsecond=0)\n            plan = _build_plan(\n                session,\n                collection_id=normalized_id,\n                expires_at=expires,\n                exempt_claim_id=retirement_claim_id,\n            )\n            plan["retirement_claim"] = retirement\n            plan["challenge"] = (\n                None if plan["blockers"] else plan_challenge(_CHALLENGE_PREFIX, plan, expires)\n            )\n            return plan\n''',
+        """    def plan(self, collection_id: int) -> dict[str, object]:\n        normalized_id = _normalize_collection_id_or_raise(collection_id)\n        with session_scope(self._session_factory) as session:\n            active = session.get(CollectionDeletionRecord, normalized_id)\n            if active is not None:\n                return _public_plan(cast(dict[str, object], json.loads(active.plan_json)))\n            expires = (utc_now() + PLAN_TTL).replace(microsecond=0)\n            plan = _build_plan(session, collection_id=normalized_id, expires_at=expires)\n            plan["challenge"] = (\n                None if plan["blockers"] else plan_challenge(_CHALLENGE_PREFIX, plan, expires)\n            )\n            return plan\n""",
+        """    def plan(\n        self,\n        collection_id: int,\n        *,\n        principal: ApplicationPrincipal | None = None,\n        retirement_claim_id: str | None = None,\n    ) -> dict[str, object]:\n        normalized_id = _normalize_collection_id_or_raise(collection_id)\n        with session_scope(self._session_factory) as session:\n            active = session.get(CollectionDeletionRecord, normalized_id)\n            if active is not None:\n                return _public_plan(cast(dict[str, object], json.loads(active.plan_json)))\n            retirement = None\n            if retirement_claim_id is not None:\n                if principal is None:\n                    raise Conflict("retirement deletion requires an authenticated claim owner")\n                retirement = require_retirement_exemption(\n                    session,\n                    claim_id=retirement_claim_id,\n                    collection_id=normalized_id,\n                    principal=principal,\n                )\n            expires = (utc_now() + PLAN_TTL).replace(microsecond=0)\n            plan = _build_plan(\n                session,\n                collection_id=normalized_id,\n                expires_at=expires,\n                exempt_claim_id=retirement_claim_id,\n            )\n            plan["retirement_claim"] = retirement\n            plan["challenge"] = (\n                None if plan["blockers"] else plan_challenge(_CHALLENGE_PREFIX, plan, expires)\n            )\n            return plan\n""",
     )
     replace_once(
         path,
-        '''        event_context: dict[str, object] | None = None,\n    ) -> dict[str, object]:\n''',
-        '''        event_context: dict[str, object] | None = None,\n        retirement_claim_id: str | None = None,\n    ) -> dict[str, object]:\n''',
+        """        event_context: dict[str, object] | None = None,\n    ) -> dict[str, object]:\n""",
+        """        event_context: dict[str, object] | None = None,\n        retirement_claim_id: str | None = None,\n    ) -> dict[str, object]:\n""",
     )
     replace_once(
         path,
-        '''            if active is not None:\n                if not secrets.compare_digest(active.challenge, supplied_challenge):\n                    raise Conflict("collection deletion challenge does not match active deletion")\n                plan = cast(dict[str, object], json.loads(active.plan_json))\n''',
-        '''            if active is not None:\n                if not secrets.compare_digest(active.challenge, supplied_challenge):\n                    raise Conflict("collection deletion challenge does not match active deletion")\n                plan = cast(dict[str, object], json.loads(active.plan_json))\n                expected_retirement = _retirement_claim_id(plan)\n                if expected_retirement != retirement_claim_id:\n                    raise Conflict("collection deletion retirement claim changed")\n''',
+        """            if active is not None:\n                if not secrets.compare_digest(active.challenge, supplied_challenge):\n                    raise Conflict("collection deletion challenge does not match active deletion")\n                plan = cast(dict[str, object], json.loads(active.plan_json))\n""",
+        """            if active is not None:\n                if not secrets.compare_digest(active.challenge, supplied_challenge):\n                    raise Conflict("collection deletion challenge does not match active deletion")\n                plan = cast(dict[str, object], json.loads(active.plan_json))\n                expected_retirement = _retirement_claim_id(plan)\n                if expected_retirement != retirement_claim_id:\n                    raise Conflict("collection deletion retirement claim changed")\n""",
     )
     replace_once(
         path,
-        '''                plan = _build_plan(session, collection_id=normalized_id, expires_at=expires)\n                if not secrets.compare_digest(\n''',
-        '''                retirement = None\n                if retirement_claim_id is not None:\n                    retirement = require_retirement_exemption(\n                        session,\n                        claim_id=retirement_claim_id,\n                        collection_id=normalized_id,\n                        principal=initiator,\n                    )\n                plan = _build_plan(\n                    session,\n                    collection_id=normalized_id,\n                    expires_at=expires,\n                    exempt_claim_id=retirement_claim_id,\n                )\n                plan["retirement_claim"] = retirement\n                if not secrets.compare_digest(\n''',
+        """                plan = _build_plan(session, collection_id=normalized_id, expires_at=expires)\n                if not secrets.compare_digest(\n""",
+        """                retirement = None\n                if retirement_claim_id is not None:\n                    retirement = require_retirement_exemption(\n                        session,\n                        claim_id=retirement_claim_id,\n                        collection_id=normalized_id,\n                        principal=initiator,\n                    )\n                plan = _build_plan(\n                    session,\n                    collection_id=normalized_id,\n                    expires_at=expires,\n                    exempt_claim_id=retirement_claim_id,\n                )\n                plan["retirement_claim"] = retirement\n                if not secrets.compare_digest(\n""",
     )
     replace_once(
         path,
@@ -452,8 +454,8 @@ def patch_deletion() -> None:
     )
     replace_once(
         path,
-        '''def _build_plan(\n    session: Session,\n    *,\n    collection_id: int,\n    expires_at: datetime,\n) -> dict[str, object]:\n''',
-        '''def _build_plan(\n    session: Session,\n    *,\n    collection_id: int,\n    expires_at: datetime,\n    exempt_claim_id: str | None = None,\n) -> dict[str, object]:\n''',
+        """def _build_plan(\n    session: Session,\n    *,\n    collection_id: int,\n    expires_at: datetime,\n) -> dict[str, object]:\n""",
+        """def _build_plan(\n    session: Session,\n    *,\n    collection_id: int,\n    expires_at: datetime,\n    exempt_claim_id: str | None = None,\n) -> dict[str, object]:\n""",
     )
     replace_once(
         path,
@@ -463,46 +465,46 @@ def patch_deletion() -> None:
     replace_once(
         path,
         "def _active_blockers(session: Session, collection_id: int) -> list[str]:\n",
-        '''def _active_blockers(\n    session: Session,\n    collection_id: int,\n    *,\n    exempt_claim_id: str | None = None,\n) -> list[str]:\n''',
+        """def _active_blockers(\n    session: Session,\n    collection_id: int,\n    *,\n    exempt_claim_id: str | None = None,\n) -> list[str]:\n""",
     )
     replace_once(
         path,
         "    blockers: list[str] = []\n",
-        '''    blockers: list[str] = processing_claim_blockers(\n        session, collection_id, exempt_claim_id=exempt_claim_id, limit=_BLOCKER_SAMPLE_LIMIT\n    )\n''',
+        """    blockers: list[str] = processing_claim_blockers(\n        session, collection_id, exempt_claim_id=exempt_claim_id, limit=_BLOCKER_SAMPLE_LIMIT\n    )\n""",
     )
     append_once(
         path,
         "def _retirement_claim_id",
-        '''def _retirement_claim_id(plan: dict[str, object]) -> str | None:\n    value = plan.get("retirement_claim")\n    if not isinstance(value, dict):\n        return None\n    claim_id = value.get("claim_id")\n    return str(claim_id) if claim_id else None''',
+        """def _retirement_claim_id(plan: dict[str, object]) -> str | None:\n    value = plan.get("retirement_claim")\n    if not isinstance(value, dict):\n        return None\n    claim_id = value.get("claim_id")\n    return str(claim_id) if claim_id else None""",
     )
 
     path = "riverhog/server/src/riverhog_api/routers/collections.py"
     replace_once(
         path,
-        '''def plan_collection_deletion(\n    collection_id: int,\n    container: ContainerDep,\n    principal: CollectionDeleter,\n) -> CollectionDeletionPlanOut:\n''',
-        '''def plan_collection_deletion(\n    collection_id: int,\n    container: ContainerDep,\n    principal: CollectionDeleter,\n    retirement_claim_id: str | None = None,\n) -> CollectionDeletionPlanOut:\n''',
+        """def plan_collection_deletion(\n    collection_id: int,\n    container: ContainerDep,\n    principal: CollectionDeleter,\n) -> CollectionDeletionPlanOut:\n""",
+        """def plan_collection_deletion(\n    collection_id: int,\n    container: ContainerDep,\n    principal: CollectionDeleter,\n    retirement_claim_id: str | None = None,\n) -> CollectionDeletionPlanOut:\n""",
     )
     replace_once(
         path,
         "        container.collection_deletions.plan(collection_id)\n",
-        '''        container.collection_deletions.plan(\n            collection_id,\n            principal=principal,\n            retirement_claim_id=retirement_claim_id,\n        )\n''',
+        """        container.collection_deletions.plan(\n            collection_id,\n            principal=principal,\n            retirement_claim_id=retirement_claim_id,\n        )\n""",
     )
     replace_once(
         path,
-        '''            initiator=principal,\n            event_context=request.event_context,\n''',
-        '''            initiator=principal,\n            event_context=request.event_context,\n            retirement_claim_id=request.retirement_claim_id,\n''',
+        """            initiator=principal,\n            event_context=request.event_context,\n""",
+        """            initiator=principal,\n            event_context=request.event_context,\n            retirement_claim_id=request.retirement_claim_id,\n""",
     )
 
     path = "packages/riverhog-api-client/src/riverhog_api_client/client.py"
     replace_once(
         path,
-        '''    def plan_collection_deletion(self, collection_id: int) -> dict[str, Any]:\n        return self._json(\n            "POST",\n            f"/v1/collections/{str(collection_id)}/deletion-plan",\n        )\n''',
-        '''    def plan_collection_deletion(\n        self,\n        collection_id: int,\n        *,\n        retirement_claim_id: str | None = None,\n    ) -> dict[str, Any]:\n        params = (\n            {"retirement_claim_id": retirement_claim_id}\n            if retirement_claim_id is not None\n            else None\n        )\n        return self._json(\n            "POST",\n            f"/v1/collections/{str(collection_id)}/deletion-plan",\n            params=params,\n        )\n''',
+        """    def plan_collection_deletion(self, collection_id: int) -> dict[str, Any]:\n        return self._json(\n            "POST",\n            f"/v1/collections/{str(collection_id)}/deletion-plan",\n        )\n""",
+        """    def plan_collection_deletion(\n        self,\n        collection_id: int,\n        *,\n        retirement_claim_id: str | None = None,\n    ) -> dict[str, Any]:\n        params = (\n            {"retirement_claim_id": retirement_claim_id}\n            if retirement_claim_id is not None\n            else None\n        )\n        return self._json(\n            "POST",\n            f"/v1/collections/{str(collection_id)}/deletion-plan",\n            params=params,\n        )\n""",
     )
     replace_once(
         path,
-        '''        challenge: str,\n        event_context: Mapping[str, Any] | None = None,\n    ) -> dict[str, Any]:\n        payload: dict[str, Any] = {"challenge": challenge}\n''',
-        '''        challenge: str,\n        retirement_claim_id: str | None = None,\n        event_context: Mapping[str, Any] | None = None,\n    ) -> dict[str, Any]:\n        payload: dict[str, Any] = {"challenge": challenge}\n        if retirement_claim_id is not None:\n            payload["retirement_claim_id"] = retirement_claim_id\n''',
+        """        challenge: str,\n        event_context: Mapping[str, Any] | None = None,\n    ) -> dict[str, Any]:\n        payload: dict[str, Any] = {"challenge": challenge}\n""",
+        """        challenge: str,\n        retirement_claim_id: str | None = None,\n        event_context: Mapping[str, Any] | None = None,\n    ) -> dict[str, Any]:\n        payload: dict[str, Any] = {"challenge": challenge}\n        if retirement_claim_id is not None:\n            payload["retirement_claim_id"] = retirement_claim_id\n""",
     )
 
 
@@ -510,11 +512,11 @@ def patch_operation_interfaces() -> None:
     path = "riverhog/server/src/riverhog_api/routers/workflows.py"
     value = read(path)
     for signature in [
-        '    response_model=ProcessingClaimPageOut,\n)',
-        '    response_model=ProcessingClaimOut,\n)\ndef get_processing_claim',
-        '    response_model=ProcessingClaimOut,\n)\ndef begin_processing_claim_retirement',
-        '    response_model=ProcessingClaimOut,\n)\ndef release_processing_claim',
-        '    response_model=CollectionDerivationOut,\n)\ndef get_collection_derivation',
+        "    response_model=ProcessingClaimPageOut,\n)",
+        "    response_model=ProcessingClaimOut,\n)\ndef get_processing_claim",
+        "    response_model=ProcessingClaimOut,\n)\ndef begin_processing_claim_retirement",
+        "    response_model=ProcessingClaimOut,\n)\ndef release_processing_claim",
+        "    response_model=CollectionDerivationOut,\n)\ndef get_collection_derivation",
     ]:
         if signature in value:
             value = value.replace(
@@ -529,7 +531,7 @@ def patch_operation_interfaces() -> None:
 
 def patch_architecture() -> None:
     path = "docs/architecture.md"
-    section = '''## Collection workflow model\n\nFinalized Riverhog collections are the only durable payload units. Minimal protocol\nadapters create collections and retain only bounded transient custody until the\nfinalized root receipt. Jeb is a payload-free, tag-targeted transformation\ncontroller. It freezes exact immutable input roots, owns fenced claims, verifies\nderived collections from Riverhog, and separately orchestrates optional retirement.\nMunchy is a content-aware collection transform executor: one finalized collection\nset and one sealed intent produce exactly one finalized collection on success.\nTargets own any bounded encrypted or ephemeral payload workspace.\n\nTags select work but are never transform identity. Processing claims bind exact\nmanifest and content identities. Scoped transform capabilities never expose archive\npassphrases, broad S3 credentials, archive-key selection, or deletion. Every derived\ncollection carries immutable input-root, plan, execution, disposition, and\nprovenance evidence. Active or retiring claims participate in Riverhog deletion\nsafety.\n'''
+    section = """## Collection workflow model\n\nFinalized Riverhog collections are the only durable payload units. Minimal protocol\nadapters create collections and retain only bounded transient custody until the\nfinalized root receipt. Jeb is a payload-free, tag-targeted transformation\ncontroller. It freezes exact immutable input roots, owns fenced claims, verifies\nderived collections from Riverhog, and separately orchestrates optional retirement.\nMunchy is a content-aware collection transform executor: one finalized collection\nset and one sealed intent produce exactly one finalized collection on success.\nTargets own any bounded encrypted or ephemeral payload workspace.\n\nTags select work but are never transform identity. Processing claims bind exact\nmanifest and content identities. Scoped transform capabilities never expose archive\npassphrases, broad S3 credentials, archive-key selection, or deletion. Every derived\ncollection carries immutable input-root, plan, execution, disposition, and\nprovenance evidence. Active or retiring claims participate in Riverhog deletion\nsafety.\n"""
     append_once(path, "## Collection workflow model", section)
 
 

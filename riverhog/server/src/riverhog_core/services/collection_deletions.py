@@ -40,11 +40,11 @@ from riverhog_core.services.archive_records import (
     archive_copy_is_complete,
     archive_copy_owned_identity,
 )
-from riverhog_core.services.collections import _normalize_collection_id_or_raise
 from riverhog_core.services.collection_workflows import (
     processing_claim_blockers,
     require_retirement_exemption,
 )
+from riverhog_core.services.collections import _normalize_collection_id_or_raise
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
@@ -364,9 +364,7 @@ def _build_plan(
         )
         or 0
     )
-    blockers = _active_blockers(
-        session, collection_id, exempt_claim_id=exempt_claim_id
-    )
+    blockers = _active_blockers(session, collection_id, exempt_claim_id=exempt_claim_id)
     if upload is not None and upload.state not in {"canceled", "expired"}:
         blockers.append(f"collection upload is active: {upload.state or 'unknown'}")
     metadata_publication_count = int(
@@ -514,6 +512,7 @@ def _deletion_result(plan: dict[str, object], *, status: str) -> dict[str, objec
         "bytes": plan["bytes"],
         "remote_storage_bytes": plan["remote_storage_bytes"],
     }
+
 
 def _retirement_claim_id(plan: dict[str, object]) -> str | None:
     value = plan.get("retirement_claim")

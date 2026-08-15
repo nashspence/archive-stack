@@ -282,6 +282,7 @@ def _like_pattern(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
 
+
 def _manifest_identity(copies: tuple[ArchiveCopyStatus, ...]) -> str:
     identities = {
         current.collection_manifest.sha256

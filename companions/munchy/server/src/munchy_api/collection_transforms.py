@@ -52,7 +52,9 @@ def _principal(request: Request) -> MunchyPrincipal:
 def _service(request: Request) -> MunchyCollectionTransformService:
     service = getattr(request.app.state, "collection_transform_service", None)
     if not isinstance(service, MunchyCollectionTransformService):
-        raise HTTPException(status_code=503, detail="collection transform executor is not configured")
+        raise HTTPException(
+            status_code=503, detail="collection transform executor is not configured"
+        )
     return service
 
 
@@ -93,7 +95,9 @@ def get_collection_transform(
     try:
         job = service.get(job_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"unknown collection transform: {job_id}") from exc
+        raise HTTPException(
+            status_code=404, detail=f"unknown collection transform: {job_id}"
+        ) from exc
     owner = job.get("owner_app")
     if owner is not None and owner != principal.app:
         raise HTTPException(status_code=404, detail=f"unknown collection transform: {job_id}")

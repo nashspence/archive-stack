@@ -7,10 +7,8 @@ returns finalized output artifacts for direct Riverhog collection creation.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -107,9 +105,7 @@ class MunchyCollectionTransformService:
     ) -> None:
         self.target = target
         self.store = store or SQLiteCollectionTransformStore()
-        self.riverhog_api_factory = riverhog_api_factory or (
-            lambda token: ApiClient(token=token)
-        )
+        self.riverhog_api_factory = riverhog_api_factory or (lambda token: ApiClient(token=token))
         self.producer_version = producer_version
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
