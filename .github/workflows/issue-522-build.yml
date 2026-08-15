@@ -32,13 +32,21 @@ jobs:
         uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
 
       - name: Expand architectural seed
+        id: seed
+        shell: bash
         run: |
-          cat .issue-522-seed/part-* | base64 -d > /tmp/issue-522-seed.tar.gz
-          echo "cb3fcf40f4cbe58fa84120dc8a5d4c1611cb62b7949060ad635d173f8736cea6  /tmp/issue-522-seed.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/issue-522-seed.tar.gz
-          rm -rf .issue-522-seed .issue-522-seed.tar.gz
+          if [[ -d .issue-522-seed ]]; then
+            cat .issue-522-seed/part-* | base64 -d > /tmp/issue-522-seed.tar.gz
+            echo "cb3fcf40f4cbe58fa84120dc8a5d4c1611cb62b7949060ad635d173f8736cea6  /tmp/issue-522-seed.tar.gz" | sha256sum -c -
+            tar -xzf /tmp/issue-522-seed.tar.gz
+            rm -rf .issue-522-seed .issue-522-seed.tar.gz
+            echo "expanded=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "expanded=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Persist expanded seed
+        if: steps.seed.outputs.expanded == 'true'
         shell: bash
         run: |
           git config user.name "OpenAI architectural handoff"
@@ -67,7 +75,7 @@ jobs:
       - name: Run focused architecture tests
         run: >-
           uv run --locked --all-packages --group dev
-          python -m pytest -q
+          python -m pytest -q --import-mode=importlib
           packages/riverhog-protocol/tests/test_collection_workflows.py
           riverhog/server/tests/test_collection_workflows.py
           companions/jeb/tests/test_collection_controller.py
