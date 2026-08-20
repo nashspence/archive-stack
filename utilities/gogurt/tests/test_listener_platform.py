@@ -292,7 +292,8 @@ def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path:
     command = (str(tmp_path / "Gogurt Tool" / "gogurt.exe"), "listener", "_run")
 
     adapter.register(paths, command)
-    create = adapter.commands[1]
+    assert [item[1] for item in adapter.commands] == ["/Create", "/Run"]
+    create = adapter.commands[0]
     assert create[:4] == ["schtasks.exe", "/Create", "/TN", "Riverhog.Gogurt"]
     assert create[create.index("/SC") + 1] == "ONLOGON"
     assert create[create.index("/RL") + 1] == "LIMITED"
