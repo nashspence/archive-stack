@@ -12,15 +12,23 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from riverhog_api_client import ApiClient
 from riverhog_protocol.collection_workflows import canonical_json_sha256
 from stove0_protocol import (
+    ArtifactSelection,
     ArtifactSubject,
+    BranchPlan,
+    BranchSetDecision,
+    BranchSetPlan,
+    BranchWorkBinding,
     CollectionRootRef,
+    JoinDeclaration,
+    JoinMemberDeclaration,
+    JoinWorkBinding,
     ObservationEvidence,
     ObservationRequest,
     ObservationRequestPayload,
     OperationRef,
     RecipeRef,
     WorkflowPlan,
-    WorkflowPlanPayload,
+    WorkflowPlanIntent,
     WorkIdentity,
     WorkPayload,
 )
@@ -76,8 +84,28 @@ class RecipeRoute(RecipeModel):
     target_options: dict[str, JsonValue] = Field(default_factory=dict)
     input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
     output_tags: tuple[str, ...] = Field(min_length=1)
-    retirement_policy: Literal["retain", "retire-after-verified-output"] = "retain"
-    retirement_grace_seconds: int = Field(default=0, ge=0)
+
+
+class RecipeJoinMember(RecipeModel):
+    branch_id: str
+    output_roles: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def canonical_roles(self) -> Self:
+        if self.output_roles != tuple(sorted(set(self.output_roles))):
+            raise ValueError("join output roles must be unique and canonical")
+        return self
+
+
+class RecipeJoin(RecipeModel):
+    id: str
+    members: tuple[RecipeJoinMember, ...] = Field(min_length=2)
+    operation_id: str
+    target_registration_id: str
+    intent: dict[str, JsonValue] = Field(default_factory=dict)
+    target_options: dict[str, JsonValue] = Field(default_factory=dict)
+    input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
+    output_tags: tuple[str, ...] = Field(min_length=1)
 
 
 class RecipeDefinition(RecipeModel):
@@ -88,6 +116,9 @@ class RecipeDefinition(RecipeModel):
     observers: tuple[ObserverUse, ...] = ()
     routes: tuple[RecipeRoute, ...] = Field(min_length=1)
     allow_derived_inputs: bool = False
+    source_retirement_policy: Literal["retain", "retire-after-verified-output"] = "retain"
+    retirement_grace_seconds: int = Field(default=0, ge=0)
+    join: RecipeJoin | None = None
 
     @model_validator(mode="after")
     def canonical_members(self) -> Self:
@@ -96,6 +127,15 @@ class RecipeDefinition(RecipeModel):
         route_ids = [route.id for route in self.routes]
         if len(route_ids) != len(set(route_ids)):
             raise ValueError("recipe route IDs must be unique")
+        if self.join is not None:
+            member_ids = [member.branch_id for member in self.join.members]
+            if member_ids != sorted(member_ids) or len(member_ids) != len(set(member_ids)):
+                raise ValueError("join members must be unique and ordered by branch ID")
+            unknown = sorted(set(member_ids) - set(route_ids))
+            if unknown:
+                raise ValueError("join members reference unknown route IDs: " + ", ".join(unknown))
+        if self.source_retirement_policy == "retain" and self.retirement_grace_seconds:
+            raise ValueError("retain recipes cannot declare a retirement grace period")
         return self
 
     @property
@@ -186,6 +226,8 @@ class RecipePlanner:
         )
 
     def observation_requests(self, work: WorkIdentity) -> tuple[ObservationRequest, ...]:
+        if work.fork_join is not None:
+            return ()
         recipe = self._recipe(work)
         requests: list[ObservationRequest] = []
         inventory = self._inventory(work)
@@ -217,68 +259,189 @@ class RecipePlanner:
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
-    ) -> WorkflowPlan | WorkInapplicable:
+    ) -> BranchSetDecision | WorkInapplicable:
+        if work.fork_join is not None:
+            raise RuntimeError("branch and join workflow plans are sealed by their parent plan")
         recipe = self._recipe(work)
-        route = next(
-            (
-                candidate
-                for candidate in recipe.routes
-                if all(_predicate_matches(predicate, observations) for predicate in candidate.when)
-            ),
-            None,
-        )
-        if route is None:
+        inventory = self._inventory(work)
+        selected: list[tuple[RecipeRoute, ArtifactSelection]] = []
+        for route in recipe.routes:
+            if not all(_predicate_matches(predicate, observations) for predicate in route.when):
+                continue
+            artifacts = _subjects(inventory, route.artifact_rules)
+            if not artifacts:
+                continue
+            selected.append((route, ArtifactSelection.seal(artifacts)))
+        selected.sort(key=lambda item: item[0].id)
+        if not selected:
             return WorkInapplicable(
                 code="no-matching-route",
-                message="No configured recipe route accepted the immutable inputs.",
+                message="No configured recipe branch accepted the immutable inputs.",
             )
+
+        selected_ids = {route.id for route, _selection in selected}
+        if recipe.join is not None:
+            missing = [
+                member.branch_id
+                for member in recipe.join.members
+                if member.branch_id not in selected_ids
+            ]
+            if missing:
+                return WorkInapplicable(
+                    code="join-members-inapplicable",
+                    message=(
+                        "The configured exact join requires branches not selected by the "
+                        "immutable observations: " + ", ".join(missing)
+                    ),
+                )
+
+        decision_sha256 = canonical_json_sha256(
+            {
+                "format": "stove0-routing-decision/v1",
+                "parent_work_id": work.work_id,
+                "recipe": recipe.ref.model_dump(mode="json"),
+                "evidence_sha256s": sorted(
+                    evidence.result.result_sha256 for evidence in observations
+                ),
+                "branches": [
+                    {
+                        "branch_id": route.id,
+                        "artifact_selection_sha256": selection.selection_sha256,
+                    }
+                    for route, selection in selected
+                ],
+                "join_members": (
+                    [member.model_dump(mode="json") for member in recipe.join.members]
+                    if recipe.join is not None
+                    else []
+                ),
+            }
+        )
+        branches = tuple(
+            self._branch_plan(
+                parent=work,
+                observations=observations,
+                route=route,
+                selection=selection,
+                decision_sha256=decision_sha256,
+                recipe=recipe,
+            )
+            for route, selection in selected
+        )
+        join = self._join_declaration(work, recipe.join) if recipe.join is not None else None
+        documents = {selection.selection_sha256: selection for _route, selection in selected}
+        selections = tuple(documents[digest] for digest in sorted(documents))
+        return BranchSetDecision(
+            plan=BranchSetPlan.seal(
+                parent_work=work,
+                decision_sha256=decision_sha256,
+                evidence_sha256s=tuple(
+                    sorted(evidence.result.result_sha256 for evidence in observations)
+                ),
+                branches=branches,
+                join=join,
+                retirement_policy=recipe.source_retirement_policy,
+                retirement_grace_seconds=recipe.retirement_grace_seconds,
+                selections=documents,
+            ),
+            selections=selections,
+        )
+
+    def _branch_plan(
+        self,
+        *,
+        parent: WorkIdentity,
+        observations: tuple[ObservationEvidence, ...],
+        route: RecipeRoute,
+        selection: ArtifactSelection,
+        decision_sha256: str,
+        recipe: RecipeDefinition,
+    ) -> BranchPlan:
         target = self.targets.contract(route.target_registration_id)
         operation = self.catalog.operation(route.operation_id)
         support = target.support_for(operation.id)
         if support.operation_contract_sha256 != operation.contract_sha256:
             raise RuntimeError("target supports another revision of the recipe operation")
-        _intent, compiled_options = self._compile_operation(work, operation.id)
-        requested_options = {**route.target_options, **compiled_options}
-        return WorkflowPlan.seal(
-            WorkflowPlanPayload(
-                work=work,
-                observations=observations,
-                operation=OperationRef(
-                    id=operation.id,
-                    sha256=operation.contract_sha256,
-                ),
+        compiled_intent, compiled_options = self._compile_operation(parent, operation.id)
+        effective_intent = {**route.intent, **compiled_intent}
+        return BranchPlan.build(
+            parent_work=parent,
+            branch_id=route.id,
+            decision_sha256=decision_sha256,
+            selection=selection,
+            recipe=recipe.ref,
+            effective_intent=effective_intent,
+            workflow_intent=WorkflowPlanIntent(
+                operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
                 target_registration_id=route.target_registration_id,
                 target_contract_sha256=target.contract_sha256,
-                requested_target_options=requested_options,
+                requested_target_options={**route.target_options, **compiled_options},
                 input_retrieval_policy=route.input_retrieval_policy,
                 output_tags=tuple(sorted(route.output_tags)),
-                retirement_policy=route.retirement_policy,
-                retirement_grace_seconds=route.retirement_grace_seconds,
-                output_policy={"route_id": route.id},
-            )
+                retirement_policy="retain",
+                output_policy={
+                    "route_id": route.id,
+                    "branch_id": route.id,
+                    "artifact_selection_sha256": selection.selection_sha256,
+                },
+            ),
+            observations=observations,
         )
 
-    def target_preflight_request(self, plan: WorkflowPlan) -> TargetPreflightRequest:
-        recipe = self._recipe(plan.work)
-        route_id = str(plan.output_policy.get("route_id") or "")
-        route = next((candidate for candidate in recipe.routes if candidate.id == route_id), None)
-        if route is None:
-            raise RuntimeError("sealed workflow plan refers to an unknown recipe route")
-        inventory = self._inventory(plan.work)
-        artifacts = _target_inputs(inventory, route.artifact_rules)
-        compiled_intent, compiled_options = self._compile_operation(
-            plan.work,
-            plan.operation.id,
+    def _join_declaration(
+        self,
+        parent: WorkIdentity,
+        join: RecipeJoin,
+    ) -> JoinDeclaration:
+        target = self.targets.contract(join.target_registration_id)
+        operation = self.catalog.operation(join.operation_id)
+        support = target.support_for(operation.id)
+        if support.operation_contract_sha256 != operation.contract_sha256:
+            raise RuntimeError("join target supports another revision of the recipe operation")
+        compiled_intent, compiled_options = self._compile_operation(parent, operation.id)
+        return JoinDeclaration.seal(
+            members=tuple(
+                JoinMemberDeclaration(
+                    branch_id=member.branch_id,
+                    output_roles=member.output_roles,
+                )
+                for member in join.members
+            ),
+            recipe=parent.recipe,
+            effective_intent={**join.intent, **compiled_intent},
+            workflow_intent=WorkflowPlanIntent(
+                operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
+                target_registration_id=join.target_registration_id,
+                target_contract_sha256=target.contract_sha256,
+                requested_target_options={**join.target_options, **compiled_options},
+                input_retrieval_policy=join.input_retrieval_policy,
+                output_tags=tuple(sorted(join.output_tags)),
+                retirement_policy="retain",
+                output_policy={"route_id": join.id, "join_id": join.id},
+            ),
         )
-        intent = {**route.intent, **compiled_intent}
-        expected_options = {**route.target_options, **compiled_options}
-        if expected_options != plan.requested_target_options:
-            raise RuntimeError("compiled target options differ from the sealed workflow plan")
+
+    def target_preflight_request(
+        self,
+        plan: WorkflowPlan,
+        selections: Mapping[str, ArtifactSelection],
+    ) -> TargetPreflightRequest:
+        self._recipe(plan.work)
+        binding = plan.work.fork_join
+        if isinstance(binding, BranchWorkBinding):
+            selection = selections.get(binding.artifact_selection_sha256)
+            if selection is None:
+                raise RuntimeError("branch preflight is missing its exact artifact selection")
+            artifacts = _target_inputs_from_selection(selection)
+        elif isinstance(binding, JoinWorkBinding):
+            artifacts = _join_target_inputs(binding, selections)
+        else:
+            raise RuntimeError("target execution requires explicit branch or join work")
         return TargetPreflightRequest(
             operation_id=plan.operation.id,
             operation_contract_sha256=plan.operation.sha256,
             inputs=artifacts,
-            intent=intent,
+            intent=plan.work.effective_intent,
             target_options=plan.requested_target_options,
         )
 
@@ -390,6 +553,59 @@ def _target_inputs(
     )
 
 
+def _target_inputs_from_selection(
+    selection: ArtifactSelection,
+) -> tuple[InputArtifact, ...]:
+    return tuple(
+        InputArtifact(
+            id=subject.id,
+            role=subject.role,
+            collection=subject.collection,
+            path=subject.path,
+            bytes=subject.bytes,
+            sha256=subject.sha256,
+            media_type=subject.media_type,
+        )
+        for subject in selection.artifacts
+    )
+
+
+def _join_target_inputs(
+    binding: JoinWorkBinding,
+    selections: Mapping[str, ArtifactSelection],
+) -> tuple[InputArtifact, ...]:
+    artifacts: list[InputArtifact] = []
+    for member in binding.members:
+        selection = selections.get(member.artifact_selection_sha256)
+        if selection is None:
+            raise RuntimeError(
+                f"join preflight is missing the exact {member.branch_id} artifact selection"
+            )
+        for subject in selection.artifacts:
+            artifact_id = (
+                "j-"
+                + canonical_json_sha256(
+                    {
+                        "branch_id": member.branch_id,
+                        "selection_sha256": member.artifact_selection_sha256,
+                        "artifact_id": subject.id,
+                    }
+                )[:32]
+            )
+            artifacts.append(
+                InputArtifact(
+                    id=artifact_id,
+                    role=subject.role,
+                    collection=subject.collection,
+                    path=subject.path,
+                    bytes=subject.bytes,
+                    sha256=subject.sha256,
+                    media_type=subject.media_type,
+                )
+            )
+    return tuple(sorted(artifacts, key=lambda item: item.id))
+
+
 def _artifact_rule(path: str, rules: Sequence[ArtifactRule]) -> ArtifactRule | None:
     return next((rule for rule in rules if fnmatch.fnmatchcase(path, rule.glob)), None)
 
@@ -436,11 +652,14 @@ def _json_pointer(document: JsonValue, pointer: str) -> tuple[bool, JsonValue]:
 
 __all__ = [
     "ArtifactRule",
+    "BranchSetDecision",
     "FactPredicate",
     "ObserverUse",
     "OperationPlanCompiler",
     "RecipeCatalog",
     "RecipeDefinition",
+    "RecipeJoin",
+    "RecipeJoinMember",
     "RecipePlanner",
     "RecipeRoute",
 ]

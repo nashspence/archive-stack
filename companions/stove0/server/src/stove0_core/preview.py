@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import Protocol
 
 from stove0_protocol import (
+    BranchSetDecision,
+    BranchTargetPreview,
     ObservationEvidence,
     ObservationInvocation,
     ObservationRequest,
@@ -115,32 +117,48 @@ class WorkflowPreviewService:
                     )
                 )
 
-            target = self.targets.contract(decision.target_registration_id)
-            if target.contract_sha256 != decision.target_contract_sha256:
-                raise RuntimeError("configured target contract changed after workflow planning")
-            preflight_request = self.planning.target_preflight_request(decision)
-            response = self.targets.preflight(
-                decision.target_registration_id,
-                preflight_request,
-            )
-            validate_preflight_response_against_request(response, preflight_request)
-            plan = response.plan
-            binding = TargetPlanBinding(
-                protocol=target.protocol,
-                target_implementation_id=target.implementation_id,
-                target_contract_sha256=target.contract_sha256,
-                operation_contract_sha256=plan.operation_contract_sha256,
-                plan=plan.binding_document(),
-                plan_sha256=plan.plan_sha256,
-            )
+            if not isinstance(decision, BranchSetDecision):
+                raise RuntimeError("planning returned an unsupported workflow decision")
+            documents = decision.selection_documents
+            target_plans: list[BranchTargetPreview] = []
+            for branch in decision.plan.branches:
+                workflow = branch.workflow_plan
+                target = self.targets.contract(workflow.target_registration_id)
+                if target.contract_sha256 != workflow.target_contract_sha256:
+                    raise RuntimeError("configured target contract changed after workflow planning")
+                preflight_request = self.planning.target_preflight_request(
+                    workflow,
+                    documents,
+                )
+                response = self.targets.preflight(
+                    workflow.target_registration_id,
+                    preflight_request,
+                )
+                validate_preflight_response_against_request(response, preflight_request)
+                plan = response.plan
+                target_plans.append(
+                    BranchTargetPreview(
+                        branch_id=branch.branch_id,
+                        workflow_plan_sha256=workflow.workflow_plan_sha256,
+                        target_plan=TargetPlanBinding(
+                            protocol=target.protocol,
+                            target_implementation_id=target.implementation_id,
+                            target_contract_sha256=target.contract_sha256,
+                            operation_contract_sha256=plan.operation_contract_sha256,
+                            plan=plan.binding_document(),
+                            plan_sha256=plan.plan_sha256,
+                        ),
+                    )
+                )
             return WorkflowPreview.seal(
                 WorkflowPreviewPayload(
                     preview_id=request.preview_id,
                     state="ready",
                     work=identity,
                     observations=evidence,
-                    workflow_plan=decision,
-                    target_plan=binding,
+                    branch_set_plan=decision.plan,
+                    selections=decision.selections,
+                    target_plans=tuple(target_plans),
                 )
             )
         except Exception as exc:

@@ -21,8 +21,10 @@ MISE_CONTAINER_TOOLS = {
     "riverhog": {"minisign", "uv"},
     "riverhog-ftp-adapter": {"uv"},
     "stove0": {"uv"},
-    "stove0-extensions": {"uv"},
-    "stove0-nvenc-extension": {"uv"},
+    "stove0-ffprobe-sampling-observer": {"uv"},
+    "stove0-nvenc-av1-opus-target": {"uv"},
+    "stove0-opus-target": {"uv"},
+    "stove0-review-target": {"uv"},
     "mango-fish": {"uv"},
     "test": {"age", "http:exiftool", "minisign", "uv"},
 }
@@ -57,22 +59,39 @@ IMAGE_CONTRACTS = {
             ("companions/stove0/compose.yaml", "worker"),
         ),
     },
-    "stove0-extensions": {
-        "dockerfile": "companions/stove0/extensions/Dockerfile",
-        "tag": "stove0-maintained-extensions:dev",
-        "title": "stove0 maintained extensions",
+    "stove0-ffprobe-sampling-observer": {
+        "dockerfile": "companions/stove0-ffprobe-sampling-observer/Dockerfile",
+        "tag": "stove0-ffprobe-sampling-observer:dev",
+        "title": "stove0 FFprobe sampling observer",
+        "license": "CAL-1.0",
+        "compose": (("companions/stove0/compose.yaml", "ffprobe-sampling-observer"),),
+    },
+    "stove0-nvenc-av1-opus-target": {
+        "dockerfile": "companions/stove0-nvenc-av1-opus-target/Dockerfile",
+        "tag": "stove0-nvenc-av1-opus-target:dev",
+        "title": "stove0 NVENC AV1 + Opus target",
         "license": "CAL-1.0",
         "compose": (
-            ("companions/stove0/compose.yaml", "media-sampling"),
-            ("companions/stove0/compose.yaml", "local-media"),
+            ("companions/stove0/compose.yaml", "nvenc-av1-opus-target"),
+            ("companions/stove0/compose.yaml", "nvenc-av1-opus-sampler"),
         ),
     },
-    "stove0-nvenc-extension": {
-        "dockerfile": "companions/stove0/extensions/nvenc/Dockerfile",
-        "tag": "stove0-nvenc-extension:dev",
-        "title": "stove0 NVENC extension",
+    "stove0-opus-target": {
+        "dockerfile": "companions/stove0-opus-target/Dockerfile",
+        "tag": "stove0-opus-target:dev",
+        "title": "stove0 Opus target",
         "license": "CAL-1.0",
-        "compose": (("companions/stove0/compose.yaml", "nvenc-media"),),
+        "compose": (
+            ("companions/stove0/compose.yaml", "opus-target"),
+            ("companions/stove0/compose.yaml", "opus-sampler"),
+        ),
+    },
+    "stove0-review-target": {
+        "dockerfile": "companions/stove0-review-target/Dockerfile",
+        "tag": "stove0-review-target:dev",
+        "title": "stove0 review target",
+        "license": "CAL-1.0",
+        "compose": (("companions/stove0/compose.yaml", "review-target"),),
     },
     "mango-fish": {
         "dockerfile": "utilities/mango-fish/Dockerfile",
@@ -290,15 +309,15 @@ def test_container_python_ownership_matches_the_supported_runtime_minor() -> Non
     assert observed_python_bases == {supported_minor}
 
     av1_dockerfile = (
-        REPO_ROOT / IMAGE_CONTRACTS["stove0-nvenc-extension"]["dockerfile"]
+        REPO_ROOT / IMAGE_CONTRACTS["stove0-nvenc-av1-opus-target"]["dockerfile"]
     ).read_text(encoding="utf-8")
     assert "assert sys.version_info[:2] == (3, 12)" in av1_dockerfile
 
 
 def test_av1_source_builds_verify_the_exact_requested_commits() -> None:
-    dockerfile = (REPO_ROOT / IMAGE_CONTRACTS["stove0-nvenc-extension"]["dockerfile"]).read_text(
-        encoding="utf-8"
-    )
+    dockerfile = (
+        REPO_ROOT / IMAGE_CONTRACTS["stove0-nvenc-av1-opus-target"]["dockerfile"]
+    ).read_text(encoding="utf-8")
 
     assert 'test "$(git rev-parse HEAD)" = "${NV_CODEC_HEADERS_REF}"' in dockerfile
     assert 'test "$(git rev-parse HEAD)" = "${FFMPEG_REF}"' in dockerfile

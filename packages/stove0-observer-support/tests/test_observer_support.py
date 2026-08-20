@@ -171,6 +171,7 @@ def _descriptor(contract: ObserverContract) -> ObserverDescriptor:
             implementation_id="fixture.bytes-observer/v1",
             implementation_version="1.0.0",
             source_revision="fixture",
+            image_digest=_sha("9"),
             contracts=(ObserverContractSupport.from_contract(contract),),
         )
     )

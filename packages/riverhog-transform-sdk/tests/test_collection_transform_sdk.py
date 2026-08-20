@@ -463,6 +463,7 @@ def test_derived_writer_binds_outputs_to_dispositions(
         work_id=WORK_ID,
         execution_id=EXECUTION_ID,
         controller_evidence=CONTROLLER_EVIDENCE,
+        producer_app="fixture-transform",
     )
 
     receipt = writer.publish(
@@ -516,6 +517,7 @@ def test_runtime_requires_complete_input_dispositions(
         work_id=WORK_ID,
         execution_id=EXECUTION_ID,
         controller_evidence=CONTROLLER_EVIDENCE,
+        producer_app="fixture-transform",
     )
     output = b"derived"
     stream = ProducerStream(
@@ -580,6 +582,7 @@ def test_finalized_receipt_is_not_revoked_by_a_late_cancellation(
         work_id=WORK_ID,
         execution_id=EXECUTION_ID,
         controller_evidence=CONTROLLER_EVIDENCE,
+        producer_app="fixture-transform",
         cancellation_check=cancellation_check,
     )
     output = b"derived"
@@ -709,6 +712,7 @@ def test_runtime_rejects_empty_capability_without_environment_fallback() -> None
             work_id=WORK_ID,
             execution_id=EXECUTION_ID,
             controller_evidence=CONTROLLER_EVIDENCE,
+            producer_app="fixture-transform",
         )
 
 

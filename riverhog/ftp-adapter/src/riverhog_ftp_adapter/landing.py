@@ -61,7 +61,9 @@ class FtpAdapter:
 
     def _run_once(self, source_ids: Sequence[str] | None = None) -> dict[str, object]:
         selected = set(source_ids or ())
-        sources = tuple(source for source in self.config.sources if not selected or source.id in selected)
+        sources = tuple(
+            source for source in self.config.sources if not selected or source.id in selected
+        )
         unknown = selected - {source.id for source in sources}
         if unknown:
             raise KeyError(", ".join(sorted(unknown)))

@@ -10,7 +10,10 @@ SPDX-License-Identifier = "Apache-2.0"
 path = [
   "riverhog/server/**",
   "companions/stove0/server/**",
-  "companions/stove0/extensions/**",
+  "companions/stove0-ffprobe-sampling-observer/**",
+  "companions/stove0-nvenc-av1-opus-target/**",
+  "companions/stove0-opus-target/**",
+  "companions/stove0-review-target/**",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2026 Nash Spence"

@@ -17,6 +17,13 @@ class CollectionRootIdentityIn(RiverhogModel):
     content_etag: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CollectionArtifactIdentityIn(RiverhogModel):
+    collection: CollectionRootIdentityIn
+    path: str = Field(min_length=1, max_length=4096)
+    bytes: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class OperationIdentityIn(RiverhogModel):
     id: str = Field(min_length=1, max_length=160)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -47,6 +54,7 @@ class ProcessingClaimPlanSealIn(RiverhogModel):
     controller_evidence: dict[str, Any]
     controller_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     operation: OperationIdentityIn
+    input_artifacts: list[CollectionArtifactIdentityIn] = Field(min_length=1)
     output_tags: list[str] = Field(min_length=1, max_length=100)
     retirement_policy: Literal["retain", "retire-after-verified-output"] = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
@@ -59,13 +67,35 @@ class TransformCapabilityCreateIn(RiverhogModel):
         default_factory=_default_capability_actions,
         min_length=1,
     )
+    artifacts: list[CollectionArtifactIdentityIn] = Field(min_length=1)
     ttl_seconds: int = Field(default=900, ge=30, le=86400)
+
+
+class ProcessingOutcomeBindingIn(RiverhogModel):
+    claim_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    fence: int = Field(ge=1)
+    outcome_id: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$")
+
+
+class ProcessingOutcomeIdentityIn(RiverhogModel):
+    outcome_id: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$")
+    source_claim_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_collection: CollectionRootIdentityIn
+    derivation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ProcessingClaimSettleIn(RiverhogModel):
     fence: int = Field(ge=1)
     output_collection_id: int = Field(ge=1)
     derivation: dict[str, Any]
+    outcome: ProcessingOutcomeBindingIn | None = None
+
+
+class ProcessingClaimOutcomesSettleIn(RiverhogModel):
+    fence: int = Field(ge=1)
+    outcomes: list[ProcessingOutcomeIdentityIn] = Field(min_length=1)
+    retirement_policy: Literal["retain", "retire-after-verified-output"] = "retain"
+    retirement_grace_seconds: int = Field(default=0, ge=0)
 
 
 class ProcessingClaimFenceIn(RiverhogModel):
@@ -96,6 +126,8 @@ class ProcessingClaimOut(RiverhogModel):
     work_document_sha256: str
     inputs: list[dict[str, Any]]
     plan: dict[str, Any] | None = None
+    outcomes: list[dict[str, Any]] = Field(default_factory=list)
+    outcome_settlement: dict[str, Any] | None = None
 
 
 class ProcessingClaimPageOut(RiverhogModel):
@@ -118,6 +150,7 @@ class TransformCapabilityOut(RiverhogModel):
     actions: list[str]
     principal_app: str
     expires_at: str
+    artifacts: list[CollectionArtifactIdentityIn]
     token: str
 
 

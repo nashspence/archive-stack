@@ -7,6 +7,7 @@ from pathlib import Path
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     CATALOG_READ,
+    PROVENANCE_EXPORT,
     PROVENANCE_READ,
     ApplicationAccess,
     ApplicationPrincipal,
@@ -174,3 +175,39 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
     assert validate_journal(unrelated).journal_id not in {
         item["journal_id"] for item in traced["journals"]
     }
+
+    scoped = ApplicationPrincipal(
+        app="claim:fixture",
+        key_id="controller",
+        access=frozenset(
+            {
+                ApplicationAccess(CATALOG_READ, "collection:1"),
+                ApplicationAccess(PROVENANCE_READ, "collection:1"),
+                ApplicationAccess(PROVENANCE_EXPORT, "collection:1"),
+            }
+        ),
+        artifact_scope=frozenset({(1, "derivative.tar")}),
+    )
+    listed = service.list_files(
+        1,
+        page=1,
+        per_page=25,
+        q=None,
+        status=None,
+        sort="path",
+        order="asc",
+        all_items=True,
+        principal=scoped,
+    )
+    assert [item["path"] for item in listed["files"]] == ["derivative.tar"]
+    scoped_trace = service.trace_file(1, "derivative.tar", principal=scoped)
+    assert {item["journal_id"] for item in scoped_trace["journals"]} == {
+        derivative_summary.journal_id,
+        *source_ids,
+    }
+    exported, _sha256 = service.export_journal(
+        1,
+        validate_journal(first).journal_id,
+        principal=scoped,
+    )
+    assert exported == first

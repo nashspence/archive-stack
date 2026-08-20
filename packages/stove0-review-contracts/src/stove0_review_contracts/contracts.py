@@ -23,8 +23,8 @@ from stove0_target_protocol import (
 MEDIA_SAMPLING_OBSERVATION_ID = "stove0.review.media-sampling/v1"
 MEDIA_SAMPLING_OPTIONS_SCHEMA_ID = "stove0.review.media-sampling-options/v1"
 MEDIA_SAMPLING_FACTS_SCHEMA_ID = "stove0.review.media-sampling-facts/v1"
-REVIEW_SAMPLE_ENCODE_OPERATION_ID = "stove0.review.sample-encode/v1"
-REVIEW_SAMPLE_ENCODE_INTENT_SCHEMA_ID = "stove0.review.sample-encode-intent/v1"
+REVIEW_MATERIALIZE_OPERATION_ID = "stove0.review.materialize/v1"
+REVIEW_MATERIALIZE_INTENT_SCHEMA_ID = "stove0.review.materialize-intent/v1"
 
 REVIEW_SOURCE_ROLE = "stove0.review.source/v1"
 REVIEW_AUDIO_ROLE = "stove0.review.audio/v1"
@@ -85,8 +85,8 @@ MEDIA_SAMPLING_FACTS_SCHEMA = JsonSchemaDocument.from_schema(
     },
 )
 
-REVIEW_SAMPLE_ENCODE_INTENT_SCHEMA = JsonSchemaDocument.from_schema(
-    REVIEW_SAMPLE_ENCODE_INTENT_SCHEMA_ID,
+REVIEW_MATERIALIZE_INTENT_SCHEMA = JsonSchemaDocument.from_schema(
+    REVIEW_MATERIALIZE_INTENT_SCHEMA_ID,
     {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -164,10 +164,10 @@ MEDIA_SAMPLING_OBSERVER_CONTRACT = ObserverContract.seal(
     )
 )
 
-REVIEW_SAMPLE_ENCODE_OPERATION = OperationContract.seal(
+REVIEW_MATERIALIZE_OPERATION = OperationContract.seal(
     OperationContractPayload(
-        id=REVIEW_SAMPLE_ENCODE_OPERATION_ID,
-        intent_schema=REVIEW_SAMPLE_ENCODE_INTENT_SCHEMA,
+        id=REVIEW_MATERIALIZE_OPERATION_ID,
+        intent_schema=REVIEW_MATERIALIZE_INTENT_SCHEMA,
         inputs=(
             InputArtifactContract(
                 role=REVIEW_SOURCE_ROLE,
@@ -210,10 +210,10 @@ __all__ = [
     "MEDIA_SAMPLING_OPTIONS_SCHEMA_ID",
     "REVIEW_AUDIO_ROLE",
     "REVIEW_INDEX_ROLE",
-    "REVIEW_SAMPLE_ENCODE_INTENT_SCHEMA",
-    "REVIEW_SAMPLE_ENCODE_INTENT_SCHEMA_ID",
-    "REVIEW_SAMPLE_ENCODE_OPERATION",
-    "REVIEW_SAMPLE_ENCODE_OPERATION_ID",
+    "REVIEW_MATERIALIZE_INTENT_SCHEMA",
+    "REVIEW_MATERIALIZE_INTENT_SCHEMA_ID",
+    "REVIEW_MATERIALIZE_OPERATION",
+    "REVIEW_MATERIALIZE_OPERATION_ID",
     "REVIEW_SOURCE_ROLE",
     "REVIEW_VIDEO_ROLE",
 ]

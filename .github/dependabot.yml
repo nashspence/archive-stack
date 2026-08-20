@@ -47,8 +47,10 @@ updates:
 
   - package-ecosystem: docker
     directories:
-      - /companions/stove0/extensions
-      - /companions/stove0/extensions/nvenc
+      - /companions/stove0-ffprobe-sampling-observer
+      - /companions/stove0-nvenc-av1-opus-target
+      - /companions/stove0-opus-target
+      - /companions/stove0-review-target
       - /companions/stove0/server
       - /riverhog/ftp-adapter
       - /riverhog/server

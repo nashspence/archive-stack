@@ -113,6 +113,7 @@ class Stove0ApiClient:
         recipe_id: str,
         collection_ids: Sequence[int],
         *,
+        preview_sha256: str,
         recipe_revision: int | None = None,
         effective_intent: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -121,6 +122,7 @@ class Stove0ApiClient:
             "/v1/work",
             json={
                 "recipe_id": recipe_id,
+                "preview_sha256": preview_sha256,
                 "recipe_revision": recipe_revision,
                 "collection_ids": list(collection_ids),
                 "effective_intent": dict(effective_intent or {}),
@@ -129,6 +131,26 @@ class Stove0ApiClient:
 
     def get_work(self, work_id: str) -> dict[str, Any]:
         return self._json("GET", f"/v1/work/{quote(work_id, safe='')}")
+
+    def inspect_work_coordination(self, work_id: str) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/work/{quote(work_id, safe='')}/coordination",
+        )
+
+    def get_artifact_selection(
+        self,
+        selection_sha256: str,
+        *,
+        page: int = 1,
+        per_page: int = 100,
+        all_items: bool = False,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/artifact-selections/{quote(selection_sha256, safe='')}",
+            params=_params(page=page, per_page=per_page, **{"all": all_items}),
+        )
 
     def step_work(self, work_id: str) -> dict[str, Any]:
         return self._json("POST", f"/v1/work/{quote(work_id, safe='')}/step")

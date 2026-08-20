@@ -127,6 +127,8 @@ class SqlAlchemyRetrievalService:
         principal: ApplicationPrincipal | None = None,
     ) -> tuple[dict[str, object], str]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
+        if principal is not None and principal.artifact_scope is not None:
+            raise NotFound(f"collection manifest not found: {normalized_id}")
         with session_scope(self._session_factory) as session:
             collection = session.get(CollectionRecord, normalized_id)
             if collection is None:
@@ -553,13 +555,19 @@ class SqlAlchemyRetrievalService:
         if requested_lease > self._config.retrieval_max_lease:
             raise BadRequest("retrieval lease exceeds the configured maximum")
         with session_scope(self._session_factory) as session:
-            for collection_id, _path in normalized:
+            for collection_id, path in normalized:
                 require_collection_access(
                     session,
                     principal,
                     RETRIEVAL_MANAGE,
                     collection_id,
                 )
+                if principal is not None and not principal.allows_artifact(
+                    RETRIEVAL_MANAGE,
+                    collection_id,
+                    path,
+                ):
+                    raise NotFound(f"collection file not found: {collection_id}/{path}")
             payload = self._build_plan(
                 session,
                 normalized,

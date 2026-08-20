@@ -18,9 +18,14 @@ from stove0_core import (
     Stove0WorkService,
     WorkFailure,
     WorkInapplicable,
+    WorkRecord,
 )
 from stove0_protocol import (
+    ArtifactSelection,
     ArtifactSubject,
+    BranchPlan,
+    BranchSetDecision,
+    BranchSetPlan,
     CollectionRootRef,
     JsonSchemaDocument,
     ObservationEvidence,
@@ -37,6 +42,7 @@ from stove0_protocol import (
     OperationRef,
     RecipeRef,
     WorkflowPlan,
+    WorkflowPlanIntent,
     WorkflowPlanPayload,
     WorkIdentity,
     WorkPayload,
@@ -110,6 +116,7 @@ def _observer() -> tuple[ObserverContract, ObserverDescriptor]:
             implementation_id="fixture.observer/v1",
             implementation_version="1.0.0",
             source_revision="fixture",
+            image_digest=_sha("9"),
             contracts=(ObserverContractSupport.from_contract(contract),),
         )
     )
@@ -192,6 +199,7 @@ def _target(operation: OperationContract) -> TargetContract:
             implementation_id="fixture.target/v1",
             implementation_version="1.0.0",
             source_revision="fixture",
+            image_digest=_sha("9"),
             operations=(
                 TargetOperationSupport(
                     operation_id=operation.id,
@@ -229,6 +237,47 @@ def _target_plan(
             intent={"suffix": ".copy"},
             target_options={},
         )
+    )
+
+
+def _branch_decision(work: WorkIdentity) -> BranchSetDecision:
+    operation = _operation()
+    target = _target(operation)
+    selection = ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="source",
+                role="fixture.source/v1",
+                collection=_root(),
+                path="source/input.bin",
+                bytes=12,
+                sha256=_sha("4"),
+            ),
+        )
+    )
+    branch = BranchPlan.build(
+        parent_work=work,
+        branch_id="fixture",
+        decision_sha256=_sha("d"),
+        selection=selection,
+        recipe=work.recipe,
+        effective_intent=work.effective_intent,
+        workflow_intent=WorkflowPlanIntent(
+            operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
+            target_registration_id="fixture-target",
+            target_contract_sha256=target.contract_sha256,
+            output_tags=("fixture-output",),
+            retirement_policy="retain",
+        ),
+    )
+    return BranchSetDecision(
+        plan=BranchSetPlan.seal(
+            parent_work=work,
+            decision_sha256=_sha("d"),
+            branches=(branch,),
+            selections={selection.selection_sha256: selection},
+        ),
+        selections=(selection,),
     )
 
 
@@ -625,3 +674,87 @@ def test_unified_state_store_is_restart_safe_and_compare_and_swap(tmp_path: Path
             expected_revision=created.revision,
             replacement=claimed,
         )
+
+
+def test_sql_branch_set_admission_is_restart_safe_and_exposes_exact_children(
+    tmp_path: Path,
+) -> None:
+    from stove0_core import SqlAlchemyStateStore
+
+    path = tmp_path / "private" / "stove0.sqlite3"
+    store = SqlAlchemyStateStore(f"sqlite+pysqlite:///{path}")
+    service = Stove0WorkService(store)
+    work = _work()
+    record = service.create_or_resume(work)
+    record = service.bind_claim(
+        record.work_id,
+        claim_id=record.work_id,
+        fence=1,
+        expected_revision=record.revision,
+    )
+    record = service.begin_planning(record.work_id, expected_revision=record.revision)
+    decision = _branch_decision(work)
+
+    admitted = service.admit_branch_set(
+        record.work_id,
+        decision,
+        expected_revision=record.revision,
+    )
+
+    assert admitted.phase == "coordinating"
+    assert admitted.branch_set_plan == decision.plan
+    branch = decision.plan.branches[0]
+    child = store.load(branch.workflow_plan.work.work_id)
+    assert child == WorkRecord(
+        work=branch.workflow_plan.work,
+        workflow_plan=branch.workflow_plan,
+    )
+    selection = decision.selections[0]
+    assert store.load_selection(selection.selection_sha256) == selection
+
+    restarted = SqlAlchemyStateStore(f"sqlite+pysqlite:///{path}")
+    assert restarted.load(work.work_id) == admitted
+    assert restarted.load(child.work_id) == child
+    assert restarted.load_selection(selection.selection_sha256) == selection
+
+
+def test_sql_branch_set_admission_rolls_back_every_document_on_child_conflict(
+    tmp_path: Path,
+) -> None:
+    from stove0_core import SqlAlchemyStateStore
+
+    path = tmp_path / "private" / "stove0.sqlite3"
+    store = SqlAlchemyStateStore(f"sqlite+pysqlite:///{path}")
+    service = Stove0WorkService(store)
+    work = _work()
+    record = service.create_or_resume(work)
+    record = service.bind_claim(
+        record.work_id,
+        claim_id=record.work_id,
+        fence=1,
+        expected_revision=record.revision,
+    )
+    record = service.begin_planning(record.work_id, expected_revision=record.revision)
+    decision = _branch_decision(work)
+    branch = decision.plan.branches[0]
+    conflicting_plan = WorkflowPlanIntent(
+        operation=branch.workflow_plan.operation,
+        target_registration_id=branch.workflow_plan.target_registration_id,
+        target_contract_sha256=branch.workflow_plan.target_contract_sha256,
+        output_tags=("conflicting-output",),
+        retirement_policy="retain",
+    ).materialize(work=branch.workflow_plan.work)
+    store.create(WorkRecord(work=branch.workflow_plan.work, workflow_plan=conflicting_plan))
+
+    with pytest.raises(ConcurrentWorkUpdate, match="branch child identity was reused"):
+        service.admit_branch_set(
+            record.work_id,
+            decision,
+            expected_revision=record.revision,
+        )
+
+    parent = store.load(record.work_id)
+    assert parent is not None and parent.phase == "planning"
+    assert parent.branch_set_plan is None
+    selection = decision.selections[0]
+    assert store.load_selection(selection.selection_sha256) is None

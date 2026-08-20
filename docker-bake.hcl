@@ -3,8 +3,10 @@ group "default" {
     "riverhog",
     "riverhog-ftp-adapter",
     "stove0",
-    "stove0-extensions",
-    "stove0-nvenc-extension",
+    "stove0-ffprobe-sampling-observer",
+    "stove0-nvenc-av1-opus-target",
+    "stove0-opus-target",
+    "stove0-review-target",
     "mango-fish",
     "test",
   ]
@@ -45,19 +47,35 @@ target "stove0" {
   args       = { SOURCE_REVISION = "unknown" }
 }
 
-target "stove0-extensions" {
+target "stove0-ffprobe-sampling-observer" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "companions/stove0/extensions/Dockerfile"
-  tags       = ["stove0-maintained-extensions:dev"]
+  dockerfile = "companions/stove0-ffprobe-sampling-observer/Dockerfile"
+  tags       = ["stove0-ffprobe-sampling-observer:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 
-target "stove0-nvenc-extension" {
+target "stove0-nvenc-av1-opus-target" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "companions/stove0/extensions/nvenc/Dockerfile"
-  tags       = ["stove0-nvenc-extension:dev"]
+  dockerfile = "companions/stove0-nvenc-av1-opus-target/Dockerfile"
+  tags       = ["stove0-nvenc-av1-opus-target:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "stove0-opus-target" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "companions/stove0-opus-target/Dockerfile"
+  tags       = ["stove0-opus-target:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "stove0-review-target" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "companions/stove0-review-target/Dockerfile"
+  tags       = ["stove0-review-target:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 

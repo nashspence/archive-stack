@@ -8,8 +8,8 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from riverhog_ftp_adapter.app import build_parser as build_adapter_parser
 from riverhog_cli.main import app as riverhog_app
+from riverhog_ftp_adapter.app import build_parser as build_adapter_parser
 from stove0_cli.main import app as stove0_app
 from typer.main import get_command
 
@@ -20,7 +20,14 @@ CONSOLE_DISTRIBUTIONS = {
     "riverhog-ftp-adapter": "riverhog-ftp-adapter",
     "stove0": "stove0-client",
     "stove0-server": "stove0-server",
-    "stove0-maintained-extension": "stove0-maintained-extensions",
+    "stove0-ffprobe-sampling-observer": "stove0-ffprobe-sampling-observer",
+    "stove0-nvenc-av1-opus-target": "stove0-nvenc-av1-opus-target",
+    "stove0-nvenc-av1-opus-sampler": "stove0-nvenc-av1-opus-target",
+    "stove0-opus-target": "stove0-opus-target",
+    "stove0-opus-sampler": "stove0-opus-target",
+    "stove0-review-target": "stove0-review-target",
+    "stove0-sampler-conformance": "stove0-sampler-support",
+    "stove0-sampler-schemas": "stove0-sampler-support",
     "gogurt": "gogurt",
     "mango-fish": "mango-fish",
 }

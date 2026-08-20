@@ -156,6 +156,7 @@ class TargetContractPayload(TargetProtocolModel):
     implementation_id: SemanticId
     implementation_version: str = Field(min_length=1, max_length=120)
     source_revision: str = Field(min_length=1, max_length=200)
+    image_digest: Sha256
     transport: Literal["riverhog-capability/v1"] = RIVERHOG_CAPABILITY_TRANSPORT
     operations: tuple[TargetOperationSupport, ...] = Field(min_length=1)
 
@@ -536,7 +537,10 @@ def validate_preflight_response_against_request(
         or plan.operation_contract_sha256 != request.operation_contract_sha256
         or plan.inputs != request.inputs
         or plan.intent != request.intent
-        or plan.target_options != request.target_options
+        or any(
+            key not in plan.target_options or plan.target_options[key] != value
+            for key, value in request.target_options.items()
+        )
     ):
         raise ValueError("target preflight plan differs from the request or target contract")
 

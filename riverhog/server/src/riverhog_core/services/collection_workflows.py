@@ -12,14 +12,16 @@ from typing import cast
 
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
+    CollectionArtifactIdentity,
     CollectionDerivation,
+    CollectionProcessingOutcomeIdentity,
     CollectionRootIdentity,
     OperationIdentity,
     canonical_json_bytes,
     canonical_json_sha256,
 )
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, InvalidState, NotFound
-from sqlalchemy import asc, desc, func, literal, or_, select
+from sqlalchemy import asc, delete, desc, func, literal, or_, select
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc_timestamp_now
 
@@ -46,8 +48,11 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.catalog_workflow_models import (
     CollectionDerivationRecord,
+    CollectionProcessingClaimArtifactRecord,
     CollectionProcessingClaimInputRecord,
     CollectionProcessingClaimRecord,
+    CollectionProcessingOutcomeRecord,
+    CollectionTransformCapabilityArtifactRecord,
     CollectionTransformCapabilityRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
@@ -145,7 +150,7 @@ class SqlAlchemyCollectionWorkflowService:
                     claim.fence += 1
                     claim.expires_at = expires_at
                     claim.updated_at = now
-                    _clear_plan(claim)
+                    _clear_plan(session, claim)
                     _revoke_capabilities(session, claim.id, now=now)
                 elif claim.state == "active" and parse_utc_timestamp(
                     expires_at
@@ -293,7 +298,7 @@ class SqlAlchemyCollectionWorkflowService:
             claim.fence += 1
             claim.expires_at = format_utc_timestamp(utc_now() + timedelta(seconds=lease))
             claim.updated_at = now
-            _clear_plan(claim)
+            _clear_plan(session, claim)
             _revoke_capabilities(session, claim.id, now=now)
             return _claim_payload(session, claim)
 
@@ -307,6 +312,7 @@ class SqlAlchemyCollectionWorkflowService:
         controller_evidence_sha256: str,
         operation_id: str,
         operation_sha256: str,
+        input_artifacts: Sequence[CollectionArtifactIdentity],
         output_tags: Sequence[str],
         retirement_policy: str,
         retirement_grace_seconds: int,
@@ -331,14 +337,12 @@ class SqlAlchemyCollectionWorkflowService:
             )
         except ValueError as exc:
             raise BadRequest(str(exc)) from exc
-        policy = str(retirement_policy)
-        if policy not in _RETIREMENT_POLICIES:
-            raise BadRequest("retirement policy is invalid")
-        if isinstance(retirement_grace_seconds, bool) or retirement_grace_seconds < 0:
-            raise BadRequest("retirement grace seconds must be non-negative")
+        policy = _retirement_policy(retirement_policy, retirement_grace_seconds)
+        artifacts = _canonical_artifacts(input_artifacts)
         with session_scope(self._session_factory) as session:
             claim = _owned_claim(session, claim_id, principal, lock=True)
             _require_live_claim(claim, fence=fence)
+            _validate_claim_artifacts(session, claim, artifacts)
             tags = _require_output_tags(session, output_tags)
             encoded_evidence = json.dumps(
                 evidence,
@@ -369,6 +373,8 @@ class SqlAlchemyCollectionWorkflowService:
                 )
                 if actual != expected:
                     raise Conflict("collection processing claim already has another sealed plan")
+                if tuple(_claim_artifact_identities(session, claim.id)) != artifacts:
+                    raise Conflict("collection processing claim already has another artifact scope")
                 return _claim_payload(session, claim)
             conflict = session.scalar(
                 select(CollectionProcessingClaimRecord.id).where(
@@ -389,6 +395,16 @@ class SqlAlchemyCollectionWorkflowService:
             claim.retirement_grace_seconds = int(retirement_grace_seconds)
             claim.plan_sealed_at = now
             claim.updated_at = now
+            session.add_all(
+                CollectionProcessingClaimArtifactRecord(
+                    claim_id=claim.id,
+                    collection_id=item.collection.collection_id,
+                    path=item.path,
+                    bytes=item.bytes,
+                    sha256=item.sha256,
+                )
+                for item in artifacts
+            )
             # Observation capabilities are no longer required after a plan is sealed.
             # Revocation narrows the active payload readers before target execution.
             _revoke_capabilities(session, claim.id, now=now)
@@ -401,6 +417,7 @@ class SqlAlchemyCollectionWorkflowService:
         fence: int,
         audience: str,
         actions: Sequence[str],
+        artifacts: Sequence[CollectionArtifactIdentity],
         ttl_seconds: int,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
@@ -411,11 +428,22 @@ class SqlAlchemyCollectionWorkflowService:
         normalized_audience = str(audience)
         if _CAPABILITY_AUDIENCE.fullmatch(normalized_audience) is None:
             raise BadRequest("transform capability audience is invalid")
+        scoped_artifacts = _canonical_artifacts(artifacts)
+        if "read-inputs" not in normalized_actions and scoped_artifacts:
+            raise BadRequest("only read-input capabilities accept artifact scope")
+        if "read-inputs" in normalized_actions and not scoped_artifacts:
+            raise BadRequest("read-input capability requires exact artifact scope")
         with session_scope(self._session_factory) as session:
             claim = _owned_claim(session, claim_id, principal, lock=True)
             _require_live_claim(claim, fence=fence)
+            _validate_claim_artifacts(session, claim, scoped_artifacts)
             if "write-output" in normalized_actions and claim.plan_sealed_at is None:
                 raise Conflict("write-output capability requires a sealed execution plan")
+            if (
+                "write-output" in normalized_actions
+                and tuple(_claim_artifact_identities(session, claim.id)) != scoped_artifacts
+            ):
+                raise Conflict("write-output capability differs from the sealed artifact scope")
             claim_expiry = parse_utc_timestamp(claim.expires_at)
             requested_expiry = utc_now() + timedelta(seconds=ttl)
             expiry = min(claim_expiry, requested_expiry)
@@ -433,6 +461,17 @@ class SqlAlchemyCollectionWorkflowService:
                 created_at=now,
             )
             session.add(capability)
+            session.flush()
+            session.add_all(
+                CollectionTransformCapabilityArtifactRecord(
+                    capability_id=capability.id,
+                    collection_id=item.collection.collection_id,
+                    path=item.path,
+                    bytes=item.bytes,
+                    sha256=item.sha256,
+                )
+                for item in scoped_artifacts
+            )
             claim.updated_at = now
             session.flush()
             return {
@@ -444,6 +483,7 @@ class SqlAlchemyCollectionWorkflowService:
                 "actions": list(normalized_actions),
                 "principal_app": _capability_app(claim, normalized_actions),
                 "expires_at": capability.expires_at,
+                "artifacts": [item.as_dict() for item in scoped_artifacts],
                 "token": token,
             }
 
@@ -489,6 +529,12 @@ class SqlAlchemyCollectionWorkflowService:
                 for tag in json.loads(claim.output_tags_json):
                     grants.add(ApplicationAccess(COLLECTIONS_CREATE, tag_resource(str(tag))))
             app = _capability_app(claim, actions)
+            artifact_scope = frozenset(
+                (item.collection_id, item.path)
+                for item in _capability_artifacts(session, capability.id)
+            )
+            if "read-inputs" in actions and not artifact_scope:
+                return None
             return ApplicationPrincipal(
                 app=app,
                 # Preserve the initiating key for download-budget attribution and
@@ -496,6 +542,7 @@ class SqlAlchemyCollectionWorkflowService:
                 # stable across capability refreshes.
                 key_id=claim.consumer_key_id,
                 access=frozenset(grants),
+                artifact_scope=artifact_scope,
             )
 
     def settle_claim(
@@ -505,6 +552,9 @@ class SqlAlchemyCollectionWorkflowService:
         fence: int,
         output_collection_id: int,
         derivation: Mapping[str, object],
+        outcome_claim_id: str | None = None,
+        outcome_fence: int | None = None,
+        outcome_id: str | None = None,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
         try:
@@ -514,13 +564,20 @@ class SqlAlchemyCollectionWorkflowService:
         with session_scope(self._session_factory) as session:
             claim = _owned_claim(session, claim_id, principal, lock=True)
             _require_fence(claim, fence)
-            _require_sealed_plan(claim)
+            _require_sealed_transform_plan(claim)
             if claim.state in {"settled", "retiring", "released"}:
                 _require_existing_settlement(
                     session,
                     claim,
                     output_collection_id=output_collection_id,
                     document=document,
+                )
+                _require_existing_outcome_binding(
+                    session,
+                    source_claim=claim,
+                    outcome_claim_id=outcome_claim_id,
+                    outcome_fence=outcome_fence,
+                    outcome_id=outcome_id,
                 )
                 return _claim_payload(session, claim)
             _require_active_generation(claim, fence=fence)
@@ -581,7 +638,7 @@ class SqlAlchemyCollectionWorkflowService:
             )
             if evidence is None or evidence.sha256 != document.sha256:
                 raise Conflict("derived collection does not contain its exact derivation evidence")
-            _verify_dispositions(session, document, output.id)
+            _verify_dispositions(session, claim, document, output.id)
             _collection_root(session, output.id)
             existing = session.get(CollectionDerivationRecord, output.id)
             encoded = document.to_json_bytes().decode("utf-8")
@@ -600,6 +657,15 @@ class SqlAlchemyCollectionWorkflowService:
                         created_at=utc_timestamp_now(),
                     )
                 )
+            _attach_processing_outcome(
+                session,
+                source_claim=claim,
+                output_collection_id=output.id,
+                derivation=document,
+                outcome_claim_id=outcome_claim_id,
+                outcome_fence=outcome_fence,
+                outcome_id=outcome_id,
+            )
             now = utc_timestamp_now()
             claim.state = "settled"
             claim.output_collection_id = output.id
@@ -607,6 +673,65 @@ class SqlAlchemyCollectionWorkflowService:
             claim.updated_at = now
             _revoke_capabilities(session, claim.id, now=now)
             session.flush()
+            return _claim_payload(session, claim)
+
+    def settle_claim_outcomes(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        outcomes: Sequence[CollectionProcessingOutcomeIdentity],
+        retirement_policy: str,
+        retirement_grace_seconds: int,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        """Close an exact set of independently verified collection outcomes."""
+
+        expected_outcomes = _canonical_outcomes(outcomes)
+        policy = _retirement_policy(retirement_policy, retirement_grace_seconds)
+        with session_scope(self._session_factory) as session:
+            claim = _owned_claim(session, claim_id, principal, lock=True)
+            _require_fence(claim, fence)
+            if claim.plan_sealed_at is not None or claim.execution_id is not None:
+                raise Conflict("an executed collection claim cannot close delegated outcomes")
+            if claim.state in {"settled", "retiring", "released"}:
+                if (
+                    claim.retirement_policy != policy
+                    or claim.retirement_grace_seconds != int(retirement_grace_seconds)
+                    or tuple(_processing_outcomes(session, claim.id)) != expected_outcomes
+                ):
+                    raise Conflict("collection processing claim has another outcome settlement")
+                return _claim_payload(session, claim)
+            _require_active_generation(claim, fence=fence)
+            actual_outcomes = tuple(_processing_outcomes(session, claim.id))
+            if actual_outcomes != expected_outcomes:
+                raise Conflict("declared outcomes differ from verified collection outputs")
+            for outcome in actual_outcomes:
+                if (
+                    _collection_root(
+                        session,
+                        outcome.output_collection.collection_id,
+                    )
+                    != outcome.output_collection
+                ):
+                    raise Conflict("processing outcome collection root changed")
+                derivation = session.get(
+                    CollectionDerivationRecord,
+                    outcome.output_collection.collection_id,
+                )
+                if (
+                    derivation is None
+                    or derivation.claim_id != outcome.source_claim_id
+                    or derivation.document_sha256 != outcome.derivation_sha256
+                ):
+                    raise Conflict("processing outcome derivation is unavailable")
+            now = utc_timestamp_now()
+            claim.retirement_policy = policy
+            claim.retirement_grace_seconds = int(retirement_grace_seconds)
+            claim.state = "settled"
+            claim.settled_at = claim.settled_at or now
+            claim.updated_at = now
+            _revoke_capabilities(session, claim.id, now=now)
             return _claim_payload(session, claim)
 
     def get_derivation(
@@ -645,25 +770,44 @@ class SqlAlchemyCollectionWorkflowService:
                 or claim.retirement_policy != "retire-after-verified-output"
             ):
                 raise Conflict("collection processing claim is not eligible for retirement")
-            if claim.settled_at is None or claim.output_collection_id is None:
+            if claim.settled_at is None:
                 raise InvalidState("settled claim has no settlement identity")
-            derivation_record = session.get(CollectionDerivationRecord, claim.output_collection_id)
-            if derivation_record is None:
-                raise InvalidState("settled claim has no verified derivation record")
-            derivation = CollectionDerivation.from_mapping(
-                json.loads(derivation_record.document_json)
-            )
-            unsafe = [
-                item.input_path
-                for item in derivation.dispositions
-                if item.status not in {"transformed", "preserved"}
-            ]
-            if unsafe:
-                raise Conflict(
-                    "source retirement is not authorized for omitted or rejected artifacts: "
-                    + ", ".join(unsafe[:10])
+            if claim.output_collection_id is not None:
+                _require_sealed_transform_plan(claim)
+                derivation_record = session.get(
+                    CollectionDerivationRecord,
+                    claim.output_collection_id,
                 )
-            _collection_root(session, claim.output_collection_id)
+                if derivation_record is None:
+                    raise InvalidState("settled claim has no verified derivation record")
+                derivation = CollectionDerivation.from_mapping(
+                    json.loads(derivation_record.document_json)
+                )
+                expected_artifacts = {
+                    (item.collection_id, path)
+                    for item in _claim_inputs(session, claim.id)
+                    for path in _collection_payload_paths(session, item.collection_id)
+                }
+                planned_artifacts = {
+                    (item.collection_id, item.path) for item in _claim_artifacts(session, claim.id)
+                }
+                if planned_artifacts != expected_artifacts:
+                    raise Conflict(
+                        "source retirement requires a plan covering every input artifact"
+                    )
+                unsafe = [
+                    item.input_path
+                    for item in derivation.dispositions
+                    if item.status not in {"transformed", "preserved"}
+                ]
+                if unsafe:
+                    raise Conflict(
+                        "source retirement is not authorized for omitted or rejected artifacts: "
+                        + ", ".join(unsafe[:10])
+                    )
+                _collection_root(session, claim.output_collection_id)
+            else:
+                _require_outcome_retirement_coverage(session, claim)
             eligible_at = parse_utc_timestamp(claim.settled_at) + timedelta(
                 seconds=claim.retirement_grace_seconds
             )
@@ -704,7 +848,7 @@ class SqlAlchemyCollectionWorkflowService:
                     raise Conflict("collection processing claim was abandoned for another reason")
                 return _claim_payload(session, claim)
             _require_active_generation(claim, fence=fence)
-            _require_no_execution_output(session, claim)
+            _require_no_transform_output(session, claim)
             if claim.output_collection_id is not None or claim.settled_at is not None:
                 raise InvalidState("active claim unexpectedly contains a settled output")
             now = utc_timestamp_now()
@@ -788,6 +932,17 @@ def _canonical_roots(
     return roots
 
 
+def _retirement_policy(value: str, grace_seconds: int) -> str:
+    policy = str(value)
+    if policy not in _RETIREMENT_POLICIES:
+        raise BadRequest("retirement policy is invalid")
+    if isinstance(grace_seconds, bool) or grace_seconds < 0:
+        raise BadRequest("retirement grace seconds must be non-negative")
+    if policy == "retain" and grace_seconds:
+        raise BadRequest("retained collection work cannot declare retirement grace")
+    return policy
+
+
 def _json_document(
     value: Mapping[str, object],
     *,
@@ -839,7 +994,17 @@ def _require_same_claim(
         raise Conflict("collection work identity was reused with different input roots")
 
 
-def _clear_plan(claim: CollectionProcessingClaimRecord) -> None:
+def _clear_plan(session: Session, claim: CollectionProcessingClaimRecord) -> None:
+    session.execute(
+        delete(CollectionProcessingClaimArtifactRecord).where(
+            CollectionProcessingClaimArtifactRecord.claim_id == claim.id
+        )
+    )
+    session.execute(
+        delete(CollectionProcessingOutcomeRecord).where(
+            CollectionProcessingOutcomeRecord.claim_id == claim.id
+        )
+    )
     claim.execution_id = None
     claim.controller_evidence_json = None
     claim.controller_evidence_sha256 = None
@@ -852,6 +1017,18 @@ def _clear_plan(claim: CollectionProcessingClaimRecord) -> None:
 
 
 def _execution_output_exists(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+) -> bool:
+    outcome = session.scalar(
+        select(CollectionProcessingOutcomeRecord.claim_id).where(
+            CollectionProcessingOutcomeRecord.claim_id == claim.id
+        )
+    )
+    return outcome is not None or _transform_output_exists(session, claim)
+
+
+def _transform_output_exists(
     session: Session,
     claim: CollectionProcessingClaimRecord,
 ) -> bool:
@@ -884,6 +1061,17 @@ def _require_no_execution_output(
         )
 
 
+def _require_no_transform_output(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+) -> None:
+    if _transform_output_exists(session, claim):
+        raise Conflict(
+            "collection processing claim cannot terminate while its "
+            "execution owns an output collection or upload"
+        )
+
+
 def _capability_app(
     claim: CollectionProcessingClaimRecord,
     actions: Sequence[str],
@@ -895,7 +1083,7 @@ def _capability_app(
     return f"claim:{claim.id}"
 
 
-def _require_sealed_plan(claim: CollectionProcessingClaimRecord) -> None:
+def _require_sealed_transform_plan(claim: CollectionProcessingClaimRecord) -> None:
     if any(
         value is None
         for value in (
@@ -939,7 +1127,7 @@ def _require_existing_settlement(
 ) -> None:
     """Accept only an exact replay of an already committed settlement.
 
-    stove0 may crash after Riverhog commits settlement but before its local work
+    A controller may crash after Riverhog commits settlement but before its local
     record advances. Replaying the same fenced settlement must converge without
     reopening or mutating the claim. Any changed output or derivation remains a
     conflict, including after retirement has begun or the claim has been released.
@@ -962,16 +1150,199 @@ def _require_existing_settlement(
     _collection_root(session, output_id)
 
 
+def _outcome_binding_args(
+    outcome_claim_id: str | None,
+    outcome_fence: int | None,
+    outcome_id: str | None,
+) -> tuple[str, int, str] | None:
+    values = (outcome_claim_id, outcome_fence, outcome_id)
+    if all(item is None for item in values):
+        return None
+    if any(item is None for item in values):
+        raise BadRequest("processing outcome binding is incomplete")
+    assert outcome_claim_id is not None
+    assert outcome_fence is not None
+    assert outcome_id is not None
+    if isinstance(outcome_fence, bool) or outcome_fence < 1:
+        raise BadRequest("processing outcome fence must be positive")
+    return outcome_claim_id, int(outcome_fence), outcome_id
+
+
+def _attach_processing_outcome(
+    session: Session,
+    *,
+    source_claim: CollectionProcessingClaimRecord,
+    output_collection_id: int,
+    derivation: CollectionDerivation,
+    outcome_claim_id: str | None,
+    outcome_fence: int | None,
+    outcome_id: str | None,
+) -> None:
+    binding = _outcome_binding_args(
+        outcome_claim_id,
+        outcome_fence,
+        outcome_id,
+    )
+    if binding is None:
+        return
+    parent_id, parent_fence, label = binding
+    if parent_id == source_claim.id:
+        raise Conflict("collection work cannot depend on its own output")
+    parent = session.scalar(
+        select(CollectionProcessingClaimRecord)
+        .where(CollectionProcessingClaimRecord.id == parent_id)
+        .with_for_update()
+    )
+    if parent is None or parent.consumer_app != source_claim.consumer_app:
+        raise NotFound(f"collection processing claim not found: {parent_id}")
+    _require_fence(parent, parent_fence)
+    _require_active_generation(parent, fence=parent_fence)
+    if parent.plan_sealed_at is not None or parent.execution_id is not None:
+        raise Conflict("an executed collection claim cannot retain delegated outcomes")
+    if parent.output_collection_id is not None:
+        raise InvalidState("outcome claim unexpectedly contains a direct output")
+    root = _collection_root(session, output_collection_id)
+    try:
+        identity = CollectionProcessingOutcomeIdentity(
+            outcome_id=label,
+            source_claim_id=source_claim.id,
+            output_collection=root,
+            derivation_sha256=derivation.sha256,
+        )
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+    existing = session.get(
+        CollectionProcessingOutcomeRecord,
+        (parent.id, identity.outcome_id),
+    )
+    if existing is not None:
+        if _outcome_identity(existing) != identity:
+            raise Conflict("processing outcome identity is already bound differently")
+        return
+    source_conflict = session.scalar(
+        select(CollectionProcessingOutcomeRecord).where(
+            CollectionProcessingOutcomeRecord.claim_id == parent.id,
+            CollectionProcessingOutcomeRecord.source_claim_id == source_claim.id,
+        )
+    )
+    output_conflict = session.scalar(
+        select(CollectionProcessingOutcomeRecord).where(
+            CollectionProcessingOutcomeRecord.claim_id == parent.id,
+            CollectionProcessingOutcomeRecord.collection_id == root.collection_id,
+        )
+    )
+    if source_conflict is not None or output_conflict is not None:
+        raise Conflict("processing outcome reuses a source claim or output collection")
+    session.add(
+        CollectionProcessingOutcomeRecord(
+            claim_id=parent.id,
+            outcome_id=identity.outcome_id,
+            source_claim_id=identity.source_claim_id,
+            collection_id=root.collection_id,
+            manifest_sha256=root.manifest_sha256,
+            content_etag=root.content_etag,
+            derivation_sha256=identity.derivation_sha256,
+            created_at=utc_timestamp_now(),
+        )
+    )
+    parent.updated_at = utc_timestamp_now()
+
+
+def _require_existing_outcome_binding(
+    session: Session,
+    *,
+    source_claim: CollectionProcessingClaimRecord,
+    outcome_claim_id: str | None,
+    outcome_fence: int | None,
+    outcome_id: str | None,
+) -> None:
+    binding = _outcome_binding_args(
+        outcome_claim_id,
+        outcome_fence,
+        outcome_id,
+    )
+    rows = list(
+        session.scalars(
+            select(CollectionProcessingOutcomeRecord).where(
+                CollectionProcessingOutcomeRecord.source_claim_id == source_claim.id
+            )
+        )
+    )
+    if binding is None:
+        if rows:
+            raise Conflict("collection work settlement has a processing outcome binding")
+        return
+    parent_id, parent_fence, label = binding
+    parent = session.get(CollectionProcessingClaimRecord, parent_id)
+    if parent is None or parent.fence != parent_fence:
+        raise Conflict("processing outcome generation differs from settlement")
+    if len(rows) != 1 or (
+        rows[0].claim_id,
+        rows[0].outcome_id,
+    ) != (parent_id, label):
+        raise Conflict("processing outcome binding differs from settlement")
+
+
+def _outcome_identity(
+    record: CollectionProcessingOutcomeRecord,
+) -> CollectionProcessingOutcomeIdentity:
+    return CollectionProcessingOutcomeIdentity(
+        outcome_id=record.outcome_id,
+        source_claim_id=record.source_claim_id,
+        output_collection=CollectionRootIdentity(
+            collection_id=record.collection_id,
+            manifest_sha256=record.manifest_sha256,
+            content_etag=record.content_etag,
+        ),
+        derivation_sha256=record.derivation_sha256,
+    )
+
+
+def _processing_outcomes(
+    session: Session,
+    claim_id: str,
+) -> list[CollectionProcessingOutcomeIdentity]:
+    return [
+        _outcome_identity(item)
+        for item in session.scalars(
+            select(CollectionProcessingOutcomeRecord)
+            .where(CollectionProcessingOutcomeRecord.claim_id == claim_id)
+            .order_by(CollectionProcessingOutcomeRecord.outcome_id)
+        )
+    ]
+
+
+def _canonical_outcomes(
+    values: Sequence[CollectionProcessingOutcomeIdentity],
+) -> tuple[CollectionProcessingOutcomeIdentity, ...]:
+    outcomes = tuple(values)
+    if not outcomes:
+        raise BadRequest("outcome settlement requires verified collection outputs")
+    if outcomes != tuple(sorted(outcomes)):
+        raise BadRequest("processing outcomes must be canonically ordered")
+    ids = [item.outcome_id for item in outcomes]
+    claims = [item.source_claim_id for item in outcomes]
+    outputs = [item.output_collection.collection_id for item in outcomes]
+    if (
+        len(ids) != len(set(ids))
+        or len(claims) != len(set(claims))
+        or len(outputs) != len(set(outputs))
+    ):
+        raise BadRequest("processing outcomes must be exact and unique")
+    return outcomes
+
+
 def _verify_dispositions(
     session: Session,
+    claim: CollectionProcessingClaimRecord,
     document: CollectionDerivation,
     output_collection_id: int,
 ) -> None:
     expected_artifacts = {
-        (root.collection_id, path)
-        for root in document.inputs
-        for path in _collection_payload_paths(session, root.collection_id)
+        (item.collection_id, item.path) for item in _claim_artifacts(session, claim.id)
     }
+    if not expected_artifacts:
+        raise InvalidState("sealed collection work plan has no exact artifact scope")
     actual_artifacts = {
         (item.input_collection_id, item.input_path) for item in document.dispositions
     }
@@ -983,6 +1354,155 @@ def _verify_dispositions(
     derived_artifacts = {path for item in document.dispositions for path in item.outputs}
     if derived_artifacts != output_artifacts:
         raise Conflict("derivation output paths do not match the derived collection artifacts")
+
+
+def _require_outcome_retirement_coverage(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+) -> None:
+    roots = {
+        item.collection_id: CollectionRootIdentity(
+            collection_id=item.collection_id,
+            manifest_sha256=item.manifest_sha256,
+            content_etag=item.content_etag,
+        )
+        for item in _claim_inputs(session, claim.id)
+    }
+    expected = {
+        (collection_id, path)
+        for collection_id in roots
+        for path in _collection_payload_paths(session, collection_id)
+    }
+    safely_disposed: set[tuple[int, str]] = set()
+    outcomes = _processing_outcomes(session, claim.id)
+    if not outcomes:
+        raise InvalidState("settled collection work has no verified outcomes")
+    for outcome in outcomes:
+        if (
+            _collection_root(
+                session,
+                outcome.output_collection.collection_id,
+            )
+            != outcome.output_collection
+        ):
+            raise Conflict("processing outcome is no longer durably available")
+        stored = session.get(
+            CollectionDerivationRecord,
+            outcome.output_collection.collection_id,
+        )
+        if (
+            stored is None
+            or stored.claim_id != outcome.source_claim_id
+            or stored.document_sha256 != outcome.derivation_sha256
+        ):
+            raise InvalidState("processing outcome derivation is unavailable")
+        derivation = CollectionDerivation.from_mapping(json.loads(stored.document_json))
+        derivation_roots = {item.collection_id: item for item in derivation.inputs}
+        for disposition in derivation.dispositions:
+            root = roots.get(disposition.input_collection_id)
+            if (
+                root is not None
+                and derivation_roots.get(disposition.input_collection_id) == root
+                and disposition.input_manifest_sha256 == root.manifest_sha256
+                and disposition.status in {"transformed", "preserved"}
+            ):
+                safely_disposed.add((disposition.input_collection_id, disposition.input_path))
+    missing = sorted(expected - safely_disposed)
+    if missing:
+        rendered = ", ".join(f"{collection_id}::{path}" for collection_id, path in missing[:10])
+        raise Conflict("source retirement lacks a verified safe disposition for: " + rendered)
+
+
+def _canonical_artifacts(
+    values: Sequence[CollectionArtifactIdentity],
+) -> tuple[CollectionArtifactIdentity, ...]:
+    artifacts = tuple(sorted(values))
+    if not artifacts:
+        raise BadRequest("exact artifact scope must not be empty")
+    keys = [(item.collection.collection_id, item.path) for item in artifacts]
+    if len(keys) != len(set(keys)):
+        raise BadRequest("exact artifact scope must not repeat a collection file")
+    return artifacts
+
+
+def _validate_claim_artifacts(
+    session: Session,
+    claim: CollectionProcessingClaimRecord,
+    artifacts: Sequence[CollectionArtifactIdentity],
+) -> None:
+    roots = {
+        item.collection_id: CollectionRootIdentity(
+            collection_id=item.collection_id,
+            manifest_sha256=item.manifest_sha256,
+            content_etag=item.content_etag,
+        )
+        for item in _claim_inputs(session, claim.id)
+    }
+    for artifact in artifacts:
+        root = roots.get(artifact.collection.collection_id)
+        if root != artifact.collection:
+            raise Conflict("artifact scope is outside the exact claim roots")
+        current = session.get(
+            CollectionFileRecord,
+            (artifact.collection.collection_id, artifact.path),
+        )
+        if current is None or current.bytes != artifact.bytes or current.sha256 != artifact.sha256:
+            raise Conflict("artifact scope differs from the immutable collection file")
+
+
+def _claim_artifacts(
+    session: Session,
+    claim_id: str,
+) -> list[CollectionProcessingClaimArtifactRecord]:
+    return list(
+        session.scalars(
+            select(CollectionProcessingClaimArtifactRecord)
+            .where(CollectionProcessingClaimArtifactRecord.claim_id == claim_id)
+            .order_by(
+                CollectionProcessingClaimArtifactRecord.collection_id,
+                CollectionProcessingClaimArtifactRecord.path,
+            )
+        )
+    )
+
+
+def _claim_artifact_identities(
+    session: Session,
+    claim_id: str,
+) -> tuple[CollectionArtifactIdentity, ...]:
+    roots = {
+        item.collection_id: CollectionRootIdentity(
+            collection_id=item.collection_id,
+            manifest_sha256=item.manifest_sha256,
+            content_etag=item.content_etag,
+        )
+        for item in _claim_inputs(session, claim_id)
+    }
+    return tuple(
+        CollectionArtifactIdentity(
+            collection=roots[item.collection_id],
+            path=item.path,
+            bytes=item.bytes,
+            sha256=item.sha256,
+        )
+        for item in _claim_artifacts(session, claim_id)
+    )
+
+
+def _capability_artifacts(
+    session: Session,
+    capability_id: str,
+) -> list[CollectionTransformCapabilityArtifactRecord]:
+    return list(
+        session.scalars(
+            select(CollectionTransformCapabilityArtifactRecord)
+            .where(CollectionTransformCapabilityArtifactRecord.capability_id == capability_id)
+            .order_by(
+                CollectionTransformCapabilityArtifactRecord.collection_id,
+                CollectionTransformCapabilityArtifactRecord.path,
+            )
+        )
+    )
 
 
 def _collection_payload_paths(session: Session, collection_id: int) -> tuple[str, ...]:
@@ -1082,7 +1602,7 @@ def _claim_payload(
 ) -> dict[str, object]:
     plan: dict[str, object] | None = None
     if claim.plan_sealed_at is not None:
-        _require_sealed_plan(claim)
+        _require_sealed_transform_plan(claim)
         assert claim.execution_id is not None
         assert claim.controller_evidence_json is not None
         assert claim.controller_evidence_sha256 is not None
@@ -1098,10 +1618,24 @@ def _claim_payload(
                 "id": claim.operation_id,
                 "sha256": claim.operation_sha256,
             },
+            "input_artifacts": [
+                item.as_dict() for item in _claim_artifact_identities(session, claim.id)
+            ],
             "output_tags": json.loads(claim.output_tags_json),
             "retirement_policy": claim.retirement_policy,
             "retirement_grace_seconds": claim.retirement_grace_seconds,
             "sealed_at": claim.plan_sealed_at,
+        }
+    outcomes = _processing_outcomes(session, claim.id)
+    outcome_settlement = None
+    if claim.plan_sealed_at is None and claim.settled_at is not None:
+        if claim.retirement_policy is None or not outcomes:
+            raise InvalidState("settled collection work has no exact outcome settlement")
+        outcome_documents = [item.as_dict() for item in outcomes]
+        outcome_settlement = {
+            "outcomes_sha256": canonical_json_sha256(outcome_documents),
+            "retirement_policy": claim.retirement_policy,
+            "retirement_grace_seconds": claim.retirement_grace_seconds,
         }
     return {
         "format": "riverhog-processing-claim/v1",
@@ -1130,6 +1664,8 @@ def _claim_payload(
             for item in _claim_inputs(session, claim.id)
         ],
         "plan": plan,
+        "outcomes": [item.as_dict() for item in outcomes],
+        "outcome_settlement": outcome_settlement,
     }
 
 
@@ -1228,8 +1764,18 @@ def processing_claim_blockers(
         )
         .exists()
     )
-    active_execution_is_unsettled = CollectionProcessingClaimRecord.execution_id.is_not(None) & or_(
-        finalized_output_exists, output_upload_exists
+    retained_outcome = (
+        select(CollectionProcessingOutcomeRecord.collection_id)
+        .where(
+            CollectionProcessingOutcomeRecord.claim_id == CollectionProcessingClaimRecord.id,
+            CollectionProcessingOutcomeRecord.collection_id == collection_id,
+        )
+        .exists()
+    )
+    active_output_is_unsettled = or_(
+        CollectionProcessingClaimRecord.execution_id.is_not(None)
+        & or_(finalized_output_exists, output_upload_exists),
+        retained_outcome,
     )
     statement = (
         select(
@@ -1242,13 +1788,14 @@ def processing_claim_blockers(
                 claimed_input,
                 CollectionProcessingClaimRecord.output_collection_id == collection_id,
                 pending_output,
+                retained_outcome,
             ),
             or_(
                 CollectionProcessingClaimRecord.state.in_(("settled", "retiring")),
                 (CollectionProcessingClaimRecord.state == "active")
                 & or_(
                     CollectionProcessingClaimRecord.expires_at > now,
-                    active_execution_is_unsettled,
+                    active_output_is_unsettled,
                 ),
             ),
         )
@@ -1274,14 +1821,20 @@ def require_retirement_exemption(
     if claim is None or claim.consumer_app != principal.app or claim.state != "retiring":
         raise Forbidden("retirement claim does not authorize collection deletion")
     input_row = session.get(CollectionProcessingClaimInputRecord, (claim_id, collection_id))
-    if input_row is None or claim.output_collection_id is None:
+    direct_output_ready = claim.output_collection_id is not None
+    outcomes = _processing_outcomes(session, claim.id)
+    if input_row is None or not (direct_output_ready or outcomes):
         raise Forbidden("retirement claim does not authorize this input collection")
+    outcome_documents = [item.as_dict() for item in outcomes]
     return {
         "claim_id": claim.id,
         "fence": claim.fence,
         "work_id": claim.work_id,
         "execution_id": claim.execution_id,
         "output_collection_id": claim.output_collection_id,
+        "outcomes_sha256": (
+            canonical_json_sha256(outcome_documents) if outcome_documents else None
+        ),
     }
 
 

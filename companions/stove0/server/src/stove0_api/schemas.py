@@ -10,7 +10,7 @@ class Stove0ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class WorkCreateIn(Stove0ApiModel):
+class WorkflowPreviewIn(Stove0ApiModel):
     recipe_id: str = Field(min_length=1, max_length=160)
     recipe_revision: int | None = Field(default=None, ge=1)
     collection_ids: tuple[int, ...] = Field(min_length=1, max_length=1000)
@@ -22,6 +22,10 @@ class WorkCreateIn(Stove0ApiModel):
         if value != tuple(sorted(set(value))) or any(item < 1 for item in value):
             raise ValueError("collection IDs must be positive, unique, and ordered")
         return value
+
+
+class WorkCreateIn(WorkflowPreviewIn):
+    preview_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class WorkCancelIn(Stove0ApiModel):
@@ -53,11 +57,18 @@ class WorkPageOut(PageOut):
     work: list[dict[str, Any]]
 
 
+class ArtifactSelectionPageOut(PageOut):
+    selection_sha256: str
+    total_bytes: int = Field(ge=0)
+    artifacts: list[dict[str, Any]]
+
+
 class EvaluationPageOut(PageOut):
     evaluations: list[dict[str, Any]]
 
 
 __all__ = [
+    "ArtifactSelectionPageOut",
     "EvaluationReviewIn",
     "ErrorResponse",
     "EvaluationPageOut",
@@ -66,4 +77,5 @@ __all__ = [
     "WorkCancelIn",
     "WorkCreateIn",
     "WorkPageOut",
+    "WorkflowPreviewIn",
 ]

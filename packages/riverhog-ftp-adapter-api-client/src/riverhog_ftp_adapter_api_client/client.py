@@ -39,17 +39,13 @@ class RiverhogFtpAdapterClient:
             else allow_insecure_http
         )
         self.base_url = safe_http_base_url(
-            base_url
-            or os.getenv("RIVERHOG_FTP_ADAPTER_BASE_URL")
-            or "http://127.0.0.1:8082",
+            base_url or os.getenv("RIVERHOG_FTP_ADAPTER_BASE_URL") or "http://127.0.0.1:8082",
             setting="RIVERHOG_FTP_ADAPTER_BASE_URL",
             allow_insecure_http=allow,
         )
         self.allow_insecure_http = allow
         self.token = token or os.getenv("RIVERHOG_FTP_ADAPTER_TOKEN")
-        self.http2 = (
-            _bool_env("RIVERHOG_FTP_ADAPTER_HTTP2", True) if http2 is None else http2
-        )
+        self.http2 = _bool_env("RIVERHOG_FTP_ADAPTER_HTTP2", True) if http2 is None else http2
         self.timeout_seconds = (
             _timeout_env("RIVERHOG_FTP_ADAPTER_HTTP_TIMEOUT_SECONDS", 300.0)
             if timeout_seconds is None
@@ -92,9 +88,7 @@ class RiverhogFtpAdapterClient:
 
     def _json(self, method: str, path: str, *, authenticated: bool = True) -> dict[str, Any]:
         if authenticated and not self.token:
-            raise FtpAdapterApiError(
-                "RIVERHOG_FTP_ADAPTER_TOKEN is required", code="unauthorized"
-            )
+            raise FtpAdapterApiError("RIVERHOG_FTP_ADAPTER_TOKEN is required", code="unauthorized")
         response = self._http.request(method, path)
         self._raise(response)
         payload = response.json()
