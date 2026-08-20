@@ -326,10 +326,9 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
         ]
 
     def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
-        self._run(
-            ["schtasks.exe", "/End", "/TN", WINDOWS_TASK_NAME],
-            allowed=frozenset({0, 1}),
-        )
+        # The listener replacement transaction quiesces and proves the prior
+        # process absent before registration. Keep registration construction-
+        # only: an additional asynchronous /End can terminate the new /Run.
         self._run(
             [
                 "schtasks.exe",
