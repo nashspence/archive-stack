@@ -6,7 +6,7 @@ from collections import Counter
 from dataclasses import fields
 from pathlib import Path
 
-from riverhog_adapters.config import AdapterConfig, SourceConfig
+from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.pack_retrieval import PackRangeRetrievalPolicy
 from riverhog_core.runtime_config import ArchiveStoreConfig, RetrievalCacheConfig, RuntimeConfig
@@ -15,7 +15,7 @@ from stove0_core import EndpointRegistration, Stove0RuntimeConfig
 
 REPO_ROOT = Path(__file__).parents[2]
 STOVE0_SOURCE = REPO_ROOT / "companions" / "stove0" / "server" / "src"
-ADAPTER_SOURCE = REPO_ROOT / "riverhog" / "adapters" / "src"
+ADAPTER_SOURCE = REPO_ROOT / "riverhog" / "ftp-adapter" / "src"
 PRODUCTION_ROOTS = (
     REPO_ROOT / "packages",
     REPO_ROOT / "riverhog",
@@ -156,9 +156,9 @@ def test_stove0_and_adapter_configuration_fields_have_consumers_and_witnesses() 
             set(Stove0RuntimeConfig.__dataclass_fields__)
             | set(EndpointRegistration.__dataclass_fields__),
         ),
-        "riverhog-adapters": (
+        "riverhog-ftp-adapter": (
             _trees(ADAPTER_SOURCE),
-            set(AdapterConfig.model_fields) | set(SourceConfig.model_fields),
+            set(FtpAdapterConfig.model_fields) | set(SourceConfig.model_fields),
         ),
     }
 
@@ -198,7 +198,7 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
             *Stove0RuntimeConfig.__dataclass_fields__,
             *EndpointRegistration.__dataclass_fields__,
         ],
-        "riverhog-adapters": [*AdapterConfig.model_fields, *SourceConfig.model_fields],
+        "riverhog-ftp-adapter": [*FtpAdapterConfig.model_fields, *SourceConfig.model_fields],
     }
     counts = {
         component: {
@@ -208,6 +208,6 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
         for component, names in components.items()
     }
 
-    assert set(counts) == {"riverhog", "stove0", "riverhog-adapters"}
+    assert set(counts) == {"riverhog", "stove0", "riverhog-ftp-adapter"}
     assert all(sum(component.values()) > 0 for component in counts.values())
     assert all(set(component) == set(_SETTING_CLASSIFICATIONS) for component in counts.values())

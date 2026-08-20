@@ -1,4 +1,4 @@
-"""Restartable finalized-receipt custody transfer for landing-directory adapters."""
+"""Restartable finalized-receipt custody transfer for the FTP intake directory."""
 
 from __future__ import annotations
 
@@ -21,28 +21,28 @@ from riverhog_provenance import (
     prepare_file_provenance,
 )
 
-from riverhog_adapters.config import AdapterConfig, SourceConfig
+from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 
-_CONTROL_DIR = ".riverhog-adapter"
-_FLUSH_MARKER = ".riverhog-flush"
+_CONTROL_DIR = ".riverhog-ftp-adapter"
+_FLUSH_MARKER = ".riverhog-ftp-flush"
 _MANIFEST = "claim.json"
 _RECEIPT = "receipt.json"
 _RECEIPTS_DIR = "receipts"
 
 
-class LandingAdapterError(RuntimeError):
+class FtpAdapterError(RuntimeError):
     pass
 
 
-class SourceChanged(LandingAdapterError):
+class SourceChanged(FtpAdapterError):
     pass
 
 
-class ClaimCollision(LandingAdapterError):
+class ClaimCollision(FtpAdapterError):
     pass
 
 
-class FinalizedReceiptAdapter:
+class FtpAdapter:
     """Move completed inputs into bounded scratch until Riverhog finalizes them.
 
     The claim intent is fsynced before the first rename. Reconciliation can
@@ -50,7 +50,7 @@ class FinalizedReceiptAdapter:
     Payload bytes are removed only after an exact finalized Riverhog receipt.
     """
 
-    def __init__(self, api: ApiClient, config: AdapterConfig) -> None:
+    def __init__(self, api: ApiClient, config: FtpAdapterConfig) -> None:
         self.api = api
         self.config = config
         self._custody_pass_lock = threading.Lock()
@@ -61,11 +61,7 @@ class FinalizedReceiptAdapter:
 
     def _run_once(self, source_ids: Sequence[str] | None = None) -> dict[str, object]:
         selected = set(source_ids or ())
-        sources = tuple(
-            source
-            for source in self.config.sources
-            if source.adapter != "tus" and (not selected or source.id in selected)
-        )
+        sources = tuple(source for source in self.config.sources if not selected or source.id in selected)
         unknown = selected - {source.id for source in sources}
         if unknown:
             raise KeyError(", ".join(sorted(unknown)))
@@ -90,7 +86,7 @@ class FinalizedReceiptAdapter:
             except Exception as exc:
                 failed.append({"source": source.id, "claim": "new", "error": str(exc)[:1000]})
         return {
-            "format": "riverhog-adapter-pass/v1",
+            "format": "riverhog-ftp-adapter-pass/v1",
             "completed": completed,
             "failed": failed,
             "sources": [source.id for source in sources],
@@ -98,11 +94,9 @@ class FinalizedReceiptAdapter:
 
     def flush(self, source_id: str) -> dict[str, object]:
         source = self.config.source(source_id)
-        if source.adapter == "tus":
-            raise ValueError("TUS uploads close through protocol completion")
         marker = source.root / _FLUSH_MARKER
         marker.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        _write_atomic(marker, b"riverhog-adapter-flush/v1\n")
+        _write_atomic(marker, b"riverhog-ftp-adapter-flush/v1\n")
         return self.run_once((source_id,))
 
     def status(self) -> dict[str, object]:
@@ -118,7 +112,6 @@ class FinalizedReceiptAdapter:
             rows.append(
                 {
                     "id": source.id,
-                    "adapter": source.adapter,
                     "ingest_source": source.ingest_source,
                     "claims": len(claims),
                     "claim_bytes": claim_bytes,
@@ -128,7 +121,7 @@ class FinalizedReceiptAdapter:
                     "provenance": source.provenance,
                 }
             )
-        return {"format": "riverhog-adapters-status/v1", "sources": rows}
+        return {"format": "riverhog-ftp-adapter-status/v1", "sources": rows}
 
     def accept_completed_file(
         self,
@@ -201,7 +194,7 @@ class FinalizedReceiptAdapter:
             else:
                 binding = dict(provenance)
             manifest = {
-                "format": "riverhog-adapter-claim/v1",
+                "format": "riverhog-ftp-adapter-claim/v1",
                 "claim_id": identity,
                 "source_event_id": source_event_id,
                 "source": source.id,
@@ -307,7 +300,7 @@ class FinalizedReceiptAdapter:
                 }
             )
         manifest = {
-            "format": "riverhog-adapter-claim/v1",
+            "format": "riverhog-ftp-adapter-claim/v1",
             "claim_id": claim_id,
             "source_event_id": event_id,
             "source": source.id,
@@ -330,7 +323,7 @@ class FinalizedReceiptAdapter:
             path,
             relative_path=relative,
             host_id=self.config.host_id,
-            agent_name="riverhog-adapters",
+            agent_name="riverhog-ftp-adapter",
             agent_version="1.0.0",
             omit_reason=(
                 source.provenance_omission_reason if source.provenance == "omit" else None
@@ -402,8 +395,8 @@ class FinalizedReceiptAdapter:
         }
         producer = CollectionProducer(
             self.api,
-            producer_app="riverhog-adapters/v1",
-            adapter_id=f"{source.adapter}/v1",
+            producer_app="riverhog-ftp-adapter/v1",
+            adapter_id="ftp/v1",
             adapter_version="1.0.0",
             ingest_source=source.ingest_source,
             tags=source.tags,
@@ -416,13 +409,13 @@ class FinalizedReceiptAdapter:
         receipt = producer.publish(
             files,
             source_event_id=str(manifest["source_event_id"]),
-            source_context={"adapter": source.adapter, "source": source.id},
+            source_context={"adapter": "ftp", "source": source.id},
             provenance_journals=journals,
             idempotency_key=str(manifest["claim_id"]),
-            event_context={"adapter": source.adapter, "source": source.id},
+            event_context={"adapter": "ftp", "source": source.id},
         )
         receipt_payload = {
-            "format": "riverhog-adapter-receipt/v1",
+            "format": "riverhog-ftp-adapter-receipt/v1",
             "claim_id": claim_root.name,
             "source_event_id": str(manifest["source_event_id"]),
             "collection_id": receipt.collection_id,
@@ -450,13 +443,13 @@ class FinalizedReceiptAdapter:
         payload = json.loads(path.read_text(encoding="utf-8"))
         if (
             not isinstance(payload, dict)
-            or payload.get("format") != "riverhog-adapter-receipt/v1"
+            or payload.get("format") != "riverhog-ftp-adapter-receipt/v1"
             or payload.get("claim_id") != claim_id
         ):
-            raise LandingAdapterError("invalid durable adapter receipt")
+            raise FtpAdapterError("invalid durable FTP adapter receipt")
         raw_receipt = payload.get("riverhog_receipt")
         if not isinstance(raw_receipt, dict):
-            raise LandingAdapterError("durable adapter receipt has no Riverhog receipt")
+            raise FtpAdapterError("durable FTP adapter receipt has no Riverhog receipt")
         return ProducedCollection(
             collection_id=int(payload["collection_id"]),
             manifest_sha256=str(payload["manifest_sha256"]),
@@ -527,28 +520,28 @@ def _require_identity(current: os.stat_result, row: Mapping[str, object], path: 
     )
     actual = (current.st_size, current.st_dev, current.st_ino)
     if actual != expected or not stat.S_ISREG(current.st_mode):
-        raise SourceChanged(f"adapter source changed during claim: {path}")
+        raise SourceChanged(f"FTP adapter source changed during claim: {path}")
 
 
 def _read_manifest(claim_root: Path) -> dict[str, object]:
     payload = json.loads((claim_root / _MANIFEST).read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or payload.get("format") != "riverhog-adapter-claim/v1":
-        raise LandingAdapterError(f"invalid adapter claim: {claim_root}")
+    if not isinstance(payload, dict) or payload.get("format") != "riverhog-ftp-adapter-claim/v1":
+        raise FtpAdapterError(f"invalid FTP adapter claim: {claim_root}")
     return payload
 
 
 def _file_rows(manifest: Mapping[str, object]) -> list[dict[str, object]]:
     value = manifest.get("files")
     if not isinstance(value, list) or not value:
-        raise LandingAdapterError("adapter claim has no files")
+        raise FtpAdapterError("FTP adapter claim has no files")
     if any(not isinstance(item, dict) for item in value):
-        raise LandingAdapterError("adapter claim file entry is invalid")
+        raise FtpAdapterError("FTP adapter claim file entry is invalid")
     return [dict(item) for item in value]
 
 
 def _mapping(value: object, label: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise LandingAdapterError(f"{label} must be an object")
+        raise FtpAdapterError(f"{label} must be an object")
     return {str(key): item for key, item in value.items()}
 
 
@@ -563,9 +556,9 @@ def _producer_provenance(file_row: Mapping[str, object]) -> dict[str, object]:
     elif status == "omitted":
         expected.add("omission_reason")
     else:
-        raise LandingAdapterError("claim provenance status is invalid")
+        raise FtpAdapterError("claim provenance status is invalid")
     if set(binding) != expected:
-        raise LandingAdapterError("claim provenance binding has unexpected fields")
+        raise FtpAdapterError("claim provenance binding has unexpected fields")
     identity = (
         str(binding["path"]),
         int(str(binding["bytes"])),
@@ -577,7 +570,7 @@ def _producer_provenance(file_row: Mapping[str, object]) -> dict[str, object]:
         str(file_row["sha256"]),
     )
     if identity != declared:
-        raise LandingAdapterError("claim provenance binding differs from its payload")
+        raise FtpAdapterError("claim provenance binding differs from its payload")
     if status == "captured":
         return {
             "status": "captured",
@@ -642,7 +635,7 @@ def _prune_empty(root: Path) -> None:
 
 __all__ = [
     "ClaimCollision",
-    "FinalizedReceiptAdapter",
-    "LandingAdapterError",
+    "FtpAdapter",
+    "FtpAdapterError",
     "SourceChanged",
 ]

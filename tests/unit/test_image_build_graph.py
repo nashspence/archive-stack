@@ -19,7 +19,7 @@ MISE_IMAGE = (
 )
 MISE_CONTAINER_TOOLS = {
     "riverhog": {"minisign", "uv"},
-    "riverhog-adapters": {"uv"},
+    "riverhog-ftp-adapter": {"uv"},
     "stove0": {"uv"},
     "stove0-extensions": {"uv"},
     "stove0-nvenc-extension": {"uv"},
@@ -38,12 +38,12 @@ IMAGE_CONTRACTS = {
             ("riverhog/server/compose.yaml", "app"),
         ),
     },
-    "riverhog-adapters": {
-        "dockerfile": "riverhog/adapters/Dockerfile",
-        "tag": "riverhog-adapters:dev",
-        "title": "Riverhog protocol adapters",
+    "riverhog-ftp-adapter": {
+        "dockerfile": "riverhog/ftp-adapter/Dockerfile",
+        "tag": "riverhog-ftp-adapter:dev",
+        "title": "Riverhog FTP adapter",
         "license": "Apache-2.0",
-        "compose": (("riverhog/adapters/compose.yaml", "adapter"),),
+        "compose": (("riverhog/ftp-adapter/compose.yaml", "ftp-adapter"),),
     },
     "stove0": {
         "dockerfile": "companions/stove0/server/Dockerfile",
@@ -100,10 +100,8 @@ PINNED_EXTERNAL_IMAGES = {
 PINNED_EXTERNAL_COMPOSE_IMAGES = {
     "alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce",
     "dxflrs/garage:b72b090a097c8ee2711c8fb065d250ed68dcd0bf@sha256:f22f09abe741e54ab244e95638310e040b81eda41e2c6ab9b7373cda4b9e955c",
-    "nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10",
     "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
     "stilliard/pure-ftpd:trixie-latest@sha256:12b5aeb1a371b789e77d0b6217434a7a5ded9a3b251d52dab1f2e85ccde4cbf8",
-    "tusproject/tusd:v2.8.0@sha256:060f117d224d057a5f25be79b4a4535168a0901515cc20cd02f62d0b8e623f5f",
 }
 
 

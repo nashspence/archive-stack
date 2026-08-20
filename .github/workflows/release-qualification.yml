@@ -150,13 +150,13 @@ jobs:
           make unit
           TESTS="tests/unit/test_operation_lifecycle_api.py::test_riverhog_official_client_positive_disposable_lifecycle
           companions/stove0/tests/test_stove0_api_parity.py::test_stove0_official_client_positive_disposable_lifecycle
-          riverhog/adapters/tests/test_adapter_api_parity.py::test_adapters_official_clients_positive_disposable_lifecycle
+          riverhog/ftp-adapter/tests/test_ftp_adapter_api_parity.py::test_official_client_positive_disposable_lifecycle
           tests/unit/test_collection_reads.py::test_collection_list_query_count_is_independent_of_page_rows
           companions/stove0/tests/test_work_state.py::test_unified_state_store_is_restart_safe_and_compare_and_swap
           companions/stove0/tests/test_preview_and_evaluation.py::test_unified_evaluation_store_is_restart_safe
           companions/stove0/tests/test_scheduler_roles.py::test_worker_tick_never_consumes_the_controller_event_cursor
-          riverhog/adapters/tests/test_landing_adapter.py::test_explicit_flush_is_the_same_bounded_claim_and_receipt_path
-          riverhog/adapters/tests/test_tus_adapter.py::test_tus_publication_recovers_crash_after_finalized_adapter_receipt
+          riverhog/ftp-adapter/tests/test_ftp_adapter_custody.py::test_landing_adapter_reconciles_lost_response_without_releasing_custody
+          riverhog/ftp-adapter/tests/test_ftp_adapter_custody.py::test_explicit_flush_is_the_same_bounded_claim_and_receipt_path
           tests/unit/test_cli_app_keys.py
           tests/unit/test_cli_archive_copy.py
           tests/unit/test_cli_archive_retire.py
@@ -172,7 +172,7 @@ jobs:
           tests/unit/test_cli_upload.py
           tests/unit/test_local_materialization.py
           companions/stove0/tests/test_cli.py
-          riverhog/adapters/tests/test_adapter_api_parity.py::test_operator_cli_has_human_and_json_views_for_each_management_operation"
+          riverhog/ftp-adapter/tests/test_ftp_adapter_api_parity.py::test_operator_cli_has_human_and_json_views_for_each_management_operation"
           args="-p tests.operation_observer"
       - name: Verify and record the complete operation matrix
         run: >-

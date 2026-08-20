@@ -128,7 +128,7 @@ jobs:
       matrix:
         target:
           - riverhog
-          - riverhog-adapters
+          - riverhog-ftp-adapter
           - stove0
           - stove0-extensions
           - stove0-nvenc-extension

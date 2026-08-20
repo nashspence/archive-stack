@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from riverhog_adapters.app import build_parser as build_adapter_parser
+from riverhog_ftp_adapter.app import build_parser as build_adapter_parser
 from riverhog_cli.main import app as riverhog_app
 from stove0_cli.main import app as stove0_app
 from typer.main import get_command
@@ -17,7 +17,7 @@ CONSOLE_DISTRIBUTIONS = {
     "riverhog": "riverhog-client",
     "riverhog-api": "riverhog-server",
     "riverhog-recover": "riverhog-recover",
-    "riverhog-adapters": "riverhog-adapters",
+    "riverhog-ftp-adapter": "riverhog-ftp-adapter",
     "stove0": "stove0-client",
     "stove0-server": "stove0-server",
     "stove0-maintained-extension": "stove0-maintained-extensions",
@@ -180,7 +180,7 @@ def test_every_official_list_command_has_one_declared_convention() -> None:
     discovered = {
         *_typer_list_commands(get_command(riverhog_app), ("riverhog",)),
         *_typer_list_commands(get_command(stove0_app), ("stove0",)),
-        *_argparse_list_commands(build_adapter_parser(), ("riverhog-adapters",)),
+        *_argparse_list_commands(build_adapter_parser(), ("riverhog-ftp-adapter",)),
     }
     classified = {
         command[:-1]

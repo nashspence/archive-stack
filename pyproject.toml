@@ -9,7 +9,7 @@ members = [
 ]
 
 [tool.uv.sources]
-riverhog-adapter-api-client = { workspace = true }
+riverhog-ftp-adapter-api-client = { workspace = true }
 riverhog-provenance = { workspace = true }
 riverhog-transform-sdk = { workspace = true }
 stove0-api-client = { workspace = true }
