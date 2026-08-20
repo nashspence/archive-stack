@@ -50,6 +50,7 @@ QUALIFICATION_PENDING_TIMEOUT_SECONDS = 72 * 60 * 60
 QUALIFICATION_RESTORE_HOLD_SECONDS = 24 * 60 * 60
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _SOURCE_SHA_RE = re.compile(r"[0-9a-f]{40}")
+_APP_KEY_ID_RE = re.compile(r"[0-9a-f]{16}")
 _ENV_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
 _PREFIX_RE = re.compile(r"[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?")
 _EXPECTED_ROLES = {
@@ -304,6 +305,7 @@ class QualificationCheckpoint:
     restore_deadline_at: str
     collection_id: int | None
     retrieval_job_id: str | None
+    qualification_key_id: str | None
     history: tuple[PhaseRecord, ...]
     checkpoint_sha256: str
 
@@ -332,6 +334,7 @@ class QualificationCheckpoint:
             "restore_deadline_at": self.restore_deadline_at,
             "collection_id": self.collection_id,
             "retrieval_job_id": self.retrieval_job_id,
+            "qualification_key_id": self.qualification_key_id,
             "history": [asdict(record) for record in self.history],
         }
         if include_digest:
@@ -1903,6 +1906,7 @@ def new_checkpoint(
         restore_deadline_at=_timestamp(current + timedelta(hours=config.restore_deadline_hours)),
         collection_id=None,
         retrieval_job_id=None,
+        qualification_key_id=None,
         history=(PhaseRecord(phase="created", at=timestamp, assertions=()),),
         checkpoint_sha256="",
     )
@@ -1951,6 +1955,34 @@ def advance_checkpoint(
             *checkpoint.history,
             PhaseRecord(phase=phase, at=timestamp, assertions=tuple(sorted(set(assertions)))),
         ),
+        checkpoint_sha256="",
+    )
+    return replace(updated, checkpoint_sha256=_checkpoint_digest(updated))
+
+
+def bind_qualification_key(
+    checkpoint: QualificationCheckpoint,
+    key_id: str,
+    *,
+    now: datetime | None = None,
+) -> QualificationCheckpoint:
+    """Bind the one app-key identity that owns restart-spanning API jobs."""
+    if _checkpoint_digest(checkpoint) != checkpoint.checkpoint_sha256:
+        raise QualificationError("checkpoint digest does not match its contents")
+    normalized = key_id.strip().casefold()
+    if _APP_KEY_ID_RE.fullmatch(normalized) is None:
+        raise QualificationError("qualification key identity is invalid")
+    if checkpoint.qualification_key_id is not None:
+        if checkpoint.qualification_key_id != normalized:
+            raise QualificationError("qualification key identity cannot change")
+        return checkpoint
+    timestamp = _timestamp(now or _utc_now())
+    updated = replace(
+        checkpoint,
+        qualification_key_id=normalized,
+        generation=checkpoint.generation + 1,
+        previous_checkpoint_sha256=checkpoint.checkpoint_sha256,
+        updated_at=timestamp,
         checkpoint_sha256="",
     )
     return replace(updated, checkpoint_sha256=_checkpoint_digest(updated))
@@ -2042,6 +2074,11 @@ def load_checkpoint(path: Path) -> QualificationCheckpoint:
                 if payload["retrieval_job_id"] is not None
                 else None
             ),
+            qualification_key_id=(
+                str(payload["qualification_key_id"])
+                if payload["qualification_key_id"] is not None
+                else None
+            ),
             history=history,
             checkpoint_sha256=str(payload["checkpoint_sha256"]),
         )
@@ -2078,6 +2115,13 @@ def load_checkpoint(path: Path) -> QualificationCheckpoint:
         for item in checkpoint.artifacts
     ):
         raise QualificationError("checkpoint artifact identities are invalid")
+    if (
+        checkpoint.qualification_key_id is not None
+        and _APP_KEY_ID_RE.fullmatch(checkpoint.qualification_key_id) is None
+    ):
+        raise QualificationError("checkpoint qualification key identity is invalid")
+    if checkpoint.retrieval_job_id is not None and checkpoint.qualification_key_id is None:
+        raise QualificationError("restartable retrieval requires its qualification key identity")
     if _checkpoint_digest(checkpoint) != checkpoint.checkpoint_sha256:
         raise QualificationError("checkpoint digest does not match its contents")
     return checkpoint
@@ -2434,7 +2478,8 @@ def _qualification_api(
     base_url: str,
     bootstrap_token: str,
     allow_insecure_http: bool,
-) -> Iterator[tuple[Any, str]]:
+    qualification_key_id: str | None,
+) -> Iterator[tuple[Any, str, str]]:
     from riverhog_api_client.client import ApiClient
 
     bootstrap = ApiClient(
@@ -2442,16 +2487,26 @@ def _qualification_api(
         token=bootstrap_token,
         allow_insecure_http=allow_insecure_http,
     )
-    created = bootstrap.create_app_key(
-        "provider-qualification",
-        access=({"permission": "*", "resource": "*"},),
-        expires_in_seconds=6 * 60 * 60,
-    )
-    token = created.get("token")
-    key_id = created.get("id")
+    created_now = qualification_key_id is None
+    if created_now:
+        credential = bootstrap.create_app_key(
+            "provider-qualification",
+            access=({"permission": "*", "resource": "*"},),
+        )
+    else:
+        assert qualification_key_id is not None
+        credential = bootstrap.rotate_app_key(
+            "provider-qualification",
+            qualification_key_id,
+        )
+    token = credential.get("token")
+    key_id = credential.get("id")
     if not isinstance(token, str) or not isinstance(key_id, str):
         bootstrap.close()
-        raise QualificationError("Riverhog did not return a transient qualification key")
+        raise QualificationError("Riverhog did not return the qualification key")
+    if qualification_key_id is not None and key_id != qualification_key_id:
+        bootstrap.close()
+        raise QualificationError("Riverhog rotated a different qualification key")
     try:
         quota = bootstrap.set_app_key_download_quota(
             "provider-qualification",
@@ -2462,7 +2517,8 @@ def _qualification_api(
             raise QualificationError("Riverhog did not apply the bounded qualification quota")
     except BaseException:
         try:
-            bootstrap.revoke_app_key("provider-qualification", key_id)
+            if created_now:
+                bootstrap.revoke_app_key("provider-qualification", key_id)
         finally:
             bootstrap.close()
         raise
@@ -2472,13 +2528,10 @@ def _qualification_api(
         allow_insecure_http=allow_insecure_http,
     )
     try:
-        yield api, token
+        yield api, token, key_id
     finally:
         api.close()
-        try:
-            bootstrap.revoke_app_key("provider-qualification", key_id)
-        finally:
-            bootstrap.close()
+        bootstrap.close()
 
 
 def _upload_collection_with_observation(
@@ -3284,7 +3337,10 @@ def operate_qualification(
         base_url=base_url,
         bootstrap_token=bootstrap_token,
         allow_insecure_http=allow_insecure_http,
-    ) as (api, token):
+        qualification_key_id=checkpoint.qualification_key_id,
+    ) as (api, token, qualification_key_id):
+        checkpoint = bind_qualification_key(checkpoint, qualification_key_id)
+        write_checkpoint(checkpoint_path, checkpoint)
         if checkpoint.phase == "created":
             collection_id, observations = _upload_collection_with_observation(
                 api,

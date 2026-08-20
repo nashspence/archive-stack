@@ -418,6 +418,11 @@ def test_checkpoint_is_restartable_tamper_evident_and_emits_bounded_evidence(
         run_id="12345678123456781234567812345678",
         now=now,
     )
+    checkpoint = module.bind_qualification_key(
+        checkpoint,
+        "a" * 16,
+        now=now + timedelta(seconds=1),
+    )
     phases = (
         "immediate-qualified",
         "deep-archive-uploaded",
@@ -1200,9 +1205,12 @@ def test_operator_advances_across_short_restore_invocations(
 
     api = _Api()
 
+    qualification_key_ids: list[str | None] = []
+
     @contextmanager
-    def qualification_api(**_kwargs):  # type: ignore[no-untyped-def]
-        yield api, "transient-token"
+    def qualification_api(**kwargs):  # type: ignore[no-untyped-def]
+        qualification_key_ids.append(kwargs["qualification_key_id"])
+        yield api, "rotated-token", "a" * 16
 
     monkeypatch.setattr(module, "_qualification_api", qualification_api)
     monkeypatch.setattr(
@@ -1273,6 +1281,7 @@ def test_operator_advances_across_short_restore_invocations(
     assert module.load_checkpoint(checkpoint_path) == first
     assert first.collection_id == 42
     assert first.retrieval_job_id == "job-42"
+    assert first.qualification_key_id == "a" * 16
 
     api.ready = True
     second = module.operate_qualification(
@@ -1294,8 +1303,69 @@ def test_operator_advances_across_short_restore_invocations(
     assert calls.count("_wait_archive_copy") == 1
     assert calls.count("_retire_copy") == 1
     assert calls.count("_cleanup_b2_namespace") == 1
+    assert qualification_key_ids == [None, "a" * 16]
     assert {item.surface for item in second.artifacts} == {
         "aws-deep-archive",
         "b2-archive",
         "cloudfront-egress",
     }
+
+
+def test_qualification_api_rotates_one_durable_job_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    from riverhog_api_client import client as client_module
+
+    calls: list[tuple[object, ...]] = []
+
+    class _Client:
+        def __init__(self, *, token: str, **_kwargs: object) -> None:
+            self.token = token
+
+        def create_app_key(self, app: str, **_kwargs: object) -> dict[str, object]:
+            calls.append(("create", app))
+            return {"id": "a" * 16, "token": "first-token"}
+
+        def rotate_app_key(self, app: str, key_id: str) -> dict[str, object]:
+            calls.append(("rotate", app, key_id))
+            return {"id": key_id, "token": "rotated-token"}
+
+        def set_app_key_download_quota(
+            self,
+            app: str,
+            key_id: str,
+            *,
+            monthly_bytes: int,
+        ) -> dict[str, object]:
+            calls.append(("quota", app, key_id, monthly_bytes))
+            return {"monthly_bytes": monthly_bytes}
+
+        def revoke_app_key(self, app: str, key_id: str) -> dict[str, object]:
+            calls.append(("revoke", app, key_id))
+            return {"id": key_id}
+
+        def close(self) -> None:
+            calls.append(("close", self.token))
+
+    monkeypatch.setattr(client_module, "ApiClient", _Client)
+
+    with module._qualification_api(
+        base_url="http://127.0.0.1:8000",
+        bootstrap_token="bootstrap",
+        allow_insecure_http=True,
+        qualification_key_id=None,
+    ) as (_api, token, key_id):
+        assert (token, key_id) == ("first-token", "a" * 16)
+
+    with module._qualification_api(
+        base_url="http://127.0.0.1:8000",
+        bootstrap_token="bootstrap",
+        allow_insecure_http=True,
+        qualification_key_id="a" * 16,
+    ) as (_api, token, key_id):
+        assert (token, key_id) == ("rotated-token", "a" * 16)
+
+    assert ("create", "provider-qualification") in calls
+    assert ("rotate", "provider-qualification", "a" * 16) in calls
+    assert not any(call[0] == "revoke" for call in calls)
