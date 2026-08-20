@@ -22,11 +22,11 @@ from typing import Any, TypeGuard, cast
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
-from riverhog_adapter_api_client import RiverhogAdapterClient, RiverhogTusClient
-from riverhog_adapters.app import AdapterComposition
-from riverhog_adapters.app import build_parser as build_adapter_parser
-from riverhog_adapters.app import create_app as create_adapter_app
-from riverhog_adapters.config import AdapterConfig, SourceConfig
+from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
+from riverhog_ftp_adapter.app import FtpAdapterComposition
+from riverhog_ftp_adapter.app import build_parser as build_adapter_parser
+from riverhog_ftp_adapter.app import create_app as create_adapter_app
+from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client.client import ApiClient
 from riverhog_cli import main as riverhog_cli
@@ -65,18 +65,13 @@ class _RiverhogContractApi:
 
 class _AdapterContractService:
     def status(self) -> dict[str, object]:
-        return {"format": "riverhog-adapters-status/v1", "sources": []}
+        return {"format": "riverhog-ftp-adapter-status/v1", "sources": []}
 
     def run_once(self) -> dict[str, object]:
-        return {"format": "riverhog-adapter-pass/v1", "sources": []}
+        return {"format": "riverhog-ftp-adapter-pass/v1", "sources": []}
 
     def flush(self, source_id: str) -> dict[str, object]:
-        return {"format": "riverhog-adapter-pass/v1", "sources": [source_id]}
-
-
-class _TusContractService:
-    def authenticate(self, _authorization: str | None) -> str:
-        return "qualification-source"
+        return {"format": "riverhog-ftp-adapter-pass/v1", "sources": [source_id]}
 
 
 def create_stove0_contract_app() -> FastAPI:
@@ -116,7 +111,7 @@ def create_stove0_contract_app() -> FastAPI:
 
 
 def create_adapter_contract_app() -> FastAPI:
-    config = AdapterConfig(
+    config = FtpAdapterConfig(
         host_id="qualification-host",
         riverhog_base_url="https://riverhog.invalid",
         riverhog_token="riverhog-qualification-token",
@@ -124,9 +119,8 @@ def create_adapter_contract_app() -> FastAPI:
         sources=(
             SourceConfig(
                 id="qualification-source",
-                adapter="watched-drop",
                 root=Path("/tmp/riverhog-operation-qualification"),
-                ingest_source="watched-drop:qualification",
+                ingest_source="ftp:qualification",
                 tags=("qualification",),
                 provenance="omit",
                 provenance_omission_reason="Synthetic operation contract fixture.",
@@ -134,11 +128,10 @@ def create_adapter_contract_app() -> FastAPI:
         ),
     )
     return create_adapter_app(
-        AdapterComposition(
+        FtpAdapterComposition(
             config,
             cast(Any, _RiverhogContractApi()),
             cast(Any, _AdapterContractService()),
-            cast(Any, _TusContractService()),
         )
     )
 
@@ -324,39 +317,10 @@ def application_surfaces() -> tuple[ApplicationSurface, ...]:
             tuple(_typer_commands(stove0_cli.app)),
         ),
         ApplicationSurface(
-            "riverhog-adapters",
+            "riverhog-ftp-adapter",
             create_adapter_contract_app(),
-            (RiverhogAdapterClient, RiverhogTusClient),
+            (RiverhogFtpAdapterClient,),
             tuple(_argparse_commands(build_adapter_parser())),
-            (
-                SupplementalOperation(
-                    operation_id="create_tus_adapter_upload",
-                    method="POST",
-                    path="/files/",
-                    classification="standard-tool/protocol",
-                    client_type=RiverhogTusClient,
-                    client_method="upload_file",
-                    cli_commands=(),
-                ),
-                SupplementalOperation(
-                    operation_id="head_tus_adapter_upload",
-                    method="HEAD",
-                    path="/files/{upload_id}",
-                    classification="standard-tool/protocol",
-                    client_type=RiverhogTusClient,
-                    client_method="upload_file",
-                    cli_commands=(),
-                ),
-                SupplementalOperation(
-                    operation_id="patch_tus_adapter_upload",
-                    method="PATCH",
-                    path="/files/{upload_id}",
-                    classification="standard-tool/protocol",
-                    client_type=RiverhogTusClient,
-                    client_method="upload_file",
-                    cli_commands=(),
-                ),
-            ),
         ),
     )
 
@@ -699,7 +663,7 @@ def _cold_cli_timings(*, trials: int = 3) -> dict[str, object]:
     entrypoints = {
         "riverhog": "from riverhog_cli.main import main; raise SystemExit(main())",
         "stove0": "from stove0_cli.main import main; main()",
-        "riverhog-adapters": ("from riverhog_adapters.app import main; raise SystemExit(main())"),
+        "riverhog-ftp-adapter": ("from riverhog_ftp_adapter.app import main; raise SystemExit(main())"),
     }
     timings: dict[str, object] = {}
     for application, program in entrypoints.items():
@@ -897,11 +861,11 @@ def evidence(*, source_sha: str, timings: Path) -> dict[str, object]:
             },
             "bounded_state_access": {
                 "status": "passed",
-                "applications": ["riverhog", "riverhog-adapters", "stove0"],
+                "applications": ["riverhog", "riverhog-ftp-adapter", "stove0"],
             },
             "event_cursor_restart_resume": {
                 "status": "passed",
-                "applications": ["riverhog", "riverhog-adapters", "stove0"],
+                "applications": ["riverhog", "riverhog-ftp-adapter", "stove0"],
             },
             "provider_backed_lifecycles": {
                 "status": "linked",

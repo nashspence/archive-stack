@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from riverhog_adapters.config import AdapterConfig, SourceConfig
-from riverhog_adapters.landing import FinalizedReceiptAdapter
+from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
+from riverhog_ftp_adapter.landing import FtpAdapter
 from riverhog_api_client.producer import ProducedCollection
 
 
-def _config(tmp_path: Path) -> AdapterConfig:
-    return AdapterConfig(
+def _config(tmp_path: Path) -> FtpAdapterConfig:
+    return FtpAdapterConfig(
         host_id="test-host",
         riverhog_base_url="https://riverhog.invalid",
         riverhog_token="riverhog-token",
@@ -23,7 +23,6 @@ def _config(tmp_path: Path) -> AdapterConfig:
         sources=(
             SourceConfig(
                 id="camera-a",
-                adapter="ftp",
                 root=tmp_path / "landing",
                 ingest_source="ftp:camera-a",
                 tags=("camera-a", "intake"),
@@ -79,15 +78,15 @@ def test_landing_adapter_reconciles_lost_response_without_releasing_custody(
     os.utime(payload, (old, old))
     _Producer.calls = []
     _Producer.fail_once = True
-    monkeypatch.setattr("riverhog_adapters.landing.CollectionProducer", _Producer)
-    adapter = FinalizedReceiptAdapter(object(), config)  # type: ignore[arg-type]
+    monkeypatch.setattr("riverhog_ftp_adapter.landing.CollectionProducer", _Producer)
+    adapter = FtpAdapter(object(), config)  # type: ignore[arg-type]
 
     first = adapter.run_once()
 
     assert first["completed"] == 0
     assert len(first["failed"]) == 1  # type: ignore[arg-type]
     assert not payload.exists()
-    claims = list((source.root / ".riverhog-adapter" / "claims").iterdir())
+    claims = list((source.root / ".riverhog-ftp-adapter" / "claims").iterdir())
     assert len(claims) == 1
     assert (claims[0] / "payload" / "camera" / "clip.mp4").read_bytes() == (
         b"immutable camera payload"
@@ -96,7 +95,7 @@ def test_landing_adapter_reconciles_lost_response_without_releasing_custody(
     second = adapter.run_once()
 
     assert second == {
-        "format": "riverhog-adapter-pass/v1",
+        "format": "riverhog-ftp-adapter-pass/v1",
         "completed": 1,
         "failed": [],
         "sources": ["camera-a"],
@@ -124,8 +123,8 @@ def test_explicit_flush_is_the_same_bounded_claim_and_receipt_path(
     payload.parent.mkdir(parents=True)
     payload.write_bytes(b"current")
     _Producer.calls = []
-    monkeypatch.setattr("riverhog_adapters.landing.CollectionProducer", _Producer)
-    adapter = FinalizedReceiptAdapter(object(), config)  # type: ignore[arg-type]
+    monkeypatch.setattr("riverhog_ftp_adapter.landing.CollectionProducer", _Producer)
+    adapter = FtpAdapter(object(), config)  # type: ignore[arg-type]
 
     assert adapter.run_once()["completed"] == 0
     assert adapter.flush(source.id)["completed"] == 1
@@ -148,7 +147,6 @@ def test_captured_provenance_is_identity_checked_and_projected_for_the_producer(
     base = _config(tmp_path)
     source = base.sources[0].model_copy(
         update={
-            "adapter": "watched-drop",
             "close_mode": "explicit-flush",
             "provenance": "capture",
             "provenance_omission_reason": None,
@@ -164,9 +162,9 @@ def test_captured_provenance_is_identity_checked_and_projected_for_the_producer(
     payload.parent.mkdir(parents=True)
     payload.write_bytes(b"captured")
     _Producer.calls = []
-    monkeypatch.setattr("riverhog_adapters.landing.CollectionProducer", _Producer)
+    monkeypatch.setattr("riverhog_ftp_adapter.landing.CollectionProducer", _Producer)
 
-    result = FinalizedReceiptAdapter(object(), config).flush(source.id)  # type: ignore[arg-type]
+    result = FtpAdapter(object(), config).flush(source.id)  # type: ignore[arg-type]
 
     assert result["completed"] == 1
     provenance = _Producer.calls[0]["files"][0][2]
@@ -199,8 +197,8 @@ def test_custody_passes_are_serialized_across_protocol_and_polling_entrypoints(
                     active -= 1
 
     BlockingProducer.calls = []
-    monkeypatch.setattr("riverhog_adapters.landing.CollectionProducer", BlockingProducer)
-    adapter = FinalizedReceiptAdapter(object(), config)  # type: ignore[arg-type]
+    monkeypatch.setattr("riverhog_ftp_adapter.landing.CollectionProducer", BlockingProducer)
+    adapter = FtpAdapter(object(), config)  # type: ignore[arg-type]
     payloads = []
     for index in range(2):
         payload = source.root / f"protocol-{index}.bin"

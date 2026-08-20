@@ -1,0 +1,20 @@
+{
+  "host_id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+  "riverhog_base_url": "http://app:8000",
+  "allow_insecure_http": true,
+  "poll_seconds": 5,
+  "sources": [
+    {
+      "id": "ftp-intake",
+      "root": "/intake/ftp",
+      "ingest_source": "ftp:example-intake",
+      "tags": ["example-intake", "stove0-video-archive"],
+      "close_mode": "stable",
+      "stable_seconds": 30,
+      "max_files": 1000,
+      "max_bytes": 107374182400,
+      "provenance": "omit",
+      "provenance_omission_reason": "The FTP producer cannot observe the source host filesystem."
+    }
+  ]
+}

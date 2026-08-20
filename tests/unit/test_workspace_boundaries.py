@@ -17,7 +17,7 @@ IMPLEMENTATION_OWNERS = {
     "riverhog-server": (REPO / "riverhog/server/src", {"riverhog_api", "riverhog_core"}),
     "riverhog-client": (REPO / "riverhog/client/src", {"riverhog_cli"}),
     "riverhog-recover": (REPO / "riverhog/recovery/src", {"riverhog_recover"}),
-    "riverhog-adapters": (REPO / "riverhog/adapters/src", {"riverhog_adapters"}),
+    "riverhog-ftp-adapter": (REPO / "riverhog/ftp-adapter/src", {"riverhog_ftp_adapter"}),
     "stove0-server": (
         REPO / "companions/stove0/server/src",
         {"stove0_api", "stove0_core"},
@@ -293,7 +293,7 @@ def test_core_domain_and_ports_are_dependency_roots() -> None:
 def test_images_copy_only_their_owned_implementation_project() -> None:
     dockerfiles = {
         REPO / "riverhog/server/Dockerfile": "riverhog/server",
-        REPO / "riverhog/adapters/Dockerfile": "riverhog/adapters",
+        REPO / "riverhog/ftp-adapter/Dockerfile": "riverhog/ftp-adapter",
         REPO / "companions/stove0/server/Dockerfile": "companions/stove0/server",
         REPO / "companions/stove0/extensions/Dockerfile": "companions/stove0/extensions",
         REPO / "companions/stove0/extensions/nvenc/Dockerfile": "companions/stove0/extensions",
@@ -344,7 +344,7 @@ def test_compose_timezone_defaults_are_configurable_utc() -> None:
 def test_images_copy_their_complete_internal_dependency_closure() -> None:
     images = {
         REPO / "riverhog/server/Dockerfile": "riverhog-server",
-        REPO / "riverhog/adapters/Dockerfile": "riverhog-adapters",
+        REPO / "riverhog/ftp-adapter/Dockerfile": "riverhog-ftp-adapter",
         REPO / "companions/stove0/server/Dockerfile": "stove0-server",
         REPO / "companions/stove0/extensions/Dockerfile": "stove0-maintained-extensions",
         REPO / "companions/stove0/extensions/nvenc/Dockerfile": ("stove0-maintained-extensions"),

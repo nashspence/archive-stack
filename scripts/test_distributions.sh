@@ -151,10 +151,10 @@ run_uv pip install \
 )
 
 smoke_workspace_distribution \
-  riverhog-adapters \
-  'riverhog_adapters-*.whl' \
-  'import importlib.metadata as m; import riverhog_adapters.app; m.version("riverhog-adapters")' \
-  riverhog-adapters
+  riverhog-ftp-adapter \
+  'riverhog_ftp_adapter-*.whl' \
+  'import importlib.metadata as m; import riverhog_ftp_adapter.app; m.version("riverhog-ftp-adapter")' \
+  riverhog-ftp-adapter
 smoke_workspace_distribution \
   stove0-client \
   'stove0_client-*.whl' \

@@ -82,7 +82,7 @@ def test_reference_recovery_is_independent_and_advertised() -> None:
 def test_published_images_carry_source_and_license_identity() -> None:
     images = {
         "riverhog/server/Dockerfile": "CAL-1.0",
-        "riverhog/adapters/Dockerfile": "Apache-2.0",
+        "riverhog/ftp-adapter/Dockerfile": "Apache-2.0",
         "companions/stove0/server/Dockerfile": "CAL-1.0",
         "companions/stove0/extensions/Dockerfile": "CAL-1.0",
         "companions/stove0/extensions/nvenc/Dockerfile": "CAL-1.0",
@@ -119,7 +119,7 @@ def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
 
     image_targets = [
         "riverhog",
-        "riverhog-adapters",
+        "riverhog-ftp-adapter",
         "stove0",
         "stove0-extensions",
         "stove0-nvenc-extension",

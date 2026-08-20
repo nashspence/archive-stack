@@ -17,7 +17,7 @@ required_checks = [
   "Analyze (python)",
   "build mango-fish",
   "build riverhog",
-  "build riverhog-adapters",
+  "build riverhog-ftp-adapter",
   "build stove0",
   "build stove0-extensions",
   "build stove0-nvenc-extension",
@@ -135,7 +135,7 @@ end_user_artifact = [
 deployed_implementation = [
   "companions/stove0/server",
   "companions/stove0/extensions",
-  "riverhog/adapters",
+  "riverhog/ftp-adapter",
   "riverhog/server",
   "utilities/mango-fish",
 ]
@@ -143,7 +143,7 @@ reusable_library = [
   "packages/file-download",
   "packages/lifecycle-events",
   "packages/riverhog-age",
-  "packages/riverhog-adapter-api-client",
+  "packages/riverhog-ftp-adapter-api-client",
   "packages/riverhog-api-client",
   "packages/riverhog-protocol",
   "packages/riverhog-provenance",
@@ -156,7 +156,6 @@ reusable_library = [
   "packages/stove0-review-contracts",
   "packages/stove0-target-protocol",
   "packages/stove0-target-support",
-  "packages/tus-transport",
 ]
 internal_build_unit = [
   "packages/application-access",
@@ -178,7 +177,7 @@ platforms = ["linux/amd64"]
 [images.runtime]
 riverhog = { distribution = "riverhog-server", repository = "ghcr.io/nashspence/riverhog" }
 mango-fish = { distribution = "mango-fish", repository = "ghcr.io/nashspence/riverhog-mango-fish" }
-riverhog-adapters = { distribution = "riverhog-adapters", repository = "ghcr.io/nashspence/riverhog-adapters" }
+riverhog-ftp-adapter = { distribution = "riverhog-ftp-adapter", repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
 stove0 = { distribution = "stove0-server", repository = "ghcr.io/nashspence/riverhog-stove0" }
 stove0-extensions = { distribution = "stove0-maintained-extensions", repository = "ghcr.io/nashspence/riverhog-stove0-extensions" }
 stove0-nvenc-extension = { distribution = "stove0-maintained-extensions", repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-extension" }

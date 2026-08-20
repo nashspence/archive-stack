@@ -16,12 +16,12 @@ members = [
     "http-api-contracts",
     "lifecycle-events",
     "mango-fish",
-    "riverhog-adapter-api-client",
-    "riverhog-adapters",
     "riverhog-age",
     "riverhog-api-client",
     "riverhog-cli-support",
     "riverhog-client",
+    "riverhog-ftp-adapter",
+    "riverhog-ftp-adapter-api-client",
     "riverhog-protocol",
     "riverhog-provenance",
     "riverhog-recover",
@@ -40,7 +40,6 @@ members = [
     "stove0-target-protocol",
     "stove0-target-support",
     "time-formats",
-    "tus-transport",
 ]
 
 [manifest.dependency-groups]
@@ -1504,54 +1503,6 @@ wheels = [
 ]
 
 [[package]]
-name = "riverhog-adapter-api-client"
-version = "0.1.0"
-source = { editable = "packages/riverhog-adapter-api-client" }
-dependencies = [
-    { name = "http-api-contracts" },
-    { name = "httpx" },
-    { name = "riverhog-provenance" },
-    { name = "tus-transport" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
-    { name = "httpx", specifier = ">=0.27,<1.0" },
-    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
-    { name = "tus-transport", editable = "packages/tus-transport" },
-]
-
-[[package]]
-name = "riverhog-adapters"
-version = "0.1.0"
-source = { editable = "riverhog/adapters" }
-dependencies = [
-    { name = "fastapi" },
-    { name = "http-api-contracts" },
-    { name = "pydantic" },
-    { name = "riverhog-adapter-api-client" },
-    { name = "riverhog-api-client" },
-    { name = "riverhog-protocol" },
-    { name = "riverhog-provenance" },
-    { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastapi", specifier = ">=0.111,<1.0" },
-    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
-    { name = "pydantic", specifier = ">=2.7,<3.0" },
-    { name = "riverhog-adapter-api-client", editable = "packages/riverhog-adapter-api-client" },
-    { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
-    { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
-    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
-    { name = "starlette", specifier = ">=0.37,<2.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
-]
-
-[[package]]
 name = "riverhog-age"
 version = "0.1.0"
 source = { editable = "packages/riverhog-age" }
@@ -1623,6 +1574,50 @@ requires-dist = [
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "typer", specifier = ">=0.12,<1.0" },
+]
+
+[[package]]
+name = "riverhog-ftp-adapter"
+version = "0.1.0"
+source = { editable = "riverhog/ftp-adapter" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "http-api-contracts" },
+    { name = "pydantic" },
+    { name = "riverhog-api-client" },
+    { name = "riverhog-ftp-adapter-api-client" },
+    { name = "riverhog-protocol" },
+    { name = "riverhog-provenance" },
+    { name = "starlette" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
+    { name = "riverhog-ftp-adapter-api-client", editable = "packages/riverhog-ftp-adapter-api-client" },
+    { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "starlette", specifier = ">=0.37,<2.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
+name = "riverhog-ftp-adapter-api-client"
+version = "0.1.0"
+source = { editable = "packages/riverhog-ftp-adapter-api-client" }
+dependencies = [
+    { name = "http-api-contracts" },
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
 ]
 
 [[package]]
@@ -2226,17 +2221,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/53/a3/1585216310e344e81
 wheels = [
     { url = "https://files.pythonhosted.org/packages/19/97/56608b2249fe206a67cd573bc93cd9896e1efb9e98bce9c163bcdc704b88/truststore-0.10.4-py3-none-any.whl", hash = "sha256:adaeaecf1cbb5f4de3b1959b42d41f6fab57b2b1666adb59e89cb0b53361d981", size = 18660, upload-time = "2025-08-12T18:49:01.46Z" },
 ]
-
-[[package]]
-name = "tus-transport"
-version = "0.1.0"
-source = { editable = "packages/tus-transport" }
-dependencies = [
-    { name = "httpx", extra = ["http2"] },
-]
-
-[package.metadata]
-requires-dist = [{ name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" }]
 
 [[package]]
 name = "typer"

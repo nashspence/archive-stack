@@ -52,8 +52,8 @@ Workspace dependency and import checks enforce the implementation-owner boundari
 - [`riverhog/server`](../riverhog/server/) is the archive platform service.
 - [`riverhog/client`](../riverhog/client/) is the direct platform CLI. Its `local` commands
   maintain client-owned local materialization.
-- [`riverhog/adapters`](../riverhog/adapters/) contains the maintained content-opaque FTP,
-  TUS, and watched-drop collection producers.
+- [`riverhog/ftp-adapter`](../riverhog/ftp-adapter/) is the maintained content-opaque FTP
+  collection producer and reference adapter boundary.
 - [`riverhog/recovery`](../riverhog/recovery/) provides an independently packaged,
   permissively licensed reference implementation; Riverhog archives remain recoverable
   without Riverhog using standard tools.

@@ -60,8 +60,8 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     }
     assert {project.name for project in projects} >= {
         "riverhog-client",
-        "riverhog-adapters",
-        "riverhog-adapter-api-client",
+        "riverhog-ftp-adapter",
+        "riverhog-ftp-adapter-api-client",
         "riverhog-recover",
         "riverhog-server",
         "stove0-server",

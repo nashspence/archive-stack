@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from http_api_contracts import safe_http_base_url
-from riverhog_adapter_api_client import RiverhogAdapterClient, RiverhogTusClient
+from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client import (
     configured_download_concurrency,
@@ -48,12 +48,10 @@ SUPPORTED_CLIENT_HELPERS = {
         "stream_retrieval_file",
     },
     "stove0": {"close", "health_live", "health_ready"},
-    "riverhog-adapters": {
+    "riverhog-ftp-adapter": {
         "close",
-        "adapter_health_live",
-        "adapter_health_ready",
-        "upload_file",
-        "wait_for_publication",
+        "ftp_adapter_health_live",
+        "ftp_adapter_health_ready",
     },
 }
 
@@ -76,9 +74,9 @@ def public_operations(app: FastAPI) -> list[tuple[str, str]]:
         ("riverhog", create_riverhog_app, (ApiClient,)),
         ("stove0", create_stove0_contract_app, (Stove0ApiClient,)),
         (
-            "riverhog-adapters",
+            "riverhog-ftp-adapter",
             create_adapter_contract_app,
-            (RiverhogAdapterClient, RiverhogTusClient),
+            (RiverhogFtpAdapterClient,),
         ),
     ),
 )
@@ -109,9 +107,9 @@ def test_every_public_api_operation_has_an_official_client_method(
         ("riverhog", create_riverhog_app, (ApiClient,)),
         ("stove0", create_stove0_contract_app, (Stove0ApiClient,)),
         (
-            "riverhog-adapters",
+            "riverhog-ftp-adapter",
             create_adapter_contract_app,
-            (RiverhogAdapterClient, RiverhogTusClient),
+            (RiverhogFtpAdapterClient,),
         ),
     ),
 )
@@ -136,7 +134,7 @@ def test_every_official_client_method_is_current_or_a_supported_helper(
     (
         ("riverhog", create_riverhog_app),
         ("stove0", create_stove0_contract_app),
-        ("riverhog-adapters", create_adapter_contract_app),
+        ("riverhog-ftp-adapter", create_adapter_contract_app),
     ),
 )
 def test_public_http_health_and_error_schemas_are_conventional(
@@ -252,11 +250,11 @@ def test_archive_copy_wire_states_match_the_service_state_machine() -> None:
             "https://stove0.example.test",
         ),
         (
-            RiverhogAdapterClient,
-            "RIVERHOG_ADAPTERS_BASE_URL",
-            "RIVERHOG_ADAPTERS_TOKEN",
-            "RIVERHOG_ADAPTERS_HTTP2",
-            "RIVERHOG_ADAPTERS_HTTP_TIMEOUT_SECONDS",
+            RiverhogFtpAdapterClient,
+            "RIVERHOG_FTP_ADAPTER_BASE_URL",
+            "RIVERHOG_FTP_ADAPTER_TOKEN",
+            "RIVERHOG_FTP_ADAPTER_HTTP2",
+            "RIVERHOG_FTP_ADAPTER_HTTP_TIMEOUT_SECONDS",
             "https://adapters.example.test",
         ),
     ),
@@ -313,7 +311,7 @@ def test_shared_transport_contract_accepts_explicit_remote_cleartext_opt_in() ->
     (
         (ApiClient, BadRequest),
         (Stove0ApiClient, ValueError),
-        (RiverhogAdapterClient, ValueError),
+        (RiverhogFtpAdapterClient, ValueError),
     ),
 )
 def test_official_clients_reject_remote_cleartext_transport(
@@ -329,7 +327,7 @@ def test_official_clients_reject_remote_cleartext_transport(
     (
         (ApiClient, "RIVERHOG_ALLOW_INSECURE_HTTP"),
         (Stove0ApiClient, "STOVE0_ALLOW_INSECURE_HTTP"),
-        (RiverhogAdapterClient, "RIVERHOG_ADAPTERS_ALLOW_INSECURE_HTTP"),
+        (RiverhogFtpAdapterClient, "RIVERHOG_FTP_ADAPTER_ALLOW_INSECURE_HTTP"),
     ),
 )
 def test_official_clients_allow_explicit_remote_cleartext_transport(
@@ -345,7 +343,7 @@ def test_official_clients_allow_explicit_remote_cleartext_transport(
         client.close()
 
 
-@pytest.mark.parametrize("client_type", (ApiClient, Stove0ApiClient, RiverhogAdapterClient))
+@pytest.mark.parametrize("client_type", (ApiClient, Stove0ApiClient, RiverhogFtpAdapterClient))
 def test_official_clients_accept_a_scoped_remote_cleartext_opt_in(
     client_type: type[Any],
 ) -> None:
