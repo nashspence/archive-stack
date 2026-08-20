@@ -20,11 +20,13 @@ recipe_app = typer.Typer(help="Configured recipes.")
 evaluation_app = typer.Typer(help="Materialized trials and evaluations.")
 event_app = typer.Typer(help="Lifecycle events.")
 scheduler_app = typer.Typer(help="Scheduler status and execution.")
+selection_app = typer.Typer(help="Exact content-addressed artifact selections.")
 app.add_typer(work_app, name="work")
 app.add_typer(recipe_app, name="recipe")
 app.add_typer(evaluation_app, name="evaluation")
 app.add_typer(event_app, name="event")
 app.add_typer(scheduler_app, name="scheduler")
+app.add_typer(selection_app, name="selection")
 console = Console()
 
 
@@ -127,6 +129,7 @@ def create_work(
     context: typer.Context,
     recipe_id: str,
     collection_ids: Annotated[list[int], typer.Argument()],
+    preview_sha256: str = typer.Option(..., "--preview-sha256"),
     revision: int | None = typer.Option(None),
     intent: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
 ) -> None:
@@ -136,6 +139,7 @@ def create_work(
         lambda: state.client.create_work(
             recipe_id,
             sorted(collection_ids),
+            preview_sha256=preview_sha256,
             recipe_revision=revision,
             effective_intent=_document(intent),
         ),
@@ -146,6 +150,33 @@ def create_work(
 def show_work(context: typer.Context, work_id: str) -> None:
     state = _context(context)
     _call(state, lambda: state.client.get_work(work_id))
+
+
+@work_app.command("coordination")
+def inspect_work_coordination(context: typer.Context, work_id: str) -> None:
+    state = _context(context)
+    _call(state, lambda: state.client.inspect_work_coordination(work_id))
+
+
+@selection_app.command("show")
+def get_artifact_selection(
+    context: typer.Context,
+    selection_sha256: str,
+    page: int = typer.Option(1, min=1),
+    per_page: int = typer.Option(100, min=1, max=1000),
+    all_items: bool = typer.Option(False, "--all"),
+) -> None:
+    state = _context(context)
+    _call(
+        state,
+        lambda: state.client.get_artifact_selection(
+            selection_sha256,
+            page=page,
+            per_page=per_page,
+            all_items=all_items,
+        ),
+        table=("artifacts", ("id", "role", "path", "bytes")),
+    )
 
 
 @work_app.command("step")

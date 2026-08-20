@@ -9,6 +9,7 @@ from typing import cast
 import pytest
 from riverhog_core.app_permissions import (
     CATALOG_READ,
+    RETRIEVAL_MANAGE,
     TAG_PREFIX,
     ApplicationAccess,
     ApplicationPrincipal,
@@ -369,6 +370,33 @@ def test_immediate_retrieval_reads_only_the_selected_pack_member_range(
     assert len(ranges.requests) == 1
     assert ranges.requests[0][2] < planned["stored_bytes"]
     assert service.acknowledge(app="reader", job_id=str(job["id"]))["state"] == "completed"
+
+
+def test_retrieval_plan_accepts_the_exact_capability_artifact(tmp_path: Path) -> None:
+    files = {"selected.bin": b"selected", "sibling.bin": b"sibling"}
+    service, collection_id, _ranges, _store = _seed_collection(tmp_path, files)
+    principal = ApplicationPrincipal(
+        app="claim:fixture",
+        key_id="controller",
+        access=frozenset(
+            {
+                ApplicationAccess(CATALOG_READ, f"collection:{collection_id}"),
+                ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{collection_id}"),
+            }
+        ),
+        artifact_scope=frozenset({(collection_id, "selected.bin")}),
+    )
+
+    plan = service.plan(((collection_id, "selected.bin"),), principal=principal)
+
+    assert plan["files"] == [
+        {
+            "collection_id": collection_id,
+            "path": "selected.bin",
+            "bytes": len(files["selected.bin"]),
+            "sha256": hashlib.sha256(files["selected.bin"]).hexdigest(),
+        }
+    ]
 
 
 def test_raw_retrieval_reassembles_verified_parts_in_file_order(tmp_path: Path) -> None:

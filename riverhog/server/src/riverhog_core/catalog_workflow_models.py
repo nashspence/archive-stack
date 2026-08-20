@@ -121,6 +121,33 @@ class CollectionProcessingClaimInputRecord(Base):
     )
 
 
+class CollectionProcessingClaimArtifactRecord(Base):
+    __tablename__ = "collection_processing_claim_artifacts"
+
+    claim_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    collection_id: Mapped[int] = mapped_column(_COLLECTION_ID_TYPE, primary_key=True)
+    path: Mapped[str] = mapped_column(String, primary_key=True)
+    bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["claim_id", "collection_id"],
+            [
+                "collection_processing_claim_inputs.claim_id",
+                "collection_processing_claim_inputs.collection_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_collection_processing_claim_artifacts_collection",
+            "collection_id",
+            "path",
+            "claim_id",
+        ),
+    )
+
+
 class CollectionTransformCapabilityRecord(Base):
     __tablename__ = "collection_transform_capabilities"
 
@@ -154,6 +181,68 @@ class CollectionTransformCapabilityRecord(Base):
     )
 
 
+class CollectionTransformCapabilityArtifactRecord(Base):
+    __tablename__ = "collection_transform_capability_artifacts"
+
+    capability_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("collection_transform_capabilities.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    collection_id: Mapped[int] = mapped_column(_COLLECTION_ID_TYPE, primary_key=True)
+    path: Mapped[str] = mapped_column(String, primary_key=True)
+    bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_collection_transform_capability_artifacts_collection",
+            "collection_id",
+            "path",
+            "capability_id",
+        ),
+    )
+
+
+class CollectionProcessingOutcomeRecord(Base):
+    __tablename__ = "collection_processing_outcomes"
+
+    claim_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("collection_processing_claims.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    outcome_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    source_claim_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("collection_processing_claims.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    collection_id: Mapped[int] = mapped_column(_COLLECTION_ID_TYPE, nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_etag: Mapped[str] = mapped_column(String(64), nullable=False)
+    derivation_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "claim_id",
+            "source_claim_id",
+            name="uq_collection_processing_outcomes_source_claim",
+        ),
+        UniqueConstraint(
+            "claim_id",
+            "collection_id",
+            name="uq_collection_processing_outcomes_output",
+        ),
+        Index(
+            "ix_collection_processing_outcomes_collection",
+            "collection_id",
+            "claim_id",
+        ),
+    )
+
+
 class CollectionDerivationRecord(Base):
     __tablename__ = "collection_derivations"
 
@@ -182,7 +271,10 @@ class CollectionDerivationRecord(Base):
 
 __all__ = [
     "CollectionDerivationRecord",
+    "CollectionProcessingClaimArtifactRecord",
     "CollectionProcessingClaimInputRecord",
     "CollectionProcessingClaimRecord",
+    "CollectionProcessingOutcomeRecord",
+    "CollectionTransformCapabilityArtifactRecord",
     "CollectionTransformCapabilityRecord",
 ]

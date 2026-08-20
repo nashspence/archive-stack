@@ -50,12 +50,12 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
 
     projects = module.validate_release_contract(REPO_ROOT)
 
-    assert len(projects) == 32
+    assert len(projects) == 36
     assert {project.version for project in projects} == {"0.1.0"}
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
-        "deployed_implementation": 5,
-        "reusable_library": 17,
+        "deployed_implementation": 8,
+        "reusable_library": 18,
         "internal_build_unit": 6,
     }
     assert {project.name for project in projects} >= {
@@ -66,12 +66,17 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "riverhog-server",
         "stove0-server",
         "stove0-client",
-        "stove0-maintained-extensions",
+        "stove0-ffprobe-sampling-observer",
+        "stove0-nvenc-av1-opus-target",
+        "stove0-opus-target",
+        "stove0-review-target",
         "stove0-api-client",
         "stove0-observer-protocol",
         "stove0-observer-support",
         "stove0-protocol",
         "stove0-review-contracts",
+        "stove0-sampler-protocol",
+        "stove0-sampler-support",
         "stove0-target-protocol",
         "stove0-target-support",
     }
@@ -124,7 +129,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert plan["tag"] == "v1.0.0"
     assert len(plan["source_sha"]) == 40
     assert all(character in "0123456789abcdef" for character in plan["source_sha"])
-    assert len(plan["python"]) == 32
+    assert len(plan["python"]) == 36
     assert all(len(project["artifacts"]) == 2 for project in plan["python"])
     assert {image["target"] for image in plan["images"]} == set(module.RUNTIME_IMAGE_TARGETS)
     assert all(image["platforms"] == ["linux/amd64"] for image in plan["images"])

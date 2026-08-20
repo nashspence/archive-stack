@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 from stove0_review_contracts.contracts import (
     MEDIA_SAMPLING_OBSERVER_CONTRACT,
-    REVIEW_SAMPLE_ENCODE_OPERATION,
+    REVIEW_MATERIALIZE_OPERATION,
 )
 
 
@@ -14,7 +14,7 @@ def contract_report() -> dict[str, object]:
     return {
         "format": "stove0-review-contract-report/v1",
         "observer_contract": MEDIA_SAMPLING_OBSERVER_CONTRACT.model_dump(mode="json"),
-        "operation_contract": REVIEW_SAMPLE_ENCODE_OPERATION.model_dump(mode="json"),
+        "operation_contract": REVIEW_MATERIALIZE_OPERATION.model_dump(mode="json"),
         "source_retirement_permitted": False,
         "status": "conformant",
     }

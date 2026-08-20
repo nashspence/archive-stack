@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from stove0_core import ClaimBinding, Stove0Scheduler, WorkRecord
+from stove0_core.scheduler import _phases_for_role
 from stove0_protocol import CollectionRootRef, RecipeRef, WorkIdentity, WorkPayload
 
 
@@ -64,6 +65,11 @@ def test_controller_and_worker_advance_disjoint_phases_of_one_work_authority() -
     worker = scheduler.advance(role="worker")
     assert worker["progressed"] == [worker_record.work_id]
     assert coordinator.steps == [worker_record.work_id]
+
+
+def test_controller_owns_branch_and_join_coordination_ticks() -> None:
+    assert "coordinating" in _phases_for_role("controller")
+    assert "coordinating" not in _phases_for_role("worker")
 
 
 def test_worker_tick_never_consumes_the_controller_event_cursor() -> None:

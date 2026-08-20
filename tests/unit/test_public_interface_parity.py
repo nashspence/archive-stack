@@ -6,7 +6,6 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from http_api_contracts import safe_http_base_url
-from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client import (
     configured_download_concurrency,
@@ -20,6 +19,7 @@ from riverhog_api_client.client import ApiClient
 from riverhog_cli import main as riverhog_cli
 from riverhog_cli import upload_progress as riverhog_upload_progress
 from riverhog_core.services.archive_copy_states import ARCHIVE_COPY_STATES
+from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
 from riverhog_protocol.errors import BadRequest
 from stove0_api_client import Stove0ApiClient
 

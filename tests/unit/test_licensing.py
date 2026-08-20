@@ -11,7 +11,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER_PROJECTS = {
     Path("riverhog/server/pyproject.toml"),
     Path("companions/stove0/server/pyproject.toml"),
-    Path("companions/stove0/extensions/pyproject.toml"),
+    Path("companions/stove0-ffprobe-sampling-observer/pyproject.toml"),
+    Path("companions/stove0-nvenc-av1-opus-target/pyproject.toml"),
+    Path("companions/stove0-opus-target/pyproject.toml"),
+    Path("companions/stove0-review-target/pyproject.toml"),
 }
 
 
@@ -28,7 +31,10 @@ def test_reuse_policy_assigns_an_apache_default_and_narrow_server_overrides() ->
     assert annotations[1]["path"] == [
         "riverhog/server/**",
         "companions/stove0/server/**",
-        "companions/stove0/extensions/**",
+        "companions/stove0-ffprobe-sampling-observer/**",
+        "companions/stove0-nvenc-av1-opus-target/**",
+        "companions/stove0-opus-target/**",
+        "companions/stove0-review-target/**",
     ]
     assert annotations[1]["SPDX-License-Identifier"] == "CAL-1.0"
     assert annotations[2]["path"] == [
@@ -84,8 +90,10 @@ def test_published_images_carry_source_and_license_identity() -> None:
         "riverhog/server/Dockerfile": "CAL-1.0",
         "riverhog/ftp-adapter/Dockerfile": "Apache-2.0",
         "companions/stove0/server/Dockerfile": "CAL-1.0",
-        "companions/stove0/extensions/Dockerfile": "CAL-1.0",
-        "companions/stove0/extensions/nvenc/Dockerfile": "CAL-1.0",
+        "companions/stove0-ffprobe-sampling-observer/Dockerfile": "CAL-1.0",
+        "companions/stove0-nvenc-av1-opus-target/Dockerfile": "CAL-1.0",
+        "companions/stove0-opus-target/Dockerfile": "CAL-1.0",
+        "companions/stove0-review-target/Dockerfile": "CAL-1.0",
         "utilities/mango-fish/Dockerfile": "Apache-2.0",
     }
     for relative, expected_license in images.items():
@@ -100,7 +108,9 @@ def test_published_images_carry_source_and_license_identity() -> None:
 
 def test_standalone_runtime_tools_preserve_their_exact_attribution_text() -> None:
     riverhog = (REPO_ROOT / "riverhog/server/Dockerfile").read_text(encoding="utf-8")
-    av1 = (REPO_ROOT / "companions/stove0/extensions/nvenc/Dockerfile").read_text(encoding="utf-8")
+    av1 = (REPO_ROOT / "companions/stove0-nvenc-av1-opus-target/Dockerfile").read_text(
+        encoding="utf-8"
+    )
 
     assert (
         "third_party/minisign/0.12/LICENSE "
@@ -121,8 +131,10 @@ def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
         "riverhog",
         "riverhog-ftp-adapter",
         "stove0",
-        "stove0-extensions",
-        "stove0-nvenc-extension",
+        "stove0-ffprobe-sampling-observer",
+        "stove0-nvenc-av1-opus-target",
+        "stove0-opus-target",
+        "stove0-review-target",
         "mango-fish",
         "test",
     ]

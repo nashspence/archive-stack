@@ -2,7 +2,8 @@
 members = [
   "companions/*/client",
   "companions/*/server",
-  "companions/stove0/extensions",
+  "companions/stove0-*-observer",
+  "companions/stove0-*-target",
   "packages/*",
   "riverhog/*",
   "utilities/*",
@@ -13,12 +14,13 @@ riverhog-ftp-adapter-api-client = { workspace = true }
 riverhog-provenance = { workspace = true }
 riverhog-transform-sdk = { workspace = true }
 stove0-api-client = { workspace = true }
-stove0-maintained-extensions = { workspace = true }
 stove0-media-contracts = { workspace = true }
 stove0-protocol = { workspace = true }
 stove0-observer-protocol = { workspace = true }
 stove0-observer-support = { workspace = true }
 stove0-review-contracts = { workspace = true }
+stove0-sampler-protocol = { workspace = true }
+stove0-sampler-support = { workspace = true }
 stove0-target-protocol = { workspace = true }
 stove0-target-support = { workspace = true }
 time-formats = { workspace = true }

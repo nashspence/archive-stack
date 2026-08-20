@@ -153,6 +153,100 @@ class CollectionRootIdentity:
         )
 
 
+@dataclass(frozen=True, order=True, slots=True)
+class CollectionArtifactIdentity:
+    """One exact immutable logical file within a finalized collection root."""
+
+    collection: CollectionRootIdentity
+    path: str
+    bytes: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", normalize_relpath(self.path))
+        object.__setattr__(self, "bytes", _uint(self.bytes, "artifact bytes"))
+        object.__setattr__(self, "sha256", _sha256(self.sha256, "artifact identity"))
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "collection": self.collection.as_dict(),
+            "path": self.path,
+            "bytes": self.bytes,
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> CollectionArtifactIdentity:
+        if set(value) != {"collection", "path", "bytes", "sha256"}:
+            raise ValueError("collection artifact identity fields are invalid")
+        collection = value.get("collection")
+        if not isinstance(collection, Mapping):
+            raise ValueError("collection artifact identity has no collection root")
+        return cls(
+            collection=CollectionRootIdentity.from_mapping(collection),
+            path=str(value.get("path") or ""),
+            bytes=_uint(value.get("bytes"), "artifact bytes"),
+            sha256=str(value.get("sha256") or ""),
+        )
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class CollectionProcessingOutcomeIdentity:
+    """One verified output retained as an outcome of collection processing."""
+
+    outcome_id: str
+    source_claim_id: str
+    output_collection: CollectionRootIdentity
+    derivation_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "outcome_id",
+            _semantic_id(self.outcome_id, "outcome id"),
+        )
+        object.__setattr__(
+            self,
+            "source_claim_id",
+            _sha256(self.source_claim_id, "source claim identity"),
+        )
+        object.__setattr__(
+            self,
+            "derivation_sha256",
+            _sha256(self.derivation_sha256, "derivation identity"),
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "outcome_id": self.outcome_id,
+            "source_claim_id": self.source_claim_id,
+            "output_collection": self.output_collection.as_dict(),
+            "derivation_sha256": self.derivation_sha256,
+        }
+
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Mapping[str, object],
+    ) -> CollectionProcessingOutcomeIdentity:
+        if set(value) != {
+            "outcome_id",
+            "source_claim_id",
+            "output_collection",
+            "derivation_sha256",
+        }:
+            raise ValueError("collection processing outcome fields are invalid")
+        output = value.get("output_collection")
+        if not isinstance(output, Mapping):
+            raise ValueError("outcome collection must be an object")
+        return cls(
+            outcome_id=str(value.get("outcome_id") or ""),
+            source_claim_id=str(value.get("source_claim_id") or ""),
+            output_collection=CollectionRootIdentity.from_mapping(output),
+            derivation_sha256=str(value.get("derivation_sha256") or ""),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class RecipeIdentity:
     id: str
@@ -671,7 +765,9 @@ class CollectionDerivation:
 
 __all__ = [
     "ArtifactDisposition",
+    "CollectionArtifactIdentity",
     "CollectionDerivation",
+    "CollectionProcessingOutcomeIdentity",
     "CollectionRootIdentity",
     "DERIVATION_EVIDENCE_PATH",
     "DERIVATION_FORMAT",

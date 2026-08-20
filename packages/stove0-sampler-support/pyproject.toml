@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stove0-sampler-support"
+version = "0.1.0"
+description = "HTTP and workspace support for terminal stove0 review samplers."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "http-api-contracts>=0.1,<0.2",
+  "httpx>=0.27,<1.0",
+  "jsonschema>=4.25,<5.0",
+  "pydantic>=2.7,<3.0",
+  "stove0-sampler-protocol>=0.1,<0.2",
+]
+
+[project.scripts]
+stove0-sampler-conformance = "stove0_sampler_support.conformance:main"
+stove0-sampler-schemas = "stove0_sampler_support.schemas:main"
+
+[tool.uv.sources]
+http-api-contracts = { workspace = true }
+stove0-sampler-protocol = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stove0_sampler_support"]

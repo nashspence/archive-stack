@@ -157,6 +157,49 @@ class ArtifactSubject(Stove0ProtocolModel):
         return normalized
 
 
+class BranchWorkBinding(Stove0ProtocolModel):
+    """Stable parent/branch lineage for one ordinary child work identity."""
+
+    kind: Literal["branch"] = "branch"
+    parent_work_id: Sha256
+    branch_id: SemanticId
+    decision_sha256: Sha256
+    artifact_selection_sha256: Sha256
+
+
+class JoinWorkMemberBinding(Stove0ProtocolModel):
+    """Exact successful branch result used to derive one join work identity."""
+
+    branch_id: SemanticId
+    settlement_sha256: Sha256
+    artifact_selection_sha256: Sha256
+
+
+class JoinWorkBinding(Stove0ProtocolModel):
+    """Stable branch-set lineage for one ordinary join work identity."""
+
+    kind: Literal["join"] = "join"
+    parent_work_id: Sha256
+    branch_set_sha256: Sha256
+    members: tuple[JoinWorkMemberBinding, ...] = Field(min_length=2)
+
+    @field_validator("members")
+    @classmethod
+    def canonical_members(
+        cls, value: tuple[JoinWorkMemberBinding, ...]
+    ) -> tuple[JoinWorkMemberBinding, ...]:
+        branch_ids = [item.branch_id for item in value]
+        if branch_ids != sorted(branch_ids) or len(branch_ids) != len(set(branch_ids)):
+            raise ValueError("join work members must be unique and ordered by branch ID")
+        return value
+
+
+ForkJoinBinding = Annotated[
+    BranchWorkBinding | JoinWorkBinding,
+    Field(discriminator="kind"),
+]
+
+
 class EvaluationBinding(Stove0ProtocolModel):
     """Immutable membership of one work item in a trial/evaluation matrix."""
 
@@ -172,6 +215,7 @@ class WorkPayload(Stove0ProtocolModel):
     inputs: tuple[CollectionRootRef, ...] = Field(min_length=1)
     effective_intent: dict[str, JsonValue] = Field(default_factory=dict)
     evaluation: EvaluationBinding | None = None
+    fork_join: ForkJoinBinding | None = None
 
     @field_validator("inputs")
     @classmethod
@@ -250,6 +294,7 @@ class ObserverDescriptorPayload(Stove0ProtocolModel):
     implementation_id: SemanticId
     implementation_version: str = Field(min_length=1, max_length=120)
     source_revision: str = Field(min_length=1, max_length=200)
+    image_digest: Sha256
     contracts: tuple[ObserverContractSupport, ...] = Field(min_length=1)
 
     @field_validator("contracts")
@@ -505,6 +550,8 @@ class WorkflowPlanPayload(Stove0ProtocolModel):
 
     @model_validator(mode="after")
     def protect_evaluation_sources(self) -> Self:
+        if self.retirement_policy == "retain" and self.retirement_grace_seconds:
+            raise ValueError("retained workflow plans cannot declare a retirement grace period")
         if self.work.evaluation is not None and self.retirement_policy != "retain":
             raise ValueError("evaluation and trial work must retain every source collection")
         return self
@@ -524,6 +571,70 @@ class WorkflowPlan(WorkflowPlanPayload):
     def seal(cls, payload: WorkflowPlanPayload) -> WorkflowPlan:
         document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
         return cls(**document, workflow_plan_sha256=canonical_json_sha256(document))
+
+
+class WorkflowPlanIntent(Stove0ProtocolModel):
+    """Work-independent fields that deterministically materialize a workflow plan."""
+
+    operation: OperationRef
+    target_registration_id: RegistrationId
+    target_contract_sha256: Sha256
+    requested_target_options: dict[str, JsonValue] = Field(default_factory=dict)
+    input_retrieval_policy: RetrievalPolicy = "available-only"
+    output_tags: tuple[str, ...] = Field(min_length=1)
+    retirement_policy: RetirementPolicy = "retain"
+    retirement_grace_seconds: int = Field(default=0, ge=0)
+    output_policy: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @field_validator("output_tags")
+    @classmethod
+    def canonical_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        tags = tuple(sorted(normalize_tag(item) for item in value))
+        if tags != value or len(tags) != len(set(tags)):
+            raise ValueError("workflow output tags must be unique and canonical")
+        return tags
+
+    @model_validator(mode="after")
+    def validate_retirement(self) -> Self:
+        if self.retirement_policy == "retain" and self.retirement_grace_seconds:
+            raise ValueError("retained workflow intent cannot declare a retirement grace period")
+        return self
+
+    @classmethod
+    def from_plan(cls, plan: WorkflowPlan) -> WorkflowPlanIntent:
+        return cls(
+            operation=plan.operation,
+            target_registration_id=plan.target_registration_id,
+            target_contract_sha256=plan.target_contract_sha256,
+            requested_target_options=plan.requested_target_options,
+            input_retrieval_policy=plan.input_retrieval_policy,
+            output_tags=plan.output_tags,
+            retirement_policy=plan.retirement_policy,
+            retirement_grace_seconds=plan.retirement_grace_seconds,
+            output_policy=plan.output_policy,
+        )
+
+    def materialize(
+        self,
+        *,
+        work: WorkIdentity,
+        observations: tuple[ObservationEvidence, ...] = (),
+    ) -> WorkflowPlan:
+        return WorkflowPlan.seal(
+            WorkflowPlanPayload(
+                work=work,
+                observations=observations,
+                operation=self.operation,
+                target_registration_id=self.target_registration_id,
+                target_contract_sha256=self.target_contract_sha256,
+                requested_target_options=self.requested_target_options,
+                input_retrieval_policy=self.input_retrieval_policy,
+                output_tags=self.output_tags,
+                retirement_policy=self.retirement_policy,
+                retirement_grace_seconds=self.retirement_grace_seconds,
+                output_policy=self.output_policy,
+            )
+        )
 
 
 class TargetPlanBinding(Stove0ProtocolModel):
@@ -714,69 +825,6 @@ class PreviewOutcome(Stove0ProtocolModel):
     retryable: bool | None = None
 
 
-class WorkflowPreviewPayload(Stove0ProtocolModel):
-    format: Literal["stove0-workflow-preview/v1"] = WORKFLOW_PREVIEW_FORMAT
-    preview_id: Sha256
-    state: Literal["ready", "inapplicable", "failed", "canceled"]
-    work: WorkIdentity
-    observations: tuple[ObservationEvidence, ...] = ()
-    workflow_plan: WorkflowPlan | None = None
-    target_plan: TargetPlanBinding | None = None
-    outcome: PreviewOutcome | None = None
-    warnings: tuple[str, ...] = ()
-
-    @field_validator("observations")
-    @classmethod
-    def canonical_observations(
-        cls, value: tuple[ObservationEvidence, ...]
-    ) -> tuple[ObservationEvidence, ...]:
-        ids = [item.request.request_id for item in value]
-        if ids != sorted(ids) or len(ids) != len(set(ids)):
-            raise ValueError("preview observations must be unique and ordered")
-        return value
-
-    @field_validator("warnings")
-    @classmethod
-    def canonical_warnings(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if value != tuple(sorted(value)) or len(value) != len(set(value)):
-            raise ValueError("preview warnings must be unique and ordered")
-        return value
-
-    @model_validator(mode="after")
-    def validate_state(self) -> Self:
-        if self.state == "ready":
-            if self.workflow_plan is None or self.target_plan is None or self.outcome is not None:
-                raise ValueError("ready preview requires workflow and target plans only")
-            if self.workflow_plan.work != self.work:
-                raise ValueError("preview workflow plan differs from the requested work")
-            if (
-                self.workflow_plan.target_contract_sha256 != self.target_plan.target_contract_sha256
-                or self.workflow_plan.operation.sha256 != self.target_plan.operation_contract_sha256
-            ):
-                raise ValueError("preview target plan differs from workflow selection")
-        else:
-            if self.workflow_plan is not None or self.target_plan is not None:
-                raise ValueError("non-ready preview cannot contain executable plans")
-            if self.outcome is None:
-                raise ValueError("non-ready preview requires an outcome")
-        return self
-
-
-class WorkflowPreview(WorkflowPreviewPayload):
-    preview_sha256: Sha256
-
-    @model_validator(mode="after")
-    def verify_digest(self) -> Self:
-        if canonical_json_sha256(_without_digest(self, "preview_sha256")) != self.preview_sha256:
-            raise ValueError("workflow preview digest does not match its canonical result")
-        return self
-
-    @classmethod
-    def seal(cls, payload: WorkflowPreviewPayload) -> WorkflowPreview:
-        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
-        return cls(**document, preview_sha256=canonical_json_sha256(document))
-
-
 class ControllerEvidencePayload(Stove0ProtocolModel):
     format: Literal["stove0-controller-evidence/v1"] = CONTROLLER_EVIDENCE_FORMAT
     execution_envelope: ExecutionEnvelope
@@ -816,6 +864,9 @@ __all__ = [
     "EXECUTION_ENVELOPE_FORMAT",
     "ExecutionEnvelope",
     "ExecutionEnvelopePayload",
+    "ForkJoinBinding",
+    "JoinWorkBinding",
+    "JoinWorkMemberBinding",
     "JsonSchemaDocument",
     "OBSERVER_PROTOCOL",
     "OBSERVATION_REQUEST_FORMAT",
@@ -852,12 +903,12 @@ __all__ = [
     "WorkIdentity",
     "WorkPayload",
     "WorkflowPlan",
+    "WorkflowPlanIntent",
     "WorkflowPlanPayload",
-    "WorkflowPreview",
-    "WorkflowPreviewPayload",
     "WorkflowPreviewRequest",
     "WorkflowPreviewRequestPayload",
     "ArtifactSubject",
+    "BranchWorkBinding",
     "CollectionRootRef",
     "canonical_json_bytes",
     "canonical_json_sha256",

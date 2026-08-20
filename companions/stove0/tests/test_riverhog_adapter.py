@@ -7,13 +7,19 @@ from riverhog_protocol import Conflict, NotFound
 from riverhog_protocol.collection_workflows import (
     ArtifactDisposition,
     CollectionDerivation,
+    CollectionProcessingOutcomeIdentity,
+    CollectionRootIdentity,
 )
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
 from stove0_core import ClaimBinding, Stove0RiverhogClient, WorkRecord
 from stove0_protocol import (
+    ArtifactSelection,
     ArtifactSubject,
+    BranchPlan,
+    BranchSetPlan,
+    BranchSettlement,
     CollectionRootRef,
     ControllerEvidence,
     ControllerEvidencePayload,
@@ -25,18 +31,23 @@ from stove0_protocol import (
     RecipeRef,
     TargetPlanBinding,
     WorkflowPlan,
+    WorkflowPlanIntent,
     WorkflowPlanPayload,
     WorkflowPreviewRequest,
     WorkflowPreviewRequestPayload,
     WorkIdentity,
     WorkPayload,
+    evaluate_branch_set,
 )
 from stove0_target_support import (
+    InputArtifact,
     OutputArtifact,
     OutputCollectionRef,
     TargetExecutionEvidence,
     TargetJobStatus,
     TargetProgress,
+    TransformPlan,
+    TransformPlanPayload,
 )
 
 
@@ -46,7 +57,7 @@ def _sha(character: str) -> str:
 
 def _authorities(
     retirement_policy: str = "retain",
-) -> tuple[WorkIdentity, WorkflowPlan, ControllerEvidence]:
+) -> tuple[WorkIdentity, WorkflowPlan, TransformPlan, ControllerEvidence]:
     work = WorkIdentity.seal(
         WorkPayload(
             recipe=RecipeRef(id="fixture.recipe/v1", revision=1, sha256=_sha("1")),
@@ -69,13 +80,32 @@ def _authorities(
             retirement_policy=retirement_policy,
         )
     )
+    target_plan = TransformPlan.seal(
+        TransformPlanPayload(
+            target_implementation_id="fixture.target/v1",
+            target_contract_sha256=_sha("5"),
+            operation_id="fixture.copy/v1",
+            operation_contract_sha256=_sha("4"),
+            inputs=(
+                InputArtifact(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=work.inputs[0],
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256=_sha("e"),
+                ),
+            ),
+            intent={},
+        )
+    )
     binding = TargetPlanBinding(
-        protocol="stove0-transform-target/v1",
+        protocol=target_plan.protocol,
         target_implementation_id="fixture.target/v1",
         target_contract_sha256=_sha("5"),
         operation_contract_sha256=_sha("4"),
-        plan={"fixture": True},
-        plan_sha256=_sha("6"),
+        plan=target_plan.binding_document(),
+        plan_sha256=target_plan.plan_sha256,
     )
     envelope = ExecutionEnvelope.seal(
         ExecutionEnvelopePayload(
@@ -86,7 +116,7 @@ def _authorities(
         )
     )
     evidence = ControllerEvidence.seal(ControllerEvidencePayload(execution_envelope=envelope))
-    return work, workflow, evidence
+    return work, workflow, target_plan, evidence
 
 
 class FixtureApi:
@@ -101,6 +131,7 @@ class FixtureApi:
         self.claim_state = "active"
         self.expire_renewal = False
         self.deleted: set[int] = set()
+        self.processing_outcomes: list[dict[str, object]] = []
 
     def create_or_resume_processing_claim(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("claim", kwargs))
@@ -156,6 +187,27 @@ class FixtureApi:
     def settle_processing_claim(self, claim_id: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("settle", {"claim_id": claim_id, **kwargs}))
         self.derivation = CollectionDerivation.from_mapping(kwargs["derivation"])
+        return {
+            "id": claim_id,
+            "fence": kwargs["fence"],
+            "state": "settled",
+        }
+
+    def get_processing_claim(self, claim_id: str) -> dict[str, Any]:
+        self.calls.append(("get-claim", {"claim_id": claim_id}))
+        return {
+            "id": claim_id,
+            "fence": self.fence,
+            "state": self.claim_state,
+            "outcomes": self.processing_outcomes,
+        }
+
+    def settle_processing_claim_outcomes(
+        self,
+        claim_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append(("settle-outcomes", {"claim_id": claim_id, **kwargs}))
         return {
             "id": claim_id,
             "fence": kwargs["fence"],
@@ -255,14 +307,14 @@ def _verifying_record(
         state="succeeded",
         attempt=1,
         request_sha256=_sha("b"),
-        plan_sha256=_sha("6"),
+        plan_sha256=evidence.execution_envelope.target_plan.plan_sha256,
         progress=TargetProgress(phase="done", completed=1, total=1),
         outputs=(output,),
         output_collection=output_ref,
         execution_evidence=TargetExecutionEvidence(
             target_contract_sha256=_sha("5"),
             operation_contract_sha256=_sha("4"),
-            plan_sha256=_sha("6"),
+            plan_sha256=evidence.execution_envelope.target_plan.plan_sha256,
             execution_sha256=_sha("a"),
         ),
         derivation=derivation.as_dict(),
@@ -279,15 +331,15 @@ def _verifying_record(
 
 
 def test_riverhog_adapter_uses_scoped_capabilities_and_verifies_settlement() -> None:
-    work, workflow, evidence = _authorities()
+    work, workflow, target_plan, evidence = _authorities()
     api = FixtureApi()
     client = Stove0RiverhogClient(api, workspace_assurance="ephemeral")
 
     claim = client.acquire_claim(work)
     assert claim == ClaimBinding(claim_id="claim-1", fence=1)
     assert client.renew_claim(work, claim) == claim
-    client.seal_execution(claim, evidence, workflow)
-    authority = client.target_authority(claim, evidence)
+    client.seal_execution(claim, evidence, workflow, target_plan)
+    authority = client.target_authority(claim, evidence, target_plan)
     assert authority.workspace_assurance == "ephemeral"
     assert authority.runtime.capability_token.startswith("secret-")
 
@@ -297,8 +349,101 @@ def test_riverhog_adapter_uses_scoped_capabilities_and_verifies_settlement() -> 
     assert any(name == "settle" for name, _payload in api.calls)
 
 
+def test_riverhog_adapter_closes_only_the_exact_generic_outcome_set() -> None:
+    work, workflow, _target_plan, _evidence = _authorities()
+    source_selection = ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="source",
+                role="fixture.source/v1",
+                collection=work.inputs[0],
+                path="source/input.bin",
+                bytes=12,
+                sha256=_sha("e"),
+            ),
+        )
+    )
+    branch = BranchPlan.build(
+        parent_work=work,
+        branch_id="copy",
+        decision_sha256=_sha("c"),
+        selection=source_selection,
+        recipe=work.recipe,
+        effective_intent={},
+        workflow_intent=WorkflowPlanIntent.from_plan(workflow),
+    )
+    plan = BranchSetPlan.seal(
+        parent_work=work,
+        decision_sha256=_sha("c"),
+        branches=(branch,),
+        selections={source_selection.selection_sha256: source_selection},
+    )
+    output_root = CollectionRootRef(
+        collection_id=7,
+        manifest_sha256=_sha("7"),
+        content_etag=_sha("8"),
+    )
+    output_selection = ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="output",
+                role="fixture.output/v1",
+                collection=output_root,
+                path="output/result.bin",
+                bytes=12,
+                sha256=_sha("9"),
+            ),
+        )
+    )
+    settlement = BranchSettlement.seal(
+        branch=branch,
+        derivation_sha256=_sha("d"),
+        output_collection=output_root,
+        output_selection=output_selection,
+    )
+    selections = {
+        source_selection.selection_sha256: source_selection,
+        output_selection.selection_sha256: output_selection,
+    }
+    evaluation = evaluate_branch_set(
+        plan,
+        selections,
+        branch_settlements=(settlement,),
+    )
+    outcome = CollectionProcessingOutcomeIdentity(
+        outcome_id="branch/copy",
+        source_claim_id=_sha("f"),
+        output_collection=CollectionRootIdentity(
+            collection_id=7,
+            manifest_sha256=_sha("7"),
+            content_etag=_sha("8"),
+        ),
+        derivation_sha256=_sha("d"),
+    )
+    api = FixtureApi()
+    api.processing_outcomes = [outcome.as_dict()]
+    client = Stove0RiverhogClient(api)
+    parent = WorkRecord(
+        work=work,
+        phase="coordinating",
+        claim=ClaimBinding(claim_id="claim-1", fence=1),
+        branch_set_plan=plan,
+    )
+
+    client.settle_outcomes(parent, evaluation)
+
+    payload = next(payload for name, payload in api.calls if name == "settle-outcomes")
+    assert payload == {
+        "claim_id": "claim-1",
+        "fence": 1,
+        "outcomes": [outcome.as_dict()],
+        "retirement_policy": "retain",
+        "retirement_grace_seconds": 0,
+    }
+
+
 def test_riverhog_adapter_recovers_an_expired_claim_with_a_new_fence() -> None:
-    work, _workflow, _evidence = _authorities()
+    work, _workflow, _target_plan, _evidence = _authorities()
     api = FixtureApi()
     client = Stove0RiverhogClient(api)
     claim = client.acquire_claim(work)
@@ -311,7 +456,7 @@ def test_riverhog_adapter_recovers_an_expired_claim_with_a_new_fence() -> None:
 
 
 def test_riverhog_adapter_refuses_to_resume_terminal_work() -> None:
-    work, _workflow, _evidence = _authorities()
+    work, _workflow, _target_plan, _evidence = _authorities()
     api = FixtureApi()
     api.claim_state = "abandoned"
     client = Stove0RiverhogClient(api)
@@ -321,7 +466,7 @@ def test_riverhog_adapter_refuses_to_resume_terminal_work() -> None:
 
 
 def test_riverhog_adapter_restarts_retryable_work_with_a_new_fence() -> None:
-    work, _workflow, _evidence = _authorities()
+    work, _workflow, _target_plan, _evidence = _authorities()
     api = FixtureApi()
     client = Stove0RiverhogClient(api)
     claim = client.acquire_claim(work)
@@ -336,7 +481,7 @@ def test_riverhog_adapter_restarts_retryable_work_with_a_new_fence() -> None:
 
 
 def test_riverhog_adapter_retirement_is_fenced_and_challenge_bound() -> None:
-    work, workflow, evidence = _authorities("retire-after-verified-output")
+    work, workflow, _target_plan, evidence = _authorities("retire-after-verified-output")
     api = FixtureApi()
     client = Stove0RiverhogClient(api)
     record = _verifying_record(work, workflow, evidence).model_copy(update={"phase": "settled"})
@@ -352,7 +497,7 @@ def test_riverhog_adapter_retirement_is_fenced_and_challenge_bound() -> None:
 
 
 def test_riverhog_adapter_abandons_the_exact_claim_generation() -> None:
-    work, _workflow, _evidence = _authorities()
+    work, _workflow, _target_plan, _evidence = _authorities()
     api = FixtureApi()
     client = Stove0RiverhogClient(api)
     record = WorkRecord(
@@ -375,7 +520,7 @@ def test_riverhog_adapter_abandons_the_exact_claim_generation() -> None:
 
 
 def test_synchronous_observation_must_fit_claim_and_capability_lifetime() -> None:
-    work, _workflow, _evidence = _authorities()
+    work, _workflow, _target_plan, _evidence = _authorities()
     api = FixtureApi()
     client = Stove0RiverhogClient(
         api,
@@ -410,7 +555,7 @@ def test_synchronous_observation_must_fit_claim_and_capability_lifetime() -> Non
 
 
 def test_preview_claim_is_separate_read_only_authority_and_is_abandoned() -> None:
-    work, _workflow, _evidence = _authorities()
+    work, _workflow, _target_plan, _evidence = _authorities()
     api = FixtureApi()
     client = Stove0RiverhogClient(api)
     request = WorkflowPreviewRequest.seal(WorkflowPreviewRequestPayload(work=work))

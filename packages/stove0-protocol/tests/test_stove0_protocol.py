@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 from stove0_protocol import (
+    ArtifactSelection,
     ArtifactSubject,
+    BranchPlan,
+    BranchSetPlan,
+    BranchTargetPreview,
     CollectionRootRef,
     ControllerEvidence,
     ControllerEvidencePayload,
@@ -30,6 +34,7 @@ from stove0_protocol import (
     RecipeRef,
     TargetPlanBinding,
     WorkflowPlan,
+    WorkflowPlanIntent,
     WorkflowPlanPayload,
     WorkflowPreview,
     WorkflowPreviewPayload,
@@ -95,6 +100,7 @@ def _descriptor(contract: ObserverContract) -> ObserverDescriptor:
             implementation_id="fixture.camera-probe/v1",
             implementation_version="1.2.3",
             source_revision="fixture-revision",
+            image_digest=_sha("9"),
             contracts=(ObserverContractSupport.from_contract(contract),),
         )
     )
@@ -319,15 +325,39 @@ def test_workflow_preview_and_evaluation_contracts_are_deterministic() -> None:
     work = _work()
     preview_request = WorkflowPreviewRequest.seal(WorkflowPreviewRequestPayload(work=work))
     operation = OperationRef(id="video.archive/v1", sha256=_sha("e"))
-    workflow = WorkflowPlan.seal(
-        WorkflowPlanPayload(
-            work=work,
+    selection = ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="source",
+                role="video.source/v1",
+                collection=work.inputs[0],
+                path="source.mp4",
+                bytes=12,
+                sha256=_sha("d"),
+            ),
+        )
+    )
+    branch = BranchPlan.build(
+        parent_work=work,
+        branch_id="archive",
+        decision_sha256=_sha("c"),
+        selection=selection,
+        recipe=work.recipe,
+        effective_intent=work.effective_intent,
+        workflow_intent=WorkflowPlanIntent(
             operation=operation,
             target_registration_id="fixture-target",
             target_contract_sha256=_sha("f"),
             output_tags=("archive-video",),
             retirement_policy="retain",
-        )
+        ),
+    )
+    workflow = branch.workflow_plan
+    branch_set = BranchSetPlan.seal(
+        parent_work=work,
+        decision_sha256=_sha("c"),
+        branches=(branch,),
+        selections={selection.selection_sha256: selection},
     )
     target = TargetPlanBinding(
         protocol="stove0-transform-target/v1",
@@ -342,8 +372,15 @@ def test_workflow_preview_and_evaluation_contracts_are_deterministic() -> None:
             preview_id=preview_request.preview_id,
             state="ready",
             work=work,
-            workflow_plan=workflow,
-            target_plan=target,
+            branch_set_plan=branch_set,
+            selections=(selection,),
+            target_plans=(
+                BranchTargetPreview(
+                    branch_id="archive",
+                    workflow_plan_sha256=workflow.workflow_plan_sha256,
+                    target_plan=target,
+                ),
+            ),
         )
     )
     second = WorkflowPreview.seal(
@@ -351,8 +388,15 @@ def test_workflow_preview_and_evaluation_contracts_are_deterministic() -> None:
             preview_id=preview_request.preview_id,
             state="ready",
             work=work,
-            workflow_plan=workflow,
-            target_plan=target,
+            branch_set_plan=branch_set,
+            selections=(selection,),
+            target_plans=(
+                BranchTargetPreview(
+                    branch_id="archive",
+                    workflow_plan_sha256=workflow.workflow_plan_sha256,
+                    target_plan=target,
+                ),
+            ),
         )
     )
     assert first == second

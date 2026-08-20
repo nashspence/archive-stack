@@ -37,31 +37,10 @@ operations:
     - stove0.media.source/v1
   source_retirement_permitted: true
   contract_sha256: 88fb13c3915c3d96e843d916d5dc2ea7d202ccf9c84e86b9b8d9307619c1cb5d
-- id: stove0.media.preserve/v1
+- id: stove0.media.av1-opus-archive/v1
   intent_schema:
-    id: stove0.media.preserve-intent/v1
-    sha256: 053cb7c2f62ff1645719e000fb2a99bc954afb2f16d8cb1c0a60c259e0833367
-    document:
-      additionalProperties: false
-      properties: {}
-      title: PreserveIntent
-      type: object
-  inputs:
-  - role: stove0.media.source/v1
-    minimum: 1
-    allowed_dispositions:
-    - transformed
-  outputs:
-  - role: stove0.media.preserved/v1
-    minimum: 1
-    derived_from_roles:
-    - stove0.media.source/v1
-  source_retirement_permitted: false
-  contract_sha256: 9eed05035a0ef3007f28807134fe220a4be3a0d5ada753464f3fdc0397a17dde
-- id: stove0.media.video-archive/v1
-  intent_schema:
-    id: stove0.media.video-archive-intent/v1
-    sha256: af855a63f6947105dc31b56c7c4d1f076b4d40ad37ddde3326ae6037063d20b6
+    id: stove0.media.av1-opus-archive-intent/v1
+    sha256: 71f39645f7dfbeaddf7223aa47aad75ede968381c5f681ac893f1a19ea976c4b
     document:
       additionalProperties: false
       properties:
@@ -102,7 +81,7 @@ operations:
           - safe-remux
           title: Salvage
           type: string
-      title: VideoArchiveIntent
+      title: Av1OpusArchiveIntent
       type: object
   inputs:
   - role: stove0.media.source/v1
@@ -110,19 +89,19 @@ operations:
     allowed_dispositions:
     - transformed
   outputs:
+  - role: stove0.media.av1-opus-archive/v1
+    minimum: 1
+    derived_from_roles:
+    - stove0.media.source/v1
   - role: stove0.media.source-artifact/v1
     minimum: 1
     derived_from_roles:
     - stove0.media.source/v1
-  - role: stove0.media.video-archive/v1
-    minimum: 1
-    derived_from_roles:
-    - stove0.media.source/v1
   source_retirement_permitted: true
-  contract_sha256: 3fdb6386231f8fb9563feee1ecbd13c475da311b0d66226ac3026a53bcfdab86
-- id: stove0.review.sample-encode/v1
+  contract_sha256: e3153dba84540a4b11edaf4dd632a6e6a7b84241233a89b07fa72bd5863a0f86
+- id: stove0.review.materialize/v1
   intent_schema:
-    id: stove0.review.sample-encode-intent/v1
+    id: stove0.review.materialize-intent/v1
     sha256: 9c1757fd841e4d40e438bcb1a0ac04bca21395306c577ffd6496547d7e2a5949
     document:
       $schema: https://json-schema.org/draft/2020-12/schema
@@ -215,7 +194,7 @@ operations:
     derived_from_roles:
     - stove0.review.source/v1
   source_retirement_permitted: false
-  contract_sha256: 65e2fcf6e45470279101b4bbbc106ddf23a355be8da7f54e45b030534debbda1
+  contract_sha256: 0bb209878f9baebd4bc23898c13e2ba661f9715634d53a747e13cf7a64f41b79
 recipes:
 - id: stove0.audio-archive/v1
   revision: 1
@@ -223,10 +202,11 @@ recipes:
   - stove0-audio-archive
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
+  source_retirement_policy: retain
   routes:
   - id: archive-audio
     operation_id: stove0.media.audio-archive/v1
-    target_registration_id: local-media
+    target_registration_id: opus
     artifact_rules:
     - glob: '*'
       role: stove0.media.source/v1
@@ -237,32 +217,15 @@ recipes:
     input_retrieval_policy: allow
     output_tags:
     - archive-audio
-    retirement_policy: retain
-- id: stove0.preserve/v1
-  revision: 1
-  input_tags:
-  - stove0-preserve
-  event_input_closure: single-finalized-collection
-  allow_derived_inputs: false
-  routes:
-  - id: preserve
-    operation_id: stove0.media.preserve/v1
-    target_registration_id: local-media
-    artifact_rules:
-    - glob: '*'
-      role: stove0.media.source/v1
-    input_retrieval_policy: allow
-    output_tags:
-    - preserved
-    retirement_policy: retain
 - id: stove0.review/v1
   revision: 1
   input_tags:
   - stove0-review
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
+  source_retirement_policy: retain
   observers:
-  - registration_id: media-sampling
+  - registration_id: ffprobe-sampling
     contract_id: stove0.review.media-sampling/v1
     artifact_rules:
     - glob: '*'
@@ -270,25 +233,28 @@ recipes:
     retrieval_policy: available-only
   routes:
   - id: review
-    operation_id: stove0.review.sample-encode/v1
-    target_registration_id: local-media
+    operation_id: stove0.review.materialize/v1
+    target_registration_id: review
     artifact_rules:
     - glob: '*'
       role: stove0.review.source/v1
+    target_options:
+      sampler_registration_id: opus
     input_retrieval_policy: available-only
     output_tags:
     - review-output
-    retirement_policy: retain
 - id: stove0.video-archive/v1
   revision: 1
   input_tags:
   - stove0-video-archive
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
+  source_retirement_policy: retire-after-verified-output
+  retirement_grace_seconds: 86400
   routes:
   - id: archive-video
-    operation_id: stove0.media.video-archive/v1
-    target_registration_id: nvenc-media
+    operation_id: stove0.media.av1-opus-archive/v1
+    target_registration_id: nvenc-av1-opus
     artifact_rules:
     - glob: '*'
       role: stove0.media.source/v1
@@ -303,5 +269,3 @@ recipes:
     input_retrieval_policy: allow
     output_tags:
     - archive-video
-    retirement_policy: retire-after-verified-output
-    retirement_grace_seconds: 86400

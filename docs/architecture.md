@@ -57,8 +57,8 @@ Workspace dependency and import checks enforce the implementation-owner boundari
 - [`riverhog/recovery`](../riverhog/recovery/) provides an independently packaged,
   permissively licensed reference implementation; Riverhog archives remain recoverable
   without Riverhog using standard tools.
-- [`companions/stove0`](../companions/stove0/) contains the orchestration server, its
-  separately packaged client, and maintained observer/target implementations.
+- [`companions`](../companions/) contains content-opaque Stove0 orchestration plus isolated
+  maintained observer, sampler, and target examples.
 - [`utilities`](../utilities/) contains portable operator and event tools.
 - [`packages`](../packages/) contains focused reusable libraries and protocol, client,
   configuration, event, transport, and CLI primitives.

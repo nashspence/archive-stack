@@ -6,11 +6,11 @@ from collections import Counter
 from dataclasses import fields
 from pathlib import Path
 
-from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.pack_retrieval import PackRangeRetrievalPolicy
 from riverhog_core.runtime_config import ArchiveStoreConfig, RetrievalCacheConfig, RuntimeConfig
 from riverhog_core.throughput import ArchiveThroughputTuning, S3TransportTuning
+from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 from stove0_core import EndpointRegistration, Stove0RuntimeConfig
 
 REPO_ROOT = Path(__file__).parents[2]

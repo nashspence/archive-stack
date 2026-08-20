@@ -82,6 +82,13 @@ class SqlAlchemyProvenanceService:
                 )
                 .where(CollectionFileRecord.collection_id == collection_id)
             )
+            if principal.artifact_scope is not None:
+                paths = sorted(
+                    path
+                    for scoped_collection_id, path in principal.artifact_scope
+                    if scoped_collection_id == collection_id
+                )
+                joined = joined.where(CollectionFileRecord.path.in_(paths))
             if q:
                 joined = joined.where(
                     func.lower(CollectionFileRecord.path).like(
@@ -131,6 +138,11 @@ class SqlAlchemyProvenanceService:
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
         path = _path(path)
+        if not (
+            principal.allows_artifact(CATALOG_READ, collection_id, path)
+            and principal.allows_artifact(PROVENANCE_READ, collection_id, path)
+        ):
+            raise NotFound(f"collection file not found: {collection_id}::{path}")
         with session_scope(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
             row = session.execute(
@@ -250,6 +262,13 @@ class SqlAlchemyProvenanceService:
             _authorized_collection(session, collection_id, principal)
             if not principal.allows_collection(PROVENANCE_EXPORT, collection_id):
                 raise NotFound(f"collection not found: {collection_id}")
+            if not _journal_is_in_artifact_scope(
+                session,
+                collection_id,
+                journal_id,
+                principal,
+            ):
+                raise NotFound(f"provenance journal not found: {journal_id}")
             record = session.get(
                 CollectionProvenanceJournalRecord,
                 (collection_id, journal_id),
@@ -265,6 +284,8 @@ class SqlAlchemyProvenanceService:
         principal: ApplicationPrincipal,
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
+        if principal.artifact_scope is not None:
+            raise NotFound(f"collection not found: {collection_id}")
         with session_scope(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
             files = list(
@@ -547,6 +568,50 @@ def _authorized_collection(
     ):
         raise NotFound(f"collection not found: {collection_id}")
     return record
+
+
+def _journal_is_in_artifact_scope(
+    session: Session,
+    collection_id: int,
+    journal_id: str,
+    principal: ApplicationPrincipal,
+) -> bool:
+    if principal.artifact_scope is None:
+        return True
+    paths = sorted(
+        path
+        for scoped_collection_id, path in principal.artifact_scope
+        if scoped_collection_id == collection_id
+    )
+    if not paths:
+        return False
+    reachable = {
+        item
+        for item in session.scalars(
+            select(CollectionFileProvenanceRecord.journal_id).where(
+                CollectionFileProvenanceRecord.collection_id == collection_id,
+                CollectionFileProvenanceRecord.path.in_(paths),
+                CollectionFileProvenanceRecord.journal_id.is_not(None),
+            )
+        )
+        if item is not None
+    }
+    pending = set(reachable)
+    while pending:
+        discovered = (
+            set(
+                session.scalars(
+                    select(CollectionProvenanceLineageEdgeRecord.to_journal_id).where(
+                        CollectionProvenanceLineageEdgeRecord.collection_id == collection_id,
+                        CollectionProvenanceLineageEdgeRecord.from_journal_id.in_(pending),
+                    )
+                )
+            )
+            - reachable
+        )
+        reachable.update(discovered)
+        pending = discovered
+    return journal_id in reachable
 
 
 def _file_payload(

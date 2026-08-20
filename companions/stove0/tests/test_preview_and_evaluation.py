@@ -14,7 +14,11 @@ from stove0_core import (
     WorkRecord,
 )
 from stove0_protocol import (
+    ArtifactSelection,
     ArtifactSubject,
+    BranchPlan,
+    BranchSetDecision,
+    BranchSetPlan,
     CollectionRootRef,
     EvaluationDefinition,
     EvaluationDefinitionPayload,
@@ -38,7 +42,7 @@ from stove0_protocol import (
     OperationRef,
     RecipeRef,
     WorkflowPlan,
-    WorkflowPlanPayload,
+    WorkflowPlanIntent,
     WorkIdentity,
     WorkPayload,
     canonical_json_sha256,
@@ -112,6 +116,7 @@ def _target(operation: OperationContract) -> TargetContract:
             implementation_id="fixture.target/v1",
             implementation_version="1.0.0",
             source_revision="fixture",
+            image_digest=_sha("9"),
             operations=(
                 TargetOperationSupport(
                     operation_id=operation.id,
@@ -150,6 +155,7 @@ def _observer() -> tuple[ObserverContract, ObserverDescriptor]:
             implementation_id="fixture.observer/v1",
             implementation_version="1.0.0",
             source_revision="fixture",
+            image_digest=_sha("9"),
             contracts=(ObserverContractSupport.from_contract(contract),),
         )
     )
@@ -195,11 +201,16 @@ class PreviewPlanning:
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
-    ) -> WorkflowPlan:
-        return WorkflowPlan.seal(
-            WorkflowPlanPayload(
-                work=work,
-                observations=observations,
+    ) -> BranchSetDecision:
+        selection = ArtifactSelection.seal(observations[0].request.subjects)
+        branch = BranchPlan.build(
+            parent_work=work,
+            branch_id="fixture",
+            decision_sha256=_sha("d"),
+            selection=selection,
+            recipe=work.recipe,
+            effective_intent={"suffix": ".copy"},
+            workflow_intent=WorkflowPlanIntent(
                 operation=OperationRef(
                     id=self.operation.id,
                     sha256=self.operation.contract_sha256,
@@ -208,10 +219,25 @@ class PreviewPlanning:
                 target_contract_sha256=self.target.contract_sha256,
                 output_tags=("fixture-output",),
                 retirement_policy="retain",
-            )
+            ),
+            observations=observations,
+        )
+        return BranchSetDecision(
+            plan=BranchSetPlan.seal(
+                parent_work=work,
+                decision_sha256=_sha("d"),
+                evidence_sha256s=(observations[0].result.result_sha256,),
+                branches=(branch,),
+                selections={selection.selection_sha256: selection},
+            ),
+            selections=(selection,),
         )
 
-    def target_preflight_request(self, _plan: WorkflowPlan) -> TargetPreflightRequest:
+    def target_preflight_request(
+        self,
+        _plan: WorkflowPlan,
+        _selections: dict[str, ArtifactSelection],
+    ) -> TargetPreflightRequest:
         return TargetPreflightRequest(
             operation_id=self.operation.id,
             operation_contract_sha256=self.operation.contract_sha256,
@@ -362,8 +388,10 @@ def test_workflow_preview_is_deterministic_across_claim_generations() -> None:
     assert first.state == second.state == "ready"
     assert first.preview_id == second.preview_id
     assert first.preview_sha256 == second.preview_sha256
-    assert first.workflow_plan == second.workflow_plan
-    assert first.target_plan == second.target_plan
+    assert first.branch_set_plan == second.branch_set_plan
+    assert first.selections == second.selections
+    assert first.target_plans == second.target_plans
+    assert len(first.target_plans) == 1
     assert [item.fence for item in observer.invocations] == [1, 2]
     assert len(riverhog.abandoned) == 2
     assert "write-output" not in riverhog.actions
