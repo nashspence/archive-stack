@@ -41,5 +41,7 @@ def test_public_compose_published_ports_default_to_loopback() -> None:
 def test_stove0_and_adapter_apis_default_to_loopback() -> None:
     compose = yaml.safe_load((ROOT / "companions/stove0/compose.yaml").read_text(encoding="utf-8"))
     assert _defaults(compose["services"]["api"]["ports"][0]).startswith("127.0.0.1:")
-    adapters = yaml.safe_load((ROOT / "riverhog/adapters/compose.yaml").read_text(encoding="utf-8"))
-    assert _defaults(adapters["services"]["adapter"]["ports"][0]).startswith("127.0.0.1:")
+    adapters = yaml.safe_load((ROOT / "riverhog/ftp-adapter/compose.yaml").read_text(encoding="utf-8"))
+    assert _defaults(adapters["services"]["ftp-adapter"]["ports"][0]).startswith(
+        "127.0.0.1:"
+    )

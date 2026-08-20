@@ -223,17 +223,14 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     )
     assert "test_operation_lifecycle_api.py" in lifecycle_evidence["run"]
     assert "test_stove0_api_parity.py" in lifecycle_evidence["run"]
-    assert "test_adapter_api_parity.py" in lifecycle_evidence["run"]
+    assert "test_ftp_adapter_api_parity.py" in lifecycle_evidence["run"]
     assert "test_collection_reads.py" in lifecycle_evidence["run"]
     assert "test_unified_state_store_is_restart_safe" in lifecycle_evidence["run"]
     assert "test_unified_evaluation_store_is_restart_safe" in lifecycle_evidence["run"]
     assert (
         "test_worker_tick_never_consumes_the_controller_event_cursor" in lifecycle_evidence["run"]
     )
-    assert (
-        "test_tus_publication_recovers_crash_after_finalized_adapter_receipt"
-        in (lifecycle_evidence["run"])
-    )
+    assert "test_landing_adapter_reconciles_lost_response" in lifecycle_evidence["run"]
     assert "tests.operation_observer" in lifecycle_evidence["run"]
     operation_evidence = next(
         step

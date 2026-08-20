@@ -438,11 +438,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
             "--public-key /tmp/release.pub",
         ),
         (
-            "tus-throughput",
-            ("TUS_URL=https://tus.invalid/files/", "args=--size-mib 1"),
-            "python scripts/tus_throughput.py https://tus.invalid/files/ --size-mib 1",
-        ),
-        (
             "transfer-profile",
             ("args=--scenario reference-recovery --workload large-file --payload-bytes 1 -- true",),
             "python scripts/transfer_profile.py --scenario reference-recovery "
@@ -503,7 +498,7 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert len(uv_log_lines) == 1
     assert "python -m mypy companions/stove0/client/src" in uv_log_lines[0]
     assert "companions/stove0/extensions/src companions/stove0/server/src" in uv_log_lines[0]
-    assert "riverhog/client/src riverhog/adapters/src riverhog/recovery/src" in uv_log_lines[0]
+    assert "riverhog/client/src riverhog/ftp-adapter/src riverhog/recovery/src" in uv_log_lines[0]
     assert "scripts/operation_qualification.py" in uv_log_lines[0]
     assert "scripts/provider_qualification.py" in uv_log_lines[0]
     assert "utilities/gogurt/src utilities/mango-fish/src" in uv_log_lines[0]
@@ -567,7 +562,7 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
     ).stdout.strip()
     targets = (
         "riverhog",
-        "riverhog-adapters",
+        "riverhog-ftp-adapter",
         "stove0",
         "stove0-extensions",
         "stove0-nvenc-extension",
@@ -760,7 +755,7 @@ def test_dockerfile_copy_sources_are_git_owned() -> None:
 
 def test_workspace_unit_lane_owns_application_unit_tests() -> None:
     assert (REPO_ROOT / "companions/stove0/tests/test_stove0_api_parity.py").is_file()
-    assert (REPO_ROOT / "riverhog/adapters/tests/test_adapter_api_parity.py").is_file()
+    assert (REPO_ROOT / "riverhog/ftp-adapter/tests/test_ftp_adapter_api_parity.py").is_file()
     assert (REPO_ROOT / "utilities/mango-fish/tests/test_mango_fish.py").is_file()
     assert (REPO_ROOT / "utilities/gogurt/tests/test_gogurt.py").is_file()
 
@@ -775,7 +770,6 @@ def test_repo_wide_lint_targets_cover_source_and_service_apps() -> None:
     assert "python -m ruff format --check $(FILES)" in makefile
     assert "MYPY_SOURCES" in makefile
     assert "riverhog/server/src" in makefile
-    assert "packages/tus-transport/src" in makefile
     assert "strict = true" in pyproject
 
 
@@ -802,7 +796,7 @@ def test_format_check_and_compile_are_non_mutating_repository_targets(tmp_path: 
 def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() -> None:
     service_dockerfiles = [
         REPO_ROOT / "riverhog/server/Dockerfile",
-        REPO_ROOT / "riverhog/adapters/Dockerfile",
+        REPO_ROOT / "riverhog/ftp-adapter/Dockerfile",
         REPO_ROOT / "companions/stove0/server/Dockerfile",
         REPO_ROOT / "companions/stove0/extensions/Dockerfile",
         REPO_ROOT / "companions/stove0/extensions/nvenc/Dockerfile",
@@ -903,7 +897,7 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert "make bootstrap-garage" in completed.stdout
     assert "make build-riverhog" in completed.stdout
-    assert "make build-riverhog-adapters" in completed.stdout
+    assert "make build-riverhog-ftp-adapter" in completed.stdout
     assert "make build-stove0" in completed.stdout
     assert "make build-stove0-extensions" in completed.stdout
     assert "make build-stove0-nvenc-extension" in completed.stdout
@@ -918,13 +912,11 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make ruff-fix" in completed.stdout
     assert "make stop-spec" in completed.stdout
     assert "make test" in completed.stdout
-    assert "make tus-throughput" in completed.stdout
     assert "make transfer-profile" in completed.stdout
     assert "args='...'" in completed.stdout
     assert "FILES='...'" in completed.stdout
     assert "PYTHON_PATHS='...'" in completed.stdout
     assert "TESTS='...'" in completed.stdout
-    assert "TUS_URL=https://..." in completed.stdout
     assert "fast" not in completed.stdout
     assert _read_log_lines(docker_log_path) == []
     assert _read_log_lines(uv_log_path) == []

@@ -1,0 +1,113 @@
+x-ftp-adapter-image: &ftp-adapter-image
+  image: riverhog-ftp-adapter:dev
+  build:
+    context: ../..
+    dockerfile: riverhog/ftp-adapter/Dockerfile
+    args:
+      SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+
+services:
+  intake-init:
+    image: alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+    restart: "no"
+    environment:
+      INTAKE_GID: ${RIVERHOG_FTP_ADAPTER_INTAKE_GID:-65532}
+    command:
+      - sh
+      - -c
+      - >-
+        install -d -o 65532 -g "$${INTAKE_GID}" -m 2770 /intake /intake/ftp
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_FTP_ADAPTER_INTAKE_HOST_DIR:-./runtime/intake}
+        target: /intake
+
+  ftp-adapter:
+    <<: *ftp-adapter-image
+    restart: unless-stopped
+    read_only: true
+    user: "65532:65532"
+    group_add:
+      - "${RIVERHOG_FTP_ADAPTER_SECRET_FILE_GID:-65532}"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      intake-init:
+        condition: service_completed_successfully
+    environment:
+      TZ: ${TZ:-UTC}
+      RIVERHOG_FTP_ADAPTER_CONFIG: /etc/riverhog/ftp-adapter.json
+      RIVERHOG_TOKEN_FILE: /run/secrets/riverhog_token
+      RIVERHOG_FTP_ADAPTER_API_TOKEN_FILE: /run/secrets/api_token
+    secrets:
+      - riverhog_token
+      - api_token
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_FTP_ADAPTER_CONFIG_HOST_PATH:-./config/ftp-adapter.example.json}
+        target: /etc/riverhog/ftp-adapter.json
+        read_only: true
+      - type: bind
+        source: ${RIVERHOG_FTP_ADAPTER_INTAKE_HOST_DIR:-./runtime/intake}
+        target: /intake
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+    networks: ["default", "riverhog-control"]
+    ports:
+      - "${RIVERHOG_FTP_ADAPTER_API_BIND_ADDR:-127.0.0.1}:${RIVERHOG_FTP_ADAPTER_API_PORT:-8082}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
+          assert payload == {'service': 'riverhog-ftp-adapter', 'status': 'ok'}
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  ftp-daemon:
+    image: stilliard/pure-ftpd:trixie-latest@sha256:12b5aeb1a371b789e77d0b6217434a7a5ded9a3b251d52dab1f2e85ccde4cbf8
+    restart: unless-stopped
+    depends_on:
+      ftp-adapter:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+      FTP_USER_NAME: ${RIVERHOG_FTP_ADAPTER_USERNAME:-ftp-intake}
+      FTP_USER_HOME: /intake/ftp
+      FTP_USER_UID: "1000"
+      FTP_USER_GID: ${RIVERHOG_FTP_ADAPTER_INTAKE_GID:-65532}
+      FTP_PASSIVE_PORTS: ${RIVERHOG_FTP_ADAPTER_PASSIVE_PORT_START:-30000}:${RIVERHOG_FTP_ADAPTER_PASSIVE_PORT_END:-30039}
+      PUBLICHOST: ${RIVERHOG_FTP_ADAPTER_PUBLIC_HOST:-127.0.0.1}
+    secrets: ["ftp_password"]
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        FTP_USER_PASS="$$(cat /run/secrets/ftp_password)";
+        export FTP_USER_PASS;
+        exec /run.sh -l puredb:/etc/pure-ftpd/pureftpd.pdb -E -j -R -P "$${PUBLICHOST}"
+    ports:
+      - "${RIVERHOG_FTP_ADAPTER_INGRESS_BIND_ADDR:-127.0.0.1}:${RIVERHOG_FTP_ADAPTER_PORT:-21}:21"
+      - "${RIVERHOG_FTP_ADAPTER_INGRESS_BIND_ADDR:-127.0.0.1}:${RIVERHOG_FTP_ADAPTER_PASSIVE_PORT_START:-30000}-${RIVERHOG_FTP_ADAPTER_PASSIVE_PORT_END:-30039}:30000-30039"
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_FTP_ADAPTER_INTAKE_HOST_DIR:-./runtime/intake}
+        target: /intake
+
+secrets:
+  riverhog_token:
+    file: ${RIVERHOG_FTP_ADAPTER_RIVERHOG_TOKEN_FILE:?RIVERHOG_FTP_ADAPTER_RIVERHOG_TOKEN_FILE is required}
+  api_token:
+    file: ${RIVERHOG_FTP_ADAPTER_API_TOKEN_FILE:?RIVERHOG_FTP_ADAPTER_API_TOKEN_FILE is required}
+  ftp_password:
+    file: ${RIVERHOG_FTP_ADAPTER_PASSWORD_FILE:-./secrets/ftp_password}
+
+networks:
+  riverhog-control:
+    external: true
+    name: ${RIVERHOG_CONTROL_NETWORK:-riverhog_default}

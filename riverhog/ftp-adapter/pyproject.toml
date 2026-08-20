@@ -3,9 +3,9 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tus-transport"
+name = "riverhog-ftp-adapter"
 version = "0.1.0"
-description = "Persistent HTTP transport for TUS uploads."
+description = "Content-opaque FTP producer for finalized Riverhog collections."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -19,8 +19,26 @@ classifiers = [
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
-  "httpx[http2]>=0.27,<1.0",
+  "fastapi>=0.111,<1.0",
+  "http-api-contracts>=0.1,<0.2",
+  "pydantic>=2.7,<3.0",
+  "riverhog-api-client>=0.1,<0.2",
+  "riverhog-ftp-adapter-api-client>=0.1,<0.2",
+  "riverhog-protocol>=0.1,<0.2",
+  "riverhog-provenance>=0.1,<0.2",
+  "starlette>=0.37,<2.0",
+  "uvicorn[standard]>=0.30,<1.0",
 ]
 
+[project.scripts]
+riverhog-ftp-adapter = "riverhog_ftp_adapter.app:main"
+
+[tool.uv.sources]
+http-api-contracts = { workspace = true }
+riverhog-ftp-adapter-api-client = { workspace = true }
+riverhog-api-client = { workspace = true }
+riverhog-protocol = { workspace = true }
+riverhog-provenance = { workspace = true }
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/tus_transport"]
+packages = ["src/riverhog_ftp_adapter"]
