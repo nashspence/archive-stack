@@ -6,19 +6,15 @@ from pathlib import Path
 
 from gogurt.core import execute_gogurt_action, load_gogurt_actions, plan_gogurt_action
 from mango_fish.relay import load_config as load_mango_fish_config
-from munchy_workflows.job_authoring import (
-    build_review_sweep_plan,
-    load_munchy_job_config,
-    munchy_job_defaults_from_config,
-)
-from munchy_workflows.profiles import load_encode_profile
+from riverhog_adapters.config import load_config as load_adapter_config
+from stove0_core import RecipeCatalog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_FILES = {
     REPO_ROOT / "utilities/mango-fish/config/mango-fish.yaml",
-    REPO_ROOT / "companions/munchy/config/examples/av1-nvenc-profile.yaml",
-    REPO_ROOT / "companions/munchy/config/examples/job.yaml",
-    REPO_ROOT / "companions/munchy/config/examples/review-sweep-job.yaml",
+    REPO_ROOT / "companions/stove0/config/recipes.example.yaml",
+    REPO_ROOT / "riverhog/adapters/config/adapters.example.json",
+    REPO_ROOT / "riverhog/adapters/config/tus-nginx.conf",
     REPO_ROOT / "utilities/gogurt/config/examples/gogurt-routes.yaml",
     REPO_ROOT / "utilities/gogurt/config/examples/scripts/fake_archive_device.py",
     REPO_ROOT / "config/provider-qualification.example.toml",
@@ -33,7 +29,8 @@ def test_every_checked_example_runs_through_its_real_consumer(
         path
         for root in (
             REPO_ROOT / "utilities/mango-fish/config",
-            REPO_ROOT / "companions/munchy/config/examples",
+            REPO_ROOT / "companions/stove0/config",
+            REPO_ROOT / "riverhog/adapters/config",
             REPO_ROOT / "utilities/gogurt/config/examples",
             REPO_ROOT / "config",
         )
@@ -56,36 +53,25 @@ def test_every_checked_example_runs_through_its_real_consumer(
 
     for name in (
         "RIVERHOG_EVENT_TOKEN",
-        "MUNCHY_EVENT_TOKEN",
-        "JEB_EVENT_TOKEN",
+        "STOVE0_EVENT_TOKEN",
         "MANGO_FISH_WEBHOOK_URL",
     ):
         monkeypatch.setenv(name, "fake-example-value")
     mango_fish = load_mango_fish_config(REPO_ROOT / "utilities/mango-fish/config/mango-fish.yaml")
-    assert [source.name for source in mango_fish.sources] == ["riverhog", "munchy", "jeb"]
+    assert [source.name for source in mango_fish.sources] == ["riverhog", "stove0"]
 
-    munchy_examples = REPO_ROOT / "companions/munchy/config/examples"
-    profile = load_encode_profile(munchy_examples / "av1-nvenc-profile.yaml")
-    assert profile.name == "example-camera"
+    recipes = RecipeCatalog.load(REPO_ROOT / "companions/stove0/config/recipes.example.yaml")
+    assert {recipe.id for recipe in recipes.recipes} == {
+        "stove0.audio-archive/v1",
+        "stove0.preserve/v1",
+        "stove0.review/v1",
+        "stove0.video-archive/v1",
+    }
 
-    job_config = load_munchy_job_config(munchy_examples / "job.yaml")
-    job_defaults = munchy_job_defaults_from_config(job_config)
-    assert set(job_defaults["groups"]) == {"video", "preserve"}
-
-    source = tmp_path / "review-source"
-    source.mkdir()
-    (source / "clip.mp4").write_bytes(b"example")
-    review_config = munchy_examples / "review-sweep-job.yaml"
-    review_defaults = munchy_job_defaults_from_config(load_munchy_job_config(review_config))
-    assert review_defaults["workflow_mode"] == "review"
-    review_plan = build_review_sweep_plan(
-        source=source,
-        template_id="example-camera-review-sweep",
-        config_path=review_config,
-    )
-    assert review_plan["ok"] is True
-    assert review_plan["variants_total"] == 8
-    assert str(review_plan["routes"][0]["variants"][0]["location"]).startswith("review-remote:")
+    monkeypatch.setenv("RIVERHOG_TOKEN", "fake-riverhog-token")
+    monkeypatch.setenv("RIVERHOG_ADAPTERS_API_TOKEN", "fake-adapter-token")
+    adapters = load_adapter_config(REPO_ROOT / "riverhog/adapters/config/adapters.example.json")
+    assert [source.adapter for source in adapters.sources] == ["ftp", "tus", "watched-drop"]
 
     script = REPO_ROOT / "scripts/provider_qualification.py"
     spec = importlib.util.spec_from_file_location("provider_qualification_example", script)

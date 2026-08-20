@@ -17,17 +17,16 @@ IMPLEMENTATION_OWNERS = {
     "riverhog-server": (REPO / "riverhog/server/src", {"riverhog_api", "riverhog_core"}),
     "riverhog-client": (REPO / "riverhog/client/src", {"riverhog_cli"}),
     "riverhog-recover": (REPO / "riverhog/recovery/src", {"riverhog_recover"}),
-    "munchy-server": (
-        REPO / "companions/munchy/server/src",
-        {"munchy_api", "munchy_core"},
+    "riverhog-adapters": (REPO / "riverhog/adapters/src", {"riverhog_adapters"}),
+    "stove0-server": (
+        REPO / "companions/stove0/server/src",
+        {"stove0_api", "stove0_core"},
     ),
-    "munchy-av1-nvenc-target": (
-        REPO / "companions/munchy/server/targets/av1-nvenc/src",
-        {"munchy_av1_nvenc"},
+    "stove0-client": (REPO / "companions/stove0/client/src", {"stove0_cli"}),
+    "stove0-maintained-extensions": (
+        REPO / "companions/stove0/extensions/src",
+        {"stove0_extensions"},
     ),
-    "munchy-client": (REPO / "companions/munchy/client/src", {"munchy_cli"}),
-    "jeb-server": (REPO / "companions/jeb/server/src", {"jeb_api", "jeb_core"}),
-    "jeb-client": (REPO / "companions/jeb/client/src", {"jeb_cli"}),
     "mango-fish": (REPO / "utilities/mango-fish/src", {"mango_fish"}),
     "gogurt": (REPO / "utilities/gogurt/src", {"gogurt"}),
 }
@@ -36,8 +35,7 @@ ALL_IMPLEMENTATION_MODULES = set().union(
 )
 CORE_ROOTS = {
     "riverhog_core": REPO / "riverhog/server/src/riverhog_core",
-    "munchy_core": REPO / "companions/munchy/server/src/munchy_core",
-    "jeb_core": REPO / "companions/jeb/server/src/jeb_core",
+    "stove0_core": REPO / "companions/stove0/server/src/stove0_core",
 }
 EXTERNAL_DISTRIBUTION_MODULES = {
     "alembic": {"alembic"},
@@ -61,6 +59,7 @@ EXTERNAL_DISTRIBUTION_MODULES = {
 }
 RUNTIME_ONLY_DEPENDENCIES = {
     "riverhog-server": {"opentimestamps-client", "psycopg"},
+    "stove0-server": {"psycopg"},
 }
 
 
@@ -264,27 +263,6 @@ def test_projects_declare_their_exact_direct_runtime_dependencies() -> None:
     assert not violations, "\n".join(violations)
 
 
-def test_companion_platform_clients_are_owned_by_contained_adapters() -> None:
-    expected = {
-        ("riverhog_api_client", REPO / "companions/munchy/server/src"): {
-            Path("companions/munchy/server/src/munchy_core/adapters/riverhog.py")
-        },
-        ("riverhog_protocol", REPO / "companions/munchy/server/src"): {
-            Path("companions/munchy/server/src/munchy_core/adapters/riverhog.py")
-        },
-        ("munchy_api_client", REPO / "companions/jeb/server/src"): {
-            Path("companions/jeb/server/src/jeb_core/adapters/munchy.py")
-        },
-    }
-    for (imported, source), expected_paths in expected.items():
-        actual = {
-            path.relative_to(REPO)
-            for path in source.rglob("*.py")
-            if imported in imported_roots(path)
-        }
-        assert actual == expected_paths
-
-
 def test_core_dependency_graphs_are_acyclic() -> None:
     for package, source in CORE_ROOTS.items():
         cycle = dependency_cycle(internal_module_graph(source, package))
@@ -315,17 +293,11 @@ def test_core_domain_and_ports_are_dependency_roots() -> None:
 def test_images_copy_only_their_owned_implementation_project() -> None:
     dockerfiles = {
         REPO / "riverhog/server/Dockerfile": "riverhog/server",
-        REPO / "companions/jeb/server/Dockerfile": "companions/jeb/server",
-        REPO / "companions/munchy/server/Dockerfile": "companions/munchy/server",
-        REPO / "companions/munchy/server/targets/av1-nvenc/Dockerfile": (
-            "companions/munchy/server/targets/av1-nvenc"
-        ),
+        REPO / "riverhog/adapters/Dockerfile": "riverhog/adapters",
+        REPO / "companions/stove0/server/Dockerfile": "companions/stove0/server",
+        REPO / "companions/stove0/extensions/Dockerfile": "companions/stove0/extensions",
+        REPO / "companions/stove0/extensions/nvenc/Dockerfile": "companions/stove0/extensions",
         REPO / "utilities/mango-fish/Dockerfile": "utilities/mango-fish",
-    }
-    allowed_manifests = {
-        REPO / "companions/munchy/server/targets/av1-nvenc/Dockerfile": {
-            "companions/munchy/server/pyproject.toml"
-        }
     }
     implementation_prefix = re.compile(r"^(?:companions|riverhog|utilities)/")
     for dockerfile, expected in dockerfiles.items():
@@ -335,12 +307,7 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
             if implementation_prefix.match(source)
         }
         assert copied
-        assert all(
-            source == expected
-            or source.startswith(f"{expected}/")
-            or source in allowed_manifests.get(dockerfile, set())
-            for source in copied
-        )
+        assert all(source == expected or source.startswith(f"{expected}/") for source in copied)
 
 
 def test_locally_built_compose_services_use_development_image_tags() -> None:
@@ -377,9 +344,10 @@ def test_compose_timezone_defaults_are_configurable_utc() -> None:
 def test_images_copy_their_complete_internal_dependency_closure() -> None:
     images = {
         REPO / "riverhog/server/Dockerfile": "riverhog-server",
-        REPO / "companions/jeb/server/Dockerfile": "jeb-server",
-        REPO / "companions/munchy/server/Dockerfile": "munchy-server",
-        REPO / "companions/munchy/server/targets/av1-nvenc/Dockerfile": ("munchy-av1-nvenc-target"),
+        REPO / "riverhog/adapters/Dockerfile": "riverhog-adapters",
+        REPO / "companions/stove0/server/Dockerfile": "stove0-server",
+        REPO / "companions/stove0/extensions/Dockerfile": "stove0-maintained-extensions",
+        REPO / "companions/stove0/extensions/nvenc/Dockerfile": ("stove0-maintained-extensions"),
         REPO / "utilities/mango-fish/Dockerfile": "mango-fish",
     }
     projects, graph = workspace_project_graph()

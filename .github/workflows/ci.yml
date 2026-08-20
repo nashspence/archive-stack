@@ -39,8 +39,6 @@ jobs:
             docker: true
           - target: compose-smoke
             docker: true
-          - target: jeb-compose-smoke
-            docker: true
           - target: dist-smoke
     steps:
       - name: Check out repository
@@ -130,10 +128,11 @@ jobs:
       matrix:
         target:
           - riverhog
-          - jeb
+          - riverhog-adapters
+          - stove0
+          - stove0-extensions
+          - stove0-nvenc-extension
           - mango-fish
-          - munchy-server
-          - munchy-av1-nvenc
           - test
     steps:
       - name: Check out repository

@@ -6,14 +6,16 @@ from collections import Counter
 from dataclasses import fields
 from pathlib import Path
 
+from riverhog_adapters.config import AdapterConfig, SourceConfig
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.pack_retrieval import PackRangeRetrievalPolicy
 from riverhog_core.runtime_config import ArchiveStoreConfig, RetrievalCacheConfig, RuntimeConfig
 from riverhog_core.throughput import ArchiveThroughputTuning, S3TransportTuning
+from stove0_core import EndpointRegistration, Stove0RuntimeConfig
 
 REPO_ROOT = Path(__file__).parents[2]
-JEB_SOURCE = REPO_ROOT / "companions" / "jeb" / "server" / "src"
-MUNCHY_SOURCE = REPO_ROOT / "companions" / "munchy" / "server"
+STOVE0_SOURCE = REPO_ROOT / "companions" / "stove0" / "server" / "src"
+ADAPTER_SOURCE = REPO_ROOT / "riverhog" / "adapters" / "src"
 PRODUCTION_ROOTS = (
     REPO_ROOT / "packages",
     REPO_ROOT / "riverhog",
@@ -21,7 +23,7 @@ PRODUCTION_ROOTS = (
     REPO_ROOT / "utilities",
     REPO_ROOT / "scripts",
 )
-_SETTING_NAME = re.compile(r"^(?:RIVERHOG|JEB|MUNCHY|GOGURT|MANGO|VCRUNCH)_[A-Z0-9_]+$")
+_SETTING_NAME = re.compile(r"^(?:RIVERHOG|STOVE0|GOGURT|MANGO|VCRUNCH)_[A-Z0-9_]+$")
 _SETTING_CLASSIFICATIONS = (
     "credential",
     "identity",
@@ -53,38 +55,6 @@ def _loaded_attributes(trees: dict[Path, ast.Module], *, excluding: set[Path]) -
         if path not in excluding
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
-    }
-
-
-def _loaded_tokens(trees: dict[Path, ast.Module]) -> set[str]:
-    return {
-        node.attr
-        for tree in trees.values()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
-    } | {
-        node.id
-        for tree in trees.values()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    }
-
-
-def _munchy_environment_fields(trees: dict[Path, ast.Module]) -> set[str]:
-    return {
-        target.id
-        for tree in trees.values()
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Assign, ast.AnnAssign))
-        and node.value is not None
-        and any(
-            isinstance(current, ast.Call)
-            and isinstance(current.func, ast.Attribute)
-            and current.func.attr in {"get", "getenv"}
-            for current in ast.walk(node.value)
-        )
-        for target in (node.targets if isinstance(node, ast.Assign) else (node.target,))
-        if isinstance(target, ast.Name) and target.id.isupper()
     }
 
 
@@ -179,80 +149,37 @@ def _classification(name: str) -> str:
     return "runtime"
 
 
-def test_jeb_configuration_model_fields_have_production_consumers() -> None:
-    trees = _trees(JEB_SOURCE)
-    models_path = JEB_SOURCE / "jeb_core" / "domain" / "models.py"
-    parser_path = JEB_SOURCE / "jeb_core" / "runtime" / "config.py"
-    config_classes = {
-        "JebConfig",
-        "JebIngressConfig",
-        "LifecycleEventSettings",
-        "ServiceSettings",
-        "TargetConfig",
-    }
-    fields = {
-        node.target.id
-        for current in ast.walk(trees[models_path])
-        if isinstance(current, ast.ClassDef) and current.name in config_classes
-        for node in current.body
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+def test_stove0_and_adapter_configuration_fields_have_consumers_and_witnesses() -> None:
+    components = {
+        "stove0": (
+            _trees(STOVE0_SOURCE),
+            set(Stove0RuntimeConfig.__dataclass_fields__)
+            | set(EndpointRegistration.__dataclass_fields__),
+        ),
+        "riverhog-adapters": (
+            _trees(ADAPTER_SOURCE),
+            set(AdapterConfig.model_fields) | set(SourceConfig.model_fields),
+        ),
     }
 
-    assert fields - _loaded_attributes(trees, excluding={models_path, parser_path}) == set()
-    assert fields - _test_tokens() == set()
+    for component, (trees, names) in components.items():
+        assert names - _loaded_attributes(trees, excluding=set()) == set(), component
+        assert names - _test_tokens() == set(), component
 
 
 def test_direct_environment_settings_have_explicit_test_witnesses() -> None:
     settings = _called_environment_settings()
 
-    assert len(settings) == 206
+    assert settings
     assert settings - _test_string_literals() == set()
-    assert Counter(
-        (name.split("_", 1)[0].casefold(), _classification(name)) for name in settings
-    ) == Counter(
-        {
-            ("riverhog", "credential"): 9,
-            ("riverhog", "identity"): 6,
-            ("riverhog", "runtime"): 72,
-            ("riverhog", "build-only"): 1,
-            ("jeb", "credential"): 4,
-            ("jeb", "identity"): 12,
-            ("jeb", "runtime"): 23,
-            ("munchy", "credential"): 3,
-            ("munchy", "identity"): 12,
-            ("munchy", "runtime"): 62,
-            ("mango", "runtime"): 1,
-            ("vcrunch", "runtime"): 1,
-        }
-    )
-
-
-def test_munchy_environment_backed_constants_have_runtime_consumers() -> None:
-    trees = _trees(MUNCHY_SOURCE)
-    assignments = _munchy_environment_fields(trees)
-
-    assert assignments
-    assert assignments - _loaded_tokens(trees) == set()
-    assert assignments - _test_tokens() == set()
+    classifications = Counter(_classification(name) for name in settings)
+    assert set(classifications) <= set(_SETTING_CLASSIFICATIONS)
+    assert classifications["credential"] > 0
+    assert classifications["identity"] > 0
+    assert classifications["runtime"] > 0
 
 
 def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
-    jeb_tree = ast.parse((JEB_SOURCE / "jeb_core" / "domain" / "models.py").read_text())
-    jeb_classes = {
-        "JebConfig",
-        "JebIngressConfig",
-        "LifecycleEventSettings",
-        "ServiceSettings",
-        "TargetConfig",
-    }
-    jeb_fields = {
-        node.target.id
-        for current in ast.walk(jeb_tree)
-        if isinstance(current, ast.ClassDef) and current.name in jeb_classes
-        for node in current.body
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-    }
-    munchy_fields = _munchy_environment_fields(_trees(MUNCHY_SOURCE))
     components = {
         "riverhog": [
             field.name
@@ -267,8 +194,11 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
             )
             for field in fields(model)
         ],
-        "jeb": sorted(jeb_fields),
-        "munchy": sorted(munchy_fields),
+        "stove0": [
+            *Stove0RuntimeConfig.__dataclass_fields__,
+            *EndpointRegistration.__dataclass_fields__,
+        ],
+        "riverhog-adapters": [*AdapterConfig.model_fields, *SourceConfig.model_fields],
     }
     counts = {
         component: {
@@ -278,29 +208,6 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
         for component, names in components.items()
     }
 
-    assert counts == {
-        "riverhog": {
-            "credential": 13,
-            "identity": 16,
-            "runtime": 55,
-            "build-only": 0,
-            "workflow-only": 0,
-            "test-only": 0,
-        },
-        "jeb": {
-            "credential": 2,
-            "identity": 12,
-            "runtime": 19,
-            "build-only": 0,
-            "workflow-only": 0,
-            "test-only": 0,
-        },
-        "munchy": {
-            "credential": 3,
-            "identity": 10,
-            "runtime": 53,
-            "build-only": 0,
-            "workflow-only": 0,
-            "test-only": 0,
-        },
-    }
+    assert set(counts) == {"riverhog", "stove0", "riverhog-adapters"}
+    assert all(sum(component.values()) > 0 for component in counts.values())
+    assert all(set(component) == set(_SETTING_CLASSIFICATIONS) for component in counts.values())

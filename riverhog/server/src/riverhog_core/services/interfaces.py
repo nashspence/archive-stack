@@ -140,7 +140,13 @@ class TagService(Protocol):
 
 
 class CollectionDeletionService(Protocol):
-    def plan(self, collection_id: int) -> JsonObject: ...
+    def plan(
+        self,
+        collection_id: int,
+        *,
+        principal: ApplicationPrincipal | None = None,
+        retirement_claim_id: str | None = None,
+    ) -> JsonObject: ...
     def delete(
         self,
         collection_id: int,
@@ -148,6 +154,7 @@ class CollectionDeletionService(Protocol):
         challenge: str,
         initiator: ApplicationPrincipal,
         event_context: dict[str, object] | None = None,
+        retirement_claim_id: str | None = None,
     ) -> JsonObject: ...
 
 

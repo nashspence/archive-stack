@@ -4,7 +4,7 @@ CREATE TABLE source_cursors (
     source TEXT PRIMARY KEY,
     cursor TEXT NOT NULL
 );
-INSERT INTO source_cursors VALUES('jeb', '23');
+INSERT INTO source_cursors VALUES('stove0', '23');
 CREATE TABLE state_schema_revision (
     version_num VARCHAR(32) NOT NULL,
     CONSTRAINT state_schema_revision_pkc PRIMARY KEY (version_num)

@@ -72,7 +72,7 @@ def test_auto_linux_observation_uses_the_linux_abi_across_distributions(
     import riverhog_provenance.linux as linux_module
 
     payload = tmp_path / "container-payload"
-    payload.write_bytes(b"containerized Jeb custody")
+    payload.write_bytes(b"containerized Stove0 custody")
     monkeypatch.setattr(
         linux_module,
         "_read_os_release",
@@ -83,13 +83,13 @@ def test_auto_linux_observation_uses_the_linux_abi_across_distributions(
         payload,
         relative_path="container-payload",
         host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
-        agent_name="jeb-server",
+        agent_name="stove0-server",
         agent_version="1.0.0",
     )
 
     assert prepared.source == "captured"
     assert prepared.binding.status == "captured"
-    assert prepared.binding.bytes == len(b"containerized Jeb custody")
+    assert prepared.binding.bytes == len(b"containerized Stove0 custody")
 
 
 def test_linux_non_utf8_filename_round_trips(tmp_path: Path, urn_factory) -> None:

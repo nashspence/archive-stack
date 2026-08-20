@@ -61,21 +61,25 @@ RUNTIME_IMAGE_TARGETS = {
         "distribution": "riverhog-server",
         "repository": "ghcr.io/nashspence/riverhog",
     },
-    "jeb": {
-        "distribution": "jeb-server",
-        "repository": "ghcr.io/nashspence/riverhog-jeb",
+    "riverhog-adapters": {
+        "distribution": "riverhog-adapters",
+        "repository": "ghcr.io/nashspence/riverhog-adapters",
     },
     "mango-fish": {
         "distribution": "mango-fish",
         "repository": "ghcr.io/nashspence/riverhog-mango-fish",
     },
-    "munchy-server": {
-        "distribution": "munchy-server",
-        "repository": "ghcr.io/nashspence/riverhog-munchy",
+    "stove0": {
+        "distribution": "stove0-server",
+        "repository": "ghcr.io/nashspence/riverhog-stove0",
     },
-    "munchy-av1-nvenc": {
-        "distribution": "munchy-av1-nvenc-target",
-        "repository": "ghcr.io/nashspence/riverhog-munchy-av1-nvenc",
+    "stove0-extensions": {
+        "distribution": "stove0-maintained-extensions",
+        "repository": "ghcr.io/nashspence/riverhog-stove0-extensions",
+    },
+    "stove0-nvenc-extension": {
+        "distribution": "stove0-maintained-extensions",
+        "repository": "ghcr.io/nashspence/riverhog-stove0-nvenc-extension",
     },
 }
 TEST_IMAGE_TARGETS = {"test": {"local_tag": "riverhog-test:dev"}}

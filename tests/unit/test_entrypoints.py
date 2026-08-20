@@ -15,8 +15,8 @@ REPOSITORY_MAP_TARGETS = {
     REPO / "riverhog/server",
     REPO / "riverhog/client",
     REPO / "riverhog/recovery",
-    REPO / "companions",
-    REPO / "companions/munchy/server/targets",
+    REPO / "riverhog/adapters",
+    REPO / "companions/stove0",
     REPO / "utilities",
     REPO / "packages",
 }
@@ -132,9 +132,9 @@ def test_architecture_states_the_repo_wide_provenance_authority_policy() -> None
     architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
 
     assert "Per-file provenance is append-only custody history" in architecture
-    assert "Existing journals remain exact prefixes across in-repo handoffs" in architecture
-    assert "every omission has an explicit reason" in architecture
-    assert "relational provenance rows are a rebuildable query projection" in architecture
+    assert "Journals remain exact prefixes across handoffs" in architecture
+    assert "omissions require a reason" in architecture
+    assert "database rows are a rebuildable projection" in architecture
 
 
 def test_architecture_states_the_direct_to_final_ingress_authority_policy() -> None:
@@ -142,11 +142,10 @@ def test_architecture_states_the_direct_to_final_ingress_authority_policy() -> N
 
     assert (
         "Collection ingress writes server-encrypted units directly to immutable final archive "
-        "keys in its selected archive store; it is not a storage tier"
+        "keys in its selected store; ingress is not a storage tier"
     ) in architecture
     assert (
-        "Sealed archive objects and published immutable collection roots alone are archive "
-        "authority"
+        "Sealed objects and published immutable roots alone are archive authority"
     ) in architecture
 
 

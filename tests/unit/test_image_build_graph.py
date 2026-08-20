@@ -19,10 +19,11 @@ MISE_IMAGE = (
 )
 MISE_CONTAINER_TOOLS = {
     "riverhog": {"minisign", "uv"},
-    "jeb": {"uv"},
+    "riverhog-adapters": {"uv"},
+    "stove0": {"uv"},
+    "stove0-extensions": {"uv"},
+    "stove0-nvenc-extension": {"uv"},
     "mango-fish": {"uv"},
-    "munchy-server": {"http:exiftool", "uv"},
-    "munchy-av1-nvenc": {"uv"},
     "test": {"age", "http:exiftool", "minisign", "uv"},
 }
 
@@ -37,15 +38,41 @@ IMAGE_CONTRACTS = {
             ("riverhog/server/compose.yaml", "app"),
         ),
     },
-    "jeb": {
-        "dockerfile": "companions/jeb/server/Dockerfile",
-        "tag": "jeb:dev",
-        "title": "Jeb",
+    "riverhog-adapters": {
+        "dockerfile": "riverhog/adapters/Dockerfile",
+        "tag": "riverhog-adapters:dev",
+        "title": "Riverhog protocol adapters",
+        "license": "Apache-2.0",
+        "compose": (("riverhog/adapters/compose.yaml", "adapter"),),
+    },
+    "stove0": {
+        "dockerfile": "companions/stove0/server/Dockerfile",
+        "tag": "stove0:dev",
+        "title": "stove0",
         "license": "CAL-1.0",
         "compose": (
-            ("companions/jeb/server/compose.yaml", "jeb-state"),
-            ("companions/jeb/server/compose.yaml", "jeb"),
+            ("companions/stove0/compose.yaml", "state"),
+            ("companions/stove0/compose.yaml", "api"),
+            ("companions/stove0/compose.yaml", "controller"),
+            ("companions/stove0/compose.yaml", "worker"),
         ),
+    },
+    "stove0-extensions": {
+        "dockerfile": "companions/stove0/extensions/Dockerfile",
+        "tag": "stove0-maintained-extensions:dev",
+        "title": "stove0 maintained extensions",
+        "license": "CAL-1.0",
+        "compose": (
+            ("companions/stove0/compose.yaml", "media-sampling"),
+            ("companions/stove0/compose.yaml", "local-media"),
+        ),
+    },
+    "stove0-nvenc-extension": {
+        "dockerfile": "companions/stove0/extensions/nvenc/Dockerfile",
+        "tag": "stove0-nvenc-extension:dev",
+        "title": "stove0 NVENC extension",
+        "license": "CAL-1.0",
+        "compose": (("companions/stove0/compose.yaml", "nvenc-media"),),
     },
     "mango-fish": {
         "dockerfile": "utilities/mango-fish/Dockerfile",
@@ -53,29 +80,6 @@ IMAGE_CONTRACTS = {
         "title": "Mango Fish",
         "license": "Apache-2.0",
         "compose": (),
-    },
-    "munchy-server": {
-        "dockerfile": "companions/munchy/server/Dockerfile",
-        "tag": "munchy-server:dev",
-        "title": "Munchy Server",
-        "license": "CAL-1.0",
-        "compose": (
-            ("companions/munchy/server/compose.yaml", "munchy-state"),
-            ("companions/munchy/server/compose.yaml", "munchy-server"),
-        ),
-    },
-    "munchy-av1-nvenc": {
-        "dockerfile": "companions/munchy/server/targets/av1-nvenc/Dockerfile",
-        "tag": "munchy-av1-nvenc-target:dev",
-        "title": "Munchy AV1 NVENC Target",
-        "license": "CAL-1.0",
-        "compose_tag": "${MUNCHY_AV1_NVENC_IMAGE:-munchy-av1-nvenc-target:dev}",
-        "compose": (
-            (
-                "companions/munchy/server/targets/av1-nvenc/compose.yaml",
-                "api",
-            ),
-        ),
     },
     "test": {
         "dockerfile": "tests/Dockerfile",
@@ -270,12 +274,6 @@ def test_mise_artifacts_match_each_image_role() -> None:
     assert '"$(mise which minisign)" /opt/riverhog-tools/bin/minisign' in riverhog
     assert 'test "$(minisign -v)" = "minisign 0.12"' in riverhog
 
-    munchy = (REPO_ROOT / IMAGE_CONTRACTS["munchy-server"]["dockerfile"]).read_text(
-        encoding="utf-8"
-    )
-    assert '"$(mise which exiftool)"' in munchy
-    assert 'test "$(exiftool -ver)" = "13.59"' in munchy
-
     test = (REPO_ROOT / IMAGE_CONTRACTS["test"]["dockerfile"]).read_text(encoding="utf-8")
     for binary in ("age", "age-keygen", "age-plugin-batchpass", "minisign", "uv"):
         assert f'"$(mise which {binary})" /opt/riverhog-tools/bin/{binary}' in test
@@ -293,14 +291,14 @@ def test_container_python_ownership_matches_the_supported_runtime_minor() -> Non
 
     assert observed_python_bases == {supported_minor}
 
-    av1_dockerfile = (REPO_ROOT / IMAGE_CONTRACTS["munchy-av1-nvenc"]["dockerfile"]).read_text(
-        encoding="utf-8"
-    )
+    av1_dockerfile = (
+        REPO_ROOT / IMAGE_CONTRACTS["stove0-nvenc-extension"]["dockerfile"]
+    ).read_text(encoding="utf-8")
     assert "assert sys.version_info[:2] == (3, 12)" in av1_dockerfile
 
 
 def test_av1_source_builds_verify_the_exact_requested_commits() -> None:
-    dockerfile = (REPO_ROOT / IMAGE_CONTRACTS["munchy-av1-nvenc"]["dockerfile"]).read_text(
+    dockerfile = (REPO_ROOT / IMAGE_CONTRACTS["stove0-nvenc-extension"]["dockerfile"]).read_text(
         encoding="utf-8"
     )
 

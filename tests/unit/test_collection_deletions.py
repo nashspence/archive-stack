@@ -111,8 +111,8 @@ def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
     with session_scope(make_session_factory(config.database_url)) as session:
         collection = session.get(CollectionRecord, COLLECTION_ID)
         assert collection is not None
-        collection.created_by_app = "munchy"
-        collection.created_by_key_id = "munchy-key"
+        collection.created_by_app = "stove0"
+        collection.created_by_key_id = "stove0-key"
 
     original_delete = archive_store.delete_collection_archive
     attempts = 0
@@ -138,8 +138,8 @@ def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
     assert active["status"] == "deleting"
     assert "_execution" not in active
     retrying_app = ApplicationPrincipal(
-        app="jeb",
-        key_id="jeb-key",
+        app="stove0",
+        key_id="stove0-key",
         access=frozenset(),
     )
     result = service.delete(
@@ -163,5 +163,4 @@ def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
     assert event.data["collection_created_at"] == UPLOADED_AT
     assert event.data["collection_tags"] == ["docs"]
     assert event.data["context"] == {"workflow": "direct-delete"}
-    assert events.page(owner_app="munchy", after=None, limit=100).events == []
-    assert events.page(owner_app="jeb", after=None, limit=100).events == []
+    assert events.page(owner_app="stove0", after=None, limit=100).events == []

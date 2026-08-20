@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import os
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Self
 from urllib.parse import quote
@@ -25,6 +26,8 @@ from riverhog_protocol.errors import (
     ServiceUnavailable,
     Unauthorized,
 )
+
+from riverhog_api_client.workflows import CollectionWorkflowMethods
 
 _HTTP_TIMEOUT_SECONDS = 300.0
 _UPLOAD_TIMEOUT_SECONDS = 1800.0
@@ -246,7 +249,7 @@ class _HttpApiClient:
             return receipt.bytes
 
 
-class ApiClient(_HttpApiClient):
+class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def __init__(
         self,
         base_url: str | None = None,
@@ -533,6 +536,106 @@ class ApiClient(_HttpApiClient):
         )
         return int(result)
 
+    @contextmanager
+    def stream_retrieval_file(
+        self,
+        job_id: str,
+        *,
+        collection_id: int,
+        path: str,
+        expected_bytes: int,
+        expected_sha256: str,
+        start: int = 0,
+        end: int | None = None,
+        chunk_size: int = _DOWNLOAD_CHUNK_BYTES,
+    ) -> Iterator[Iterator[bytes]]:
+        """Stream one verified retrieval file or byte range.
+
+        The returned iterator must be consumed completely before leaving the
+        context. Full-file reads are SHA-256 verified; range reads are bound to
+        the whole-file ETag and exact Content-Range returned by Riverhog.
+        """
+
+        if isinstance(expected_bytes, bool) or expected_bytes < 0:
+            raise ValueError("expected retrieval bytes must be non-negative")
+        digest = expected_sha256.casefold()
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise ValueError("expected retrieval SHA-256 is invalid")
+        resolved_end = expected_bytes if end is None else end
+        if (
+            isinstance(start, bool)
+            or isinstance(resolved_end, bool)
+            or start < 0
+            or resolved_end < start
+            or resolved_end > expected_bytes
+        ):
+            raise ValueError("retrieval byte range is invalid")
+        if chunk_size < 1:
+            raise ValueError("retrieval stream chunk size must be positive")
+        partial = start != 0 or resolved_end != expected_bytes
+        if partial and start == resolved_end:
+            raise ValueError("retrieval byte range must be nonempty")
+        headers: dict[str, str] = {"Accept-Encoding": "identity"}
+        if partial:
+            headers["Range"] = f"bytes={start}-{resolved_end - 1}"
+        client = self._persistent_download_client()
+        request_path = f"/v1/retrieval-jobs/{quote(job_id, safe='')}/content"
+        params: dict[str, str | int] = {"collection_id": collection_id, "path": path}
+        try:
+            with client.stream("GET", request_path, params=params, headers=headers) as response:
+                if not response.is_success:
+                    response.read()
+                    self._raise_for_error(response)
+                expected_status = 206 if partial else 200
+                if response.status_code != expected_status:
+                    raise InvalidState(
+                        "retrieval stream returned an unexpected HTTP status: "
+                        f"{response.status_code}"
+                    )
+                returned_etag = response.headers.get("ETag", "").strip().strip('"').casefold()
+                if returned_etag != digest:
+                    raise InvalidState("retrieval stream ETag does not match the planned SHA-256")
+                expected_length = resolved_end - start
+                raw_length = response.headers.get("Content-Length")
+                try:
+                    returned_length = int(raw_length) if raw_length is not None else -1
+                except ValueError as exc:
+                    raise InvalidState(
+                        "retrieval stream returned an invalid Content-Length"
+                    ) from exc
+                if returned_length != expected_length:
+                    raise InvalidState(
+                        "retrieval stream Content-Length does not match the requested range"
+                    )
+                if partial:
+                    expected_range = f"bytes {start}-{resolved_end - 1}/{expected_bytes}"
+                    if response.headers.get("Content-Range") != expected_range:
+                        raise InvalidState("retrieval stream Content-Range is inconsistent")
+
+                returned = 0
+                hasher = hashlib.sha256() if not partial else None
+
+                def chunks() -> Iterator[bytes]:
+                    nonlocal returned
+                    for chunk in response.iter_bytes(chunk_size=chunk_size):
+                        if not chunk:
+                            continue
+                        returned += len(chunk)
+                        if returned > expected_length:
+                            raise InvalidState("retrieval stream exceeded the requested byte range")
+                        if hasher is not None:
+                            hasher.update(chunk)
+                        yield chunk
+
+                yield chunks()
+                if returned != expected_length:
+                    raise InvalidState("retrieval stream ended before the requested byte range")
+                if hasher is not None and hasher.hexdigest() != digest:
+                    raise HashMismatch("retrieval stream SHA-256 verification failed")
+        except httpx.TransportError as exc:
+            self.close()
+            raise ServiceUnavailable("retrieval stream was interrupted") from exc
+
     def create_or_resume_collection_upload_session(
         self,
         idempotency_key: str,
@@ -816,10 +919,21 @@ class ApiClient(_HttpApiClient):
             f"/v1/collections/{collection_id}/provenance/verify",
         )
 
-    def plan_collection_deletion(self, collection_id: int) -> dict[str, Any]:
+    def plan_collection_deletion(
+        self,
+        collection_id: int,
+        *,
+        retirement_claim_id: str | None = None,
+    ) -> dict[str, Any]:
+        params = (
+            {"retirement_claim_id": retirement_claim_id}
+            if retirement_claim_id is not None
+            else None
+        )
         return self._json(
             "POST",
             f"/v1/collections/{str(collection_id)}/deletion-plan",
+            params=params,
         )
 
     def delete_collection(
@@ -827,9 +941,12 @@ class ApiClient(_HttpApiClient):
         collection_id: int,
         *,
         challenge: str,
+        retirement_claim_id: str | None = None,
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"challenge": challenge}
+        if retirement_claim_id is not None:
+            payload["retirement_claim_id"] = retirement_claim_id
         if event_context is not None:
             payload["event_context"] = dict(event_context)
         return self._json(

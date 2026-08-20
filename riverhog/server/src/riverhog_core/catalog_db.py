@@ -11,6 +11,10 @@ from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
 from state_schema import StateSchema, StateStatus
 
+# The catalog database composition boundary owns registration of every current
+# v1 table with the shared declarative metadata. Model modules remain acyclic.
+from riverhog_core import catalog_models as _catalog_models  # noqa: E402,F401
+from riverhog_core import catalog_workflow_models as _catalog_workflow_models  # noqa: E402,F401
 from riverhog_core.catalog_base import Base
 
 SessionFactory = sessionmaker[Session]

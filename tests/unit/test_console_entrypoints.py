@@ -8,30 +8,26 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-from jeb_cli.main import build_parser as build_jeb_parser
-from munchy_api import app as munchy_api_app
-from munchy_av1_nvenc import main as munchy_av1_nvenc_app
-from munchy_cli.main import app as munchy_app
+from riverhog_adapters.app import build_parser as build_adapter_parser
 from riverhog_cli.main import app as riverhog_app
+from stove0_cli.main import app as stove0_app
 from typer.main import get_command
 
 CONSOLE_DISTRIBUTIONS = {
     "riverhog": "riverhog-client",
     "riverhog-api": "riverhog-server",
     "riverhog-recover": "riverhog-recover",
-    "munchy": "munchy-client",
-    "munchy-server": "munchy-server",
-    "munchy-av1-nvenc": "munchy-av1-nvenc-target",
-    "jeb": "jeb-client",
-    "jeb-service": "jeb-server",
+    "riverhog-adapters": "riverhog-adapters",
+    "stove0": "stove0-client",
+    "stove0-server": "stove0-server",
+    "stove0-maintained-extension": "stove0-maintained-extensions",
     "gogurt": "gogurt",
     "mango-fish": "mango-fish",
 }
 
 LIFECYCLE_EVENT_LIST_COMMANDS = (
     ("riverhog", "event", "list", "--help"),
-    ("munchy", "event", "list", "--help"),
-    ("jeb", "event", "list", "--help"),
+    ("stove0", "event", "list", "--help"),
 )
 
 PAGED_LIST_COMMANDS = (
@@ -48,17 +44,14 @@ PAGED_LIST_COMMANDS = (
     ("riverhog", "app", "key", "access", "list", "--help"),
     ("riverhog", "app", "key", "quota", "list", "--help"),
     ("riverhog", "local", "list", "--help"),
-    ("munchy", "app", "list", "--help"),
-    ("munchy", "app", "key", "list", "--help"),
-    ("munchy", "template", "list", "--help"),
-    ("munchy", "job", "list", "--help"),
-    ("munchy", "job", "diagnostic", "list", "--help"),
-    ("jeb", "operation", "list", "--help"),
-    ("jeb", "source", "list", "--help"),
-    ("jeb", "attempt", "list", "--help"),
+    ("stove0", "work", "list", "--help"),
+    ("stove0", "evaluation", "list", "--help"),
 )
 
-BOUNDED_LIST_COMMANDS = (("riverhog", "collection", "tag", "list", "--help"),)
+BOUNDED_LIST_COMMANDS = (
+    ("riverhog", "collection", "tag", "list", "--help"),
+    ("stove0", "recipe", "list", "--help"),
+)
 
 
 def _run_help(command: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
@@ -72,11 +65,6 @@ def _run_help(command: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
         text=True,
         timeout=10,
     )
-
-
-def test_munchy_http_api_versions_match_their_installed_distributions() -> None:
-    assert munchy_api_app.app.version == importlib.metadata.version("munchy-server")
-    assert munchy_av1_nvenc_app.app.version == importlib.metadata.version("munchy-av1-nvenc-target")
 
 
 @pytest.mark.parametrize("command", CONSOLE_DISTRIBUTIONS)
@@ -112,8 +100,10 @@ def test_lifecycle_event_cli_help_uses_the_shared_contract(command: tuple[str, .
     completed = _run_help(command)
 
     assert completed.returncode == 0, completed.stderr
-    for option in ("--after", "--limit", "--json"):
+    for option in ("--after", "--limit"):
         assert option in completed.stdout
+    if command[0] == "riverhog":
+        assert "--json" in completed.stdout
 
 
 @pytest.mark.parametrize(
@@ -124,8 +114,10 @@ def test_paged_list_cli_help_uses_the_shared_contract(command: tuple[str, ...]) 
     completed = _run_help(command)
 
     assert completed.returncode == 0, completed.stderr
-    for option in ("--page", "--per-page", "--sort", "--order", "--query", "--all", "--json"):
+    for option in ("--page", "--per-page", "--sort", "--order", "--query", "--all"):
         assert option in completed.stdout
+    if command[0] == "riverhog":
+        assert "--json" in completed.stdout
 
 
 @pytest.mark.parametrize("command", BOUNDED_LIST_COMMANDS)
@@ -133,8 +125,16 @@ def test_bounded_list_cli_help_uses_the_shared_output_contract(command: tuple[st
     completed = _run_help(command)
 
     assert completed.returncode == 0, completed.stderr
-    for option in ("--ids", "--json"):
-        assert option in completed.stdout
+    if command[0] == "riverhog":
+        for option in ("--ids", "--json"):
+            assert option in completed.stdout
+
+
+def test_stove0_declares_its_shared_json_projection_once_at_the_root() -> None:
+    completed = _run_help(("stove0", "--help"))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--json" in completed.stdout
 
 
 def test_retrieval_cache_list_emits_actionable_composite_selectors() -> None:
@@ -179,8 +179,8 @@ def _argparse_list_commands(
 def test_every_official_list_command_has_one_declared_convention() -> None:
     discovered = {
         *_typer_list_commands(get_command(riverhog_app), ("riverhog",)),
-        *_typer_list_commands(get_command(munchy_app), ("munchy",)),
-        *_argparse_list_commands(build_jeb_parser(), ("jeb",)),
+        *_typer_list_commands(get_command(stove0_app), ("stove0",)),
+        *_argparse_list_commands(build_adapter_parser(), ("riverhog-adapters",)),
     }
     classified = {
         command[:-1]

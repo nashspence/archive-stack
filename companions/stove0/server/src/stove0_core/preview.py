@@ -1,0 +1,164 @@
+"""Deterministic workflow preview using the production planning authorities.
+
+A preview may observe exact immutable inputs and invoke target preflight, but it
+never seals an execution plan with Riverhog, receives output-write authority,
+starts a target job, or publishes a collection. The same :class:`PlanningPort`
+is used by preview and execution so the preview is not an approximate simulator.
+"""
+
+from __future__ import annotations
+
+from typing import Protocol
+
+from stove0_protocol import (
+    ObservationEvidence,
+    ObservationInvocation,
+    ObservationRequest,
+    ObserverRuntimeAuthority,
+    PreviewOutcome,
+    TargetPlanBinding,
+    WorkflowPreview,
+    WorkflowPreviewPayload,
+    WorkflowPreviewRequest,
+    WorkflowPreviewRequestPayload,
+    validate_observation_result,
+)
+from stove0_target_support import validate_preflight_response_against_request
+
+from stove0_core.coordinator import ObserverPort, PlanningPort, TargetPort
+from stove0_core.work_state import ClaimBinding, WorkInapplicable
+
+
+class PreviewRiverhogPort(Protocol):
+    """Read-only Riverhog authority for one workflow preview."""
+
+    def acquire_preview_claim(self, request: WorkflowPreviewRequest) -> ClaimBinding: ...
+
+    def observation_authority(
+        self,
+        claim: ClaimBinding,
+        request: ObservationRequest,
+    ) -> ObserverRuntimeAuthority: ...
+
+    def abandon_preview_claim(
+        self,
+        request: WorkflowPreviewRequest,
+        claim: ClaimBinding,
+    ) -> None: ...
+
+
+class WorkflowPreviewService:
+    """Resolve observation, routing, and target preflight without execution."""
+
+    def __init__(
+        self,
+        *,
+        riverhog: PreviewRiverhogPort,
+        planning: PlanningPort,
+        observers: ObserverPort,
+        targets: TargetPort,
+    ) -> None:
+        self.riverhog = riverhog
+        self.planning = planning
+        self.observers = observers
+        self.targets = targets
+
+    def preview(self, work: object) -> WorkflowPreview:
+        from stove0_protocol import WorkIdentity
+
+        identity = WorkIdentity.model_validate(work)
+        request = WorkflowPreviewRequest.seal(WorkflowPreviewRequestPayload(work=identity))
+        claim = self.riverhog.acquire_preview_claim(request)
+        observations: list[ObservationEvidence] = []
+        try:
+            for observation_request in self.planning.observation_requests(identity):
+                if observation_request.work_id != identity.work_id:
+                    raise RuntimeError("preview observation request differs from the work identity")
+                descriptor = self.observers.descriptor(observation_request.observer_registration_id)
+                if descriptor.descriptor_sha256 != observation_request.observer_descriptor_sha256:
+                    raise RuntimeError(
+                        "configured observer descriptor changed after preview request sealing"
+                    )
+                authority = self.riverhog.observation_authority(
+                    claim,
+                    observation_request,
+                )
+                result = self.observers.observe(
+                    observation_request.observer_registration_id,
+                    ObservationInvocation(
+                        request=observation_request,
+                        claim_id=claim.claim_id,
+                        fence=claim.fence,
+                        runtime=authority,
+                    ),
+                )
+                validate_observation_result(
+                    result,
+                    observation_request,
+                    descriptor,
+                )
+                observations.append(ObservationEvidence(request=observation_request, result=result))
+
+            evidence = tuple(observations)
+            decision = self.planning.workflow_plan(identity, evidence)
+            if isinstance(decision, WorkInapplicable):
+                return WorkflowPreview.seal(
+                    WorkflowPreviewPayload(
+                        preview_id=request.preview_id,
+                        state="inapplicable",
+                        work=identity,
+                        observations=evidence,
+                        outcome=PreviewOutcome(
+                            code=decision.code,
+                            message=decision.message,
+                        ),
+                    )
+                )
+
+            target = self.targets.contract(decision.target_registration_id)
+            if target.contract_sha256 != decision.target_contract_sha256:
+                raise RuntimeError("configured target contract changed after workflow planning")
+            preflight_request = self.planning.target_preflight_request(decision)
+            response = self.targets.preflight(
+                decision.target_registration_id,
+                preflight_request,
+            )
+            validate_preflight_response_against_request(response, preflight_request)
+            plan = response.plan
+            binding = TargetPlanBinding(
+                protocol=target.protocol,
+                target_implementation_id=target.implementation_id,
+                target_contract_sha256=target.contract_sha256,
+                operation_contract_sha256=plan.operation_contract_sha256,
+                plan=plan.binding_document(),
+                plan_sha256=plan.plan_sha256,
+            )
+            return WorkflowPreview.seal(
+                WorkflowPreviewPayload(
+                    preview_id=request.preview_id,
+                    state="ready",
+                    work=identity,
+                    observations=evidence,
+                    workflow_plan=decision,
+                    target_plan=binding,
+                )
+            )
+        except Exception as exc:
+            return WorkflowPreview.seal(
+                WorkflowPreviewPayload(
+                    preview_id=request.preview_id,
+                    state="failed",
+                    work=identity,
+                    observations=tuple(observations),
+                    outcome=PreviewOutcome(
+                        code="workflow-preview-failed",
+                        message=f"{type(exc).__name__}: {exc}"[:1000],
+                        retryable=True,
+                    ),
+                )
+            )
+        finally:
+            self.riverhog.abandon_preview_claim(request, claim)
+
+
+__all__ = ["PreviewRiverhogPort", "WorkflowPreviewService"]

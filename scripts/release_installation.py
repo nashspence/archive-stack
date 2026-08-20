@@ -26,10 +26,9 @@ from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 INSTALLATION_SCHEMA = "riverhog-installation/v1"
 END_USER_ROOTS = (
     "gogurt",
-    "jeb-client",
-    "munchy-client",
     "riverhog-client",
     "riverhog-recover",
+    "stove0-client",
 )
 SUPPORTED_PLATFORMS = ("linux-x64", "macos-arm64", "windows-x64")
 INSTALLATION_POLICY = {

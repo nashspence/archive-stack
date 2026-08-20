@@ -1,10 +1,11 @@
 group "default" {
   targets = [
     "riverhog",
-    "jeb",
+    "riverhog-adapters",
+    "stove0",
+    "stove0-extensions",
+    "stove0-nvenc-extension",
     "mango-fish",
-    "munchy-server",
-    "munchy-av1-nvenc",
     "test",
   ]
 }
@@ -28,11 +29,35 @@ target "riverhog" {
   args       = { SOURCE_REVISION = "unknown" }
 }
 
-target "jeb" {
+target "riverhog-adapters" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "companions/jeb/server/Dockerfile"
-  tags       = ["jeb:dev"]
+  dockerfile = "riverhog/adapters/Dockerfile"
+  tags       = ["riverhog-adapters:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "stove0" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "companions/stove0/server/Dockerfile"
+  tags       = ["stove0:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "stove0-extensions" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "companions/stove0/extensions/Dockerfile"
+  tags       = ["stove0-maintained-extensions:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "stove0-nvenc-extension" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "companions/stove0/extensions/nvenc/Dockerfile"
+  tags       = ["stove0-nvenc-extension:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 
@@ -41,22 +66,6 @@ target "mango-fish" {
   context    = "."
   dockerfile = "utilities/mango-fish/Dockerfile"
   tags       = ["mango-fish:dev"]
-  args       = { SOURCE_REVISION = "unknown" }
-}
-
-target "munchy-server" {
-  inherits   = ["image-common"]
-  context    = "."
-  dockerfile = "companions/munchy/server/Dockerfile"
-  tags       = ["munchy-server:dev"]
-  args       = { SOURCE_REVISION = "unknown" }
-}
-
-target "munchy-av1-nvenc" {
-  inherits   = ["image-common"]
-  context    = "."
-  dockerfile = "companions/munchy/server/targets/av1-nvenc/Dockerfile"
-  tags       = ["munchy-av1-nvenc-target:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from riverhog_age import encrypt_age_scrypt
-from riverhog_protocol.errors import BadRequest, Conflict, NotFound
+from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from riverhog_protocol.manifest import collection_content_etag_ordered
 from riverhog_protocol.paths import (
     PathNormalizationError,
@@ -30,7 +30,7 @@ from riverhog_provenance import (
 )
 from sqlalchemy import asc, desc, exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
-from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
+from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc_timestamp_now
 
 from riverhog_core.app_permissions import COLLECTIONS_CREATE, ApplicationPrincipal
 from riverhog_core.archive_catalog import ArchiveVolumeProjection, build_archive_catalog_projection
@@ -65,6 +65,7 @@ from riverhog_core.catalog_models import (
     RetrievalCacheObjectRecord,
     TagRecord,
 )
+from riverhog_core.catalog_workflow_models import CollectionProcessingClaimRecord
 from riverhog_core.collection_access import require_collection_create_access
 from riverhog_core.collection_metadata import collection_record_manifest
 from riverhog_core.collection_plan import CollectionVolumePolicy
@@ -203,6 +204,14 @@ class SqlAlchemyCollectionUploadService:
         )
 
         with session_scope(self._session_factory) as session:
+            _require_transform_output_intent(
+                session,
+                initiator=initiator,
+                idempotency_key=key,
+                tags=normalized_tags,
+                ingest_source=ingest_source,
+                archive_store=archive_store,
+            )
             collection = session.scalar(
                 select(CollectionRecord)
                 .options(selectinload(CollectionRecord.archive_copies))
@@ -260,7 +269,9 @@ class SqlAlchemyCollectionUploadService:
                 last_activity_at=now,
                 archive_phase="planning",
                 archive_phase_updated_at=now,
-                archive_storage_prefix=archive_binding.store.new_collection_archive_storage_prefix(),
+                archive_storage_prefix=(
+                    archive_binding.store.new_collection_archive_storage_prefix()
+                ),
                 planner_checkpoint_json=(
                     incremental_volume_planner_checkpoint_bytes(checkpoint).decode("utf-8")
                 ),
@@ -1555,7 +1566,9 @@ class SqlAlchemyCollectionUploadService:
                             object_id=current.object_id,
                             object_order=artifact_order,
                             kind=current.kind,
-                            object_path=f"{projection.root.archive_storage_prefix}/{current.relative_path}",
+                            object_path=(
+                                f"{projection.root.archive_storage_prefix}/{current.relative_path}"
+                            ),
                             plaintext_bytes=current.plaintext_bytes,
                             stored_bytes=current.stored_bytes,
                             sha256=current.plaintext_sha256,
@@ -1714,6 +1727,46 @@ def _normalize_tags(values: Sequence[str]) -> tuple[str, ...]:
     if len(set(normalized)) != len(normalized):
         raise BadRequest("collection tags must not contain duplicates")
     return normalized
+
+
+def _require_transform_output_intent(
+    session: Session,
+    *,
+    initiator: ApplicationPrincipal,
+    idempotency_key: str,
+    tags: Sequence[str],
+    ingest_source: str | None,
+    archive_store: str | None,
+) -> None:
+    # The transform namespace is reserved for claim-scoped capability principals.
+    prefix = "transform:"
+    if not initiator.app.startswith(prefix):
+        return
+    execution_id = initiator.app.removeprefix(prefix)
+    if _SHA256_RE.fullmatch(execution_id) is None:
+        raise Forbidden("transform output collections require a scoped capability")
+    claim = session.scalar(
+        select(CollectionProcessingClaimRecord)
+        .where(CollectionProcessingClaimRecord.execution_id == execution_id)
+        .with_for_update()
+    )
+    if (
+        claim is None
+        or claim.state != "active"
+        or claim.plan_sealed_at is None
+        or claim.output_tags_json is None
+        or parse_utc_timestamp(claim.expires_at) <= utc_now()
+        or initiator.key_id != claim.consumer_key_id
+    ):
+        raise Forbidden("transform output intent is not active")
+    expected_tags = tuple(str(value) for value in json.loads(claim.output_tags_json))
+    if (
+        idempotency_key != execution_id
+        or tuple(tags) != expected_tags
+        or ingest_source != f"transform:{execution_id}"
+        or archive_store is not None
+    ):
+        raise Forbidden("collection upload differs from the sealed transform output intent")
 
 
 def _require_tags(session: Session, tags: Sequence[str]) -> None:
@@ -2263,10 +2316,19 @@ def _finalized_payload(
     )
     tags = sorted(current.tag_id for current in collection.tags)
     stored_bytes = sum(current.stored_bytes for current in copy.objects) if copy else 0
+    manifest = (
+        next((current for current in copy.objects if current.object_id == "manifest"), None)
+        if copy
+        else None
+    )
+    if manifest is None or not manifest.sha256:
+        raise RuntimeError("finalized collection has no immutable manifest identity")
     summary = {
         "id": collection.id,
         "created_at": collection.created_at,
         "tags": tags,
+        "content_etag": collection.content_etag,
+        "manifest_sha256": manifest.sha256,
         "files": len(collection.files),
         "bytes": sum(current.bytes for current in collection.files),
         "remote_storage_bytes": stored_bytes,
@@ -2279,6 +2341,8 @@ def _finalized_payload(
         "ingest_source": collection.ingest_source,
         "provenance_mode": collection.provenance_mode,
         "provenance_etag": collection.provenance_etag,
+        "content_etag": collection.content_etag,
+        "manifest_sha256": manifest.sha256,
         "archive_store": copy.store if copy else store_name,
         "state": "finalized",
         "layout": None,

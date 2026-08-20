@@ -40,6 +40,10 @@ from riverhog_core.services.archive_records import (
     archive_copy_is_complete,
     archive_copy_owned_identity,
 )
+from riverhog_core.services.collection_workflows import (
+    processing_claim_blockers,
+    require_retirement_exemption,
+)
 from riverhog_core.services.collections import _normalize_collection_id_or_raise
 from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
@@ -75,14 +79,36 @@ class SqlAlchemyCollectionDeletionService:
             session_factory=self._session_factory,
         )
 
-    def plan(self, collection_id: int) -> dict[str, object]:
+    def plan(
+        self,
+        collection_id: int,
+        *,
+        principal: ApplicationPrincipal | None = None,
+        retirement_claim_id: str | None = None,
+    ) -> dict[str, object]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
         with session_scope(self._session_factory) as session:
             active = session.get(CollectionDeletionRecord, normalized_id)
             if active is not None:
                 return _public_plan(cast(dict[str, object], json.loads(active.plan_json)))
+            retirement = None
+            if retirement_claim_id is not None:
+                if principal is None:
+                    raise Conflict("retirement deletion requires an authenticated claim owner")
+                retirement = require_retirement_exemption(
+                    session,
+                    claim_id=retirement_claim_id,
+                    collection_id=normalized_id,
+                    principal=principal,
+                )
             expires = (utc_now() + PLAN_TTL).replace(microsecond=0)
-            plan = _build_plan(session, collection_id=normalized_id, expires_at=expires)
+            plan = _build_plan(
+                session,
+                collection_id=normalized_id,
+                expires_at=expires,
+                exempt_claim_id=retirement_claim_id,
+            )
+            plan["retirement_claim"] = retirement
             plan["challenge"] = (
                 None if plan["blockers"] else plan_challenge(_CHALLENGE_PREFIX, plan, expires)
             )
@@ -95,6 +121,7 @@ class SqlAlchemyCollectionDeletionService:
         challenge: str,
         initiator: ApplicationPrincipal,
         event_context: dict[str, object] | None = None,
+        retirement_claim_id: str | None = None,
     ) -> dict[str, object]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
         supplied_challenge = challenge.strip()
@@ -113,6 +140,9 @@ class SqlAlchemyCollectionDeletionService:
                 if not secrets.compare_digest(active.challenge, supplied_challenge):
                     raise Conflict("collection deletion challenge does not match active deletion")
                 plan = cast(dict[str, object], json.loads(active.plan_json))
+                expected_retirement = _retirement_claim_id(plan)
+                if expected_retirement != retirement_claim_id:
+                    raise Conflict("collection deletion retirement claim changed")
             elif collection is None:
                 if not challenge_has_shape(supplied_challenge, prefix=_CHALLENGE_PREFIX):
                     raise NotFound(f"collection not found: {normalized_id}")
@@ -133,7 +163,21 @@ class SqlAlchemyCollectionDeletionService:
                 )
                 if utc_now() > expires:
                     raise Conflict("collection deletion plan has expired; request a new plan")
-                plan = _build_plan(session, collection_id=normalized_id, expires_at=expires)
+                retirement = None
+                if retirement_claim_id is not None:
+                    retirement = require_retirement_exemption(
+                        session,
+                        claim_id=retirement_claim_id,
+                        collection_id=normalized_id,
+                        principal=initiator,
+                    )
+                plan = _build_plan(
+                    session,
+                    collection_id=normalized_id,
+                    expires_at=expires,
+                    exempt_claim_id=retirement_claim_id,
+                )
+                plan["retirement_claim"] = retirement
                 if not secrets.compare_digest(
                     plan_challenge(_CHALLENGE_PREFIX, plan, expires),
                     supplied_challenge,
@@ -208,7 +252,11 @@ class SqlAlchemyCollectionDeletionService:
                 return _deletion_result(plan, status="already_absent")
             if not secrets.compare_digest(active.challenge, challenge):
                 raise Conflict("collection deletion challenge does not match active deletion")
-            blockers = _active_blockers(session, collection_id)
+            blockers = _active_blockers(
+                session,
+                collection_id,
+                exempt_claim_id=_retirement_claim_id(plan),
+            )
             if blockers:
                 raise Conflict("collection activity began during deletion: " + "; ".join(blockers))
             retrieval_job_ids = select(RetrievalJobFileRecord.job_id).where(
@@ -274,6 +322,7 @@ def _build_plan(
     *,
     collection_id: int,
     expires_at: datetime,
+    exempt_claim_id: str | None = None,
 ) -> dict[str, object]:
     collection = session.get(CollectionRecord, collection_id)
     if collection is None:
@@ -315,7 +364,7 @@ def _build_plan(
         )
         or 0
     )
-    blockers = _active_blockers(session, collection_id)
+    blockers = _active_blockers(session, collection_id, exempt_claim_id=exempt_claim_id)
     if upload is not None and upload.state not in {"canceled", "expired"}:
         blockers.append(f"collection upload is active: {upload.state or 'unknown'}")
     metadata_publication_count = int(
@@ -369,8 +418,15 @@ def _execution(plan: dict[str, object]) -> dict[str, object]:
     return cast(dict[str, object], execution)
 
 
-def _active_blockers(session: Session, collection_id: int) -> list[str]:
-    blockers: list[str] = []
+def _active_blockers(
+    session: Session,
+    collection_id: int,
+    *,
+    exempt_claim_id: str | None = None,
+) -> list[str]:
+    blockers: list[str] = processing_claim_blockers(
+        session, collection_id, exempt_claim_id=exempt_claim_id, limit=_BLOCKER_SAMPLE_LIMIT
+    )
     retrieval_jobs = list(
         session.scalars(
             select(RetrievalJobRecord.id)
@@ -456,3 +512,11 @@ def _deletion_result(plan: dict[str, object], *, status: str) -> dict[str, objec
         "bytes": plan["bytes"],
         "remote_storage_bytes": plan["remote_storage_bytes"],
     }
+
+
+def _retirement_claim_id(plan: dict[str, object]) -> str | None:
+    value = plan.get("retirement_claim")
+    if not isinstance(value, dict):
+        return None
+    claim_id = value.get("claim_id")
+    return str(claim_id) if claim_id else None
