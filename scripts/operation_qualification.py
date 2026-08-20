@@ -22,14 +22,14 @@ from typing import Any, TypeGuard, cast
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
-from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
+from riverhog_api.app import create_app as create_riverhog_app
+from riverhog_api_client.client import ApiClient
+from riverhog_cli import main as riverhog_cli
 from riverhog_ftp_adapter.app import FtpAdapterComposition
 from riverhog_ftp_adapter.app import build_parser as build_adapter_parser
 from riverhog_ftp_adapter.app import create_app as create_adapter_app
 from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
-from riverhog_api.app import create_app as create_riverhog_app
-from riverhog_api_client.client import ApiClient
-from riverhog_cli import main as riverhog_cli
+from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from stove0_api.app import Stove0Composition
@@ -663,7 +663,9 @@ def _cold_cli_timings(*, trials: int = 3) -> dict[str, object]:
     entrypoints = {
         "riverhog": "from riverhog_cli.main import main; raise SystemExit(main())",
         "stove0": "from stove0_cli.main import main; main()",
-        "riverhog-ftp-adapter": ("from riverhog_ftp_adapter.app import main; raise SystemExit(main())"),
+        "riverhog-ftp-adapter": (
+            "from riverhog_ftp_adapter.app import main; raise SystemExit(main())"
+        ),
     }
     timings: dict[str, object] = {}
     for application, program in entrypoints.items():

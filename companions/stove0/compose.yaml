@@ -6,14 +6,6 @@ x-stove0-image: &stove0-image
     args:
       SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
 
-x-extension-image: &extension-image
-  image: stove0-maintained-extensions:dev
-  build:
-    context: ../..
-    dockerfile: companions/stove0/extensions/Dockerfile
-    args:
-      SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
-
 x-stove0-environment: &stove0-environment
   TZ: ${TZ:-UTC}
   STOVE0_DATABASE_URL_FILE: /run/secrets/stove0_database_url
@@ -24,14 +16,14 @@ x-stove0-environment: &stove0-environment
   STOVE0_SCHEDULER_INTERVAL_SECONDS: ${STOVE0_SCHEDULER_INTERVAL_SECONDS:-5}
   RIVERHOG_BASE_URL: ${STOVE0_RIVERHOG_BASE_URL:-http://app:8000}
   RIVERHOG_ALLOW_INSECURE_HTTP: "true"
-  STOVE0_OBSERVERS_JSON: '{"media-sampling":{"base_url":"http://media-sampling:8080","token_env":"STOVE0_OBSERVER_TOKEN","allow_insecure_http":true}}'
-  STOVE0_TARGETS_JSON: '{"local-media":{"base_url":"http://local-media:8080","token_env":"STOVE0_LOCAL_TARGET_TOKEN","allow_insecure_http":true},"nvenc-media":{"base_url":"http://nvenc-media:8080","token_env":"STOVE0_NVENC_TARGET_TOKEN","allow_insecure_http":true}}'
-  STOVE0_OBSERVER_TOKEN_FILE: /run/secrets/stove0_observer_token
-  STOVE0_LOCAL_TARGET_TOKEN_FILE: /run/secrets/stove0_local_target_token
-  STOVE0_NVENC_TARGET_TOKEN_FILE: /run/secrets/stove0_nvenc_target_token
+  STOVE0_OBSERVERS_JSON: '{"ffprobe-sampling":{"base_url":"http://ffprobe-sampling-observer:8080","token_env":"STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN","allow_insecure_http":true}}'
+  STOVE0_TARGETS_JSON: '{"nvenc-av1-opus":{"base_url":"http://nvenc-av1-opus-target:8080","token_env":"STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN","allow_insecure_http":true},"opus":{"base_url":"http://opus-target:8080","token_env":"STOVE0_OPUS_TARGET_TOKEN","allow_insecure_http":true},"review":{"base_url":"http://review-target:8080","token_env":"STOVE0_REVIEW_TARGET_TOKEN","allow_insecure_http":true}}'
+  STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE: /run/secrets/stove0_ffprobe_sampling_observer_token
+  STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE: /run/secrets/stove0_nvenc_av1_opus_target_token
+  STOVE0_OPUS_TARGET_TOKEN_FILE: /run/secrets/stove0_opus_target_token
+  STOVE0_REVIEW_TARGET_TOKEN_FILE: /run/secrets/stove0_review_target_token
 
-x-stove0-common: &stove0-common
-  <<: *stove0-image
+x-hardening: &hardening
   restart: unless-stopped
   read_only: true
   user: "65532:65532"
@@ -39,6 +31,9 @@ x-stove0-common: &stove0-common
     - "${STOVE0_SECRET_FILE_GID:-65532}"
   cap_drop: ["ALL"]
   security_opt: ["no-new-privileges:true"]
+
+x-stove0-common: &stove0-common
+  <<: [*stove0-image, *hardening]
   volumes:
     - type: bind
       source: ${STOVE0_RECIPES_HOST_PATH:-./config/recipes.example.yaml}
@@ -47,20 +42,6 @@ x-stove0-common: &stove0-common
   tmpfs:
     - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
   networks: ["stove0-internal", "riverhog-control"]
-
-x-extension-common: &extension-common
-  <<: *extension-image
-  restart: unless-stopped
-  read_only: true
-  user: "65532:65532"
-  group_add:
-    - "${STOVE0_SECRET_FILE_GID:-65532}"
-  cap_drop: ["ALL"]
-  security_opt: ["no-new-privileges:true"]
-  networks: ["stove0-internal", "riverhog-control"]
-  tmpfs:
-    - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
-    - /run/stove0-workspaces:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532,size=${STOVE0_WORKSPACE_TMPFS_SIZE:-32g}
 
 services:
   state:
@@ -83,9 +64,10 @@ services:
       RIVERHOG_TOKEN_FILE: /run/secrets/stove0_api_riverhog_token
     secrets:
       - stove0_database_url
-      - stove0_observer_token
-      - stove0_local_target_token
-      - stove0_nvenc_target_token
+      - stove0_ffprobe_sampling_observer_token
+      - stove0_nvenc_av1_opus_target_token
+      - stove0_opus_target_token
+      - stove0_review_target_token
       - stove0_api_token
       - stove0_api_riverhog_token
     ports:
@@ -115,9 +97,10 @@ services:
       RIVERHOG_TOKEN_FILE: /run/secrets/stove0_controller_riverhog_token
     secrets:
       - stove0_database_url
-      - stove0_observer_token
-      - stove0_local_target_token
-      - stove0_nvenc_target_token
+      - stove0_ffprobe_sampling_observer_token
+      - stove0_nvenc_av1_opus_target_token
+      - stove0_opus_target_token
+      - stove0_review_target_token
       - stove0_controller_riverhog_token
 
   worker:
@@ -131,97 +114,179 @@ services:
       RIVERHOG_TOKEN_FILE: /run/secrets/stove0_worker_riverhog_token
     secrets:
       - stove0_database_url
-      - stove0_observer_token
-      - stove0_local_target_token
-      - stove0_nvenc_target_token
+      - stove0_ffprobe_sampling_observer_token
+      - stove0_nvenc_av1_opus_target_token
+      - stove0_opus_target_token
+      - stove0_review_target_token
       - stove0_worker_riverhog_token
 
-  media-sampling:
-    <<: *extension-common
-    command: ["observer", "--host", "0.0.0.0", "--port", "8080"]
-    environment:
-      TZ: ${TZ:-UTC}
-      STOVE0_EXTENSION_TOKEN_FILE: /run/secrets/stove0_observer_token
-      STOVE0_EXTENSION_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
-      STOVE0_EXTENSION_WORKSPACE: /run/stove0-workspaces
-    secrets: ["stove0_observer_token"]
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - >-
-          import json, urllib.request;
-          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
-          assert payload['status'] == 'ok'
-      interval: 15s
-      timeout: 5s
-      retries: 12
-      start_period: 10s
-
-  local-media:
-    <<: *extension-common
-    command: ["local-target", "--host", "0.0.0.0", "--port", "8080"]
-    environment:
-      TZ: ${TZ:-UTC}
-      STOVE0_EXTENSION_TOKEN_FILE: /run/secrets/stove0_local_target_token
-      STOVE0_EXTENSION_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
-      STOVE0_EXTENSION_WORKSPACE: /run/stove0-workspaces
-      STOVE0_TARGET_STATE_ROOT: /var/lib/stove0-target
-    secrets: ["stove0_local_target_token"]
-    volumes:
-      - stove0-local-target-state:/var/lib/stove0-target
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - >-
-          import json, urllib.request;
-          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
-          assert payload['status'] == 'ok'
-      interval: 15s
-      timeout: 5s
-      retries: 12
-      start_period: 10s
-
-  nvenc-media:
-    <<: *extension-common
-    image: stove0-nvenc-extension:dev
+  ffprobe-sampling-observer:
+    <<: *hardening
+    image: stove0-ffprobe-sampling-observer:dev
     build:
       context: ../..
-      dockerfile: companions/stove0/extensions/nvenc/Dockerfile
+      dockerfile: companions/stove0-ffprobe-sampling-observer/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    command: ["stove0-ffprobe-sampling-observer", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE: /run/secrets/stove0_ffprobe_sampling_observer_token
+      STOVE0_FFPROBE_SAMPLING_OBSERVER_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_FFPROBE_SAMPLING_OBSERVER_IMAGE_DIGEST: ${STOVE0_FFPROBE_IMAGE_DIGEST:?STOVE0_FFPROBE_IMAGE_DIGEST is required}
+      STOVE0_FFPROBE_SAMPLING_OBSERVER_WORKSPACE: /run/stove0-ffprobe-sampling-observer
+    secrets: ["stove0_ffprobe_sampling_observer_token"]
+    networks: ["stove0-internal", "riverhog-control"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+      - /run/stove0-ffprobe-sampling-observer:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532,size=${STOVE0_OBSERVER_TMPFS_SIZE:-8g}
+    healthcheck: &ffmpeg-health
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
+          assert payload['status'] == 'ok'
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  opus-target:
+    <<: *hardening
+    image: stove0-opus-target:dev
+    build: &opus-build
+      context: ../..
+      dockerfile: companions/stove0-opus-target/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    command: ["stove0-opus-target", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_OPUS_TARGET_TOKEN_FILE: /run/secrets/stove0_opus_target_token
+      STOVE0_OPUS_TARGET_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_OPUS_TARGET_IMAGE_DIGEST: ${STOVE0_OPUS_IMAGE_DIGEST:?STOVE0_OPUS_IMAGE_DIGEST is required}
+      STOVE0_OPUS_TARGET_STATE_ROOT: /var/lib/stove0-opus-target
+      STOVE0_OPUS_TARGET_WORKSPACE: /run/stove0-opus-target
+    secrets: ["stove0_opus_target_token"]
+    networks: ["stove0-internal", "riverhog-control"]
+    volumes:
+      - stove0-opus-target-state:/var/lib/stove0-opus-target
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+      - /run/stove0-opus-target:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532,size=${STOVE0_TARGET_TMPFS_SIZE:-32g}
+    healthcheck: *ffmpeg-health
+
+  opus-sampler:
+    <<: *hardening
+    image: stove0-opus-target:dev
+    build: *opus-build
+    command: ["stove0-opus-sampler", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_OPUS_SAMPLER_TOKEN_FILE: /run/secrets/stove0_opus_sampler_token
+      STOVE0_OPUS_SAMPLER_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_OPUS_SAMPLER_IMAGE_DIGEST: ${STOVE0_OPUS_IMAGE_DIGEST:?STOVE0_OPUS_IMAGE_DIGEST is required}
+      STOVE0_OPUS_SAMPLER_WORKSPACE: /run/stove0-review-target
+    secrets: ["stove0_opus_sampler_token"]
+    networks: ["review-sampler"]
+    volumes:
+      - stove0-review-workspace:/run/stove0-review-target
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+    healthcheck: *ffmpeg-health
+
+  review-target:
+    <<: *hardening
+    image: stove0-review-target:dev
+    build:
+      context: ../..
+      dockerfile: companions/stove0-review-target/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    command: ["stove0-review-target", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_REVIEW_TARGET_TOKEN_FILE: /run/secrets/stove0_review_target_token
+      STOVE0_REVIEW_TARGET_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_REVIEW_TARGET_IMAGE_DIGEST: ${STOVE0_REVIEW_IMAGE_DIGEST:?STOVE0_REVIEW_IMAGE_DIGEST is required}
+      STOVE0_REVIEW_TARGET_STATE_ROOT: /var/lib/stove0-review-target
+      STOVE0_REVIEW_TARGET_WORKSPACE: /run/stove0-review-target
+      STOVE0_REVIEW_TARGET_SAMPLERS_JSON: '{"samplers":[{"id":"opus","base_url":"http://opus-sampler:8080","token_file":"/run/secrets/stove0_opus_sampler_token","allow_insecure_http":true,"descriptor_sha256":"${STOVE0_OPUS_SAMPLER_DESCRIPTOR_SHA256:?STOVE0_OPUS_SAMPLER_DESCRIPTOR_SHA256 is required}","image_digest":"${STOVE0_OPUS_IMAGE_DIGEST:?STOVE0_OPUS_IMAGE_DIGEST is required}"}]}'
+    depends_on:
+      opus-sampler:
+        condition: service_healthy
+    secrets:
+      - stove0_review_target_token
+      - stove0_opus_sampler_token
+    networks: ["stove0-internal", "riverhog-control", "review-sampler"]
+    volumes:
+      - stove0-review-target-state:/var/lib/stove0-review-target
+      - stove0-review-workspace:/run/stove0-review-target
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+    healthcheck: *ffmpeg-health
+
+  nvenc-av1-opus-target:
+    <<: *hardening
+    image: stove0-nvenc-av1-opus-target:dev
+    build: &nvenc-build
+      context: ../..
+      dockerfile: companions/stove0-nvenc-av1-opus-target/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     profiles: ["nvenc"]
     gpus: all
-    command: ["nvenc-target", "--host", "0.0.0.0", "--port", "8080"]
+    command: ["stove0-nvenc-av1-opus-target", "--host", "0.0.0.0", "--port", "8080"]
     environment:
       TZ: ${TZ:-UTC}
-      STOVE0_EXTENSION_TOKEN_FILE: /run/secrets/stove0_nvenc_target_token
-      STOVE0_EXTENSION_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
-      STOVE0_EXTENSION_WORKSPACE: /run/stove0-workspaces
-      STOVE0_TARGET_STATE_ROOT: /var/lib/stove0-target
-    secrets: ["stove0_nvenc_target_token"]
+      STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE: /run/secrets/stove0_nvenc_av1_opus_target_token
+      STOVE0_NVENC_AV1_OPUS_TARGET_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_NVENC_AV1_OPUS_TARGET_IMAGE_DIGEST: ${STOVE0_NVENC_AV1_OPUS_IMAGE_DIGEST:?STOVE0_NVENC_AV1_OPUS_IMAGE_DIGEST is required}
+      STOVE0_NVENC_AV1_OPUS_TARGET_STATE_ROOT: /var/lib/stove0-nvenc-av1-opus-target
+      STOVE0_NVENC_AV1_OPUS_TARGET_WORKSPACE: /run/stove0-nvenc-av1-opus-target
+    secrets: ["stove0_nvenc_av1_opus_target_token"]
+    networks: ["stove0-internal", "riverhog-control"]
     volumes:
-      - stove0-nvenc-target-state:/var/lib/stove0-target
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - >-
-          import json, urllib.request;
-          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
-          assert payload['status'] == 'ok'
-      interval: 15s
-      timeout: 5s
-      retries: 12
-      start_period: 10s
+      - stove0-nvenc-av1-opus-target-state:/var/lib/stove0-nvenc-av1-opus-target
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+      - /run/stove0-nvenc-av1-opus-target:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532,size=${STOVE0_TARGET_TMPFS_SIZE:-32g}
+    healthcheck: *ffmpeg-health
+
+  nvenc-av1-opus-sampler:
+    <<: *hardening
+    image: stove0-nvenc-av1-opus-target:dev
+    build: *nvenc-build
+    profiles: ["nvenc"]
+    gpus: all
+    command: ["stove0-nvenc-av1-opus-sampler", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_NVENC_AV1_OPUS_SAMPLER_TOKEN_FILE: /run/secrets/stove0_nvenc_av1_opus_sampler_token
+      STOVE0_NVENC_AV1_OPUS_SAMPLER_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_NVENC_AV1_OPUS_SAMPLER_IMAGE_DIGEST: ${STOVE0_NVENC_AV1_OPUS_IMAGE_DIGEST:?STOVE0_NVENC_AV1_OPUS_IMAGE_DIGEST is required}
+      STOVE0_NVENC_AV1_OPUS_SAMPLER_WORKSPACE: /run/stove0-review-target
+    secrets: ["stove0_nvenc_av1_opus_sampler_token"]
+    networks: ["review-sampler"]
+    volumes:
+      - stove0-review-workspace:/run/stove0-review-target
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+    healthcheck: *ffmpeg-health
 
 volumes:
-  stove0-local-target-state:
-  stove0-nvenc-target-state:
+  stove0-nvenc-av1-opus-target-state:
+  stove0-opus-target-state:
+  stove0-review-target-state:
+  stove0-review-workspace:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=${STOVE0_REVIEW_TMPFS_SIZE:-32g},uid=65532,gid=65532,mode=0700
 
 secrets:
   stove0_database_url:
@@ -234,15 +299,23 @@ secrets:
     file: ${STOVE0_CONTROLLER_RIVERHOG_TOKEN_FILE:?STOVE0_CONTROLLER_RIVERHOG_TOKEN_FILE is required}
   stove0_worker_riverhog_token:
     file: ${STOVE0_WORKER_RIVERHOG_TOKEN_FILE:?STOVE0_WORKER_RIVERHOG_TOKEN_FILE is required}
-  stove0_observer_token:
-    file: ${STOVE0_OBSERVER_TOKEN_FILE:?STOVE0_OBSERVER_TOKEN_FILE is required}
-  stove0_local_target_token:
-    file: ${STOVE0_LOCAL_TARGET_TOKEN_FILE:?STOVE0_LOCAL_TARGET_TOKEN_FILE is required}
-  stove0_nvenc_target_token:
-    file: ${STOVE0_NVENC_TARGET_TOKEN_FILE:?STOVE0_NVENC_TARGET_TOKEN_FILE is required}
+  stove0_ffprobe_sampling_observer_token:
+    file: ${STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE:?STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE is required}
+  stove0_nvenc_av1_opus_target_token:
+    file: ${STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE:?STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE is required}
+  stove0_nvenc_av1_opus_sampler_token:
+    file: ${STOVE0_NVENC_AV1_OPUS_SAMPLER_TOKEN_FILE:?STOVE0_NVENC_AV1_OPUS_SAMPLER_TOKEN_FILE is required}
+  stove0_opus_target_token:
+    file: ${STOVE0_OPUS_TARGET_TOKEN_FILE:?STOVE0_OPUS_TARGET_TOKEN_FILE is required}
+  stove0_opus_sampler_token:
+    file: ${STOVE0_OPUS_SAMPLER_TOKEN_FILE:?STOVE0_OPUS_SAMPLER_TOKEN_FILE is required}
+  stove0_review_target_token:
+    file: ${STOVE0_REVIEW_TARGET_TOKEN_FILE:?STOVE0_REVIEW_TARGET_TOKEN_FILE is required}
 
 networks:
   stove0-internal:
+    internal: true
+  review-sampler:
     internal: true
   riverhog-control:
     external: true

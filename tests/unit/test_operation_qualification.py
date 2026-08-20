@@ -66,7 +66,8 @@ def test_operation_audiences_distinguish_commands_wires_and_protocols() -> None:
     assert by_identity[("stove0", "list_work")].classification == "human-cli+json"
     assert "work list" in by_identity[("stove0", "list_work")].cli_commands
     assert (
-        by_identity[("riverhog-ftp-adapter", "get_ftp_adapter_status")].classification == "human-cli+json"
+        by_identity[("riverhog-ftp-adapter", "get_ftp_adapter_status")].classification
+        == "human-cli+json"
     )
 
 

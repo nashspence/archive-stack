@@ -14,7 +14,24 @@ from stove0_core import (
     Stove0WorkService,
     stove0_state_schema,
 )
-from stove0_protocol import CollectionRootRef, RecipeRef, WorkIdentity, WorkPayload
+from stove0_protocol import (
+    ArtifactSelection,
+    ArtifactSubject,
+    BranchPlan,
+    BranchSetDecision,
+    BranchSetPlan,
+    BranchSettlement,
+    CollectionRootRef,
+    JoinDeclaration,
+    JoinMemberDeclaration,
+    JoinPlan,
+    OperationRef,
+    RecipeRef,
+    WorkflowPlanIntent,
+    WorkIdentity,
+    WorkPayload,
+    resolve_join_plan,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -35,7 +52,7 @@ def stores() -> Iterator[tuple[SqlAlchemyStateStore, SqlAlchemyStateStore]]:
         .render_as_string(hide_password=False)
     )
     assert stove0_state_schema(scoped_url).upgrade().condition == "current"
-    assert stove0_state_schema(scoped_url).validate().current_revision == "v1_0001"
+    assert stove0_state_schema(scoped_url).validate().current_revision == "v1_0002"
     first_engine = create_engine(
         scoped_url,
         pool_pre_ping=True,
@@ -70,6 +87,107 @@ def _work() -> WorkIdentity:
             ),
         )
     )
+
+
+def _branch_decision() -> BranchSetDecision:
+    work = _work()
+    selection = ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="source",
+                role="fixture.source/v1",
+                collection=work.inputs[0],
+                path="source/input.bin",
+                bytes=12,
+                sha256="d" * 64,
+            ),
+        )
+    )
+    decision_sha256 = "e" * 64
+    branches = tuple(
+        BranchPlan.build(
+            parent_work=work,
+            branch_id=branch_id,
+            decision_sha256=decision_sha256,
+            selection=selection,
+            recipe=work.recipe,
+            effective_intent={"branch": branch_id},
+            workflow_intent=WorkflowPlanIntent(
+                operation=OperationRef(id="fixture.branch/v1", sha256="f" * 64),
+                target_registration_id="fixture-target",
+                target_contract_sha256="1" * 64,
+                output_tags=(f"fixture-{branch_id}",),
+                retirement_policy="retain",
+            ),
+        )
+        for branch_id in ("audio", "video")
+    )
+    join = JoinDeclaration.seal(
+        members=tuple(
+            JoinMemberDeclaration(
+                branch_id=branch.branch_id,
+                output_roles=("fixture.branch-output/v1",),
+            )
+            for branch in branches
+        ),
+        recipe=work.recipe,
+        effective_intent={"combine": "exact"},
+        workflow_intent=WorkflowPlanIntent(
+            operation=OperationRef(id="fixture.join/v1", sha256="2" * 64),
+            target_registration_id="fixture-target",
+            target_contract_sha256="1" * 64,
+            output_tags=("fixture-joined",),
+            retirement_policy="retain",
+        ),
+    )
+    documents = {selection.selection_sha256: selection}
+    return BranchSetDecision(
+        plan=BranchSetPlan.seal(
+            parent_work=work,
+            decision_sha256=decision_sha256,
+            branches=branches,
+            join=join,
+            selections=documents,
+        ),
+        selections=(selection,),
+    )
+
+
+def _resolved_join(
+    decision: BranchSetDecision,
+) -> tuple[JoinPlan, tuple[ArtifactSelection, ...]]:
+    documents = dict(decision.selection_documents)
+    settlements: list[BranchSettlement] = []
+    for offset, branch in enumerate(decision.plan.branches, start=10):
+        root = CollectionRootRef(
+            collection_id=offset,
+            manifest_sha256=f"{offset % 16:x}" * 64,
+            content_etag=f"{(offset + 2) % 16:x}" * 64,
+        )
+        output = ArtifactSelection.seal(
+            (
+                ArtifactSubject(
+                    id=f"{branch.branch_id}-output",
+                    role="fixture.branch-output/v1",
+                    collection=root,
+                    path=f"{branch.branch_id}/output.bin",
+                    bytes=12,
+                    sha256=f"{(offset + 4) % 16:x}" * 64,
+                ),
+            )
+        )
+        documents[output.selection_sha256] = output
+        settlements.append(
+            BranchSettlement.seal(
+                branch=branch,
+                derivation_sha256=f"{(offset + 6) % 16:x}" * 64,
+                output_collection=root,
+                output_selection=output,
+            )
+        )
+    resolved = resolve_join_plan(decision.plan, documents, settlements)
+    assert resolved is not None
+    return resolved
 
 
 def test_postgres_concurrent_create_converges_and_controller_worker_cas_is_fenced(
@@ -130,6 +248,88 @@ def test_postgres_concurrent_create_converges_and_controller_worker_cas_is_fence
     assert len(stale) == 1
     current = first.load(work.work_id)
     assert current is not None and current.phase == "claimed" and current.revision == 2
+
+
+def test_postgres_concurrent_branch_set_and_join_admission_converge_exactly_once(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    decision = _branch_decision()
+    service = Stove0WorkService(first)
+    created = service.create_or_resume(decision.plan.parent_work)
+    claimed = service.bind_claim(
+        created.work_id,
+        claim_id="parent-claim",
+        fence=1,
+        expected_revision=created.revision,
+    )
+    planning = service.begin_planning(
+        claimed.work_id,
+        expected_revision=claimed.revision,
+    )
+
+    barrier = threading.Barrier(2)
+    admitted: list[object] = []
+    failures: list[BaseException] = []
+
+    def admit_branch_set(store: SqlAlchemyStateStore) -> None:
+        try:
+            barrier.wait(timeout=5)
+            admitted.append(
+                Stove0WorkService(store).admit_branch_set(
+                    planning.work_id,
+                    decision,
+                    expected_revision=planning.revision,
+                )
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=admit_branch_set, args=(store,)) for store in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not failures
+    assert len(admitted) == 2 and admitted[0] == admitted[1]
+    parent = first.load(planning.work_id)
+    assert parent is not None and parent.branch_set_plan == decision.plan
+    for branch in decision.plan.branches:
+        child = first.load(branch.workflow_plan.work.work_id)
+        assert child is not None and child.workflow_plan == branch.workflow_plan
+
+    join_plan, join_selections = _resolved_join(decision)
+    barrier = threading.Barrier(2)
+    joined: list[object] = []
+    failures = []
+
+    def admit_join(store: SqlAlchemyStateStore) -> None:
+        try:
+            barrier.wait(timeout=5)
+            joined.append(
+                Stove0WorkService(store).admit_join(
+                    parent.work_id,
+                    join_plan,
+                    join_selections,
+                    expected_revision=parent.revision,
+                )
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=admit_join, args=(store,)) for store in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not failures
+    assert len(joined) == 2 and joined[0] == joined[1]
+    parent = second.load(parent.work_id)
+    assert parent is not None and parent.join_plan == join_plan
+    child = second.load(join_plan.work.work_id)
+    assert child is not None and child.workflow_plan == join_plan.workflow_plan
 
 
 def test_postgres_event_cursor_compare_and_swap_prevents_replayed_cursor_regression(

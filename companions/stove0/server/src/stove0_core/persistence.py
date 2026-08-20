@@ -11,6 +11,7 @@ from lifecycle_events import CloudEvent, EventPage, cloud_event
 from sqlalchemy import (
     Integer,
     String,
+    Table,
     Text,
     asc,
     create_engine,
@@ -20,18 +21,26 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Connection, CursorResult, Engine
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from state_schema import StateSchema
+from stove0_protocol import ArtifactSelection, BranchSetDecision, JoinPlan
 from time_formats import utc_timestamp_now
 
 from stove0_core.evaluation import (
     ConcurrentEvaluationUpdate,
     EvaluationRecord,
 )
-from stove0_core.work_state import ConcurrentWorkUpdate, WorkRecord
+from stove0_core.work_state import (
+    ConcurrentWorkUpdate,
+    Stove0StateError,
+    WorkRecord,
+    _preview_target_expectations,
+)
 
 SortOrder = Literal["asc", "desc"]
 WorkSort = Literal["updated_at", "phase", "work_id"]
@@ -51,6 +60,13 @@ class _WorkRow(_Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     phase: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     updated_at: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    document_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class _ArtifactSelectionRow(_Base):
+    __tablename__ = "stove0_artifact_selections"
+
+    selection_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     document_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
@@ -212,7 +228,17 @@ class SqlAlchemyStateStore:
             if row is None:
                 raise RuntimeError("stove0 work record disappeared during creation")
             existing = WorkRecord.model_validate_json(row.document_json)
-            if existing.work != record.work:
+            if (
+                existing.work != record.work
+                or (
+                    record.preview_acceptance is not None
+                    and existing.preview_acceptance != record.preview_acceptance
+                )
+                or (
+                    record.expected_target_plan_sha256 is not None
+                    and existing.expected_target_plan_sha256 != record.expected_target_plan_sha256
+                )
+            ):
                 raise ConcurrentWorkUpdate("work identity was reused with another payload")
             return existing
 
@@ -258,6 +284,194 @@ class SqlAlchemyStateStore:
                 },
             )
         return replacement
+
+    def admit_branch_set(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int,
+        decision: BranchSetDecision,
+    ) -> WorkRecord:
+        now = utc_timestamp_now()
+        with self.sessions() as session, session.begin():
+            row = session.scalar(
+                select(_WorkRow).where(_WorkRow.work_id == work_id).with_for_update()
+            )
+            if row is None:
+                raise KeyError(work_id)
+            current = WorkRecord.model_validate_json(row.document_json)
+            if current.branch_set_plan == decision.plan:
+                return current
+            if current.revision != expected_revision:
+                raise ConcurrentWorkUpdate(
+                    f"stale stove0 work revision: {expected_revision} != {current.revision}"
+                )
+            if current.phase != "planning" or decision.plan.parent_work != current.work:
+                raise Stove0StateError("work cannot admit this branch set")
+
+            expectations = _preview_target_expectations(current, decision)
+
+            for selection in decision.selections:
+                _insert_or_verify_selection(session, selection)
+
+            children = tuple(
+                WorkRecord(
+                    work=branch.workflow_plan.work,
+                    workflow_plan=branch.workflow_plan,
+                    expected_target_plan_sha256=expectations.get(branch.branch_id),
+                )
+                for branch in decision.plan.branches
+            )
+            for child in children:
+                encoded = _encode(child.model_dump(mode="json", by_alias=True, exclude_none=True))
+                if _insert_work_atomically(session, child, encoded=encoded, now=now):
+                    _emit(
+                        session,
+                        type="work.created",
+                        subject=child.work_id,
+                        data={
+                            "work_id": child.work_id,
+                            "phase": child.phase,
+                            "parent_work_id": work_id,
+                            "branch_set_sha256": decision.plan.branch_set_sha256,
+                        },
+                    )
+                    continue
+                existing_row = session.get(_WorkRow, child.work_id)
+                if existing_row is None:
+                    raise RuntimeError("stove0 branch child disappeared during admission")
+                existing = WorkRecord.model_validate_json(existing_row.document_json)
+                if (
+                    existing.work != child.work
+                    or existing.workflow_plan != child.workflow_plan
+                    or existing.expected_target_plan_sha256 != child.expected_target_plan_sha256
+                ):
+                    raise ConcurrentWorkUpdate("branch child identity was reused")
+
+            replacement = WorkRecord.model_validate(
+                current.model_copy(
+                    update={
+                        "phase": "coordinating",
+                        "branch_set_plan": decision.plan,
+                        "revision": current.revision + 1,
+                    }
+                ).model_dump(mode="python")
+            )
+            row.revision = replacement.revision
+            row.phase = replacement.phase
+            row.updated_at = now
+            row.document_json = _encode(
+                replacement.model_dump(mode="json", by_alias=True, exclude_none=True)
+            )
+            _emit(
+                session,
+                type="branch-set.admitted",
+                subject=work_id,
+                data={
+                    "work_id": work_id,
+                    "phase": replacement.phase,
+                    "revision": replacement.revision,
+                    "branch_set_sha256": decision.plan.branch_set_sha256,
+                    "branch_count": len(children),
+                },
+            )
+            return replacement
+
+    def admit_join(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int,
+        plan: JoinPlan,
+        selections: Sequence[ArtifactSelection],
+    ) -> WorkRecord:
+        selection_documents = {item.selection_sha256: item for item in selections}
+        if len(selection_documents) != len(tuple(selections)):
+            raise ValueError("resolved join selections must be unique")
+        now = utc_timestamp_now()
+        with self.sessions() as session, session.begin():
+            row = session.scalar(
+                select(_WorkRow).where(_WorkRow.work_id == work_id).with_for_update()
+            )
+            if row is None:
+                raise KeyError(work_id)
+            current = WorkRecord.model_validate_json(row.document_json)
+            if current.join_plan == plan:
+                return current
+            if current.revision != expected_revision:
+                raise ConcurrentWorkUpdate(
+                    f"stale stove0 work revision: {expected_revision} != {current.revision}"
+                )
+            if (
+                current.phase != "coordinating"
+                or current.branch_set_plan is None
+                or plan.branch_set_sha256 != current.branch_set_plan.branch_set_sha256
+            ):
+                raise Stove0StateError("work cannot admit this resolved join")
+            if current.join_plan is not None:
+                if current.join_plan != plan:
+                    raise ConcurrentWorkUpdate("branch set already resolved another join plan")
+                return current
+
+            for selection in selection_documents.values():
+                _insert_or_verify_selection(session, selection)
+
+            child = WorkRecord(work=plan.work, workflow_plan=plan.workflow_plan)
+            encoded = _encode(child.model_dump(mode="json", by_alias=True, exclude_none=True))
+            if _insert_work_atomically(session, child, encoded=encoded, now=now):
+                _emit(
+                    session,
+                    type="work.created",
+                    subject=child.work_id,
+                    data={
+                        "work_id": child.work_id,
+                        "phase": child.phase,
+                        "parent_work_id": work_id,
+                        "branch_set_sha256": plan.branch_set_sha256,
+                        "join_plan_sha256": plan.join_plan_sha256,
+                    },
+                )
+            else:
+                existing_row = session.get(_WorkRow, child.work_id)
+                if existing_row is None:
+                    raise RuntimeError("stove0 join child disappeared during admission")
+                existing = WorkRecord.model_validate_json(existing_row.document_json)
+                if existing.work != child.work or existing.workflow_plan != child.workflow_plan:
+                    raise ConcurrentWorkUpdate("join work identity was reused")
+
+            replacement = WorkRecord.model_validate(
+                current.model_copy(
+                    update={
+                        "join_plan": plan,
+                        "revision": current.revision + 1,
+                    }
+                ).model_dump(mode="python")
+            )
+            row.revision = replacement.revision
+            row.phase = replacement.phase
+            row.updated_at = now
+            row.document_json = _encode(
+                replacement.model_dump(mode="json", by_alias=True, exclude_none=True)
+            )
+            _emit(
+                session,
+                type="join.admitted",
+                subject=work_id,
+                data={
+                    "work_id": work_id,
+                    "phase": replacement.phase,
+                    "revision": replacement.revision,
+                    "branch_set_sha256": plan.branch_set_sha256,
+                    "join_plan_sha256": plan.join_plan_sha256,
+                    "join_work_id": child.work_id,
+                },
+            )
+            return replacement
+
+    def load_selection(self, selection_sha256: str) -> ArtifactSelection | None:
+        with self.sessions() as session:
+            row = session.get(_ArtifactSelectionRow, selection_sha256)
+            return None if row is None else ArtifactSelection.model_validate_json(row.document_json)
 
     def list_work(
         self,
@@ -573,6 +787,55 @@ def _insert_work(session: Session, record: WorkRecord, *, encoded: str, now: str
         return True
     except IntegrityError:
         return False
+
+
+def _insert_or_verify_selection(
+    session: Session,
+    selection: ArtifactSelection,
+) -> None:
+    encoded = _encode(selection.model_dump(mode="json", by_alias=True, exclude_none=True))
+    table = cast(Table, _ArtifactSelectionRow.__table__)
+    values = {
+        "selection_sha256": selection.selection_sha256,
+        "document_json": encoded,
+    }
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        session.execute(postgresql_insert(table).values(**values).on_conflict_do_nothing())
+    elif dialect == "sqlite":
+        session.execute(sqlite_insert(table).values(**values).on_conflict_do_nothing())
+    else:
+        raise RuntimeError(f"unsupported Stove0 state database dialect: {dialect}")
+    existing = session.get(_ArtifactSelectionRow, selection.selection_sha256)
+    if existing is None:
+        raise RuntimeError("stove0 artifact selection disappeared during admission")
+    if ArtifactSelection.model_validate_json(existing.document_json) != selection:
+        raise ConcurrentWorkUpdate("artifact selection identity was reused")
+
+
+def _insert_work_atomically(
+    session: Session,
+    record: WorkRecord,
+    *,
+    encoded: str,
+    now: str,
+) -> bool:
+    table = cast(Table, _WorkRow.__table__)
+    values = {
+        "work_id": record.work_id,
+        "revision": record.revision,
+        "phase": record.phase,
+        "updated_at": now,
+        "document_json": encoded,
+    }
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        result = session.execute(postgresql_insert(table).values(**values).on_conflict_do_nothing())
+    elif dialect == "sqlite":
+        result = session.execute(sqlite_insert(table).values(**values).on_conflict_do_nothing())
+    else:
+        raise RuntimeError(f"unsupported Stove0 state database dialect: {dialect}")
+    return cast(CursorResult[object], result).rowcount == 1
 
 
 def _insert_evaluation(

@@ -126,9 +126,12 @@ printf '%s\n' 'stove0-compose-smoke-token' > "${secret_root}/stove0-api-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-api-riverhog-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-controller-riverhog-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-worker-riverhog-token"
-printf '%s\n' 'stove0-compose-observer-token' > "${secret_root}/stove0-observer-token"
-printf '%s\n' 'stove0-compose-local-target-token' > "${secret_root}/stove0-local-target-token"
-printf '%s\n' 'stove0-compose-nvenc-target-token' > "${secret_root}/stove0-nvenc-target-token"
+printf '%s\n' 'stove0-compose-ffprobe-observer-token' > "${secret_root}/stove0-ffprobe-sampling-observer-token"
+printf '%s\n' 'stove0-compose-nvenc-target-token' > "${secret_root}/stove0-nvenc-av1-opus-target-token"
+printf '%s\n' 'stove0-compose-nvenc-sampler-token' > "${secret_root}/stove0-nvenc-av1-opus-sampler-token"
+printf '%s\n' 'stove0-compose-opus-target-token' > "${secret_root}/stove0-opus-target-token"
+printf '%s\n' 'stove0-compose-opus-sampler-token' > "${secret_root}/stove0-opus-sampler-token"
+printf '%s\n' 'stove0-compose-review-target-token' > "${secret_root}/stove0-review-target-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/adapter-riverhog-token"
 printf '%s\n' 'riverhog-ftp-adapter-compose-smoke-token' > "${secret_root}/ftp-adapter-api-token"
 printf '%s\n' 'riverhog-ftp-adapter-compose-smoke-password' > "${secret_root}/ftp-adapter-password"
@@ -145,7 +148,7 @@ printf '%s\n' '{' \
   '      "id": "ftp-smoke",' \
   '      "root": "/intake/ftp",' \
   '      "ingest_source": "ftp:compose-smoke",' \
-  '      "tags": ["stove0-preserve"],' \
+  '      "tags": ["stove0-audio-archive"],' \
   '      "close_mode": "explicit-flush",' \
   '      "stable_seconds": 1,' \
   '      "max_files": 8,' \
@@ -167,9 +170,17 @@ export STOVE0_API_TOKEN_FILE="${secret_root}/stove0-api-token"
 export STOVE0_API_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-api-riverhog-token"
 export STOVE0_CONTROLLER_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-controller-riverhog-token"
 export STOVE0_WORKER_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-worker-riverhog-token"
-export STOVE0_OBSERVER_TOKEN_FILE="${secret_root}/stove0-observer-token"
-export STOVE0_LOCAL_TARGET_TOKEN_FILE="${secret_root}/stove0-local-target-token"
-export STOVE0_NVENC_TARGET_TOKEN_FILE="${secret_root}/stove0-nvenc-target-token"
+export STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE="${secret_root}/stove0-ffprobe-sampling-observer-token"
+export STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE="${secret_root}/stove0-nvenc-av1-opus-target-token"
+export STOVE0_NVENC_AV1_OPUS_SAMPLER_TOKEN_FILE="${secret_root}/stove0-nvenc-av1-opus-sampler-token"
+export STOVE0_OPUS_TARGET_TOKEN_FILE="${secret_root}/stove0-opus-target-token"
+export STOVE0_OPUS_SAMPLER_TOKEN_FILE="${secret_root}/stove0-opus-sampler-token"
+export STOVE0_REVIEW_TARGET_TOKEN_FILE="${secret_root}/stove0-review-target-token"
+export STOVE0_FFPROBE_IMAGE_DIGEST="$(printf '1%.0s' {1..64})"
+export STOVE0_NVENC_AV1_OPUS_IMAGE_DIGEST="$(printf '2%.0s' {1..64})"
+export STOVE0_OPUS_IMAGE_DIGEST="$(printf '3%.0s' {1..64})"
+export STOVE0_REVIEW_IMAGE_DIGEST="$(printf '4%.0s' {1..64})"
+export STOVE0_OPUS_SAMPLER_DESCRIPTOR_SHA256="$(printf '5%.0s' {1..64})"
 export RIVERHOG_FTP_ADAPTER_API_PORT=0
 export RIVERHOG_FTP_ADAPTER_PORT=0
 export RIVERHOG_FTP_ADAPTER_PUBLIC_HOST=ftp-daemon
@@ -187,22 +198,42 @@ client_environment=(
   --env "RIVERHOG_TOKEN=${smoke_token}"
 )
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
-  --entrypoint riverhog test tag create stove0-preserve --json >/dev/null
+  --entrypoint riverhog test tag create stove0-audio-archive --json >/dev/null
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
-  --entrypoint riverhog test tag create preserved --json >/dev/null
+  --entrypoint riverhog test tag create archive-audio --json >/dev/null
 
-stove0_compose up --detach --build --wait state api controller worker media-sampling local-media
+stove0_compose up --detach --build --wait \
+  state api controller worker ffprobe-sampling-observer opus-target
 adapter_compose up --detach --build --wait intake-init ftp-adapter ftp-daemon
 
-adapter_run_code="from ftplib import FTP
+adapter_run_code="from ftplib import FTP, all_errors
 from io import BytesIO
 from pathlib import Path
+import time
+import wave
 from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
-source = Path('/intake/ftp/smoke.txt')
-with FTP('ftp-daemon', timeout=10) as ftp:
-    ftp.login('ftp-intake', 'riverhog-ftp-adapter-compose-smoke-password')
-    ftp.storbinary('STOR smoke.txt', BytesIO(b'riverhog stove0 compose lifecycle\\n'))
-assert source.read_bytes() == b'riverhog stove0 compose lifecycle\\n'
+source = Path('/intake/ftp/smoke.wav')
+payload = BytesIO()
+with wave.open(payload, 'wb') as audio:
+    audio.setnchannels(1)
+    audio.setsampwidth(2)
+    audio.setframerate(8000)
+    audio.writeframes(b'\\x00\\x00' * 2000)
+expected = payload.getvalue()
+deadline = time.monotonic() + 30
+last_error = None
+while time.monotonic() < deadline:
+    try:
+        with FTP('ftp-daemon', timeout=10) as ftp:
+            ftp.login('ftp-intake', 'riverhog-ftp-adapter-compose-smoke-password')
+            ftp.storbinary('STOR smoke.wav', BytesIO(expected))
+        break
+    except all_errors as error:
+        last_error = error
+        time.sleep(0.25)
+else:
+    raise RuntimeError('FTP listener did not become ready') from last_error
+assert source.read_bytes() == expected
 with RiverhogFtpAdapterClient(
     base_url='http://127.0.0.1:8080',
     token='riverhog-ftp-adapter-compose-smoke-token',
@@ -220,7 +251,7 @@ adapter_compose exec -T ftp-adapter python -c "${adapter_run_code}"
 
 cache_code="from riverhog_api_client import ApiClient
 with ApiClient() as client:
-    collections = client.list_collections(tag='stove0-preserve', all_items=True)['collections']
+    collections = client.list_collections(tag='stove0-audio-archive', all_items=True)['collections']
     assert len(collections) == 1, collections
     input_id = collections[0]['id']
     cached = client.list_retrieval_cache_objects(collection_id=input_id, all_items=True)
@@ -249,13 +280,23 @@ while time.monotonic() < deadline:
             raise RuntimeError(json.dumps(last, sort_keys=True))
     time.sleep(0.5)
 else:
-    raise TimeoutError(json.dumps(last, sort_keys=True) if last else 'no stove0 work appeared')"
+    request = urllib.request.Request(
+        'http://127.0.0.1:8080/v1/admin/scheduler/run',
+        data=json.dumps({'role': 'controller', 'work_limit': 25}).encode(),
+        headers={
+            'Authorization': 'Bearer stove0-compose-smoke-token',
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+    diagnostic = json.load(urllib.request.urlopen(request, timeout=30))
+    raise TimeoutError(json.dumps({'work': last, 'scheduler': diagnostic}, sort_keys=True))"
 stove0_compose exec -T api python -c "${wait_code}"
 
 lineage_code="from riverhog_api_client import ApiClient
 with ApiClient() as client:
-    inputs = client.list_collections(tag='stove0-preserve', all_items=True)['collections']
-    outputs = client.list_collections(tag='preserved', all_items=True)['collections']
+    inputs = client.list_collections(tag='stove0-audio-archive', all_items=True)['collections']
+    outputs = client.list_collections(tag='archive-audio', all_items=True)['collections']
     assert len(inputs) == 1 and len(outputs) == 1, (inputs, outputs)
     derivation = client.get_collection_derivation(outputs[0]['id'])
     assert derivation['derivation']['format'] == 'riverhog-collection-derivation/v1'
@@ -263,6 +304,6 @@ with ApiClient() as client:
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --entrypoint python test -c "${lineage_code}"
 
-stove0_compose restart api controller worker local-media
-stove0_compose up --detach --wait api controller worker local-media
+stove0_compose restart api controller worker ffprobe-sampling-observer opus-target
+stove0_compose up --detach --wait api controller worker ffprobe-sampling-observer opus-target
 stove0_compose exec -T api python -c "${wait_code}"

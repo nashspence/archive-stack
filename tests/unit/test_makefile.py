@@ -497,7 +497,16 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 1
     assert "python -m mypy companions/stove0/client/src" in uv_log_lines[0]
-    assert "companions/stove0/extensions/src companions/stove0/server/src" in uv_log_lines[0]
+    for source in (
+        "companions/stove0-ffprobe-sampling-observer/src",
+        "companions/stove0-nvenc-av1-opus-target/src",
+        "companions/stove0-opus-target/src",
+        "companions/stove0-review-target/src",
+        "companions/stove0/server/src",
+        "packages/stove0-sampler-protocol/src",
+        "packages/stove0-sampler-support/src",
+    ):
+        assert source in uv_log_lines[0]
     assert "riverhog/client/src riverhog/ftp-adapter/src riverhog/recovery/src" in uv_log_lines[0]
     assert "scripts/operation_qualification.py" in uv_log_lines[0]
     assert "scripts/provider_qualification.py" in uv_log_lines[0]
@@ -564,8 +573,10 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
         "riverhog",
         "riverhog-ftp-adapter",
         "stove0",
-        "stove0-extensions",
-        "stove0-nvenc-extension",
+        "stove0-ffprobe-sampling-observer",
+        "stove0-nvenc-av1-opus-target",
+        "stove0-opus-target",
+        "stove0-review-target",
         "mango-fish",
         "test",
     )
@@ -798,8 +809,10 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
         REPO_ROOT / "riverhog/server/Dockerfile",
         REPO_ROOT / "riverhog/ftp-adapter/Dockerfile",
         REPO_ROOT / "companions/stove0/server/Dockerfile",
-        REPO_ROOT / "companions/stove0/extensions/Dockerfile",
-        REPO_ROOT / "companions/stove0/extensions/nvenc/Dockerfile",
+        REPO_ROOT / "companions/stove0-ffprobe-sampling-observer/Dockerfile",
+        REPO_ROOT / "companions/stove0-nvenc-av1-opus-target/Dockerfile",
+        REPO_ROOT / "companions/stove0-opus-target/Dockerfile",
+        REPO_ROOT / "companions/stove0-review-target/Dockerfile",
         REPO_ROOT / "utilities/mango-fish/Dockerfile",
     ]
 
@@ -813,7 +826,7 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
 
 
 def test_stove0_nvenc_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
-    target = REPO_ROOT / "companions/stove0/extensions/nvenc"
+    target = REPO_ROOT / "companions/stove0-nvenc-av1-opus-target"
     dockerfile = (target / "Dockerfile").read_text(encoding="utf-8")
     verification = (target / "verify-ffmpeg").read_text(encoding="utf-8")
 
@@ -832,16 +845,23 @@ def test_stove0_nvenc_ffmpeg_retains_cuda_features_without_nonfree_code() -> Non
     assert "FFmpeg must not be built with --enable-nonfree" in verification
 
 
-def test_stove0_extension_images_include_source_artifact_runtime_tools() -> None:
-    dockerfiles = [
-        (REPO_ROOT / "companions/stove0/extensions/Dockerfile").read_text(encoding="utf-8"),
-        (REPO_ROOT / "companions/stove0/extensions/nvenc/Dockerfile").read_text(encoding="utf-8"),
-    ]
+def test_nvenc_target_includes_source_artifact_runtime_tools() -> None:
+    dockerfile = (REPO_ROOT / "companions/stove0-nvenc-av1-opus-target/Dockerfile").read_text(
+        encoding="utf-8"
+    )
 
-    for dockerfile in dockerfiles:
-        assert "ffmpeg" in dockerfile
-        assert "mkvtoolnix" in dockerfile
-        assert "zstd" in dockerfile
+    for tool in ("ffmpeg", "mkvtoolnix", "zstd"):
+        assert tool in dockerfile
+
+
+def test_opus_target_is_a_slim_non_cuda_image() -> None:
+    dockerfile = (REPO_ROOT / "companions/stove0-opus-target/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "apt-get install -y --no-install-recommends ca-certificates ffmpeg tini" in dockerfile
+    assert "nvidia/cuda" not in dockerfile
+    assert "mkvtoolnix" not in dockerfile
 
 
 def test_workspace_lock_and_app_manifests_own_runtime_dependencies() -> None:
@@ -899,8 +919,10 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make build-riverhog" in completed.stdout
     assert "make build-riverhog-ftp-adapter" in completed.stdout
     assert "make build-stove0" in completed.stdout
-    assert "make build-stove0-extensions" in completed.stdout
-    assert "make build-stove0-nvenc-extension" in completed.stdout
+    assert "make build-stove0-ffprobe-sampling-observer" in completed.stdout
+    assert "make build-stove0-nvenc-av1-opus-target" in completed.stdout
+    assert "make build-stove0-opus-target" in completed.stdout
+    assert "make build-stove0-review-target" in completed.stdout
     assert "make build-mango-fish" in completed.stdout
     assert "make mango-fish-smoke" in completed.stdout
     assert "make build-test" in completed.stdout

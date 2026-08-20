@@ -26,7 +26,9 @@ from riverhog_core.services.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     ArtifactDisposition,
+    CollectionArtifactIdentity,
     CollectionDerivation,
+    CollectionProcessingOutcomeIdentity,
     CollectionRootIdentity,
     OperationIdentity,
     RecipeIdentity,
@@ -169,6 +171,15 @@ def _work_document(root: CollectionRootIdentity) -> dict[str, object]:
     }
 
 
+def _artifact(root: CollectionRootIdentity) -> CollectionArtifactIdentity:
+    return CollectionArtifactIdentity(
+        collection=root,
+        path="camera/input.mov",
+        bytes=4,
+        sha256="8" * 64,
+    )
+
+
 def test_claim_plan_capabilities_settlement_and_deletion_blocker(
     tmp_path: Path,
     request: FixtureRequest,
@@ -195,6 +206,7 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
         fence=1,
         audience="fixture.observer/v1",
         actions=("read-inputs",),
+        artifacts=(_artifact(root),),
         ttl_seconds=600,
         principal=_principal(),
     )
@@ -208,7 +220,8 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
             claim_id,
             fence=1,
             audience="fixture.target/v1",
-            actions=("write-output",),
+            actions=("read-inputs", "write-output"),
+            artifacts=(_artifact(root),),
             ttl_seconds=600,
             principal=_principal(),
         )
@@ -221,6 +234,7 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
         controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
         operation_id="archive-video/v1",
         operation_sha256="c" * 64,
+        input_artifacts=(_artifact(root),),
         output_tags=("archive-camera",),
         retirement_policy="retire-after-verified-output",
         retirement_grace_seconds=0,
@@ -234,6 +248,7 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
         fence=1,
         audience="fixture.target/v1",
         actions=("read-inputs", "write-output"),
+        artifacts=(_artifact(root),),
         ttl_seconds=600,
         principal=_principal(),
     )
@@ -242,6 +257,7 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
         fence=1,
         audience="fixture.target/v1",
         actions=("read-inputs", "write-output"),
+        artifacts=(_artifact(root),),
         ttl_seconds=600,
         principal=_principal(),
     )
@@ -415,6 +431,7 @@ def test_fenced_restart_advances_generation_revokes_capabilities_and_clears_plan
         controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
         operation_id="archive-video/v1",
         operation_sha256="c" * 64,
+        input_artifacts=(_artifact(root),),
         output_tags=("archive-camera",),
         retirement_policy="retain",
         retirement_grace_seconds=0,
@@ -425,6 +442,7 @@ def test_fenced_restart_advances_generation_revokes_capabilities_and_clears_plan
         fence=1,
         audience="fixture.target/v1",
         actions=("read-inputs", "write-output"),
+        artifacts=(_artifact(root),),
         ttl_seconds=600,
         principal=_principal(),
     )
@@ -477,6 +495,7 @@ def test_fenced_restart_refuses_an_existing_execution_output(
         controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
         operation_id="archive-video/v1",
         operation_sha256="c" * 64,
+        input_artifacts=(_artifact(root),),
         output_tags=("archive-camera",),
         retirement_policy="retain",
         retirement_grace_seconds=0,
@@ -544,6 +563,7 @@ def test_expired_execution_upload_remains_a_deletion_blocker(
         controller_evidence_sha256=CONTROLLER_EVIDENCE_SHA256,
         operation_id="archive-video/v1",
         operation_sha256="c" * 64,
+        input_artifacts=(_artifact(root),),
         output_tags=("archive-camera",),
         retirement_policy="retain",
         retirement_grace_seconds=0,
@@ -613,6 +633,7 @@ def test_expired_execution_upload_remains_a_deletion_blocker(
         fence=1,
         audience="fixture.target/v1",
         actions=("read-inputs", "write-output"),
+        artifacts=(_artifact(root),),
         ttl_seconds=600,
         principal=_principal(),
     )
@@ -643,6 +664,7 @@ def test_fenced_abandonment_revokes_capabilities_and_unblocks_deletion(
         fence=1,
         audience="fixture.observer/v1",
         actions=("read-inputs",),
+        artifacts=(_artifact(root),),
         ttl_seconds=600,
         principal=_principal(),
     )
@@ -768,3 +790,191 @@ def test_expired_current_generation_can_reconcile_terminal_abandonment(
         principal=_principal(),
     )
     assert abandoned["state"] == "abandoned"
+
+
+def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
+    tmp_path: Path,
+    request: FixtureRequest,
+) -> None:
+    factory = _session_factory(tmp_path, request)
+    root = _setup(factory)
+    with factory() as session, session.begin():
+        session.add(
+            CollectionFileRecord(
+                collection_id=1,
+                path="camera/sidecar.json",
+                bytes=2,
+                sha256="9" * 64,
+            )
+        )
+    service = SqlAlchemyCollectionWorkflowService(
+        cast(Any, object()),
+        session_factory=factory,
+    )
+
+    parent_work = {"format": "fixture-multi-output-work/v1", "inputs": [root.as_dict()]}
+    parent_work_id = hashlib.sha256(canonical_json_bytes(parent_work)).hexdigest()
+    parent = service.create_or_resume_claim(
+        work_id=parent_work_id,
+        work_document=parent_work,
+        work_document_sha256=parent_work_id,
+        inputs=(root,),
+        purpose="fixture-multi-output/v1",
+        principal=_principal(),
+    )
+    parent_id = str(parent["id"])
+
+    def settle_output(
+        *,
+        outcome_id: str,
+        execution_id: str,
+        source_path: str,
+        source_bytes: int,
+        source_sha256: str,
+        output_collection_id: int,
+        output_path: str,
+    ) -> None:
+        work = {
+            "format": "fixture-output-work/v1",
+            "outcome": outcome_id,
+            "inputs": [root.as_dict()],
+        }
+        work_id = hashlib.sha256(canonical_json_bytes(work)).hexdigest()
+        claim = service.create_or_resume_claim(
+            work_id=work_id,
+            work_document=work,
+            work_document_sha256=work_id,
+            inputs=(root,),
+            purpose="fixture-output/v1",
+            principal=_principal(),
+        )
+        claim_id = str(claim["id"])
+        artifact = CollectionArtifactIdentity(
+            collection=root,
+            path=source_path,
+            bytes=source_bytes,
+            sha256=source_sha256,
+        )
+        controller_evidence = {
+            "format": "fixture-controller-evidence/v1",
+            "execution_envelope": {"execution_envelope_sha256": execution_id},
+        }
+        controller_evidence_sha256 = hashlib.sha256(
+            canonical_json_bytes(controller_evidence)
+        ).hexdigest()
+        service.seal_claim_plan(
+            claim_id,
+            fence=1,
+            execution_id=execution_id,
+            controller_evidence=controller_evidence,
+            controller_evidence_sha256=controller_evidence_sha256,
+            operation_id="fixture.copy/v1",
+            operation_sha256="c" * 64,
+            input_artifacts=(artifact,),
+            output_tags=("archive-camera",),
+            retirement_policy="retain",
+            retirement_grace_seconds=0,
+            principal=_principal(),
+        )
+        derivation = CollectionDerivation(
+            execution_id=execution_id,
+            claim_id=claim_id,
+            fence=1,
+            recipe=RecipeIdentity("fixture.branch/v1", 1, "b" * 64),
+            operation=OperationIdentity("fixture.copy/v1", "c" * 64),
+            inputs=(root,),
+            output_tags=("archive-camera",),
+            execution_envelope_sha256=execution_id,
+            execution_sha256="e" * 64,
+            controller_evidence=controller_evidence,
+            controller_evidence_sha256=controller_evidence_sha256,
+            dispositions=(
+                ArtifactDisposition(
+                    input_collection_id=1,
+                    input_manifest_sha256=root.manifest_sha256,
+                    input_path=source_path,
+                    status="transformed",
+                    outputs=(output_path,),
+                ),
+            ),
+        )
+        with factory() as session, session.begin():
+            _collection(
+                session,
+                output_collection_id,
+                creator=f"transform:{execution_id}",
+                tag="archive-camera",
+                root=str(output_collection_id) * 64,
+                idempotency_key=execution_id,
+            )
+            session.add_all(
+                [
+                    CollectionFileRecord(
+                        collection_id=output_collection_id,
+                        path=output_path,
+                        bytes=source_bytes,
+                        sha256=source_sha256,
+                    ),
+                    CollectionFileRecord(
+                        collection_id=output_collection_id,
+                        path=DERIVATION_EVIDENCE_PATH,
+                        bytes=len(derivation.to_json_bytes()),
+                        sha256=derivation.sha256,
+                    ),
+                ]
+            )
+        service.settle_claim(
+            claim_id,
+            fence=1,
+            output_collection_id=output_collection_id,
+            derivation=derivation.as_dict(),
+            outcome_claim_id=parent_id,
+            outcome_fence=1,
+            outcome_id=outcome_id,
+            principal=_principal(),
+        )
+
+    settle_output(
+        outcome_id="video-copy",
+        execution_id="1" * 64,
+        source_path="camera/input.mov",
+        source_bytes=4,
+        source_sha256="8" * 64,
+        output_collection_id=2,
+        output_path="video/output.mkv",
+    )
+    settle_output(
+        outcome_id="sidecar-copy",
+        execution_id="2" * 64,
+        source_path="camera/sidecar.json",
+        source_bytes=2,
+        source_sha256="9" * 64,
+        output_collection_id=3,
+        output_path="metadata/sidecar.json",
+    )
+    parent = service.get_claim(parent_id, principal=_principal())
+    outcomes = tuple(
+        CollectionProcessingOutcomeIdentity.from_mapping(item)
+        for item in cast(list[dict[str, object]], parent["outcomes"])
+    )
+    assert [item.outcome_id for item in outcomes] == [
+        "sidecar-copy",
+        "video-copy",
+    ]
+    with factory() as session:
+        assert processing_claim_blockers(session, 2)
+        assert processing_claim_blockers(session, 3)
+
+    settled = service.settle_claim_outcomes(
+        parent_id,
+        fence=1,
+        outcomes=outcomes,
+        retirement_policy="retire-after-verified-output",
+        retirement_grace_seconds=0,
+        principal=_principal(),
+    )
+    assert settled["state"] == "settled"
+    assert settled["outcome_settlement"] is not None
+    assert (
+        service.begin_retirement(parent_id, fence=1, principal=_principal())["state"] == "retiring"
+    )

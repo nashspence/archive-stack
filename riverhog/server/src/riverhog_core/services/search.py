@@ -5,7 +5,7 @@ from typing import Any
 
 from riverhog_protocol.errors import BadRequest
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import String, asc, cast, desc, func, literal, select
+from sqlalchemy import String, and_, asc, cast, desc, false, func, literal, or_, select
 from sqlalchemy.sql.elements import ColumnElement
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
@@ -96,6 +96,21 @@ class SqlAlchemySearchService:
         filters: list[ColumnElement[bool]] = [
             collection_access_filter(CollectionFileRecord.collection_id, principal, CATALOG_READ)
         ]
+        if principal is not None and principal.artifact_scope is not None:
+            scoped = tuple(sorted(principal.artifact_scope))
+            filters.append(
+                or_(
+                    *(
+                        and_(
+                            CollectionFileRecord.collection_id == collection_id,
+                            CollectionFileRecord.path == path,
+                        )
+                        for collection_id, path in scoped
+                    )
+                )
+                if scoped
+                else false()
+            )
         query = q.strip() if q is not None else None
         if query:
             filters.append(

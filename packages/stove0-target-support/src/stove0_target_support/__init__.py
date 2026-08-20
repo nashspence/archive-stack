@@ -47,6 +47,12 @@ from stove0_target_support.http_binding import (
     TargetServiceError,
     TransformTargetService,
 )
+from stove0_target_support.persistent import (
+    JobExecutor,
+    PersistentTargetService,
+    TargetExecutionCanceled,
+    TargetExecutionInapplicable,
+)
 from stove0_target_support.runtime import TargetExecutionRuntime
 from stove0_target_support.schemas import (
     TARGET_SCHEMA_BUNDLE_FORMAT,
@@ -62,11 +68,13 @@ __all__ = [
     "InputArtifact",
     "InputDisposition",
     "InputArtifactContract",
+    "JobExecutor",
     "OperationContract",
     "OperationContractPayload",
     "OutputArtifact",
     "OutputArtifactContract",
     "OutputCollectionRef",
+    "PersistentTargetService",
     "SemanticId",
     "Sha256",
     "TargetCancelRequest",
@@ -74,6 +82,8 @@ __all__ = [
     "TargetContract",
     "TargetContractPayload",
     "TargetExecutionEvidence",
+    "TargetExecutionCanceled",
+    "TargetExecutionInapplicable",
     "TargetExecutionRuntime",
     "TargetFailure",
     "TargetInapplicable",

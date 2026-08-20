@@ -73,13 +73,21 @@ RUNTIME_IMAGE_TARGETS = {
         "distribution": "stove0-server",
         "repository": "ghcr.io/nashspence/riverhog-stove0",
     },
-    "stove0-extensions": {
-        "distribution": "stove0-maintained-extensions",
-        "repository": "ghcr.io/nashspence/riverhog-stove0-extensions",
+    "stove0-ffprobe-sampling-observer": {
+        "distribution": "stove0-ffprobe-sampling-observer",
+        "repository": "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer",
     },
-    "stove0-nvenc-extension": {
-        "distribution": "stove0-maintained-extensions",
-        "repository": "ghcr.io/nashspence/riverhog-stove0-nvenc-extension",
+    "stove0-nvenc-av1-opus-target": {
+        "distribution": "stove0-nvenc-av1-opus-target",
+        "repository": "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target",
+    },
+    "stove0-opus-target": {
+        "distribution": "stove0-opus-target",
+        "repository": "ghcr.io/nashspence/riverhog-stove0-opus-target",
+    },
+    "stove0-review-target": {
+        "distribution": "stove0-review-target",
+        "repository": "ghcr.io/nashspence/riverhog-stove0-review-target",
     },
 }
 TEST_IMAGE_TARGETS = {"test": {"local_tag": "riverhog-test:dev"}}

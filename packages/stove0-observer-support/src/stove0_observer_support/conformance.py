@@ -37,6 +37,7 @@ def conformance_report(
         "implementation_id": descriptor.implementation_id,
         "implementation_version": descriptor.implementation_version,
         "source_revision": descriptor.source_revision,
+        "image_digest": descriptor.image_digest,
         "descriptor_sha256": descriptor.descriptor_sha256,
         "contracts": [
             {

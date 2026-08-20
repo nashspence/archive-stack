@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,10 +39,13 @@ from stove0_target_support import (
     OutputArtifact,
     OutputArtifactContract,
     OutputCollectionRef,
+    PersistentTargetService,
     TargetCancelRequest,
     TargetContract,
     TargetContractPayload,
+    TargetExecutionCanceled,
     TargetExecutionEvidence,
+    TargetExecutionInapplicable,
     TargetExecutionRuntime,
     TargetHttpBinding,
     TargetJobDeclaration,
@@ -126,6 +132,7 @@ def _target(operation: OperationContract) -> TargetContract:
             implementation_id="fixture.target/v1",
             implementation_version="1.0.0",
             source_revision="fixture",
+            image_digest=_sha("9"),
             operations=(
                 TargetOperationSupport(
                     operation_id=operation.id,
@@ -543,3 +550,109 @@ def test_target_schema_bundle_is_deterministic_and_self_validating() -> None:
     }
     for schema in first["schemas"].values():
         Draft202012Validator.check_schema(schema)
+
+
+def _write_model(path: Path, value: Any) -> None:
+    path.write_bytes(
+        canonical_json_bytes(value.model_dump(mode="json", by_alias=True, exclude_none=True))
+    )
+
+
+def test_persistent_target_resumes_exact_declaration_without_storing_authority(
+    tmp_path: Path,
+) -> None:
+    operation, target, request = _request()
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    job_id = request.declaration.job_id
+    _write_model(state_root / f"{job_id}.accepted.json", request.accepted())
+    _write_model(
+        state_root / f"{job_id}.status.json",
+        TargetJobStatus(
+            job_id=job_id,
+            state="running",
+            attempt=1,
+            request_sha256=request.request_sha256,
+            plan_sha256=request.declaration.plan.plan_sha256,
+            progress=TargetProgress(phase="transforming", completed=0),
+        ),
+    )
+
+    def execute(
+        _request: TargetJobRequest,
+        _attempt: int,
+        _cancellation: threading.Event,
+    ) -> TargetJobStatus:
+        raise TargetExecutionInapplicable("unsupported-content", "fixture input")
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=execute,
+    )
+    try:
+        assert service.get_job(job_id).state == "interrupted"
+        assert service.put_job(request).attempt == 2
+        deadline = time.monotonic() + 5
+        while service.get_job(job_id).state != "inapplicable":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert service.put_job(request) == service.get_job(job_id)
+    finally:
+        service.close()
+
+    persisted = b"\n".join(path.read_bytes() for path in state_root.iterdir())
+    assert b"first-secret" not in persisted
+    assert b"riverhog.invalid" not in persisted
+
+
+def test_persistent_target_shutdown_and_operator_cancel_have_distinct_state(
+    tmp_path: Path,
+) -> None:
+    operation, target, request = _request()
+    started = threading.Event()
+
+    def block(
+        _request: TargetJobRequest,
+        _attempt: int,
+        cancellation: threading.Event,
+    ) -> TargetJobStatus:
+        started.set()
+        assert cancellation.wait(timeout=5)
+        raise TargetExecutionCanceled
+
+    interrupted = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=tmp_path / "interrupted",
+        execute=block,
+    )
+    interrupted.put_job(request)
+    assert started.wait(timeout=5)
+    interrupted.close()
+    assert interrupted.get_job(request.declaration.job_id).state == "interrupted"
+
+    started.clear()
+    canceled = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=tmp_path / "canceled",
+        execute=block,
+    )
+    try:
+        canceled.put_job(request)
+        assert started.wait(timeout=5)
+        assert (
+            canceled.cancel_job(
+                request.declaration.job_id,
+                TargetCancelRequest(reason="operator"),
+            ).state
+            == "canceling"
+        )
+        deadline = time.monotonic() + 5
+        while canceled.get_job(request.declaration.job_id).state != "canceled":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        canceled.close()

@@ -31,7 +31,8 @@ class DerivedCollectionWriter:
     """Publish one output collection through a scoped transform capability.
 
     The writer depends only on controller-sealed identities and evidence. It does
-    not import stove0 core, inspect contents, or choose archive object locations.
+    not import an orchestration application, inspect contents, or choose archive
+    object locations.
     """
 
     def __init__(
@@ -44,7 +45,7 @@ class DerivedCollectionWriter:
         work_id: str,
         execution_id: str,
         controller_evidence: Mapping[str, object],
-        producer_app: str = "stove0-worker",
+        producer_app: str,
         producer_version: str = "development",
     ) -> None:
         if not claim_id or claim_id != claim_id.strip():

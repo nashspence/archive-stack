@@ -150,3 +150,27 @@ def test_search_applies_tag_grants_in_the_database(tmp_path: Path) -> None:
 
     assert payload["total"] == 0
     assert payload["files"] == []
+
+
+def test_search_returns_only_the_exact_artifact_capability_scope(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+    principal = ApplicationPrincipal(
+        app="claim:fixture",
+        key_id="controller",
+        access=frozenset({ApplicationAccess(CATALOG_READ, "collection:1")}),
+        artifact_scope=frozenset({(1, "tax/receipt.pdf")}),
+    )
+
+    payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
+        q=None,
+        page=1,
+        per_page=25,
+        sort="file_ref",
+        order="asc",
+        principal=principal,
+    )
+
+    assert payload["total"] == 1
+    assert [item["file_ref"] for item in payload["files"]] == ["1/tax/receipt.pdf"]

@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from riverhog_api_client.producer import ProducedCollection
 from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 from riverhog_ftp_adapter.landing import FtpAdapter
-from riverhog_api_client.producer import ProducedCollection
 
 
 def _config(tmp_path: Path) -> FtpAdapterConfig:

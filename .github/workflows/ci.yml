@@ -130,8 +130,10 @@ jobs:
           - riverhog
           - riverhog-ftp-adapter
           - stove0
-          - stove0-extensions
-          - stove0-nvenc-extension
+          - stove0-ffprobe-sampling-observer
+          - stove0-nvenc-av1-opus-target
+          - stove0-opus-target
+          - stove0-review-target
           - mango-fish
           - test
     steps:
