@@ -151,23 +151,38 @@ def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Pat
     first = ListenerRuntime(config, paths, discover=lambda: [mount])
     thread = threading.Thread(target=first.run)
     thread.start()
-    _wait_for_runs(counter, 1)
-    first.request_stop()
-    thread.join(timeout=5)
+    try:
+        _wait_for_runs(counter, 1)
+    finally:
+        first.request_stop()
+        thread.join(timeout=5)
     assert not thread.is_alive()
 
-    second = ListenerRuntime(config, paths, discover=lambda: [mount])
+    mounted = threading.Event()
+    mounted.set()
+    absence_observed = threading.Event()
+
+    def discover() -> list[Path]:
+        if mounted.is_set():
+            return [mount]
+        absence_observed.set()
+        return []
+
+    second = ListenerRuntime(config, paths, discover=discover)
     thread = threading.Thread(target=second.run)
     thread.start()
-    time.sleep(0.3)
-    assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
+    try:
+        time.sleep(0.3)
+        assert counter.read_text(encoding="utf-8").splitlines() == ["run"]
 
-    second.discover = lambda: []
-    time.sleep(0.2)
-    second.discover = lambda: [mount]
-    _wait_for_runs(counter, 2)
-    second.request_stop()
-    thread.join(timeout=5)
+        mounted.clear()
+        assert absence_observed.wait(timeout=5)
+        mounted.set()
+        _wait_for_runs(counter, 2)
+    finally:
+        second.request_stop()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
     assert counter.read_text(encoding="utf-8").splitlines() == ["run", "run"]
 
 
