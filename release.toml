@@ -19,8 +19,10 @@ required_checks = [
   "build riverhog",
   "build riverhog-ftp-adapter",
   "build stove0",
-  "build stove0-extensions",
-  "build stove0-nvenc-extension",
+  "build stove0-ffprobe-sampling-observer",
+  "build stove0-nvenc-av1-opus-target",
+  "build stove0-opus-target",
+  "build stove0-review-target",
   "build test",
   "client platform (macos-15)",
   "client platform (ubuntu-24.04)",
@@ -133,8 +135,11 @@ end_user_artifact = [
   "utilities/gogurt",
 ]
 deployed_implementation = [
+  "companions/stove0-ffprobe-sampling-observer",
+  "companions/stove0-nvenc-av1-opus-target",
+  "companions/stove0-opus-target",
+  "companions/stove0-review-target",
   "companions/stove0/server",
-  "companions/stove0/extensions",
   "riverhog/ftp-adapter",
   "riverhog/server",
   "utilities/mango-fish",
@@ -154,6 +159,8 @@ reusable_library = [
   "packages/stove0-api-client",
   "packages/stove0-protocol",
   "packages/stove0-review-contracts",
+  "packages/stove0-sampler-protocol",
+  "packages/stove0-sampler-support",
   "packages/stove0-target-protocol",
   "packages/stove0-target-support",
 ]
@@ -179,8 +186,10 @@ riverhog = { distribution = "riverhog-server", repository = "ghcr.io/nashspence/
 mango-fish = { distribution = "mango-fish", repository = "ghcr.io/nashspence/riverhog-mango-fish" }
 riverhog-ftp-adapter = { distribution = "riverhog-ftp-adapter", repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
 stove0 = { distribution = "stove0-server", repository = "ghcr.io/nashspence/riverhog-stove0" }
-stove0-extensions = { distribution = "stove0-maintained-extensions", repository = "ghcr.io/nashspence/riverhog-stove0-extensions" }
-stove0-nvenc-extension = { distribution = "stove0-maintained-extensions", repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-extension" }
+stove0-ffprobe-sampling-observer = { distribution = "stove0-ffprobe-sampling-observer", repository = "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer" }
+stove0-nvenc-av1-opus-target = { distribution = "stove0-nvenc-av1-opus-target", repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target" }
+stove0-opus-target = { distribution = "stove0-opus-target", repository = "ghcr.io/nashspence/riverhog-stove0-opus-target" }
+stove0-review-target = { distribution = "stove0-review-target", repository = "ghcr.io/nashspence/riverhog-stove0-review-target" }
 
 [images.test_only]
 test = { local_tag = "riverhog-test:dev" }

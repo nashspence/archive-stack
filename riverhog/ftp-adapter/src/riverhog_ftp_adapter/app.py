@@ -27,8 +27,8 @@ from http_api_contracts import (
     error_code_for_status,
     error_payload,
 )
-from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
 from riverhog_api_client import ApiClient
+from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from riverhog_ftp_adapter.config import FtpAdapterConfig, load_config
@@ -92,9 +92,7 @@ def create_app(composition: FtpAdapterComposition | None = None) -> FastAPI:
     app.state.ftp_adapter = resolved
 
     @app.exception_handler(FtpAdapterHttpError)
-    async def ftp_adapter_http_error(
-        _request: Request, exc: FtpAdapterHttpError
-    ) -> JSONResponse:
+    async def ftp_adapter_http_error(_request: Request, exc: FtpAdapterHttpError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status,
             content=error_payload(code=exc.code, message=exc.message),
@@ -198,9 +196,7 @@ def create_app(composition: FtpAdapterComposition | None = None) -> FastAPI:
         try:
             return resolved.adapter.flush(source_id)
         except KeyError as exc:
-            raise FtpAdapterHttpError(
-                404, "not_found", "FTP adapter source was not found"
-            ) from exc
+            raise FtpAdapterHttpError(404, "not_found", "FTP adapter source was not found") from exc
 
     app.openapi_schema = apply_openapi_error_contract(app.openapi())
     return app

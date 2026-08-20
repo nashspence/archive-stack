@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stove0-ffprobe-sampling-observer"
+version = "0.1.0"
+description = "FFprobe implementation of the Stove0 media-sampling observer contract."
+requires-python = ">=3.12"
+license = "CAL-1.0"
+license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "fastapi>=0.111,<1.0",
+  "http-api-contracts>=0.1,<0.2",
+  "stove0-observer-protocol>=0.1,<0.2",
+  "stove0-observer-support>=0.1,<0.2",
+  "stove0-review-contracts>=0.1,<0.2",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.scripts]
+stove0-ffprobe-sampling-observer = "stove0_ffprobe_sampling_observer.app:main"
+
+[tool.uv.sources]
+http-api-contracts = { workspace = true }
+stove0-observer-protocol = { workspace = true }
+stove0-observer-support = { workspace = true }
+stove0-review-contracts = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stove0_ffprobe_sampling_observer"]

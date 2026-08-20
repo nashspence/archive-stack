@@ -52,5 +52,5 @@ def test_api_state_commands_report_and_verify_the_current_revision(
     verified = json.loads(capsys.readouterr().out)
 
     assert empty["condition"] == "empty"
-    assert upgraded["current_revision"] == "v1_0003"
+    assert upgraded["current_revision"] == "v1_0004"
     assert verified["condition"] == "current"

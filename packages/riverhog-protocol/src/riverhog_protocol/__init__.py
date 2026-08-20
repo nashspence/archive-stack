@@ -30,7 +30,9 @@ from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     PRODUCER_EVIDENCE_PATH,
     ArtifactDisposition,
+    CollectionArtifactIdentity,
     CollectionDerivation,
+    CollectionProcessingOutcomeIdentity,
     CollectionRootIdentity,
     OperationIdentity,
     ProducerEvidence,
@@ -42,8 +44,10 @@ from riverhog_protocol.collection_workflows import (
 
 __all__ += [
     "ArtifactDisposition",
+    "CollectionArtifactIdentity",
     "CollectionDerivation",
     "CollectionRootIdentity",
+    "CollectionProcessingOutcomeIdentity",
     "DERIVATION_EVIDENCE_PATH",
     "OperationIdentity",
     "PRODUCER_EVIDENCE_PATH",

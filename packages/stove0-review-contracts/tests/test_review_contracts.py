@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from stove0_protocol import CollectionRootRef, RecipeRef
 from stove0_review_contracts import (
     MEDIA_SAMPLING_OBSERVER_CONTRACT,
-    REVIEW_SAMPLE_ENCODE_OPERATION,
+    REVIEW_MATERIALIZE_OPERATION,
     MediaSamplingArtifactFacts,
     MediaSamplingFacts,
     ReviewVariant,
@@ -43,8 +43,8 @@ def _facts() -> MediaSamplingFacts:
 
 def test_review_contract_pack_is_content_specific_but_core_independent() -> None:
     assert MEDIA_SAMPLING_OBSERVER_CONTRACT.id == "stove0.review.media-sampling/v1"
-    assert REVIEW_SAMPLE_ENCODE_OPERATION.id == "stove0.review.sample-encode/v1"
-    assert REVIEW_SAMPLE_ENCODE_OPERATION.source_retirement_permitted is False
+    assert REVIEW_MATERIALIZE_OPERATION.id == "stove0.review.materialize/v1"
+    assert REVIEW_MATERIALIZE_OPERATION.source_retirement_permitted is False
     assert contract_report()["status"] == "conformant"
 
     command = [
@@ -127,7 +127,7 @@ def test_review_evaluation_expands_one_normal_work_per_variant() -> None:
     )
     for child in children:
         intent = review_operation_intent(child)
-        Draft202012Validator(REVIEW_SAMPLE_ENCODE_OPERATION.intent_schema.document).validate(intent)
+        Draft202012Validator(REVIEW_MATERIALIZE_OPERATION.intent_schema.document).validate(intent)
         assert intent["variant"]["id"] == child.evaluation.variant_id
         assert review_target_options(child) == {}
 

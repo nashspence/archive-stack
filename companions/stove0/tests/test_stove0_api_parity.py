@@ -9,7 +9,7 @@ from lifecycle_events import EventPage
 from riverhog_api_client import ApiClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
-from stove0_api.app import Stove0Composition, create_app
+from stove0_api.app import Stove0Composition, _log_scheduler_failures, create_app
 from stove0_api_client import Stove0ApiClient
 from stove0_core import (
     EvaluationService,
@@ -46,6 +46,12 @@ class _Document:
     def model_dump(self, **_kwargs: object) -> dict[str, object]:
         return dict(self.payload)
 
+    def __getattr__(self, name: str) -> object:
+        try:
+            return self.payload[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
 
 class _LifecycleCatalogApi(CatalogApi):
     def get_collection(self, collection_id: int) -> dict[str, object]:
@@ -80,8 +86,10 @@ class _LifecycleState:
             "work": [{"work_id": "work-1", "phase": "eligible", "revision": 1}],
         }
 
-    def load(self, work_id: str) -> _Document:
-        return _Document(work_id=work_id, phase="eligible", revision=1)
+    def load(self, work_id: str) -> _Document | None:
+        if work_id == "work-1":
+            return _Document(work_id=work_id, phase="eligible", revision=1)
+        return None
 
     def list_evaluations(self, **_kwargs: object) -> dict[str, object]:
         return {
@@ -98,6 +106,20 @@ class _LifecycleState:
     def load_evaluation(self, evaluation_id: str) -> _Document:
         return _Document(evaluation_id=evaluation_id, phase="running", revision=1)
 
+    def load_selection(self, selection_sha256: str) -> _Document:
+        return _Document(
+            selection_sha256=selection_sha256,
+            total_bytes=12,
+            artifacts=(
+                _Document(
+                    id="source",
+                    role="fixture.source/v1",
+                    path="source/input.bin",
+                    bytes=12,
+                ),
+            ),
+        )
+
     def load_cursor(self, _stream: str) -> None:
         return None
 
@@ -111,13 +133,13 @@ class _LifecycleRecipes:
 
 class _LifecyclePlanner:
     def create_work(self, *_args: object, **_kwargs: object) -> object:
-        return object()
+        return _Document(work_id="generated-work")
 
 
 class _LifecycleCoordinator:
     planning = _LifecyclePlanner()
 
-    def create_or_resume(self, _identity: object) -> _Document:
+    def create_or_resume(self, _identity: object, **_kwargs: object) -> _Document:
         return _Document(work_id="work-1", phase="eligible", revision=1)
 
     def step(self, work_id: str) -> _Document:
@@ -129,10 +151,22 @@ class _LifecycleCoordinator:
     def cancel(self, work_id: str, *, reason: str | None) -> _Document:
         return _Document(work_id=work_id, phase="canceled", revision=4, reason=reason)
 
+    def inspect_coordination(self, _work_id: str) -> _Document:
+        return _Document(
+            branch_set_sha256="b" * 64,
+            unsettled_branch_ids=(),
+            join_state="succeeded",
+            branch_set_succeeded=True,
+        )
+
 
 class _LifecyclePreview:
     def preview(self, _identity: object) -> _Document:
-        return _Document(format="stove0-workflow-preview/v1", state="ready")
+        return _Document(
+            format="stove0-workflow-preview/v1",
+            state="ready",
+            preview_sha256="a" * 64,
+        )
 
 
 class _LifecycleEvaluations:
@@ -279,8 +313,17 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert client.list_recipes()["recipes"]
         assert client.get_recipe("fixture.recipe/v1")["revision"] == 1
         assert client.list_work(all_items=True)["total"] == 1
-        assert client.create_work("fixture.recipe/v1", [1])["work_id"] == "work-1"
+        assert (
+            client.create_work(
+                "fixture.recipe/v1",
+                [1],
+                preview_sha256="a" * 64,
+            )["work_id"]
+            == "work-1"
+        )
         assert client.get_work("work-1")["work_id"] == "work-1"
+        assert client.inspect_work_coordination("work-1")["branch_set_succeeded"] is True
+        assert client.get_artifact_selection("c" * 64)["total"] == 1
         assert client.step_work("work-1")["phase"] == "claimed"
         assert client.retry_work("work-1")["phase"] == "eligible"
         assert client.cancel_work("work-1", reason="qualification")["phase"] == "canceled"
@@ -315,7 +358,7 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
 
 def test_every_stove0_api_operation_has_one_current_official_client_method() -> None:
     operations = _operations()
-    assert len(operations) == 19
+    assert len(operations) == 21
     assert {
         operation_id
         for operation_id in operations
@@ -327,6 +370,29 @@ def test_every_stove0_api_operation_has_one_current_official_client_method() -> 
         if not name.startswith("_") and callable(getattr(Stove0ApiClient, name))
     }
     assert public_methods - set(operations) == {"close", "health_live", "health_ready"}
+
+
+def test_scheduler_work_failures_are_operator_visible(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _log_scheduler_failures(
+        "controller",
+        {
+            "work": {
+                "failures": [
+                    {
+                        "work_id": "work-1",
+                        "error": "Conflict: processing outcomes differ",
+                    }
+                ]
+            }
+        },
+    )
+
+    assert (
+        "stove0 controller scheduler could not advance work work-1: "
+        "Conflict: processing outcomes differ"
+    ) in caplog.text
 
 
 def test_stove0_openapi_uses_conventional_errors_health_and_paging() -> None:
@@ -353,6 +419,16 @@ def test_stove0_openapi_uses_conventional_errors_health_and_paging() -> None:
         assert operation["responses"]["200"]["content"]["application/json"]["schema"][
             "$ref"
         ].startswith("#/components/schemas/")
+    selection = schema["paths"]["/v1/artifact-selections/{selection_sha256}"]["get"]
+    assert {item["name"] for item in selection["parameters"]} >= {
+        "selection_sha256",
+        "page",
+        "per_page",
+        "all",
+    }
+    assert selection["responses"]["200"]["content"]["application/json"]["schema"][
+        "$ref"
+    ].startswith("#/components/schemas/")
     for path, path_item in schema["paths"].items():
         if not path.startswith("/v1"):
             continue

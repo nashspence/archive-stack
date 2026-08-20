@@ -13,7 +13,12 @@ from typing import Literal, Protocol
 
 from stove0_observer_support import ContentObserverClient
 from stove0_protocol import (
+    ArtifactSelection,
+    BranchSetDecision,
+    BranchSetEvaluation,
+    BranchWorkBinding,
     ControllerEvidence,
+    JoinWorkBinding,
     ObservationEvidence,
     ObservationInvocation,
     ObservationRequest,
@@ -22,6 +27,7 @@ from stove0_protocol import (
     ObserverRuntimeAuthority,
     OperationRef,
     WorkflowPlan,
+    WorkflowPreview,
     WorkIdentity,
 )
 from stove0_target_support import (
@@ -35,13 +41,16 @@ from stove0_target_support import (
     TargetPreflightRequest,
     TargetPreflightResponse,
     TargetRuntimeAuthority,
+    TransformPlan,
     TransformTargetClient,
     validate_preflight_response_against_request,
 )
 
+from stove0_core.coordination import project_coordination
 from stove0_core.work_state import (
     ClaimBinding,
     Stove0WorkService,
+    WorkFailure,
     WorkInapplicable,
     WorkRecord,
 )
@@ -53,6 +62,14 @@ WorkspaceAssurance = Literal["encrypted", "ephemeral"]
 class TargetInvocationAuthority:
     runtime: TargetRuntimeAuthority
     workspace_assurance: WorkspaceAssurance
+
+
+@dataclass(frozen=True, slots=True)
+class ParentOutcomeBinding:
+    """Exact parent claim outcome receiving one verified ordinary work output."""
+
+    claim: ClaimBinding
+    outcome_id: str
 
 
 class RiverhogControlPort(Protocol):
@@ -75,15 +92,27 @@ class RiverhogControlPort(Protocol):
         claim: ClaimBinding,
         evidence: ControllerEvidence,
         plan: WorkflowPlan,
+        target_plan: TransformPlan,
     ) -> None: ...
 
     def target_authority(
         self,
         claim: ClaimBinding,
         evidence: ControllerEvidence,
+        target_plan: TransformPlan,
     ) -> TargetInvocationAuthority: ...
 
-    def verify_and_settle(self, record: WorkRecord) -> OutputCollectionRef: ...
+    def verify_and_settle(
+        self,
+        record: WorkRecord,
+        parent_outcome: ParentOutcomeBinding | None = None,
+    ) -> OutputCollectionRef: ...
+
+    def settle_outcomes(
+        self,
+        record: WorkRecord,
+        evaluation: BranchSetEvaluation,
+    ) -> None: ...
 
     def abandon_claim(self, record: WorkRecord) -> None: ...
 
@@ -106,9 +135,13 @@ class PlanningPort(Protocol):
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
-    ) -> WorkflowPlan | WorkInapplicable: ...
+    ) -> BranchSetDecision | WorkInapplicable: ...
 
-    def target_preflight_request(self, plan: WorkflowPlan) -> TargetPreflightRequest: ...
+    def target_preflight_request(
+        self,
+        plan: WorkflowPlan,
+        selections: dict[str, ArtifactSelection],
+    ) -> TargetPreflightRequest: ...
 
     def operation_contract(self, operation: OperationRef) -> OperationContract: ...
 
@@ -230,8 +263,19 @@ class Stove0Coordinator:
         self.observers = observers
         self.targets = targets
 
-    def create_or_resume(self, identity: WorkIdentity) -> WorkRecord:
-        return self.work.create_or_resume(identity)
+    def create_or_resume(
+        self,
+        identity: WorkIdentity,
+        *,
+        preview: WorkflowPreview | None = None,
+    ) -> WorkRecord:
+        return self.work.create_or_resume(identity, preview=preview)
+
+    def inspect_coordination(self, work_id: str) -> BranchSetEvaluation:
+        record = self.work.store.load(work_id)
+        if record is None:
+            raise KeyError(work_id)
+        return project_coordination(record, self.work.store).evaluation
 
     def step(self, work_id: str) -> WorkRecord:
         record = self.work.store.load(work_id)
@@ -252,6 +296,7 @@ class Stove0Coordinator:
             "queued",
             "executing",
             "output_finalizing",
+            "coordinating",
         }:
             assert record.claim is not None
             renewed = self.riverhog.renew_claim(record.work, record.claim)
@@ -271,6 +316,11 @@ class Stove0Coordinator:
                 expected_revision=record.revision,
             )
         if phase == "claimed":
+            if record.workflow_plan is not None:
+                return self.work.activate_preplanned(
+                    work_id,
+                    expected_revision=record.revision,
+                )
             assert record.claim is not None
             requests = self.planning.observation_requests(record.work)
             if requests:
@@ -298,11 +348,45 @@ class Stove0Coordinator:
                     decision,
                     expected_revision=record.revision,
                 )
-            return self.work.seal_workflow_plan(
+            acceptance = record.preview_acceptance
+            if (
+                acceptance is not None
+                and decision.plan.branch_set_sha256 != acceptance.branch_set_sha256
+            ):
+                return self.work.fail(
+                    work_id,
+                    WorkFailure(
+                        code="accepted-preview-changed",
+                        message=(
+                            "Current observation and routing authorities no longer produce "
+                            "the accepted workflow preview."
+                        ),
+                        retryable=True,
+                    ),
+                    expected_revision=record.revision,
+                )
+            return self.work.admit_branch_set(
                 work_id,
                 decision,
                 expected_revision=record.revision,
             )
+        if phase == "coordinating":
+            if record.coordination_cancel_requested:
+                return self._advance_coordination_cancel(record)
+            projection = project_coordination(record, self.work.store)
+            if projection.pending_join is not None:
+                return self.work.admit_join(
+                    work_id,
+                    projection.pending_join,
+                    projection.pending_join_selections,
+                    expected_revision=record.revision,
+                )
+            if projection.evaluation.branch_set_succeeded:
+                if not self._successful_children_complete(record):
+                    return record
+                self.riverhog.settle_outcomes(record, projection.evaluation)
+                return self._begin_or_complete_retirement(record)
+            return record
         if phase == "target_preflight":
             return self._preflight(record)
         if phase == "queued":
@@ -310,7 +394,10 @@ class Stove0Coordinator:
         if phase in {"executing", "output_finalizing"}:
             return self._poll_target(record)
         if phase == "verifying":
-            output = self.riverhog.verify_and_settle(record)
+            output = self.riverhog.verify_and_settle(
+                record,
+                self._parent_outcome(record),
+            )
             return self.work.verify_output(
                 work_id,
                 output,
@@ -361,6 +448,11 @@ class Stove0Coordinator:
             return self.work.cancel(work_id, expected_revision=record.revision)
         if record.phase in {"settled", "retirement_pending"}:
             raise RuntimeError("settled work cannot be canceled")
+        if record.phase == "coordinating" and record.branch_set_plan is not None:
+            return self.work.request_coordination_cancel(
+                work_id,
+                expected_revision=record.revision,
+            )
         if record.target_request is None or record.workflow_plan is None:
             return self.work.cancel(work_id, expected_revision=record.revision)
         status = self.targets.cancel_job(
@@ -412,9 +504,28 @@ class Stove0Coordinator:
         target = self.targets.contract(plan.target_registration_id)
         if target.contract_sha256 != plan.target_contract_sha256:
             raise RuntimeError("configured target contract changed after workflow planning")
-        request = self.planning.target_preflight_request(plan)
+        request = self.planning.target_preflight_request(
+            plan,
+            self._selection_documents(record),
+        )
         response = self.targets.preflight(plan.target_registration_id, request)
         validate_preflight_response_against_request(response, request)
+        if (
+            record.expected_target_plan_sha256 is not None
+            and response.plan.plan_sha256 != record.expected_target_plan_sha256
+        ):
+            return self.work.fail(
+                record.work_id,
+                WorkFailure(
+                    code="accepted-preview-target-changed",
+                    message=(
+                        "Current target preflight no longer produces the plan accepted "
+                        "by the workflow preview."
+                    ),
+                    retryable=True,
+                ),
+                expected_revision=record.revision,
+            )
         return self.work.seal_target_plan(
             record.work_id,
             target=target,
@@ -436,10 +547,12 @@ class Stove0Coordinator:
             record.claim,
             record.controller_evidence,
             record.workflow_plan,
+            record.target_plan,
         )
         authority = self.riverhog.target_authority(
             record.claim,
             record.controller_evidence,
+            record.target_plan,
         )
         declaration = TargetJobDeclaration(
             job_id=(record.controller_evidence.execution_envelope.execution_envelope_sha256),
@@ -473,11 +586,13 @@ class Stove0Coordinator:
             or record.workflow_plan is None
             or record.target_request is None
             or record.controller_evidence is None
+            or record.target_plan is None
         ):
             raise RuntimeError("active target work has no accepted target authorities")
         authority = self.riverhog.target_authority(
             record.claim,
             record.controller_evidence,
+            record.target_plan,
         )
         refreshed = TargetJobRequest(
             declaration=record.target_request.declaration,
@@ -497,19 +612,33 @@ class Stove0Coordinator:
         )
 
     def _begin_or_complete_retirement(self, record: WorkRecord) -> WorkRecord:
-        plan = record.workflow_plan
-        if plan is None:
-            raise RuntimeError("settled work has no workflow plan")
-        if plan.retirement_policy == "retain":
+        if record.branch_set_plan is not None:
+            policy = record.branch_set_plan.retirement_policy
+        elif record.workflow_plan is not None:
+            policy = record.workflow_plan.retirement_policy
+        else:
+            raise RuntimeError("settled work has no workflow or branch-set plan")
+        if policy == "retain":
             self.riverhog.release_claim(record)
             return self.work.begin_retirement(
                 record.work_id,
                 (),
                 expected_revision=record.revision,
             )
-        operation = self.planning.operation_contract(plan.operation)
-        if not operation.source_retirement_permitted:
-            raise RuntimeError("operation contract does not authorize source retirement")
+        if record.branch_set_plan is not None:
+            operations = tuple(
+                self.planning.operation_contract(branch.workflow_plan.operation)
+                for branch in record.branch_set_plan.branches
+            )
+            if not all(operation.source_retirement_permitted for operation in operations):
+                raise RuntimeError(
+                    "every branch operation contract must authorize source retirement"
+                )
+        else:
+            assert record.workflow_plan is not None
+            operation = self.planning.operation_contract(record.workflow_plan.operation)
+            if not operation.source_retirement_permitted:
+                raise RuntimeError("operation contract does not authorize source retirement")
         self.riverhog.begin_retirement(record)
         return self.work.begin_retirement(
             record.work_id,
@@ -530,10 +659,88 @@ class Stove0Coordinator:
             expected_revision=record.revision,
         )
 
+    def _selection_documents(
+        self,
+        record: WorkRecord,
+    ) -> dict[str, ArtifactSelection]:
+        binding = record.work.fork_join
+        digests: tuple[str, ...]
+        if isinstance(binding, BranchWorkBinding):
+            digests = (binding.artifact_selection_sha256,)
+        elif isinstance(binding, JoinWorkBinding):
+            digests = tuple(item.artifact_selection_sha256 for item in binding.members)
+        else:
+            raise RuntimeError("target work has no exact branch or join artifact selection")
+        documents: dict[str, ArtifactSelection] = {}
+        for digest in digests:
+            selection = self.work.store.load_selection(digest)
+            if selection is None:
+                raise RuntimeError(f"durable target selection is unavailable: {digest}")
+            documents[digest] = selection
+        return documents
+
+    def _parent_outcome(
+        self,
+        record: WorkRecord,
+    ) -> ParentOutcomeBinding | None:
+        binding = record.work.fork_join
+        parent_work_id: str
+        outcome_id: str
+        if isinstance(binding, BranchWorkBinding):
+            parent_work_id = binding.parent_work_id
+            outcome_id = f"branch/{binding.branch_id}"
+        elif isinstance(binding, JoinWorkBinding):
+            parent_work_id = binding.parent_work_id
+            outcome_id = "join"
+        else:
+            return None
+        parent = self.work.store.load(parent_work_id)
+        if parent is None or parent.claim is None or parent.branch_set_plan is None:
+            raise RuntimeError("coordination parent claim is unavailable")
+        return ParentOutcomeBinding(
+            claim=parent.claim,
+            outcome_id=outcome_id,
+        )
+
+    def _advance_coordination_cancel(self, record: WorkRecord) -> WorkRecord:
+        if record.branch_set_plan is None:
+            raise RuntimeError("coordination cancellation has no branch-set plan")
+        child_ids = [
+            branch.workflow_plan.work.work_id for branch in record.branch_set_plan.branches
+        ]
+        if record.join_plan is not None:
+            child_ids.append(record.join_plan.work.work_id)
+        terminal = {"complete", "inapplicable", "failed", "canceled"}
+        for child_id in child_ids:
+            child = self.work.store.load(child_id)
+            if child is None:
+                raise RuntimeError("coordination cancellation child is unavailable")
+            if child.phase not in terminal:
+                self.cancel(child_id, reason="parent coordination canceled")
+                return record
+        return self.work.cancel(record.work_id, expected_revision=record.revision)
+
+    def _successful_children_complete(self, record: WorkRecord) -> bool:
+        if record.branch_set_plan is None:
+            raise RuntimeError("successful coordination has no branch-set plan")
+        child_ids = [
+            branch.workflow_plan.work.work_id for branch in record.branch_set_plan.branches
+        ]
+        if record.join_plan is not None:
+            child_ids.append(record.join_plan.work.work_id)
+        for child_id in child_ids:
+            child = self.work.store.load(child_id)
+            if child is None:
+                raise RuntimeError("successful coordination child is unavailable")
+            if child.phase != "complete":
+                return False
+        return True
+
 
 __all__ = [
     "HttpObserverPort",
     "HttpTargetPort",
+    "ParentOutcomeBinding",
     "ObserverPort",
     "PlanningPort",
     "RiverhogControlPort",

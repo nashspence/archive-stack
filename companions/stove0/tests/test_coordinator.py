@@ -10,14 +10,25 @@ from riverhog_protocol.collection_workflows import (
 from stove0_core import (
     ClaimBinding,
     InMemoryWorkStore,
+    ParentOutcomeBinding,
     Stove0Coordinator,
     Stove0WorkService,
     TargetInvocationAuthority,
     WorkInapplicable,
 )
 from stove0_protocol import (
+    ArtifactSelection,
     ArtifactSubject,
+    BranchPlan,
+    BranchSetDecision,
+    BranchSetEvaluation,
+    BranchSetPlan,
+    BranchTargetPreview,
+    BranchWorkBinding,
     CollectionRootRef,
+    JoinDeclaration,
+    JoinMemberDeclaration,
+    JoinWorkBinding,
     JsonSchemaDocument,
     ObservationEvidence,
     ObservationRequest,
@@ -33,8 +44,13 @@ from stove0_protocol import (
     ObserverRuntimeAuthority,
     OperationRef,
     RecipeRef,
+    TargetPlanBinding,
     WorkflowPlan,
-    WorkflowPlanPayload,
+    WorkflowPlanIntent,
+    WorkflowPreview,
+    WorkflowPreviewPayload,
+    WorkflowPreviewRequest,
+    WorkflowPreviewRequestPayload,
     WorkIdentity,
     WorkPayload,
     canonical_json_sha256,
@@ -109,12 +125,71 @@ def _operation() -> OperationContract:
     )
 
 
+def _fork_join_operations() -> tuple[OperationContract, OperationContract]:
+    intent = JsonSchemaDocument.from_schema(
+        "fixture.empty-intent/v1",
+        {"type": "object", "additionalProperties": False},
+    )
+    branch = OperationContract.seal(
+        OperationContractPayload(
+            id="fixture.branch/v1",
+            intent_schema=intent,
+            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            outputs=(
+                OutputArtifactContract(
+                    role="fixture.branch-output/v1",
+                    derived_from_roles=("fixture.source/v1",),
+                ),
+            ),
+        )
+    )
+    join = OperationContract.seal(
+        OperationContractPayload(
+            id="fixture.join/v1",
+            intent_schema=intent,
+            inputs=(InputArtifactContract(role="fixture.branch-output/v1", minimum=2),),
+            outputs=(
+                OutputArtifactContract(
+                    role="fixture.joined-output/v1",
+                    derived_from_roles=("fixture.branch-output/v1",),
+                ),
+            ),
+        )
+    )
+    return branch, join
+
+
+def _fork_join_target(
+    operations: tuple[OperationContract, OperationContract],
+) -> TargetContract:
+    return TargetContract.seal(
+        TargetContractPayload(
+            implementation_id="fixture.fork-join-target/v1",
+            implementation_version="1.0.0",
+            source_revision="fixture",
+            image_digest=_sha("8"),
+            operations=tuple(
+                TargetOperationSupport(
+                    operation_id=operation.id,
+                    operation_contract_sha256=operation.contract_sha256,
+                    options_schema=JsonSchemaDocument.from_schema(
+                        f"{operation.id}.options",
+                        {"type": "object", "additionalProperties": False},
+                    ),
+                )
+                for operation in operations
+            ),
+        )
+    )
+
+
 def _target(operation: OperationContract) -> TargetContract:
     return TargetContract.seal(
         TargetContractPayload(
             implementation_id="fixture.target/v1",
             implementation_version="1.0.0",
             source_revision="fixture",
+            image_digest=_sha("9"),
             operations=(
                 TargetOperationSupport(
                     operation_id=operation.id,
@@ -164,6 +239,7 @@ def _observer() -> tuple[ObserverContract, ObserverDescriptor]:
             implementation_id="fixture.observer/v1",
             implementation_version="1.0.0",
             source_revision="fixture",
+            image_digest=_sha("9"),
             contracts=(ObserverContractSupport.from_contract(contract),),
         )
     )
@@ -213,11 +289,30 @@ class FixturePlanning:
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
-    ) -> WorkflowPlan:
-        return WorkflowPlan.seal(
-            WorkflowPlanPayload(
-                work=work,
-                observations=observations,
+    ) -> BranchSetDecision:
+        subjects = (
+            observations[0].request.subjects
+            if observations
+            else (
+                ArtifactSubject(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=_root(),
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256=_sha("4"),
+                ),
+            )
+        )
+        selection = ArtifactSelection.seal(subjects)
+        branch = BranchPlan.build(
+            parent_work=work,
+            branch_id="fixture",
+            decision_sha256=_sha("d"),
+            selection=selection,
+            recipe=work.recipe,
+            effective_intent=work.effective_intent,
+            workflow_intent=WorkflowPlanIntent(
                 operation=OperationRef(
                     id=self.operation.id,
                     sha256=self.operation.contract_sha256,
@@ -226,14 +321,33 @@ class FixturePlanning:
                 target_contract_sha256=self.target.contract_sha256,
                 output_tags=("fixture-output",),
                 retirement_policy="retain",
-            )
+            ),
+            observations=observations,
+        )
+        return BranchSetDecision(
+            plan=BranchSetPlan.seal(
+                parent_work=work,
+                decision_sha256=_sha("d"),
+                evidence_sha256s=tuple(item.result.result_sha256 for item in observations),
+                branches=(branch,),
+                selections={selection.selection_sha256: selection},
+            ),
+            selections=(selection,),
         )
 
-    def target_preflight_request(self, _plan: WorkflowPlan) -> TargetPreflightRequest:
+    def target_preflight_request(
+        self,
+        _plan: WorkflowPlan,
+        selections: dict[str, ArtifactSelection],
+    ) -> TargetPreflightRequest:
+        selection = next(iter(selections.values()))
         return TargetPreflightRequest(
             operation_id=self.operation.id,
             operation_contract_sha256=self.operation.contract_sha256,
-            inputs=(_input(),),
+            inputs=tuple(
+                InputArtifact.model_validate(item.model_dump(mode="json"))
+                for item in selection.artifacts
+            ),
             intent={"suffix": ".copy"},
             target_options={},
         )
@@ -242,6 +356,123 @@ class FixturePlanning:
         assert operation.id == self.operation.id
         assert operation.sha256 == self.operation.contract_sha256
         return self.operation
+
+
+class ForkJoinPlanning:
+    def __init__(
+        self,
+        branch_operation: OperationContract,
+        join_operation: OperationContract,
+        target: TargetContract,
+    ) -> None:
+        self.operations = {
+            branch_operation.id: branch_operation,
+            join_operation.id: join_operation,
+        }
+        self.branch_operation = branch_operation
+        self.join_operation = join_operation
+        self.target = target
+
+    def observation_requests(self, _work: WorkIdentity) -> tuple[ObservationRequest, ...]:
+        return ()
+
+    def workflow_plan(
+        self,
+        work: WorkIdentity,
+        observations: tuple[ObservationEvidence, ...],
+    ) -> BranchSetDecision:
+        assert not observations
+        selection = ArtifactSelection.seal(
+            (
+                ArtifactSubject(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=_root(),
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256=_sha("4"),
+                ),
+            )
+        )
+        decision = _sha("e")
+        branches = tuple(
+            BranchPlan.build(
+                parent_work=work,
+                branch_id=branch_id,
+                decision_sha256=decision,
+                selection=selection,
+                recipe=work.recipe,
+                effective_intent={"branch": branch_id},
+                workflow_intent=WorkflowPlanIntent(
+                    operation=OperationRef(
+                        id=self.branch_operation.id,
+                        sha256=self.branch_operation.contract_sha256,
+                    ),
+                    target_registration_id="fixture-target",
+                    target_contract_sha256=self.target.contract_sha256,
+                    output_tags=(f"fixture-{branch_id}",),
+                    retirement_policy="retain",
+                ),
+            )
+            for branch_id in ("audio", "video")
+        )
+        join = JoinDeclaration.seal(
+            members=tuple(
+                JoinMemberDeclaration(
+                    branch_id=branch.branch_id,
+                    output_roles=("fixture.branch-output/v1",),
+                )
+                for branch in branches
+            ),
+            recipe=work.recipe,
+            effective_intent={"combine": "exact"},
+            workflow_intent=WorkflowPlanIntent(
+                operation=OperationRef(
+                    id=self.join_operation.id,
+                    sha256=self.join_operation.contract_sha256,
+                ),
+                target_registration_id="fixture-target",
+                target_contract_sha256=self.target.contract_sha256,
+                output_tags=("fixture-joined",),
+                retirement_policy="retain",
+            ),
+        )
+        documents = {selection.selection_sha256: selection}
+        return BranchSetDecision(
+            plan=BranchSetPlan.seal(
+                parent_work=work,
+                decision_sha256=decision,
+                branches=branches,
+                join=join,
+                selections=documents,
+            ),
+            selections=(selection,),
+        )
+
+    def target_preflight_request(
+        self,
+        plan: WorkflowPlan,
+        selections: dict[str, ArtifactSelection],
+    ) -> TargetPreflightRequest:
+        artifacts = tuple(
+            sorted(
+                (artifact for selection in selections.values() for artifact in selection.artifacts),
+                key=lambda artifact: artifact.id,
+            )
+        )
+        return TargetPreflightRequest(
+            operation_id=plan.operation.id,
+            operation_contract_sha256=plan.operation.sha256,
+            inputs=tuple(
+                InputArtifact.model_validate(item.model_dump(mode="json")) for item in artifacts
+            ),
+            intent=plan.work.effective_intent,
+        )
+
+    def operation_contract(self, operation: OperationRef) -> OperationContract:
+        contract = self.operations[operation.id]
+        assert operation.sha256 == contract.contract_sha256
+        return contract
 
 
 class InapplicablePlanning(FixturePlanning):
@@ -437,6 +668,115 @@ class FixtureTarget:
         )
 
 
+class DriftingPreflightTarget(FixtureTarget):
+    def preflight(
+        self,
+        registration_id: str,
+        request: TargetPreflightRequest,
+    ) -> TargetPreflightResponse:
+        response = super().preflight(registration_id, request)
+        changed = TransformPlan.seal(
+            TransformPlanPayload(
+                **response.plan.model_dump(
+                    mode="python",
+                    exclude={"plan_sha256", "target_options"},
+                ),
+                target_options={**response.plan.target_options, "runtime-profile": "changed"},
+            )
+        )
+        return TargetPreflightResponse(target=self.target, plan=changed)
+
+
+class ForkJoinTarget(FixtureTarget):
+    def __init__(
+        self,
+        operations: tuple[OperationContract, OperationContract],
+        target: TargetContract,
+    ) -> None:
+        super().__init__(operations[0], target)
+        self.operations = {operation.id: operation for operation in operations}
+
+    def get_job(self, registration_id: str, job_id: str) -> TargetJobStatus:
+        assert registration_id == "fixture-target"
+        request = self.jobs[job_id]
+        declaration = request.declaration
+        workflow = declaration.controller_evidence.execution_envelope.workflow_plan
+        operation = self.operations[workflow.operation.id]
+        binding = workflow.work.fork_join
+        if isinstance(binding, BranchWorkBinding):
+            output_id = f"{binding.branch_id}-output"
+            output_role = "fixture.branch-output/v1"
+        elif isinstance(binding, JoinWorkBinding):
+            output_id = "joined-output"
+            output_role = "fixture.joined-output/v1"
+        else:
+            raise AssertionError("fork/join target received unbound work")
+        output_path = f"output/{output_id}.bin"
+        output = OutputArtifact(
+            id=output_id,
+            role=output_role,
+            path=output_path,
+            bytes=12,
+            sha256=job_id,
+            derived_from=tuple(item.id for item in declaration.plan.inputs),
+        )
+        derivation = CollectionDerivation(
+            execution_id=job_id,
+            claim_id=declaration.claim_id,
+            fence=declaration.fence,
+            recipe=workflow.work.recipe.to_identity(),
+            operation=workflow.operation.to_identity(),
+            inputs=tuple(item.to_identity() for item in workflow.work.inputs),
+            output_tags=workflow.output_tags,
+            execution_envelope_sha256=job_id,
+            execution_sha256=_sha("9"),
+            controller_evidence=declaration.controller_evidence.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_none=True,
+            ),
+            controller_evidence_sha256=riverhog_canonical_json_sha256(
+                declaration.controller_evidence.model_dump(
+                    mode="json",
+                    by_alias=True,
+                    exclude_none=True,
+                )
+            ),
+            dispositions=tuple(
+                ArtifactDisposition(
+                    input_collection_id=item.collection.collection_id,
+                    input_manifest_sha256=item.collection.manifest_sha256,
+                    input_path=item.path,
+                    status="transformed",
+                    outputs=(output_path,),
+                )
+                for item in declaration.plan.inputs
+            ),
+        )
+        return TargetJobStatus(
+            job_id=job_id,
+            state="succeeded",
+            attempt=1,
+            request_sha256=request.request_sha256,
+            plan_sha256=declaration.plan.plan_sha256,
+            progress=TargetProgress(phase="done", completed=1, total=1),
+            outputs=(output,),
+            output_collection=OutputCollectionRef(
+                collection_id=100 + int(workflow.work.work_id[:12], 16) % 1_000_000_000,
+                manifest_sha256=workflow.work.work_id,
+                content_etag=workflow.workflow_plan_sha256,
+                derivation_sha256=derivation.sha256,
+            ),
+            execution_evidence=TargetExecutionEvidence(
+                target_contract_sha256=self.target.contract_sha256,
+                operation_contract_sha256=operation.contract_sha256,
+                plan_sha256=declaration.plan.plan_sha256,
+                execution_sha256=_sha("9"),
+            ),
+            derivation=derivation.as_dict(),
+        )
+
+
 class FixtureRiverhog:
     def __init__(self) -> None:
         self.sealed = False
@@ -447,9 +787,15 @@ class FixtureRiverhog:
         self.target: FixtureTarget | None = None
         self.renewed_claim: ClaimBinding | None = None
         self.restarted = False
+        self.claims: dict[str, ClaimBinding] = {}
+        self.outcomes: dict[str, OutputCollectionRef] = {}
+        self.coordination_settled = False
 
-    def acquire_claim(self, _work: WorkIdentity) -> ClaimBinding:
-        return ClaimBinding(claim_id="claim-1", fence=1)
+    def acquire_claim(self, work: WorkIdentity) -> ClaimBinding:
+        return self.claims.setdefault(
+            work.work_id,
+            ClaimBinding(claim_id=f"claim-{len(self.claims) + 1}", fence=1),
+        )
 
     def renew_claim(self, _work: WorkIdentity, claim: ClaimBinding) -> ClaimBinding:
         self.renewals += 1
@@ -475,14 +821,18 @@ class FixtureRiverhog:
         _claim: ClaimBinding,
         _evidence: object,
         _plan: WorkflowPlan,
+        target_plan: TransformPlan,
     ) -> None:
+        assert target_plan.inputs
         self.sealed = True
 
     def target_authority(
         self,
         _claim: ClaimBinding,
         _evidence: object,
+        target_plan: TransformPlan,
     ) -> TargetInvocationAuthority:
+        assert target_plan.inputs
         self.target_authorities += 1
         return TargetInvocationAuthority(
             runtime=TargetRuntimeAuthority(
@@ -492,13 +842,38 @@ class FixtureRiverhog:
             workspace_assurance="ephemeral",
         )
 
-    def verify_and_settle(self, record: object) -> OutputCollectionRef:
+    def verify_and_settle(
+        self,
+        record: object,
+        parent_outcome: ParentOutcomeBinding | None = None,
+    ) -> OutputCollectionRef:
         from stove0_core import WorkRecord
 
         record = WorkRecord.model_validate(record)
         assert record.target_status is not None
         assert record.target_status.output_collection is not None
-        return record.target_status.output_collection
+        output = record.target_status.output_collection
+        if parent_outcome is not None:
+            assert parent_outcome.claim in self.claims.values()
+            existing = self.outcomes.setdefault(parent_outcome.outcome_id, output)
+            assert existing == output
+        return output
+
+    def settle_outcomes(
+        self,
+        record: object,
+        evaluation: BranchSetEvaluation,
+    ) -> None:
+        from stove0_core import WorkRecord
+
+        record = WorkRecord.model_validate(record)
+        assert record.branch_set_plan is not None
+        assert evaluation.branch_set_succeeded
+        assert set(self.outcomes) == {
+            *(f"branch/{item.branch_id}" for item in evaluation.succeeded_branches),
+            *({"join"} if evaluation.join_settlement is not None else set()),
+        }
+        self.coordination_settled = True
 
     def abandon_claim(self, _record: object) -> None:
         self.abandoned = True
@@ -513,7 +888,49 @@ class FixtureRiverhog:
         self.released = True
 
 
-def _run(observer_enabled: bool) -> tuple[object, FixtureRiverhog, FixtureTarget]:
+def _workflow_preview(
+    planning: FixturePlanning,
+    target: FixtureTarget,
+) -> WorkflowPreview:
+    work = _work()
+    decision = planning.workflow_plan(work, ())
+    target_plans: list[BranchTargetPreview] = []
+    for branch in decision.plan.branches:
+        workflow = branch.workflow_plan
+        request = planning.target_preflight_request(
+            workflow,
+            decision.selection_documents,
+        )
+        response = target.preflight(workflow.target_registration_id, request)
+        plan = response.plan
+        target_plans.append(
+            BranchTargetPreview(
+                branch_id=branch.branch_id,
+                workflow_plan_sha256=workflow.workflow_plan_sha256,
+                target_plan=TargetPlanBinding(
+                    protocol=response.target.protocol,
+                    target_implementation_id=response.target.implementation_id,
+                    target_contract_sha256=response.target.contract_sha256,
+                    operation_contract_sha256=plan.operation_contract_sha256,
+                    plan=plan.binding_document(),
+                    plan_sha256=plan.plan_sha256,
+                ),
+            )
+        )
+    request = WorkflowPreviewRequest.seal(WorkflowPreviewRequestPayload(work=work))
+    return WorkflowPreview.seal(
+        WorkflowPreviewPayload(
+            preview_id=request.preview_id,
+            state="ready",
+            work=work,
+            branch_set_plan=decision.plan,
+            selections=decision.selections,
+            target_plans=tuple(target_plans),
+        )
+    )
+
+
+def _run(observer_enabled: bool) -> tuple[object, object, FixtureRiverhog, FixtureTarget]:
     operation = _operation()
     target_contract = _target(operation)
     observer = _observer() if observer_enabled else None
@@ -528,12 +945,174 @@ def _run(observer_enabled: bool) -> tuple[object, FixtureRiverhog, FixtureTarget
         observers=FixtureObservers(observer),
         targets=target,
     )
-    record = coordinator.create_or_resume(_work())
-    for _ in range(12):
-        if record.phase == "complete":
+    parent = coordinator.create_or_resume(_work())
+    child = None
+    for _ in range(24):
+        if parent.phase == "complete":
             break
-        record = coordinator.step(record.work_id)
-    return record, riverhog, target
+        if parent.phase != "coordinating":
+            parent = coordinator.step(parent.work_id)
+            continue
+        assert parent.branch_set_plan is not None
+        child_id = parent.branch_set_plan.branches[0].workflow_plan.work.work_id
+        child = store.load(child_id)
+        assert child is not None
+        if child.phase != "complete":
+            child = coordinator.step(child.work_id)
+        else:
+            parent = coordinator.step(parent.work_id)
+    assert child is not None
+    return parent, child, riverhog, target
+
+
+def _advance_child_to(
+    coordinator: Stove0Coordinator,
+    store: InMemoryWorkStore,
+    phase: str,
+):  # type: ignore[no-untyped-def]
+    parent = coordinator.create_or_resume(_work())
+    while parent.phase != "coordinating":
+        parent = coordinator.step(parent.work_id)
+    assert parent.branch_set_plan is not None
+    child_id = parent.branch_set_plan.branches[0].workflow_plan.work.work_id
+    child = store.load(child_id)
+    assert child is not None
+    while child.phase != phase:
+        child = coordinator.step(child.work_id)
+    return parent, child
+
+
+def test_operator_initiation_binds_the_exact_preview_and_target_plan() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    planning = FixturePlanning(operation, target_contract, None)
+    target = FixtureTarget(operation, target_contract)
+    preview = _workflow_preview(planning, target)
+    store = InMemoryWorkStore()
+    coordinator = Stove0Coordinator(
+        Stove0WorkService(store),
+        riverhog=FixtureRiverhog(),
+        planning=planning,
+        observers=FixtureObservers(None),
+        targets=target,
+    )
+
+    parent = coordinator.create_or_resume(_work(), preview=preview)
+    assert parent.preview_acceptance is not None
+    assert parent.preview_acceptance.preview_sha256 == preview.preview_sha256
+    while parent.phase != "coordinating":
+        parent = coordinator.step(parent.work_id)
+    assert parent.branch_set_plan is not None
+    child = store.load(parent.branch_set_plan.branches[0].workflow_plan.work.work_id)
+    assert child is not None
+    assert child.expected_target_plan_sha256 == preview.target_plans[0].target_plan.plan_sha256
+    while child.phase != "queued":
+        child = coordinator.step(child.work_id)
+    assert child.target_plan is not None
+    assert child.target_plan.plan_sha256 == child.expected_target_plan_sha256
+
+
+def test_operator_initiation_fails_truthfully_when_target_preflight_changes() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    planning = FixturePlanning(operation, target_contract, None)
+    preview = _workflow_preview(planning, FixtureTarget(operation, target_contract))
+    store = InMemoryWorkStore()
+    coordinator = Stove0Coordinator(
+        Stove0WorkService(store),
+        riverhog=FixtureRiverhog(),
+        planning=planning,
+        observers=FixtureObservers(None),
+        targets=DriftingPreflightTarget(operation, target_contract),
+    )
+    parent = coordinator.create_or_resume(_work(), preview=preview)
+    while parent.phase != "coordinating":
+        parent = coordinator.step(parent.work_id)
+    assert parent.branch_set_plan is not None
+    child = store.load(parent.branch_set_plan.branches[0].workflow_plan.work.work_id)
+    assert child is not None
+    while child.phase != "failed":
+        child = coordinator.step(child.work_id)
+
+    assert child.failure is not None
+    assert child.failure.code == "accepted-preview-target-changed"
+    assert child.failure.retryable is True
+    assert child.target_request is None
+
+
+def test_coordinator_executes_two_retained_branches_and_one_exact_final_join() -> None:
+    operations = _fork_join_operations()
+    target_contract = _fork_join_target(operations)
+    planning = ForkJoinPlanning(*operations, target_contract)
+    target = ForkJoinTarget(operations, target_contract)
+    store = InMemoryWorkStore()
+    riverhog = FixtureRiverhog()
+    coordinator = Stove0Coordinator(
+        Stove0WorkService(store),
+        riverhog=riverhog,
+        planning=planning,
+        observers=FixtureObservers(None),
+        targets=target,
+    )
+    parent = coordinator.create_or_resume(_work())
+
+    for _ in range(128):
+        parent = store.load(parent.work_id)
+        assert parent is not None
+        if parent.phase == "complete":
+            break
+        if parent.phase != "coordinating":
+            coordinator.step(parent.work_id)
+            continue
+        assert parent.branch_set_plan is not None
+        child_ids = [
+            branch.workflow_plan.work.work_id for branch in parent.branch_set_plan.branches
+        ]
+        if parent.join_plan is not None:
+            child_ids.append(parent.join_plan.work.work_id)
+        for child_id in child_ids:
+            child = store.load(child_id)
+            assert child is not None
+            if child.phase != "complete":
+                coordinator.step(child_id)
+        coordinator.step(parent.work_id)
+
+    parent = store.load(parent.work_id)
+    assert parent is not None and parent.phase == "complete"
+    assert parent.branch_set_plan is not None and parent.join_plan is not None
+    assert riverhog.coordination_settled is True
+    assert set(riverhog.outcomes) == {"branch/audio", "branch/video", "join"}
+    assert len({item.collection_id for item in riverhog.outcomes.values()}) == 3
+    join = store.load(parent.join_plan.work.work_id)
+    assert join is not None and join.phase == "complete" and join.output is not None
+    assert join.output == riverhog.outcomes["join"]
+
+
+def test_coordination_settles_parent_only_after_successful_children_complete() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    store = InMemoryWorkStore()
+    riverhog = FixtureRiverhog()
+    coordinator = Stove0Coordinator(
+        Stove0WorkService(store),
+        riverhog=riverhog,
+        planning=FixturePlanning(operation, target_contract, None),
+        observers=FixtureObservers(None),
+        targets=FixtureTarget(operation, target_contract),
+    )
+    parent, child = _advance_child_to(coordinator, store, "settled")
+
+    unchanged = coordinator.step(parent.work_id)
+
+    assert unchanged.phase == "coordinating"
+    assert riverhog.coordination_settled is False
+
+    child = coordinator.step(child.work_id)
+    assert child.phase == "complete"
+    completed = coordinator.step(parent.work_id)
+
+    assert completed.phase == "complete"
+    assert riverhog.coordination_settled is True
 
 
 def test_coordinator_records_inapplicable_as_a_distinct_terminal_outcome() -> None:
@@ -587,38 +1166,41 @@ def test_coordinator_restarts_unsettled_work_under_a_new_claim_fence() -> None:
 
 
 def test_coordinator_completes_observation_free_work_without_persisting_tokens() -> None:
-    record, riverhog, target = _run(False)
-    assert record.phase == "complete"
+    parent, child, riverhog, target = _run(False)
+    assert parent.phase == "complete"
+    assert child.phase == "complete"
     assert riverhog.sealed and riverhog.released
     assert target.accepted is not None
     assert riverhog.renewals > 0
     assert riverhog.target_authorities >= 2
     assert target.accepted.runtime.capability_token.endswith(str(riverhog.target_authorities))
-    assert record.target_request is not None
-    encoded = record.model_dump_json()
+    assert child.target_request is not None
+    encoded = parent.model_dump_json() + child.model_dump_json()
     assert "target-secret" not in encoded
     assert "observer-secret" not in encoded
 
 
 def test_coordinator_records_pinned_observation_evidence_before_target_execution() -> None:
-    record, riverhog, _target_port = _run(True)
-    assert record.phase == "complete"
+    parent, child, riverhog, _target_port = _run(True)
+    assert parent.phase == "complete"
+    assert child.phase == "complete"
     assert riverhog.sealed and riverhog.released
-    assert len(record.observation_results) == 1
-    result = record.observation_results[0]
+    assert len(parent.observation_results) == 1
+    result = parent.observation_results[0]
     assert result.state == "observed"
     assert result.facts == {"kind": "fixture"}
-    assert record.workflow_plan is not None
+    assert child.workflow_plan is not None
     assert (
-        tuple(item.result for item in record.workflow_plan.observations)
-        == record.observation_results
+        tuple(item.result for item in child.workflow_plan.observations)
+        == parent.observation_results
     )
 
 
 def test_coordinator_verifies_the_current_fence_without_renewing_it() -> None:
     operation = _operation()
     target_contract = _target(operation)
-    state = Stove0WorkService(InMemoryWorkStore())
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
     riverhog = FixtureRiverhog()
     coordinator = Stove0Coordinator(
         state,
@@ -627,23 +1209,22 @@ def test_coordinator_verifies_the_current_fence_without_renewing_it() -> None:
         observers=FixtureObservers(None),
         targets=FixtureTarget(operation, target_contract),
     )
-    record = coordinator.create_or_resume(_work())
-    while record.phase != "verifying":
-        record = coordinator.step(record.work_id)
+    _parent, record = _advance_child_to(coordinator, store, "verifying")
 
     renewals = riverhog.renewals
-    riverhog.renewed_claim = ClaimBinding(claim_id="claim-1", fence=2)
+    riverhog.renewed_claim = ClaimBinding(claim_id="claim-2", fence=2)
     settled = coordinator.step(record.work_id)
 
     assert settled.phase == "settled"
-    assert settled.claim == ClaimBinding(claim_id="claim-1", fence=1)
+    assert settled.claim == ClaimBinding(claim_id="claim-2", fence=1)
     assert riverhog.renewals == renewals
 
 
 def test_coordinator_retries_target_failure_under_a_fresh_claim_fence() -> None:
     operation = _operation()
     target_contract = _target(operation)
-    state = Stove0WorkService(InMemoryWorkStore())
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
     riverhog = FixtureRiverhog()
     target = FixtureTarget(operation, target_contract)
     coordinator = Stove0Coordinator(
@@ -653,9 +1234,7 @@ def test_coordinator_retries_target_failure_under_a_fresh_claim_fence() -> None:
         observers=FixtureObservers(None),
         targets=target,
     )
-    record = coordinator.create_or_resume(_work())
-    while record.phase != "executing":
-        record = coordinator.step(record.work_id)
+    _parent, record = _advance_child_to(coordinator, store, "executing")
 
     assert record.target_request is not None
     failed = TargetJobStatus(
@@ -682,7 +1261,7 @@ def test_coordinator_retries_target_failure_under_a_fresh_claim_fence() -> None:
     retried = coordinator.retry(record.work_id)
 
     assert retried.phase == "claimed"
-    assert retried.claim == ClaimBinding(claim_id="claim-1", fence=2)
+    assert retried.claim == ClaimBinding(claim_id="claim-2", fence=2)
     assert retried.target_request is None
     assert retried.failure is None
     assert riverhog.restarted is True
@@ -708,9 +1287,7 @@ def test_coordinator_cancels_retryable_terminal_target_failure_by_abandoning_cla
         observers=FixtureObservers(None),
         targets=target,
     )
-    record = coordinator.create_or_resume(_work())
-    while record.phase != "executing":
-        record = coordinator.step(record.work_id)
+    _parent, record = _advance_child_to(coordinator, store, "executing")
 
     assert record.target_request is not None
     failed = TargetJobStatus(
@@ -740,6 +1317,9 @@ def test_coordinator_cancels_retryable_terminal_target_failure_by_abandoning_cla
     canceled = coordinator.step(record.work_id)
     assert canceled.phase == "canceled"
     assert riverhog.abandoned is True
+    assert "operator request" not in canceled.model_dump_json()
+    assert "target-secret" not in canceled.model_dump_json()
+    assert riverhog.abandoned is True
 
 
 def test_coordinator_propagates_target_cancellation_without_persisting_reason() -> None:
@@ -756,14 +1336,38 @@ def test_coordinator_propagates_target_cancellation_without_persisting_reason() 
         observers=FixtureObservers(None),
         targets=target,
     )
-    record = coordinator.create_or_resume(_work())
-    while record.phase != "executing":
-        record = coordinator.step(record.work_id)
+    _parent, record = _advance_child_to(coordinator, store, "executing")
 
     pending = coordinator.cancel(record.work_id, reason="operator request")
     assert pending.phase == "abandon_pending"
     canceled = coordinator.step(record.work_id)
     assert canceled.phase == "canceled"
+
+
+def test_parent_cancellation_converges_children_before_abandoning_coordination() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
+    riverhog = FixtureRiverhog()
+    target = FixtureTarget(operation, target_contract)
+    coordinator = Stove0Coordinator(
+        state,
+        riverhog=riverhog,
+        planning=FixturePlanning(operation, target_contract, None),
+        observers=FixtureObservers(None),
+        targets=target,
+    )
+    parent, child = _advance_child_to(coordinator, store, "executing")
+
+    requested = coordinator.cancel(parent.work_id, reason="operator canceled graph")
+    assert requested.phase == "coordinating"
+    assert requested.coordination_cancel_requested is True
+    waiting = coordinator.step(parent.work_id)
+    assert waiting.phase == "coordinating"
+    child = store.load(child.work_id)
+    assert child is not None and child.phase == "abandon_pending"
+    assert coordinator.step(child.work_id).phase == "canceled"
+    assert coordinator.step(parent.work_id).phase == "abandon_pending"
+    assert coordinator.step(parent.work_id).phase == "canceled"
     assert riverhog.abandoned is True
-    assert "operator request" not in canceled.model_dump_json()
-    assert "target-secret" not in canceled.model_dump_json()

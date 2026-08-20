@@ -36,7 +36,7 @@ class CollectionTransformRuntime:
         work_id: str,
         execution_id: str,
         controller_evidence: Mapping[str, object],
-        producer_app: str = "stove0-worker",
+        producer_app: str,
         producer_version: str = "development",
         cancellation_check: CancellationCheck | None = None,
         input_retrieval_policy: Literal["available-only", "allow"] = "available-only",

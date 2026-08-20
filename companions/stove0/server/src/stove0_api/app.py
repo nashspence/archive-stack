@@ -54,7 +54,7 @@ from stove0_core import (
 from stove0_observer_support import ContentObserverClient
 from stove0_protocol import CollectionRootRef, EvaluationDefinition, WorkIdentity
 from stove0_review_contracts import (
-    REVIEW_SAMPLE_ENCODE_OPERATION_ID,
+    REVIEW_MATERIALIZE_OPERATION_ID,
     review_operation_intent,
     review_target_options,
 )
@@ -62,6 +62,7 @@ from stove0_target_support import TransformTargetClient
 from time_formats import utc_timestamp_now
 
 from stove0_api.schemas import (
+    ArtifactSelectionPageOut,
     ErrorResponse,
     EvaluationPageOut,
     EvaluationReviewIn,
@@ -69,6 +70,7 @@ from stove0_api.schemas import (
     SchedulerRunIn,
     WorkCancelIn,
     WorkCreateIn,
+    WorkflowPreviewIn,
     WorkPageOut,
 )
 
@@ -137,7 +139,7 @@ class Stove0Composition:
             observers=observers,
             targets=targets,
             operation_compilers={
-                REVIEW_SAMPLE_ENCODE_OPERATION_ID: lambda work: (
+                REVIEW_MATERIALIZE_OPERATION_ID: lambda work: (
                     review_operation_intent(work),
                     review_target_options(work),
                 )
@@ -350,7 +352,22 @@ def create_app(
     )
     def create_work(request: WorkCreateIn) -> dict[str, Any]:
         identity = _work_identity(composition, request)
-        return composition.coordinator.create_or_resume(identity).model_dump(
+        existing = composition.state.load(identity.work_id)
+        if existing is not None:
+            acceptance = existing.preview_acceptance
+            if acceptance is None or acceptance.preview_sha256 != request.preview_sha256:
+                raise HTTPException(
+                    status_code=409,
+                    detail="existing work was not initiated from the accepted preview",
+                )
+            return existing.model_dump(mode="json", exclude_none=True)
+        preview = composition.preview.preview(identity)
+        if preview.state != "ready" or preview.preview_sha256 != request.preview_sha256:
+            raise HTTPException(
+                status_code=409,
+                detail="current workflow preview differs from the accepted preview",
+            )
+        return composition.coordinator.create_or_resume(identity, preview=preview).model_dump(
             mode="json", exclude_none=True
         )
 
@@ -365,6 +382,59 @@ def create_app(
         if record is None:
             raise KeyError(work_id)
         return record.model_dump(mode="json", exclude_none=True)
+
+    @app.get(
+        "/v1/work/{work_id}/coordination",
+        dependencies=[Depends(authorize)],
+        operation_id="inspect_work_coordination",
+        tags=["work"],
+    )
+    def inspect_work_coordination(work_id: str) -> dict[str, Any]:
+        return composition.coordinator.inspect_coordination(work_id).model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+
+    @app.get(
+        "/v1/artifact-selections/{selection_sha256}",
+        response_model=ArtifactSelectionPageOut,
+        dependencies=[Depends(authorize)],
+        operation_id="get_artifact_selection",
+        tags=["artifact-selections"],
+    )
+    def get_artifact_selection(
+        selection_sha256: str,
+        page: int = Query(default=1, ge=1),
+        per_page: int = Query(default=100, ge=1, le=1000),
+        all_items: bool = Query(default=False, alias="all"),
+    ) -> dict[str, object]:
+        selection = composition.state.load_selection(selection_sha256)
+        if selection is None:
+            raise KeyError(selection_sha256)
+        total = len(selection.artifacts)
+        if all_items:
+            selected = selection.artifacts
+            response_page = 1
+            response_per_page = total
+            pages = 1 if total else 0
+        else:
+            start = (page - 1) * per_page
+            selected = selection.artifacts[start : start + per_page]
+            response_page = page
+            response_per_page = per_page
+            pages = (total + per_page - 1) // per_page
+        return {
+            "page": response_page,
+            "per_page": response_per_page,
+            "total": total,
+            "pages": pages,
+            "sort": "id",
+            "order": "asc",
+            "filters": {},
+            "selection_sha256": selection.selection_sha256,
+            "total_bytes": selection.total_bytes,
+            "artifacts": [item.model_dump(mode="json") for item in selected],
+        }
 
     @app.post(
         "/v1/work/{work_id}/step",
@@ -401,7 +471,7 @@ def create_app(
         operation_id="preview_workflow",
         tags=["previews"],
     )
-    def preview_workflow(request: WorkCreateIn) -> dict[str, Any]:
+    def preview_workflow(request: WorkflowPreviewIn) -> dict[str, Any]:
         return composition.preview.preview(_work_identity(composition, request)).model_dump(
             mode="json", exclude_none=True
         )
@@ -557,7 +627,7 @@ def create_app(
 
 def _work_identity(
     composition: Stove0Composition,
-    request: WorkCreateIn,
+    request: WorkflowPreviewIn,
 ) -> WorkIdentity:
     roots: list[CollectionRootRef] = []
     for collection_id in request.collection_ids:
@@ -586,7 +656,8 @@ def _scheduler_loop(
     try:
         while not stop.is_set():
             try:
-                composition.scheduler.run_once(role=role)
+                result = composition.scheduler.run_once(role=role)
+                _log_scheduler_failures(role, result)
             except Exception:
                 # The durable cursor/work state makes the next tick a safe retry.
                 LOGGER.exception("stove0 %s scheduler iteration failed", role)
@@ -594,6 +665,24 @@ def _scheduler_loop(
     finally:
         composition.riverhog_api.close()
         composition.state.engine.dispose()
+
+
+def _log_scheduler_failures(role: SchedulerRole, result: dict[str, object]) -> None:
+    """Make isolated per-work advancement failures operator-visible."""
+
+    work = result.get("work")
+    failures = work.get("failures") if isinstance(work, dict) else None
+    if not isinstance(failures, list):
+        return
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        LOGGER.error(
+            "stove0 %s scheduler could not advance work %s: %s",
+            role,
+            failure.get("work_id", "unknown"),
+            failure.get("error", "unknown error"),
+        )
 
 
 def _install_stop_handlers(stop: threading.Event) -> None:

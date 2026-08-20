@@ -27,6 +27,7 @@ _CONTROLLER_PHASES = frozenset(
         "eligible",
         "claimed",
         "planning",
+        "coordinating",
         "verifying",
         "settled",
         "retirement_pending",

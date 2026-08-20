@@ -13,15 +13,21 @@ from typing import Any, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from stove0_protocol import (
+    ArtifactSelection,
+    BranchSetDecision,
+    BranchSetPlan,
     ControllerEvidence,
     ControllerEvidencePayload,
     ExecutionEnvelope,
     ExecutionEnvelopePayload,
+    JoinPlan,
     ObservationRequest,
     ObservationResult,
     ObserverDescriptor,
+    Sha256,
     TargetPlanBinding,
     WorkflowPlan,
+    WorkflowPreview,
     WorkIdentity,
     validate_observation_result,
 )
@@ -48,6 +54,7 @@ WorkPhase = Literal[
     "verifying",
     "settled",
     "retirement_pending",
+    "coordinating",
     "abandon_pending",
     "complete",
     "inapplicable",
@@ -86,14 +93,57 @@ class WorkInapplicable(Stove0StateModel):
     message: str = Field(min_length=1, max_length=1000)
 
 
+class PreviewTargetExpectation(Stove0StateModel):
+    """Compact target-plan identity approved by one workflow preview."""
+
+    branch_id: str = Field(min_length=1, max_length=160)
+    plan_sha256: Sha256
+
+
+class PreviewAcceptance(Stove0StateModel):
+    """Exact preview identities accepted when operator work is initiated."""
+
+    preview_sha256: Sha256
+    branch_set_sha256: Sha256
+    target_plans: tuple[PreviewTargetExpectation, ...]
+
+    @model_validator(mode="after")
+    def canonical_targets(self) -> Self:
+        branch_ids = [item.branch_id for item in self.target_plans]
+        if branch_ids != sorted(branch_ids) or len(branch_ids) != len(set(branch_ids)):
+            raise ValueError("preview target expectations must be unique and ordered")
+        return self
+
+    @classmethod
+    def from_preview(cls, preview: WorkflowPreview) -> PreviewAcceptance:
+        if preview.state != "ready" or preview.branch_set_plan is None:
+            raise ValueError("only a ready workflow preview can initiate work")
+        return cls(
+            preview_sha256=preview.preview_sha256,
+            branch_set_sha256=preview.branch_set_plan.branch_set_sha256,
+            target_plans=tuple(
+                PreviewTargetExpectation(
+                    branch_id=item.branch_id,
+                    plan_sha256=item.target_plan.plan_sha256,
+                )
+                for item in preview.target_plans
+            ),
+        )
+
+
 class WorkRecord(Stove0StateModel):
     format: Literal["stove0-work-record/v1"] = "stove0-work-record/v1"
     work: WorkIdentity
     phase: WorkPhase = "eligible"
     revision: int = Field(default=1, ge=1)
     claim: ClaimBinding | None = None
+    preview_acceptance: PreviewAcceptance | None = None
+    expected_target_plan_sha256: Sha256 | None = None
     observation_requests: tuple[ObservationRequest, ...] = ()
     observation_results: tuple[ObservationResult, ...] = ()
+    branch_set_plan: BranchSetPlan | None = None
+    join_plan: JoinPlan | None = None
+    coordination_cancel_requested: bool = False
     workflow_plan: WorkflowPlan | None = None
     target_plan: TransformPlan | None = None
     controller_evidence: ControllerEvidence | None = None
@@ -151,6 +201,43 @@ class WorkRecord(Stove0StateModel):
             raise ValueError("only abandon_pending work may retain an abandon outcome")
         if self.retirement_remaining and self.phase != "retirement_pending":
             raise ValueError("retirement work must remain in retirement_pending")
+        if self.branch_set_plan is not None:
+            if self.branch_set_plan.parent_work != self.work:
+                raise ValueError("branch-set plan differs from its parent work record")
+            if self.workflow_plan is not None or self.work.fork_join is not None:
+                raise ValueError("coordination parents cannot also be target work")
+            if self.phase not in {
+                "coordinating",
+                "retirement_pending",
+                "complete",
+                "abandon_pending",
+                "canceled",
+                "failed",
+            }:
+                raise ValueError("branch-set plans appear only after atomic admission")
+        if self.preview_acceptance is not None:
+            if self.work.fork_join is not None:
+                raise ValueError("only parent work may retain a preview acceptance")
+            if self.branch_set_plan is not None and (
+                self.branch_set_plan.branch_set_sha256 != self.preview_acceptance.branch_set_sha256
+            ):
+                raise ValueError("admitted branch set differs from the accepted preview")
+        if self.expected_target_plan_sha256 is not None and self.workflow_plan is None:
+            raise ValueError("a target-plan expectation requires ordinary target work")
+        if self.join_plan is not None:
+            if self.branch_set_plan is None or self.join_plan.branch_set_sha256 != (
+                self.branch_set_plan.branch_set_sha256
+            ):
+                raise ValueError("resolved join plan differs from its branch set")
+        if self.phase == "coordinating" and self.branch_set_plan is None:
+            raise ValueError("coordinating work requires an immutable branch-set plan")
+        if self.coordination_cancel_requested and (
+            self.branch_set_plan is None
+            or self.phase not in {"coordinating", "abandon_pending", "canceled"}
+        ):
+            raise ValueError("coordination cancellation belongs only to a branch-set parent")
+        if self.workflow_plan is not None and self.workflow_plan.work != self.work:
+            raise ValueError("workflow plan differs from its ordinary work record")
         return self
 
     @property
@@ -171,6 +258,41 @@ class WorkStore(Protocol):
         replacement: WorkRecord,
     ) -> WorkRecord: ...
 
+    def admit_branch_set(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int,
+        decision: BranchSetDecision,
+    ) -> WorkRecord: ...
+
+    def admit_join(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int,
+        plan: JoinPlan,
+        selections: Sequence[ArtifactSelection],
+    ) -> WorkRecord: ...
+
+    def load_selection(self, selection_sha256: str) -> ArtifactSelection | None: ...
+
+
+def _preview_target_expectations(
+    record: WorkRecord,
+    decision: BranchSetDecision,
+) -> dict[str, Sha256]:
+    acceptance = record.preview_acceptance
+    if acceptance is None:
+        return {}
+    if decision.plan.branch_set_sha256 != acceptance.branch_set_sha256:
+        raise Stove0StateError("planned branch set differs from the accepted workflow preview")
+    expected = {item.branch_id: item.plan_sha256 for item in acceptance.target_plans}
+    actual = {item.branch_id for item in decision.plan.branches}
+    if set(expected) != actual:
+        raise Stove0StateError("planned branches differ from the accepted workflow preview")
+    return expected
+
 
 class InMemoryWorkStore:
     """Thread-safe deterministic store used by tests and in-process prototypes."""
@@ -178,6 +300,9 @@ class InMemoryWorkStore:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._records: dict[str, WorkRecord] = {}
+        self._selections: dict[str, ArtifactSelection] = {}
+        self._branch_sets: dict[str, BranchSetPlan] = {}
+        self._join_plans: dict[str, JoinPlan] = {}
 
     def load(self, work_id: str) -> WorkRecord | None:
         with self._lock:
@@ -187,7 +312,18 @@ class InMemoryWorkStore:
         with self._lock:
             existing = self._records.get(record.work_id)
             if existing is not None:
-                if existing.work != record.work:
+                if (
+                    existing.work != record.work
+                    or (
+                        record.preview_acceptance is not None
+                        and existing.preview_acceptance != record.preview_acceptance
+                    )
+                    or (
+                        record.expected_target_plan_sha256 is not None
+                        and existing.expected_target_plan_sha256
+                        != record.expected_target_plan_sha256
+                    )
+                ):
                     raise ConcurrentWorkUpdate("work identity was reused with another payload")
                 return existing
             self._records[record.work_id] = record
@@ -213,6 +349,129 @@ class InMemoryWorkStore:
             self._records[work_id] = replacement
             return replacement
 
+    def admit_branch_set(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int,
+        decision: BranchSetDecision,
+    ) -> WorkRecord:
+        with self._lock:
+            current = self._records.get(work_id)
+            if current is None:
+                raise KeyError(work_id)
+            if current.branch_set_plan == decision.plan:
+                return current
+            if current.revision != expected_revision:
+                raise ConcurrentWorkUpdate(
+                    f"stale stove0 work revision: {expected_revision} != {current.revision}"
+                )
+            if current.phase != "planning" or decision.plan.parent_work != current.work:
+                raise Stove0StateError("work cannot admit this branch set")
+            expectations = _preview_target_expectations(current, decision)
+            child_records = tuple(
+                WorkRecord(
+                    work=branch.workflow_plan.work,
+                    workflow_plan=branch.workflow_plan,
+                    expected_target_plan_sha256=expectations.get(branch.branch_id),
+                )
+                for branch in decision.plan.branches
+            )
+            for selection in decision.selections:
+                existing_selection = self._selections.get(selection.selection_sha256)
+                if existing_selection is not None and existing_selection != selection:
+                    raise ConcurrentWorkUpdate("artifact selection identity was reused")
+            existing_plan = self._branch_sets.get(decision.plan.branch_set_sha256)
+            if existing_plan is not None and existing_plan != decision.plan:
+                raise ConcurrentWorkUpdate("branch-set identity was reused")
+            for child in child_records:
+                existing_child = self._records.get(child.work_id)
+                if existing_child is not None and (
+                    existing_child.work != child.work
+                    or existing_child.workflow_plan != child.workflow_plan
+                    or existing_child.expected_target_plan_sha256
+                    != child.expected_target_plan_sha256
+                ):
+                    raise ConcurrentWorkUpdate("branch child identity was reused")
+            replacement = WorkRecord.model_validate(
+                current.model_copy(
+                    update={
+                        "phase": "coordinating",
+                        "branch_set_plan": decision.plan,
+                        "revision": current.revision + 1,
+                    }
+                ).model_dump(mode="python")
+            )
+            self._selections.update(decision.selection_documents)
+            self._branch_sets[decision.plan.branch_set_sha256] = decision.plan
+            for child in child_records:
+                self._records.setdefault(child.work_id, child)
+            self._records[work_id] = replacement
+            return replacement
+
+    def admit_join(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int,
+        plan: JoinPlan,
+        selections: Sequence[ArtifactSelection],
+    ) -> WorkRecord:
+        with self._lock:
+            current = self._records.get(work_id)
+            if current is None:
+                raise KeyError(work_id)
+            if current.join_plan == plan:
+                return current
+            if current.revision != expected_revision:
+                raise ConcurrentWorkUpdate(
+                    f"stale stove0 work revision: {expected_revision} != {current.revision}"
+                )
+            if (
+                current.phase != "coordinating"
+                or current.branch_set_plan is None
+                or plan.branch_set_sha256 != current.branch_set_plan.branch_set_sha256
+            ):
+                raise Stove0StateError("work cannot admit this resolved join")
+            if current.join_plan is not None:
+                if current.join_plan != plan:
+                    raise ConcurrentWorkUpdate("branch set already resolved another join plan")
+                return current
+            selection_documents = {item.selection_sha256: item for item in selections}
+            if len(selection_documents) != len(tuple(selections)):
+                raise ValueError("resolved join selections must be unique")
+            for selection in selection_documents.values():
+                existing = self._selections.get(selection.selection_sha256)
+                if existing is not None and existing != selection:
+                    raise ConcurrentWorkUpdate("artifact selection identity was reused")
+            existing_plan = self._join_plans.get(plan.join_plan_sha256)
+            if existing_plan is not None and existing_plan != plan:
+                raise ConcurrentWorkUpdate("join-plan identity was reused")
+            child = WorkRecord(work=plan.work, workflow_plan=plan.workflow_plan)
+            existing_child = self._records.get(child.work_id)
+            if existing_child is not None and (
+                existing_child.work != child.work
+                or existing_child.workflow_plan != child.workflow_plan
+            ):
+                raise ConcurrentWorkUpdate("join work identity was reused")
+            replacement = WorkRecord.model_validate(
+                current.model_copy(
+                    update={
+                        "join_plan": plan,
+                        "revision": current.revision + 1,
+                    }
+                ).model_dump(mode="python")
+            )
+            self._selections.update(selection_documents)
+            self._join_plans[plan.join_plan_sha256] = plan
+            self._records.setdefault(child.work_id, child)
+            self._records[work_id] = replacement
+            return replacement
+
+    def load_selection(self, selection_sha256: str) -> ArtifactSelection | None:
+        with self._lock:
+            return self._selections.get(selection_sha256)
+
 
 class Stove0WorkService:
     """Validated state transitions for one collection transformation authority."""
@@ -220,8 +479,57 @@ class Stove0WorkService:
     def __init__(self, store: WorkStore) -> None:
         self.store = store
 
-    def create_or_resume(self, work: WorkIdentity) -> WorkRecord:
-        return self.store.create(WorkRecord(work=work))
+    def create_or_resume(
+        self,
+        work: WorkIdentity,
+        *,
+        preview: WorkflowPreview | None = None,
+    ) -> WorkRecord:
+        acceptance = PreviewAcceptance.from_preview(preview) if preview is not None else None
+        if preview is not None and preview.work != work:
+            raise ValueError("accepted workflow preview differs from the initiated work")
+        return self.store.create(WorkRecord(work=work, preview_acceptance=acceptance))
+
+    def admit_branch_set(
+        self,
+        work_id: str,
+        decision: BranchSetDecision,
+        *,
+        expected_revision: int,
+    ) -> WorkRecord:
+        return self.store.admit_branch_set(
+            work_id,
+            expected_revision=expected_revision,
+            decision=decision,
+        )
+
+    def admit_join(
+        self,
+        work_id: str,
+        plan: JoinPlan,
+        selections: Sequence[ArtifactSelection],
+        *,
+        expected_revision: int,
+    ) -> WorkRecord:
+        return self.store.admit_join(
+            work_id,
+            expected_revision=expected_revision,
+            plan=plan,
+            selections=selections,
+        )
+
+    def activate_preplanned(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int,
+    ) -> WorkRecord:
+        record = self._load(work_id, expected_revision)
+        if record.phase != "claimed" or record.claim is None or record.workflow_plan is None:
+            raise Stove0StateError(f"work cannot activate a sealed plan from {record.phase}")
+        if record.work.fork_join is None:
+            raise Stove0StateError("only branch or join work may be preplanned")
+        return self._replace(record, phase="target_preflight")
 
     def bind_claim(
         self,
@@ -273,13 +581,14 @@ class Stove0WorkService:
             raise Stove0StateError("Riverhog returned another processing claim identity")
         if replacement.fence <= record.claim.fence:
             raise Stove0StateError("replacement claim fence must advance")
+        retained_workflow_plan = record.workflow_plan if record.work.fork_join is not None else None
         return self._replace(
             record,
             phase="claimed",
             claim=replacement,
             observation_requests=(),
             observation_results=(),
-            workflow_plan=None,
+            workflow_plan=retained_workflow_plan,
             target_plan=None,
             controller_evidence=None,
             target_request=None,
@@ -561,9 +870,18 @@ class Stove0WorkService:
         expected_revision: int,
     ) -> WorkRecord:
         record = self._load(work_id, expected_revision)
-        if record.phase != "settled" or record.workflow_plan is None:
+        if record.phase not in {"settled", "coordinating"}:
             raise Stove0StateError(f"work cannot begin retirement from {record.phase}")
-        if record.workflow_plan.retirement_policy == "retain":
+        policy = (
+            record.branch_set_plan.retirement_policy
+            if record.branch_set_plan is not None
+            else record.workflow_plan.retirement_policy
+            if record.workflow_plan is not None
+            else None
+        )
+        if policy is None:
+            raise Stove0StateError("retirement work has no sealed policy")
+        if policy == "retain":
             if collection_ids:
                 raise ValueError("retained work cannot retire input collections")
             return self._replace(record, phase="complete")
@@ -576,6 +894,19 @@ class Stove0WorkService:
             phase="retirement_pending",
             retirement_remaining=normalized,
         )
+
+    def request_coordination_cancel(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int,
+    ) -> WorkRecord:
+        record = self._load(work_id, expected_revision)
+        if record.phase != "coordinating" or record.branch_set_plan is None:
+            raise Stove0StateError("only coordinating branch-set work accepts parent cancellation")
+        if record.coordination_cancel_requested:
+            return record
+        return self._replace(record, coordination_cancel_requested=True)
 
     def record_retired(
         self,
@@ -618,13 +949,14 @@ class Stove0WorkService:
             raise Stove0StateError("retry must retain the same Riverhog claim identity")
         if replacement.fence <= record.claim.fence:
             raise Stove0StateError("retry must advance the Riverhog claim fence")
+        retained_workflow_plan = record.workflow_plan if record.work.fork_join is not None else None
         return self._replace(
             record,
             phase="claimed",
             claim=replacement,
             observation_requests=(),
             observation_results=(),
-            workflow_plan=None,
+            workflow_plan=retained_workflow_plan,
             target_plan=None,
             controller_evidence=None,
             target_request=None,
@@ -744,6 +1076,8 @@ __all__ = [
     "ClaimBinding",
     "ConcurrentWorkUpdate",
     "InMemoryWorkStore",
+    "PreviewAcceptance",
+    "PreviewTargetExpectation",
     "Stove0StateError",
     "Stove0WorkService",
     "TerminalPhase",

@@ -47,6 +47,7 @@ def conformance_report(
         "implementation_id": contract.implementation_id,
         "implementation_version": contract.implementation_version,
         "source_revision": contract.source_revision,
+        "image_digest": contract.image_digest,
         "target_contract_sha256": contract.contract_sha256,
         "transport": contract.transport,
         "operations": [

@@ -23,9 +23,21 @@ IMPLEMENTATION_OWNERS = {
         {"stove0_api", "stove0_core"},
     ),
     "stove0-client": (REPO / "companions/stove0/client/src", {"stove0_cli"}),
-    "stove0-maintained-extensions": (
-        REPO / "companions/stove0/extensions/src",
-        {"stove0_extensions"},
+    "stove0-ffprobe-sampling-observer": (
+        REPO / "companions/stove0-ffprobe-sampling-observer/src",
+        {"stove0_ffprobe_sampling_observer"},
+    ),
+    "stove0-nvenc-av1-opus-target": (
+        REPO / "companions/stove0-nvenc-av1-opus-target/src",
+        {"stove0_nvenc_av1_opus_target"},
+    ),
+    "stove0-opus-target": (
+        REPO / "companions/stove0-opus-target/src",
+        {"stove0_opus_target"},
+    ),
+    "stove0-review-target": (
+        REPO / "companions/stove0-review-target/src",
+        {"stove0_review_target"},
     ),
     "mango-fish": (REPO / "utilities/mango-fish/src", {"mango_fish"}),
     "gogurt": (REPO / "utilities/gogurt/src", {"gogurt"}),
@@ -37,6 +49,15 @@ CORE_ROOTS = {
     "riverhog_core": REPO / "riverhog/server/src/riverhog_core",
     "stove0_core": REPO / "companions/stove0/server/src/stove0_core",
 }
+RIVERHOG_COLLECTION_WORKFLOW_SURFACE = (
+    REPO / "packages/riverhog-protocol/src/riverhog_protocol/collection_workflows.py",
+    REPO / "packages/riverhog-api-client/src/riverhog_api_client/workflows.py",
+    REPO / "riverhog/server/src/riverhog_api/routers/workflows.py",
+    REPO / "riverhog/server/src/riverhog_api/schemas/workflows.py",
+    REPO / "riverhog/server/src/riverhog_core/catalog_workflow_models.py",
+    REPO / "riverhog/server/src/riverhog_core/services/collection_workflows.py",
+    REPO / "riverhog/server/src/riverhog_core/state_migrations/versions/v1_0004.py",
+)
 EXTERNAL_DISTRIBUTION_MODULES = {
     "alembic": {"alembic"},
     "argon2-cffi": {"argon2"},
@@ -227,6 +248,49 @@ def test_shared_packages_do_not_import_implementation_projects() -> None:
     assert not violations, "\n".join(violations)
 
 
+def test_riverhog_collection_workflows_use_application_agnostic_outcomes() -> None:
+    surface = {
+        path.relative_to(REPO): path.read_text(encoding="utf-8")
+        for path in RIVERHOG_COLLECTION_WORKFLOW_SURFACE
+    }
+    combined = "\n".join(surface.values())
+
+    assert "CollectionProcessingOutcomeIdentity" in combined
+    assert '"collection_processing_outcomes"' in combined
+    assert '"/collection-processing-claims/{claim_id}/outcomes/settle"' in combined
+
+    forbidden = ("stove0", "branch_set", "join_plan", "coordination", "dependency_id")
+    violations = [
+        f"{path}: {term}"
+        for path, text in surface.items()
+        for term in forbidden
+        if term in text.lower()
+    ]
+    assert not violations, "\n".join(violations)
+
+
+def test_riverhog_production_surfaces_are_stove0_agnostic() -> None:
+    roots = (
+        REPO / "riverhog/server/src",
+        REPO / "riverhog/client/src",
+        REPO / "riverhog/recovery/src",
+        REPO / "riverhog/ftp-adapter/src",
+    )
+    paths = [path for root in roots for path in root.rglob("*.py")]
+    paths.extend(
+        path
+        for package in (REPO / "packages").glob("riverhog-*")
+        for path in (package / "src").rglob("*.py")
+    )
+    violations = [
+        str(path.relative_to(REPO))
+        for path in paths
+        if "stove0" in path.read_text(encoding="utf-8").casefold()
+    ]
+
+    assert not violations, "\n".join(violations)
+
+
 def test_projects_declare_their_exact_direct_runtime_dependencies() -> None:
     configs: dict[str, tuple[Path, dict[str, object]]] = {}
     distribution_modules: dict[str, set[str]] = dict(EXTERNAL_DISTRIBUTION_MODULES)
@@ -295,8 +359,14 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
         REPO / "riverhog/server/Dockerfile": "riverhog/server",
         REPO / "riverhog/ftp-adapter/Dockerfile": "riverhog/ftp-adapter",
         REPO / "companions/stove0/server/Dockerfile": "companions/stove0/server",
-        REPO / "companions/stove0/extensions/Dockerfile": "companions/stove0/extensions",
-        REPO / "companions/stove0/extensions/nvenc/Dockerfile": "companions/stove0/extensions",
+        REPO / "companions/stove0-ffprobe-sampling-observer/Dockerfile": (
+            "companions/stove0-ffprobe-sampling-observer"
+        ),
+        REPO / "companions/stove0-nvenc-av1-opus-target/Dockerfile": (
+            "companions/stove0-nvenc-av1-opus-target"
+        ),
+        REPO / "companions/stove0-opus-target/Dockerfile": "companions/stove0-opus-target",
+        REPO / "companions/stove0-review-target/Dockerfile": ("companions/stove0-review-target"),
         REPO / "utilities/mango-fish/Dockerfile": "utilities/mango-fish",
     }
     implementation_prefix = re.compile(r"^(?:companions|riverhog|utilities)/")
@@ -346,8 +416,14 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
         REPO / "riverhog/server/Dockerfile": "riverhog-server",
         REPO / "riverhog/ftp-adapter/Dockerfile": "riverhog-ftp-adapter",
         REPO / "companions/stove0/server/Dockerfile": "stove0-server",
-        REPO / "companions/stove0/extensions/Dockerfile": "stove0-maintained-extensions",
-        REPO / "companions/stove0/extensions/nvenc/Dockerfile": ("stove0-maintained-extensions"),
+        REPO / "companions/stove0-ffprobe-sampling-observer/Dockerfile": (
+            "stove0-ffprobe-sampling-observer"
+        ),
+        REPO / "companions/stove0-nvenc-av1-opus-target/Dockerfile": (
+            "stove0-nvenc-av1-opus-target"
+        ),
+        REPO / "companions/stove0-opus-target/Dockerfile": "stove0-opus-target",
+        REPO / "companions/stove0-review-target/Dockerfile": "stove0-review-target",
         REPO / "utilities/mango-fish/Dockerfile": "mango-fish",
     }
     projects, graph = workspace_project_graph()

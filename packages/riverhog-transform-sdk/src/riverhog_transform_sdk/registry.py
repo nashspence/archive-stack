@@ -10,7 +10,7 @@ from riverhog_transform_sdk.runtime import CollectionTransformRuntime
 
 
 class TransformRuntimeRegistry:
-    """Route stove0 capability refreshes to an executing target runtime.
+    """Route controller capability refreshes to an executing target runtime.
 
     The registry contains bearer material only in memory. A refresh arriving just
     before target startup is retained until the runtime binds; a refresh arriving

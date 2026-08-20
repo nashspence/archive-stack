@@ -14,22 +14,16 @@ from stove0_target_protocol import (
 )
 
 SOURCE_ROLE: Final = "stove0.media.source/v1"
-PRESERVED_ROLE: Final = "stove0.media.preserved/v1"
 AUDIO_ARCHIVE_ROLE: Final = "stove0.media.audio-archive/v1"
-VIDEO_ARCHIVE_ROLE: Final = "stove0.media.video-archive/v1"
+AV1_OPUS_ARCHIVE_ROLE: Final = "stove0.media.av1-opus-archive/v1"
 SOURCE_ARTIFACT_ROLE: Final = "stove0.media.source-artifact/v1"
 
-PRESERVE_OPERATION_ID: Final = "stove0.media.preserve/v1"
 AUDIO_ARCHIVE_OPERATION_ID: Final = "stove0.media.audio-archive/v1"
-VIDEO_ARCHIVE_OPERATION_ID: Final = "stove0.media.video-archive/v1"
+AV1_OPUS_ARCHIVE_OPERATION_ID: Final = "stove0.media.av1-opus-archive/v1"
 
 
 class IntentModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class PreserveIntent(IntentModel):
-    pass
 
 
 class AudioArchiveIntent(IntentModel):
@@ -38,7 +32,7 @@ class AudioArchiveIntent(IntentModel):
     bitrate_kbps: int = Field(default=128, ge=16, le=512)
 
 
-class VideoArchiveIntent(IntentModel):
+class Av1OpusArchiveIntent(IntentModel):
     codec: Literal["av1"] = "av1"
     container: Literal["mkv"] = "mkv"
     quality: int = Field(default=23, ge=0, le=63)
@@ -50,28 +44,6 @@ class VideoArchiveIntent(IntentModel):
 def _schema(identifier: str, model: type[IntentModel]) -> JsonSchemaDocument:
     return JsonSchemaDocument.from_schema(identifier, model.model_json_schema())
 
-
-PRESERVE_OPERATION = OperationContract.seal(
-    OperationContractPayload(
-        id=PRESERVE_OPERATION_ID,
-        intent_schema=_schema("stove0.media.preserve-intent/v1", PreserveIntent),
-        inputs=(
-            InputArtifactContract(
-                role=SOURCE_ROLE,
-                minimum=1,
-                allowed_dispositions=("transformed",),
-            ),
-        ),
-        outputs=(
-            OutputArtifactContract(
-                role=PRESERVED_ROLE,
-                minimum=1,
-                derived_from_roles=(SOURCE_ROLE,),
-            ),
-        ),
-        source_retirement_permitted=False,
-    )
-)
 
 AUDIO_ARCHIVE_OPERATION = OperationContract.seal(
     OperationContractPayload(
@@ -95,10 +67,10 @@ AUDIO_ARCHIVE_OPERATION = OperationContract.seal(
     )
 )
 
-VIDEO_ARCHIVE_OPERATION = OperationContract.seal(
+AV1_OPUS_ARCHIVE_OPERATION = OperationContract.seal(
     OperationContractPayload(
-        id=VIDEO_ARCHIVE_OPERATION_ID,
-        intent_schema=_schema("stove0.media.video-archive-intent/v1", VideoArchiveIntent),
+        id=AV1_OPUS_ARCHIVE_OPERATION_ID,
+        intent_schema=_schema("stove0.media.av1-opus-archive-intent/v1", Av1OpusArchiveIntent),
         inputs=(
             InputArtifactContract(
                 role=SOURCE_ROLE,
@@ -108,12 +80,12 @@ VIDEO_ARCHIVE_OPERATION = OperationContract.seal(
         ),
         outputs=(
             OutputArtifactContract(
-                role=SOURCE_ARTIFACT_ROLE,
+                role=AV1_OPUS_ARCHIVE_ROLE,
                 minimum=1,
                 derived_from_roles=(SOURCE_ROLE,),
             ),
             OutputArtifactContract(
-                role=VIDEO_ARCHIVE_ROLE,
+                role=SOURCE_ARTIFACT_ROLE,
                 minimum=1,
                 derived_from_roles=(SOURCE_ROLE,),
             ),
@@ -123,8 +95,7 @@ VIDEO_ARCHIVE_OPERATION = OperationContract.seal(
 )
 
 OPERATIONS: Final = {
-    operation.id: operation
-    for operation in (PRESERVE_OPERATION, AUDIO_ARCHIVE_OPERATION, VIDEO_ARCHIVE_OPERATION)
+    operation.id: operation for operation in (AUDIO_ARCHIVE_OPERATION, AV1_OPUS_ARCHIVE_OPERATION)
 }
 
 
@@ -141,15 +112,11 @@ __all__ = [
     "AUDIO_ARCHIVE_ROLE",
     "AudioArchiveIntent",
     "OPERATIONS",
-    "PRESERVED_ROLE",
-    "PRESERVE_OPERATION",
-    "PRESERVE_OPERATION_ID",
-    "PreserveIntent",
     "SOURCE_ARTIFACT_ROLE",
     "SOURCE_ROLE",
-    "VIDEO_ARCHIVE_OPERATION",
-    "VIDEO_ARCHIVE_OPERATION_ID",
-    "VIDEO_ARCHIVE_ROLE",
-    "VideoArchiveIntent",
+    "AV1_OPUS_ARCHIVE_OPERATION",
+    "AV1_OPUS_ARCHIVE_OPERATION_ID",
+    "AV1_OPUS_ARCHIVE_ROLE",
+    "Av1OpusArchiveIntent",
     "operation_contract",
 ]

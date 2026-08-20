@@ -494,6 +494,12 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         manifest_sha256=str(source_collection["manifest_sha256"]),
         content_etag=str(source_collection["content_etag"]),
     )
+    source_artifact = {
+        "collection": source_identity.as_dict(),
+        "path": binding.path,
+        "bytes": binding.bytes,
+        "sha256": binding.sha256,
+    }
 
     abandoned_work = {
         "format": "qualification-work/v1",
@@ -514,6 +520,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         fence=abandoned_fence,
         audience="qualification.observer/v1",
         actions=("read-inputs",),
+        artifacts=(source_artifact,),
     )
     restarted = operator.restart_processing_claim(
         abandoned_claim_id,
@@ -556,6 +563,20 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         1,
         hashlib.sha256(b"qualification-recipe-contract").hexdigest(),
     )
+    multi_output_work = {
+        "format": "qualification-multi-output-work/v1",
+        "inputs": [source_identity.as_dict()],
+    }
+    multi_output_work_id = canonical_json_sha256(multi_output_work)
+    outcome_claim = operator.create_or_resume_processing_claim(
+        work_id=multi_output_work_id,
+        work_document=multi_output_work,
+        work_document_sha256=multi_output_work_id,
+        inputs=[source_identity.as_dict()],
+        purpose="qualification-multi-output/v1",
+    )
+    outcome_claim_id = str(outcome_claim["id"])
+    outcome_fence = int(outcome_claim["fence"])
     work_document = {
         "format": "qualification-work/v1",
         "recipe": recipe_identity.as_dict(),
@@ -571,7 +592,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     claim_id = str(claim["id"])
     claim_fence = int(claim["fence"])
     assert operator.get_processing_claim(claim_id)["work_id"] == work_id
-    assert operator.list_processing_claims(all_items=True)["total"] == 2
+    assert operator.list_processing_claims(all_items=True)["total"] == 3
     assert (
         operator.renew_processing_claim(
             claim_id,
@@ -597,8 +618,9 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         controller_evidence_sha256=controller_evidence_sha256,
         operation_id=operation_identity.id,
         operation_sha256=operation_identity.sha256,
+        input_artifacts=(source_artifact,),
         output_tags=("reviewed",),
-        retirement_policy="retire-after-verified-output",
+        retirement_policy="retain",
     )
     assert sealed["plan"]["execution_id"] == execution_id
     output_capability = operator.create_transform_capability(
@@ -606,6 +628,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         fence=claim_fence,
         audience="qualification.target/v1",
         actions=("read-inputs", "write-output"),
+        artifacts=(source_artifact,),
     )
 
     output_root = tmp_path / "derived"
@@ -760,6 +783,9 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         fence=claim_fence,
         output_collection_id=output_collection_id,
         derivation=derivation.as_dict(),
+        outcome_claim_id=outcome_claim_id,
+        outcome_fence=outcome_fence,
+        outcome_id="qualification-output",
     )
     assert settled["state"] == "settled"
     replayed_settlement = operator.settle_processing_claim(
@@ -767,43 +793,61 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         fence=claim_fence,
         output_collection_id=output_collection_id,
         derivation=derivation.as_dict(),
+        outcome_claim_id=outcome_claim_id,
+        outcome_fence=outcome_fence,
+        outcome_id="qualification-output",
     )
     assert replayed_settlement["state"] == "settled"
     assert (
         operator.get_collection_derivation(output_collection_id)["document_sha256"]
         == derivation.sha256
     )
+    assert operator.release_processing_claim(claim_id, fence=claim_fence)["state"] == "released"
+    outcomes = operator.get_processing_claim(outcome_claim_id)["outcomes"]
+    settled_outcomes = operator.settle_processing_claim_outcomes(
+        outcome_claim_id,
+        fence=outcome_fence,
+        outcomes=outcomes,
+        retirement_policy="retire-after-verified-output",
+    )
+    assert settled_outcomes["state"] == "settled"
     retiring = operator.begin_processing_claim_retirement(
-        claim_id,
-        fence=claim_fence,
+        outcome_claim_id,
+        fence=outcome_fence,
     )
     assert retiring["state"] == "retiring"
-    replayed_retiring_settlement = operator.settle_processing_claim(
-        claim_id,
-        fence=claim_fence,
-        output_collection_id=output_collection_id,
-        derivation=derivation.as_dict(),
+    replayed_outcomes = operator.settle_processing_claim_outcomes(
+        outcome_claim_id,
+        fence=outcome_fence,
+        outcomes=outcomes,
+        retirement_policy="retire-after-verified-output",
     )
-    assert replayed_retiring_settlement["state"] == "retiring"
+    assert replayed_outcomes["state"] == "retiring"
     retirement = operator.plan_collection_deletion(
         collection_id,
-        retirement_claim_id=claim_id,
+        retirement_claim_id=outcome_claim_id,
     )
     assert retirement["status"] == "ready"
     assert (
         operator.delete_collection(
             collection_id,
             challenge=str(retirement["challenge"]),
-            retirement_claim_id=claim_id,
+            retirement_claim_id=outcome_claim_id,
         )["status"]
         == "deleted"
     )
-    assert operator.release_processing_claim(claim_id, fence=claim_fence)["state"] == "released"
-    replayed_released_settlement = operator.settle_processing_claim(
-        claim_id,
-        fence=claim_fence,
-        output_collection_id=output_collection_id,
-        derivation=derivation.as_dict(),
+    assert (
+        operator.release_processing_claim(
+            outcome_claim_id,
+            fence=outcome_fence,
+        )["state"]
+        == "released"
+    )
+    replayed_released_settlement = operator.settle_processing_claim_outcomes(
+        outcome_claim_id,
+        fence=outcome_fence,
+        outcomes=outcomes,
+        retirement_policy="retire-after-verified-output",
     )
     assert replayed_released_settlement["state"] == "released"
 

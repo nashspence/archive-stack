@@ -114,6 +114,7 @@ class CollectionWorkflowMethods:
         controller_evidence_sha256: str,
         operation_id: str,
         operation_sha256: str,
+        input_artifacts: Sequence[Mapping[str, Any]],
         output_tags: Sequence[str],
         retirement_policy: str = "retain",
         retirement_grace_seconds: int = 0,
@@ -127,6 +128,7 @@ class CollectionWorkflowMethods:
                 "controller_evidence": dict(controller_evidence),
                 "controller_evidence_sha256": controller_evidence_sha256,
                 "operation": {"id": operation_id, "sha256": operation_sha256},
+                "input_artifacts": [dict(item) for item in input_artifacts],
                 "output_tags": list(output_tags),
                 "retirement_policy": retirement_policy,
                 "retirement_grace_seconds": retirement_grace_seconds,
@@ -140,6 +142,7 @@ class CollectionWorkflowMethods:
         fence: int,
         audience: str,
         actions: Sequence[str] = ("read-inputs",),
+        artifacts: Sequence[Mapping[str, Any]],
         ttl_seconds: int = 900,
     ) -> dict[str, Any]:
         return self._json(
@@ -149,6 +152,7 @@ class CollectionWorkflowMethods:
                 "fence": fence,
                 "audience": audience,
                 "actions": list(actions),
+                "artifacts": [dict(item) for item in artifacts],
                 "ttl_seconds": ttl_seconds,
             },
         )
@@ -160,7 +164,19 @@ class CollectionWorkflowMethods:
         fence: int,
         output_collection_id: int,
         derivation: Mapping[str, Any],
+        outcome_claim_id: str | None = None,
+        outcome_fence: int | None = None,
+        outcome_id: str | None = None,
     ) -> dict[str, Any]:
+        outcome = None
+        if any(item is not None for item in (outcome_claim_id, outcome_fence, outcome_id)):
+            if outcome_claim_id is None or outcome_fence is None or outcome_id is None:
+                raise ValueError("processing outcome binding is incomplete")
+            outcome = {
+                "claim_id": outcome_claim_id,
+                "fence": outcome_fence,
+                "outcome_id": outcome_id,
+            }
         return self._json(
             "POST",
             f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/settle",
@@ -168,6 +184,27 @@ class CollectionWorkflowMethods:
                 "fence": fence,
                 "output_collection_id": output_collection_id,
                 "derivation": dict(derivation),
+                **({"outcome": outcome} if outcome is not None else {}),
+            },
+        )
+
+    def settle_processing_claim_outcomes(
+        self,
+        claim_id: str,
+        *,
+        fence: int,
+        outcomes: Sequence[Mapping[str, Any]],
+        retirement_policy: str = "retain",
+        retirement_grace_seconds: int = 0,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/outcomes/settle",
+            json={
+                "fence": fence,
+                "outcomes": [dict(item) for item in outcomes],
+                "retirement_policy": retirement_policy,
+                "retirement_grace_seconds": retirement_grace_seconds,
             },
         )
 

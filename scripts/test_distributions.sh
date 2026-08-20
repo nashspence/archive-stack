@@ -72,7 +72,7 @@ smoke_workspace_distribution() {
   local name="$1"
   local pattern="$2"
   local import_check="$3"
-  local executable="${4:-}"
+  shift 3
   local wheel
   wheel="$(single_wheel "${pattern}")"
   run_uv venv --python 3.12 "${SCRATCH}/${name}"
@@ -87,9 +87,9 @@ smoke_workspace_distribution() {
   (
     cd "${SCRATCH}"
     env -u PYTHONPATH "${SCRATCH}/${name}/bin/python" -I -c "${import_check}"
-    if [[ -n "${executable}" ]]; then
+    for executable in "$@"; do
       env -u PYTHONPATH "${SCRATCH}/${name}/bin/${executable}" --help >/dev/null
-    fi
+    done
   )
 }
 
@@ -166,10 +166,27 @@ smoke_workspace_distribution \
   'import importlib.metadata as m; import stove0_api.app; import stove0_core; m.version("stove0-server")' \
   stove0-server
 smoke_workspace_distribution \
-  stove0-maintained-extensions \
-  'stove0_maintained_extensions-*.whl' \
-  'import importlib.metadata as m; import stove0_extensions.app; m.version("stove0-maintained-extensions")' \
-  stove0-maintained-extension
+  stove0-ffprobe-sampling-observer \
+  'stove0_ffprobe_sampling_observer-*.whl' \
+  'import importlib.metadata as m; import stove0_ffprobe_sampling_observer.app; m.version("stove0-ffprobe-sampling-observer")' \
+  stove0-ffprobe-sampling-observer
+smoke_workspace_distribution \
+  stove0-nvenc-av1-opus-target \
+  'stove0_nvenc_av1_opus_target-*.whl' \
+  'import importlib.metadata as m; import stove0_nvenc_av1_opus_target.app; m.version("stove0-nvenc-av1-opus-target")' \
+  stove0-nvenc-av1-opus-target \
+  stove0-nvenc-av1-opus-sampler
+smoke_workspace_distribution \
+  stove0-opus-target \
+  'stove0_opus_target-*.whl' \
+  'import importlib.metadata as m; import stove0_opus_target.app; m.version("stove0-opus-target")' \
+  stove0-opus-target \
+  stove0-opus-sampler
+smoke_workspace_distribution \
+  stove0-review-target \
+  'stove0_review_target-*.whl' \
+  'import importlib.metadata as m; import stove0_review_target.app; m.version("stove0-review-target")' \
+  stove0-review-target
 smoke_workspace_distribution \
   stove0-observer-support \
   'stove0_observer_support-*.whl' \
@@ -180,6 +197,12 @@ smoke_workspace_distribution \
   'stove0_target_support-*.whl' \
   'import importlib.metadata as m; import stove0_target_support; m.version("stove0-target-support")' \
   stove0-target-conformance
+smoke_workspace_distribution \
+  stove0-sampler-support \
+  'stove0_sampler_support-*.whl' \
+  'import importlib.metadata as m; import stove0_sampler_support; m.version("stove0-sampler-support")' \
+  stove0-sampler-conformance \
+  stove0-sampler-schemas
 smoke_workspace_distribution \
   gogurt \
   'gogurt-*.whl' \

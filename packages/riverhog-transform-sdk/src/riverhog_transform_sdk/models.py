@@ -25,9 +25,10 @@ def _sha256(value: str, label: str) -> str:
 class DerivedCollectionSpec:
     """Controller-sealed authorities needed to create one derived collection.
 
-    The data-plane SDK deliberately does not depend on stove0 core or on a
-    workflow-specific intent model. It receives only exact immutable input roots,
-    opaque recipe/operation identities, and the authorized output tags.
+    The data-plane SDK deliberately does not depend on an orchestration
+    application or workflow-specific intent model. It receives only exact
+    immutable input roots, opaque recipe/operation identities, and the authorized
+    output tags.
     """
 
     inputs: tuple[CollectionRootIdentity, ...]
