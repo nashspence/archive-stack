@@ -201,7 +201,10 @@ jobs:
             ])
           ' "$OPERATIONS_SUMMARY"
       - name: Verify live release governance
-        run: make release-governance-check RELEASE_SUMMARY="$GOVERNANCE_SUMMARY"
+        run: >-
+          make release-governance-check
+          RELEASE_GOVERNANCE_SCOPE=actions-observable
+          RELEASE_SUMMARY="$GOVERNANCE_SUMMARY"
       - name: Build and verify release evidence
         run: >-
           make release-dry-run
@@ -213,7 +216,10 @@ jobs:
             '.source_sha == $sha and .published == false and .signature_verified == true' \
             "$RELEASE_SUMMARY"
           jq --exit-status --arg sha "$SOURCE_SHA" \
-            '.source_sha == $sha' "$GOVERNANCE_SUMMARY"
+            '.source_sha == $sha
+              and .scope == "actions-observable"
+              and .immutable_releases == "operator-preflight-required"' \
+            "$GOVERNANCE_SUMMARY"
       - name: Record the completed qualification
         run: |
           jq --null-input \
@@ -227,7 +233,7 @@ jobs:
               version: $version,
               required_checks: "passed",
               operation_matrix: "passed",
-              github_governance: "passed",
+              github_governance: "actions-observable-passed",
               release_evidence: "passed",
               published: false
             }' > "$QUALIFICATION_DIR/qualification.json"

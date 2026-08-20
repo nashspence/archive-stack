@@ -196,7 +196,7 @@ release-dry-run:
 	$(call UV_CMD,python scripts/release.py dry-run --version "$(RELEASE_VERSION)" $(if $(RELEASE_SUMMARY),--summary "$(RELEASE_SUMMARY)"))
 
 release-governance-check:
-	$(call UV_CMD,python scripts/github_governance.py check $(if $(RELEASE_SUMMARY),--summary "$(RELEASE_SUMMARY)"))
+	$(call UV_CMD,python scripts/github_governance.py check $(if $(RELEASE_GOVERNANCE_SCOPE),--scope "$(RELEASE_GOVERNANCE_SCOPE)") $(if $(RELEASE_SUMMARY),--summary "$(RELEASE_SUMMARY)"))
 
 release-evidence:
 	@if [[ -z "$(RELEASE_OUTPUT)" || -z "$(RELEASE_SIGNING_KEY)" || -z "$(RELEASE_PUBLIC_KEY)" ]]; then \

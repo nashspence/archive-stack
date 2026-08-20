@@ -41,7 +41,14 @@ class ArchiveCopyJobOut(RiverhogModel):
     initiated_by_app: str | None
     initiated_by_key_id: str | None
     state: Literal[
-        "requested", "waiting", "copying", "canceling", "completed", "failed", "canceled"
+        "requested",
+        "waiting",
+        "checking",
+        "copying",
+        "canceling",
+        "completed",
+        "failed",
+        "canceled",
     ]
     requested_at: str | None
     ready_at: str | None

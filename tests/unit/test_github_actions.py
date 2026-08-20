@@ -252,6 +252,14 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     assert "cli_human_json_projection.status" in verify_operations["run"]
     assert "bounded_state_access.status" in verify_operations["run"]
     assert "event_cursor_restart_resume.status" in verify_operations["run"]
+    governance = next(
+        step for step in audit["steps"] if step["name"] == "Verify live release governance"
+    )
+    assert "RELEASE_GOVERNANCE_SCOPE=actions-observable" in governance["run"]
+    verify_summary = next(
+        step for step in audit["steps"] if step["name"] == "Verify exact-SHA nonpublication summary"
+    )
+    assert 'immutable_releases == "operator-preflight-required"' in verify_summary["run"]
     resolve_source = next(
         step
         for step in workflow["jobs"]["resolve"]["steps"]

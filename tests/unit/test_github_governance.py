@@ -141,6 +141,30 @@ def test_github_immutable_releases_must_remain_enabled() -> None:
         module._check_immutable_releases({"enabled": False})
 
 
+def test_actions_observable_scope_defers_admin_only_immutable_release_state() -> None:
+    module = load_script()
+    module._gh = lambda _endpoint: pytest.fail("actions scope must not query admin-only state")
+
+    assert (
+        module._immutable_release_status(
+            "nashspence/riverhog",
+            scope="actions-observable",
+        )
+        == "operator-preflight-required"
+    )
+
+
+def test_complete_scope_requires_live_immutable_release_state() -> None:
+    module = load_script()
+    module._gh = lambda endpoint: (
+        {"enabled": True, "enforced_by_owner": False}
+        if endpoint.endswith("/immutable-releases")
+        else pytest.fail(f"unexpected endpoint: {endpoint}")
+    )
+
+    assert module._immutable_release_status("nashspence/riverhog", scope="complete") == "enabled"
+
+
 @pytest.mark.parametrize("reviewer_required", [False, True])
 def test_environment_policy_supports_gated_and_unattended_jobs(
     reviewer_required: bool,
