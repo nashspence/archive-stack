@@ -18,9 +18,9 @@ export RIVERHOG_RETRIEVAL_CACHE_FORCE_PATH_STYLE="${RIVERHOG_RETRIEVAL_CACHE_FOR
 
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/riverhog-compose-smoke.XXXXXX")"
 stove0_project="${COMPOSE_PROJECT_NAME}-stove0"
-adapter_project="${COMPOSE_PROJECT_NAME}-adapters"
+adapter_project="${COMPOSE_PROJECT_NAME}-ftp-adapter"
 stove0_compose_file="${ROOT_DIR}/companions/stove0/compose.yaml"
-adapter_compose_file="${ROOT_DIR}/riverhog/adapters/compose.yaml"
+adapter_compose_file="${ROOT_DIR}/riverhog/ftp-adapter/compose.yaml"
 
 stove0_compose() {
   docker compose --project-name "${stove0_project}" --file "${stove0_compose_file}" "$@"
@@ -130,11 +130,11 @@ printf '%s\n' 'stove0-compose-observer-token' > "${secret_root}/stove0-observer-
 printf '%s\n' 'stove0-compose-local-target-token' > "${secret_root}/stove0-local-target-token"
 printf '%s\n' 'stove0-compose-nvenc-target-token' > "${secret_root}/stove0-nvenc-target-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/adapter-riverhog-token"
-printf '%s\n' 'riverhog-adapter-compose-smoke-token' > "${secret_root}/adapter-api-token"
-printf '%s\n' 'riverhog-tus-compose-smoke-token' > "${secret_root}/tus-password"
+printf '%s\n' 'riverhog-ftp-adapter-compose-smoke-token' > "${secret_root}/ftp-adapter-api-token"
+printf '%s\n' 'riverhog-ftp-adapter-compose-smoke-password' > "${secret_root}/ftp-adapter-password"
 chmod 0640 "${secret_root}"/*
 
-adapter_config="${smoke_root}/adapters.json"
+adapter_config="${smoke_root}/ftp-adapter.json"
 printf '%s\n' '{' \
   '  "host_id": "urn:uuid:00000000-0000-4000-8000-000000000522",' \
   '  "riverhog_base_url": "http://app:8000",' \
@@ -142,16 +142,16 @@ printf '%s\n' '{' \
   '  "poll_seconds": 0.25,' \
   '  "sources": [' \
   '    {' \
-  '      "id": "watched-smoke",' \
-  '      "adapter": "watched-drop",' \
-  '      "root": "/intake/watched",' \
-  '      "ingest_source": "watched-drop:compose-smoke",' \
+  '      "id": "ftp-smoke",' \
+  '      "root": "/intake/ftp",' \
+  '      "ingest_source": "ftp:compose-smoke",' \
   '      "tags": ["stove0-preserve"],' \
   '      "close_mode": "explicit-flush",' \
   '      "stable_seconds": 1,' \
   '      "max_files": 8,' \
   '      "max_bytes": 1048576,' \
-  '      "provenance": "capture"' \
+  '      "provenance": "omit",' \
+  '      "provenance_omission_reason": "The FTP producer cannot observe the source host filesystem."' \
   '    }' \
   '  ]' \
   '}' > "${adapter_config}"
@@ -170,14 +170,16 @@ export STOVE0_WORKER_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-worker-riverhog-
 export STOVE0_OBSERVER_TOKEN_FILE="${secret_root}/stove0-observer-token"
 export STOVE0_LOCAL_TARGET_TOKEN_FILE="${secret_root}/stove0-local-target-token"
 export STOVE0_NVENC_TARGET_TOKEN_FILE="${secret_root}/stove0-nvenc-target-token"
-export RIVERHOG_ADAPTERS_API_PORT=0
-export RIVERHOG_ADAPTERS_SECRET_FILE_GID="$(id -g)"
-export RIVERHOG_ADAPTERS_INTAKE_GID="$(id -g)"
-export RIVERHOG_ADAPTERS_INTAKE_HOST_DIR="${intake_root}"
-export RIVERHOG_ADAPTERS_CONFIG_HOST_PATH="${adapter_config}"
-export RIVERHOG_ADAPTER_TOKEN_FILE="${secret_root}/adapter-riverhog-token"
-export RIVERHOG_ADAPTERS_API_TOKEN_FILE="${secret_root}/adapter-api-token"
-export RIVERHOG_TUS_PASSWORD_FILE="${secret_root}/tus-password"
+export RIVERHOG_FTP_ADAPTER_API_PORT=0
+export RIVERHOG_FTP_ADAPTER_PORT=0
+export RIVERHOG_FTP_ADAPTER_PUBLIC_HOST=ftp-daemon
+export RIVERHOG_FTP_ADAPTER_SECRET_FILE_GID="$(id -g)"
+export RIVERHOG_FTP_ADAPTER_INTAKE_GID="$(id -g)"
+export RIVERHOG_FTP_ADAPTER_INTAKE_HOST_DIR="${intake_root}"
+export RIVERHOG_FTP_ADAPTER_CONFIG_HOST_PATH="${adapter_config}"
+export RIVERHOG_FTP_ADAPTER_RIVERHOG_TOKEN_FILE="${secret_root}/adapter-riverhog-token"
+export RIVERHOG_FTP_ADAPTER_API_TOKEN_FILE="${secret_root}/ftp-adapter-api-token"
+export RIVERHOG_FTP_ADAPTER_PASSWORD_FILE="${secret_root}/ftp-adapter-password"
 
 client_environment=(
   --env RIVERHOG_BASE_URL=http://app:8000
@@ -190,26 +192,31 @@ compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --entrypoint riverhog test tag create preserved --json >/dev/null
 
 stove0_compose up --detach --build --wait state api controller worker media-sampling local-media
-adapter_compose up --detach --build --wait intake-init adapter
+adapter_compose up --detach --build --wait intake-init ftp-adapter ftp-daemon
 
-adapter_run_code="from pathlib import Path
-from riverhog_adapter_api_client import RiverhogAdapterClient
-source = Path('/intake/watched/smoke.txt')
-source.write_bytes(b'riverhog stove0 compose lifecycle\\n')
-with RiverhogAdapterClient(
+adapter_run_code="from ftplib import FTP
+from io import BytesIO
+from pathlib import Path
+from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
+source = Path('/intake/ftp/smoke.txt')
+with FTP('ftp-daemon', timeout=10) as ftp:
+    ftp.login('ftp-intake', 'riverhog-ftp-adapter-compose-smoke-password')
+    ftp.storbinary('STOR smoke.txt', BytesIO(b'riverhog stove0 compose lifecycle\\n'))
+assert source.read_bytes() == b'riverhog stove0 compose lifecycle\\n'
+with RiverhogFtpAdapterClient(
     base_url='http://127.0.0.1:8080',
-    token='riverhog-adapter-compose-smoke-token',
+    token='riverhog-ftp-adapter-compose-smoke-token',
     allow_insecure_http=True,
 ) as client:
-    assert client.adapter_health_ready() == {'service': 'riverhog-adapters', 'status': 'ok'}
-    result = client.flush_adapter_source('watched-smoke')
+    assert client.ftp_adapter_health_ready() == {'service': 'riverhog-ftp-adapter', 'status': 'ok'}
+    result = client.flush_ftp_adapter_source('ftp-smoke')
     assert result['completed'] == 1, result
     assert result['failed'] == [], result
-    status = client.get_adapter_status()
+    status = client.get_ftp_adapter_status()
     assert status['sources'][0]['claims'] == 0, status
 assert not source.exists()
-assert list(Path('/intake/watched/.riverhog-adapter/receipts').glob('*.json'))"
-adapter_compose exec -T adapter python -c "${adapter_run_code}"
+assert list(Path('/intake/ftp/.riverhog-ftp-adapter/receipts').glob('*.json'))"
+adapter_compose exec -T ftp-adapter python -c "${adapter_run_code}"
 
 cache_code="from riverhog_api_client import ApiClient
 with ApiClient() as client:

@@ -50,7 +50,7 @@ updates:
       - /companions/stove0/extensions
       - /companions/stove0/extensions/nvenc
       - /companions/stove0/server
-      - /riverhog/adapters
+      - /riverhog/ftp-adapter
       - /riverhog/server
       - /tests
       - /utilities/mango-fish

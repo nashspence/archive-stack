@@ -28,14 +28,13 @@ def test_generated_operation_matrix_is_complete_and_fail_closed() -> None:
     assert len(identities) == len(matrix)
     assert {item.application for item in matrix} == {
         "riverhog",
-        "riverhog-adapters",
+        "riverhog-ftp-adapter",
         "stove0",
     }
     assert {item.classification for item in matrix} == {
         "human-cli+json",
         "client-only-primitive",
         "standard-tool/protocol",
-        "service-internal",
     }
     assert all(
         item.client is not None
@@ -67,21 +66,7 @@ def test_operation_audiences_distinguish_commands_wires_and_protocols() -> None:
     assert by_identity[("stove0", "list_work")].classification == "human-cli+json"
     assert "work list" in by_identity[("stove0", "list_work")].cli_commands
     assert (
-        by_identity[("riverhog-adapters", "create_tus_adapter_upload")].classification
-        == "standard-tool/protocol"
-    )
-    assert (
-        by_identity[("riverhog-adapters", "put_tus_provenance_binding")].classification
-        == "client-only-primitive"
-    )
-    assert by_identity[("riverhog-adapters", "put_tus_provenance_binding")].client == (
-        "RiverhogTusClient"
-    )
-    assert (
-        by_identity[("riverhog-adapters", "get_adapter_status")].classification == "human-cli+json"
-    )
-    assert by_identity[("riverhog-adapters", "handle_tus_hook")].classification == (
-        "service-internal"
+        by_identity[("riverhog-ftp-adapter", "get_ftp_adapter_status")].classification == "human-cli+json"
     )
 
 

@@ -15,7 +15,7 @@ REPOSITORY_MAP_TARGETS = {
     REPO / "riverhog/server",
     REPO / "riverhog/client",
     REPO / "riverhog/recovery",
-    REPO / "riverhog/adapters",
+    REPO / "riverhog/ftp-adapter",
     REPO / "companions/stove0",
     REPO / "utilities",
     REPO / "packages",

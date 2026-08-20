@@ -6,15 +6,14 @@ from pathlib import Path
 
 from gogurt.core import execute_gogurt_action, load_gogurt_actions, plan_gogurt_action
 from mango_fish.relay import load_config as load_mango_fish_config
-from riverhog_adapters.config import load_config as load_adapter_config
+from riverhog_ftp_adapter.config import load_config as load_adapter_config
 from stove0_core import RecipeCatalog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_FILES = {
     REPO_ROOT / "utilities/mango-fish/config/mango-fish.yaml",
     REPO_ROOT / "companions/stove0/config/recipes.example.yaml",
-    REPO_ROOT / "riverhog/adapters/config/adapters.example.json",
-    REPO_ROOT / "riverhog/adapters/config/tus-nginx.conf",
+    REPO_ROOT / "riverhog/ftp-adapter/config/ftp-adapter.example.json",
     REPO_ROOT / "utilities/gogurt/config/examples/gogurt-routes.yaml",
     REPO_ROOT / "utilities/gogurt/config/examples/scripts/fake_archive_device.py",
     REPO_ROOT / "config/provider-qualification.example.toml",
@@ -30,7 +29,7 @@ def test_every_checked_example_runs_through_its_real_consumer(
         for root in (
             REPO_ROOT / "utilities/mango-fish/config",
             REPO_ROOT / "companions/stove0/config",
-            REPO_ROOT / "riverhog/adapters/config",
+            REPO_ROOT / "riverhog/ftp-adapter/config",
             REPO_ROOT / "utilities/gogurt/config/examples",
             REPO_ROOT / "config",
         )
@@ -69,9 +68,11 @@ def test_every_checked_example_runs_through_its_real_consumer(
     }
 
     monkeypatch.setenv("RIVERHOG_TOKEN", "fake-riverhog-token")
-    monkeypatch.setenv("RIVERHOG_ADAPTERS_API_TOKEN", "fake-adapter-token")
-    adapters = load_adapter_config(REPO_ROOT / "riverhog/adapters/config/adapters.example.json")
-    assert [source.adapter for source in adapters.sources] == ["ftp", "tus", "watched-drop"]
+    monkeypatch.setenv("RIVERHOG_FTP_ADAPTER_API_TOKEN", "fake-adapter-token")
+    adapters = load_adapter_config(
+        REPO_ROOT / "riverhog/ftp-adapter/config/ftp-adapter.example.json"
+    )
+    assert [source.id for source in adapters.sources] == ["ftp-intake"]
 
     script = REPO_ROOT / "scripts/provider_qualification.py"
     spec = importlib.util.spec_from_file_location("provider_qualification_example", script)

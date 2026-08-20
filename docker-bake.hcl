@@ -1,7 +1,7 @@
 group "default" {
   targets = [
     "riverhog",
-    "riverhog-adapters",
+    "riverhog-ftp-adapter",
     "stove0",
     "stove0-extensions",
     "stove0-nvenc-extension",
@@ -29,11 +29,11 @@ target "riverhog" {
   args       = { SOURCE_REVISION = "unknown" }
 }
 
-target "riverhog-adapters" {
+target "riverhog-ftp-adapter" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "riverhog/adapters/Dockerfile"
-  tags       = ["riverhog-adapters:dev"]
+  dockerfile = "riverhog/ftp-adapter/Dockerfile"
+  tags       = ["riverhog-ftp-adapter:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 

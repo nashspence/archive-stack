@@ -21,17 +21,16 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
 COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
-COPY riverhog/adapters riverhog/adapters
+COPY riverhog/ftp-adapter riverhog/ftp-adapter
 COPY packages/file-download packages/file-download
 COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events
-COPY packages/riverhog-adapter-api-client packages/riverhog-adapter-api-client
+COPY packages/riverhog-ftp-adapter-api-client packages/riverhog-ftp-adapter-api-client
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/time-formats packages/time-formats
-COPY packages/tus-transport packages/tus-transport
-RUN uv sync --frozen --package riverhog-adapters --no-dev --no-editable
+RUN uv sync --frozen --package riverhog-ftp-adapter --no-dev --no-editable
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 
@@ -43,7 +42,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG BUILD_CREATED=1970-01-01T00:00:00Z
 ARG RELEASE_VERSION=development
 ARG SOURCE_REVISION=unknown
-LABEL org.opencontainers.image.title="Riverhog protocol adapters" \
+LABEL org.opencontainers.image.title="Riverhog FTP adapter" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/nashspence/riverhog" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
@@ -57,8 +56,7 @@ COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
-    && install -d -o 65532 -g 65532 -m 0770 \
-       /intake /intake/ftp /intake/tus /intake/tus/uploads /intake/watched \
+    && install -d -o 65532 -g 65532 -m 0770 /intake /intake/ftp \
     && ! command -v mise
 
 COPY --from=build /opt/venv /opt/venv
@@ -66,4 +64,4 @@ COPY --from=build /opt/venv /opt/venv
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["riverhog-adapters", "serve", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["riverhog-ftp-adapter", "serve", "--host", "0.0.0.0", "--port", "8080"]
