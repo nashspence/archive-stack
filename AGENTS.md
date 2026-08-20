@@ -81,4 +81,7 @@ After pushing, watch the pushed commit's GitHub Actions checks through completio
 GitHub checks are part of complete validation; fix any failure before handing work back.
 `release.toml` owns the release-governance policy. Deliver `main` by authorized fast-forward
 push plus that post-push validation; deliver `release/v1` only by a current, fully green pull
-request. Publication requires its protected GitHub environment and never moves a v1 tag.
+request. Publication requires its protected GitHub environment, a complete governance check
+with an administrator-readable GitHub token, and never moves a v1 tag. GitHub Actions runs
+the narrower `actions-observable` governance scope because its least-privilege token cannot
+read repository administration settings.

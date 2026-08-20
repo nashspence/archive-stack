@@ -12,6 +12,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "riverhog-github-governance/v1"
+GOVERNANCE_SCOPES = ("complete", "actions-observable")
 MAIN_RULESET = "Protect main"
 RELEASE_RULESET = "Protect release/v1"
 TAG_RULESET = "Protect v1 tags"
@@ -131,6 +132,13 @@ def _check_immutable_releases(settings: dict[str, Any]) -> None:
         raise GovernanceError("GitHub immutable releases must remain enabled")
 
 
+def _immutable_release_status(repository: str, *, scope: str) -> str:
+    if scope == "actions-observable":
+        return "operator-preflight-required"
+    _check_immutable_releases(_gh(f"repos/{repository}/immutable-releases"))
+    return "enabled"
+
+
 def _check_environment(
     repository: str,
     name: str,
@@ -179,7 +187,9 @@ def _check_environment(
         raise GovernanceError(f"{name} deployment refs differ from release.toml")
 
 
-def check() -> dict[str, Any]:
+def check(*, scope: str = "complete") -> dict[str, Any]:
+    if scope not in GOVERNANCE_SCOPES:
+        raise GovernanceError(f"unknown governance scope: {scope}")
     config = tomllib.loads((ROOT / "release.toml").read_text(encoding="utf-8"))
     governance = config["governance"]
     repository = str(governance["repository"])
@@ -199,7 +209,7 @@ def check() -> dict[str, Any]:
         int(governance["required_check_integration_id"]),
     )
     _check_tag_ruleset(tag_ruleset)
-    _check_immutable_releases(_gh(f"repos/{repository}/immutable-releases"))
+    immutable_release_status = _immutable_release_status(repository, scope=scope)
 
     environments = governance["environments"]
     maintainer = str(governance["maintainer"])
@@ -230,13 +240,14 @@ def check() -> dict[str, Any]:
     )
     return {
         "schema": SCHEMA,
+        "scope": scope,
         "repository": repository,
         "source_sha": _git_sha(),
         "main": "protected-direct-delivery",
         "release_branch": "protected-pull-request-delivery",
         "required_checks": required_checks,
         "tag_policy": "immutable-v1",
-        "immutable_releases": "enabled",
+        "immutable_releases": immutable_release_status,
         "environments": sorted(environments.values()),
     }
 
@@ -244,6 +255,7 @@ def check() -> dict[str, Any]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("check",))
+    parser.add_argument("--scope", choices=GOVERNANCE_SCOPES, default="complete")
     parser.add_argument("--summary", type=Path)
     return parser
 
@@ -251,7 +263,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        payload = check()
+        payload = check(scope=args.scope)
     except (GovernanceError, KeyError, OSError, subprocess.CalledProcessError) as exc:
         raise SystemExit(f"governance error: {exc}") from exc
     rendered = json.dumps(payload, indent=2, sort_keys=True) + "\n"
