@@ -19,6 +19,7 @@ from riverhog_api_client import producer as riverhog_producer
 from riverhog_api_client.client import ApiClient
 from riverhog_cli import main as riverhog_cli
 from riverhog_cli import upload_progress as riverhog_upload_progress
+from riverhog_core.services.archive_copy_states import ARCHIVE_COPY_STATES
 from riverhog_protocol.errors import BadRequest
 from stove0_api_client import Stove0ApiClient
 
@@ -216,6 +217,12 @@ def test_paged_lists_use_the_shared_parameter_and_response_envelope(
         parameter_names = {parameter["name"] for parameter in operation.get("parameters", [])}
         assert {"page", "per_page", "all"} <= parameter_names, path
     assert paged_operations > 0
+
+
+def test_archive_copy_wire_states_match_the_service_state_machine() -> None:
+    schema = create_riverhog_app().openapi()["components"]["schemas"]["ArchiveCopyJobOut"]
+
+    assert set(schema["properties"]["state"]["enum"]) == ARCHIVE_COPY_STATES
 
 
 @pytest.mark.parametrize(
