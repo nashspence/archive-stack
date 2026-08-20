@@ -40,6 +40,21 @@ class TimeoutNeutralTestClient:
             )
         return response
 
+    def get(self, path: str, **kwargs):  # type: ignore[no-untyped-def]
+        return self.request("GET", path, **kwargs)
+
+    def head(self, path: str, **kwargs):  # type: ignore[no-untyped-def]
+        return self.request("HEAD", path, **kwargs)
+
+    def post(self, path: str, **kwargs):  # type: ignore[no-untyped-def]
+        return self.request("POST", path, **kwargs)
+
+    def put(self, path: str, **kwargs):  # type: ignore[no-untyped-def]
+        return self.request("PUT", path, **kwargs)
+
+    def patch(self, path: str, **kwargs):  # type: ignore[no-untyped-def]
+        return self.request("PATCH", path, **kwargs)
+
     @contextmanager
     def stream(self, method: str, path: str, **kwargs):  # type: ignore[no-untyped-def]
         kwargs.pop("timeout", None)
@@ -152,6 +167,8 @@ def _observe_cli_projection(frame: Any, event: str, argument: object) -> None:
         json_mode = bool(local["json_mode"])
     elif "args" in local:
         json_mode = bool(getattr(local["args"], "json", False))
+    elif "context" in local:
+        json_mode = bool(getattr(getattr(local["context"], "obj", None), "json_output", False))
     else:
         return
     if len(identities) > 1 and "args" in local:

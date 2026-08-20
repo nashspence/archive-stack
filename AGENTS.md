@@ -7,9 +7,10 @@ Read [README.md](README.md) for the product entrypoint.
 Server, client, companion, target, utility, and recovery implementations may share focused
 packages but never import one another's implementation modules. Runtime integration crosses
 published HTTP and CloudEvents contracts. `riverhog/recovery` must remain independent of the
-server, client, and database. Hardware-specific Munchy targets remain server-owned even when
-separately deployed. Keep public code generic; real identity and deployment topology belong
-downstream.
+server, client, and database. stove0 core remains content-opaque; observers interpret bytes,
+targets perform declared transformations, and protocol adapters only produce collections.
+Hardware-specific targets remain server-owned even when separately deployed. Keep public code
+generic; real identity and deployment topology belong downstream.
 
 ## Safety
 

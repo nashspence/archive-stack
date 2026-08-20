@@ -388,7 +388,7 @@ def test_ciphertext_corruption_fails_without_publishing_partial_output(
     assert not output.exists()
 
 
-def test_client_jeb_munchy_riverhog_recovery_preserves_one_exact_main_lineage(
+def test_client_stove0_target_riverhog_recovery_preserves_one_exact_main_lineage(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "source-alpha.txt"
@@ -402,35 +402,35 @@ def test_client_jeb_munchy_riverhog_recovery_preserves_one_exact_main_lineage(
     )
     staged = tmp_path / "staged-alpha.txt"
     staged.write_bytes(source.read_bytes())
-    jeb_journal = append_observation(
+    stove0_journal = append_observation(
         client_journal,
         staged,
         relative_path="staging/alpha.txt",
         host_id="urn:uuid:00000000-0000-4000-8000-000000000002",
-        agent_name="jeb-server",
+        agent_name="stove0-server",
         agent_version="1.0.0",
     )
     transformed = tmp_path / "transformed-alpha.txt"
     transformed.write_bytes(b"alpha\n")
-    munchy_journal = append_replacement_transformation(
-        jeb_journal,
+    target_journal = append_replacement_transformation(
+        stove0_journal,
         transformed,
         relative_path="notes/alpha.txt",
         host_id="urn:uuid:00000000-0000-4000-8000-000000000003",
-        agent_name="munchy-server",
+        agent_name="target-server",
         agent_version="1.0.0",
-        event_label="Munchy canonical archive transformation",
+        event_label="Target canonical archive transformation",
         started_at="2026-08-10T01:00:00Z",
         ended_at="2026-08-10T01:01:00Z",
     )
-    assert jeb_journal.startswith(client_journal)
-    assert munchy_journal.startswith(jeb_journal)
+    assert stove0_journal.startswith(client_journal)
+    assert target_journal.startswith(stove0_journal)
 
     archive = tmp_path / "archive"
     expected, exact_journal = _write_archive(
         archive,
         with_provenance=True,
-        provenance_journal=munchy_journal,
+        provenance_journal=target_journal,
     )
     assert exact_journal is not None
     exact_summary = validate_journal(exact_journal)

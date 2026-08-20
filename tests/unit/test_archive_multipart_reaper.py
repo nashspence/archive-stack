@@ -66,10 +66,14 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
         requeue_interrupted_metadata_publications_for_startup=Mock(return_value=0),
         process_due_metadata_publications=Mock(return_value=0),
     )
+    collection_workflows = SimpleNamespace(
+        reap_expired_claims=Mock(return_value=0),
+    )
     container = cast(
         ServiceContainer,
         SimpleNamespace(
             collection_uploads=collection_uploads,
+            collection_workflows=collection_workflows,
             archive_copies=archive_copies,
             archive_maintenance=archive_maintenance,
         ),
@@ -81,6 +85,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
         limit=100
     )
     collection_uploads.process_due_finalizations.assert_called_once_with(limit=1)
+    collection_workflows.reap_expired_claims.assert_called_once_with(limit=100)
 
 
 def test_archive_multipart_sweep_uses_the_configured_max_age(monkeypatch) -> None:

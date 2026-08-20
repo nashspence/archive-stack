@@ -5,11 +5,7 @@ sources:
     events_url: http://riverhog:8000/v1/events
     token_env: RIVERHOG_EVENT_TOKEN
     webhook_url_env: MANGO_FISH_WEBHOOK_URL
-  - name: munchy
-    events_url: http://munchy-server:8092/v1/events
-    token_env: MUNCHY_EVENT_TOKEN
-    webhook_url_env: MANGO_FISH_WEBHOOK_URL
-  - name: jeb
-    events_url: http://jeb:8081/v1/events
-    token_env: JEB_EVENT_TOKEN
+  - name: stove0
+    events_url: http://stove0:8080/v1/events
+    token_env: STOVE0_EVENT_TOKEN
     webhook_url_env: MANGO_FISH_WEBHOOK_URL

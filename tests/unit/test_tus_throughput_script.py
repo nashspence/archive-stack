@@ -208,12 +208,12 @@ def test_tus_throughput_result_compares_goodput_to_raw_baseline() -> None:
             seconds=10.0,
             size_mib=1000,
         ),
-        scenario="jeb-munchy",
+        scenario="adapter-ingress",
         workload="large-file",
         baseline_mib_per_second=125.0,
     )
 
-    assert payload["scenario"] == "jeb-munchy"
+    assert payload["scenario"] == "adapter-ingress"
     assert payload["workload"] == "large-file"
     assert payload["target_utilization"] == 0.8
     assert payload["utilization"] == 0.8

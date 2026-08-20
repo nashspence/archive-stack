@@ -5,7 +5,7 @@ MISE_BIN ?= mise
 FILES ?= .
 TESTS ?= companions packages riverhog tests/unit utilities
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
-POSTGRES_TESTS ?= tests/integration/test_catalog_schema_postgres.py tests/integration/test_collection_deletion_concurrency.py tests/integration/test_download_allowance_concurrency.py
+POSTGRES_TESTS ?= tests/integration/test_catalog_schema_postgres.py tests/integration/test_collection_deletion_concurrency.py tests/integration/test_download_allowance_concurrency.py tests/integration/test_stove0_postgres_concurrency.py
 PYTHON_PATHS ?= companions packages riverhog scripts tests utilities
 TUS_URL ?=
 RELEASE_VERSION ?= 1.0.0
@@ -17,35 +17,36 @@ UV_RUN = "$(MISE_BIN)" x -- uv run --locked --all-packages --group dev
 BAKE_FILE = docker-bake.hcl
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 MYPY_SOURCES = \
-	companions/jeb/client/src \
-	companions/jeb/server/src \
-	companions/munchy/client/src \
-	companions/munchy/server/src \
+	companions/stove0/client/src \
+	companions/stove0/extensions/src \
+	companions/stove0/server/src \
 	packages/application-access/src \
 	packages/config-validation/src \
 	packages/file-download/src \
 	packages/http-api-contracts/src \
-	packages/jeb-api-client/src \
-	packages/jeb-cli-support/src \
-	packages/jeb-protocol/src \
 	packages/lifecycle-events/src \
-	packages/media-preflight/src \
-	packages/munchy-api-client/src \
-	packages/munchy-config/src \
-	packages/munchy-target-support/src \
-	packages/munchy-workflows/src \
 	packages/riverhog-age/src \
+	packages/riverhog-adapter-api-client/src \
 	packages/riverhog-api-client/src \
 	packages/riverhog-cli-support/src \
 	packages/riverhog-protocol/src \
+	packages/riverhog-transform-sdk/src \
+	packages/stove0-api-client/src \
+	packages/stove0-observer-protocol/src \
+	packages/stove0-observer-support/src \
+	packages/stove0-media-contracts/src \
+	packages/stove0-protocol/src \
+	packages/stove0-review-contracts/src \
+	packages/stove0-target-protocol/src \
+	packages/stove0-target-support/src \
 	packages/riverhog-provenance/src \
 	packages/state-schema/src \
 	packages/time-formats/src \
 	packages/tus-transport/src \
 	riverhog/client/src \
+	riverhog/adapters/src \
 	riverhog/recovery/src \
 	riverhog/server/src \
-	scripts/jeb_compose_tus.py \
 	scripts/operation_qualification.py \
 	scripts/provider_qualification.py \
 	scripts/release.py \
@@ -56,7 +57,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke jeb-compose-smoke mango-fish-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke mango-fish-smoke tus-throughput transfer-profile stop-spec dist dist-smoke build build-riverhog build-riverhog-adapters build-stove0 build-stove0-extensions build-stove0-nvenc-extension build-mango-fish build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -104,8 +105,7 @@ help:
 		'  make release-verify    Verify a generated release evidence directory.' \
 		'  make c2sp-vectors      Download and run the pinned C2SP age conformance corpus.' \
 		'  make postgres-concurrency Run database concurrency tests against disposable Postgres.' \
-		'  make compose-smoke     Start and verify a fresh disposable Riverhog stack.' \
-		'  make jeb-compose-smoke Exercise TUS publication through the real Jeb Compose stack.' \
+		'  make compose-smoke     Verify disposable adapter, Riverhog, cache, and stove0 lifecycle.' \
 		'  make mango-fish-smoke  Exercise the already-built final Mango Fish image.' \
 		'  make tus-throughput    Measure a TUS endpoint with incomplete, deleted probes.' \
 		'  make transfer-profile  Profile a supported transfer command with secret-free JSON.' \
@@ -113,10 +113,11 @@ help:
 		'  make dist              Build every Python distribution independently.' \
 		'  make dist-smoke        Install and exercise the Riverhog server and client wheels.' \
 		'  make build-riverhog    Build the Riverhog image.' \
-		'  make build-jeb         Build the Jeb image.' \
+		'  make build-riverhog-adapters Build the protocol-adapters image.' \
+		'  make build-stove0      Build the stove0 service image.' \
+		'  make build-stove0-extensions Build the maintained stove0 extensions image.' \
+		'  make build-stove0-nvenc-extension Build the hardware-specific stove0 NVENC image.' \
 		'  make build-mango-fish  Build the Mango Fish image.' \
-		'  make build-munchy-server Build the Munchy server image.' \
-		'  make build-munchy-av1-nvenc Build the Munchy AV1 NVENC image.' \
 		'  make build-test        Build the test image.' \
 		'  make build             Build every application and test image.' \
 		'  make bootstrap-garage  Start Garage and apply the checked-in bucket/key bootstrap.' \
@@ -220,13 +221,6 @@ postgres-concurrency:
 compose-smoke:
 	@./scripts/test_compose_smoke.sh
 
-jeb-compose-smoke:
-	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
-		printf '%s\n' 'Jeb Compose smoke requires mise on PATH, or MISE_BIN=/abs/path/to/mise.' >&2; \
-		exit 127; \
-	fi
-	@MISE_BIN="$(MISE_BIN)" ./scripts/test_jeb_compose_tus.sh
-
 tus-throughput:
 	@if [[ -z "$(TUS_URL)" ]]; then \
 		printf '%s\n' 'TUS_URL is required, for example TUS_URL=https://host/files/' >&2; \
@@ -254,8 +248,17 @@ dist-smoke: dist
 build-riverhog:
 	$(call BAKE_IMAGE,riverhog)
 
-build-jeb:
-	$(call BAKE_IMAGE,jeb)
+build-riverhog-adapters:
+	$(call BAKE_IMAGE,riverhog-adapters)
+
+build-stove0:
+	$(call BAKE_IMAGE,stove0)
+
+build-stove0-extensions:
+	$(call BAKE_IMAGE,stove0-extensions)
+
+build-stove0-nvenc-extension:
+	$(call BAKE_IMAGE,stove0-nvenc-extension)
 
 build-mango-fish:
 	$(call BAKE_IMAGE,mango-fish)
@@ -267,16 +270,10 @@ mango-fish-smoke:
 	fi
 	@"$(MISE_BIN)" x python -- python scripts/test_mango_fish_image.py
 
-build-munchy-server:
-	$(call BAKE_IMAGE,munchy-server)
-
-build-munchy-av1-nvenc:
-	$(call BAKE_IMAGE,munchy-av1-nvenc)
-
 build-test:
 	$(call BAKE_IMAGE,test)
 
-build: build-riverhog build-jeb build-mango-fish build-munchy-server build-munchy-av1-nvenc build-test
+build: build-riverhog build-riverhog-adapters build-stove0 build-stove0-extensions build-stove0-nvenc-extension build-mango-fish build-test
 
 bootstrap-garage:
 	@./scripts/bootstrap_garage.sh

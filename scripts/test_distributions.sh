@@ -151,33 +151,35 @@ run_uv pip install \
 )
 
 smoke_workspace_distribution \
-  jeb-client \
-  'jeb_client-*.whl' \
-  'import importlib.metadata as m; import jeb_cli.main; m.version("jeb-client")' \
-  jeb
+  riverhog-adapters \
+  'riverhog_adapters-*.whl' \
+  'import importlib.metadata as m; import riverhog_adapters.app; m.version("riverhog-adapters")' \
+  riverhog-adapters
 smoke_workspace_distribution \
-  jeb-server \
-  'jeb_server-*.whl' \
-  'import importlib.metadata as m; from jeb_api.app import JebServiceState, create_app; from jeb_api.composition import config_from_env, create_services; config = config_from_env({"JEB_API_TOKEN": "distribution-smoke-management-token", "JEB_MUNCHY_URL": "https://munchy.invalid"}); app = create_app(JebServiceState(services=create_services(config))); assert app.version == m.version("jeb-server"); assert "SourceCreateIn" in app.openapi()["components"]["schemas"]' \
-  jeb-service
+  stove0-client \
+  'stove0_client-*.whl' \
+  'import importlib.metadata as m; import stove0_cli.main; m.version("stove0-client")' \
+  stove0
 smoke_workspace_distribution \
-  munchy-client \
-  'munchy_client-*.whl' \
-  'import importlib.metadata as m; import munchy_cli.main; m.version("munchy-client")' \
-  munchy
+  stove0-server \
+  'stove0_server-*.whl' \
+  'import importlib.metadata as m; import stove0_api.app; import stove0_core; m.version("stove0-server")' \
+  stove0-server
 smoke_workspace_distribution \
-  munchy-server \
-  'munchy_server-*.whl' \
-  'import importlib.metadata as m; import munchy_api.app; import munchy_api.composition; import munchy_core.services.jobs; m.version("munchy-server")'
+  stove0-maintained-extensions \
+  'stove0_maintained_extensions-*.whl' \
+  'import importlib.metadata as m; import stove0_extensions.app; m.version("stove0-maintained-extensions")' \
+  stove0-maintained-extension
 smoke_workspace_distribution \
-  munchy-av1-nvenc-target \
-  'munchy_av1_nvenc_target-*.whl' \
-  'import importlib.metadata as m; import munchy_av1_nvenc.main; m.version("munchy-av1-nvenc-target")'
+  stove0-observer-support \
+  'stove0_observer_support-*.whl' \
+  'import importlib.metadata as m; import stove0_observer_support; m.version("stove0-observer-support")' \
+  stove0-observer-conformance
 smoke_workspace_distribution \
-  munchy-target-support \
-  'munchy_target_support-*.whl' \
-  'import importlib.metadata as m; from munchy_target_support.operations import operation_contract; from munchy_target_support.protocol import TARGET_PROTOCOL; assert TARGET_PROTOCOL == "munchy-transform-target/v1"; operation_contract("munchy.video.archive/v1"); m.version("munchy-target-support")' \
-  munchy-target-conformance
+  stove0-target-support \
+  'stove0_target_support-*.whl' \
+  'import importlib.metadata as m; import stove0_target_support; m.version("stove0-target-support")' \
+  stove0-target-conformance
 smoke_workspace_distribution \
   gogurt \
   'gogurt-*.whl' \

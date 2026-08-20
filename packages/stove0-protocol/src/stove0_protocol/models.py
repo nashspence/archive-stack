@@ -1,0 +1,865 @@
+"""Canonical contracts for stove0 work, observations, plans, and evidence.
+
+The package is intentionally independent of stove0 implementation code. External
+observer and target authors may depend on these models without importing the
+orchestrator, cloning the Riverhog repository, or sharing a database schema.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Any, Literal, Self
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+from riverhog_protocol.collection_workflows import (
+    CollectionRootIdentity,
+    OperationIdentity,
+    RecipeIdentity,
+)
+from riverhog_protocol.paths import normalize_relpath, normalize_tag
+
+from stove0_protocol.jcs import canonical_json_bytes, canonical_json_sha256
+
+WORK_FORMAT: Literal["stove0-work/v1"] = "stove0-work/v1"
+OBSERVER_PROTOCOL: Literal["stove0-content-observer/v1"] = "stove0-content-observer/v1"
+OBSERVATION_REQUEST_FORMAT: Literal["stove0-observation-request/v1"] = (
+    "stove0-observation-request/v1"
+)
+OBSERVATION_RESULT_FORMAT: Literal["stove0-observation-result/v1"] = "stove0-observation-result/v1"
+WORKFLOW_PLAN_FORMAT: Literal["stove0-workflow-plan/v1"] = "stove0-workflow-plan/v1"
+EXECUTION_ENVELOPE_FORMAT: Literal["stove0-execution-envelope/v1"] = "stove0-execution-envelope/v1"
+CONTROLLER_EVIDENCE_FORMAT: Literal["stove0-controller-evidence/v1"] = (
+    "stove0-controller-evidence/v1"
+)
+WORKFLOW_PREVIEW_REQUEST_FORMAT: Literal["stove0-workflow-preview-request/v1"] = (
+    "stove0-workflow-preview-request/v1"
+)
+WORKFLOW_PREVIEW_FORMAT: Literal["stove0-workflow-preview/v1"] = "stove0-workflow-preview/v1"
+EVALUATION_MATRIX_FORMAT: Literal["stove0-evaluation-matrix/v1"] = "stove0-evaluation-matrix/v1"
+EVALUATION_DEFINITION_FORMAT: Literal["stove0-evaluation-definition/v1"] = (
+    "stove0-evaluation-definition/v1"
+)
+RIVERHOG_CAPABILITY_TRANSPORT: Literal["riverhog-capability/v1"] = "riverhog-capability/v1"
+
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
+SEMANTIC_ID_PATTERN = r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$"
+ARTIFACT_ID_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,158}[A-Za-z0-9])?$"
+REGISTRATION_ID_PATTERN = r"^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$"
+
+Sha256 = Annotated[str, StringConstraints(pattern=SHA256_PATTERN)]
+SemanticId = Annotated[str, StringConstraints(pattern=SEMANTIC_ID_PATTERN)]
+RegistrationId = Annotated[str, StringConstraints(pattern=REGISTRATION_ID_PATTERN)]
+ObservationState = Literal["observed", "inapplicable", "failed", "canceled"]
+RetirementPolicy = Literal["retain", "retire-after-verified-output"]
+RetrievalPolicy = Literal["available-only", "allow"]
+
+
+def _without_digest(model: BaseModel, field: str) -> dict[str, Any]:
+    return model.model_dump(mode="json", by_alias=True, exclude={field}, exclude_none=True)
+
+
+def _root_payload(root: CollectionRootIdentity) -> dict[str, object]:
+    return root.as_dict()
+
+
+def _recipe_payload(recipe: RecipeIdentity) -> dict[str, object]:
+    return recipe.as_dict()
+
+
+def _operation_payload(operation: OperationIdentity) -> dict[str, object]:
+    return operation.as_dict()
+
+
+class Stove0ProtocolModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+
+class JsonSchemaDocument(Stove0ProtocolModel):
+    id: SemanticId
+    sha256: Sha256
+    document: dict[str, JsonValue] = Field(alias="schema")
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(self.document) != self.sha256:
+            raise ValueError("schema sha256 does not match its canonical JSON")
+        return self
+
+    @classmethod
+    def from_schema(cls, schema_id: str, schema: dict[str, JsonValue]) -> JsonSchemaDocument:
+        return cls(id=schema_id, sha256=canonical_json_sha256(schema), schema=schema)
+
+
+class CollectionRootRef(Stove0ProtocolModel):
+    collection_id: int = Field(ge=1)
+    manifest_sha256: Sha256
+    content_etag: Sha256
+
+    @classmethod
+    def from_identity(cls, value: CollectionRootIdentity) -> CollectionRootRef:
+        return cls(
+            collection_id=value.collection_id,
+            manifest_sha256=value.manifest_sha256,
+            content_etag=value.content_etag,
+        )
+
+    def to_identity(self) -> CollectionRootIdentity:
+        return CollectionRootIdentity(**self.model_dump(mode="python"))
+
+
+class RecipeRef(Stove0ProtocolModel):
+    id: SemanticId
+    revision: int = Field(ge=1)
+    sha256: Sha256
+
+    @classmethod
+    def from_identity(cls, value: RecipeIdentity) -> RecipeRef:
+        return cls(id=value.id, revision=value.revision, sha256=value.sha256)
+
+    def to_identity(self) -> RecipeIdentity:
+        return RecipeIdentity(**self.model_dump(mode="python"))
+
+
+class OperationRef(Stove0ProtocolModel):
+    id: SemanticId
+    sha256: Sha256
+
+    @classmethod
+    def from_identity(cls, value: OperationIdentity) -> OperationRef:
+        return cls(id=value.id, sha256=value.sha256)
+
+    def to_identity(self) -> OperationIdentity:
+        return OperationIdentity(**self.model_dump(mode="python"))
+
+
+class ArtifactSubject(Stove0ProtocolModel):
+    id: str = Field(pattern=ARTIFACT_ID_PATTERN)
+    role: SemanticId
+    collection: CollectionRootRef
+    path: str = Field(min_length=1, max_length=4096)
+    bytes: int = Field(ge=0)
+    sha256: Sha256
+    media_type: str | None = Field(default=None, min_length=1, max_length=255)
+
+    @field_validator("path")
+    @classmethod
+    def canonical_path(cls, value: str) -> str:
+        normalized = normalize_relpath(value)
+        if normalized != value:
+            raise ValueError("artifact path must be canonical")
+        return normalized
+
+
+class EvaluationBinding(Stove0ProtocolModel):
+    """Immutable membership of one work item in a trial/evaluation matrix."""
+
+    evaluation_id: Sha256
+    matrix_sha256: Sha256
+    variant_id: SemanticId
+    parameters: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class WorkPayload(Stove0ProtocolModel):
+    format: Literal["stove0-work/v1"] = WORK_FORMAT
+    recipe: RecipeRef
+    inputs: tuple[CollectionRootRef, ...] = Field(min_length=1)
+    effective_intent: dict[str, JsonValue] = Field(default_factory=dict)
+    evaluation: EvaluationBinding | None = None
+
+    @field_validator("inputs")
+    @classmethod
+    def canonical_inputs(
+        cls, value: tuple[CollectionRootRef, ...]
+    ) -> tuple[CollectionRootRef, ...]:
+        ordered = tuple(sorted(value, key=lambda item: (item.collection_id, item.manifest_sha256)))
+        if value != ordered or len(value) != len({item.collection_id for item in value}):
+            raise ValueError("work inputs must be unique and canonically ordered")
+        return value
+
+
+class WorkIdentity(WorkPayload):
+    work_id: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "work_id")) != self.work_id:
+            raise ValueError("work id does not match the canonical work payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: WorkPayload) -> WorkIdentity:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, work_id=canonical_json_sha256(document))
+
+    def root_identities(self) -> tuple[CollectionRootIdentity, ...]:
+        return tuple(item.to_identity() for item in self.inputs)
+
+
+class ObserverContractPayload(Stove0ProtocolModel):
+    id: SemanticId
+    options_schema: JsonSchemaDocument
+    facts_schema: JsonSchemaDocument
+    maximum_subjects: int = Field(default=128, ge=1, le=10000)
+    maximum_result_bytes: int = Field(default=1024 * 1024, ge=1, le=64 * 1024 * 1024)
+
+
+class ObserverContract(ObserverContractPayload):
+    contract_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "contract_sha256")) != self.contract_sha256:
+            raise ValueError("observer contract digest does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: ObserverContractPayload) -> ObserverContract:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, contract_sha256=canonical_json_sha256(document))
+
+
+class ObserverContractSupport(Stove0ProtocolModel):
+    contract_id: SemanticId
+    contract_sha256: Sha256
+    options_schema: JsonSchemaDocument
+    facts_schema: JsonSchemaDocument
+    maximum_subjects: int = Field(ge=1, le=10000)
+    maximum_result_bytes: int = Field(ge=1, le=64 * 1024 * 1024)
+
+    @classmethod
+    def from_contract(cls, value: ObserverContract) -> ObserverContractSupport:
+        return cls(
+            contract_id=value.id,
+            contract_sha256=value.contract_sha256,
+            options_schema=value.options_schema,
+            facts_schema=value.facts_schema,
+            maximum_subjects=value.maximum_subjects,
+            maximum_result_bytes=value.maximum_result_bytes,
+        )
+
+
+class ObserverDescriptorPayload(Stove0ProtocolModel):
+    protocol: Literal["stove0-content-observer/v1"] = OBSERVER_PROTOCOL
+    implementation_id: SemanticId
+    implementation_version: str = Field(min_length=1, max_length=120)
+    source_revision: str = Field(min_length=1, max_length=200)
+    contracts: tuple[ObserverContractSupport, ...] = Field(min_length=1)
+
+    @field_validator("contracts")
+    @classmethod
+    def unique_contracts(
+        cls, value: tuple[ObserverContractSupport, ...]
+    ) -> tuple[ObserverContractSupport, ...]:
+        ids = [item.contract_id for item in value]
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
+            raise ValueError("observer contracts must be unique and ordered by ID")
+        return value
+
+
+class ObserverDescriptor(ObserverDescriptorPayload):
+    descriptor_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        expected = canonical_json_sha256(_without_digest(self, "descriptor_sha256"))
+        if expected != self.descriptor_sha256:
+            raise ValueError("observer descriptor digest does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: ObserverDescriptorPayload) -> ObserverDescriptor:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, descriptor_sha256=canonical_json_sha256(document))
+
+    def support_for(self, contract_id: str) -> ObserverContractSupport:
+        for support in self.contracts:
+            if support.contract_id == contract_id:
+                return support
+        raise ValueError(f"observer does not support contract: {contract_id}")
+
+
+class ObservationRequestPayload(Stove0ProtocolModel):
+    format: Literal["stove0-observation-request/v1"] = OBSERVATION_REQUEST_FORMAT
+    work_id: Sha256
+    observer_registration_id: RegistrationId
+    observer_descriptor_sha256: Sha256
+    observer_contract_id: SemanticId
+    observer_contract_sha256: Sha256
+    subjects: tuple[ArtifactSubject, ...] = Field(min_length=1)
+    options: dict[str, JsonValue] = Field(default_factory=dict)
+    timeout_seconds: int = Field(default=300, ge=1, le=86400)
+    maximum_result_bytes: int = Field(default=1024 * 1024, ge=1, le=64 * 1024 * 1024)
+    retrieval_policy: RetrievalPolicy = "available-only"
+
+    @field_validator("subjects")
+    @classmethod
+    def canonical_subjects(cls, value: tuple[ArtifactSubject, ...]) -> tuple[ArtifactSubject, ...]:
+        ids = [item.id for item in value]
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
+            raise ValueError("observation subjects must be unique and ordered by artifact ID")
+        return value
+
+
+class ObservationRequest(ObservationRequestPayload):
+    request_id: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "request_id")) != self.request_id:
+            raise ValueError("observation request id does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: ObservationRequestPayload) -> ObservationRequest:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, request_id=canonical_json_sha256(document))
+
+
+class ObserverRuntimeAuthority(Stove0ProtocolModel):
+    """Secret-bearing invocation material excluded from durable request identity."""
+
+    transport: Literal["riverhog-capability/v1"] = RIVERHOG_CAPABILITY_TRANSPORT
+    riverhog_base_url: str = Field(min_length=1, max_length=2048)
+    capability_token: str = Field(min_length=1, max_length=4096, repr=False)
+    allow_insecure_http: bool = False
+    workspace_assurance: Literal["encrypted", "ephemeral"]
+
+
+class ObservationInvocation(Stove0ProtocolModel):
+    """Fence-bound invocation authority excluded from semantic request identity."""
+
+    request: ObservationRequest
+    claim_id: str = Field(min_length=1, max_length=160)
+    fence: int = Field(ge=1)
+    runtime: ObserverRuntimeAuthority
+
+    @field_validator("claim_id")
+    @classmethod
+    def canonical_claim_id(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("claim id must be canonical")
+        return value
+
+
+class ObserverImplementation(Stove0ProtocolModel):
+    protocol: Literal["stove0-content-observer/v1"] = OBSERVER_PROTOCOL
+    id: SemanticId
+    version: str = Field(min_length=1, max_length=120)
+    source_revision: str = Field(min_length=1, max_length=200)
+    descriptor_sha256: Sha256
+
+
+class ObservationFailure(Stove0ProtocolModel):
+    code: SemanticId
+    message: str = Field(min_length=1, max_length=1000)
+    retryable: bool
+
+
+class ObservationResultPayload(Stove0ProtocolModel):
+    format: Literal["stove0-observation-result/v1"] = OBSERVATION_RESULT_FORMAT
+    request_id: Sha256
+    state: ObservationState
+    observer: ObserverImplementation
+    observer_contract_id: SemanticId
+    observer_contract_sha256: Sha256
+    subjects: tuple[ArtifactSubject, ...] = Field(min_length=1)
+    facts_schema: JsonSchemaDocument | None = None
+    facts: dict[str, JsonValue] | None = None
+    facts_sha256: Sha256 | None = None
+    execution_evidence: dict[str, JsonValue] = Field(default_factory=dict)
+    failure: ObservationFailure | None = None
+
+    @field_validator("subjects")
+    @classmethod
+    def canonical_subjects(cls, value: tuple[ArtifactSubject, ...]) -> tuple[ArtifactSubject, ...]:
+        ids = [item.id for item in value]
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
+            raise ValueError("observation result subjects must be unique and ordered")
+        return value
+
+    @model_validator(mode="after")
+    def validate_state_payload(self) -> Self:
+        if self.state == "observed":
+            if self.facts_schema is None or self.facts is None or self.facts_sha256 is None:
+                raise ValueError("observed result requires facts and their schema")
+            if canonical_json_sha256(self.facts) != self.facts_sha256:
+                raise ValueError("observation facts digest does not match canonical facts")
+            if self.failure is not None:
+                raise ValueError("observed result cannot include failure details")
+        else:
+            has_facts = (
+                self.facts_schema is not None
+                or self.facts is not None
+                or self.facts_sha256 is not None
+            )
+            if has_facts:
+                raise ValueError("non-observed result cannot include facts")
+            if self.state == "failed" and self.failure is None:
+                raise ValueError("failed observation requires failure details")
+            if self.state != "failed" and self.failure is not None:
+                raise ValueError("only failed observation may include failure details")
+        return self
+
+
+class ObservationResult(ObservationResultPayload):
+    result_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "result_sha256")) != self.result_sha256:
+            raise ValueError("observation result digest does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: ObservationResultPayload) -> ObservationResult:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, result_sha256=canonical_json_sha256(document))
+
+
+class ObservationEvidence(Stove0ProtocolModel):
+    """Complete routing evidence: immutable request plus accepted result."""
+
+    request: ObservationRequest
+    result: ObservationResult
+
+    @model_validator(mode="after")
+    def bind_result(self) -> Self:
+        if (
+            self.result.request_id != self.request.request_id
+            or self.result.observer_contract_id != self.request.observer_contract_id
+            or self.result.observer_contract_sha256 != self.request.observer_contract_sha256
+            or self.result.observer.descriptor_sha256 != self.request.observer_descriptor_sha256
+            or self.result.subjects != self.request.subjects
+        ):
+            raise ValueError("observation evidence result does not bind its request")
+        return self
+
+
+def validate_observation_result(
+    result: ObservationResult,
+    request: ObservationRequest,
+    descriptor: ObserverDescriptor,
+) -> None:
+    if result.request_id != request.request_id:
+        raise ValueError("observation result does not bind the request")
+    support = descriptor.support_for(request.observer_contract_id)
+    if (
+        request.observer_contract_sha256 != support.contract_sha256
+        or descriptor.descriptor_sha256 != request.observer_descriptor_sha256
+        or result.observer_contract_id != support.contract_id
+        or result.observer_contract_sha256 != support.contract_sha256
+        or result.observer.descriptor_sha256 != request.observer_descriptor_sha256
+    ):
+        raise ValueError("observation result does not bind the accepted observer contract")
+    if result.subjects != request.subjects:
+        raise ValueError("observation result subjects differ from the request")
+    if len(request.subjects) > support.maximum_subjects:
+        raise ValueError("observation request exceeds the observer contract subject limit")
+    if request.maximum_result_bytes > support.maximum_result_bytes:
+        raise ValueError("observation request exceeds the observer contract result limit")
+    if result.state == "observed" and result.facts_schema != support.facts_schema:
+        raise ValueError("observation result uses an unexpected facts schema")
+    encoded = canonical_json_bytes(result.model_dump(mode="json", exclude_none=True))
+    if len(encoded) > request.maximum_result_bytes:
+        raise ValueError("observation result exceeds the requested result-size limit")
+
+
+class WorkflowPlanPayload(Stove0ProtocolModel):
+    format: Literal["stove0-workflow-plan/v1"] = WORKFLOW_PLAN_FORMAT
+    work: WorkIdentity
+    observations: tuple[ObservationEvidence, ...] = ()
+    operation: OperationRef
+    target_registration_id: RegistrationId
+    target_contract_sha256: Sha256
+    requested_target_options: dict[str, JsonValue] = Field(default_factory=dict)
+    input_retrieval_policy: RetrievalPolicy = "available-only"
+    output_tags: tuple[str, ...] = Field(min_length=1)
+    retirement_policy: RetirementPolicy = "retain"
+    retirement_grace_seconds: int = Field(default=0, ge=0)
+    output_policy: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @field_validator("observations")
+    @classmethod
+    def canonical_observations(
+        cls, value: tuple[ObservationEvidence, ...]
+    ) -> tuple[ObservationEvidence, ...]:
+        ids = [item.request.request_id for item in value]
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
+            raise ValueError("workflow observations must be unique and ordered by request id")
+        return value
+
+    @field_validator("output_tags")
+    @classmethod
+    def canonical_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        tags = tuple(sorted(normalize_tag(item) for item in value))
+        if tags != value or len(tags) != len(set(tags)):
+            raise ValueError("workflow output tags must be unique and canonical")
+        return tags
+
+    @model_validator(mode="after")
+    def protect_evaluation_sources(self) -> Self:
+        if self.work.evaluation is not None and self.retirement_policy != "retain":
+            raise ValueError("evaluation and trial work must retain every source collection")
+        return self
+
+
+class WorkflowPlan(WorkflowPlanPayload):
+    workflow_plan_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        expected = canonical_json_sha256(_without_digest(self, "workflow_plan_sha256"))
+        if expected != self.workflow_plan_sha256:
+            raise ValueError("workflow plan digest does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: WorkflowPlanPayload) -> WorkflowPlan:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, workflow_plan_sha256=canonical_json_sha256(document))
+
+
+class TargetPlanBinding(Stove0ProtocolModel):
+    """Opaque binding to a target-owned preflight plan.
+
+    The target protocol owns the plan schema and canonicalization algorithm. stove0
+    retains the complete validated plan document and its target-issued digest, but
+    deliberately does not reinterpret or re-hash the plan with stove0's canonical
+    JSON rules. This prevents two authorities from disagreeing about target plan
+    identity while preserving the full document in the execution envelope.
+    """
+
+    protocol: SemanticId
+    target_implementation_id: SemanticId
+    target_contract_sha256: Sha256
+    operation_contract_sha256: Sha256
+    plan: dict[str, JsonValue]
+    plan_sha256: Sha256
+
+    @field_validator("plan")
+    @classmethod
+    def require_plan_document(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        if not value:
+            raise ValueError("target plan binding requires the complete plan document")
+        return value
+
+
+class ExecutionEnvelopePayload(Stove0ProtocolModel):
+    format: Literal["stove0-execution-envelope/v1"] = EXECUTION_ENVELOPE_FORMAT
+    claim_id: str = Field(min_length=1, max_length=160)
+    fence: int = Field(ge=1)
+    workflow_plan: WorkflowPlan
+    target_plan: TargetPlanBinding
+
+    @field_validator("claim_id")
+    @classmethod
+    def canonical_claim_id(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("execution claim id must be canonical")
+        return value
+
+    @model_validator(mode="after")
+    def bind_target(self) -> Self:
+        if self.workflow_plan.target_contract_sha256 != self.target_plan.target_contract_sha256:
+            raise ValueError("target plan differs from the workflow-selected target contract")
+        if self.workflow_plan.operation.sha256 != self.target_plan.operation_contract_sha256:
+            raise ValueError("target plan differs from the workflow-selected operation contract")
+        return self
+
+
+class ExecutionEnvelope(ExecutionEnvelopePayload):
+    execution_envelope_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if (
+            canonical_json_sha256(_without_digest(self, "execution_envelope_sha256"))
+            != self.execution_envelope_sha256
+        ):
+            raise ValueError("execution envelope digest does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: ExecutionEnvelopePayload) -> ExecutionEnvelope:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, execution_envelope_sha256=canonical_json_sha256(document))
+
+
+class EvaluationVariant(Stove0ProtocolModel):
+    id: SemanticId
+    parameters: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class EvaluationMatrixPayload(Stove0ProtocolModel):
+    format: Literal["stove0-evaluation-matrix/v1"] = EVALUATION_MATRIX_FORMAT
+    variants: tuple[EvaluationVariant, ...] = Field(min_length=1, max_length=256)
+
+    @field_validator("variants")
+    @classmethod
+    def canonical_variants(
+        cls, value: tuple[EvaluationVariant, ...]
+    ) -> tuple[EvaluationVariant, ...]:
+        ids = [item.id for item in value]
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
+            raise ValueError("evaluation variants must be unique and ordered by ID")
+        return value
+
+
+class EvaluationMatrix(EvaluationMatrixPayload):
+    matrix_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "matrix_sha256")) != self.matrix_sha256:
+            raise ValueError("evaluation matrix digest does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: EvaluationMatrixPayload) -> EvaluationMatrix:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, matrix_sha256=canonical_json_sha256(document))
+
+
+class EvaluationDefinitionPayload(Stove0ProtocolModel):
+    format: Literal["stove0-evaluation-definition/v1"] = EVALUATION_DEFINITION_FORMAT
+    purpose: Literal["trial", "evaluation"] = "evaluation"
+    recipe: RecipeRef
+    inputs: tuple[CollectionRootRef, ...] = Field(min_length=1)
+    common_intent: dict[str, JsonValue] = Field(default_factory=dict)
+    matrix: EvaluationMatrix
+
+    @field_validator("inputs")
+    @classmethod
+    def canonical_inputs(
+        cls, value: tuple[CollectionRootRef, ...]
+    ) -> tuple[CollectionRootRef, ...]:
+        ordered = tuple(sorted(value, key=lambda item: (item.collection_id, item.manifest_sha256)))
+        if value != ordered or len(value) != len({item.collection_id for item in value}):
+            raise ValueError("evaluation inputs must be unique and canonically ordered")
+        return value
+
+    @model_validator(mode="after")
+    def validate_purpose(self) -> Self:
+        if self.purpose == "trial" and len(self.matrix.variants) != 1:
+            raise ValueError("materialized trial definitions require exactly one variant")
+        return self
+
+
+class EvaluationDefinition(EvaluationDefinitionPayload):
+    evaluation_id: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "evaluation_id")) != self.evaluation_id:
+            raise ValueError("evaluation id does not match its canonical definition")
+        return self
+
+    @classmethod
+    def seal(cls, payload: EvaluationDefinitionPayload) -> EvaluationDefinition:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, evaluation_id=canonical_json_sha256(document))
+
+    def child_work(self, variant_id: str) -> WorkIdentity:
+        variant = next((item for item in self.matrix.variants if item.id == variant_id), None)
+        if variant is None:
+            raise ValueError(f"unknown evaluation variant: {variant_id}")
+        return WorkIdentity.seal(
+            WorkPayload(
+                recipe=self.recipe,
+                inputs=self.inputs,
+                effective_intent=self.common_intent,
+                evaluation=EvaluationBinding(
+                    evaluation_id=self.evaluation_id,
+                    matrix_sha256=self.matrix.matrix_sha256,
+                    variant_id=variant.id,
+                    parameters=variant.parameters,
+                ),
+            )
+        )
+
+    def child_works(self) -> tuple[WorkIdentity, ...]:
+        return tuple(self.child_work(item.id) for item in self.matrix.variants)
+
+
+class WorkflowPreviewRequestPayload(Stove0ProtocolModel):
+    format: Literal["stove0-workflow-preview-request/v1"] = WORKFLOW_PREVIEW_REQUEST_FORMAT
+    work: WorkIdentity
+
+
+class WorkflowPreviewRequest(WorkflowPreviewRequestPayload):
+    preview_id: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "preview_id")) != self.preview_id:
+            raise ValueError("workflow preview id does not match its canonical request")
+        return self
+
+    @classmethod
+    def seal(cls, payload: WorkflowPreviewRequestPayload) -> WorkflowPreviewRequest:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, preview_id=canonical_json_sha256(document))
+
+
+class PreviewOutcome(Stove0ProtocolModel):
+    code: SemanticId
+    message: str = Field(min_length=1, max_length=1000)
+    retryable: bool | None = None
+
+
+class WorkflowPreviewPayload(Stove0ProtocolModel):
+    format: Literal["stove0-workflow-preview/v1"] = WORKFLOW_PREVIEW_FORMAT
+    preview_id: Sha256
+    state: Literal["ready", "inapplicable", "failed", "canceled"]
+    work: WorkIdentity
+    observations: tuple[ObservationEvidence, ...] = ()
+    workflow_plan: WorkflowPlan | None = None
+    target_plan: TargetPlanBinding | None = None
+    outcome: PreviewOutcome | None = None
+    warnings: tuple[str, ...] = ()
+
+    @field_validator("observations")
+    @classmethod
+    def canonical_observations(
+        cls, value: tuple[ObservationEvidence, ...]
+    ) -> tuple[ObservationEvidence, ...]:
+        ids = [item.request.request_id for item in value]
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
+            raise ValueError("preview observations must be unique and ordered")
+        return value
+
+    @field_validator("warnings")
+    @classmethod
+    def canonical_warnings(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != tuple(sorted(value)) or len(value) != len(set(value)):
+            raise ValueError("preview warnings must be unique and ordered")
+        return value
+
+    @model_validator(mode="after")
+    def validate_state(self) -> Self:
+        if self.state == "ready":
+            if self.workflow_plan is None or self.target_plan is None or self.outcome is not None:
+                raise ValueError("ready preview requires workflow and target plans only")
+            if self.workflow_plan.work != self.work:
+                raise ValueError("preview workflow plan differs from the requested work")
+            if (
+                self.workflow_plan.target_contract_sha256 != self.target_plan.target_contract_sha256
+                or self.workflow_plan.operation.sha256 != self.target_plan.operation_contract_sha256
+            ):
+                raise ValueError("preview target plan differs from workflow selection")
+        else:
+            if self.workflow_plan is not None or self.target_plan is not None:
+                raise ValueError("non-ready preview cannot contain executable plans")
+            if self.outcome is None:
+                raise ValueError("non-ready preview requires an outcome")
+        return self
+
+
+class WorkflowPreview(WorkflowPreviewPayload):
+    preview_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "preview_sha256")) != self.preview_sha256:
+            raise ValueError("workflow preview digest does not match its canonical result")
+        return self
+
+    @classmethod
+    def seal(cls, payload: WorkflowPreviewPayload) -> WorkflowPreview:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, preview_sha256=canonical_json_sha256(document))
+
+
+class ControllerEvidencePayload(Stove0ProtocolModel):
+    format: Literal["stove0-controller-evidence/v1"] = CONTROLLER_EVIDENCE_FORMAT
+    execution_envelope: ExecutionEnvelope
+
+
+class ControllerEvidence(ControllerEvidencePayload):
+    controller_evidence_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if (
+            canonical_json_sha256(_without_digest(self, "controller_evidence_sha256"))
+            != self.controller_evidence_sha256
+        ):
+            raise ValueError("controller evidence digest does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: ControllerEvidencePayload) -> ControllerEvidence:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, controller_evidence_sha256=canonical_json_sha256(document))
+
+
+__all__ = [
+    "ARTIFACT_ID_PATTERN",
+    "CONTROLLER_EVIDENCE_FORMAT",
+    "ControllerEvidence",
+    "ControllerEvidencePayload",
+    "EVALUATION_DEFINITION_FORMAT",
+    "EVALUATION_MATRIX_FORMAT",
+    "EvaluationBinding",
+    "EvaluationDefinition",
+    "EvaluationDefinitionPayload",
+    "EvaluationMatrix",
+    "EvaluationMatrixPayload",
+    "EvaluationVariant",
+    "EXECUTION_ENVELOPE_FORMAT",
+    "ExecutionEnvelope",
+    "ExecutionEnvelopePayload",
+    "JsonSchemaDocument",
+    "OBSERVER_PROTOCOL",
+    "OBSERVATION_REQUEST_FORMAT",
+    "OBSERVATION_RESULT_FORMAT",
+    "ObservationEvidence",
+    "ObservationFailure",
+    "ObservationInvocation",
+    "ObservationRequest",
+    "ObservationRequestPayload",
+    "ObservationResult",
+    "ObservationResultPayload",
+    "ObservationState",
+    "ObserverContract",
+    "ObserverContractPayload",
+    "ObserverContractSupport",
+    "ObserverDescriptor",
+    "ObserverDescriptorPayload",
+    "ObserverImplementation",
+    "ObserverRuntimeAuthority",
+    "OperationRef",
+    "PreviewOutcome",
+    "RIVERHOG_CAPABILITY_TRANSPORT",
+    "RecipeRef",
+    "RetirementPolicy",
+    "SHA256_PATTERN",
+    "SemanticId",
+    "Sha256",
+    "Stove0ProtocolModel",
+    "TargetPlanBinding",
+    "WORKFLOW_PLAN_FORMAT",
+    "WORKFLOW_PREVIEW_FORMAT",
+    "WORKFLOW_PREVIEW_REQUEST_FORMAT",
+    "WORK_FORMAT",
+    "WorkIdentity",
+    "WorkPayload",
+    "WorkflowPlan",
+    "WorkflowPlanPayload",
+    "WorkflowPreview",
+    "WorkflowPreviewPayload",
+    "WorkflowPreviewRequest",
+    "WorkflowPreviewRequestPayload",
+    "ArtifactSubject",
+    "CollectionRootRef",
+    "canonical_json_bytes",
+    "canonical_json_sha256",
+    "validate_observation_result",
+]

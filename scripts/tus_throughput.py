@@ -19,7 +19,7 @@ DEFAULT_CHUNK_MIB = (DEFAULT_TUS_UPLOAD_CHUNK_MIB, 128)
 USER_ENV = "TUS_BENCHMARK_USER"
 PASSWORD_ENV = "TUS_BENCHMARK_PASSWORD"
 TUS_TARGET_UTILIZATION = 0.80
-TUS_SCENARIOS = ("jeb-ingress", "jeb-munchy", "munchy-eager", "munchy-non-eager")
+TUS_SCENARIOS = ("adapter-ingress",)
 WORKLOADS = ("large-file", "many-small-files", "resume")
 
 

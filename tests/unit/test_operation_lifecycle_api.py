@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+import pytest
 from fastapi.testclient import TestClient
 from riverhog_api.app import create_app
 from riverhog_api.deps import ServiceContainer
@@ -25,6 +26,9 @@ from riverhog_core.services.archive_maintenance import SqlAlchemyArchiveMaintena
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
+from riverhog_core.services.collection_workflows import (
+    SqlAlchemyCollectionWorkflowService,
+)
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
@@ -33,6 +37,16 @@ from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
+from riverhog_protocol.collection_workflows import (
+    DERIVATION_EVIDENCE_PATH,
+    ArtifactDisposition,
+    CollectionDerivation,
+    CollectionRootIdentity,
+    OperationIdentity,
+    RecipeIdentity,
+    canonical_json_sha256,
+)
+from riverhog_protocol.errors import Forbidden
 from riverhog_protocol.manifest import collection_content_etag
 from riverhog_provenance import (
     FileProvenanceBinding,
@@ -100,6 +114,9 @@ def _container(tmp_path: Path) -> ServiceContainer:
             stores,
             proof_stamper=stamper,
             session_factory=session_factory,
+        ),
+        collection_workflows=SqlAlchemyCollectionWorkflowService(
+            config, session_factory=session_factory
         ),
         provenance=SqlAlchemyProvenanceService(config, session_factory=session_factory),
         collection_deletions=SqlAlchemyCollectionDeletionService(
@@ -471,6 +488,325 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     )
     assert copy["destination_store"] == "secondary"
 
+    source_collection = operator.get_collection(collection_id)
+    source_identity = CollectionRootIdentity(
+        collection_id=collection_id,
+        manifest_sha256=str(source_collection["manifest_sha256"]),
+        content_etag=str(source_collection["content_etag"]),
+    )
+
+    abandoned_work = {
+        "format": "qualification-work/v1",
+        "kind": "abandonment-witness",
+        "inputs": [source_identity.as_dict()],
+    }
+    abandoned_work_id = canonical_json_sha256(abandoned_work)
+    abandoned_claim = operator.create_or_resume_processing_claim(
+        work_id=abandoned_work_id,
+        work_document=abandoned_work,
+        work_document_sha256=abandoned_work_id,
+        inputs=[source_identity.as_dict()],
+    )
+    abandoned_claim_id = str(abandoned_claim["id"])
+    abandoned_fence = int(abandoned_claim["fence"])
+    read_capability = operator.create_transform_capability(
+        abandoned_claim_id,
+        fence=abandoned_fence,
+        audience="qualification.observer/v1",
+        actions=("read-inputs",),
+    )
+    restarted = operator.restart_processing_claim(
+        abandoned_claim_id,
+        fence=abandoned_fence,
+        lease_seconds=1800,
+    )
+    abandoned_fence = int(restarted["fence"])
+    assert abandoned_fence == 2
+    assert restarted["plan"] is None
+    assert (
+        transport.get(
+            f"/v1/collections/{collection_id}",
+            headers={"Authorization": f"Bearer {read_capability['token']}"},
+        ).status_code
+        == 401
+    )
+    abandonment_reason = "qualification: explicit terminal no-output work"
+    abandoned = operator.abandon_processing_claim(
+        abandoned_claim_id,
+        fence=abandoned_fence,
+        reason=abandonment_reason,
+    )
+    assert abandoned["state"] == "abandoned"
+    assert abandoned["abandonment_reason"] == abandonment_reason
+    assert (
+        operator.abandon_processing_claim(
+            abandoned_claim_id,
+            fence=abandoned_fence,
+            reason=abandonment_reason,
+        )["state"]
+        == "abandoned"
+    )
+
+    operation_identity = OperationIdentity(
+        "qualification-transform/v1",
+        hashlib.sha256(b"qualification-operation-contract").hexdigest(),
+    )
+    recipe_identity = RecipeIdentity(
+        "qualification-recipe/v1",
+        1,
+        hashlib.sha256(b"qualification-recipe-contract").hexdigest(),
+    )
+    work_document = {
+        "format": "qualification-work/v1",
+        "recipe": recipe_identity.as_dict(),
+        "inputs": [source_identity.as_dict()],
+    }
+    work_id = canonical_json_sha256(work_document)
+    claim = operator.create_or_resume_processing_claim(
+        work_id=work_id,
+        work_document=work_document,
+        work_document_sha256=work_id,
+        inputs=[source_identity.as_dict()],
+    )
+    claim_id = str(claim["id"])
+    claim_fence = int(claim["fence"])
+    assert operator.get_processing_claim(claim_id)["work_id"] == work_id
+    assert operator.list_processing_claims(all_items=True)["total"] == 2
+    assert (
+        operator.renew_processing_claim(
+            claim_id,
+            fence=claim_fence,
+            lease_seconds=1800,
+        )["state"]
+        == "active"
+    )
+
+    execution_id = hashlib.sha256(b"qualification-execution-envelope").hexdigest()
+    controller_evidence = {
+        "format": "qualification-controller-evidence/v1",
+        "claim": {"id": claim_id, "fence": claim_fence},
+        "work_id": work_id,
+        "execution_id": execution_id,
+    }
+    controller_evidence_sha256 = canonical_json_sha256(controller_evidence)
+    sealed = operator.seal_processing_claim_plan(
+        claim_id,
+        fence=claim_fence,
+        execution_id=execution_id,
+        controller_evidence=controller_evidence,
+        controller_evidence_sha256=controller_evidence_sha256,
+        operation_id=operation_identity.id,
+        operation_sha256=operation_identity.sha256,
+        output_tags=("reviewed",),
+        retirement_policy="retire-after-verified-output",
+    )
+    assert sealed["plan"]["execution_id"] == execution_id
+    output_capability = operator.create_transform_capability(
+        claim_id,
+        fence=claim_fence,
+        audience="qualification.target/v1",
+        actions=("read-inputs", "write-output"),
+    )
+
+    output_root = tmp_path / "derived"
+    output_payload_path = output_root / "derived" / "document.txt"
+    output_payload_path.parent.mkdir(parents=True)
+    output_payload_path.write_bytes(source.read_bytes().upper())
+    output_relative_path = "derived/document.txt"
+    derivation = CollectionDerivation(
+        execution_id=execution_id,
+        claim_id=claim_id,
+        fence=claim_fence,
+        recipe=recipe_identity,
+        operation=operation_identity,
+        inputs=(source_identity,),
+        output_tags=("reviewed",),
+        execution_envelope_sha256=execution_id,
+        execution_sha256=hashlib.sha256(b"qualification-execution-result").hexdigest(),
+        controller_evidence=controller_evidence,
+        controller_evidence_sha256=controller_evidence_sha256,
+        dispositions=(
+            ArtifactDisposition(
+                input_collection_id=collection_id,
+                input_manifest_sha256=source_identity.manifest_sha256,
+                input_path="document.txt",
+                status="transformed",
+                outputs=(output_relative_path,),
+            ),
+        ),
+    )
+    derivation_path = output_root / DERIVATION_EVIDENCE_PATH
+    derivation_path.parent.mkdir(parents=True)
+    derivation_path.write_bytes(derivation.to_json_bytes())
+    output_files = {
+        output_relative_path: output_payload_path,
+        DERIVATION_EVIDENCE_PATH: derivation_path,
+    }
+    output_entries = [
+        (
+            path,
+            current.stat().st_size,
+            hashlib.sha256(current.read_bytes()).hexdigest(),
+        )
+        for path, current in output_files.items()
+    ]
+    target = _api(transport, str(output_capability["token"]), observer=observer)
+    target_retrieval_plan = target.plan_retrieval(
+        [(collection_id, "document.txt")],
+        restore_policy="never",
+    )
+    target_retrieval = target.create_retrieval_job(
+        [(collection_id, "document.txt")],
+        plan_etag=str(target_retrieval_plan["etag"]),
+        restore_policy="never",
+    )
+    assert target_retrieval["state"] == "ready"
+    assert target.acknowledge_retrieval_job(str(target_retrieval["id"]))["state"] == "completed"
+    with pytest.raises(Forbidden):
+        target.create_or_resume_collection_upload_session(
+            hashlib.sha256(b"unauthorized-output").hexdigest(),
+            ["reviewed"],
+            ingest_source=f"transform:{execution_id}",
+            provenance_mode="omitted",
+            provenance_omission_reason="qualification transform evidence",
+        )
+    with pytest.raises(Forbidden):
+        target.create_or_resume_collection_upload_session(
+            execution_id,
+            ["reviewed"],
+            ingest_source="transform:another-execution",
+            provenance_mode="omitted",
+            provenance_omission_reason="qualification transform evidence",
+        )
+    with pytest.raises(Forbidden):
+        target.create_or_resume_collection_upload_session(
+            execution_id,
+            ["reviewed"],
+            ingest_source=f"transform:{execution_id}",
+            archive_store="primary",
+            provenance_mode="omitted",
+            provenance_omission_reason="qualification transform evidence",
+        )
+    target_session = target.create_or_resume_collection_upload_session(
+        execution_id,
+        ["reviewed"],
+        ingest_source=f"transform:{execution_id}",
+        provenance_mode="omitted",
+        provenance_omission_reason="qualification transform evidence",
+    )
+    output_collection_id = int(target_session["collection_id"])
+    replayed_target_session = target.create_or_resume_collection_upload_session(
+        execution_id,
+        ["reviewed"],
+        ingest_source=f"transform:{execution_id}",
+        provenance_mode="omitted",
+        provenance_omission_reason="qualification transform evidence",
+    )
+    assert int(replayed_target_session["collection_id"]) == output_collection_id
+    target.register_collection_upload_session_files(
+        output_collection_id,
+        [
+            {
+                "path": path,
+                "bytes": byte_count,
+                "sha256": sha256,
+                "provenance": {
+                    "status": "omitted",
+                    "omission_reason": "qualification transform evidence",
+                },
+            }
+            for path, byte_count, sha256 in sorted(output_entries)
+        ],
+    )
+    target.complete_collection_upload_session(
+        output_collection_id,
+        files_total=len(output_entries),
+        content_etag=collection_content_etag(output_entries),
+        provenance_etag=None,
+    )
+    for volume in target.list_collection_upload_session_volumes(output_collection_id)["volumes"]:
+        shown = target.get_collection_upload_session_volume(
+            output_collection_id,
+            str(volume["volume_id"]),
+        )
+        for unit in shown["units"]:
+            current = target.get_collection_upload_session_unit(
+                output_collection_id,
+                str(volume["volume_id"]),
+                int(unit["unit"]),
+            )
+            target.put_collection_upload_session_unit(
+                output_collection_id,
+                str(volume["volume_id"]),
+                int(unit["unit"]),
+                plan_sha256=str(volume["plan_sha256"]),
+                content=_unit_content(output_root, current),
+            )
+    assert container.collection_uploads.process_due_finalizations() == 1
+    assert target.get_collection_upload_session(output_collection_id)["state"] == "finalized"
+    replayed_output = target.create_or_resume_collection_upload_session(
+        execution_id,
+        ["reviewed"],
+        ingest_source=f"transform:{execution_id}",
+        provenance_mode="omitted",
+        provenance_omission_reason="qualification transform evidence",
+    )
+    assert replayed_output["state"] == "finalized"
+    assert int(replayed_output["collection_id"]) == output_collection_id
+    target.close()
+
+    settled = operator.settle_processing_claim(
+        claim_id,
+        fence=claim_fence,
+        output_collection_id=output_collection_id,
+        derivation=derivation.as_dict(),
+    )
+    assert settled["state"] == "settled"
+    replayed_settlement = operator.settle_processing_claim(
+        claim_id,
+        fence=claim_fence,
+        output_collection_id=output_collection_id,
+        derivation=derivation.as_dict(),
+    )
+    assert replayed_settlement["state"] == "settled"
+    assert (
+        operator.get_collection_derivation(output_collection_id)["document_sha256"]
+        == derivation.sha256
+    )
+    retiring = operator.begin_processing_claim_retirement(
+        claim_id,
+        fence=claim_fence,
+    )
+    assert retiring["state"] == "retiring"
+    replayed_retiring_settlement = operator.settle_processing_claim(
+        claim_id,
+        fence=claim_fence,
+        output_collection_id=output_collection_id,
+        derivation=derivation.as_dict(),
+    )
+    assert replayed_retiring_settlement["state"] == "retiring"
+    retirement = operator.plan_collection_deletion(
+        collection_id,
+        retirement_claim_id=claim_id,
+    )
+    assert retirement["status"] == "ready"
+    assert (
+        operator.delete_collection(
+            collection_id,
+            challenge=str(retirement["challenge"]),
+            retirement_claim_id=claim_id,
+        )["status"]
+        == "deleted"
+    )
+    assert operator.release_processing_claim(claim_id, fence=claim_fence)["state"] == "released"
+    replayed_released_settlement = operator.settle_processing_claim(
+        claim_id,
+        fence=claim_fence,
+        output_collection_id=output_collection_id,
+        derivation=derivation.as_dict(),
+    )
+    assert replayed_released_settlement["state"] == "released"
+
     events = operator.list_lifecycle_events(limit=100)
     assert events.events
     assert int(events.next_cursor) > 0
@@ -488,13 +824,6 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert restarted_events.next_cursor == events.next_cursor
     restarted_transport.close()
     restarted_container.close()
-    deletion = operator.plan_collection_deletion(collection_id)
-    deleted = operator.delete_collection(
-        collection_id,
-        challenge=str(deletion["challenge"]),
-    )
-    assert deleted["status"] == "deleted"
-
     from scripts.operation_qualification import operation_matrix
 
     observer.require(

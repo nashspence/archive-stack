@@ -15,11 +15,12 @@ required_check_integration_id = 15368
 required_checks = [
   "Analyze (actions)",
   "Analyze (python)",
-  "build jeb",
   "build mango-fish",
-  "build munchy-av1-nvenc",
-  "build munchy-server",
   "build riverhog",
+  "build riverhog-adapters",
+  "build stove0",
+  "build stove0-extensions",
+  "build stove0-nvenc-extension",
   "build test",
   "client platform (macos-15)",
   "client platform (ubuntu-24.04)",
@@ -28,7 +29,6 @@ required_checks = [
   "make compile",
   "make compose-smoke",
   "make dist-smoke",
-  "make jeb-compose-smoke",
   "make lint",
   "make postgres-concurrency",
   "make spec",
@@ -127,40 +127,41 @@ github_oidc = "Published GitHub artifacts also receive workflow identity attesta
 
 [python]
 end_user_artifact = [
-  "companions/jeb/client",
-  "companions/munchy/client",
+  "companions/stove0/client",
   "riverhog/client",
   "riverhog/recovery",
   "utilities/gogurt",
 ]
 deployed_implementation = [
-  "companions/jeb/server",
-  "companions/munchy/server",
-  "companions/munchy/server/targets/av1-nvenc",
+  "companions/stove0/server",
+  "companions/stove0/extensions",
+  "riverhog/adapters",
   "riverhog/server",
   "utilities/mango-fish",
 ]
 reusable_library = [
   "packages/file-download",
-  "packages/jeb-api-client",
-  "packages/jeb-protocol",
   "packages/lifecycle-events",
-  "packages/media-preflight",
-  "packages/munchy-api-client",
-  "packages/munchy-config",
-  "packages/munchy-target-support",
-  "packages/munchy-workflows",
   "packages/riverhog-age",
+  "packages/riverhog-adapter-api-client",
   "packages/riverhog-api-client",
   "packages/riverhog-protocol",
   "packages/riverhog-provenance",
+  "packages/riverhog-transform-sdk",
+  "packages/stove0-observer-protocol",
+  "packages/stove0-observer-support",
+  "packages/stove0-media-contracts",
+  "packages/stove0-api-client",
+  "packages/stove0-protocol",
+  "packages/stove0-review-contracts",
+  "packages/stove0-target-protocol",
+  "packages/stove0-target-support",
   "packages/tus-transport",
 ]
 internal_build_unit = [
   "packages/application-access",
   "packages/config-validation",
   "packages/http-api-contracts",
-  "packages/jeb-cli-support",
   "packages/riverhog-cli-support",
   "packages/state-schema",
   "packages/time-formats",
@@ -176,10 +177,11 @@ platforms = ["linux/amd64"]
 
 [images.runtime]
 riverhog = { distribution = "riverhog-server", repository = "ghcr.io/nashspence/riverhog" }
-jeb = { distribution = "jeb-server", repository = "ghcr.io/nashspence/riverhog-jeb" }
 mango-fish = { distribution = "mango-fish", repository = "ghcr.io/nashspence/riverhog-mango-fish" }
-munchy-server = { distribution = "munchy-server", repository = "ghcr.io/nashspence/riverhog-munchy" }
-munchy-av1-nvenc = { distribution = "munchy-av1-nvenc-target", repository = "ghcr.io/nashspence/riverhog-munchy-av1-nvenc" }
+riverhog-adapters = { distribution = "riverhog-adapters", repository = "ghcr.io/nashspence/riverhog-adapters" }
+stove0 = { distribution = "stove0-server", repository = "ghcr.io/nashspence/riverhog-stove0" }
+stove0-extensions = { distribution = "stove0-maintained-extensions", repository = "ghcr.io/nashspence/riverhog-stove0-extensions" }
+stove0-nvenc-extension = { distribution = "stove0-maintained-extensions", repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-extension" }
 
 [images.test_only]
 test = { local_tag = "riverhog-test:dev" }

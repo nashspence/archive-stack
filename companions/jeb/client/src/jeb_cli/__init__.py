@@ -1,1 +1,0 @@
-"""Jeb command-line client."""

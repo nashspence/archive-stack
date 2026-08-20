@@ -13,6 +13,8 @@ from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     APPLICATION_PERMISSIONS,
     CATALOG_READ,
+    COLLECTION_TRANSFORMS_CONTROL,
+    COLLECTION_TRANSFORMS_EXECUTE,
     COLLECTIONS_CREATE,
     PROVENANCE_EXPORT,
     PROVENANCE_READ,
@@ -21,10 +23,13 @@ from riverhog_core.app_permissions import (
 )
 
 
-def _permission_dependencies(dependant: Dependant) -> Iterable[str]:
+def _permission_dependencies(dependant: Dependant) -> Iterable[tuple[str, ...]]:
     permission = getattr(dependant.call, "riverhog_permission", None)
     if isinstance(permission, str):
-        yield permission
+        yield (permission,)
+    permissions = getattr(dependant.call, "riverhog_permissions", None)
+    if isinstance(permissions, tuple) and all(isinstance(item, str) for item in permissions):
+        yield permissions
     for child in dependant.dependencies:
         yield from _permission_dependencies(child)
 
@@ -52,10 +57,11 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
             continue
         permissions = list(_permission_dependencies(route.dependant))
         assert len(permissions) == 1, (path, route.methods, permissions)
-        permission = permissions[0]
-        assert permission in APPLICATION_PERMISSIONS
+        requirement = permissions[0]
+        assert requirement
+        assert set(requirement) <= APPLICATION_PERMISSIONS
         for method in route.methods:
-            protected.append((method, path, permission))
+            protected.append((method, path, "|".join(requirement)))
 
     assert protected
     assert len(protected) == len(set(protected))
@@ -89,6 +95,32 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
             "/v1/collections/{collection_id}/provenance/verify",
         ): PROVENANCE_READ,
     }
+
+    workflow_permissions = {
+        (method, path): permission
+        for method, path, permission in protected
+        if "collection-processing-claims" in path or path.endswith("/derivation")
+    }
+    assert (
+        workflow_permissions[("POST", "/v1/collection-processing-claims/{claim_id}/capabilities")]
+        == COLLECTION_TRANSFORMS_EXECUTE
+    )
+    assert (
+        workflow_permissions[("POST", "/v1/collection-processing-claims/{claim_id}/plan")]
+        == COLLECTION_TRANSFORMS_EXECUTE
+    )
+    assert (
+        workflow_permissions[("POST", "/v1/collection-processing-claims/{claim_id}/settle")]
+        == COLLECTION_TRANSFORMS_CONTROL
+    )
+    assert (
+        workflow_permissions[("POST", "/v1/collection-processing-claims/{claim_id}/retirement")]
+        == COLLECTION_TRANSFORMS_CONTROL
+    )
+    assert (
+        workflow_permissions[("POST", "/v1/collection-processing-claims/{claim_id}/renew")]
+        == f"{COLLECTION_TRANSFORMS_CONTROL}|{COLLECTION_TRANSFORMS_EXECUTE}"
+    )
 
 
 def test_application_authentication_uses_the_public_error_contract() -> None:

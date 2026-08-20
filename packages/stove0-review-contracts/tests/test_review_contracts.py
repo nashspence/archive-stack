@@ -1,0 +1,157 @@
+from __future__ import annotations
+
+import subprocess
+import sys
+
+import pytest
+from jsonschema import Draft202012Validator
+from pydantic import ValidationError
+from stove0_protocol import CollectionRootRef, RecipeRef
+from stove0_review_contracts import (
+    MEDIA_SAMPLING_OBSERVER_CONTRACT,
+    REVIEW_SAMPLE_ENCODE_OPERATION,
+    MediaSamplingArtifactFacts,
+    MediaSamplingFacts,
+    ReviewVariant,
+    SampleableRange,
+    contract_report,
+    evenly_spaced_sample_plan,
+    review_evaluation_definition,
+    review_operation_intent,
+    review_target_options,
+)
+
+
+def _sha(character: str) -> str:
+    return character * 64
+
+
+def _facts() -> MediaSamplingFacts:
+    return MediaSamplingFacts(
+        artifacts=(
+            MediaSamplingArtifactFacts(
+                artifact_id="camera-a",
+                duration_ms=120_000,
+                sampleable_ranges=(
+                    SampleableRange(start_ms=0, duration_ms=50_000),
+                    SampleableRange(start_ms=60_000, duration_ms=60_000),
+                ),
+            ),
+        )
+    )
+
+
+def test_review_contract_pack_is_content_specific_but_core_independent() -> None:
+    assert MEDIA_SAMPLING_OBSERVER_CONTRACT.id == "stove0.review.media-sampling/v1"
+    assert REVIEW_SAMPLE_ENCODE_OPERATION.id == "stove0.review.sample-encode/v1"
+    assert REVIEW_SAMPLE_ENCODE_OPERATION.source_retirement_permitted is False
+    assert contract_report()["status"] == "conformant"
+
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import sys; import stove0_review_contracts; "
+            "forbidden = {'stove0_core', 'stove0_observer_support', "
+            "'stove0_target_support', 'riverhog_api_client', "
+            "'riverhog_transform_sdk'}; "
+            "loaded = forbidden & set(sys.modules); "
+            "assert not loaded, sorted(loaded)"
+        ),
+    ]
+    subprocess.run(command, check=True)
+
+
+def test_evenly_spaced_sample_plan_is_deterministic_and_bounded() -> None:
+    first = evenly_spaced_sample_plan(
+        _facts(),
+        samples_per_artifact=4,
+        window_duration_ms=5_000,
+    )
+    second = evenly_spaced_sample_plan(
+        _facts(),
+        samples_per_artifact=4,
+        window_duration_ms=5_000,
+    )
+    assert first == second
+    assert len(first.windows) == 4
+    assert all(item.duration_ms == 5_000 for item in first.windows)
+    assert len({item.start_ms for item in first.windows}) == 4
+    assert first.windows == tuple(sorted(first.windows, key=lambda item: item.start_ms))
+
+    with pytest.raises(ValueError, match="insufficient"):
+        evenly_spaced_sample_plan(
+            _facts(),
+            samples_per_artifact=64,
+            window_duration_ms=119_999,
+        )
+
+
+def test_review_evaluation_expands_one_normal_work_per_variant() -> None:
+    sample_plan = evenly_spaced_sample_plan(
+        _facts(),
+        samples_per_artifact=3,
+        window_duration_ms=4_000,
+    )
+    definition = review_evaluation_definition(
+        recipe=RecipeRef(id="review.encode/v1", revision=1, sha256=_sha("a")),
+        inputs=(
+            CollectionRootRef(
+                collection_id=1,
+                manifest_sha256=_sha("b"),
+                content_etag=_sha("c"),
+            ),
+        ),
+        sample_plan=sample_plan,
+        variants=(
+            ReviewVariant(id="quality-24", portable_intent={"quality": 24}),
+            ReviewVariant(id="quality-28", portable_intent={"quality": 28}),
+            ReviewVariant(id="quality-32", portable_intent={"quality": 32}),
+        ),
+    )
+    children = definition.child_works()
+    assert len(children) == 3
+    assert len({item.work_id for item in children}) == 3
+    assert {item.evaluation.variant_id for item in children if item.evaluation is not None} == {
+        "quality-24",
+        "quality-28",
+        "quality-32",
+    }
+    assert {item.evaluation.matrix_sha256 for item in children if item.evaluation is not None} == {
+        definition.matrix.matrix_sha256
+    }
+    assert all(
+        item.effective_intent["review_sample_plan"]["sample_plan_sha256"]
+        == sample_plan.sample_plan_sha256
+        for item in children
+    )
+    for child in children:
+        intent = review_operation_intent(child)
+        Draft202012Validator(REVIEW_SAMPLE_ENCODE_OPERATION.intent_schema.document).validate(intent)
+        assert intent["variant"]["id"] == child.evaluation.variant_id
+        assert review_target_options(child) == {}
+
+
+def test_materialized_trial_requires_exactly_one_variant() -> None:
+    sample_plan = evenly_spaced_sample_plan(
+        _facts(),
+        samples_per_artifact=1,
+        window_duration_ms=4_000,
+    )
+    with pytest.raises(ValidationError, match="exactly one variant"):
+        review_evaluation_definition(
+            recipe=RecipeRef(id="review.encode/v1", revision=1, sha256=_sha("a")),
+            inputs=(
+                CollectionRootRef(
+                    collection_id=1,
+                    manifest_sha256=_sha("b"),
+                    content_etag=_sha("c"),
+                ),
+            ),
+            sample_plan=sample_plan,
+            variants=(
+                ReviewVariant(id="one"),
+                ReviewVariant(id="two"),
+            ),
+            purpose="trial",
+        )

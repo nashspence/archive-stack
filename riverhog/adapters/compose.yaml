@@ -1,0 +1,174 @@
+x-adapter-image: &adapter-image
+  image: riverhog-adapters:dev
+  build:
+    context: ../..
+    dockerfile: riverhog/adapters/Dockerfile
+    args:
+      SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+
+services:
+  intake-init:
+    image: alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+    restart: "no"
+    environment:
+      INTAKE_GID: ${RIVERHOG_ADAPTERS_INTAKE_GID:-65532}
+    command:
+      - sh
+      - -c
+      - >-
+        install -d -o 65532 -g "$${INTAKE_GID}" -m 2770
+        /intake /intake/ftp /intake/tus /intake/tus/uploads /intake/watched
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_ADAPTERS_INTAKE_HOST_DIR:-./runtime/intake}
+        target: /intake
+
+  adapter:
+    <<: *adapter-image
+    restart: unless-stopped
+    read_only: true
+    user: "65532:65532"
+    group_add:
+      - "${RIVERHOG_ADAPTERS_SECRET_FILE_GID:-65532}"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      intake-init:
+        condition: service_completed_successfully
+    environment:
+      TZ: ${TZ:-UTC}
+      RIVERHOG_ADAPTERS_CONFIG: /etc/riverhog/adapters.json
+      RIVERHOG_TOKEN_FILE: /run/secrets/riverhog_adapter_token
+      RIVERHOG_ADAPTERS_API_TOKEN_FILE: /run/secrets/adapter_api_token
+      RIVERHOG_TUS_PASSWORD_FILE: /run/secrets/tus_password
+    secrets:
+      - riverhog_adapter_token
+      - adapter_api_token
+      - tus_password
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_ADAPTERS_CONFIG_HOST_PATH:-./config/adapters.example.json}
+        target: /etc/riverhog/adapters.json
+        read_only: true
+      - type: bind
+        source: ${RIVERHOG_ADAPTERS_INTAKE_HOST_DIR:-./runtime/intake}
+        target: /intake
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+    networks: ["default", "riverhog-control"]
+    ports:
+      - "${RIVERHOG_ADAPTERS_API_BIND_ADDR:-127.0.0.1}:${RIVERHOG_ADAPTERS_API_PORT:-8082}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
+          assert payload == {'service': 'riverhog-adapters', 'status': 'ok'}
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  tusd:
+    profiles: ["tus"]
+    image: tusproject/tusd:v2.8.0@sha256:060f117d224d057a5f25be79b4a4535168a0901515cc20cd02f62d0b8e623f5f
+    restart: unless-stopped
+    user: "1000:65532"
+    depends_on:
+      adapter:
+        condition: service_healthy
+    command:
+      - -host
+      - 0.0.0.0
+      - -port
+      - "1080"
+      - -base-path
+      - /files/
+      - -behind-proxy
+      - -disable-download
+      - -upload-dir
+      - /intake/tus/uploads
+      - -hooks-http
+      - http://adapter:8080/internal/tus/hooks
+      - -hooks-http-forward-headers
+      - Authorization
+      - -hooks-enabled-events
+      - pre-create,post-finish
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_ADAPTERS_INTAKE_HOST_DIR:-./runtime/intake}
+        target: /intake
+
+  tus:
+    profiles: ["tus"]
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    restart: unless-stopped
+    read_only: true
+    user: "101:101"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      adapter:
+        condition: service_healthy
+      tusd:
+        condition: service_started
+    ports:
+      - "${RIVERHOG_ADAPTERS_INGRESS_BIND_ADDR:-127.0.0.1}:${RIVERHOG_TUS_PORT:-1081}:1081"
+    volumes:
+      - type: bind
+        source: ./config/tus-nginx.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=101,gid=101
+      - /var/cache/nginx:rw,noexec,nosuid,nodev,mode=700,uid=101,gid=101
+      - /var/run:rw,noexec,nosuid,nodev,mode=700,uid=101,gid=101
+
+  ftp:
+    profiles: ["ftp"]
+    image: stilliard/pure-ftpd:trixie-latest@sha256:12b5aeb1a371b789e77d0b6217434a7a5ded9a3b251d52dab1f2e85ccde4cbf8
+    restart: unless-stopped
+    depends_on:
+      adapter:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-UTC}
+      FTP_USER_NAME: ${RIVERHOG_FTP_USERNAME:-ftp-intake}
+      FTP_USER_HOME: /intake/ftp
+      FTP_USER_UID: "1000"
+      FTP_USER_GID: "65532"
+      FTP_PASSIVE_PORTS: ${RIVERHOG_FTP_PASSIVE_PORT_START:-30000}:${RIVERHOG_FTP_PASSIVE_PORT_END:-30039}
+      PUBLICHOST: ${RIVERHOG_FTP_PUBLIC_HOST:-127.0.0.1}
+    secrets: ["ftp_password"]
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        FTP_USER_PASS="$$(cat /run/secrets/ftp_password)";
+        export FTP_USER_PASS;
+        exec /run.sh -l puredb:/etc/pure-ftpd/pureftpd.pdb -E -j -R -P "$${PUBLICHOST}"
+    ports:
+      - "${RIVERHOG_ADAPTERS_INGRESS_BIND_ADDR:-127.0.0.1}:${RIVERHOG_FTP_PORT:-21}:21"
+      - "${RIVERHOG_ADAPTERS_INGRESS_BIND_ADDR:-127.0.0.1}:${RIVERHOG_FTP_PASSIVE_PORT_START:-30000}-${RIVERHOG_FTP_PASSIVE_PORT_END:-30039}:30000-30039"
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_ADAPTERS_INTAKE_HOST_DIR:-./runtime/intake}
+        target: /intake
+
+secrets:
+  riverhog_adapter_token:
+    file: ${RIVERHOG_ADAPTER_TOKEN_FILE:?RIVERHOG_ADAPTER_TOKEN_FILE is required}
+  adapter_api_token:
+    file: ${RIVERHOG_ADAPTERS_API_TOKEN_FILE:?RIVERHOG_ADAPTERS_API_TOKEN_FILE is required}
+  tus_password:
+    file: ${RIVERHOG_TUS_PASSWORD_FILE:?RIVERHOG_TUS_PASSWORD_FILE is required}
+  ftp_password:
+    file: ${RIVERHOG_FTP_PASSWORD_FILE:-./secrets/ftp_password}
+
+networks:
+  riverhog-control:
+    external: true
+    name: ${RIVERHOG_CONTROL_NETWORK:-riverhog_default}

@@ -46,7 +46,7 @@ def test_observation_journal_binds_payload_and_continues_exact_prefix(
         payload,
         relative_path="staged/source.bin",
         host_id=urn_factory(),
-        agent_name="jeb",
+        agent_name="stove0",
         agent_version="0.1.0",
     )
     current = validate_journal(continued)
@@ -64,7 +64,7 @@ def test_replacement_transformation_stays_in_the_same_lineage(tmp_path: Path, ur
         source,
         relative_path="source.mov",
         host_id=urn_factory(),
-        agent_name="munchy-client",
+        agent_name="target-client",
         agent_version="0.1.0",
     )
     initial = validate_journal(journal)
@@ -75,7 +75,7 @@ def test_replacement_transformation_stays_in_the_same_lineage(tmp_path: Path, ur
         output,
         relative_path="source.mkv",
         host_id=urn_factory(),
-        agent_name="munchy",
+        agent_name="target",
         agent_version="0.1.0",
         event_label="Canonical transcode",
         started_at="2026-08-10T01:00:00Z",
@@ -101,7 +101,7 @@ def test_derivative_gets_a_new_lineage_with_exact_multi_input_references(
                 path,
                 relative_path=name,
                 host_id=urn_factory(),
-                agent_name="munchy-client",
+                agent_name="target-client",
                 agent_version="0.1.0",
             )
         )
@@ -112,7 +112,7 @@ def test_derivative_gets_a_new_lineage_with_exact_multi_input_references(
         relative_path="video/source-artifacts.tar.zst",
         source_journals=sources,
         host_id=urn_factory(),
-        agent_name="munchy",
+        agent_name="target",
         agent_version="0.1.0",
         event_label="Preserve source artifacts",
         started_at="2026-08-10T01:00:00Z",
