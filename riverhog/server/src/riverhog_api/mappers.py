@@ -93,6 +93,8 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "id": summary.id,
         "created_at": summary.created_at,
         "tags": list(summary.tags),
+        "content_etag": summary.content_etag,
+        "manifest_sha256": summary.manifest_sha256,
         "files": summary.files,
         "bytes": summary.bytes,
         "remote_storage_bytes": summary.remote_storage_bytes,

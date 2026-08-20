@@ -1,0 +1,71 @@
+"""Dependency-light public contracts for external stove0 content observers.
+
+The authoritative implementations currently live in :mod:`stove0_protocol` so
+workflow plans and observer evidence share exact model classes. This package
+publishes the intentionally narrow observer-author import surface without the
+HTTP client, Riverhog data plane, or stove0 core.
+"""
+
+from stove0_protocol import (
+    ARTIFACT_ID_PATTERN,
+    OBSERVATION_REQUEST_FORMAT,
+    OBSERVATION_RESULT_FORMAT,
+    OBSERVER_PROTOCOL,
+    RIVERHOG_CAPABILITY_TRANSPORT,
+    SHA256_PATTERN,
+    ArtifactSubject,
+    CollectionRootRef,
+    JsonSchemaDocument,
+    ObservationEvidence,
+    ObservationFailure,
+    ObservationInvocation,
+    ObservationRequest,
+    ObservationRequestPayload,
+    ObservationResult,
+    ObservationResultPayload,
+    ObservationState,
+    ObserverContract,
+    ObserverContractPayload,
+    ObserverContractSupport,
+    ObserverDescriptor,
+    ObserverDescriptorPayload,
+    ObserverImplementation,
+    ObserverRuntimeAuthority,
+    SemanticId,
+    Sha256,
+    canonical_json_bytes,
+    canonical_json_sha256,
+    validate_observation_result,
+)
+
+__all__ = [
+    "ARTIFACT_ID_PATTERN",
+    "OBSERVER_PROTOCOL",
+    "OBSERVATION_REQUEST_FORMAT",
+    "OBSERVATION_RESULT_FORMAT",
+    "RIVERHOG_CAPABILITY_TRANSPORT",
+    "SHA256_PATTERN",
+    "ArtifactSubject",
+    "CollectionRootRef",
+    "JsonSchemaDocument",
+    "ObservationEvidence",
+    "ObservationFailure",
+    "ObservationInvocation",
+    "ObservationRequest",
+    "ObservationRequestPayload",
+    "ObservationResult",
+    "ObservationResultPayload",
+    "ObservationState",
+    "ObserverContract",
+    "ObserverContractPayload",
+    "ObserverContractSupport",
+    "ObserverDescriptor",
+    "ObserverDescriptorPayload",
+    "ObserverImplementation",
+    "ObserverRuntimeAuthority",
+    "SemanticId",
+    "Sha256",
+    "canonical_json_bytes",
+    "canonical_json_sha256",
+    "validate_observation_result",
+]

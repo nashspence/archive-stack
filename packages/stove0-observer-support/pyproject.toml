@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stove0-observer-support"
+version = "0.1.0"
+description = "External-author protocol, runtime, and conformance support for stove0 content observers."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "http-api-contracts>=0.1,<0.2",
+  "httpx>=0.27,<1.0",
+  "jsonschema>=4.25,<5.0",
+  "pydantic>=2.7,<3.0",
+  "riverhog-api-client>=0.1,<0.2",
+  "riverhog-transform-sdk>=0.1,<0.2",
+  "stove0-observer-protocol>=0.1,<0.2",
+]
+
+[project.scripts]
+stove0-observer-conformance = "stove0_observer_support.conformance:main"
+stove0-observer-schemas = "stove0_observer_support.schemas:main"
+
+[tool.uv.sources]
+http-api-contracts = { workspace = true }
+riverhog-api-client = { workspace = true }
+riverhog-transform-sdk = { workspace = true }
+stove0-observer-protocol = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stove0_observer_support"]

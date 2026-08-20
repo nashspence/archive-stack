@@ -65,8 +65,8 @@ def test_mango_fish_state_commands_report_and_verify_the_current_revision(
     config_path.write_text(
         "state_path: " + str(tmp_path / "mango-fish.sqlite3") + "\n"
         "sources:\n"
-        "  - name: jeb\n"
-        "    events_url: https://jeb.test/v1/events\n"
+        "  - name: stove0\n"
+        "    events_url: https://stove0.test/v1/events\n"
         "    token_env: EVENT_TOKEN\n"
         "    webhook_url_env: HA_WEBHOOK\n",
         encoding="utf-8",
@@ -96,7 +96,7 @@ def test_relative_state_path_is_resolved_from_config_for_every_command(
     _write_config(
         config_path,
         state_path="state/mango-fish.sqlite3",
-        sources=(("jeb", "https://jeb.test/v1/events", "EVENT_TOKEN", "HA_WEBHOOK"),),
+        sources=(("stove0", "https://stove0.test/v1/events", "EVENT_TOKEN", "HA_WEBHOOK"),),
     )
     expected_state = config_path.parent / "state" / "mango-fish.sqlite3"
 
@@ -220,7 +220,7 @@ def test_one_shot_empty_pages_succeed(
     _write_config(
         config_path,
         state_path=str(state_path),
-        sources=(("jeb", "https://jeb.test/v1/events", "EVENT_TOKEN", "HA_WEBHOOK"),),
+        sources=(("stove0", "https://stove0.test/v1/events", "EVENT_TOKEN", "HA_WEBHOOK"),),
     )
     monkeypatch.setenv("EVENT_TOKEN", "token")
     monkeypatch.setenv("HA_WEBHOOK", "https://ha.test/hook")
@@ -239,13 +239,13 @@ def test_nonadvancing_page_is_rejected_before_webhook_delivery(
 ) -> None:
     monkeypatch.setenv("EVENT_TOKEN", "token")
     monkeypatch.setenv("HA_WEBHOOK", "https://ha.test/hook")
-    event = cloud_event(source="urn:jeb", type="io.riverhog.jeb.attempt.issue")
+    event = cloud_event(source="urn:stove0", type="io.riverhog.stove0.attempt.issue")
     config = MangoFishConfig(
         state_path=tmp_path / "mango-fish.sqlite3",
         sources=(
             SourceConfig(
-                name="jeb",
-                events_url="https://jeb.test/v1/events",
+                name="stove0",
+                events_url="https://stove0.test/v1/events",
                 token_env="EVENT_TOKEN",
                 webhook_url_env="HA_WEBHOOK",
             ),
@@ -270,7 +270,7 @@ def test_nonadvancing_page_is_rejected_before_webhook_delivery(
             relay.relay_source_once(config.sources[0], client=client)
 
     assert caught.value.error_type == "ValueError"
-    assert relay.state.cursor("jeb") == "0"
+    assert relay.state.cursor("stove0") == "0"
 
 
 def test_mango_fish_advances_only_after_the_complete_page_is_delivered(
@@ -280,15 +280,15 @@ def test_mango_fish_advances_only_after_the_complete_page_is_delivered(
     monkeypatch.setenv("EVENT_TOKEN", "token")
     monkeypatch.setenv("HA_WEBHOOK", "https://ha.test/hook")
     events = [
-        cloud_event(source="urn:jeb", type="io.riverhog.jeb.attempt.issue", subject="a"),
-        cloud_event(source="urn:jeb", type="io.riverhog.jeb.attempt.issue", subject="b"),
+        cloud_event(source="urn:stove0", type="io.riverhog.stove0.attempt.issue", subject="a"),
+        cloud_event(source="urn:stove0", type="io.riverhog.stove0.attempt.issue", subject="b"),
     ]
     deliveries: list[str] = []
     fail_second = True
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal fail_second
-        if request.url.host == "jeb.test":
+        if request.url.host == "stove0.test":
             return httpx.Response(
                 200,
                 json={
@@ -309,8 +309,8 @@ def test_mango_fish_advances_only_after_the_complete_page_is_delivered(
         state_path=tmp_path / "mango-fish.sqlite3",
         sources=(
             SourceConfig(
-                name="jeb",
-                events_url="https://jeb.test/v1/events",
+                name="stove0",
+                events_url="https://stove0.test/v1/events",
                 token_env="EVENT_TOKEN",
                 webhook_url_env="HA_WEBHOOK",
             ),
@@ -322,10 +322,10 @@ def test_mango_fish_advances_only_after_the_complete_page_is_delivered(
     try:
         with pytest.raises(SourceRelayError, match="delivery failed"):
             relay.relay_source_once(config.sources[0], client=client)
-        assert relay.state.cursor("jeb") == "0"
+        assert relay.state.cursor("stove0") == "0"
 
         assert relay.relay_source_once(config.sources[0], client=client) == 2
-        assert relay.state.cursor("jeb") == "2"
+        assert relay.state.cursor("stove0") == "2"
     finally:
         client.close()
 

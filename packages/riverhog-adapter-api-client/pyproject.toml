@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "riverhog-adapter-api-client"
+version = "0.1.0"
+description = "Official client for Riverhog protocol-adapter APIs."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "http-api-contracts>=0.1,<0.2",
+  "httpx>=0.27,<1.0",
+  "riverhog-provenance>=0.1,<0.2",
+  "tus-transport>=0.1,<0.2",
+]
+
+[tool.uv.sources]
+http-api-contracts = { workspace = true }
+riverhog-provenance = { workspace = true }
+tus-transport = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riverhog_adapter_api_client"]

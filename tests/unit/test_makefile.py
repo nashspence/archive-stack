@@ -46,6 +46,9 @@ def _install_fake_command(tmp_path: Path, name: str, log_name: str) -> Path:
                     ),
                     "  printf 'fake-node@garage\\n'",
                     "fi",
+                    'if [[ "$*" == *"/v1/apps/smoke/keys"* ]]; then',
+                    "  printf 'fake-application-token\\n'",
+                    "fi",
                 ]
             )
             + "\n"
@@ -363,10 +366,14 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         ("ruff", (), "python -m ruff check ."),
         (
             "ruff-fix",
-            ("FILES=companions/jeb/server",),
-            "python -m ruff check --fix companions/jeb/server",
+            ("FILES=companions/stove0/server",),
+            "python -m ruff check --fix companions/stove0/server",
         ),
-        ("format", ("FILES=companions/jeb/server",), "python -m ruff format companions/jeb/server"),
+        (
+            "format",
+            ("FILES=companions/stove0/server",),
+            "python -m ruff format companions/stove0/server",
+        ),
         (
             "unit",
             ("args=-k entrypoint",),
@@ -374,8 +381,8 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         ),
         (
             "unit",
-            ("TESTS=companions/jeb/tests/test_jeb_health.py",),
-            "python -m pytest -q companions/jeb/tests/test_jeb_health.py",
+            ("TESTS=companions/stove0/tests/test_stove0_api_parity.py",),
+            "python -m pytest -q companions/stove0/tests/test_stove0_api_parity.py",
         ),
         (
             "spec",
@@ -461,15 +468,15 @@ def test_fix_runs_ruff_fix_then_format(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "fix",
-        "FILES=companions/jeb/server",
+        "FILES=companions/stove0/server",
     )
 
     assert completed.returncode == 0, completed.stderr
     assert _read_log_lines(docker_log_path) == []
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 2
-    assert "python -m ruff check --fix companions/jeb/server" in uv_log_lines[0]
-    assert "python -m ruff format companions/jeb/server" in uv_log_lines[1]
+    assert "python -m ruff check --fix companions/stove0/server" in uv_log_lines[0]
+    assert "python -m ruff format companions/stove0/server" in uv_log_lines[1]
 
 
 def test_local_targets_fail_clearly_when_mise_is_missing(tmp_path: Path) -> None:
@@ -494,9 +501,9 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert _read_log_lines(docker_log_path) == []
     uv_log_lines = _read_log_lines(uv_log_path)
     assert len(uv_log_lines) == 1
-    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[0]
-    assert "companions/munchy/client/src companions/munchy/server/src" in uv_log_lines[0]
-    assert "riverhog/client/src riverhog/recovery/src riverhog/server/src" in uv_log_lines[0]
+    assert "python -m mypy companions/stove0/client/src" in uv_log_lines[0]
+    assert "companions/stove0/extensions/src companions/stove0/server/src" in uv_log_lines[0]
+    assert "riverhog/client/src riverhog/adapters/src riverhog/recovery/src" in uv_log_lines[0]
     assert "scripts/operation_qualification.py" in uv_log_lines[0]
     assert "scripts/provider_qualification.py" in uv_log_lines[0]
     assert "utilities/gogurt/src utilities/mango-fish/src" in uv_log_lines[0]
@@ -529,7 +536,7 @@ def test_lint_runs_license_format_ruff_and_mypy(tmp_path: Path) -> None:
     assert "python -m reuse lint" in uv_log_lines[0]
     assert "python -m ruff format --check ." in uv_log_lines[1]
     assert "python -m ruff check ." in uv_log_lines[2]
-    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[3]
+    assert "python -m mypy companions/stove0/client/src" in uv_log_lines[3]
 
 
 def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
@@ -560,10 +567,11 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
     ).stdout.strip()
     targets = (
         "riverhog",
-        "jeb",
+        "riverhog-adapters",
+        "stove0",
+        "stove0-extensions",
+        "stove0-nvenc-extension",
         "mango-fish",
-        "munchy-server",
-        "munchy-av1-nvenc",
         "test",
     )
     assert _read_log_lines(docker_log_path) == [
@@ -655,6 +663,7 @@ def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
     assert " up --detach garage" in docker_log
     assert f" build --sbom=generator={SBOM_GENERATOR} app" in docker_log
     assert " up --detach --wait app" in docker_log
+    assert " exec -T postgres createdb --username riverhog --owner riverhog stove0" in docker_log
     assert " restart app" in docker_log
     assert " exec -T --env RIVERHOG_SMOKE_TOKEN=" in docker_log
     assert " app python -c " in docker_log
@@ -750,9 +759,9 @@ def test_dockerfile_copy_sources_are_git_owned() -> None:
 
 
 def test_workspace_unit_lane_owns_application_unit_tests() -> None:
-    assert (REPO_ROOT / "companions/jeb/tests/test_jeb_health.py").is_file()
+    assert (REPO_ROOT / "companions/stove0/tests/test_stove0_api_parity.py").is_file()
+    assert (REPO_ROOT / "riverhog/adapters/tests/test_adapter_api_parity.py").is_file()
     assert (REPO_ROOT / "utilities/mango-fish/tests/test_mango_fish.py").is_file()
-    assert (REPO_ROOT / "companions/munchy/tests/test_munchy_server_contract.py").is_file()
     assert (REPO_ROOT / "utilities/gogurt/tests/test_gogurt.py").is_file()
 
 
@@ -793,10 +802,11 @@ def test_format_check_and_compile_are_non_mutating_repository_targets(tmp_path: 
 def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() -> None:
     service_dockerfiles = [
         REPO_ROOT / "riverhog/server/Dockerfile",
-        REPO_ROOT / "companions/jeb/server/Dockerfile",
+        REPO_ROOT / "riverhog/adapters/Dockerfile",
+        REPO_ROOT / "companions/stove0/server/Dockerfile",
+        REPO_ROOT / "companions/stove0/extensions/Dockerfile",
+        REPO_ROOT / "companions/stove0/extensions/nvenc/Dockerfile",
         REPO_ROOT / "utilities/mango-fish/Dockerfile",
-        REPO_ROOT / "companions/munchy/server/Dockerfile",
-        REPO_ROOT / "companions/munchy/server/targets/av1-nvenc/Dockerfile",
     ]
 
     for path in service_dockerfiles:
@@ -808,8 +818,8 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
         assert "PYTHONPATH=/riverhog/src" not in dockerfile
 
 
-def test_munchy_av1_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
-    target = REPO_ROOT / "companions/munchy/server/targets/av1-nvenc"
+def test_stove0_nvenc_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
+    target = REPO_ROOT / "companions/stove0/extensions/nvenc"
     dockerfile = (target / "Dockerfile").read_text(encoding="utf-8")
     verification = (target / "verify-ffmpeg").read_text(encoding="utf-8")
 
@@ -828,14 +838,16 @@ def test_munchy_av1_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
     assert "FFmpeg must not be built with --enable-nonfree" in verification
 
 
-def test_munchy_server_image_includes_source_artifact_runtime_tools() -> None:
-    dockerfile = (REPO_ROOT / "companions/munchy/server" / "Dockerfile").read_text(encoding="utf-8")
+def test_stove0_extension_images_include_source_artifact_runtime_tools() -> None:
+    dockerfiles = [
+        (REPO_ROOT / "companions/stove0/extensions/Dockerfile").read_text(encoding="utf-8"),
+        (REPO_ROOT / "companions/stove0/extensions/nvenc/Dockerfile").read_text(encoding="utf-8"),
+    ]
 
-    assert "ffmpeg" in dockerfile
-    assert 'mise install --locked "http:exiftool"' in dockerfile
-    assert 'test "$(exiftool -ver)" = "13.59"' in dockerfile
-    assert "rclone" in dockerfile
-    assert "zstd" in dockerfile
+    for dockerfile in dockerfiles:
+        assert "ffmpeg" in dockerfile
+        assert "mkvtoolnix" in dockerfile
+        assert "zstd" in dockerfile
 
 
 def test_workspace_lock_and_app_manifests_own_runtime_dependencies() -> None:
@@ -861,7 +873,7 @@ def test_test_aggregate_runs_lint_then_unit(tmp_path: Path) -> None:
     assert "python -m reuse lint" in uv_log_lines[0]
     assert "python -m ruff format --check ." in uv_log_lines[1]
     assert "python -m ruff check ." in uv_log_lines[2]
-    assert "python -m mypy companions/jeb/client/src companions/jeb/server/src" in uv_log_lines[3]
+    assert "python -m mypy companions/stove0/client/src" in uv_log_lines[3]
     assert (
         "python -m pytest -q companions packages riverhog tests/unit utilities" in uv_log_lines[4]
     )
@@ -891,11 +903,12 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert "make bootstrap-garage" in completed.stdout
     assert "make build-riverhog" in completed.stdout
-    assert "make build-jeb" in completed.stdout
+    assert "make build-riverhog-adapters" in completed.stdout
+    assert "make build-stove0" in completed.stdout
+    assert "make build-stove0-extensions" in completed.stdout
+    assert "make build-stove0-nvenc-extension" in completed.stdout
     assert "make build-mango-fish" in completed.stdout
     assert "make mango-fish-smoke" in completed.stdout
-    assert "make build-munchy-server" in completed.stdout
-    assert "make build-munchy-av1-nvenc" in completed.stdout
     assert "make build-test" in completed.stdout
     assert "make dist-smoke" in completed.stdout
     assert "make fix" in completed.stdout

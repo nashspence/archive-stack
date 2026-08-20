@@ -6,13 +6,13 @@ The following server implementations are licensed under the Cryptographic Autono
 License 1.0 (`CAL-1.0`):
 
 - `riverhog/server/**`
-- `companions/munchy/server/**`
-- `companions/jeb/server/**`
+- `companions/stove0/server/**`
+- `companions/stove0/extensions/**`
 
 Published OpenAPI and other explicitly identified interoperability artifacts beneath those
 directories are licensed under Apache License 2.0 as recorded in `REUSE.toml`. Server
-Dockerfiles, migrations, configuration schemas, deployment examples, and server-owned
-execution targets remain part of their CAL-licensed server. No Riverhog file carries CAL's
+Dockerfiles, migrations, configuration schemas, deployment examples, and maintained
+observer/target implementations remain CAL-licensed. No Riverhog file carries CAL's
 Combined Work Exception unless it is explicitly identified there in the future.
 
 All other first-party repository content is licensed under Apache License 2.0

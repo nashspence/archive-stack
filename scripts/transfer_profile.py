@@ -18,8 +18,11 @@ SCENARIO_OPERATIONS: Mapping[str, frozenset[str]] = {
     "riverhog-ingress": frozenset(
         {"pack_upload_open", "pack_upload_part", "raw_upload_open", "raw_upload_part"}
     ),
-    "munchy-riverhog-handoff": frozenset(
+    "stove0-derived-publication": frozenset(
         {"pack_upload_open", "pack_upload_part", "raw_upload_open", "raw_upload_part"}
+    ),
+    "stove0-input-read": frozenset(
+        {"pack_retrieval_member", "pack_retrieval_range", "raw_retrieval_part"}
     ),
     "riverhog-retrieval": frozenset(
         {"pack_retrieval_member", "pack_retrieval_range", "raw_retrieval_part"}

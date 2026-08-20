@@ -18,16 +18,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
             ["state", "upgrade"],
         ),
         (
-            "companions/munchy/server/compose.yaml",
-            "munchy-state",
-            "munchy-server",
-            ["munchy-server", "state", "upgrade"],
-        ),
-        (
-            "companions/jeb/server/compose.yaml",
-            "jeb-state",
-            "jeb",
-            ["jeb-service", "state", "upgrade"],
+            "companions/stove0/compose.yaml",
+            "state",
+            "api",
+            ["stove0-server", "state", "upgrade"],
         ),
     ),
 )

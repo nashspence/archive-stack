@@ -6,15 +6,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from http_api_contracts import safe_http_base_url
-from jeb_api.app import JebServiceState
-from jeb_api.app import create_app as create_jeb_app
-from jeb_api.composition import config_from_env as jeb_config_from_env
-from jeb_api.composition import create_services as create_jeb_services
-from jeb_api_client import JebApiClient
-from munchy_api.app import app as munchy_app
-from munchy_api_client.client import MunchyAdminClient, MunchyClient
-from munchy_cli import main as munchy_cli
-from munchy_core.adapters import riverhog as munchy_riverhog
+from riverhog_adapter_api_client import RiverhogAdapterClient, RiverhogTusClient
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client import (
     configured_download_concurrency,
@@ -23,10 +15,17 @@ from riverhog_api_client import (
     configured_upload_window,
     upload_collection_units,
 )
+from riverhog_api_client import producer as riverhog_producer
 from riverhog_api_client.client import ApiClient
 from riverhog_cli import main as riverhog_cli
 from riverhog_cli import upload_progress as riverhog_upload_progress
 from riverhog_protocol.errors import BadRequest
+from stove0_api_client import Stove0ApiClient
+
+from scripts.operation_qualification import (
+    create_adapter_contract_app,
+    create_stove0_contract_app,
+)
 
 HTTP_METHODS = {"delete", "get", "patch", "post", "put"}
 PUBLIC_ERROR_STATUSES = {"400", "401", "403", "404", "409", "500", "503"}
@@ -34,10 +33,6 @@ OPERATION_ERROR_STATUSES = {
     "riverhog": {
         "create_retrieval_job": {"429"},
         "download_retrieval_file": {"429"},
-    },
-    "munchy": {
-        "create_submission": {"429", "507"},
-        "preflight_submission": {"429", "507"},
     },
 }
 SUPPORTED_CLIENT_HELPERS = {
@@ -49,32 +44,17 @@ SUPPORTED_CLIENT_HELPERS = {
         "resourcesync_resource_pages",
         "resourcesync_resources",
         "spawn",
+        "stream_retrieval_file",
     },
-    "munchy": {
+    "stove0": {"close", "health_live", "health_ready"},
+    "riverhog-adapters": {
         "close",
-        "json",
-        "request",
+        "adapter_health_live",
+        "adapter_health_ready",
         "upload_file",
-        "upload_files",
-        "wait_for_job",
+        "wait_for_publication",
     },
-    "jeb": {"close", "wait_for_attempt", "wait_for_operation"},
 }
-
-
-def create_jeb_contract_app() -> FastAPI:
-    return create_jeb_app(
-        JebServiceState(
-            services=create_jeb_services(
-                jeb_config_from_env(
-                    {
-                        "JEB_API_TOKEN": "interface-parity-management-token",
-                        "JEB_MUNCHY_URL": "https://munchy.invalid",
-                    }
-                )
-            )
-        )
-    )
 
 
 def public_operations(app: FastAPI) -> list[tuple[str, str]]:
@@ -93,8 +73,12 @@ def public_operations(app: FastAPI) -> list[tuple[str, str]]:
     ("application", "app_factory", "client_types"),
     (
         ("riverhog", create_riverhog_app, (ApiClient,)),
-        ("munchy", lambda: munchy_app, (MunchyClient, MunchyAdminClient)),
-        ("jeb", create_jeb_contract_app, (JebApiClient,)),
+        ("stove0", create_stove0_contract_app, (Stove0ApiClient,)),
+        (
+            "riverhog-adapters",
+            create_adapter_contract_app,
+            (RiverhogAdapterClient, RiverhogTusClient),
+        ),
     ),
 )
 def test_every_public_api_operation_has_an_official_client_method(
@@ -122,8 +106,12 @@ def test_every_public_api_operation_has_an_official_client_method(
     ("application", "app_factory", "client_types"),
     (
         ("riverhog", create_riverhog_app, (ApiClient,)),
-        ("munchy", lambda: munchy_app, (MunchyClient, MunchyAdminClient)),
-        ("jeb", create_jeb_contract_app, (JebApiClient,)),
+        ("stove0", create_stove0_contract_app, (Stove0ApiClient,)),
+        (
+            "riverhog-adapters",
+            create_adapter_contract_app,
+            (RiverhogAdapterClient, RiverhogTusClient),
+        ),
     ),
 )
 def test_every_official_client_method_is_current_or_a_supported_helper(
@@ -146,8 +134,8 @@ def test_every_official_client_method_is_current_or_a_supported_helper(
     ("application", "app_factory"),
     (
         ("riverhog", create_riverhog_app),
-        ("munchy", lambda: munchy_app),
-        ("jeb", create_jeb_contract_app),
+        ("stove0", create_stove0_contract_app),
+        ("riverhog-adapters", create_adapter_contract_app),
     ),
 )
 def test_public_http_health_and_error_schemas_are_conventional(
@@ -201,7 +189,7 @@ def test_public_http_health_and_error_schemas_are_conventional(
 
 @pytest.mark.parametrize(
     "app_factory",
-    (create_riverhog_app, lambda: munchy_app, create_jeb_contract_app),
+    (create_riverhog_app, create_stove0_contract_app),
 )
 def test_paged_lists_use_the_shared_parameter_and_response_envelope(
     app_factory: Callable[[], FastAPI],
@@ -249,20 +237,20 @@ def test_paged_lists_use_the_shared_parameter_and_response_envelope(
             "https://riverhog.example.test",
         ),
         (
-            MunchyClient,
-            "MUNCHY_BASE_URL",
-            "MUNCHY_TOKEN",
-            "MUNCHY_HTTP2",
-            "MUNCHY_HTTP_TIMEOUT_SECONDS",
-            "https://munchy.example.test",
+            Stove0ApiClient,
+            "STOVE0_BASE_URL",
+            "STOVE0_TOKEN",
+            "STOVE0_HTTP2",
+            "STOVE0_HTTP_TIMEOUT_SECONDS",
+            "https://stove0.example.test",
         ),
         (
-            JebApiClient,
-            "JEB_BASE_URL",
-            "JEB_TOKEN",
-            "JEB_HTTP2",
-            "JEB_HTTP_TIMEOUT_SECONDS",
-            "https://jeb.example.test",
+            RiverhogAdapterClient,
+            "RIVERHOG_ADAPTERS_BASE_URL",
+            "RIVERHOG_ADAPTERS_TOKEN",
+            "RIVERHOG_ADAPTERS_HTTP2",
+            "RIVERHOG_ADAPTERS_HTTP_TIMEOUT_SECONDS",
+            "https://adapters.example.test",
         ),
     ),
 )
@@ -317,8 +305,8 @@ def test_shared_transport_contract_accepts_explicit_remote_cleartext_opt_in() ->
     ("client_type", "error_type"),
     (
         (ApiClient, BadRequest),
-        (MunchyClient, ValueError),
-        (JebApiClient, ValueError),
+        (Stove0ApiClient, ValueError),
+        (RiverhogAdapterClient, ValueError),
     ),
 )
 def test_official_clients_reject_remote_cleartext_transport(
@@ -333,8 +321,8 @@ def test_official_clients_reject_remote_cleartext_transport(
     ("client_type", "allow_insecure_env"),
     (
         (ApiClient, "RIVERHOG_ALLOW_INSECURE_HTTP"),
-        (MunchyClient, "MUNCHY_ALLOW_INSECURE_HTTP"),
-        (JebApiClient, "JEB_ALLOW_INSECURE_HTTP"),
+        (Stove0ApiClient, "STOVE0_ALLOW_INSECURE_HTTP"),
+        (RiverhogAdapterClient, "RIVERHOG_ADAPTERS_ALLOW_INSECURE_HTTP"),
     ),
 )
 def test_official_clients_allow_explicit_remote_cleartext_transport(
@@ -350,7 +338,7 @@ def test_official_clients_allow_explicit_remote_cleartext_transport(
         client.close()
 
 
-@pytest.mark.parametrize("client_type", (ApiClient, MunchyClient, JebApiClient))
+@pytest.mark.parametrize("client_type", (ApiClient, Stove0ApiClient, RiverhogAdapterClient))
 def test_official_clients_accept_a_scoped_remote_cleartext_opt_in(
     client_type: type[Any],
 ) -> None:
@@ -367,15 +355,12 @@ def test_official_clients_accept_a_scoped_remote_cleartext_opt_in(
 
 def test_official_direct_ingress_callers_share_the_upload_runner() -> None:
     assert riverhog_cli.upload_collection_units is upload_collection_units
-    assert munchy_riverhog.upload_collection_units is upload_collection_units
+    assert riverhog_producer.upload_collection_units is upload_collection_units
 
 
 @pytest.mark.parametrize(
     ("setting", "rich_enabled"),
-    (
-        ("RIVERHOG_CLI_PLAIN", riverhog_upload_progress._rich_progress_available),
-        ("MUNCHY_CLI_PLAIN", munchy_cli._rich_enabled),
-    ),
+    (("RIVERHOG_CLI_PLAIN", riverhog_upload_progress._rich_progress_available),),
 )
 def test_rich_clients_share_plain_output_selection(
     monkeypatch: pytest.MonkeyPatch,

@@ -22,18 +22,30 @@ from typing import Any, TypeGuard, cast
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
-from jeb_api.app import JebServiceState
-from jeb_api.app import create_app as create_jeb_app
-from jeb_api.composition import config_from_env as jeb_config_from_env
-from jeb_api.composition import create_services as create_jeb_services
-from jeb_api_client import JebApiClient, JebIngressClient
-from jeb_cli import main as jeb_cli
-from munchy_api.app import app as munchy_app
-from munchy_api_client.client import MunchyAdminClient, MunchyClient
-from munchy_cli import main as munchy_cli
+from riverhog_adapter_api_client import RiverhogAdapterClient, RiverhogTusClient
+from riverhog_adapters.app import AdapterComposition
+from riverhog_adapters.app import build_parser as build_adapter_parser
+from riverhog_adapters.app import create_app as create_adapter_app
+from riverhog_adapters.config import AdapterConfig, SourceConfig
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client.client import ApiClient
 from riverhog_cli import main as riverhog_cli
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
+from stove0_api.app import Stove0Composition
+from stove0_api.app import create_app as create_stove0_app
+from stove0_api_client import Stove0ApiClient
+from stove0_cli import main as stove0_cli
+from stove0_core import (
+    EvaluationService,
+    RecipeCatalog,
+    SqlAlchemyStateStore,
+    Stove0Coordinator,
+    Stove0RuntimeConfig,
+    Stove0Scheduler,
+    Stove0WorkService,
+    WorkflowPreviewService,
+)
 
 SCHEMA = "riverhog-operation-qualification/v1"
 TIMING_SCHEMA = "riverhog-operation-timings/v1"
@@ -42,17 +54,91 @@ SUPPORTED_ROUTE_METHODS = HTTP_METHODS | {"head"}
 SOURCE_SHA_PATTERN = "0123456789abcdef"
 
 
-def create_jeb_contract_app() -> FastAPI:
-    return create_jeb_app(
-        JebServiceState(
-            services=create_jeb_services(
-                jeb_config_from_env(
-                    {
-                        "JEB_API_TOKEN": "operation-qualification-management-token",
-                        "JEB_MUNCHY_URL": "https://munchy.invalid",
-                    }
-                )
-            )
+class _RiverhogContractApi:
+    def close(self) -> None:
+        pass
+
+    def list_archive_stores(self, *, per_page: int) -> dict[str, object]:
+        del per_page
+        return {"items": []}
+
+
+class _AdapterContractService:
+    def status(self) -> dict[str, object]:
+        return {"format": "riverhog-adapters-status/v1", "sources": []}
+
+    def run_once(self) -> dict[str, object]:
+        return {"format": "riverhog-adapter-pass/v1", "sources": []}
+
+    def flush(self, source_id: str) -> dict[str, object]:
+        return {"format": "riverhog-adapter-pass/v1", "sources": [source_id]}
+
+
+class _TusContractService:
+    def authenticate(self, _authorization: str | None) -> str:
+        return "qualification-source"
+
+
+def create_stove0_contract_app() -> FastAPI:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    state = SqlAlchemyStateStore("sqlite+pysqlite:///:memory:", engine=engine)
+    work = Stove0WorkService(state)
+    return create_stove0_app(
+        Stove0Composition(
+            config=Stove0RuntimeConfig(
+                database_url="sqlite+pysqlite:///:memory:",
+                api_token="operation-qualification-token",
+                riverhog_base_url="https://riverhog.invalid",
+                riverhog_token="riverhog-qualification-token",
+                riverhog_allow_insecure_http=False,
+                recipes_path=Path("recipes.yaml"),
+                observers={},
+                targets={},
+                workspace_assurance="ephemeral",
+                claim_lease_seconds=1800,
+                capability_ttl_seconds=900,
+                scheduler_interval_seconds=5,
+            ),
+            riverhog_api=cast(ApiClient, _RiverhogContractApi()),
+            state=state,
+            recipes=RecipeCatalog(operations=(), recipes=()),
+            work=work,
+            coordinator=cast(Stove0Coordinator, object()),
+            preview=cast(WorkflowPreviewService, object()),
+            evaluations=EvaluationService(state.evaluation_store(), work=work),
+            scheduler=cast(Stove0Scheduler, object()),
+        )
+    )
+
+
+def create_adapter_contract_app() -> FastAPI:
+    config = AdapterConfig(
+        host_id="qualification-host",
+        riverhog_base_url="https://riverhog.invalid",
+        riverhog_token="riverhog-qualification-token",
+        api_token="adapter-qualification-token",
+        sources=(
+            SourceConfig(
+                id="qualification-source",
+                adapter="watched-drop",
+                root=Path("/tmp/riverhog-operation-qualification"),
+                ingest_source="watched-drop:qualification",
+                tags=("qualification",),
+                provenance="omit",
+                provenance_omission_reason="Synthetic operation contract fixture.",
+            ),
+        ),
+    )
+    return create_adapter_app(
+        AdapterComposition(
+            config,
+            cast(Any, _RiverhogContractApi()),
+            cast(Any, _AdapterContractService()),
+            cast(Any, _TusContractService()),
         )
     )
 
@@ -146,6 +232,8 @@ def _callback_has_projection_parity(
             elif mode is not None:
                 human = True
                 machine = True
+        elif name == "dumps":
+            machine = True
         elif name in {"echo", "print"}:
             human = True
         if isinstance(node.func, ast.Name):
@@ -162,7 +250,14 @@ def _callback_has_projection_parity(
 def _typer_commands(
     root: Any,
     prefix: tuple[str, ...] = (),
+    *,
+    inherited_json: bool = False,
 ) -> Iterator[tuple[str, Any, bool]]:
+    callback_info = getattr(root, "registered_callback", None)
+    root_callback = getattr(callback_info, "callback", None)
+    current_json = inherited_json or (
+        root_callback is not None and _callback_has_json(root_callback)
+    )
     for command in root.registered_commands:
         callback = command.callback
         if callback is None:
@@ -171,28 +266,38 @@ def _typer_commands(
         yield (
             " ".join((*prefix, name)),
             callback,
-            _callback_has_json(callback) and _callback_has_projection_parity(callback),
+            (current_json or _callback_has_json(callback))
+            and _callback_has_projection_parity(callback),
         )
     for group in root.registered_groups:
-        yield from _typer_commands(group.typer_instance, (*prefix, str(group.name)))
+        yield from _typer_commands(
+            group.typer_instance,
+            (*prefix, str(group.name)),
+            inherited_json=current_json,
+        )
 
 
 def _argparse_commands(
     parser: argparse.ArgumentParser,
     prefix: tuple[str, ...] = (),
+    *,
+    inherited_json: bool = False,
 ) -> Iterator[tuple[str, Any, bool]]:
+    current_json = inherited_json or any(
+        "--json" in option for current in parser._actions for option in current.option_strings
+    )
     subcommands = [
         action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
     ]
     for action in subcommands:
         for name, child in action.choices.items():
-            nested = tuple(_argparse_commands(child, (*prefix, name)))
+            nested = tuple(_argparse_commands(child, (*prefix, name), inherited_json=current_json))
             if nested:
                 yield from nested
                 continue
             callback = child.get_default("func")
             if callback is not None:
-                has_json = any(
+                has_json = current_json or any(
                     "--json" in option
                     for current in child._actions
                     for option in current.option_strings
@@ -213,81 +318,43 @@ def application_surfaces() -> tuple[ApplicationSurface, ...]:
             tuple(_typer_commands(riverhog_cli.app)),
         ),
         ApplicationSurface(
-            "munchy",
-            munchy_app,
-            (MunchyClient, MunchyAdminClient),
-            tuple(_typer_commands(munchy_cli.app)),
-            (
-                SupplementalOperation(
-                    operation_id="patch_tusd_submission_file",
-                    method="PATCH",
-                    path="/files/{upload_id}",
-                    classification="standard-tool/protocol",
-                    client_type=MunchyClient,
-                    client_method="upload_file",
-                    cli_commands=("submit",),
-                ),
-            ),
+            "stove0",
+            create_stove0_contract_app(),
+            (Stove0ApiClient,),
+            tuple(_typer_commands(stove0_cli.app)),
         ),
         ApplicationSurface(
-            "jeb",
-            create_jeb_contract_app(),
-            (JebApiClient, JebIngressClient),
-            tuple(_argparse_commands(jeb_cli.build_parser())),
+            "riverhog-adapters",
+            create_adapter_contract_app(),
+            (RiverhogAdapterClient, RiverhogTusClient),
+            tuple(_argparse_commands(build_adapter_parser())),
             (
                 SupplementalOperation(
-                    operation_id="create_tusd_ingress_upload",
+                    operation_id="create_tus_adapter_upload",
                     method="POST",
                     path="/files/",
                     classification="standard-tool/protocol",
-                    client_type=JebIngressClient,
+                    client_type=RiverhogTusClient,
                     client_method="upload_file",
-                    cli_commands=("upload",),
+                    cli_commands=(),
                 ),
                 SupplementalOperation(
-                    operation_id="put_public_tus_ingress_provenance_journal",
-                    method="PUT",
-                    path="/provenance/{upload_id}/journals/{journal_id}",
-                    classification="client-only-primitive",
-                    client_type=JebIngressClient,
-                    client_method="put_provenance_journal",
-                    cli_commands=("upload",),
-                ),
-                SupplementalOperation(
-                    operation_id="put_public_tus_ingress_provenance_binding",
-                    method="PUT",
-                    path="/provenance/{upload_id}/binding",
-                    classification="client-only-primitive",
-                    client_type=JebIngressClient,
-                    client_method="put_provenance_binding",
-                    cli_commands=("upload",),
-                ),
-                SupplementalOperation(
-                    operation_id="head_tusd_ingress_upload",
+                    operation_id="head_tus_adapter_upload",
                     method="HEAD",
                     path="/files/{upload_id}",
                     classification="standard-tool/protocol",
-                    client_type=JebIngressClient,
+                    client_type=RiverhogTusClient,
                     client_method="upload_file",
-                    cli_commands=("upload",),
+                    cli_commands=(),
                 ),
                 SupplementalOperation(
-                    operation_id="patch_tusd_ingress_upload",
+                    operation_id="patch_tus_adapter_upload",
                     method="PATCH",
                     path="/files/{upload_id}",
                     classification="standard-tool/protocol",
-                    client_type=JebIngressClient,
+                    client_type=RiverhogTusClient,
                     client_method="upload_file",
-                    cli_commands=("upload",),
-                ),
-                SupplementalOperation(
-                    operation_id="get_public_tus_ingress_publication",
-                    method="GET",
-                    path="/publications/{upload_id}",
-                    classification="client-only-primitive",
-                    client_type=JebIngressClient,
-                    client_method="wait_for_publication",
-                    cli_commands=("upload",),
+                    cli_commands=(),
                 ),
             ),
         ),
@@ -298,9 +365,8 @@ def _project_callable(value: object) -> TypeGuard[Callable[..., object]]:
     module = str(getattr(value, "__module__", ""))
     return inspect.isfunction(value) and module.startswith(
         (
-            "jeb_",
-            "munchy_",
             "riverhog_",
+            "stove0_",
         )
     )
 
@@ -632,8 +698,8 @@ def _source_sha(value: str) -> str:
 def _cold_cli_timings(*, trials: int = 3) -> dict[str, object]:
     entrypoints = {
         "riverhog": "from riverhog_cli.main import main; raise SystemExit(main())",
-        "munchy": "from munchy_cli.main import main; raise SystemExit(main())",
-        "jeb": "from jeb_cli.main import main; raise SystemExit(main())",
+        "stove0": "from stove0_cli.main import main; main()",
+        "riverhog-adapters": ("from riverhog_adapters.app import main; raise SystemExit(main())"),
     }
     timings: dict[str, object] = {}
     for application, program in entrypoints.items():
@@ -831,11 +897,11 @@ def evidence(*, source_sha: str, timings: Path) -> dict[str, object]:
             },
             "bounded_state_access": {
                 "status": "passed",
-                "applications": ["jeb", "munchy", "riverhog"],
+                "applications": ["riverhog", "riverhog-adapters", "stove0"],
             },
             "event_cursor_restart_resume": {
                 "status": "passed",
-                "applications": ["jeb", "munchy", "riverhog"],
+                "applications": ["riverhog", "riverhog-adapters", "stove0"],
             },
             "provider_backed_lifecycles": {
                 "status": "linked",

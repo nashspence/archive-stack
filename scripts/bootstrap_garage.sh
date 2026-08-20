@@ -47,9 +47,9 @@ fi
 garage_node_id="${garage_node%@*}"
 compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" layout assign -z local -c 1GB "${garage_node_id}"
 compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" layout apply --version 1
-compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${archive_access_key_id}" "${archive_access_key_id}" "${archive_secret_access_key}"
+compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${archive_access_key_id}" "${archive_access_key_id}" "${archive_secret_access_key}" >/dev/null
 if [[ "${cache_configured}" == true && "${cache_access_key_id}" != "${archive_access_key_id}" ]]; then
-  compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${cache_access_key_id}" "${cache_access_key_id}" "${cache_secret_access_key}"
+  compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" key import --yes -n "${cache_access_key_id}" "${cache_access_key_id}" "${cache_secret_access_key}" >/dev/null
 fi
 compose exec -T garage /garage -c /etc/garage.toml -h "${garage_node}" bucket create "${archive_bucket}"
 if [[ "${cache_configured}" == true && "${cache_bucket}" != "${archive_bucket}" ]]; then

@@ -243,10 +243,8 @@ def _tool_environment(scratch: Path, root: str) -> dict[str, str]:
             "UV_TOOL_DIR": str(isolated / "environments"),
             "RIVERHOG_ALLOW_INSECURE_HTTP": "true",
             "RIVERHOG_HTTP2": "false",
-            "MUNCHY_ALLOW_INSECURE_HTTP": "true",
-            "MUNCHY_HTTP2": "false",
-            "JEB_ALLOW_INSECURE_HTTP": "true",
-            "JEB_HTTP2": "false",
+            "STOVE0_ALLOW_INSECURE_HTTP": "true",
+            "STOVE0_HTTP2": "false",
         }
     )
     return environment
@@ -307,11 +305,10 @@ def _run_client_operation(
     if root == "riverhog-client":
         environment["RIVERHOG_BASE_URL"] = base_url
         command = [str(executable), "event", "list", "--json"]
-    elif root == "munchy-client":
-        command = [str(executable), "event", "list", "--server-url", base_url, "--json"]
-    elif root == "jeb-client":
-        environment["JEB_BASE_URL"] = base_url
-        command = [str(executable), "event", "list", "--json"]
+    elif root == "stove0-client":
+        environment["STOVE0_BASE_URL"] = base_url
+        environment["STOVE0_TOKEN"] = "qualification-token"
+        command = [str(executable), "--json", "event", "list"]
     else:
         raise QualificationError(f"no disposable client operation for {root}")
     completed = _run(command, cwd=cwd, env=environment, capture=True)
@@ -1036,7 +1033,7 @@ def _qualify_component(
         raise QualificationError(f"{root} --version differs from the installed release")
     _run([str(primary), "--help"], cwd=scratch, env=environment, capture=True)
 
-    if root in {"riverhog-client", "munchy-client", "jeb-client"}:
+    if root in {"riverhog-client", "stove0-client"}:
         operation = _run_client_operation(
             root,
             primary,

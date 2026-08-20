@@ -47,9 +47,10 @@ updates:
 
   - package-ecosystem: docker
     directories:
-      - /companions/jeb/server
-      - /companions/munchy/server
-      - /companions/munchy/server/targets/av1-nvenc
+      - /companions/stove0/extensions
+      - /companions/stove0/extensions/nvenc
+      - /companions/stove0/server
+      - /riverhog/adapters
       - /riverhog/server
       - /tests
       - /utilities/mango-fish

@@ -143,6 +143,8 @@ def test_collection_contracts_expose_the_stable_creation_timestamp() -> None:
             id=CollectionId(42),
             created_at="2026-07-26T20:00:00.000000Z",
             tags=("family",),
+            content_etag="1" * 64,
+            manifest_sha256="2" * 64,
             files=1,
             bytes=10,
         )

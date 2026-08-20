@@ -50,20 +50,30 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
 
     projects = module.validate_release_contract(REPO_ROOT)
 
-    assert len(projects) == 31
+    assert len(projects) == 32
     assert {project.version for project in projects} == {"0.1.0"}
     assert Counter(project.role for project in projects) == {
-        "end_user_artifact": 5,
+        "end_user_artifact": 4,
         "deployed_implementation": 5,
-        "reusable_library": 14,
-        "internal_build_unit": 7,
+        "reusable_library": 17,
+        "internal_build_unit": 6,
     }
     assert {project.name for project in projects} >= {
-        "jeb-client",
-        "munchy-client",
         "riverhog-client",
+        "riverhog-adapters",
+        "riverhog-adapter-api-client",
         "riverhog-recover",
         "riverhog-server",
+        "stove0-server",
+        "stove0-client",
+        "stove0-maintained-extensions",
+        "stove0-api-client",
+        "stove0-observer-protocol",
+        "stove0-observer-support",
+        "stove0-protocol",
+        "stove0-review-contracts",
+        "stove0-target-protocol",
+        "stove0-target-support",
     }
     signing = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))["signing"]
     assert signing["checksums"] == "SHA-256"
@@ -114,7 +124,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert plan["tag"] == "v1.0.0"
     assert len(plan["source_sha"]) == 40
     assert all(character in "0123456789abcdef" for character in plan["source_sha"])
-    assert len(plan["python"]) == 31
+    assert len(plan["python"]) == 32
     assert all(len(project["artifacts"]) == 2 for project in plan["python"])
     assert {image["target"] for image in plan["images"]} == set(module.RUNTIME_IMAGE_TARGETS)
     assert all(image["platforms"] == ["linux/amd64"] for image in plan["images"])
@@ -134,10 +144,9 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
             "manifest": "install-manifest.json",
             "locks": [
                 "pylock.gogurt.toml",
-                "pylock.jeb-client.toml",
-                "pylock.munchy-client.toml",
                 "pylock.riverhog-client.toml",
                 "pylock.riverhog-recover.toml",
+                "pylock.stove0-client.toml",
             ],
             "index_snapshot": "riverhog-python-index-v1.0.0.tar.gz",
             "gogurt_listener_reference": "gogurt-listener-v1.0.0.md",

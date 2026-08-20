@@ -96,13 +96,11 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
         "c2sp-vectors",
         "postgres-concurrency",
         "compose-smoke",
-        "jeb-compose-smoke",
         "dist-smoke",
     ]
     assert [entry["target"] for entry in matrix if entry.get("docker") == "true"] == [
         "postgres-concurrency",
         "compose-smoke",
-        "jeb-compose-smoke",
     ]
 
     steps = job["steps"]
@@ -224,11 +222,18 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
         if step["name"] == "Exercise disposable operation lifecycles and record timings"
     )
     assert "test_operation_lifecycle_api.py" in lifecycle_evidence["run"]
-    assert "test_munchy_server_contract.py" in lifecycle_evidence["run"]
-    assert "test_jeb_health.py" in lifecycle_evidence["run"]
+    assert "test_stove0_api_parity.py" in lifecycle_evidence["run"]
+    assert "test_adapter_api_parity.py" in lifecycle_evidence["run"]
     assert "test_collection_reads.py" in lifecycle_evidence["run"]
-    assert "test_list_jobs_does_not_scan_all_job_states" in lifecycle_evidence["run"]
-    assert "test_source_registry_lists_compact_filtered_pages" in lifecycle_evidence["run"]
+    assert "test_unified_state_store_is_restart_safe" in lifecycle_evidence["run"]
+    assert "test_unified_evaluation_store_is_restart_safe" in lifecycle_evidence["run"]
+    assert (
+        "test_worker_tick_never_consumes_the_controller_event_cursor" in lifecycle_evidence["run"]
+    )
+    assert (
+        "test_tus_publication_recovers_crash_after_finalized_adapter_receipt"
+        in (lifecycle_evidence["run"])
+    )
     assert "tests.operation_observer" in lifecycle_evidence["run"]
     operation_evidence = next(
         step

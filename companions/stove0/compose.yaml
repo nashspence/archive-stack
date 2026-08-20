@@ -1,0 +1,249 @@
+x-stove0-image: &stove0-image
+  image: stove0:dev
+  build:
+    context: ../..
+    dockerfile: companions/stove0/server/Dockerfile
+    args:
+      SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+
+x-extension-image: &extension-image
+  image: stove0-maintained-extensions:dev
+  build:
+    context: ../..
+    dockerfile: companions/stove0/extensions/Dockerfile
+    args:
+      SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+
+x-stove0-environment: &stove0-environment
+  TZ: ${TZ:-UTC}
+  STOVE0_DATABASE_URL_FILE: /run/secrets/stove0_database_url
+  STOVE0_RECIPES_PATH: /etc/stove0/recipes.yaml
+  STOVE0_WORKSPACE_ASSURANCE: ephemeral
+  STOVE0_CLAIM_LEASE_SECONDS: ${STOVE0_CLAIM_LEASE_SECONDS:-1800}
+  STOVE0_CAPABILITY_TTL_SECONDS: ${STOVE0_CAPABILITY_TTL_SECONDS:-900}
+  STOVE0_SCHEDULER_INTERVAL_SECONDS: ${STOVE0_SCHEDULER_INTERVAL_SECONDS:-5}
+  RIVERHOG_BASE_URL: ${STOVE0_RIVERHOG_BASE_URL:-http://app:8000}
+  RIVERHOG_ALLOW_INSECURE_HTTP: "true"
+  STOVE0_OBSERVERS_JSON: '{"media-sampling":{"base_url":"http://media-sampling:8080","token_env":"STOVE0_OBSERVER_TOKEN","allow_insecure_http":true}}'
+  STOVE0_TARGETS_JSON: '{"local-media":{"base_url":"http://local-media:8080","token_env":"STOVE0_LOCAL_TARGET_TOKEN","allow_insecure_http":true},"nvenc-media":{"base_url":"http://nvenc-media:8080","token_env":"STOVE0_NVENC_TARGET_TOKEN","allow_insecure_http":true}}'
+  STOVE0_OBSERVER_TOKEN_FILE: /run/secrets/stove0_observer_token
+  STOVE0_LOCAL_TARGET_TOKEN_FILE: /run/secrets/stove0_local_target_token
+  STOVE0_NVENC_TARGET_TOKEN_FILE: /run/secrets/stove0_nvenc_target_token
+
+x-stove0-common: &stove0-common
+  <<: *stove0-image
+  restart: unless-stopped
+  read_only: true
+  user: "65532:65532"
+  group_add:
+    - "${STOVE0_SECRET_FILE_GID:-65532}"
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  volumes:
+    - type: bind
+      source: ${STOVE0_RECIPES_HOST_PATH:-./config/recipes.example.yaml}
+      target: /etc/stove0/recipes.yaml
+      read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+  networks: ["stove0-internal", "riverhog-control"]
+
+x-extension-common: &extension-common
+  <<: *extension-image
+  restart: unless-stopped
+  read_only: true
+  user: "65532:65532"
+  group_add:
+    - "${STOVE0_SECRET_FILE_GID:-65532}"
+  cap_drop: ["ALL"]
+  security_opt: ["no-new-privileges:true"]
+  networks: ["stove0-internal", "riverhog-control"]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+    - /run/stove0-workspaces:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532,size=${STOVE0_WORKSPACE_TMPFS_SIZE:-32g}
+
+services:
+  state:
+    <<: *stove0-common
+    restart: "no"
+    command: ["stove0-server", "state", "upgrade"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_DATABASE_URL_FILE: /run/secrets/stove0_database_url
+    secrets: ["stove0_database_url"]
+
+  api:
+    <<: *stove0-common
+    depends_on:
+      state:
+        condition: service_completed_successfully
+    environment:
+      <<: *stove0-environment
+      STOVE0_API_TOKEN_FILE: /run/secrets/stove0_api_token
+      RIVERHOG_TOKEN_FILE: /run/secrets/stove0_api_riverhog_token
+    secrets:
+      - stove0_database_url
+      - stove0_observer_token
+      - stove0_local_target_token
+      - stove0_nvenc_target_token
+      - stove0_api_token
+      - stove0_api_riverhog_token
+    ports:
+      - "${STOVE0_API_BIND_ADDR:-127.0.0.1}:${STOVE0_API_PORT:-8094}:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
+          assert payload == {'service': 'stove0', 'status': 'ok'}
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  controller:
+    <<: *stove0-common
+    depends_on:
+      state:
+        condition: service_completed_successfully
+    command: ["stove0-server", "scheduler", "--role", "controller"]
+    environment:
+      <<: *stove0-environment
+      RIVERHOG_TOKEN_FILE: /run/secrets/stove0_controller_riverhog_token
+    secrets:
+      - stove0_database_url
+      - stove0_observer_token
+      - stove0_local_target_token
+      - stove0_nvenc_target_token
+      - stove0_controller_riverhog_token
+
+  worker:
+    <<: *stove0-common
+    depends_on:
+      state:
+        condition: service_completed_successfully
+    command: ["stove0-server", "scheduler", "--role", "worker"]
+    environment:
+      <<: *stove0-environment
+      RIVERHOG_TOKEN_FILE: /run/secrets/stove0_worker_riverhog_token
+    secrets:
+      - stove0_database_url
+      - stove0_observer_token
+      - stove0_local_target_token
+      - stove0_nvenc_target_token
+      - stove0_worker_riverhog_token
+
+  media-sampling:
+    <<: *extension-common
+    command: ["observer", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_EXTENSION_TOKEN_FILE: /run/secrets/stove0_observer_token
+      STOVE0_EXTENSION_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_EXTENSION_WORKSPACE: /run/stove0-workspaces
+    secrets: ["stove0_observer_token"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
+          assert payload['status'] == 'ok'
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  local-media:
+    <<: *extension-common
+    command: ["local-target", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_EXTENSION_TOKEN_FILE: /run/secrets/stove0_local_target_token
+      STOVE0_EXTENSION_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_EXTENSION_WORKSPACE: /run/stove0-workspaces
+      STOVE0_TARGET_STATE_ROOT: /var/lib/stove0-target
+    secrets: ["stove0_local_target_token"]
+    volumes:
+      - stove0-local-target-state:/var/lib/stove0-target
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
+          assert payload['status'] == 'ok'
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  nvenc-media:
+    <<: *extension-common
+    image: stove0-nvenc-extension:dev
+    build:
+      context: ../..
+      dockerfile: companions/stove0/extensions/nvenc/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    profiles: ["nvenc"]
+    gpus: all
+    command: ["nvenc-target", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_EXTENSION_TOKEN_FILE: /run/secrets/stove0_nvenc_target_token
+      STOVE0_EXTENSION_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_EXTENSION_WORKSPACE: /run/stove0-workspaces
+      STOVE0_TARGET_STATE_ROOT: /var/lib/stove0-target
+    secrets: ["stove0_nvenc_target_token"]
+    volumes:
+      - stove0-nvenc-target-state:/var/lib/stove0-target
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          payload = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=5));
+          assert payload['status'] == 'ok'
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  stove0-local-target-state:
+  stove0-nvenc-target-state:
+
+secrets:
+  stove0_database_url:
+    file: ${STOVE0_DATABASE_URL_FILE:?STOVE0_DATABASE_URL_FILE is required}
+  stove0_api_token:
+    file: ${STOVE0_API_TOKEN_FILE:?STOVE0_API_TOKEN_FILE is required}
+  stove0_api_riverhog_token:
+    file: ${STOVE0_API_RIVERHOG_TOKEN_FILE:?STOVE0_API_RIVERHOG_TOKEN_FILE is required}
+  stove0_controller_riverhog_token:
+    file: ${STOVE0_CONTROLLER_RIVERHOG_TOKEN_FILE:?STOVE0_CONTROLLER_RIVERHOG_TOKEN_FILE is required}
+  stove0_worker_riverhog_token:
+    file: ${STOVE0_WORKER_RIVERHOG_TOKEN_FILE:?STOVE0_WORKER_RIVERHOG_TOKEN_FILE is required}
+  stove0_observer_token:
+    file: ${STOVE0_OBSERVER_TOKEN_FILE:?STOVE0_OBSERVER_TOKEN_FILE is required}
+  stove0_local_target_token:
+    file: ${STOVE0_LOCAL_TARGET_TOKEN_FILE:?STOVE0_LOCAL_TARGET_TOKEN_FILE is required}
+  stove0_nvenc_target_token:
+    file: ${STOVE0_NVENC_TARGET_TOKEN_FILE:?STOVE0_NVENC_TARGET_TOKEN_FILE is required}
+
+networks:
+  stove0-internal:
+    internal: true
+  riverhog-control:
+    external: true
+    name: ${RIVERHOG_CONTROL_NETWORK:-riverhog_default}

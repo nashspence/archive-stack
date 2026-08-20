@@ -40,6 +40,7 @@ from riverhog_api.routers.resourcesync import router as resourcesync_router
 from riverhog_api.routers.retrieval import router as retrieval_router
 from riverhog_api.routers.search import router as search_router
 from riverhog_api.routers.tags import router as tags_router
+from riverhog_api.routers.workflows import router as workflows_router
 from riverhog_api.schemas.common import ErrorResponse, HealthResponse
 
 _LOG = logging.getLogger(__name__)
@@ -119,6 +120,7 @@ def _process_archive_maintenance(
                 requeued_metadata,
             )
     container.collection_uploads.process_due_finalizations(limit=1)
+    container.collection_workflows.reap_expired_claims(limit=100)
     container.archive_copies.process_due(limit=1)
     container.archive_maintenance.process_due_metadata_publications(limit=10)
 
@@ -495,6 +497,7 @@ def create_app(
     app.include_router(provenance_router, prefix="/v1")
     app.include_router(retrieval_router, prefix="/v1")
     app.include_router(resourcesync_router)
+    app.include_router(workflows_router, prefix="/v1")
     app.openapi_schema = apply_openapi_error_contract(app.openapi())
     return app
 

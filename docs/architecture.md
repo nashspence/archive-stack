@@ -1,30 +1,25 @@
 # Architecture
 
-Riverhog is an encrypted archive platform surrounded by independently packaged clients,
-companions, execution targets, utilities, and focused shared packages. Exact public
-interfaces, configuration shapes, archive-format details, and command behavior live in
-executable contracts; this document records only the ownership and authority model.
+Riverhog is an encrypted archive platform with independently packaged clients, adapters,
+orchestration, extensions, utilities, and shared packages. Executable contracts define exact
+interfaces, configuration, formats, and commands; this page records ownership and authority.
 
 ## Authority model
 
 - Archive stores are the durable authority for encrypted archive bytes. A collection may
   have verified copies in multiple named stores; copy retirement and collection deletion
   are archive mutations.
-- A component's relational database is its durable operational state and schema authority.
-  Riverhog's catalog records logical identity, placement, and workflows, but is not required
-  to recover a known archive copy.
+- Each component's database is its operational state and schema authority. Riverhog's catalog
+  records identity, placement, and workflows but is unnecessary to recover a known copy.
 - Collection ingress writes server-encrypted units directly to immutable final archive keys
-  in its selected archive store; it is not a storage tier. Planner checkpoints, unsealed
-  membership, and open multipart uploads are operational state. Sealed archive objects and
-  published immutable collection roots alone are archive authority. Retrieval caches hold
-  exact ciphertext rebuildable from archive stores.
-- Payload transfer loops exclude control-plane refresh and reporting work. Phase-separated,
-  identity-safe timing records and the `make transfer-profile` harness qualify transfer
-  goodput against a same-path raw baseline.
-- Per-file provenance is append-only custody history. Existing journals remain exact prefixes
-  across in-repo handoffs; clients capture or continue them by default, and every omission has
-  an explicit reason. The immutable collection index and journal bundles are authoritative;
-  relational provenance rows are a rebuildable query projection.
+  in its selected store; ingress is not a storage tier. Checkpoints, unsealed membership, and
+  open multipart uploads are operational state. Sealed objects and published immutable roots
+  alone are archive authority. Retrieval caches hold rebuildable ciphertext.
+- Payload loops exclude control-plane and reporting work. Phase-separated timing records and
+  `make transfer-profile` qualify goodput against a same-path raw baseline.
+- Per-file provenance is append-only custody history. Journals remain exact prefixes across
+  handoffs; clients capture or continue them by default, and omissions require a reason. The
+  immutable index and journals are authoritative; database rows are a rebuildable projection.
 - A collection is an immutable logical namespace and deletion unit. Tags are mutable
   catalog metadata. Applications own desired state and materializations derived through
   public APIs.
@@ -33,16 +28,19 @@ executable contracts; this document records only the ownership and authority mod
 
 ## Boundary model
 
-Each server, client, companion, execution target, and utility owns its implementation.
-Focused packages may be shared; implementation modules may not. Runtime integration crosses
-published HTTP and CloudEvents contracts.
+Each product owns its implementation. Focused packages may be shared; implementation modules
+may not. Runtime integration crosses published HTTP and CloudEvents contracts.
 
-- The Riverhog server owns archive construction, catalog publication, archive-copy
-  management, retrieval preparation, and verified logical-file delivery.
+- The Riverhog server owns archive construction, catalog publication, copies, retrieval, and
+  verified logical-file delivery.
 - The official Riverhog client is an ordinary API consumer. Its `local` commands own one
   local materialization and its rebuildable views.
-- A companion server owns its workflows and adapters; its separately packaged client uses
-  the public API. A Munchy execution target implements a server-owned target contract.
+- Protocol adapters are content-opaque producers with bounded custody. They relinquish bytes
+  only after Riverhog returns the finalized receipt.
+- stove0 is the sole transformation workflow authority and stores only control state. Its core
+  consumes identities, observations, plans, and outcomes without interpreting content.
+- Content observers report bounded facts about exact immutable artifacts. Transform targets
+  perform one declared operation and publish through one exact derived-collection capability.
 - End-user clients and utilities support Linux, macOS, and Windows. Server applications ship
   as Linux OCI images; hardware-bound execution targets may declare a narrower platform.
   Downstream configuration supplies private policy and deployment identity.
@@ -54,13 +52,13 @@ Workspace dependency and import checks enforce the implementation-owner boundari
 - [`riverhog/server`](../riverhog/server/) is the archive platform service.
 - [`riverhog/client`](../riverhog/client/) is the direct platform CLI. Its `local` commands
   maintain client-owned local materialization.
+- [`riverhog/adapters`](../riverhog/adapters/) contains the maintained content-opaque FTP,
+  TUS, and watched-drop collection producers.
 - [`riverhog/recovery`](../riverhog/recovery/) provides an independently packaged,
   permissively licensed reference implementation; Riverhog archives remain recoverable
   without Riverhog using standard tools.
-- [`companions`](../companions/) contains Munchy and Jeb. Each has an independently
-  packaged server and client.
-- [`companions/munchy/server/targets`](../companions/munchy/server/targets/) contains
-  server-owned execution targets, not standalone companion applications.
+- [`companions/stove0`](../companions/stove0/) contains the orchestration server, its
+  separately packaged client, and maintained observer/target implementations.
 - [`utilities`](../utilities/) contains portable operator and event tools.
 - [`packages`](../packages/) contains focused reusable libraries and protocol, client,
   configuration, event, transport, and CLI primitives.

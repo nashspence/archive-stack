@@ -149,30 +149,30 @@ jobs:
         run: >-
           make unit
           TESTS="tests/unit/test_operation_lifecycle_api.py::test_riverhog_official_client_positive_disposable_lifecycle
-          companions/munchy/tests/test_munchy_server_contract.py::test_munchy_official_clients_cover_complete_positive_api_lifecycle
-          companions/jeb/tests/test_jeb_health.py::test_jeb_official_client_covers_complete_positive_api_lifecycle
+          companions/stove0/tests/test_stove0_api_parity.py::test_stove0_official_client_positive_disposable_lifecycle
+          riverhog/adapters/tests/test_adapter_api_parity.py::test_adapters_official_clients_positive_disposable_lifecycle
           tests/unit/test_collection_reads.py::test_collection_list_query_count_is_independent_of_page_rows
-          companions/munchy/tests/test_munchy_server_contract.py::test_list_jobs_does_not_scan_all_job_states_for_current_page
-          companions/jeb/tests/test_jeb_server.py::test_source_registry_lists_compact_filtered_pages_in_sql
+          companions/stove0/tests/test_work_state.py::test_unified_state_store_is_restart_safe_and_compare_and_swap
+          companions/stove0/tests/test_preview_and_evaluation.py::test_unified_evaluation_store_is_restart_safe
+          companions/stove0/tests/test_scheduler_roles.py::test_worker_tick_never_consumes_the_controller_event_cursor
+          riverhog/adapters/tests/test_landing_adapter.py::test_explicit_flush_is_the_same_bounded_claim_and_receipt_path
+          riverhog/adapters/tests/test_tus_adapter.py::test_tus_publication_recovers_crash_after_finalized_adapter_receipt
           tests/unit/test_cli_app_keys.py
           tests/unit/test_cli_archive_copy.py
           tests/unit/test_cli_archive_retire.py
           tests/unit/test_cli_client.py
           tests/unit/test_cli_collection_delete.py
-          tests/unit/test_cli_errors.py
           tests/unit/test_cli_events.py
           tests/unit/test_cli_help.py
           tests/unit/test_cli_json_output.py
           tests/unit/test_cli_list_ids.py
-          tests/unit/test_cli_output.py
           tests/unit/test_cli_provenance.py
           tests/unit/test_cli_status.py
           tests/unit/test_cli_tags.py
           tests/unit/test_cli_upload.py
           tests/unit/test_local_materialization.py
-          companions/munchy/tests/test_munchy_cli.py
-          companions/jeb/tests/test_jeb_cli.py
-          companions/jeb/tests/test_jeb_remote_cli.py"
+          companions/stove0/tests/test_cli.py
+          riverhog/adapters/tests/test_adapter_api_parity.py::test_operator_cli_has_human_and_json_views_for_each_management_operation"
           args="-p tests.operation_observer"
       - name: Verify and record the complete operation matrix
         run: >-
@@ -192,7 +192,7 @@ jobs:
             and .qualification.provider_backed_lifecycles.status == "linked"
             and .performance.local_api.schema == "riverhog-operation-timings/v1"
             and .performance.local_api.source_sha == $sha
-            and (.summary.applications | keys == ["jeb", "munchy", "riverhog"])
+            and (.summary.applications | keys == ["riverhog", "riverhog-adapters", "stove0"])
             and (.summary.classifications | keys == [
               "client-only-primitive",
               "human-cli+json",

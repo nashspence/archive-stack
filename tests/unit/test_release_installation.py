@@ -92,7 +92,7 @@ def test_installation_artifacts_are_derived_and_mutually_consistent(
         "install-lock",
         "install-reference",
     }
-    assert len([item for item in records if item["kind"] == "install-lock"]) == 5
+    assert len([item for item in records if item["kind"] == "install-lock"]) == 4
     listener = manifest["gogurt_listener"]
     assert listener["contract"]["operations"] == [
         "install",

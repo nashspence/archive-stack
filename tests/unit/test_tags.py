@@ -55,7 +55,7 @@ def _services(path: Path) -> tuple[SqlAlchemyAppKeyService, SqlAlchemyTagService
 def test_tag_creation_grants_only_collection_creation_access(tmp_path: Path) -> None:
     keys, tags = _services(tmp_path / "catalog.sqlite3")
     created = keys.create(
-        app="munchy",
+        app="stove0",
         access=(ApplicationAccess(TAGS_CREATE),),
         grantor=BOOTSTRAP,
     )

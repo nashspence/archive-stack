@@ -47,14 +47,14 @@ def test_causal_events_and_sqlite_delivery_state_are_idempotent(tmp_path: Path) 
     )
     translated = caused_event(
         cause=upstream,
-        source="urn:munchy",
-        type="io.riverhog.munchy.job.archive.finalized",
+        source="urn:target",
+        type="io.riverhog.target.job.archive.finalized",
         subject="job-1",
         data={"job_id": "job-1"},
     )
 
-    first_cursor = log.append_once(translated, owner="munchy")
-    second_cursor = log.append_once(translated, owner="munchy")
+    first_cursor = log.append_once(translated, owner="target")
+    second_cursor = log.append_once(translated, owner="target")
     cursors.advance("riverhog", "41")
 
     assert first_cursor == second_cursor == 1

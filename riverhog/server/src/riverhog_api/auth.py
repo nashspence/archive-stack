@@ -12,6 +12,8 @@ from riverhog_core.app_permissions import (
     ARCHIVES_READ,
     CATALOG_READ,
     COLLECTION_TAGS_MANAGE,
+    COLLECTION_TRANSFORMS_CONTROL,
+    COLLECTION_TRANSFORMS_EXECUTE,
     COLLECTIONS_CREATE,
     COLLECTIONS_DELETE,
     EVENTS_READ,
@@ -53,7 +55,11 @@ def authenticate_token(token: str, container: ServiceContainer) -> ApplicationPr
             ),
             unrestricted_delegation=True,
         )
-    return container.app_keys.authenticate(supplied)
+    principal = container.app_keys.authenticate(supplied)
+    if principal is not None:
+        return principal
+    workflows = getattr(container, "collection_workflows", None)
+    return workflows.authenticate_capability(supplied) if workflows is not None else None
 
 
 def require_application(
@@ -81,6 +87,23 @@ def require_permission(permission: str) -> PermissionDependency:
     return dependency
 
 
+def require_any_permission(*permissions: str) -> PermissionDependency:
+    if not permissions:
+        raise ValueError("at least one Riverhog permission is required")
+
+    def dependency(
+        credentials: BearerCredentials,
+        container: ContainerDep,
+    ) -> ApplicationPrincipal:
+        principal = require_application(credentials, container)
+        if any(principal.allows(permission) for permission in permissions):
+            return principal
+        raise Forbidden("one application permission is required: " + ", ".join(permissions))
+
+    dependency.riverhog_permissions = tuple(permissions)  # type: ignore[attr-defined]
+    return dependency
+
+
 CatalogReader = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(CATALOG_READ))),
@@ -92,6 +115,26 @@ RetrievalManager = Annotated[
 CollectionCreator = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(COLLECTIONS_CREATE))),
+]
+CollectionTransformController = Annotated[
+    ApplicationPrincipal,
+    Depends(cast(Callable[..., object], require_permission(COLLECTION_TRANSFORMS_CONTROL))),
+]
+CollectionTransformExecutor = Annotated[
+    ApplicationPrincipal,
+    Depends(cast(Callable[..., object], require_permission(COLLECTION_TRANSFORMS_EXECUTE))),
+]
+CollectionTransformLeaseManager = Annotated[
+    ApplicationPrincipal,
+    Depends(
+        cast(
+            Callable[..., object],
+            require_any_permission(
+                COLLECTION_TRANSFORMS_CONTROL,
+                COLLECTION_TRANSFORMS_EXECUTE,
+            ),
+        )
+    ),
 ]
 CollectionTagManager = Annotated[
     ApplicationPrincipal,
@@ -147,6 +190,9 @@ __all__ = [
     "CollectionCreator",
     "CollectionDeleter",
     "CollectionTagManager",
+    "CollectionTransformController",
+    "CollectionTransformExecutor",
+    "CollectionTransformLeaseManager",
     "EventsReader",
     "KeyManager",
     "QuotaManager",
@@ -157,5 +203,6 @@ __all__ = [
     "TagDeleter",
     "authenticate_token",
     "require_application",
+    "require_any_permission",
     "require_permission",
 ]

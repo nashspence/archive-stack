@@ -204,6 +204,8 @@ def _collection_summary(
         id=CollectionId(collection.id),
         created_at=collection.created_at,
         tags=tuple(sorted(current.tag_id for current in collection.tags)),
+        content_etag=collection.content_etag,
+        manifest_sha256=_manifest_identity(copies),
         files=int(row.files),
         bytes=int(row.bytes),
         remote_storage_bytes=sum(current.stored_bytes or 0 for current in copies),
@@ -279,3 +281,14 @@ def _normalize_tag(value: str) -> str:
 def _like_pattern(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
+
+
+def _manifest_identity(copies: tuple[ArchiveCopyStatus, ...]) -> str:
+    identities = {
+        current.collection_manifest.sha256
+        for current in copies
+        if current.collection_manifest is not None and current.collection_manifest.sha256
+    }
+    if len(identities) != 1:
+        raise RuntimeError("finalized collection has no unambiguous immutable manifest identity")
+    return str(next(iter(identities)))

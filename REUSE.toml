@@ -9,8 +9,8 @@ SPDX-License-Identifier = "Apache-2.0"
 [[annotations]]
 path = [
   "riverhog/server/**",
-  "companions/munchy/server/**",
-  "companions/jeb/server/**",
+  "companions/stove0/server/**",
+  "companions/stove0/extensions/**",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2026 Nash Spence"
@@ -19,8 +19,6 @@ SPDX-License-Identifier = "CAL-1.0"
 [[annotations]]
 path = [
   "riverhog/server/openapi/**",
-  "companions/munchy/server/openapi/**",
-  "companions/jeb/server/openapi/**",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2026 Nash Spence"

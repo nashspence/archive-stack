@@ -27,6 +27,7 @@ from riverhog_core.services.archive_maintenance import SqlAlchemyArchiveMaintena
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
+from riverhog_core.services.collection_workflows import SqlAlchemyCollectionWorkflowService
 from riverhog_core.services.collections import SqlAlchemyCollectionService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 from riverhog_core.services.interfaces import (
@@ -67,6 +68,7 @@ class ServiceContainer:
     tags: TagService
     collections: CollectionService
     collection_uploads: SqlAlchemyCollectionUploadService
+    collection_workflows: SqlAlchemyCollectionWorkflowService
     provenance: ProvenanceService
     collection_deletions: CollectionDeletionService
     search: SearchService
@@ -154,6 +156,9 @@ def default_container() -> ServiceContainer:
             session_factory=session_factory,
             throughput_tuning=throughput_tuning,
             transfer_resources=transfer_resources,
+        ),
+        collection_workflows=SqlAlchemyCollectionWorkflowService(
+            config, session_factory=session_factory
         ),
         provenance=SqlAlchemyProvenanceService(config, session_factory=session_factory),
         collection_deletions=SqlAlchemyCollectionDeletionService(
