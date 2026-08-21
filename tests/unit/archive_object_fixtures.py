@@ -257,8 +257,6 @@ def make_captured_provenance_archive(
 def archive_receipt(
     archive: FixtureArchive,
     *,
-    backend: str = "s3",
-    storage_class: str = "STANDARD",
     prefix: str = "archives/opaque-docs",
 ) -> CollectionArchiveUploadReceipt:
     rows: list[ArchiveObjectUploadReceipt] = [
@@ -273,8 +271,6 @@ def archive_receipt(
             sha256=None,
             stored_sha256=None,
             version_id=f"fixture-{archive.pack_plan.volume_id}-version",
-            backend=backend,
-            storage_class=storage_class,
             uploaded_at=UPLOADED_AT,
             verified_at=UPLOADED_AT,
         )
@@ -308,8 +304,6 @@ def archive_receipt(
                     sha256=hashlib.sha256(plaintext).hexdigest(),
                     stored_sha256=hashlib.sha256(stored).hexdigest(),
                     version_id=f"fixture-{object_id}-version",
-                    backend=backend,
-                    storage_class=storage_class,
                     uploaded_at=UPLOADED_AT,
                     verified_at=UPLOADED_AT,
                 )
@@ -327,8 +321,6 @@ def archive_receipt(
                     archive.stored_objects["manifest.json.age"]
                 ).hexdigest(),
                 version_id="fixture-manifest-version",
-                backend=backend,
-                storage_class=storage_class,
                 uploaded_at=UPLOADED_AT,
                 verified_at=UPLOADED_AT,
             ),
@@ -343,8 +335,6 @@ def archive_receipt(
                     archive.stored_objects["manifest.json.ots.age"]
                 ).hexdigest(),
                 version_id="fixture-proof-version",
-                backend=backend,
-                storage_class=storage_class,
                 uploaded_at=UPLOADED_AT,
                 verified_at=UPLOADED_AT,
             ),
@@ -358,23 +348,14 @@ def add_archive_copy(
     archive: FixtureArchive,
     *,
     store: str,
-    backend: str,
-    storage_class: str,
 ) -> CollectionArchiveCopyRecord:
     copy = CollectionArchiveCopyRecord(collection_id=archive.collection_id, store=store)
     session.add(copy)
     session.flush()
     prefix = f"archives/{store}/opaque-docs"
-    receipt = archive_receipt(
-        archive,
-        backend=backend,
-        storage_class=storage_class,
-        prefix=prefix,
-    )
+    receipt = archive_receipt(archive, prefix=prefix)
     copy.state = "uploaded"
     copy.archive_storage_prefix = prefix
-    copy.backend = backend
-    copy.storage_class = storage_class
     copy.last_uploaded_at = UPLOADED_AT
     copy.last_verified_at = UPLOADED_AT
     pack_receipt = receipt.require_object(archive.pack_plan.volume_id)
@@ -394,8 +375,6 @@ def add_archive_copy(
         part_receipts_json=archive.pack_parts_json,
         plan_sha256=archive.pack_plan_sha256,
         index_sha256=archive.pack_index_sha256,
-        backend=backend,
-        storage_class=storage_class,
         uploaded_at=UPLOADED_AT,
         verified_at=UPLOADED_AT,
     )
@@ -436,8 +415,6 @@ def add_archive_copy(
                 sha256=object_receipt.sha256,
                 stored_sha256=object_receipt.stored_sha256,
                 version_id=f"fixture-{object_id}-version",
-                backend=backend,
-                storage_class=storage_class,
                 uploaded_at=UPLOADED_AT,
                 verified_at=UPLOADED_AT,
             )
@@ -450,8 +427,6 @@ def seed_archive_copy(
     files: dict[str, bytes],
     *,
     store: str = "deep",
-    backend: str = "s3",
-    storage_class: str = "STANDARD",
     archive: FixtureArchive | None = None,
 ) -> tuple[RuntimeConfig, FixtureArchive]:
     database_url = sqlite_url(path)
@@ -513,8 +488,6 @@ def seed_archive_copy(
             session,
             current,
             store=store,
-            backend=backend,
-            storage_class=storage_class,
         )
     config = RuntimeConfig(database_url=database_url)
     if store == "archive":
@@ -522,8 +495,7 @@ def seed_archive_copy(
     configured_store = replace(
         config.archive_store("archive"),
         name=store,
-        backend=backend,
-        storage_class=storage_class,
+        base_url=f"http://127.0.0.1/{store}",
     )
     return (
         replace(
@@ -562,14 +534,12 @@ class MemoryArchiveStore:
         self,
         archive: FixtureArchive | None = None,
         *,
-        backend: str = "s3",
-        storage_class: str = "STANDARD",
+        new_archive_prefix: str = "archives/memory/new-copy",
         ready: bool = True,
         read_mode: str = "immediate",
     ) -> None:
         self.archive = archive
-        self.backend = backend
-        self.storage_class = storage_class
+        self.new_archive_prefix = new_archive_prefix
         self.ready = ready
         self._read_mode = read_mode
         self.prepared: list[tuple[str, ...]] = []
@@ -606,7 +576,7 @@ class MemoryArchiveStore:
         }
 
     def new_collection_archive_storage_prefix(self) -> str:
-        return f"archives/{self.backend}/new-copy"
+        return self.new_archive_prefix
 
     def create_multipart_upload(
         self,
@@ -783,8 +753,6 @@ class MemoryArchiveStore:
             sha256=hashlib.sha256(content).hexdigest(),
             stored_sha256=hashlib.sha256(stored).hexdigest(),
             version_id=object.version_id,
-            backend=self.backend,
-            storage_class=self.storage_class,
             uploaded_at=UPLOADED_AT,
             verified_at=UPLOADED_AT,
         )
@@ -821,8 +789,6 @@ class MemoryArchiveStore:
             sha256=hashlib.sha256(proof_bytes).hexdigest(),
             stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
             version_id=self._version(ciphertext),
-            backend=self.backend,
-            storage_class=self.storage_class,
             uploaded_at=UPLOADED_AT,
             verified_at=UPLOADED_AT,
         )
@@ -869,7 +835,6 @@ class MemoryArchiveStore:
                     object_id=object_id,
                     object_path=f"{archive_storage_prefix}/{filenames[object_id]}",
                     content=content,
-                    backend=self.backend,
                     version_id=self._version(content),
                 )
                 for object_id, content in content_by_id.items()
@@ -889,7 +854,6 @@ class MemoryArchiveStore:
                 object_id=object.object_id,
                 object_path=object.object_path,
                 content=content,
-                backend=self.backend,
                 version_id=object.version_id,
             ),
             content=content,
@@ -909,7 +873,6 @@ class MemoryArchiveStore:
             object_id=object.object_id,
             object_path=object.object_path,
             content=proof_bytes,
-            backend=self.backend,
             version_id=self._version(proof_bytes),
         )
 
@@ -1001,7 +964,6 @@ def _plaintext_receipt(
     object_id: str,
     object_path: str,
     content: bytes,
-    backend: str,
     version_id: str | None,
 ) -> ArchiveObjectUploadReceipt:
     digest = hashlib.sha256(content).hexdigest()
@@ -1014,8 +976,6 @@ def _plaintext_receipt(
         sha256=digest,
         stored_sha256=digest,
         version_id=version_id,
-        backend=backend,
-        storage_class="STANDARD",
         uploaded_at=UPLOADED_AT,
         verified_at=UPLOADED_AT,
     )

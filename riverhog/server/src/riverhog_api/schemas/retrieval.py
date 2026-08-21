@@ -87,7 +87,6 @@ class RetrievalCachePolicyOut(RiverhogModel):
     retrieval_default_lease_seconds: int
     retrieval_max_lease_seconds: int
     pending_timeout_seconds: int
-    restore_hold_seconds: int
     sweep_interval_seconds: int
     restore_poll_interval_seconds: int
 

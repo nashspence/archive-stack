@@ -190,7 +190,6 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
                     "retrieval_default_lease_seconds": 7200,
                     "retrieval_max_lease_seconds": 10800,
                     "pending_timeout_seconds": 14400,
-                    "restore_hold_seconds": 18000,
                     "sweep_interval_seconds": 30,
                     "restore_poll_interval_seconds": 60,
                 },

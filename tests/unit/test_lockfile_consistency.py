@@ -49,9 +49,11 @@ def test_workspace_packages_resolve_internal_dependencies_through_uv_sources() -
         assert all(sources[name] == {"workspace": True} for name in internal)
 
 
-def test_riverhog_server_declares_its_http2_download_transport() -> None:
+def test_storage_adapter_client_declares_its_http2_transport() -> None:
     pyproject = tomllib.loads(
-        (REPO_ROOT / "riverhog/server/pyproject.toml").read_text(encoding="utf-8")
+        (REPO_ROOT / "packages/riverhog-storage-adapter-support/pyproject.toml").read_text(
+            encoding="utf-8"
+        )
     )
 
     assert any(

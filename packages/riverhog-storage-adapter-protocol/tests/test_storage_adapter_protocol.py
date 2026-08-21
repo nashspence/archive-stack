@@ -49,7 +49,7 @@ def test_protocol_matches_the_existing_capability_port_inventory() -> None:
     }
 
 
-def test_multipart_completion_preserves_optional_part_digests() -> None:
+def test_multipart_completion_preserves_optional_digests_and_repeated_provider_tokens() -> None:
     upload = MultipartUpload(object_path="archives/id/volumes/pack.tar.age", upload_id="opaque")
     request = MultipartCompleteRequest(
         upload=upload,
@@ -61,7 +61,7 @@ def test_multipart_completion_preserves_optional_part_digests() -> None:
             ),
             MultipartPartReceipt(
                 number=2,
-                part_token="provider-part-2",
+                part_token="provider-part-1",
                 stored_bytes=7,
                 stored_sha256="a" * 64,
             ),
@@ -72,6 +72,7 @@ def test_multipart_completion_preserves_optional_part_digests() -> None:
     )
 
     assert request.expected_identity_metadata == {"riverhog-format": "riverhog-pack-volume/v1"}
+    assert request.parts[0].part_token == request.parts[1].part_token
     assert request.parts[0].stored_sha256 is None
     assert "stored_sha256" not in MultipartCompleteRequest.model_fields
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from riverhog_age import decrypt_age_scrypt
 from riverhog_core.ports.archive_store import (
@@ -198,6 +199,13 @@ def test_metadata_publication_keeps_archive_semantics_in_riverhog() -> None:
     assert store.read_mode() == "immediate"
     assert store.new_collection_archive_storage_prefix().startswith("archives/")
     assert not store.new_collection_archive_storage_prefix().startswith("archive/archives/")
+    assert set(adapter.objects) == {
+        "AGENTS.md",
+        "README.md",
+        "archives/opaque/metadata.json.age",
+    }
+    assert adapter.objects["README.md"].placement == "immediate"
+    assert adapter.objects["AGENTS.md"].placement == "immediate"
 
 
 def test_encrypted_archive_artifact_write_and_read_stay_in_riverhog() -> None:
@@ -339,3 +347,76 @@ def test_deletion_uses_all_versions_and_verifies_current_absence() -> None:
 
     assert len(adapter.deleted) == 1
     assert adapter.deleted[0].mode == "all_versions"
+
+
+def test_plaintext_attestations_round_trip_and_the_proof_is_replaceable() -> None:
+    adapter = _MemoryAdapter()
+    store = _store(adapter)
+
+    published = store.publish_archive_attestation(
+        collection_id=17,
+        archive_storage_prefix="archives/opaque",
+        checksums=b"checksums",
+        signature=b"signature",
+        proof=b"proof",
+    )
+    signature = published.require_object("signature")
+    signature_identity = ArchiveObjectIdentity(
+        object_id=signature.object_id,
+        kind=signature.kind,
+        object_path=signature.object_path,
+        plaintext_bytes=signature.plaintext_bytes,
+        stored_bytes=signature.stored_bytes,
+        sha256=signature.sha256,
+        stored_sha256=signature.stored_sha256,
+        version_id=signature.version_id,
+    )
+    proof = published.require_object("signature-proof")
+    proof_identity = ArchiveObjectIdentity(
+        object_id=proof.object_id,
+        kind=proof.kind,
+        object_path=proof.object_path,
+        plaintext_bytes=proof.plaintext_bytes,
+        stored_bytes=proof.stored_bytes,
+        sha256=proof.sha256,
+        stored_sha256=proof.stored_sha256,
+        version_id=proof.version_id,
+    )
+
+    assert (
+        store.read_archive_attestation_artifact(
+            collection_id=17,
+            object=signature_identity,
+        ).content
+        == b"signature"
+    )
+    replaced = store.replace_archive_attestation_proof(
+        collection_id=17,
+        object=proof_identity,
+        proof_bytes=b"mature-proof",
+    )
+    assert adapter.objects[replaced.object_path].content == b"mature-proof"
+    assert adapter.objects[replaced.object_path].placement == "immediate"
+
+
+def test_incomplete_sweep_and_discard_stay_scoped_to_the_archive_namespace() -> None:
+    adapter = _MemoryAdapter()
+    store = _store(adapter)
+    adapter.objects["archives/opaque/partial"] = _Stored(
+        content=b"partial",
+        identity={},
+        placement="archive",
+        revision="partial-version",
+    )
+
+    assert (
+        store.abort_incomplete_multipart_uploads(
+            initiated_before=datetime(2026, 8, 21, tzinfo=UTC),
+        )
+        == 0
+    )
+    store.discard_collection_archive_upload(archive_storage_prefix="archives/opaque")
+
+    assert adapter.aborted[0].object_prefix == "archives/"
+    assert adapter.aborted[1].object_prefix == "archives/opaque/"
+    assert "archives/opaque/partial" not in adapter.objects

@@ -255,8 +255,6 @@ def _seed(database_url: str) -> None:
             store="deep",
             state="uploaded",
             archive_storage_prefix="archives/opaque-docs",
-            backend="s3",
-            storage_class="STANDARD",
             last_uploaded_at="2026-07-18T00:00:00.000000Z",
             last_verified_at="2026-07-18T00:00:00.000000Z",
         )
@@ -280,8 +278,6 @@ def _seed(database_url: str) -> None:
                     stored_bytes=stored_bytes,
                     sha256=chr(ord("a") + order) * 64,
                     stored_sha256=chr(ord("d") + order) * 64,
-                    backend="s3",
-                    storage_class="STANDARD",
                     uploaded_at="2026-07-18T00:00:00.000000Z",
                     verified_at="2026-07-18T00:00:00.000000Z",
                 )
@@ -333,8 +329,6 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
             store="deep",
             state="uploaded",
             archive_storage_prefix="archives/opaque-second",
-            backend="s3",
-            storage_class="STANDARD",
             last_uploaded_at="2026-07-18T00:00:00.000000Z",
             last_verified_at="2026-07-18T00:00:00.000000Z",
         )
@@ -358,8 +352,6 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
                     stored_bytes=10,
                     sha256=("f" if object_id == "manifest" else "e") * 64,
                     stored_sha256=("9" if object_id == "manifest" else "8") * 64,
-                    backend="s3",
-                    storage_class="STANDARD",
                     uploaded_at="2026-07-18T00:00:00.000000Z",
                     verified_at="2026-07-18T00:00:00.000000Z",
                 )
@@ -551,8 +543,6 @@ def _seed_derived_output(
                 store="deep",
                 state="uploaded",
                 archive_storage_prefix=f"archives/derived-{output_collection_id}",
-                backend="s3",
-                storage_class="STANDARD",
                 last_uploaded_at="2026-01-01T00:00:00.000000Z",
                 last_verified_at="2026-01-01T00:00:00.000000Z",
             )
@@ -569,8 +559,6 @@ def _seed_derived_output(
                 stored_bytes=2,
                 sha256="1" * 64,
                 stored_sha256="0" * 64,
-                backend="s3",
-                storage_class="STANDARD",
                 uploaded_at="2026-01-01T00:00:00.000000Z",
                 verified_at="2026-01-01T00:00:00.000000Z",
             )
@@ -667,8 +655,6 @@ def _seed_multi_input_derived_output(
             store="deep",
             state="uploaded",
             archive_storage_prefix="archives/derived-multi",
-            backend="s3",
-            storage_class="STANDARD",
             last_uploaded_at="2026-01-01T00:00:00.000000Z",
             last_verified_at="2026-01-01T00:00:00.000000Z",
         )
@@ -685,8 +671,6 @@ def _seed_multi_input_derived_output(
                 stored_bytes=2,
                 sha256="1" * 64,
                 stored_sha256="0" * 64,
-                backend="s3",
-                storage_class="STANDARD",
                 uploaded_at="2026-01-01T00:00:00.000000Z",
                 verified_at="2026-01-01T00:00:00.000000Z",
             )
@@ -703,8 +687,6 @@ def _seed_b2_copy(database_url: str) -> None:
             store="b2",
             state="uploaded",
             archive_storage_prefix="archives/b2-opaque-docs",
-            backend="b2",
-            storage_class="STANDARD",
             last_uploaded_at=deep.last_uploaded_at,
             last_verified_at=deep.last_verified_at,
         )
@@ -724,8 +706,6 @@ def _seed_b2_copy(database_url: str) -> None:
                 stored_bytes=current.stored_bytes,
                 sha256=current.sha256,
                 stored_sha256=current.stored_sha256,
-                backend="b2",
-                storage_class="STANDARD",
                 uploaded_at=current.uploaded_at,
                 verified_at=current.verified_at,
             )
@@ -1492,8 +1472,6 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
     b2_config = replace(
         archive,
         name="b2",
-        backend="b2",
-        storage_class="STANDARD",
     )
     config = replace(
         base,

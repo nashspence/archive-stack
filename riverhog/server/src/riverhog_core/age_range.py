@@ -54,7 +54,7 @@ def plan_age_plaintext_range(
     plaintext_offset: int,
     plaintext_bytes: int,
 ) -> AgePlaintextRange:
-    """Map a plaintext range to one exact S3 ciphertext range.
+    """Map a plaintext range to one exact stored ciphertext range.
 
     Standard age v1 payload chunks are independently authenticated. Riverhog can therefore
     fetch only the chunks covering a tar member, decrypt them using the persisted public age

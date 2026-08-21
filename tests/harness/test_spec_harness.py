@@ -57,7 +57,7 @@ def harness(tmp_path: Path) -> Harness:
     return Harness(
         collections=SqlAlchemyCollectionService(config),
         search=SqlAlchemySearchService(config),
-        archive_stores=SqlAlchemyArchiveStoreService(config),
+        archive_stores=SqlAlchemyArchiveStoreService(config, archive_stores),
         retrieval=SqlAlchemyRetrievalService(
             config,
             archive_stores,

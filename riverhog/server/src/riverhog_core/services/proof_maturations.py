@@ -299,8 +299,6 @@ class SqlAlchemyProofMaturationService:
             proof.sha256 = receipt.sha256
             proof.stored_sha256 = receipt.stored_sha256
             proof.version_id = receipt.version_id
-            proof.backend = receipt.backend
-            proof.storage_class = receipt.storage_class
             proof.uploaded_at = receipt.uploaded_at
             proof.verified_at = receipt.verified_at
             copy.last_uploaded_at = max(

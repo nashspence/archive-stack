@@ -5,6 +5,7 @@ from pathlib import Path
 
 from riverhog_api.mappers import map_archive_store
 from riverhog_api.schemas.archive_stores import ArchiveStoreOut
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -17,6 +18,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 
+from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -25,7 +27,7 @@ def _config(path: Path) -> RuntimeConfig:
     deep = replace(
         config.archive_store("archive"),
         name="deep",
-        storage_class="DEEP_ARCHIVE",
+        base_url="http://127.0.0.1/deep",
     )
     return replace(
         config,
@@ -63,8 +65,6 @@ def _seed(path: Path) -> None:
             store="deep",
             state="uploaded",
             archive_storage_prefix="collections/1",
-            backend="s3",
-            storage_class="DEEP_ARCHIVE",
             last_uploaded_at="2026-01-01T00:00:00.000000Z",
             last_verified_at="2026-01-01T00:00:00.000000Z",
         )
@@ -84,8 +84,6 @@ def _seed(path: Path) -> None:
                     stored_bytes=size,
                     sha256=chr(ord("a") + order) * 64,
                     stored_sha256=chr(ord("a") + order) * 64,
-                    backend="s3",
-                    storage_class="DEEP_ARCHIVE" if kind == "pack" else "STANDARD",
                     uploaded_at="2026-01-01T00:00:00.000000Z",
                     verified_at="2026-01-01T00:00:00.000000Z",
                 )
@@ -107,6 +105,15 @@ def _seed(path: Path) -> None:
         )
 
 
+def _stores(*, include_b2: bool = False) -> ArchiveStoreRegistry:
+    stores = {
+        "deep": archive_store_binding(MemoryArchiveStore(read_mode="restore_required")),
+    }
+    if include_b2:
+        stores["b2"] = archive_store_binding(MemoryArchiveStore(read_mode="immediate"))
+    return ArchiveStoreRegistry(stores)
+
+
 def test_archive_store_summary_uses_database_aggregates_and_validates_api_schema(
     tmp_path: Path,
 ) -> None:
@@ -114,7 +121,7 @@ def test_archive_store_summary_uses_database_aggregates_and_validates_api_schema
     initialize_db(sqlite_url(path))
     _seed(path)
 
-    summary = SqlAlchemyArchiveStoreService(_config(path)).get("deep")
+    summary = SqlAlchemyArchiveStoreService(_config(path), _stores()).get("deep")
     response = ArchiveStoreOut.model_validate(map_archive_store(summary))
 
     assert response.store == "deep"
@@ -136,8 +143,7 @@ def test_archive_store_list_is_bounded_filterable_and_sorted(tmp_path: Path) -> 
             "b2": replace(
                 archive,
                 name="b2",
-                storage_class="STANDARD",
-                read_mode="immediate",
+                base_url="http://127.0.0.1/b2",
             ),
         },
         archive_write_store="deep",
@@ -146,21 +152,22 @@ def test_archive_store_list_is_bounded_filterable_and_sorted(tmp_path: Path) -> 
     initialize_db(config.database_url)
     _seed(path)
 
-    page = SqlAlchemyArchiveStoreService(config).list(
+    service = SqlAlchemyArchiveStoreService(config, _stores(include_b2=True))
+    page = service.list(
         page=1,
         per_page=1,
         q=None,
         sort="stored_bytes",
         order="desc",
     )
-    filtered = SqlAlchemyArchiveStoreService(config).list(
+    filtered = service.list(
         page=1,
         per_page=25,
-        q="standard",
+        q="immediate",
         sort="store",
         order="asc",
     )
-    by_read_priority = SqlAlchemyArchiveStoreService(config).list(
+    by_read_priority = service.list(
         page=1,
         per_page=25,
         q=None,
@@ -203,6 +210,7 @@ def test_archive_store_summary_includes_download_allowance(tmp_path: Path) -> No
 
     summary = SqlAlchemyArchiveStoreService(
         config,
+        _stores(),
         download_allowance=allowance,
     ).get("deep")
 

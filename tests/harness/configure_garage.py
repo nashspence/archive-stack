@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Mapping
 
-from riverhog_core.runtime_config import load_runtime_config
-from riverhog_core.stores.s3_support import (
-    create_archive_s3_client,
-    create_retrieval_cache_s3_client,
+from riverhog_storage_adapter_s3_support import (
+    S3ClientConfig,
+    create_s3_client,
 )
 
 EXPECTED_LIFECYCLE_CONFIGURATION = {
@@ -40,32 +41,31 @@ def _normalize_lifecycle_configuration(payload: dict[str, object]) -> dict[str, 
     return {"Rules": rules}
 
 
-def _lifecycle_targets(config) -> list[tuple[object, str]]:
+def _lifecycle_targets(values: Mapping[str, str]) -> list[tuple[object, str]]:
     targets: list[tuple[object, str]] = []
-    seen: set[tuple[object, ...]] = set()
-    for store in config.archive_stores.values():
-        archive_signature = (
-            store.endpoint_url,
-            store.region,
-            store.bucket,
-            store.access_key_id,
-            store.force_path_style,
+    seen: set[tuple[str, ...]] = set()
+    endpoint_url = values.get("RIVERHOG_GARAGE_STORAGE_ADAPTER_ENDPOINT_URL", "http://garage:3900")
+    region = values.get("RIVERHOG_GARAGE_STORAGE_ADAPTER_REGION", "garage")
+    for role, default_bucket in (("ARCHIVE", "riverhog-archive"), ("CACHE", "riverhog-cache")):
+        bucket = values.get(f"RIVERHOG_GARAGE_{role}_BUCKET", default_bucket)
+        access_key_id = values.get(
+            f"RIVERHOG_GARAGE_{role}_ACCESS_KEY_ID", "GK000000000000000000000002"
         )
-        if archive_signature in seen:
+        secret_access_key = values.get(f"RIVERHOG_GARAGE_{role}_SECRET_ACCESS_KEY", "2" * 64)
+        signature = (endpoint_url, region, bucket, access_key_id)
+        if signature in seen:
             continue
-        seen.add(archive_signature)
-        targets.append((create_archive_s3_client(config, store), store.bucket))
-    if config.retrieval_cache is not None:
-        cache = config.retrieval_cache
-        cache_signature = (
-            cache.endpoint_url,
-            cache.region,
-            cache.bucket,
-            cache.access_key_id,
-            cache.force_path_style,
+        seen.add(signature)
+        client = create_s3_client(
+            S3ClientConfig(
+                endpoint_url=endpoint_url,
+                region=region,
+                access_key_id=access_key_id,
+                secret_access_key=secret_access_key,
+                force_path_style=True,
+            )
         )
-        if cache_signature not in seen:
-            targets.append((create_retrieval_cache_s3_client(config, cache), cache.bucket))
+        targets.append((client, bucket))
     return targets
 
 
@@ -84,8 +84,7 @@ def _configure_bucket_lifecycle(*, client, bucket: str) -> None:
 
 
 def main() -> None:
-    config = load_runtime_config()
-    for client, bucket in _lifecycle_targets(config):
+    for client, bucket in _lifecycle_targets(os.environ):
         _configure_bucket_lifecycle(client=client, bucket=bucket)
 
 

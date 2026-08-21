@@ -319,7 +319,7 @@ class StorageAdapterRetrievalCache:
         float,
         float,
     ]:
-        worker_count = self._throughput.s3_part_concurrency
+        worker_count = self._throughput.multipart_concurrency
         window = worker_count * 2
         chunks = iter(content)
         buffer = bytearray()

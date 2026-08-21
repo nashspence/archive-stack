@@ -6,26 +6,21 @@ import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
+from math import isfinite
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from http_api_contracts import safe_http_base_url
 from time_formats import parse_duration
 
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 DEV_ARCHIVE_PASSPHRASE = "riverhog-dev-archive-passphrase"
-DEV_ARCHIVE_ACCESS_KEY_IDS = frozenset(
-    {
-        "minioadmin",
-        "GK000000000000000000000002",
-    }
-)
-DEV_ARCHIVE_ENDPOINT_HOSTS = frozenset({"127.0.0.1", "localhost", "garage"})
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
 DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
-DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
+DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS = 32
+DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS = 300.0
 DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
-SUPPORTED_ARCHIVE_BACKENDS = frozenset({"aws", "b2", "s3"})
 
 
 def _parse_bool(value: str) -> bool:
@@ -41,6 +36,13 @@ def _parse_int(value: str, *, name: str, minimum: int = 0) -> int:
     parsed = int(value.strip())
     if parsed < minimum:
         raise ValueError(f"invalid {name} {value!r}: expected >= {minimum}")
+    return parsed
+
+
+def _parse_float(value: str, *, name: str, minimum: float = 0.0) -> float:
+    parsed = float(value.strip())
+    if not isfinite(parsed) or parsed <= minimum:
+        raise ValueError(f"invalid {name} {value!r}: expected > {minimum}")
     return parsed
 
 
@@ -72,19 +74,6 @@ def _parse_bytes(value: str, *, name: str, minimum: int = 0) -> int:
     return parsed
 
 
-def _parse_choice(value: str, *, name: str, allowed: set[str]) -> str:
-    normalized = value.strip().casefold().replace("-", "_")
-    if normalized not in allowed:
-        expected = ", ".join(sorted(allowed))
-        raise ValueError(f"invalid {name} {value!r}: expected one of {expected}")
-    return normalized
-
-
-def _normalize_prefix(value: str) -> str:
-    parts = [part for part in value.strip().strip("/").split("/") if part]
-    return "/".join(parts)
-
-
 def _normalize_archive_store_name(value: str) -> str:
     name = value.strip().casefold()
     if not name or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
@@ -110,84 +99,36 @@ def _database_url_driver(database_url: str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class ArchiveStoreConfig:
+class StorageAdapterRegistration:
     name: str
-    endpoint_url: str
-    region: str
-    bucket: str
-    access_key_id: str
-    secret_access_key: str
-    force_path_style: bool
-    prefix: str
-    backend: str
-    storage_class: str
-    read_mode: str = "immediate"
-    session_token: str | None = None
-    cloudfront_base_url: str | None = None
-    cloudfront_public_key_id: str | None = None
-    cloudfront_private_key_path: Path | None = None
+    base_url: str
+    token_file: Path
+    allow_insecure_http: bool = False
+    maximum_connections: int = DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS
+    timeout_seconds: float = DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS
     monthly_download_allowance_bytes: int | None = None
     download_safety_buffer_bytes: int = 0
 
 
-def _download_source(store: ArchiveStoreConfig) -> tuple[str, ...]:
-    if store.cloudfront_base_url is not None:
-        return ("cloudfront", store.cloudfront_base_url.rstrip("/").casefold())
-    return (
-        store.backend.casefold(),
-        store.endpoint_url.rstrip("/").casefold(),
-        store.bucket.casefold(),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class RetrievalCacheConfig:
-    endpoint_url: str
-    region: str
-    bucket: str
-    access_key_id: str
-    secret_access_key: str
-    force_path_style: bool = False
-    prefix: str = ""
-    session_token: str | None = None
-
-
-def _is_development_archive_store(store: ArchiveStoreConfig) -> bool:
-    endpoint_host = (urlsplit(store.endpoint_url).hostname or "").casefold()
-    return (
-        endpoint_host in DEV_ARCHIVE_ENDPOINT_HOSTS
-        and store.access_key_id in DEV_ARCHIVE_ACCESS_KEY_IDS
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
-    s3_max_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS
     database_url: str = ""
     log_level: str = DEFAULT_LOG_LEVEL
     archive_write_store: str = "archive"
     archive_read_order: tuple[str, ...] = ("archive",)
-    archive_stores: Mapping[str, ArchiveStoreConfig] = field(
+    archive_stores: Mapping[str, StorageAdapterRegistration] = field(
         default_factory=lambda: {
-            "archive": ArchiveStoreConfig(
+            "archive": StorageAdapterRegistration(
                 name="archive",
-                endpoint_url="http://127.0.0.1:9000",
-                region="us-east-1",
-                bucket="riverhog",
-                access_key_id="minioadmin",
-                secret_access_key="minioadmin",
-                force_path_style=True,
-                prefix="archive",
-                backend="s3",
-                storage_class="STANDARD",
-                read_mode="immediate",
+                base_url="http://127.0.0.1:9081",
+                token_file=Path("/run/secrets/riverhog_archive_adapter_token"),
             )
         }
     )
     archive_multipart_part_bytes: int = DEFAULT_ARCHIVE_MULTIPART_PART_BYTES
     archive_multipart_max_age: timedelta = field(default_factory=lambda: timedelta(days=3))
     archive_multipart_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=6))
-    retrieval_cache: RetrievalCacheConfig | None = None
+    retrieval_cache: StorageAdapterRegistration | None = None
     retrieval_cache_new_archive_enabled: bool = True
     retrieval_cache_new_archive_lease: timedelta = field(
         default_factory=lambda: timedelta(hours=72)
@@ -195,7 +136,6 @@ class RuntimeConfig:
     retrieval_default_lease: timedelta = field(default_factory=lambda: timedelta(hours=24))
     retrieval_max_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
     retrieval_pending_timeout: timedelta = field(default_factory=lambda: timedelta(hours=72))
-    retrieval_restore_hold: timedelta = field(default_factory=lambda: timedelta(hours=24))
     retrieval_cache_sweep_interval: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     archive_passphrase: str = DEV_ARCHIVE_PASSPHRASE
     archive_require_explicit_passphrase: bool = False
@@ -203,7 +143,6 @@ class RuntimeConfig:
     archive_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     retrieval_restore_poll_interval: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     retrieval_estimated_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
-    retrieval_tier: str = "bulk"
     ots_stamp_command: tuple[str, ...] = ("ots",)
     ots_verify_command: tuple[str, ...] = (
         "ots",
@@ -255,49 +194,27 @@ class RuntimeConfig:
                 )
             object.__setattr__(self, "public_base_url", public_base_url)
         archive_write_store = _normalize_archive_store_name(self.archive_write_store)
-        normalized_archive_stores: dict[str, ArchiveStoreConfig] = {}
+        normalized_archive_stores: dict[str, StorageAdapterRegistration] = {}
         for raw_name, store in self.archive_stores.items():
             name = _normalize_archive_store_name(raw_name)
             if store.name != name:
                 raise ValueError(f"archive store mapping key must match its name: {raw_name!r}")
-            backend = _parse_choice(
-                store.backend,
-                name=f"archive store {name} backend",
-                allowed=set(SUPPORTED_ARCHIVE_BACKENDS),
-            )
-            read_mode = _parse_choice(
-                store.read_mode,
-                name=f"archive store {name} read mode",
-                allowed={"immediate", "restore_required"},
-            )
             store = replace(
                 store,
-                prefix=_normalize_prefix(store.prefix),
-                backend=backend,
-                read_mode=read_mode,
+                base_url=safe_http_base_url(
+                    store.base_url,
+                    setting=f"archive store {name} adapter URL",
+                    allow_insecure_http=store.allow_insecure_http,
+                ),
             )
-            required_store_fields = {
-                "endpoint_url": store.endpoint_url,
-                "region": store.region,
-                "bucket": store.bucket,
-                "access_key_id": store.access_key_id,
-                "secret_access_key": store.secret_access_key,
-                "backend": store.backend,
-                "storage_class": store.storage_class,
-            }
-            missing_fields = [
-                field_name
-                for field_name, field_value in required_store_fields.items()
-                if not field_value.strip()
-            ]
-            if missing_fields:
+            if str(store.token_file) == ".":
+                raise ValueError(f"archive store {name} adapter token file must be set")
+            if store.maximum_connections < 1:
                 raise ValueError(
-                    f"archive store {name} has blank required fields: " + ", ".join(missing_fields)
+                    f"archive store {name} adapter maximum connections must be positive"
                 )
-            if store.read_mode == "restore_required" and store.backend != "aws":
-                raise ValueError(
-                    f"archive store {name} restore_required reads require the aws backend"
-                )
+            if store.timeout_seconds <= 0:
+                raise ValueError(f"archive store {name} adapter timeout must be positive")
             if store.monthly_download_allowance_bytes is not None:
                 if store.monthly_download_allowance_bytes <= 0:
                     raise ValueError(
@@ -313,43 +230,10 @@ class RuntimeConfig:
                     f"archive store {name} download safety buffer requires a monthly "
                     "download allowance"
                 )
-            cloudfront_fields = {
-                "base URL": store.cloudfront_base_url,
-                "public key id": store.cloudfront_public_key_id,
-                "private key path": store.cloudfront_private_key_path,
-            }
-            configured_cloudfront_fields = [
-                field_name for field_name, value in cloudfront_fields.items() if value is not None
-            ]
-            if configured_cloudfront_fields and len(configured_cloudfront_fields) != len(
-                cloudfront_fields
-            ):
-                raise ValueError(
-                    f"archive store {name} CloudFront download configuration must set "
-                    "base URL, public key id, and private key path together"
-                )
-            if store.cloudfront_base_url is not None:
-                if store.backend.casefold() != "aws":
-                    raise ValueError(
-                        f"archive store {name} CloudFront downloads require the aws backend"
-                    )
-                cloudfront_url = urlsplit(store.cloudfront_base_url)
-                if (
-                    cloudfront_url.scheme != "https"
-                    or not cloudfront_url.hostname
-                    or cloudfront_url.username is not None
-                    or cloudfront_url.password is not None
-                    or cloudfront_url.query
-                    or cloudfront_url.fragment
-                ):
-                    raise ValueError(
-                        f"archive store {name} CloudFront base URL must be an HTTPS URL "
-                        "without credentials, query, or fragment"
-                    )
             normalized_archive_stores[name] = store
         metered_sources: dict[tuple[str, ...], list[str]] = {}
         for name, store in normalized_archive_stores.items():
-            metered_sources.setdefault(_download_source(store), []).append(name)
+            metered_sources.setdefault((store.base_url.casefold(),), []).append(name)
         duplicate_metered_sources = [
             names
             for names in metered_sources.values()
@@ -383,39 +267,31 @@ class RuntimeConfig:
             (*read_order, *[name for name in normalized_archive_stores if name not in read_order]),
         )
         object.__setattr__(self, "archive_stores", normalized_archive_stores)
-        restore_required_stores = [
-            name
-            for name, store in normalized_archive_stores.items()
-            if store.read_mode == "restore_required"
-        ]
-        if restore_required_stores and self.retrieval_cache is None:
-            raise ValueError(
-                "RIVERHOG_RETRIEVAL_CACHE_* must be configured for restore-required "
-                "archive stores: " + ", ".join(restore_required_stores)
-            )
         if self.retrieval_cache is not None:
             cache = replace(
                 self.retrieval_cache,
-                prefix=_normalize_prefix(self.retrieval_cache.prefix),
+                base_url=safe_http_base_url(
+                    self.retrieval_cache.base_url,
+                    setting="retrieval cache adapter URL",
+                    allow_insecure_http=self.retrieval_cache.allow_insecure_http,
+                ),
             )
-            missing_cache_fields = [
-                name
-                for name, value in {
-                    "endpoint_url": cache.endpoint_url,
-                    "region": cache.region,
-                    "bucket": cache.bucket,
-                    "access_key_id": cache.access_key_id,
-                    "secret_access_key": cache.secret_access_key,
-                }.items()
-                if not value.strip()
-            ]
-            if missing_cache_fields:
+            if cache.name != "retrieval-cache":
                 raise ValueError(
-                    "retrieval cache has blank required fields: " + ", ".join(missing_cache_fields)
+                    "retrieval cache adapter registration name must be retrieval-cache"
                 )
+            if str(cache.token_file) == ".":
+                raise ValueError("retrieval cache adapter token file must be set")
+            if cache.maximum_connections < 1:
+                raise ValueError("retrieval cache adapter maximum connections must be positive")
+            if cache.timeout_seconds <= 0:
+                raise ValueError("retrieval cache adapter timeout must be positive")
+            if (
+                cache.monthly_download_allowance_bytes is not None
+                or cache.download_safety_buffer_bytes != 0
+            ):
+                raise ValueError("retrieval cache adapter does not accept archive allowances")
             object.__setattr__(self, "retrieval_cache", cache)
-        if self.s3_max_pool_connections < 1:
-            raise ValueError("RIVERHOG_S3_MAX_POOL_CONNECTIONS must be >= 1")
         if self.archive_multipart_part_bytes < 1:
             raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES must be >= 1")
         if self.archive_multipart_max_age.total_seconds() <= 0.0:
@@ -432,8 +308,6 @@ class RuntimeConfig:
             )
         if self.retrieval_pending_timeout.total_seconds() <= 0:
             raise ValueError("RIVERHOG_RETRIEVAL_PENDING_TIMEOUT must be > 0")
-        if self.retrieval_restore_hold.total_seconds() <= 0:
-            raise ValueError("RIVERHOG_RETRIEVAL_RESTORE_HOLD must be > 0")
         if self.retrieval_cache_sweep_interval.total_seconds() <= 0:
             raise ValueError("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL must be > 0")
         if self.retrieval_restore_poll_interval.total_seconds() <= 0:
@@ -442,16 +316,6 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR must be in 1..22")
         if not self.archive_passphrase:
             raise ValueError("RIVERHOG_ARCHIVE_PASSPHRASE must be set")
-        non_development_stores = sorted(
-            name
-            for name, store in self.archive_stores.items()
-            if not _is_development_archive_store(store)
-        )
-        if self.archive_passphrase == DEV_ARCHIVE_PASSPHRASE and non_development_stores:
-            raise ValueError(
-                "RIVERHOG_ARCHIVE_PASSPHRASE must be explicitly set to a "
-                "non-development secret for archive store(s): " + ", ".join(non_development_stores)
-            )
         if (
             self.archive_require_explicit_passphrase
             and self.archive_passphrase == DEV_ARCHIVE_PASSPHRASE
@@ -462,7 +326,7 @@ class RuntimeConfig:
                 "non-development secret"
             )
 
-    def archive_store(self, name: str) -> ArchiveStoreConfig:
+    def archive_store(self, name: str) -> StorageAdapterRegistration:
         normalized = _normalize_archive_store_name(name)
         try:
             return self.archive_stores[normalized]
@@ -472,7 +336,8 @@ class RuntimeConfig:
 
 def _parse_archive_stores(
     values: Mapping[str, str],
-) -> tuple[str, tuple[str, ...], dict[str, ArchiveStoreConfig]]:
+) -> tuple[str, tuple[str, ...], dict[str, StorageAdapterRegistration]]:
+    named_store_configuration = "RIVERHOG_ARCHIVE_STORES" in values
     names = tuple(
         dict.fromkeys(
             _normalize_archive_store_name(raw)
@@ -485,43 +350,43 @@ def _parse_archive_stores(
     write_store = _normalize_archive_store_name(
         values.get("RIVERHOG_ARCHIVE_WRITE_STORE", names[0])
     )
-    stores: dict[str, ArchiveStoreConfig] = {}
+    stores: dict[str, StorageAdapterRegistration] = {}
     for name in names:
         prefix = f"RIVERHOG_ARCHIVE_STORE_{_archive_store_env_suffix(name)}_"
+        configured_url = values.get(f"{prefix}ADAPTER_URL", "").strip()
+        configured_token_file = values.get(f"{prefix}ADAPTER_TOKEN_FILE", "").strip()
+        if named_store_configuration or configured_url or configured_token_file:
+            if not configured_url or not configured_token_file:
+                raise ValueError(f"archive store {name} adapter connection is incomplete")
+        adapter_url = configured_url or "http://127.0.0.1:9081"
         monthly_download_allowance_raw = values.get(
             f"{prefix}MONTHLY_DOWNLOAD_ALLOWANCE_BYTES", ""
         ).strip()
         download_safety_buffer_raw = values.get(f"{prefix}DOWNLOAD_SAFETY_BUFFER_BYTES", "").strip()
-        cloudfront_base_url = (
-            values.get(f"{prefix}CLOUDFRONT_BASE_URL", "").strip().rstrip("/") or None
-        )
-        cloudfront_public_key_id = (
-            values.get(f"{prefix}CLOUDFRONT_PUBLIC_KEY_ID", "").strip() or None
-        )
-        cloudfront_private_key_path_raw = values.get(
-            f"{prefix}CLOUDFRONT_PRIVATE_KEY_PATH", ""
-        ).strip()
-        stores[name] = ArchiveStoreConfig(
+        stores[name] = StorageAdapterRegistration(
             name=name,
-            endpoint_url=values.get(f"{prefix}ENDPOINT_URL", "http://127.0.0.1:9000").rstrip("/"),
-            region=values.get(f"{prefix}REGION", "us-east-1"),
-            bucket=values.get(f"{prefix}BUCKET", "riverhog-archive"),
-            access_key_id=values.get(f"{prefix}ACCESS_KEY_ID", "minioadmin"),
-            secret_access_key=values.get(f"{prefix}SECRET_ACCESS_KEY", "minioadmin"),
-            force_path_style=_parse_bool(values.get(f"{prefix}FORCE_PATH_STYLE", "true")),
-            prefix=_normalize_prefix(values.get(f"{prefix}PREFIX", "archive")),
-            backend=values.get(f"{prefix}BACKEND", "s3").strip() or "s3",
-            storage_class=values.get(f"{prefix}STORAGE_CLASS", "STANDARD").strip() or "STANDARD",
-            read_mode=_parse_choice(
-                values.get(f"{prefix}READ_MODE", "immediate"),
-                name=f"{prefix}READ_MODE",
-                allowed={"immediate", "restore_required"},
+            base_url=adapter_url.rstrip("/"),
+            token_file=Path(configured_token_file or "/run/secrets/riverhog_archive_adapter_token"),
+            allow_insecure_http=_parse_bool(
+                values.get(
+                    f"{prefix}ADAPTER_ALLOW_INSECURE_HTTP",
+                    "false",
+                )
             ),
-            session_token=values.get(f"{prefix}SESSION_TOKEN", "").strip() or None,
-            cloudfront_base_url=cloudfront_base_url,
-            cloudfront_public_key_id=cloudfront_public_key_id,
-            cloudfront_private_key_path=(
-                Path(cloudfront_private_key_path_raw) if cloudfront_private_key_path_raw else None
+            maximum_connections=_parse_int(
+                values.get(
+                    f"{prefix}ADAPTER_MAX_CONNECTIONS",
+                    str(DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS),
+                ),
+                name=f"{prefix}ADAPTER_MAX_CONNECTIONS",
+                minimum=1,
+            ),
+            timeout_seconds=_parse_float(
+                values.get(
+                    f"{prefix}ADAPTER_TIMEOUT_SECONDS",
+                    str(DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS),
+                ),
+                name=f"{prefix}ADAPTER_TIMEOUT_SECONDS",
             ),
             monthly_download_allowance_bytes=(
                 _parse_bytes(
@@ -562,11 +427,6 @@ def load_runtime_config() -> RuntimeConfig:
     database_url = database_url_raw or DEFAULT_DATABASE_URL
     if _database_url_driver(database_url) != "postgresql":
         raise ValueError("RIVERHOG_DATABASE_URL must use postgresql")
-    s3_max_pool_connections = _parse_int(
-        os.getenv("RIVERHOG_S3_MAX_POOL_CONNECTIONS", str(DEFAULT_S3_MAX_POOL_CONNECTIONS)),
-        name="RIVERHOG_S3_MAX_POOL_CONNECTIONS",
-        minimum=1,
-    )
     archive_multipart_part_bytes = _parse_bytes(
         os.getenv("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES", "64MiB"),
         name="RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
@@ -587,33 +447,37 @@ def load_runtime_config() -> RuntimeConfig:
     retrieval_estimated_latency = parse_duration(
         os.getenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "48h")
     )
-    retrieval_tier = _parse_choice(
-        os.getenv("RIVERHOG_RETRIEVAL_TIER", "bulk"),
-        name="RIVERHOG_RETRIEVAL_TIER",
-        allowed={"bulk", "standard"},
-    )
     archive_write_store, archive_read_order, archive_stores = _parse_archive_stores(os.environ)
     cache_values = {
-        "endpoint_url": os.getenv("RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL", "").strip().rstrip("/"),
-        "region": os.getenv("RIVERHOG_RETRIEVAL_CACHE_REGION", "").strip(),
-        "bucket": os.getenv("RIVERHOG_RETRIEVAL_CACHE_BUCKET", "").strip(),
-        "access_key_id": os.getenv("RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID", "").strip(),
-        "secret_access_key": os.getenv("RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY", "").strip(),
+        "base_url": os.getenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL", "").strip().rstrip("/"),
+        "token_file": os.getenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE", "").strip(),
     }
-    cache_session_token = os.getenv("RIVERHOG_RETRIEVAL_CACHE_SESSION_TOKEN", "").strip() or None
     configured_cache_fields = [name for name, value in cache_values.items() if value]
-    if (configured_cache_fields or cache_session_token is not None) and len(
-        configured_cache_fields
-    ) != len(cache_values):
-        raise ValueError("RIVERHOG_RETRIEVAL_CACHE_* configuration is incomplete")
+    if configured_cache_fields and len(configured_cache_fields) != len(cache_values):
+        raise ValueError("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_* configuration is incomplete")
     retrieval_cache = (
-        RetrievalCacheConfig(
-            **cache_values,
-            force_path_style=_parse_bool(
-                os.getenv("RIVERHOG_RETRIEVAL_CACHE_FORCE_PATH_STYLE", "false")
+        StorageAdapterRegistration(
+            name="retrieval-cache",
+            base_url=cache_values["base_url"],
+            token_file=Path(cache_values["token_file"]),
+            allow_insecure_http=_parse_bool(
+                os.getenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP", "false")
             ),
-            prefix=os.getenv("RIVERHOG_RETRIEVAL_CACHE_PREFIX", "").strip(),
-            session_token=cache_session_token,
+            maximum_connections=_parse_int(
+                os.getenv(
+                    "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS",
+                    str(DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS),
+                ),
+                name="RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS",
+                minimum=1,
+            ),
+            timeout_seconds=_parse_float(
+                os.getenv(
+                    "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS",
+                    str(DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS),
+                ),
+                name="RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS",
+            ),
         )
         if configured_cache_fields
         else None
@@ -674,7 +538,6 @@ def load_runtime_config() -> RuntimeConfig:
         event_context_retention=parse_duration(
             os.getenv("RIVERHOG_EVENT_CONTEXT_RETENTION", "30d")
         ),
-        s3_max_pool_connections=s3_max_pool_connections,
         database_url=database_url,
         log_level=log_level,
         archive_write_store=archive_write_store,
@@ -697,7 +560,6 @@ def load_runtime_config() -> RuntimeConfig:
         retrieval_pending_timeout=parse_duration(
             os.getenv("RIVERHOG_RETRIEVAL_PENDING_TIMEOUT", "72h")
         ),
-        retrieval_restore_hold=parse_duration(os.getenv("RIVERHOG_RETRIEVAL_RESTORE_HOLD", "24h")),
         retrieval_cache_sweep_interval=parse_duration(
             os.getenv("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL", "5m")
         ),
@@ -707,7 +569,6 @@ def load_runtime_config() -> RuntimeConfig:
         archive_upload_sweep_interval=archive_upload_sweep_interval,
         retrieval_restore_poll_interval=retrieval_restore_poll_interval,
         retrieval_estimated_latency=retrieval_estimated_latency,
-        retrieval_tier=retrieval_tier,
         ots_stamp_command=ots_stamp_command,
         ots_verify_command=ots_verify_command,
         ots_upgrade_command=ots_upgrade_command,

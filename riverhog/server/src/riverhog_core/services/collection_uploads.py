@@ -948,11 +948,12 @@ class SqlAlchemyCollectionUploadService:
         collection_id: int,
         object_id: str,
     ) -> ArchiveMultipartObjectStore:
-        archive = self._archive_stores.require(store_name).multipart_objects
+        binding = self._archive_stores.require(store_name)
+        archive = binding.multipart_objects
         if (
             not self._config.retrieval_cache_new_archive_enabled
             or self._retrieval_cache is None
-            or self._config.archive_store(store_name).read_mode != "restore_required"
+            or binding.store.read_mode() != "restore_required"
         ):
             return archive
         return MirroredArchiveMultipartObjectStore(
@@ -1473,14 +1474,12 @@ class SqlAlchemyCollectionUploadService:
                 )
                 for tag in tags
             )
-            store_config = self._config.archive_store(upload.archive_store)
+            store_binding = self._archive_stores.require(upload.archive_store)
             copy = CollectionArchiveCopyRecord(
                 collection_id=collection_id,
                 store=upload.archive_store,
                 state="uploaded",
                 archive_storage_prefix=projection.root.archive_storage_prefix,
-                backend=store_config.backend,
-                storage_class=store_config.storage_class,
                 last_uploaded_at=now,
                 last_verified_at=now,
             )
@@ -1490,7 +1489,7 @@ class SqlAlchemyCollectionUploadService:
             cache_required = (
                 self._config.retrieval_cache_new_archive_enabled
                 and self._retrieval_cache is not None
-                and store_config.read_mode == "restore_required"
+                and store_binding.store.read_mode() == "restore_required"
             )
             for volume in projection.volumes:
                 if cache_required and volume.retrieval_cache is None:
@@ -1514,8 +1513,6 @@ class SqlAlchemyCollectionUploadService:
                         part_receipts_json=volume.part_receipts_json,
                         plan_sha256=volume.plan_sha256,
                         index_sha256=volume.index_sha256,
-                        backend=store_config.backend,
-                        storage_class=store_config.storage_class,
                         uploaded_at=volume.completed_at,
                         verified_at=now,
                     )
@@ -1575,8 +1572,6 @@ class SqlAlchemyCollectionUploadService:
                             sha256=current.plaintext_sha256,
                             stored_sha256=current.stored_sha256,
                             version_id=current.version_id,
-                            backend=store_config.backend,
-                            storage_class=store_config.storage_class,
                             uploaded_at=current.completed_at,
                             verified_at=now,
                         )
@@ -1596,8 +1591,6 @@ class SqlAlchemyCollectionUploadService:
                         sha256=root.plaintext_sha256,
                         stored_sha256=root.stored_sha256,
                         version_id=root.version_id,
-                        backend=store_config.backend,
-                        storage_class=store_config.storage_class,
                         uploaded_at=root.completed_at,
                         verified_at=now,
                     ),
@@ -1613,8 +1606,6 @@ class SqlAlchemyCollectionUploadService:
                         sha256=hashlib.sha256(proof_bytes).hexdigest(),
                         stored_sha256=proof_receipt.stored_sha256,
                         version_id=proof_receipt.version_id,
-                        backend=store_config.backend,
-                        storage_class=store_config.storage_class,
                         uploaded_at=proof_receipt.completed_at,
                         verified_at=now,
                     ),

@@ -578,8 +578,6 @@ def _apply_receipt(
     record.sha256 = receipt.sha256
     record.stored_sha256 = receipt.stored_sha256
     record.version_id = receipt.version_id
-    record.backend = receipt.backend
-    record.storage_class = receipt.storage_class
     record.uploaded_at = receipt.uploaded_at
     record.verified_at = receipt.verified_at
 

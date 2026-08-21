@@ -523,7 +523,6 @@ def test_checkpoint_is_restartable_tamper_evident_and_emits_bounded_evidence(
         "retrieval_default_lease_seconds": 3 * 24 * 60 * 60,
         "retrieval_max_lease_seconds": 3 * 24 * 60 * 60,
         "pending_timeout_seconds": 72 * 60 * 60,
-        "restore_hold_seconds": 24 * 60 * 60,
         "sweep_interval_seconds": 30,
         "restore_poll_interval_seconds": 60,
         "opportunistic_restore_policy": "never",
@@ -874,6 +873,10 @@ def test_runtime_environment_uses_scoped_credentials_and_cloudfront(
         )
     )
     values[config.cloudfront.public_key_path_env] = str(public_path)
+    adapter_token = tmp_path / "storage-adapter.token"
+    adapter_token.write_text("test-storage-adapter-token\n", encoding="utf-8")
+    adapter_token.chmod(0o600)
+    values["RIVERHOG_QUALIFICATION_STORAGE_ADAPTER_TOKEN_PATH"] = str(adapter_token)
     corpus = module.CorpusManifest(profile="regular", files=(), bytes=0, sha256="1" * 64)
     checkpoint = module.new_checkpoint(
         source_sha="a" * 40,
@@ -898,26 +901,69 @@ def test_runtime_environment_uses_scoped_credentials_and_cloudfront(
         output=output,
     )
     text = output.read_text()
+    riverhog_path = module._riverhog_environment_path(output)
+    riverhog_text = riverhog_path.read_text()
+    adapter_paths = module._adapter_environment_paths(output)
+    aws_adapter = adapter_paths["aws-deep-archive"].read_text()
+    b2_archive_adapter = adapter_paths["b2-archive"].read_text()
+    b2_cache_adapter = adapter_paths["b2-retrieval-cache"].read_text()
 
     assert output.stat().st_mode & 0o777 == 0o600
-    assert f'RIVERHOG_COMPOSE_ENV_FILE="{output.resolve()}"' in text
+    assert riverhog_path.stat().st_mode & 0o777 == 0o600
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in adapter_paths.values())
+    assert f'RIVERHOG_COMPOSE_ENV_FILE="{riverhog_path}"' in text
     assert 'RIVERHOG_PUBLIC_BASE_URL=""' in text
     assert 'RIVERHOG_ARCHIVE_STORES="b2-archive,aws-deep-archive"' in text
     assert 'RIVERHOG_ARCHIVE_WRITE_STORE="b2-archive"' in text
     assert 'RIVERHOG_ARCHIVE_READ_ORDER="aws-deep-archive,b2-archive"' in text
-    assert 'RIVERHOG_ARCHIVE_STORE_AWS_DEEP_ARCHIVE_STORAGE_CLASS="DEEP_ARCHIVE"' in text
-    assert 'RIVERHOG_ARCHIVE_STORE_AWS_DEEP_ARCHIVE_READ_MODE="restore_required"' in text
-    assert 'RIVERHOG_ARCHIVE_STORE_AWS_DEEP_ARCHIVE_SESSION_TOKEN="aws-session"' in text
-    assert "RIVERHOG_ARCHIVE_STORE_AWS_DEEP_ARCHIVE_CLOUDFRONT_BASE_URL=" in text
+    assert (
+        'RIVERHOG_ARCHIVE_STORE_AWS_DEEP_ARCHIVE_ADAPTER_URL="http://aws-deep-archive-adapter:8080"'
+    ) in text
+    assert (
+        'RIVERHOG_ARCHIVE_STORE_B2_ARCHIVE_ADAPTER_URL="http://b2-archive-adapter:8080"'
+    ) in text
     assert 'RIVERHOG_ARCHIVE_STORE_AWS_DEEP_ARCHIVE_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES="1TB"' in text
-    assert 'RIVERHOG_RETRIEVAL_CACHE_BUCKET="qualification-b2-retrieval-cache"' in text
-    assert 'RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY="b2-retrieval-cache-secret"' in text
+    assert 'RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL="http://b2-retrieval-cache-adapter:8080"' in text
     assert 'RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED="true"' in text
     assert 'RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE="1h"' in text
     assert 'RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL="30s"' in text
     assert 'RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL="1m"' in text
-    assert 'RIVERHOG_ARCHIVE_STORE_B2_ARCHIVE_SECRET_ACCESS_KEY="b2-archive-secret"' in text
-    assert f'RIVERHOG_ARCHIVE_STORE_B2_ARCHIVE_PREFIX="{checkpoint.namespace}"' in text
+    assert "SECRET_ACCESS_KEY" not in text
+    assert "STORAGE_CLASS" not in text
+    assert "RESTORE_TIER" not in text
+    riverhog_names = {line.partition("=")[0] for line in riverhog_text.splitlines()}
+    compose_names = {line.partition("=")[0] for line in text.splitlines()}
+    assert compose_names - riverhog_names == {
+        "RIVERHOG_AWS_STORAGE_ADAPTER_CLOUDFRONT_PRIVATE_KEY_HOST_PATH",
+        "RIVERHOG_COMPOSE_ENV_FILE",
+        "RIVERHOG_QUALIFICATION_AWS_ADAPTER_ENV_FILE",
+        "RIVERHOG_QUALIFICATION_B2_ARCHIVE_ADAPTER_ENV_FILE",
+        "RIVERHOG_QUALIFICATION_B2_CACHE_ADAPTER_ENV_FILE",
+        "RIVERHOG_STORAGE_ADAPTER_TOKEN_HOST_PATH",
+        "TEST_COMPOSE_PROJECT_NAME",
+    }
+    assert "QUALIFICATION_" not in riverhog_text
+    assert "AWS_STORAGE_ADAPTER" not in riverhog_text
+    assert "BACKBLAZE_STORAGE_ADAPTER" not in riverhog_text
+    assert "STORAGE_CLASS" not in riverhog_text
+    assert "RESTORE_TIER" not in riverhog_text
+    assert 'RIVERHOG_AWS_STORAGE_ADAPTER_ARCHIVE_STORAGE_CLASS="DEEP_ARCHIVE"' in aws_adapter
+    assert 'RIVERHOG_AWS_STORAGE_ADAPTER_RESTORE_TIER="Bulk"' in aws_adapter
+    assert 'RIVERHOG_AWS_STORAGE_ADAPTER_SESSION_TOKEN="aws-session"' in aws_adapter
+    assert "RIVERHOG_AWS_STORAGE_ADAPTER_CLOUDFRONT_BASE_URL=" in aws_adapter
+    assert (
+        'RIVERHOG_BACKBLAZE_STORAGE_ADAPTER_SECRET_ACCESS_KEY="b2-archive-secret"'
+        in b2_archive_adapter
+    )
+    assert (
+        f'RIVERHOG_BACKBLAZE_STORAGE_ADAPTER_ROOT_PREFIX="{checkpoint.namespace}"'
+        in b2_archive_adapter
+    )
+    assert (
+        'RIVERHOG_BACKBLAZE_STORAGE_ADAPTER_SECRET_ACCESS_KEY="b2-retrieval-cache-secret"'
+    ) in b2_cache_adapter
+    assert "AWS_STORAGE_ADAPTER" not in b2_archive_adapter
+    assert "BACKBLAZE_STORAGE_ADAPTER" not in aws_adapter
 
 
 def test_runtime_environment_rejects_mismatched_cloudfront_signing_keys(

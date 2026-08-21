@@ -199,7 +199,6 @@ def _seed_collection(
     cache: MemoryRetrievalCache | None = None,
     allowance: RecordingDownloadAllowance | None = None,
     pending_timeout: timedelta | None = None,
-    restore_hold: timedelta | None = None,
 ) -> tuple[
     SqlAlchemyRetrievalService,
     int,
@@ -211,7 +210,6 @@ def _seed_collection(
         database_url=database_url,
         archive_scrypt_work_factor=1,
         retrieval_pending_timeout=pending_timeout or timedelta(hours=72),
-        retrieval_restore_hold=restore_hold or timedelta(hours=24),
     )
     initialize_db(database_url)
     with session_scope(make_session_factory(database_url)) as session:
@@ -530,21 +528,6 @@ def test_restore_policy_never_is_atomic_and_never_requests_archive_restore(
     assert store.prepared == []
 
 
-def test_requested_retrieval_uses_the_independent_provider_hold(tmp_path: Path) -> None:
-    cache = MemoryRetrievalCache()
-    service, collection_id, _ranges, store = _seed_collection(
-        tmp_path,
-        {"document.txt": b"document"},
-        read_mode="restore_required",
-        cache=cache,
-        restore_hold=timedelta(hours=49),
-    )
-    _ready_job(service, collection_id, "document.txt")
-
-    assert service.process_due() == 1
-    assert store.prepare_calls == 1
-
-
 def test_requested_retrieval_converges_after_its_pending_timeout(tmp_path: Path) -> None:
     cache = MemoryRetrievalCache()
     allowance = RecordingDownloadAllowance()
@@ -720,7 +703,6 @@ def test_cache_status_reports_effective_new_archive_insertion(tmp_path: Path) ->
         "retrieval_default_lease_seconds": 24 * 60 * 60,
         "retrieval_max_lease_seconds": 7 * 24 * 60 * 60,
         "pending_timeout_seconds": 72 * 60 * 60,
-        "restore_hold_seconds": 24 * 60 * 60,
         "sweep_interval_seconds": 5 * 60,
         "restore_poll_interval_seconds": 5 * 60,
     }

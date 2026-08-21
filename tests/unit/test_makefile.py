@@ -163,18 +163,11 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
     assert "RIVERHOG_ARCHIVE_STORE_" in runtime_source
     assert {name.rsplit("_", 1)[-1] for name in dynamic_archive_store_names} <= {
         "URL",
-        "REGION",
-        "BUCKET",
-        "ID",
-        "KEY",
-        "STYLE",
-        "PREFIX",
-        "BACKEND",
-        "CLASS",
-        "PATH",
-        "MODE",
         "BYTES",
-        "TOKEN",
+        "CONNECTIONS",
+        "FILE",
+        "HTTP",
+        "SECONDS",
     }
 
 
@@ -251,12 +244,9 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
         "retrieval_cache",
     }
     archive_topology_fields = {
-        "access_key_id",
-        "bucket",
-        "endpoint_url",
-        "region",
-        "secret_access_key",
-        "prefix",
+        "allow_insecure_http",
+        "base_url",
+        "token_file",
     }
     for defaults in (runtime_defaults, compose_defaults):
         for store in defaults["archive_stores"].values():
@@ -274,19 +264,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_STORES",
         "RIVERHOG_ARCHIVE_WRITE_STORE",
         "RIVERHOG_ARCHIVE_READ_ORDER",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ENDPOINT_URL",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_REGION",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_BUCKET",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ACCESS_KEY_ID",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_SECRET_ACCESS_KEY",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_FORCE_PATH_STYLE",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_STORAGE_CLASS",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_READ_MODE",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PUBLIC_KEY_ID",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PRIVATE_KEY_PATH",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ADAPTER_URL",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ADAPTER_TOKEN_FILE",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ADAPTER_ALLOW_INSECURE_HTTP",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ADAPTER_MAX_CONNECTIONS",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ADAPTER_TIMEOUT_SECONDS",
         "RIVERHOG_ARCHIVE_STORE_ARCHIVE_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
         "RIVERHOG_ARCHIVE_STORE_ARCHIVE_DOWNLOAD_SAFETY_BUFFER_BYTES",
         "RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
@@ -300,31 +282,26 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR",
         "RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL",
         "RIVERHOG_BOOTSTRAP_TOKEN",
-        "RIVERHOG_S3_MAX_POOL_CONNECTIONS",
         "RIVERHOG_INGRESS_MAX_INFLIGHT_BYTES",
         "RIVERHOG_INGRESS_SOURCE_READ_CHUNK_BYTES",
         "RIVERHOG_AGE_SESSION_CACHE_ENTRIES",
         "RIVERHOG_AGE_SESSION_DERIVATION_CONCURRENCY",
-        "RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL",
-        "RIVERHOG_RETRIEVAL_CACHE_BUCKET",
+        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL",
+        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE",
+        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP",
+        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS",
+        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE",
         "RIVERHOG_RETRIEVAL_DEFAULT_LEASE",
         "RIVERHOG_RETRIEVAL_MAX_LEASE",
         "RIVERHOG_RETRIEVAL_PENDING_TIMEOUT",
-        "RIVERHOG_RETRIEVAL_RESTORE_HOLD",
         "RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL",
         "RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL",
         "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY",
-        "RIVERHOG_RETRIEVAL_TIER",
         "RIVERHOG_RETRIEVAL_REQUEST_CONCURRENCY",
         "RIVERHOG_RETRIEVAL_MAX_INFLIGHT_BYTES",
         "RIVERHOG_RETRIEVAL_READ_CHUNK_BYTES",
-        "RIVERHOG_S3_CONNECT_TIMEOUT_SECONDS",
-        "RIVERHOG_S3_READ_TIMEOUT_SECONDS",
-        "RIVERHOG_S3_MAX_ATTEMPTS",
-        "RIVERHOG_S3_RETRY_MODE",
-        "RIVERHOG_S3_TCP_KEEPALIVE",
         "RIVERHOG_EVENT_SOURCE",
         "RIVERHOG_EVENT_CONTEXT_RETENTION",
         "RIVERHOG_OTS_STAMP_COMMAND",
@@ -338,10 +315,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):
         assert required <= set(compose["services"][service]["environment"])
-        assert (
-            compose["services"][service]["environment"]["RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX"]
-            == "${RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX-}"
-        )
         assert compose["services"][service]["env_file"] == [
             {
                 "path": "${RIVERHOG_COMPOSE_ENV_FILE:-../../.env.compose}",
@@ -351,8 +324,11 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         mounts = compose["services"][service].get("volumes", [])
         assert {
             "type": "bind",
-            "source": "${RIVERHOG_CLOUDFRONT_PRIVATE_KEY_HOST_PATH:-/dev/null}",
-            "target": "/run/secrets/riverhog-cloudfront.pem",
+            "source": (
+                "${RIVERHOG_STORAGE_ADAPTER_TOKEN_HOST_PATH:-"
+                "../../tests/harness/garage-storage-adapter.token}"
+            ),
+            "target": "/run/secrets/riverhog-storage-adapter.token",
             "read_only": True,
         } in mounts
 

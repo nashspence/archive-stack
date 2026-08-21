@@ -8,8 +8,8 @@ from pathlib import Path
 
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.pack_retrieval import PackRangeRetrievalPolicy
-from riverhog_core.runtime_config import ArchiveStoreConfig, RetrievalCacheConfig, RuntimeConfig
-from riverhog_core.throughput import ArchiveThroughputTuning, S3TransportTuning
+from riverhog_core.runtime_config import RuntimeConfig, StorageAdapterRegistration
+from riverhog_core.throughput import ArchiveThroughputTuning
 from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 from stove0_core import EndpointRegistration, Stove0RuntimeConfig
 
@@ -185,11 +185,9 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
             field.name
             for model in (
                 RuntimeConfig,
-                ArchiveStoreConfig,
-                RetrievalCacheConfig,
+                StorageAdapterRegistration,
                 CollectionVolumePolicy,
                 PackRangeRetrievalPolicy,
-                S3TransportTuning,
                 ArchiveThroughputTuning,
             )
             for field in fields(model)

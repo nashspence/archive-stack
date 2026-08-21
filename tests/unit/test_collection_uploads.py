@@ -39,7 +39,7 @@ from riverhog_core.incremental_plan import (
 from riverhog_core.ports.archive_objects import CompletedObjectReceipt
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.proofs import ProofStamper
-from riverhog_core.runtime_config import RetrievalCacheConfig, RuntimeConfig
+from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.throughput import ArchiveThroughputTuning, log_transfer_timing
@@ -190,22 +190,12 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
     baseline = RuntimeConfig(database_url=database_url)
     archive = replace(
         baseline.archive_store("archive"),
-        backend="aws",
-        storage_class="DEEP_ARCHIVE",
-        read_mode="restore_required",
     )
     config = RuntimeConfig(
         database_url=database_url,
         archive_passphrase="test archive secret",
         archive_scrypt_work_factor=1,
         archive_stores={"archive": archive},
-        retrieval_cache=RetrievalCacheConfig(
-            endpoint_url="https://cache.invalid",
-            region="us-east-1",
-            bucket="cache",
-            access_key_id="fixture",
-            secret_access_key="fixture",
-        ),
     )
     initialize_db(database_url)
     with session_scope(make_session_factory(database_url)) as session:
@@ -219,7 +209,7 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
     archive_multipart = MemoryMultipartStore()
     cache = _MemoryMultipartCache()
     binding = replace(
-        archive_store_binding(MemoryArchiveStore()),
+        archive_store_binding(MemoryArchiveStore(read_mode="restore_required")),
         multipart_objects=archive_multipart,
         immutable_objects=MemoryImmutableStore(),
         object_ranges=_UnusedRangeStore(),
@@ -301,24 +291,15 @@ def test_restore_required_ingress_uses_archive_only_when_new_archive_cache_is_di
     baseline = RuntimeConfig(database_url=database_url)
     archive = replace(
         baseline.archive_store("archive"),
-        backend="aws",
-        read_mode="restore_required",
     )
     config = RuntimeConfig(
         database_url=database_url,
         archive_stores={"archive": archive},
-        retrieval_cache=RetrievalCacheConfig(
-            endpoint_url="https://cache.invalid",
-            region="us-east-1",
-            bucket="cache",
-            access_key_id="fixture",
-            secret_access_key="fixture",
-        ),
         retrieval_cache_new_archive_enabled=False,
     )
     archive_multipart = MemoryMultipartStore()
     binding = replace(
-        archive_store_binding(MemoryArchiveStore()),
+        archive_store_binding(MemoryArchiveStore(read_mode="restore_required")),
         multipart_objects=archive_multipart,
     )
     service = SqlAlchemyCollectionUploadService(

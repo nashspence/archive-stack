@@ -20,7 +20,7 @@ classifiers = [
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "http-api-contracts>=0.1,<0.2",
-  "httpx>=0.27,<1.0",
+  "httpx[http2]>=0.27,<1.0",
   "pydantic>=2.7,<3.0",
   "riverhog-storage-adapter-protocol>=0.1,<0.2",
 ]

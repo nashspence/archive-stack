@@ -45,10 +45,10 @@ def test_prepare_age_part_consumes_large_source_chunk_without_plaintext_part_sta
         log_n=1,
         plaintext_size=len(content),
     )
-    plan = session.s3_part_plans(
+    plan = session.multipart_part_plans(
         len(content),
         chunks_per_part=256,
-        enforce_s3_limits=False,
+        enforce_portable_limits=False,
     )[0]
 
     prepared = prepare_age_part(

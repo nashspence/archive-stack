@@ -19,8 +19,6 @@ class ArchiveObjectUploadReceipt:
     sha256: str | None
     stored_sha256: str | None
     version_id: str | None
-    backend: str
-    storage_class: str
     uploaded_at: str
     verified_at: str | None = None
     retrieval_cache: RetrievalCacheReceipt | None = None
