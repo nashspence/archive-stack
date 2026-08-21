@@ -16,6 +16,7 @@ from riverhog_storage_adapter_protocol import (
     MultipartCompleteRequest,
     MultipartCreateRequest,
     MultipartHeadRequest,
+    ObjectHeadRequest,
     ObjectLocator,
     ObjectReadRequest,
     ReadPreparationRequest,
@@ -403,9 +404,12 @@ def test_metadata_head_hides_adapter_markers_but_keeps_opaque_identity() -> None
     receipt = adapter.put_small_object(_small_request(content), content)
 
     head = adapter.head_object(
-        ObjectLocator(
-            object_path="archives/collection/manifest.age",
-            revision=receipt.revision,
+        ObjectHeadRequest(
+            object=ObjectLocator(
+                object_path="archives/collection/manifest.age",
+                revision=receipt.revision,
+            ),
+            expected_placement="immediate",
         )
     )
 

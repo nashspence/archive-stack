@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, cast
 
 from botocore.exceptions import ClientError, ConnectionClosedError
+from riverhog_storage_adapter_protocol import ObjectPlacement
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.ports.archive_objects import ImmutableObjectReceipt
@@ -47,6 +48,7 @@ class S3ImmutableArchiveObjectStore:
         content: bytes,
         content_type: str,
         identity_metadata: dict[str, str],
+        placement: ObjectPlacement,
     ) -> ImmutableObjectReceipt:
         if not object_path or not content or not content_type:
             raise ValueError("immutable archive object identity and content are required")
@@ -71,7 +73,7 @@ class S3ImmutableArchiveObjectStore:
             "Metadata": metadata,
             "IfNoneMatch": "*",
         }
-        if self._storage_class:
+        if placement == "archive" and self._storage_class:
             request["StorageClass"] = self._storage_class
         try:
             self._put_create_only(request)

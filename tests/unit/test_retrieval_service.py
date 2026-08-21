@@ -47,10 +47,12 @@ class MemoryArchiveRangeStore:
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
         _ = version_id
+        assert expected_bytes == len(self._multipart.objects[object_path][0])
         self.requests.append((object_path, offset, size))
         yield self._multipart.objects[object_path][0][offset : offset + size]
 
@@ -133,11 +135,14 @@ class MemoryRetrievalCache:
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
+        payload = self.objects[(object_path, version_id)]
+        assert expected_bytes == len(payload)
         self.range_requests.append((object_path, offset, size))
-        yield self.objects[(object_path, version_id)][offset : offset + size]
+        yield payload[offset : offset + size]
 
     def delete(self, *, object_path: str, version_id: str | None) -> None:
         self.deleted.append((object_path, version_id))

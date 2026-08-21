@@ -60,6 +60,7 @@ from riverhog_provenance import (
     create_observation_journal,
     validate_journal,
 )
+from riverhog_storage_adapter_protocol import ObjectPlacement
 from sqlalchemy.orm import Session
 
 from tests.unit.db_helpers import sqlite_url
@@ -687,8 +688,10 @@ class MemoryArchiveStore:
         content: bytes,
         content_type: str,
         identity_metadata: dict[str, str],
+        placement: ObjectPlacement,
     ) -> ImmutableObjectReceipt:
         _ = content_type
+        assert placement == "immediate"
         existing = self.objects.get(object_path)
         if existing is not None and (
             existing != content or self.object_metadata.get(object_path) != identity_metadata
@@ -710,6 +713,7 @@ class MemoryArchiveStore:
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
@@ -720,6 +724,7 @@ class MemoryArchiveStore:
                 raise KeyError(object_path)
             relative_path = _archive_relative_path(object_path)
             content = self.archive.stored_objects[relative_path]
+        assert len(content) == expected_bytes
         yield content[offset : offset + size]
 
     def verify_collection_archive(

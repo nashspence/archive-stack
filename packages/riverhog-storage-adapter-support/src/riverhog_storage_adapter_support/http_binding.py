@@ -18,7 +18,7 @@ from riverhog_storage_adapter_protocol import (
     MultipartHeadRequest,
     MultipartPartWriteRequest,
     MultipartUpload,
-    ObjectLocator,
+    ObjectHeadRequest,
     ObjectReadRequest,
     ReadPreparationRequest,
     SmallObjectWriteRequest,
@@ -184,7 +184,7 @@ class StorageAdapterHttpBinding:
                     raise RuntimeError("adapter replacement receipt differs from its request")
                 return _model_response(small_receipt)
             if normalized_method == "POST" and path == "/v1/objects/head":
-                metadata_receipt = self.adapter.head_object(self._parse(body, ObjectLocator))
+                metadata_receipt = self.adapter.head_object(self._parse(body, ObjectHeadRequest))
                 if metadata_receipt is None:
                     return _error(404, "not_found", "object was not found")
                 return _model_response(metadata_receipt)
