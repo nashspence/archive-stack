@@ -50,12 +50,12 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
 
     projects = module.validate_release_contract(REPO_ROOT)
 
-    assert len(projects) == 36
+    assert len(projects) == 42
     assert {project.version for project in projects} == {"0.1.0"}
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
-        "deployed_implementation": 8,
-        "reusable_library": 18,
+        "deployed_implementation": 10,
+        "reusable_library": 22,
         "internal_build_unit": 6,
     }
     assert {project.name for project in projects} >= {
@@ -64,6 +64,8 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "riverhog-ftp-adapter-api-client",
         "riverhog-recover",
         "riverhog-server",
+        "riverhog-storage-adapter-aws",
+        "riverhog-storage-adapter-backblaze",
         "stove0-server",
         "stove0-client",
         "stove0-ffprobe-sampling-observer",
@@ -129,7 +131,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert plan["tag"] == "v1.0.0"
     assert len(plan["source_sha"]) == 40
     assert all(character in "0123456789abcdef" for character in plan["source_sha"])
-    assert len(plan["python"]) == 36
+    assert len(plan["python"]) == 42
     assert all(len(project["artifacts"]) == 2 for project in plan["python"])
     assert {image["target"] for image in plan["images"]} == set(module.RUNTIME_IMAGE_TARGETS)
     assert all(image["platforms"] == ["linux/amd64"] for image in plan["images"])

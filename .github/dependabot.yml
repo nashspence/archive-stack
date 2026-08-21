@@ -54,6 +54,8 @@ updates:
       - /companions/stove0/server
       - /riverhog/ftp-adapter
       - /riverhog/server
+      - /riverhog/storage-adapter-aws
+      - /riverhog/storage-adapter-backblaze
       - /tests
       - /utilities/mango-fish
     schedule:

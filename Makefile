@@ -33,6 +33,10 @@ MYPY_SOURCES = \
 	packages/riverhog-cli-support/src \
 	packages/riverhog-protocol/src \
 	packages/riverhog-transform-sdk/src \
+	packages/riverhog-storage-adapter-asgi-support/src \
+	packages/riverhog-storage-adapter-protocol/src \
+	packages/riverhog-storage-adapter-s3-support/src \
+	packages/riverhog-storage-adapter-support/src \
 	packages/stove0-api-client/src \
 	packages/stove0-observer-protocol/src \
 	packages/stove0-observer-support/src \
@@ -50,6 +54,8 @@ MYPY_SOURCES = \
 	riverhog/ftp-adapter/src \
 	riverhog/recovery/src \
 	riverhog/server/src \
+	riverhog/storage-adapter-aws/src \
+	riverhog/storage-adapter-backblaze/src \
 	scripts/operation_qualification.py \
 	scripts/provider_qualification.py \
 	scripts/release.py \
@@ -60,7 +66,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke mango-fish-smoke transfer-profile stop-spec dist dist-smoke build build-riverhog build-riverhog-ftp-adapter build-stove0 build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-target build-mango-fish build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke mango-fish-smoke transfer-profile stop-spec dist dist-smoke build build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-target build-mango-fish build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -116,6 +122,8 @@ help:
 		'  make dist-smoke        Install and exercise the Riverhog server and client wheels.' \
 		'  make build-riverhog    Build the Riverhog image.' \
 		'  make build-riverhog-ftp-adapter Build the FTP adapter image.' \
+		'  make build-riverhog-storage-adapter-aws Build the AWS storage adapter image.' \
+		'  make build-riverhog-storage-adapter-backblaze Build the Backblaze storage adapter image.' \
 		'  make build-stove0      Build the stove0 service image.' \
 		'  make build-stove0-ffprobe-sampling-observer Build the FFprobe observer image.' \
 		'  make build-stove0-nvenc-av1-opus-target Build the NVENC AV1 + Opus target/sampler image.' \
@@ -245,6 +253,12 @@ build-riverhog:
 build-riverhog-ftp-adapter:
 	$(call BAKE_IMAGE,riverhog-ftp-adapter)
 
+build-riverhog-storage-adapter-aws:
+	$(call BAKE_IMAGE,riverhog-storage-adapter-aws)
+
+build-riverhog-storage-adapter-backblaze:
+	$(call BAKE_IMAGE,riverhog-storage-adapter-backblaze)
+
 build-stove0:
 	$(call BAKE_IMAGE,stove0)
 
@@ -273,7 +287,7 @@ mango-fish-smoke:
 build-test:
 	$(call BAKE_IMAGE,test)
 
-build: build-riverhog build-riverhog-ftp-adapter build-stove0 build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-target build-mango-fish build-test
+build: build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-target build-mango-fish build-test
 
 bootstrap-garage:
 	@./scripts/bootstrap_garage.sh

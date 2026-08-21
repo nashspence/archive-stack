@@ -366,6 +366,10 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
     dockerfiles = {
         REPO / "riverhog/server/Dockerfile": "riverhog/server",
         REPO / "riverhog/ftp-adapter/Dockerfile": "riverhog/ftp-adapter",
+        REPO / "riverhog/storage-adapter-aws/Dockerfile": "riverhog/storage-adapter-aws",
+        REPO / "riverhog/storage-adapter-backblaze/Dockerfile": (
+            "riverhog/storage-adapter-backblaze"
+        ),
         REPO / "companions/stove0/server/Dockerfile": "companions/stove0/server",
         REPO / "companions/stove0-ffprobe-sampling-observer/Dockerfile": (
             "companions/stove0-ffprobe-sampling-observer"
@@ -423,6 +427,10 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
     images = {
         REPO / "riverhog/server/Dockerfile": "riverhog-server",
         REPO / "riverhog/ftp-adapter/Dockerfile": "riverhog-ftp-adapter",
+        REPO / "riverhog/storage-adapter-aws/Dockerfile": "riverhog-storage-adapter-aws",
+        REPO / "riverhog/storage-adapter-backblaze/Dockerfile": (
+            "riverhog-storage-adapter-backblaze"
+        ),
         REPO / "companions/stove0/server/Dockerfile": "stove0-server",
         REPO / "companions/stove0-ffprobe-sampling-observer/Dockerfile": (
             "stove0-ffprobe-sampling-observer"
