@@ -1302,6 +1302,7 @@ class SqlAlchemyCollectionUploadService:
                 "riverhog-plaintext-sha256": hashlib.sha256(proof_bytes).hexdigest(),
                 "riverhog-manifest-sha256": root.plaintext_sha256,
             },
+            placement="immediate",
         )
         projection = build_archive_catalog_projection(
             collection_id=collection_id,

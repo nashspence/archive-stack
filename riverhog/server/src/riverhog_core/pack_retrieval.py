@@ -322,6 +322,7 @@ class PackMemberRangeReader:
                 raw = self._store.iter_object_range(
                     object_path=source.object_path,
                     version_id=source.version_id,
+                    expected_bytes=source.stored_bytes,
                     offset=age_plan.ciphertext_offset,
                     size=age_plan.ciphertext_bytes,
                 )
@@ -555,6 +556,7 @@ class PackRangeBatchReader:
                 raw = self._store.iter_object_range(
                     object_path=plan.source.object_path,
                     version_id=plan.source.version_id,
+                    expected_bytes=plan.source.stored_bytes,
                     offset=request.ciphertext_offset,
                     size=request.ciphertext_bytes,
                 )

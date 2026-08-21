@@ -276,6 +276,11 @@ class ObjectMetadataReceipt(StorageAdapterModel):
         return _canonical_metadata(value)
 
 
+class ObjectHeadRequest(StorageAdapterModel):
+    object: ObjectLocator
+    expected_placement: ObjectPlacement
+
+
 class ObjectReadRequest(StorageAdapterModel):
     object: ObjectLocator
     expected_bytes: int = Field(ge=0)
@@ -400,7 +405,7 @@ class StorageAdapterPort(Protocol):
         content: bytes,
     ) -> ImmutableObjectReceipt: ...
 
-    def head_object(self, object: ObjectLocator) -> ObjectMetadataReceipt | None: ...
+    def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None: ...
 
     def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]: ...
 
@@ -433,6 +438,7 @@ __all__ = [
     "MultipartPartWriteRequest",
     "MultipartUpload",
     "ObjectLocator",
+    "ObjectHeadRequest",
     "ObjectMetadataReceipt",
     "ObjectPlacement",
     "ObjectReadRequest",

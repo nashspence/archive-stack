@@ -244,12 +244,14 @@ def test_immutable_adapter_is_idempotent_by_logical_identity(
         content=b"ciphertext",
         content_type="application/vnd.riverhog.collection-manifest+age",
         identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+        placement="immediate",
     )
     second = store.put_immutable_object(
         object_path="archive/manifest.json.age",
         content=b"different randomized ciphertext",
         content_type="application/vnd.riverhog.collection-manifest+age",
         identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+        placement="immediate",
     )
 
     assert second == first
@@ -274,12 +276,14 @@ def test_immutable_adapter_uses_the_head_readable_version_identity(
         content=b"ciphertext",
         content_type="application/vnd.riverhog.collection-manifest+age",
         identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+        placement="immediate",
     )
     second = store.put_immutable_object(
         object_path="archive/manifest.json.age",
         content=b"different randomized ciphertext",
         content_type="application/vnd.riverhog.collection-manifest+age",
         identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+        placement="immediate",
     )
 
     assert first.version_id is None
@@ -303,12 +307,14 @@ def test_immutable_adapter_uses_conditional_multipart_when_put_condition_is_unsu
         content=b"ciphertext",
         content_type="application/vnd.riverhog.collection-manifest+age",
         identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+        placement="immediate",
     )
     second = store.put_immutable_object(
         object_path="archive/manifest.json.age",
         content=b"different randomized ciphertext",
         content_type="application/vnd.riverhog.collection-manifest+age",
         identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+        placement="immediate",
     )
 
     assert client.put_attempts == 1
@@ -339,12 +345,14 @@ def test_immutable_adapter_uses_conditional_multipart_when_put_connection_is_clo
         content=b"ciphertext",
         content_type="application/vnd.riverhog.collection-manifest+age",
         identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+        placement="immediate",
     )
     second = store.put_immutable_object(
         object_path="archive/manifest.json.age",
         content=b"different randomized ciphertext",
         content_type="application/vnd.riverhog.collection-manifest+age",
         identity_metadata={"riverhog-plaintext-sha256": "a" * 64},
+        placement="immediate",
     )
 
     assert client.put_attempts == 1
@@ -376,6 +384,7 @@ def test_range_adapter_returns_the_exact_requested_bytes(
             store.iter_object_range(
                 object_path="archive/volume.age",
                 version_id=None,
+                expected_bytes=10,
                 offset=3,
                 size=4,
             )

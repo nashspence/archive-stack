@@ -171,6 +171,7 @@ def test_canonical_archive_adapters_against_garage() -> None:
                 ranges.iter_object_range(
                     object_path=mirrored_path,
                     version_id=mirrored_completed.version_id,
+                    expected_bytes=len(ciphertext),
                     offset=0,
                     size=len(ciphertext),
                 )
@@ -194,6 +195,7 @@ def test_canonical_archive_adapters_against_garage() -> None:
                 "riverhog-plaintext-bytes": str(len(manifest_plaintext)),
                 "riverhog-plaintext-sha256": manifest_sha256,
             },
+            placement="immediate",
         )
         assert (
             immutable.put_immutable_object(
@@ -205,6 +207,7 @@ def test_canonical_archive_adapters_against_garage() -> None:
                     "riverhog-plaintext-bytes": str(len(manifest_plaintext)),
                     "riverhog-plaintext-sha256": manifest_sha256,
                 },
+                placement="immediate",
             )
             == root
         )
@@ -214,6 +217,7 @@ def test_canonical_archive_adapters_against_garage() -> None:
                 ranges.iter_object_range(
                     object_path=volume_path,
                     version_id=completed.version_id,
+                    expected_bytes=len(ciphertext),
                     offset=0,
                     size=min(64, len(ciphertext)),
                 )

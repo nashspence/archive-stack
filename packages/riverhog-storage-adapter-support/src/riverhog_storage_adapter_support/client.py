@@ -23,7 +23,7 @@ from riverhog_storage_adapter_protocol import (
     MultipartPartReceipt,
     MultipartPartWriteRequest,
     MultipartUpload,
-    ObjectLocator,
+    ObjectHeadRequest,
     ObjectMetadataReceipt,
     ObjectReadRequest,
     ReadPreparationRequest,
@@ -179,12 +179,12 @@ class StorageAdapterClient:
             content=framed_request(request, content),
         )
 
-    def head_object(self, object: ObjectLocator) -> ObjectMetadataReceipt | None:
+    def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None:
         return self._optional_model(
             "POST",
             "/v1/objects/head",
             ObjectMetadataReceipt,
-            object,
+            request,
         )
 
     def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:

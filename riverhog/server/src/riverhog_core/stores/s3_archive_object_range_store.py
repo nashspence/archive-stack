@@ -37,13 +37,16 @@ class S3ArchiveObjectRangeStore:
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
         if not object_path:
             raise ValueError("archive range object path is required")
-        if offset < 0 or size < 0:
+        if expected_bytes < 0 or offset < 0 or size < 0:
             raise ValueError("archive object range must be non-negative")
+        if offset + size > expected_bytes:
+            raise ValueError("archive object range exceeds its expected object")
         if size == 0:
             return
         end = offset + size - 1
@@ -63,7 +66,12 @@ class S3ArchiveObjectRangeStore:
                 raise RuntimeError("S3 range response length does not match the request")
             content_range = str(response.get("ContentRange", ""))
             match = _CONTENT_RANGE_RE.fullmatch(content_range)
-            if match is None or int(match.group(1)) != offset or int(match.group(2)) != end:
+            if (
+                match is None
+                or int(match.group(1)) != offset
+                or int(match.group(2)) != end
+                or match.group(3) != str(expected_bytes)
+            ):
                 raise RuntimeError("S3 range response does not match the requested byte interval")
             if not callable(read):
                 raise RuntimeError("S3 range response body is not readable")

@@ -105,6 +105,7 @@ class ArchiveProvenancePublisher:
                 "riverhog-plaintext-bytes": str(len(content)),
                 "riverhog-plaintext-sha256": plaintext_sha256,
             },
+            placement="immediate",
         )
         return SealedProvenanceObject(
             object_id=object_id,

@@ -21,7 +21,7 @@ from riverhog_storage_adapter_protocol import (
     MultipartHeadRequest,
     MultipartPartReceipt,
     MultipartUpload,
-    ObjectLocator,
+    ObjectHeadRequest,
     ObjectMetadataReceipt,
     ObjectPlacement,
     ObjectReadRequest,
@@ -405,16 +405,17 @@ class S3StorageAdapter:
         self._validate_placement(persisted, request.placement)
         return receipt
 
-    def head_object(self, object: ObjectLocator) -> ObjectMetadataReceipt | None:
-        head = self._head(object.object_path, revision=object.revision)
+    def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None:
+        head = self._head(request.object.object_path, revision=request.object.revision)
         if head is None:
             return None
+        self._validate_placement(head, request.expected_placement)
         metadata = _normalized_metadata(head)
         stored_sha256 = metadata.get(_STORED_SHA256_METADATA)
         if stored_sha256 is not None and not _valid_sha256(stored_sha256):
             raise RuntimeError("S3 object has invalid stored-digest metadata")
         return ObjectMetadataReceipt(
-            object_path=object.object_path,
+            object_path=request.object.object_path,
             revision=_provider_revision(head),
             entity_token=_provider_entity_token(head),
             content_type=(

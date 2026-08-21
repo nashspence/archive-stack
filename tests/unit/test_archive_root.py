@@ -11,6 +11,7 @@ from riverhog_core.domain.archive import (
 )
 from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
 from riverhog_core.ports.archive_objects import ImmutableObjectReceipt
+from riverhog_storage_adapter_protocol import ObjectPlacement
 
 from tests.fixtures.archive import age_state_json
 
@@ -33,8 +34,9 @@ class MemoryImmutableStore:
         content: bytes,
         content_type: str,
         identity_metadata: dict[str, str],
+        placement: ObjectPlacement,
     ) -> ImmutableObjectReceipt:
-        assert content_type
+        assert content_type and placement == "immediate"
         existing = self.objects.get(object_path)
         if existing is not None:
             if existing.identity != identity_metadata:

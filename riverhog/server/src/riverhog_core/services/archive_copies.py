@@ -1105,6 +1105,7 @@ class SqlAlchemyArchiveCopyService:
                         "riverhog-plaintext-bytes": str(source.plaintext_bytes),
                         "riverhog-plaintext-sha256": source.sha256 or "",
                     },
+                    placement="immediate",
                 )
                 remote_seconds = time.perf_counter() - remote_started
         if receipt.stored_sha256 != stored_sha256:

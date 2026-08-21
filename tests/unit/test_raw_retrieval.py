@@ -26,10 +26,12 @@ class SlowRangeStore:
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ):
         del object_path, version_id
+        assert expected_bytes == len(self.content)
         with self.lock:
             self.active += 1
             self.maximum_active = max(self.maximum_active, self.active)
