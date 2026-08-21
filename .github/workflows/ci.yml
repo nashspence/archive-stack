@@ -185,3 +185,8 @@ jobs:
       - name: Smoke Mango Fish image
         if: matrix.target == 'mango-fish'
         run: make mango-fish-smoke
+      - name: Verify reviewed Stove0 image roles
+        if: startsWith(matrix.target, 'stove0')
+        env:
+          IMAGE_TARGET: ${{ matrix.target }}
+        run: python3 scripts/check_image_roles.py "$IMAGE_TARGET"

@@ -25,8 +25,6 @@ from stove0_review_contracts.models import (
     SampleableRange,
     evenly_spaced_sample_plan,
     review_evaluation_definition,
-    review_operation_intent,
-    review_target_options,
 )
 
 __all__ = [
@@ -54,6 +52,4 @@ __all__ = [
     "contract_report",
     "evenly_spaced_sample_plan",
     "review_evaluation_definition",
-    "review_operation_intent",
-    "review_target_options",
 ]

@@ -174,14 +174,22 @@ smoke_workspace_distribution \
   stove0-nvenc-av1-opus-target \
   'stove0_nvenc_av1_opus_target-*.whl' \
   'import importlib.metadata as m; import stove0_nvenc_av1_opus_target.app; m.version("stove0-nvenc-av1-opus-target")' \
-  stove0-nvenc-av1-opus-target \
-  stove0-nvenc-av1-opus-sampler
+  stove0-nvenc-av1-opus-target
+smoke_workspace_distribution \
+  stove0-nvenc-av1-opus-review-sampler \
+  'stove0_nvenc_av1_opus_review_sampler-*.whl' \
+  'import importlib.metadata as m; import stove0_nvenc_av1_opus_review_sampler.app; m.version("stove0-nvenc-av1-opus-review-sampler")' \
+  stove0-nvenc-av1-opus-review-sampler
 smoke_workspace_distribution \
   stove0-opus-target \
   'stove0_opus_target-*.whl' \
   'import importlib.metadata as m; import stove0_opus_target.app; m.version("stove0-opus-target")' \
-  stove0-opus-target \
-  stove0-opus-sampler
+  stove0-opus-target
+smoke_workspace_distribution \
+  stove0-opus-review-sampler \
+  'stove0_opus_review_sampler-*.whl' \
+  'import importlib.metadata as m; import stove0_opus_review_sampler.app; m.version("stove0-opus-review-sampler")' \
+  stove0-opus-review-sampler
 smoke_workspace_distribution \
   stove0-review-target \
   'stove0_review_target-*.whl' \
@@ -198,11 +206,11 @@ smoke_workspace_distribution \
   'import importlib.metadata as m; import stove0_target_support; m.version("stove0-target-support")' \
   stove0-target-conformance
 smoke_workspace_distribution \
-  stove0-sampler-support \
-  'stove0_sampler_support-*.whl' \
-  'import importlib.metadata as m; import stove0_sampler_support; m.version("stove0-sampler-support")' \
-  stove0-sampler-conformance \
-  stove0-sampler-schemas
+  stove0-review-sampler-support \
+  'stove0_review_sampler_support-*.whl' \
+  'import importlib.metadata as m; import stove0_review_sampler_support; m.version("stove0-review-sampler-support")' \
+  stove0-review-sampler-conformance \
+  stove0-review-sampler-schemas
 smoke_workspace_distribution \
   gogurt \
   'gogurt-*.whl' \

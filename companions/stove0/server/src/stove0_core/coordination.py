@@ -20,7 +20,7 @@ from stove0_protocol import (
     evaluate_branch_set,
     resolve_join_plan,
 )
-from stove0_target_support import OutputCollectionRef
+from stove0_target_protocol import OutputCollectionRef
 
 from stove0_core.work_state import WorkRecord, WorkStore
 

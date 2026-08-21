@@ -7,10 +7,12 @@ License 1.0 (`CAL-1.0`):
 
 - `riverhog/server/**`
 - `companions/stove0/server/**`
-- `companions/stove0-ffprobe-sampling-observer/**`
-- `companions/stove0-nvenc-av1-opus-target/**`
-- `companions/stove0-opus-target/**`
-- `companions/stove0-review-target/**`
+- `extensions/stove0/ffprobe-sampling-observer/**`
+- `extensions/stove0/nvenc-av1-opus-review-sampler/**`
+- `extensions/stove0/nvenc-av1-opus-target/**`
+- `extensions/stove0/opus-review-sampler/**`
+- `extensions/stove0/opus-target/**`
+- `extensions/stove0/review-target/**`
 
 Published OpenAPI and other explicitly identified interoperability artifacts beneath those
 directories are licensed under Apache License 2.0 as recorded in `REUSE.toml`. Server

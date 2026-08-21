@@ -13,10 +13,12 @@ SERVER_PROJECTS = {
     Path("riverhog/storage-adapter-aws/pyproject.toml"),
     Path("riverhog/storage-adapter-backblaze/pyproject.toml"),
     Path("companions/stove0/server/pyproject.toml"),
-    Path("companions/stove0-ffprobe-sampling-observer/pyproject.toml"),
-    Path("companions/stove0-nvenc-av1-opus-target/pyproject.toml"),
-    Path("companions/stove0-opus-target/pyproject.toml"),
-    Path("companions/stove0-review-target/pyproject.toml"),
+    Path("extensions/stove0/ffprobe-sampling-observer/pyproject.toml"),
+    Path("extensions/stove0/nvenc-av1-opus-review-sampler/pyproject.toml"),
+    Path("extensions/stove0/nvenc-av1-opus-target/pyproject.toml"),
+    Path("extensions/stove0/opus-target/pyproject.toml"),
+    Path("extensions/stove0/opus-review-sampler/pyproject.toml"),
+    Path("extensions/stove0/review-target/pyproject.toml"),
 }
 
 
@@ -35,10 +37,12 @@ def test_reuse_policy_assigns_an_apache_default_and_narrow_server_overrides() ->
         "riverhog/storage-adapter-aws/**",
         "riverhog/storage-adapter-backblaze/**",
         "companions/stove0/server/**",
-        "companions/stove0-ffprobe-sampling-observer/**",
-        "companions/stove0-nvenc-av1-opus-target/**",
-        "companions/stove0-opus-target/**",
-        "companions/stove0-review-target/**",
+        "extensions/stove0/ffprobe-sampling-observer/**",
+        "extensions/stove0/nvenc-av1-opus-review-sampler/**",
+        "extensions/stove0/nvenc-av1-opus-target/**",
+        "extensions/stove0/opus-target/**",
+        "extensions/stove0/opus-review-sampler/**",
+        "extensions/stove0/review-target/**",
     ]
     assert annotations[1]["SPDX-License-Identifier"] == "CAL-1.0"
     assert annotations[2]["path"] == [
@@ -96,10 +100,10 @@ def test_published_images_carry_source_and_license_identity() -> None:
         "riverhog/storage-adapter-aws/Dockerfile": "CAL-1.0",
         "riverhog/storage-adapter-backblaze/Dockerfile": "CAL-1.0",
         "companions/stove0/server/Dockerfile": "CAL-1.0",
-        "companions/stove0-ffprobe-sampling-observer/Dockerfile": "CAL-1.0",
-        "companions/stove0-nvenc-av1-opus-target/Dockerfile": "CAL-1.0",
-        "companions/stove0-opus-target/Dockerfile": "CAL-1.0",
-        "companions/stove0-review-target/Dockerfile": "CAL-1.0",
+        "extensions/stove0/ffprobe-sampling-observer/Dockerfile": "CAL-1.0",
+        "extensions/stove0/nvenc-av1-opus-target/Dockerfile": "CAL-1.0",
+        "extensions/stove0/opus-target/Dockerfile": "CAL-1.0",
+        "extensions/stove0/review-target/Dockerfile": "CAL-1.0",
         "utilities/mango-fish/Dockerfile": "Apache-2.0",
     }
     for relative, expected_license in images.items():
@@ -114,7 +118,7 @@ def test_published_images_carry_source_and_license_identity() -> None:
 
 def test_standalone_runtime_tools_preserve_their_exact_attribution_text() -> None:
     riverhog = (REPO_ROOT / "riverhog/server/Dockerfile").read_text(encoding="utf-8")
-    av1 = (REPO_ROOT / "companions/stove0-nvenc-av1-opus-target/Dockerfile").read_text(
+    av1 = (REPO_ROOT / "extensions/stove0/nvenc-av1-opus-target/Dockerfile").read_text(
         encoding="utf-8"
     )
 

@@ -240,6 +240,23 @@ recipes:
       role: stove0.review.source/v1
     target_options:
       sampler_registration_id: opus
+    projections:
+    - source: work-effective-intent
+      source_pointer: /review_sample_plan
+      destination: intent
+      destination_pointer: /sample_plan
+    - source: work-evaluation
+      source_pointer: /variant_id
+      destination: intent
+      destination_pointer: /variant/id
+    - source: work-evaluation
+      source_pointer: /parameters/review_variant/portable_intent
+      destination: intent
+      destination_pointer: /variant/portable_intent
+    - source: work-evaluation
+      source_pointer: /parameters/review_variant/target_options
+      destination: target-options
+      destination_pointer: ''
     input_retrieval_policy: available-only
     output_tags:
     - review-output

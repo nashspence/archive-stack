@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import fnmatch
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal, Self, cast
 
@@ -32,7 +33,7 @@ from stove0_protocol import (
     WorkIdentity,
     WorkPayload,
 )
-from stove0_target_support import (
+from stove0_target_protocol import (
     InputArtifact,
     OperationContract,
     TargetPreflightRequest,
@@ -40,11 +41,6 @@ from stove0_target_support import (
 
 from stove0_core.coordinator import ObserverPort, TargetPort
 from stove0_core.work_state import WorkInapplicable
-
-OperationPlanCompiler = Callable[
-    [WorkIdentity],
-    tuple[Mapping[str, JsonValue], Mapping[str, JsonValue]],
-]
 
 
 class RecipeModel(BaseModel):
@@ -74,6 +70,15 @@ class FactPredicate(RecipeModel):
     value: JsonValue = None
 
 
+class OperationProjection(RecipeModel):
+    """One bounded JSON-pointer copy into an operation request."""
+
+    source: Literal["work-effective-intent", "work-evaluation"]
+    source_pointer: str = Field(pattern=r"^(?:|/(?:[^~/]|~[01])*(?:/(?:[^~/]|~[01])*)*)$")
+    destination: Literal["intent", "target-options"]
+    destination_pointer: str = Field(pattern=r"^(?:|/(?:[^~/]|~[01])*(?:/(?:[^~/]|~[01])*)*)$")
+
+
 class RecipeRoute(RecipeModel):
     id: str
     when: tuple[FactPredicate, ...] = ()
@@ -82,8 +87,14 @@ class RecipeRoute(RecipeModel):
     artifact_rules: tuple[ArtifactRule, ...] = (ArtifactRule(),)
     intent: dict[str, JsonValue] = Field(default_factory=dict)
     target_options: dict[str, JsonValue] = Field(default_factory=dict)
+    projections: tuple[OperationProjection, ...] = ()
     input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
     output_tags: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def canonical_projections(self) -> Self:
+        _validate_projections(self.projections)
+        return self
 
 
 class RecipeJoinMember(RecipeModel):
@@ -104,8 +115,14 @@ class RecipeJoin(RecipeModel):
     target_registration_id: str
     intent: dict[str, JsonValue] = Field(default_factory=dict)
     target_options: dict[str, JsonValue] = Field(default_factory=dict)
+    projections: tuple[OperationProjection, ...] = ()
     input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
     output_tags: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def canonical_projections(self) -> Self:
+        _validate_projections(self.projections)
+        return self
 
 
 class RecipeDefinition(RecipeModel):
@@ -200,13 +217,11 @@ class RecipePlanner:
         riverhog: ApiClient,
         observers: ObserverPort,
         targets: TargetPort,
-        operation_compilers: Mapping[str, OperationPlanCompiler] | None = None,
     ) -> None:
         self.catalog = catalog
         self.riverhog = riverhog
         self.observers = observers
         self.targets = targets
-        self.operation_compilers = dict(operation_compilers or {})
 
     def create_work(
         self,
@@ -362,7 +377,7 @@ class RecipePlanner:
         support = target.support_for(operation.id)
         if support.operation_contract_sha256 != operation.contract_sha256:
             raise RuntimeError("target supports another revision of the recipe operation")
-        compiled_intent, compiled_options = self._compile_operation(parent, operation.id)
+        compiled_intent, compiled_options = self._project_operation(parent, route.projections)
         effective_intent = {**route.intent, **compiled_intent}
         return BranchPlan.build(
             parent_work=parent,
@@ -398,7 +413,7 @@ class RecipePlanner:
         support = target.support_for(operation.id)
         if support.operation_contract_sha256 != operation.contract_sha256:
             raise RuntimeError("join target supports another revision of the recipe operation")
-        compiled_intent, compiled_options = self._compile_operation(parent, operation.id)
+        compiled_intent, compiled_options = self._project_operation(parent, join.projections)
         return JoinDeclaration.seal(
             members=tuple(
                 JoinMemberDeclaration(
@@ -445,15 +460,25 @@ class RecipePlanner:
             target_options=plan.requested_target_options,
         )
 
-    def _compile_operation(
+    def _project_operation(
         self,
         work: WorkIdentity,
-        operation_id: str,
+        projections: tuple[OperationProjection, ...],
     ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
-        compiler = self.operation_compilers.get(operation_id)
-        if compiler is not None:
-            intent, options = compiler(work)
-            return dict(intent), dict(options)
+        if projections:
+            intent: dict[str, JsonValue] = {}
+            options: dict[str, JsonValue] = {}
+            sources: dict[str, JsonValue] = {
+                "work-effective-intent": work.effective_intent,
+                "work-evaluation": (
+                    work.evaluation.model_dump(mode="json") if work.evaluation is not None else None
+                ),
+            }
+            for projection in projections:
+                value = _projection_value(sources[projection.source], projection.source_pointer)
+                destination = intent if projection.destination == "intent" else options
+                _json_pointer_set(destination, projection.destination_pointer, deepcopy(value))
+            return intent, options
         intent = dict(work.effective_intent)
         raw_options = intent.pop("target_options", {})
         if not isinstance(raw_options, Mapping):
@@ -502,6 +527,54 @@ class RecipePlanner:
                     }
                 )
         return tuple(rows)
+
+
+def _validate_projections(projections: tuple[OperationProjection, ...]) -> None:
+    if len(projections) > 64:
+        raise ValueError("operation projections are limited to 64 bounded copies")
+    keys = [(item.destination, item.destination_pointer) for item in projections]
+    if keys != sorted(keys) or len(keys) != len(set(keys)):
+        raise ValueError("operation projections must be unique and canonically ordered")
+    for index, (destination, pointer) in enumerate(keys):
+        for other_destination, other_pointer in keys[index + 1 :]:
+            if other_destination != destination:
+                continue
+            if other_pointer.startswith(f"{pointer}/"):
+                raise ValueError("operation projection destinations must not overlap")
+
+
+def _pointer_parts(pointer: str) -> tuple[str, ...]:
+    if not pointer:
+        return ()
+    return tuple(part.replace("~1", "/").replace("~0", "~") for part in pointer[1:].split("/"))
+
+
+def _projection_value(document: JsonValue, pointer: str) -> JsonValue:
+    current = document
+    for part in _pointer_parts(pointer):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        elif isinstance(current, list) and part.isdecimal() and int(part) < len(current):
+            current = current[int(part)]
+        else:
+            raise ValueError(f"operation projection source does not exist: {pointer}")
+    return current
+
+
+def _json_pointer_set(document: dict[str, JsonValue], pointer: str, value: JsonValue) -> None:
+    parts = _pointer_parts(pointer)
+    if not parts:
+        if not isinstance(value, dict):
+            raise ValueError("root operation projection requires a JSON object")
+        document.update(value)
+        return
+    current = document
+    for part in parts[:-1]:
+        child = current.setdefault(part, {})
+        if not isinstance(child, dict):
+            raise ValueError(f"operation projection destination is not an object: {pointer}")
+        current = child
+    current[parts[-1]] = value
 
 
 def _subjects(
@@ -655,7 +728,7 @@ __all__ = [
     "BranchSetDecision",
     "FactPredicate",
     "ObserverUse",
-    "OperationPlanCompiler",
+    "OperationProjection",
     "RecipeCatalog",
     "RecipeDefinition",
     "RecipeJoin",

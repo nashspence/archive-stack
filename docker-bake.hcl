@@ -68,7 +68,7 @@ target "stove0" {
 target "stove0-ffprobe-sampling-observer" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "companions/stove0-ffprobe-sampling-observer/Dockerfile"
+  dockerfile = "extensions/stove0/ffprobe-sampling-observer/Dockerfile"
   tags       = ["stove0-ffprobe-sampling-observer:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -76,7 +76,7 @@ target "stove0-ffprobe-sampling-observer" {
 target "stove0-nvenc-av1-opus-target" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "companions/stove0-nvenc-av1-opus-target/Dockerfile"
+  dockerfile = "extensions/stove0/nvenc-av1-opus-target/Dockerfile"
   tags       = ["stove0-nvenc-av1-opus-target:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -84,7 +84,7 @@ target "stove0-nvenc-av1-opus-target" {
 target "stove0-opus-target" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "companions/stove0-opus-target/Dockerfile"
+  dockerfile = "extensions/stove0/opus-target/Dockerfile"
   tags       = ["stove0-opus-target:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -92,7 +92,7 @@ target "stove0-opus-target" {
 target "stove0-review-target" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "companions/stove0-review-target/Dockerfile"
+  dockerfile = "extensions/stove0/review-target/Dockerfile"
   tags       = ["stove0-review-target:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }

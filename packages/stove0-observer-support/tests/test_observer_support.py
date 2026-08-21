@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 from riverhog_protocol.collection_workflows import PRODUCER_EVIDENCE_PATH
+from stove0_observer_client import ContentObserverClient
 from stove0_observer_support import (
-    ContentObserverClient,
     ObservationResultBuilder,
     ObservationRuntime,
     ObserverHttpBinding,

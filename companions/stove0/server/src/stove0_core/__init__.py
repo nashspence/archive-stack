@@ -25,7 +25,6 @@ from stove0_core.evaluation import (
 from stove0_core.persistence import SqlAlchemyStateStore, stove0_state_schema
 from stove0_core.preview import PreviewRiverhogPort, WorkflowPreviewService
 from stove0_core.recipes import (
-    OperationPlanCompiler,
     RecipeCatalog,
     RecipeDefinition,
     RecipePlanner,
@@ -74,7 +73,6 @@ __all__ = [
     "InMemoryEvaluationStore",
     "InMemoryWorkStore",
     "ObserverPort",
-    "OperationPlanCompiler",
     "EndpointRegistration",
     "PlanningPort",
     "PreviewAcceptance",

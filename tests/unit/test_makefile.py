@@ -474,13 +474,18 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert len(uv_log_lines) == 1
     assert "python -m mypy companions/stove0/client/src" in uv_log_lines[0]
     for source in (
-        "companions/stove0-ffprobe-sampling-observer/src",
-        "companions/stove0-nvenc-av1-opus-target/src",
-        "companions/stove0-opus-target/src",
-        "companions/stove0-review-target/src",
+        "extensions/stove0/ffprobe-sampling-observer/src",
+        "extensions/stove0/nvenc-av1-opus-review-sampler/src",
+        "extensions/stove0/nvenc-av1-opus-target/src",
+        "extensions/stove0/opus-review-sampler/src",
+        "extensions/stove0/opus-target/src",
+        "extensions/stove0/review-target/src",
         "companions/stove0/server/src",
-        "packages/stove0-sampler-protocol/src",
-        "packages/stove0-sampler-support/src",
+        "packages/stove0-observer-client/src",
+        "packages/stove0-review-sampler-protocol/src",
+        "packages/stove0-review-sampler-support/src",
+        "packages/stove0-review-sampler-client/src",
+        "packages/stove0-target-client/src",
     ):
         assert source in uv_log_lines[0]
     assert "riverhog/client/src riverhog/ftp-adapter/src riverhog/recovery/src" in uv_log_lines[0]
@@ -787,10 +792,10 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
         REPO_ROOT / "riverhog/server/Dockerfile",
         REPO_ROOT / "riverhog/ftp-adapter/Dockerfile",
         REPO_ROOT / "companions/stove0/server/Dockerfile",
-        REPO_ROOT / "companions/stove0-ffprobe-sampling-observer/Dockerfile",
-        REPO_ROOT / "companions/stove0-nvenc-av1-opus-target/Dockerfile",
-        REPO_ROOT / "companions/stove0-opus-target/Dockerfile",
-        REPO_ROOT / "companions/stove0-review-target/Dockerfile",
+        REPO_ROOT / "extensions/stove0/ffprobe-sampling-observer/Dockerfile",
+        REPO_ROOT / "extensions/stove0/nvenc-av1-opus-target/Dockerfile",
+        REPO_ROOT / "extensions/stove0/opus-target/Dockerfile",
+        REPO_ROOT / "extensions/stove0/review-target/Dockerfile",
         REPO_ROOT / "utilities/mango-fish/Dockerfile",
     ]
 
@@ -804,7 +809,7 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
 
 
 def test_stove0_nvenc_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
-    target = REPO_ROOT / "companions/stove0-nvenc-av1-opus-target"
+    target = REPO_ROOT / "extensions/stove0/nvenc-av1-opus-target"
     dockerfile = (target / "Dockerfile").read_text(encoding="utf-8")
     verification = (target / "verify-ffmpeg").read_text(encoding="utf-8")
 
@@ -824,7 +829,7 @@ def test_stove0_nvenc_ffmpeg_retains_cuda_features_without_nonfree_code() -> Non
 
 
 def test_nvenc_target_includes_source_artifact_runtime_tools() -> None:
-    dockerfile = (REPO_ROOT / "companions/stove0-nvenc-av1-opus-target/Dockerfile").read_text(
+    dockerfile = (REPO_ROOT / "extensions/stove0/nvenc-av1-opus-target/Dockerfile").read_text(
         encoding="utf-8"
     )
 
@@ -833,7 +838,7 @@ def test_nvenc_target_includes_source_artifact_runtime_tools() -> None:
 
 
 def test_opus_target_is_a_slim_non_cuda_image() -> None:
-    dockerfile = (REPO_ROOT / "companions/stove0-opus-target/Dockerfile").read_text(
+    dockerfile = (REPO_ROOT / "extensions/stove0/opus-target/Dockerfile").read_text(
         encoding="utf-8"
     )
 

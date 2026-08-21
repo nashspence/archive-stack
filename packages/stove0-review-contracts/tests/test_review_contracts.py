@@ -4,7 +4,6 @@ import subprocess
 import sys
 
 import pytest
-from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 from stove0_protocol import CollectionRootRef, RecipeRef
 from stove0_review_contracts import (
@@ -17,8 +16,6 @@ from stove0_review_contracts import (
     contract_report,
     evenly_spaced_sample_plan,
     review_evaluation_definition,
-    review_operation_intent,
-    review_target_options,
 )
 
 
@@ -125,11 +122,6 @@ def test_review_evaluation_expands_one_normal_work_per_variant() -> None:
         == sample_plan.sample_plan_sha256
         for item in children
     )
-    for child in children:
-        intent = review_operation_intent(child)
-        Draft202012Validator(REVIEW_MATERIALIZE_OPERATION.intent_schema.document).validate(intent)
-        assert intent["variant"]["id"] == child.evaluation.variant_id
-        assert review_target_options(child) == {}
 
 
 def test_materialized_trial_requires_exactly_one_variant() -> None:

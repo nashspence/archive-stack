@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from jsonschema import Draft202012Validator
+from stove0_target_client.client import TransformTargetClient
 from stove0_target_protocol import (
     OperationContract,
     TargetContract,
@@ -20,8 +21,6 @@ from stove0_target_protocol import (
     validate_preflight_response_against_request,
     validate_status_against_request,
 )
-
-from stove0_target_support.client import TransformTargetClient
 
 
 class TargetClient(Protocol):
