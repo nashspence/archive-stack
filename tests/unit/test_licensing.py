@@ -10,6 +10,8 @@ from tests.workspace import workspace_pyprojects
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER_PROJECTS = {
     Path("riverhog/server/pyproject.toml"),
+    Path("riverhog/storage-adapter-aws/pyproject.toml"),
+    Path("riverhog/storage-adapter-backblaze/pyproject.toml"),
     Path("companions/stove0/server/pyproject.toml"),
     Path("companions/stove0-ffprobe-sampling-observer/pyproject.toml"),
     Path("companions/stove0-nvenc-av1-opus-target/pyproject.toml"),
@@ -30,6 +32,8 @@ def test_reuse_policy_assigns_an_apache_default_and_narrow_server_overrides() ->
     }
     assert annotations[1]["path"] == [
         "riverhog/server/**",
+        "riverhog/storage-adapter-aws/**",
+        "riverhog/storage-adapter-backblaze/**",
         "companions/stove0/server/**",
         "companions/stove0-ffprobe-sampling-observer/**",
         "companions/stove0-nvenc-av1-opus-target/**",

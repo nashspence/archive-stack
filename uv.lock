@@ -27,6 +27,8 @@ members = [
     "riverhog-recover",
     "riverhog-server",
     "riverhog-storage-adapter-asgi-support",
+    "riverhog-storage-adapter-aws",
+    "riverhog-storage-adapter-backblaze",
     "riverhog-storage-adapter-protocol",
     "riverhog-storage-adapter-s3-support",
     "riverhog-storage-adapter-support",
@@ -1716,6 +1718,50 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.111,<1.0" },
     { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
     { name = "riverhog-storage-adapter-support", editable = "packages/riverhog-storage-adapter-support" },
+]
+
+[[package]]
+name = "riverhog-storage-adapter-aws"
+version = "0.1.0"
+source = { editable = "riverhog/storage-adapter-aws" }
+dependencies = [
+    { name = "botocore" },
+    { name = "cryptography" },
+    { name = "httpx" },
+    { name = "riverhog-storage-adapter-asgi-support" },
+    { name = "riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-s3-support" },
+    { name = "time-formats" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "botocore", specifier = ">=1.35,<2.0" },
+    { name = "cryptography", specifier = ">=50,<51" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "riverhog-storage-adapter-asgi-support", editable = "packages/riverhog-storage-adapter-asgi-support" },
+    { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-s3-support", editable = "packages/riverhog-storage-adapter-s3-support" },
+    { name = "time-formats", editable = "packages/time-formats" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
+name = "riverhog-storage-adapter-backblaze"
+version = "0.1.0"
+source = { editable = "riverhog/storage-adapter-backblaze" }
+dependencies = [
+    { name = "riverhog-storage-adapter-asgi-support" },
+    { name = "riverhog-storage-adapter-s3-support" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "riverhog-storage-adapter-asgi-support", editable = "packages/riverhog-storage-adapter-asgi-support" },
+    { name = "riverhog-storage-adapter-s3-support", editable = "packages/riverhog-storage-adapter-s3-support" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
 
 [[package]]

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "riverhog-storage-adapter-aws"
+version = "0.1.0"
+description = "AWS S3, Deep Archive, and CloudFront storage adapter for Riverhog."
+requires-python = ">=3.12"
+license = "CAL-1.0"
+license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "botocore>=1.35,<2.0",
+  "cryptography>=50,<51",
+  "httpx>=0.27,<1.0",
+  "riverhog-storage-adapter-asgi-support>=0.1,<0.2",
+  "riverhog-storage-adapter-protocol>=0.1,<0.2",
+  "riverhog-storage-adapter-s3-support>=0.1,<0.2",
+  "time-formats>=0.1,<0.2",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.scripts]
+riverhog-storage-adapter-aws = "riverhog_storage_adapter_aws.app:main"
+
+[tool.uv.sources]
+riverhog-storage-adapter-asgi-support = { workspace = true }
+riverhog-storage-adapter-protocol = { workspace = true }
+riverhog-storage-adapter-s3-support = { workspace = true }
+time-formats = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riverhog_storage_adapter_aws"]
