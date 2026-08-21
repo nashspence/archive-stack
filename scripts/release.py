@@ -65,6 +65,14 @@ RUNTIME_IMAGE_TARGETS = {
         "distribution": "riverhog-ftp-adapter",
         "repository": "ghcr.io/nashspence/riverhog-ftp-adapter",
     },
+    "riverhog-storage-adapter-aws": {
+        "distribution": "riverhog-storage-adapter-aws",
+        "repository": "ghcr.io/nashspence/riverhog-storage-adapter-aws",
+    },
+    "riverhog-storage-adapter-backblaze": {
+        "distribution": "riverhog-storage-adapter-backblaze",
+        "repository": "ghcr.io/nashspence/riverhog-storage-adapter-backblaze",
+    },
     "mango-fish": {
         "distribution": "mango-fish",
         "repository": "ghcr.io/nashspence/riverhog-mango-fish",

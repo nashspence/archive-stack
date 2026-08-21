@@ -20,6 +20,8 @@ MISE_IMAGE = (
 MISE_CONTAINER_TOOLS = {
     "riverhog": {"minisign", "uv"},
     "riverhog-ftp-adapter": {"uv"},
+    "riverhog-storage-adapter-aws": {"uv"},
+    "riverhog-storage-adapter-backblaze": {"uv"},
     "stove0": {"uv"},
     "stove0-ffprobe-sampling-observer": {"uv"},
     "stove0-nvenc-av1-opus-target": {"uv"},
@@ -46,6 +48,20 @@ IMAGE_CONTRACTS = {
         "title": "Riverhog FTP adapter",
         "license": "Apache-2.0",
         "compose": (("riverhog/ftp-adapter/compose.yaml", "ftp-adapter"),),
+    },
+    "riverhog-storage-adapter-aws": {
+        "dockerfile": "riverhog/storage-adapter-aws/Dockerfile",
+        "tag": "riverhog-storage-adapter-aws:dev",
+        "title": "Riverhog AWS storage adapter",
+        "license": "CAL-1.0",
+        "compose": (),
+    },
+    "riverhog-storage-adapter-backblaze": {
+        "dockerfile": "riverhog/storage-adapter-backblaze/Dockerfile",
+        "tag": "riverhog-storage-adapter-backblaze:dev",
+        "title": "Riverhog Backblaze storage adapter",
+        "license": "CAL-1.0",
+        "compose": (),
     },
     "stove0": {
         "dockerfile": "companions/stove0/server/Dockerfile",

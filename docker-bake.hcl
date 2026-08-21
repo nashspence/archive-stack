@@ -2,6 +2,8 @@ group "default" {
   targets = [
     "riverhog",
     "riverhog-ftp-adapter",
+    "riverhog-storage-adapter-aws",
+    "riverhog-storage-adapter-backblaze",
     "stove0",
     "stove0-ffprobe-sampling-observer",
     "stove0-nvenc-av1-opus-target",
@@ -36,6 +38,22 @@ target "riverhog-ftp-adapter" {
   context    = "."
   dockerfile = "riverhog/ftp-adapter/Dockerfile"
   tags       = ["riverhog-ftp-adapter:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "riverhog-storage-adapter-aws" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "riverhog/storage-adapter-aws/Dockerfile"
+  tags       = ["riverhog-storage-adapter-aws:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "riverhog-storage-adapter-backblaze" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "riverhog/storage-adapter-backblaze/Dockerfile"
+  tags       = ["riverhog-storage-adapter-backblaze:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 

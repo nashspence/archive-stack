@@ -37,6 +37,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=int(os.getenv(f"{_PREFIX}PORT", "8080")))
     args = parser.parse_args(argv)
     token = _secret("TOKEN")
+    bucket = _required("BUCKET")
     client = create_s3_client(
         S3ClientConfig(
             endpoint_url=_optional("ENDPOINT_URL"),
@@ -70,7 +71,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         S3StorageAdapterConfig(
             implementation_id="riverhog.aws/v1",
             implementation_version=importlib.metadata.version(SERVICE),
-            bucket=_required("BUCKET"),
+            bucket=bucket,
             root_prefix=_optional("ROOT_PREFIX") or "",
             read_mode=read_mode,
             archive_storage_class=_optional("ARCHIVE_STORAGE_CLASS") or "DEEP_ARCHIVE",
@@ -82,7 +83,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     def readiness() -> None:
-        client.head_bucket(Bucket=_required("BUCKET"))
+        client.head_bucket(Bucket=bucket)
 
     app = create_storage_adapter_app(
         service=SERVICE,

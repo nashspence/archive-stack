@@ -18,6 +18,8 @@ required_checks = [
   "build mango-fish",
   "build riverhog",
   "build riverhog-ftp-adapter",
+  "build riverhog-storage-adapter-aws",
+  "build riverhog-storage-adapter-backblaze",
   "build stove0",
   "build stove0-ffprobe-sampling-observer",
   "build stove0-nvenc-av1-opus-target",
@@ -142,6 +144,8 @@ deployed_implementation = [
   "companions/stove0/server",
   "riverhog/ftp-adapter",
   "riverhog/server",
+  "riverhog/storage-adapter-aws",
+  "riverhog/storage-adapter-backblaze",
   "utilities/mango-fish",
 ]
 reusable_library = [
@@ -152,6 +156,10 @@ reusable_library = [
   "packages/riverhog-api-client",
   "packages/riverhog-protocol",
   "packages/riverhog-provenance",
+  "packages/riverhog-storage-adapter-asgi-support",
+  "packages/riverhog-storage-adapter-protocol",
+  "packages/riverhog-storage-adapter-s3-support",
+  "packages/riverhog-storage-adapter-support",
   "packages/riverhog-transform-sdk",
   "packages/stove0-observer-protocol",
   "packages/stove0-observer-support",
@@ -185,6 +193,8 @@ platforms = ["linux/amd64"]
 riverhog = { distribution = "riverhog-server", repository = "ghcr.io/nashspence/riverhog" }
 mango-fish = { distribution = "mango-fish", repository = "ghcr.io/nashspence/riverhog-mango-fish" }
 riverhog-ftp-adapter = { distribution = "riverhog-ftp-adapter", repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
+riverhog-storage-adapter-aws = { distribution = "riverhog-storage-adapter-aws", repository = "ghcr.io/nashspence/riverhog-storage-adapter-aws" }
+riverhog-storage-adapter-backblaze = { distribution = "riverhog-storage-adapter-backblaze", repository = "ghcr.io/nashspence/riverhog-storage-adapter-backblaze" }
 stove0 = { distribution = "stove0-server", repository = "ghcr.io/nashspence/riverhog-stove0" }
 stove0-ffprobe-sampling-observer = { distribution = "stove0-ffprobe-sampling-observer", repository = "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer" }
 stove0-nvenc-av1-opus-target = { distribution = "stove0-nvenc-av1-opus-target", repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target" }
