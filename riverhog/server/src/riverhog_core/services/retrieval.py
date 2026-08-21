@@ -1714,6 +1714,7 @@ class _CachedArchiveRangeStore:
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
@@ -1723,6 +1724,7 @@ class _CachedArchiveRangeStore:
         return self._cache.iter_object_range(
             object_path=self._cache_object_path,
             version_id=self._cache_version_id,
+            expected_bytes=expected_bytes,
             offset=offset,
             size=size,
         )
@@ -1747,12 +1749,14 @@ class _TrackedArchiveRangeStore:
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
         content = self._store.iter_object_range(
             object_path=object_path,
             version_id=version_id,
+            expected_bytes=expected_bytes,
             offset=offset,
             size=size,
         )
@@ -1773,6 +1777,7 @@ class _DispatchArchiveRangeStore:
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
@@ -1783,6 +1788,7 @@ class _DispatchArchiveRangeStore:
         return store.iter_object_range(
             object_path=object_path,
             version_id=version_id,
+            expected_bytes=expected_bytes,
             offset=offset,
             size=size,
         )

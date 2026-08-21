@@ -19,6 +19,7 @@ from riverhog_storage_adapter_protocol import (
     MultipartHeadRequest,
     MultipartPartReceipt,
     MultipartUpload,
+    ObjectHeadRequest,
     ObjectLocator,
     ObjectMetadataReceipt,
     ObjectReadRequest,
@@ -168,19 +169,21 @@ class MemoryAdapter:
             completed_at="2026-08-21T00:00:00Z",
         )
 
-    def head_object(self, object: ObjectLocator) -> ObjectMetadataReceipt | None:
-        stored = self.objects.get(object.object_path)
+    def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None:
+        stored = self.objects.get(request.object.object_path)
         if stored is None:
             return None
-        content, metadata, revision, _placement = stored
+        content, metadata, revision, placement = stored
+        if placement != request.expected_placement:
+            raise RuntimeError("different placement")
         return ObjectMetadataReceipt(
-            object_path=object.object_path,
+            object_path=request.object.object_path,
             revision=revision,
             entity_token="object-token",
             stored_bytes=len(content),
             stored_sha256=(
                 hashlib.sha256(content).hexdigest()
-                if object.object_path in self.small_objects
+                if request.object.object_path in self.small_objects
                 else None
             ),
             identity_metadata=metadata,
@@ -305,7 +308,12 @@ def test_small_object_and_exact_range_round_trip() -> None:
             ),
             content,
         )
-        metadata = client.head_object(ObjectLocator(object_path="README.md"))
+        metadata = client.head_object(
+            ObjectHeadRequest(
+                object=ObjectLocator(object_path="README.md"),
+                expected_placement="immediate",
+            )
+        )
         ranged = b"".join(
             client.iter_object(
                 ObjectReadRequest(
@@ -452,13 +460,17 @@ def test_client_surfaces_the_closed_adapter_error() -> None:
         client=http,
     )
     try:
-        assert client.head_object(ObjectLocator(object_path="missing")) is None
+        request = ObjectHeadRequest(
+            object=ObjectLocator(object_path="missing"),
+            expected_placement="immediate",
+        )
+        assert client.head_object(request) is None
         with pytest.raises(StorageAdapterProtocolError, match="not found"):
             client._model(  # noqa: SLF001 - verifies the closed wire error
                 "POST",
                 "/v1/objects/head",
                 ObjectMetadataReceipt,
-                ObjectLocator(object_path="missing"),
+                request,
             )
     finally:
         client.close()

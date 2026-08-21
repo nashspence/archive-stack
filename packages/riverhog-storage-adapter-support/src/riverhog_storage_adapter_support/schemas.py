@@ -24,6 +24,7 @@ from riverhog_storage_adapter_protocol import (
     MultipartPartReceipt,
     MultipartPartWriteRequest,
     MultipartUpload,
+    ObjectHeadRequest,
     ObjectLocator,
     ObjectMetadataReceipt,
     ObjectReadRequest,
@@ -50,6 +51,7 @@ _SCHEMA_MODELS: tuple[type[BaseModel], ...] = (
     MultipartPartWriteRequest,
     MultipartUpload,
     ObjectLocator,
+    ObjectHeadRequest,
     ObjectMetadataReceipt,
     ObjectReadRequest,
     ReadPreparationRequest,
@@ -81,7 +83,7 @@ def storage_adapter_schema_bundle() -> dict[str, Any]:
             "POST /v1/objects/put": (
                 "framed SmallObjectWriteRequest + bytes -> ImmutableObjectReceipt"
             ),
-            "POST /v1/objects/head": "ObjectLocator -> ObjectMetadataReceipt|404",
+            "POST /v1/objects/head": "ObjectHeadRequest -> ObjectMetadataReceipt|404",
             "POST /v1/objects/read": "ObjectReadRequest -> byte stream",
             "POST /v1/objects/delete": "DeleteObjectRequest -> 204",
             "POST /v1/objects/delete-prefix": "DeletePrefixRequest -> MaintenanceResult",

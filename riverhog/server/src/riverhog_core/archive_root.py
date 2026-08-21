@@ -104,6 +104,7 @@ class ArchiveRootPublisher:
                 "riverhog-plaintext-sha256": plaintext_sha256,
                 "riverhog-tree-sha256": str(tree["sha256"]),
             },
+            placement="immediate",
         )
         if receipt.object_path != object_path or receipt.stored_bytes <= 0:
             raise RuntimeError("immutable root store returned an inconsistent receipt")

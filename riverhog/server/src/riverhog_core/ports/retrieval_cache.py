@@ -45,6 +45,7 @@ class RetrievalCache(Protocol):
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]: ...

@@ -254,6 +254,7 @@ class RawVolumeRangeReader:
                 yield from self._store.iter_object_range(
                     object_path=source.object_path,
                     version_id=source.version_id,
+                    expected_bytes=sum(part.stored_bytes for part in source.parts),
                     offset=stored_offset,
                     size=part.stored_bytes,
                 )

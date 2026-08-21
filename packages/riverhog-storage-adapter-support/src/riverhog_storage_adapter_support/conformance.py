@@ -18,6 +18,7 @@ from riverhog_storage_adapter_protocol import (
     MultipartCompleteRequest,
     MultipartCreateRequest,
     MultipartHeadRequest,
+    ObjectHeadRequest,
     ObjectLocator,
     ObjectReadRequest,
     ReadPreparationRequest,
@@ -92,7 +93,12 @@ def run_storage_adapter_conformance(
             raise AssertionError("create-only retry did not return the original object receipt")
         checks.append("create-only-retry")
 
-        metadata = client.head_object(ObjectLocator(object_path=small_path))
+        metadata = client.head_object(
+            ObjectHeadRequest(
+                object=ObjectLocator(object_path=small_path),
+                expected_placement="immediate",
+            )
+        )
         if (
             metadata is None
             or metadata.stored_bytes != len(small_content)
@@ -234,14 +240,30 @@ def run_storage_adapter_conformance(
             )
         )
         client.delete_object(delete_request)
-        if client.head_object(ObjectLocator(object_path=small_path)) is not None:
+        if (
+            client.head_object(
+                ObjectHeadRequest(
+                    object=ObjectLocator(object_path=small_path),
+                    expected_placement="immediate",
+                )
+            )
+            is not None
+        ):
             raise AssertionError("exact object deletion did not remove the target")
         checks.append("exact-deletion")
 
         affected = client.delete_prefix(DeletePrefixRequest(object_prefix=cleanup_prefix))
         if affected < 1:
             raise AssertionError("version-aware prefix cleanup did not remove its test object")
-        if client.head_object(ObjectLocator(object_path=multipart_path)) is not None:
+        if (
+            client.head_object(
+                ObjectHeadRequest(
+                    object=ObjectLocator(object_path=multipart_path),
+                    expected_placement="immediate",
+                )
+            )
+            is not None
+        ):
             raise AssertionError("version-aware prefix cleanup left its test object")
         checks.append("version-aware-prefix-cleanup")
     finally:

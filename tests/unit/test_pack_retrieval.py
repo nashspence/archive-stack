@@ -26,9 +26,11 @@ class MemoryRangeStore:
         *,
         object_path: str,
         version_id: str | None,
+        expected_bytes: int,
         offset: int,
         size: int,
     ):
+        assert expected_bytes == len(self.content)
         self.requests.append((object_path, version_id, offset, size))
         yield self.content[offset : offset + size]
 
