@@ -18,6 +18,14 @@ IMPLEMENTATION_OWNERS = {
     "riverhog-client": (REPO / "riverhog/client/src", {"riverhog_cli"}),
     "riverhog-recover": (REPO / "riverhog/recovery/src", {"riverhog_recover"}),
     "riverhog-ftp-adapter": (REPO / "riverhog/ftp-adapter/src", {"riverhog_ftp_adapter"}),
+    "riverhog-storage-adapter-aws": (
+        REPO / "riverhog/storage-adapter-aws/src",
+        {"riverhog_storage_adapter_aws"},
+    ),
+    "riverhog-storage-adapter-backblaze": (
+        REPO / "riverhog/storage-adapter-backblaze/src",
+        {"riverhog_storage_adapter_backblaze"},
+    ),
     "stove0-server": (
         REPO / "companions/stove0/server/src",
         {"stove0_api", "stove0_core"},

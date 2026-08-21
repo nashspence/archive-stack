@@ -9,6 +9,8 @@ SPDX-License-Identifier = "Apache-2.0"
 [[annotations]]
 path = [
   "riverhog/server/**",
+  "riverhog/storage-adapter-aws/**",
+  "riverhog/storage-adapter-backblaze/**",
   "companions/stove0/server/**",
   "companions/stove0-ffprobe-sampling-observer/**",
   "companions/stove0-nvenc-av1-opus-target/**",
