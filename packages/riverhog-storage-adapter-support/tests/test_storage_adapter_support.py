@@ -28,8 +28,11 @@ from riverhog_storage_adapter_protocol import (
 )
 from riverhog_storage_adapter_support import (
     StorageAdapterClient,
+    StorageAdapterConformanceResult,
     StorageAdapterHttpBinding,
     StorageAdapterProtocolError,
+    StorageAdapterServiceError,
+    run_storage_adapter_conformance,
     storage_adapter_schema_bundle,
 )
 
@@ -39,6 +42,7 @@ class MemoryAdapter:
         self.created: dict[str, MultipartCreateRequest] = {}
         self.parts: dict[tuple[str, int], bytes] = {}
         self.objects: dict[str, tuple[bytes, dict[str, str], str | None, str]] = {}
+        self.small_objects: set[str] = set()
         self.read_requests: list[ReadPreparationRequest] = []
 
     def descriptor(self) -> AdapterDescriptor:
@@ -132,12 +136,22 @@ class MemoryAdapter:
         request: SmallObjectWriteRequest,
         content: bytes,
     ) -> ImmutableObjectReceipt:
+        existing = self.objects.get(request.object_path)
+        if existing is not None and request.mode == "create_only":
+            existing_content, existing_metadata, _revision, _placement = existing
+            if existing_content != content or existing_metadata != request.identity_metadata:
+                raise StorageAdapterServiceError(
+                    409,
+                    "identity_conflict",
+                    "object already exists with a different identity",
+                )
         self.objects[request.object_path] = (
             content,
             request.identity_metadata,
             "small-version",
             request.placement,
         )
+        self.small_objects.add(request.object_path)
         return ImmutableObjectReceipt(
             object_path=request.object_path,
             revision="small-version",
@@ -158,7 +172,9 @@ class MemoryAdapter:
             entity_token="object-token",
             stored_bytes=len(content),
             stored_sha256=(
-                hashlib.sha256(content).hexdigest() if object.object_path == "README.md" else None
+                hashlib.sha256(content).hexdigest()
+                if object.object_path in self.small_objects
+                else None
             ),
             identity_metadata=metadata,
             placement=placement,  # type: ignore[arg-type]
@@ -173,11 +189,13 @@ class MemoryAdapter:
 
     def delete_object(self, request: DeleteObjectRequest) -> None:
         self.objects.pop(request.object.object_path, None)
+        self.small_objects.discard(request.object.object_path)
 
     def delete_prefix(self, request: DeletePrefixRequest) -> int:
         matched = [path for path in self.objects if path.startswith(request.object_prefix)]
         for path in matched:
             del self.objects[path]
+            self.small_objects.discard(path)
         return len(matched)
 
     def prepare_read(self, request: ReadPreparationRequest) -> ReadStatus:
@@ -434,6 +452,37 @@ def test_client_surfaces_the_closed_adapter_error() -> None:
                 ObjectMetadataReceipt,
                 ObjectLocator(object_path="missing"),
             )
+    finally:
+        client.close()
+        http.close()
+
+
+def test_consumer_runnable_conformance_uses_only_the_public_http_contract() -> None:
+    adapter = MemoryAdapter()
+    client, http = _client(adapter)
+    try:
+        result = run_storage_adapter_conformance(
+            client,
+            object_prefix="conformance/run-1",
+        )
+
+        assert isinstance(result, StorageAdapterConformanceResult)
+        assert result.implementation_id == "fixture.storage/v1"
+        assert result.checks == (
+            "descriptor",
+            "create-only-retry",
+            "exact-metadata",
+            "exact-range",
+            "identity-conflict",
+            "multipart-reconciliation",
+            "multipart-completion-recovery",
+            "multipart-stream",
+            "read-preparation",
+            "multipart-abort",
+            "exact-deletion",
+            "version-aware-prefix-cleanup",
+        )
+        assert not adapter.objects
     finally:
         client.close()
         http.close()
