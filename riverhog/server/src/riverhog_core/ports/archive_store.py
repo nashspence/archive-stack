@@ -177,10 +177,6 @@ class ArchiveStore(Protocol):
         *,
         collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
-        retrieval_tier: str,
-        hold_days: int,
-        requested_at: str,
-        estimated_ready_at: str,
     ) -> ArchiveReadStatus: ...
 
     def get_archive_objects_read_status(
@@ -188,9 +184,6 @@ class ArchiveStore(Protocol):
         *,
         collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
-        requested_at: str,
-        estimated_ready_at: str | None,
-        estimated_expires_at: str | None,
     ) -> ArchiveReadStatus: ...
 
     def iter_archive_object(

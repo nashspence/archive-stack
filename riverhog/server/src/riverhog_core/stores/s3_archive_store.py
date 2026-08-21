@@ -829,16 +829,20 @@ class S3ArchiveStore:
         *,
         collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
-        retrieval_tier: str,
-        hold_days: int,
-        requested_at: str,
-        estimated_ready_at: str,
     ) -> ArchiveReadStatus:
         _ = collection_id
+        requested_at = utc_timestamp_now()
+        estimated_ready_at = format_utc_timestamp(
+            datetime.now(UTC) + self._config.retrieval_estimated_latency
+        )
+        hold_days = max(
+            1,
+            int((self._config.retrieval_restore_hold.total_seconds() + 86_399) // 86_400),
+        )
         statuses = [
             self._request_collection_object_restore(
                 object=current,
-                retrieval_tier=retrieval_tier,
+                retrieval_tier=self._config.retrieval_tier,
                 hold_days=hold_days,
                 requested_at=requested_at,
                 estimated_ready_at=estimated_ready_at,
@@ -918,11 +922,13 @@ class S3ArchiveStore:
         *,
         collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
-        requested_at: str,
-        estimated_ready_at: str | None,
-        estimated_expires_at: str | None,
     ) -> ArchiveReadStatus:
         _ = collection_id
+        requested_at = utc_timestamp_now()
+        estimated_ready_at = format_utc_timestamp(
+            datetime.now(UTC) + self._config.retrieval_estimated_latency
+        )
+        estimated_expires_at = None
         statuses = [
             self._collection_object_restore_status(
                 object=current,
@@ -1030,9 +1036,6 @@ class S3ArchiveStore:
         status = self.get_archive_objects_read_status(
             collection_id=collection_id,
             objects=(object,),
-            requested_at=utc_timestamp_now(),
-            estimated_ready_at=None,
-            estimated_expires_at=None,
         )
         if status.state != "ready":
             raise RuntimeError(f"Archive object is not readable yet: {object_path}")

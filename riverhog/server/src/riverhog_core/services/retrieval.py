@@ -1416,18 +1416,10 @@ class SqlAlchemyRetrievalService:
         try:
             if groups and restore_requested_at is None:
                 restore_requested_at = format_utc_timestamp(utc_now())
-                estimated_ready = format_utc_timestamp(
-                    parse_utc_timestamp(restore_requested_at)
-                    + self._config.retrieval_estimated_latency
-                )
                 for (store_name, collection_id), objects in groups.items():
                     self._archive_stores.require(store_name).store.prepare_archive_objects_read(
                         collection_id=collection_id,
                         objects=objects,
-                        retrieval_tier=self._config.retrieval_tier,
-                        hold_days=_provider_hold_days(self._config.retrieval_restore_hold),
-                        requested_at=restore_requested_at,
-                        estimated_ready_at=estimated_ready,
                     )
                 with session_scope(self._session_factory) as session:
                     job = session.scalar(
@@ -1443,10 +1435,6 @@ class SqlAlchemyRetrievalService:
                     else:
                         restore_requested_at = job.restore_requested_at
 
-            requested_at = restore_requested_at or format_utc_timestamp(utc_now())
-            estimated_ready = format_utc_timestamp(
-                parse_utc_timestamp(requested_at) + self._config.retrieval_estimated_latency
-            )
             all_ready = True
             restore_expired = False
             for (store_name, collection_id), objects in groups.items():
@@ -1454,9 +1442,6 @@ class SqlAlchemyRetrievalService:
                 status = store.get_archive_objects_read_status(
                     collection_id=collection_id,
                     objects=objects,
-                    requested_at=requested_at,
-                    estimated_ready_at=estimated_ready,
-                    estimated_expires_at=None,
                 )
                 if status.state == "expired":
                     all_ready = False
@@ -1841,11 +1826,6 @@ def _normalize_restore_policy(value: str) -> str:
     if normalized not in {"allow", "never"}:
         raise BadRequest("restore_policy must be allow or never")
     return normalized
-
-
-def _provider_hold_days(value: timedelta) -> int:
-    seconds = value.total_seconds()
-    return max(1, int((seconds + 86_399) // 86_400))
 
 
 def _active_cache_lease_summary(now: str) -> Any:
