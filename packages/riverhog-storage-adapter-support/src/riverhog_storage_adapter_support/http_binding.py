@@ -242,7 +242,7 @@ class StorageAdapterHttpBinding:
                     self._parse(body, AbortIncompleteUploadsRequest)
                 )
                 return _model_response(MaintenanceResult(affected=affected))
-            if path in _HTTP_PATHS:
+            if path in STORAGE_ADAPTER_HTTP_PATHS:
                 return _error(405, "method_not_allowed", "adapter method is not allowed")
             return _error(404, "not_found", "adapter endpoint was not found")
         except StorageAdapterServiceError as exc:
@@ -264,7 +264,7 @@ class StorageAdapterHttpBinding:
         return model.model_validate_json(body)
 
 
-_HTTP_PATHS = frozenset(
+STORAGE_ADAPTER_HTTP_PATHS = frozenset(
     {
         "/v1/adapter",
         "/v1/multipart/create",
@@ -350,6 +350,7 @@ def _validated_stream(content: Iterator[bytes], expected_bytes: int) -> Iterator
 
 
 __all__ = [
+    "STORAGE_ADAPTER_HTTP_PATHS",
     "StorageAdapterHttpBinding",
     "StorageAdapterHttpResponse",
     "StorageAdapterServiceError",
