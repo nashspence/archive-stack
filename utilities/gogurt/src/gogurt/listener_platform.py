@@ -166,7 +166,7 @@ class SystemdUserAdapter(_CommandAdapter):
         _write_private(registration, render_systemd_unit(command))
         self._run(["systemctl", "--user", "daemon-reload"])
         self._run(["systemctl", "--user", "enable", registration.name])
-        self._run(["systemctl", "--user", "restart", registration.name])
+        self._run(["systemctl", "--user", "start", registration.name])
 
     def status(self, paths: ListenerPaths) -> NativeListenerStatus:
         registration = self._require_registration(paths)
@@ -255,10 +255,6 @@ class LaunchdUserAdapter(_CommandAdapter):
     def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
         registration = self._require_registration(paths)
         _write_private(registration, render_launchd_plist(command))
-        self._run(
-            ["launchctl", "bootout", self._target()],
-            allowed=frozenset({0, 3, 113}),
-        )
         self._run(["launchctl", "bootstrap", self._domain(), str(registration)])
 
     def status(self, paths: ListenerPaths) -> NativeListenerStatus:
