@@ -30,6 +30,8 @@ from riverhog_storage_adapter_protocol import (
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterError,
+    StorageAdapterErrorCode,
+    StorageAdapterRejection,
 )
 
 from riverhog_storage_adapter_support.framing import framed_request
@@ -38,17 +40,18 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 _PARTS = TypeAdapter(tuple[MultipartPartReceipt, ...])
 
 
-class StorageAdapterProtocolError(RuntimeError):
+class StorageAdapterProtocolError(StorageAdapterRejection):
     def __init__(
         self,
         message: str,
         *,
         status_code: int | None = None,
-        code: str | None = None,
+        code: StorageAdapterErrorCode = "internal_failure",
     ) -> None:
-        super().__init__(message)
+        RuntimeError.__init__(self, message)
         self.status_code = status_code
         self.code = code
+        self.message = message
 
 
 class StorageAdapterClient:
