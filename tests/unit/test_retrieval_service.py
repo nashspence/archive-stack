@@ -66,16 +66,14 @@ class DirectArchiveStore(MemoryArchiveStore):
     ) -> None:
         super().__init__(read_mode=read_mode)
         self._multipart = multipart
-        self.prepare_holds: list[int] = []
+        self.prepare_calls = 0
 
     def prepare_archive_objects_read(
         self,
-        *,
-        hold_days: int,
         **kwargs: object,
     ):  # type: ignore[no-untyped-def]
-        self.prepare_holds.append(hold_days)
-        return super().prepare_archive_objects_read(hold_days=hold_days, **kwargs)
+        self.prepare_calls += 1
+        return super().prepare_archive_objects_read(**kwargs)
 
     def iter_stored_archive_object(
         self,
@@ -544,7 +542,7 @@ def test_requested_retrieval_uses_the_independent_provider_hold(tmp_path: Path) 
     _ready_job(service, collection_id, "document.txt")
 
     assert service.process_due() == 1
-    assert store.prepare_holds == [3]
+    assert store.prepare_calls == 1
 
 
 def test_requested_retrieval_converges_after_its_pending_timeout(tmp_path: Path) -> None:

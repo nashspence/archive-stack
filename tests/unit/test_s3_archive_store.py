@@ -649,17 +649,13 @@ def test_aws_deep_objects_are_restored_and_report_current_status(
     status = store.prepare_archive_objects_read(
         collection_id=COLLECTION_ID,
         objects=(deep,),
-        retrieval_tier="bulk",
-        hold_days=7,
-        requested_at="2026-01-01T00:00:00Z",
-        estimated_ready_at="2026-01-03T00:00:00Z",
     )
     assert status.state == "requested"
     assert client.restore_requests == [
         (
             deep.object_path,
             deep.version_id,
-            {"Days": 7, "GlacierJobParameters": {"Tier": "Bulk"}},
+            {"Days": 1, "GlacierJobParameters": {"Tier": "Bulk"}},
         )
     ]
 
@@ -669,9 +665,6 @@ def test_aws_deep_objects_are_restored_and_report_current_status(
     status = store.get_archive_objects_read_status(
         collection_id=COLLECTION_ID,
         objects=(deep,),
-        requested_at="2026-01-01T00:00:00Z",
-        estimated_ready_at="2026-01-03T00:00:00Z",
-        estimated_expires_at=None,
     )
     assert status.state == "ready"
 
