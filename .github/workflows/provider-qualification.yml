@@ -267,6 +267,10 @@ jobs:
             test "$(jq -r '.source_sha' "$input_dir/status.json")" = "$SOURCE_SHA"
           else
             test "$(jq -r '.source_ref' "$input_dir/status.json")" = "$SOURCE_REF"
+            superseded_source_sha="$(jq -r '.source_sha' "$input_dir/status.json")"
+            [[ "$superseded_source_sha" =~ ^[0-9a-f]{40}$ ]]
+            git merge-base --is-ancestor "$superseded_source_sha" "$SOURCE_SHA"
+            printf 'SUPERSEDED_SOURCE_SHA=%s\n' "$superseded_source_sha" >> "$GITHUB_ENV"
           fi
           test -s "$input_dir/checkpoint.json"
           test -s "$input_dir/database.dump"
@@ -295,10 +299,14 @@ jobs:
           RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_ARCHIVE_SECRET_ACCESS_KEY }}
           RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID: ${{ vars.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_ACCESS_KEY_ID }}
           RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_B2_RETRIEVAL_CACHE_SECRET_ACCESS_KEY }}
-        run: >-
-          make provider-qualification
-          args="cleanup-b2 $CONFIG_PATH
-          --checkpoint $STATE_INPUT_DIR/checkpoint.json"
+        run: |
+          set -euo pipefail
+          cleanup_root="$RUNNER_TEMP/provider-cleanup-source"
+          git worktree add --detach "$cleanup_root" "$SUPERSEDED_SOURCE_SHA"
+          MISE_TRUSTED_CONFIG_PATHS="$cleanup_root" make -C "$cleanup_root" \
+            provider-qualification \
+            args="cleanup-b2 $cleanup_root/$CONFIG_PATH \
+            --checkpoint $STATE_INPUT_DIR/checkpoint.json"
       - name: Configure Docker engine
         uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0
         with:
