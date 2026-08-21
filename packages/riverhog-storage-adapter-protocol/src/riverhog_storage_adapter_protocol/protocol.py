@@ -34,7 +34,10 @@ ReadMode = Literal["immediate", "restore_required"]
 ReadState = Literal["ready", "requested", "expired"]
 StorageAdapterErrorCode = Literal[
     "unauthorized",
+    "invalid_request",
     "not_found",
+    "method_not_allowed",
+    "request_too_large",
     "identity_conflict",
     "invalid_path",
     "invalid_range",
@@ -150,6 +153,12 @@ class MultipartPartReceipt(StorageAdapterModel):
     part_token: str = Field(min_length=1, max_length=4000)
     stored_bytes: int = Field(ge=1)
     stored_sha256: Sha256 | None = None
+
+
+class MultipartPartWriteRequest(StorageAdapterModel):
+    upload: MultipartUpload
+    number: int = Field(ge=1)
+    stored_bytes: int = Field(ge=1)
 
 
 class MultipartCompleteRequest(StorageAdapterModel):
@@ -268,6 +277,7 @@ class ObjectMetadataReceipt(StorageAdapterModel):
 
 class ObjectReadRequest(StorageAdapterModel):
     object: ObjectLocator
+    expected_bytes: int = Field(ge=0)
     offset: int | None = Field(default=None, ge=0)
     size: int | None = Field(default=None, ge=0)
 
@@ -275,6 +285,9 @@ class ObjectReadRequest(StorageAdapterModel):
     def validate_range(self) -> Self:
         if (self.offset is None) != (self.size is None):
             raise ValueError("object range requires both offset and size")
+        if self.offset is not None and self.size is not None:
+            if self.offset + self.size > self.expected_bytes:
+                raise ValueError("object range exceeds the expected object bytes")
         return self
 
 
@@ -293,6 +306,7 @@ class DeleteObjectRequest(StorageAdapterModel):
 
 class DeletePrefixRequest(StorageAdapterModel):
     object_prefix: str = Field(min_length=1, max_length=4096)
+    mode: Literal["all_versions"] = "all_versions"
 
     @field_validator("object_prefix")
     @classmethod
@@ -316,7 +330,6 @@ class ReadStatus(StorageAdapterModel):
     state: ReadState
     ready_at: str | None = Field(default=None, max_length=100)
     expires_at: str | None = Field(default=None, max_length=100)
-    message: str | None = Field(default=None, max_length=1000)
 
 
 class AbortIncompleteUploadsRequest(StorageAdapterModel):
@@ -329,9 +342,17 @@ class AbortIncompleteUploadsRequest(StorageAdapterModel):
         return normalize_object_path(value, allow_prefix=True)
 
 
-class StorageAdapterError(StorageAdapterModel):
+class StorageAdapterErrorBody(StorageAdapterModel):
     code: StorageAdapterErrorCode
     message: str = Field(min_length=1, max_length=2000)
+
+
+class StorageAdapterError(StorageAdapterModel):
+    error: StorageAdapterErrorBody
+
+
+class MaintenanceResult(StorageAdapterModel):
+    affected: int = Field(ge=0)
 
 
 class StorageAdapterPort(Protocol):
@@ -394,10 +415,12 @@ __all__ = [
     "DeleteObjectRequest",
     "DeletePrefixRequest",
     "ImmutableObjectReceipt",
+    "MaintenanceResult",
     "MultipartCompleteRequest",
     "MultipartCreateRequest",
     "MultipartHeadRequest",
     "MultipartPartReceipt",
+    "MultipartPartWriteRequest",
     "MultipartUpload",
     "ObjectLocator",
     "ObjectMetadataReceipt",
@@ -412,6 +435,7 @@ __all__ = [
     "Sha256",
     "SmallObjectWriteRequest",
     "StorageAdapterError",
+    "StorageAdapterErrorBody",
     "StorageAdapterErrorCode",
     "StorageAdapterModel",
     "StorageAdapterPort",
