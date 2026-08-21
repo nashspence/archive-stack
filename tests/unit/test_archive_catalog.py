@@ -49,7 +49,7 @@ def _fixture() -> tuple[
                 plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
                 stored_bytes=len(plaintext) + 16,
                 stored_sha256=hashlib.sha256(b"stored" + plaintext).hexdigest(),
-                etag=f'"part-{unit.unit + 1}"',
+                part_token=f"part-{unit.unit + 1}",
             )
         )
     receipt = SealedPackVolume(
@@ -63,14 +63,14 @@ def _fixture() -> tuple[
         index_sha256=plan.index_sha256,
         plan_sha256=plan.plan_sha256,
         parts=tuple(parts),
-        version_id="version-1",
+        revision="version-1",
         completed_at="2026-08-03T00:00:00Z",
     )
     manifest = build_collection_archive_manifest(files=files, packs=((plan, receipt),))
     root = SealedArchiveRoot(
         object_path="archives/example/manifest.json.age",
         relative_path="manifest.json.age",
-        version_id="root-version",
+        revision="root-version",
         plaintext_bytes=len(manifest),
         plaintext_sha256=hashlib.sha256(manifest).hexdigest(),
         stored_bytes=len(manifest) + 100,
@@ -109,7 +109,7 @@ def test_catalog_projection_rejects_a_root_for_different_volume_set() -> None:
     changed = SealedArchiveRoot(
         object_path=root.object_path,
         relative_path=root.relative_path,
-        version_id=root.version_id,
+        revision=root.revision,
         plaintext_bytes=root.plaintext_bytes,
         plaintext_sha256=root.plaintext_sha256,
         stored_bytes=root.stored_bytes,

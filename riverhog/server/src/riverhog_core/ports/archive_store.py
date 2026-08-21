@@ -10,6 +10,19 @@ from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 
 
 @dataclass(frozen=True, slots=True)
+class StorageExecutionEvidence:
+    storage_adapter: str
+    storage_profile_id: str
+    storage_profile_contract_sha256: str
+    egress_accounting_id: str
+    read_mode: str
+    adapter_implementation_id: str
+    adapter_implementation_version: str
+    adapter_source_revision: str
+    adapter_runtime_descriptor_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveObjectUploadReceipt:
     object_id: str
     kind: str
@@ -18,9 +31,16 @@ class ArchiveObjectUploadReceipt:
     stored_bytes: int
     sha256: str | None
     stored_sha256: str | None
-    version_id: str | None
-    backend: str
-    storage_class: str
+    revision: str
+    storage_adapter: str
+    storage_profile_id: str
+    storage_profile_contract_sha256: str
+    egress_accounting_id: str
+    adapter_implementation_id: str
+    adapter_implementation_version: str
+    adapter_source_revision: str
+    adapter_runtime_descriptor_sha256: str
+    read_mode: str
     uploaded_at: str
     verified_at: str | None = None
     retrieval_cache: RetrievalCacheReceipt | None = None
@@ -46,7 +66,7 @@ class ArchiveArtifactRead:
 @dataclass(frozen=True, slots=True)
 class MutableManifestReceipt:
     object_path: str
-    version_id: str | None
+    revision: str
     stored_bytes: int
     stored_sha256: str
     published_at: str
@@ -61,7 +81,7 @@ class ArchiveObjectIdentity:
     stored_bytes: int
     sha256: str | None
     stored_sha256: str | None
-    version_id: str | None
+    revision: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +112,7 @@ class ArchiveReadStatus:
 
 
 class ArchiveStore(Protocol):
+    def storage_execution_evidence(self) -> StorageExecutionEvidence: ...
     def read_mode(self) -> str: ...
     def new_collection_archive_storage_prefix(self) -> str: ...
 
@@ -123,6 +144,7 @@ class ArchiveStore(Protocol):
         collection_id: int,
         archive_storage_prefix: str,
         manifest: bytes,
+        prior_revision: str | None = None,
     ) -> MutableManifestReceipt: ...
 
     def read_archive_artifact(
@@ -177,10 +199,6 @@ class ArchiveStore(Protocol):
         *,
         collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
-        retrieval_tier: str,
-        hold_days: int,
-        requested_at: str,
-        estimated_ready_at: str,
     ) -> ArchiveReadStatus: ...
 
     def get_archive_objects_read_status(
@@ -188,9 +206,6 @@ class ArchiveStore(Protocol):
         *,
         collection_id: int,
         objects: Sequence[ArchiveObjectIdentity],
-        requested_at: str,
-        estimated_ready_at: str | None,
-        estimated_expires_at: str | None,
     ) -> ArchiveReadStatus: ...
 
     def iter_archive_object(

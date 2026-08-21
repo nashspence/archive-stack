@@ -114,6 +114,6 @@ class ArchiveProvenancePublisher:
             plaintext_sha256=plaintext_sha256,
             stored_bytes=receipt.stored_bytes,
             stored_sha256=receipt.stored_sha256,
-            version_id=receipt.version_id,
+            revision=receipt.revision,
             completed_at=receipt.completed_at,
         )

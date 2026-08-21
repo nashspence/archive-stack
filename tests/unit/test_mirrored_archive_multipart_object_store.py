@@ -21,21 +21,23 @@ NOW = "2026-08-13T00:00:00Z"
 class _MultipartStore:
     name: str
     object_path: str | None = None
-    upload_id: str | None = None
+    transfer_id: str | None = None
     parts: dict[int, bytes] = field(default_factory=dict)
     completed: bytes | None = None
     events: list[str] = field(default_factory=list)
     fail_completion_once: bool = False
 
-    def create_multipart_upload(self, *, object_path, content_type, metadata):  # type: ignore[no-untyped-def]
-        _ = content_type, metadata
+    def create_multipart_upload(  # type: ignore[no-untyped-def]
+        self, *, object_path, content_type, metadata, expected_bytes
+    ):
+        _ = content_type, metadata, expected_bytes
         self.object_path = object_path
-        self.upload_id = f"{self.name}-upload"
+        self.transfer_id = f"{self.name}-upload"
         self.events.append(f"{self.name}:create")
-        return MultipartUpload(object_path, self.upload_id)
+        return MultipartUpload(object_path, self.transfer_id)
 
     def upload_part(self, *, upload, number, content):  # type: ignore[no-untyped-def]
-        assert upload.upload_id == self.upload_id
+        assert upload.transfer_id == self.transfer_id
         self.parts[number] = content
         self.events.append(f"{self.name}:part:{number}")
         return MultipartPartReceipt(
@@ -46,9 +48,14 @@ class _MultipartStore:
         )
 
     def list_parts(self, *, upload):  # type: ignore[no-untyped-def]
-        assert upload.upload_id == self.upload_id
+        assert upload.transfer_id == self.transfer_id
         return tuple(
-            MultipartPartReceipt(number, f"{self.name}-{number}", len(content))
+            MultipartPartReceipt(
+                number,
+                f"{self.name}-{number}",
+                len(content),
+                hashlib.sha256(content).hexdigest(),
+            )
             for number, content in sorted(self.parts.items())
         )
 
@@ -61,7 +68,7 @@ class _MultipartStore:
         expected_metadata,
     ):  # type: ignore[no-untyped-def]
         _ = expected_metadata
-        assert upload.upload_id == self.upload_id
+        assert upload.transfer_id == self.transfer_id
         if self.fail_completion_once:
             self.fail_completion_once = False
             raise RuntimeError(f"{self.name} completion interrupted")
@@ -75,7 +82,7 @@ class _MultipartStore:
         return self._completed_receipt() if self.completed is not None else None
 
     def abort_multipart_upload(self, *, upload):  # type: ignore[no-untyped-def]
-        assert upload.upload_id == self.upload_id
+        assert upload.transfer_id == self.transfer_id
         self.events.append(f"{self.name}:abort")
 
     def _completed_receipt(self) -> CompletedObjectReceipt:
@@ -83,9 +90,9 @@ class _MultipartStore:
         assert self.object_path is not None
         return CompletedObjectReceipt(
             object_path=self.object_path,
-            version_id=f"{self.name}-version",
-            etag=f"{self.name}-etag",
-            bytes=len(self.completed),
+            revision=f"{self.name}-version",
+            stored_bytes=len(self.completed),
+            stored_sha256=hashlib.sha256(self.completed).hexdigest(),
             completed_at=NOW,
         )
 
@@ -105,20 +112,20 @@ class _Cache:
     ) -> RetrievalCacheReceipt:
         assert parts
         assert self.store.completed is not None
-        assert completed.bytes == len(self.store.completed)
+        assert completed.stored_bytes == len(self.store.completed)
         self.store.events.append("cache:verify")
         return RetrievalCacheReceipt(
             object_path=completed.object_path,
-            version_id=completed.version_id,
-            stored_bytes=completed.bytes,
+            revision=completed.revision,
+            stored_bytes=completed.stored_bytes,
             stored_sha256=hashlib.sha256(self.store.completed).hexdigest(),
             cached_at=completed.completed_at,
             verified_at=NOW,
         )
 
-    def delete(self, *, object_path: str, version_id: str | None) -> None:
+    def delete(self, *, object_path: str, revision: str | None) -> None:
         assert object_path == self.store.object_path
-        assert version_id == "cache-version"
+        assert revision == "cache-version"
         self.store.completed = None
         self.store.events.append("cache:delete")
 
@@ -145,6 +152,7 @@ def test_encrypted_parts_are_verified_in_cache_before_archive_completion() -> No
         object_path="archives/one/volumes/pack.tar.age",
         content_type="application/vnd.riverhog.pack+age",
         metadata={"riverhog-format": "riverhog-pack-volume/v1"},
+        expected_bytes=9,
     )
     receipt = mirror.upload_part(upload=upload, number=1, content=b"encrypted")
     completed = mirror.complete_multipart_upload(
@@ -169,6 +177,7 @@ def test_completion_resumes_after_cache_sealed_before_archive() -> None:
         object_path="archives/one/volumes/segment.bin.age",
         content_type="application/vnd.riverhog.raw-segment+age",
         metadata={"riverhog-format": "riverhog-raw-volume/v1"},
+        expected_bytes=10,
     )
     receipt = mirror.upload_part(upload=upload, number=1, content=b"ciphertext")
 
@@ -213,6 +222,7 @@ def test_abort_removes_a_sealed_cache_orphan_when_archive_is_incomplete() -> Non
         object_path="archives/one/volumes/pack.tar.age",
         content_type="application/vnd.riverhog.pack+age",
         metadata={"riverhog-format": "riverhog-pack-volume/v1"},
+        expected_bytes=9,
     )
     mirror.upload_part(upload=upload, number=1, content=b"encrypted")
     cache.completed = b"encrypted"

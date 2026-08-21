@@ -306,7 +306,6 @@ class SqlAlchemyRetrievalService:
                 "pending_timeout_seconds": int(
                     self._config.retrieval_pending_timeout.total_seconds()
                 ),
-                "restore_hold_seconds": int(self._config.retrieval_restore_hold.total_seconds()),
                 "sweep_interval_seconds": int(
                     self._config.retrieval_cache_sweep_interval.total_seconds()
                 ),
@@ -917,7 +916,7 @@ class SqlAlchemyRetrievalService:
             source = PackVolumeRetrievalSource(
                 volume_id=record.object_id,
                 object_path=record.object_path,
-                version_id=record.version_id,
+                revision=record.revision,
                 plaintext_bytes=record.plaintext_bytes,
                 stored_bytes=record.stored_bytes,
                 age_state_json=record.age_state_json,
@@ -957,7 +956,7 @@ class SqlAlchemyRetrievalService:
                     RawVolumeRetrievalSource(
                         volume_id=record.object_id,
                         object_path=record.object_path,
-                        version_id=record.version_id,
+                        revision=record.revision,
                         source_path=path,
                         file_offset=placement.file_offset,
                         plaintext_bytes=placement.bytes,
@@ -1006,7 +1005,7 @@ class SqlAlchemyRetrievalService:
                 self._cache,
                 archive_object_path=object_record.object_path,
                 cache_object_path=cached.object_path,
-                cache_version_id=cached.version_id,
+                cache_revision=cached.revision,
             )
             tracked_store = "retrieval-cache"
         if self._download_allowance is None:
@@ -1143,7 +1142,7 @@ class SqlAlchemyRetrievalService:
                     cached.collection_id,
                     cached.object_id,
                     cached.object_path,
-                    cached.version_id,
+                    cached.revision,
                 )
                 for cached in candidates
             ]
@@ -1151,11 +1150,11 @@ class SqlAlchemyRetrievalService:
                 cached.state = "deleting"
 
         removed = 0
-        for source_store, collection_id, object_id, object_path, version_id in cleanup:
+        for source_store, collection_id, object_id, object_path, revision in cleanup:
             try:
                 self._cache.delete(
                     object_path=object_path,
-                    version_id=version_id,
+                    revision=revision,
                 )
             except Exception:
                 with session_scope(self._session_factory) as session:
@@ -1167,7 +1166,7 @@ class SqlAlchemyRetrievalService:
                         cache_record is not None
                         and cache_record.state == "deleting"
                         and cache_record.object_path == object_path
-                        and cache_record.version_id == version_id
+                        and cache_record.revision == revision
                     ):
                         cache_record.state = "delete_pending"
                 continue
@@ -1180,7 +1179,7 @@ class SqlAlchemyRetrievalService:
                     cache_record is not None
                     and cache_record.state == "deleting"
                     and cache_record.object_path == object_path
-                    and cache_record.version_id == version_id
+                    and cache_record.revision == revision
                 ):
                     session.delete(cache_record)
                     removed += 1
@@ -1320,7 +1319,7 @@ class SqlAlchemyRetrievalService:
         source = PackVolumeRetrievalSource(
             volume_id=object_record.object_id,
             object_path=object_record.object_path,
-            version_id=object_record.version_id,
+            revision=object_record.revision,
             plaintext_bytes=object_record.plaintext_bytes,
             stored_bytes=object_record.stored_bytes,
             age_state_json=object_record.age_state_json,
@@ -1416,18 +1415,10 @@ class SqlAlchemyRetrievalService:
         try:
             if groups and restore_requested_at is None:
                 restore_requested_at = format_utc_timestamp(utc_now())
-                estimated_ready = format_utc_timestamp(
-                    parse_utc_timestamp(restore_requested_at)
-                    + self._config.retrieval_estimated_latency
-                )
                 for (store_name, collection_id), objects in groups.items():
                     self._archive_stores.require(store_name).store.prepare_archive_objects_read(
                         collection_id=collection_id,
                         objects=objects,
-                        retrieval_tier=self._config.retrieval_tier,
-                        hold_days=_provider_hold_days(self._config.retrieval_restore_hold),
-                        requested_at=restore_requested_at,
-                        estimated_ready_at=estimated_ready,
                     )
                 with session_scope(self._session_factory) as session:
                     job = session.scalar(
@@ -1443,10 +1434,6 @@ class SqlAlchemyRetrievalService:
                     else:
                         restore_requested_at = job.restore_requested_at
 
-            requested_at = restore_requested_at or format_utc_timestamp(utc_now())
-            estimated_ready = format_utc_timestamp(
-                parse_utc_timestamp(requested_at) + self._config.retrieval_estimated_latency
-            )
             all_ready = True
             restore_expired = False
             for (store_name, collection_id), objects in groups.items():
@@ -1454,9 +1441,6 @@ class SqlAlchemyRetrievalService:
                 status = store.get_archive_objects_read_status(
                     collection_id=collection_id,
                     objects=objects,
-                    requested_at=requested_at,
-                    estimated_ready_at=estimated_ready,
-                    estimated_expires_at=None,
                 )
                 if status.state == "expired":
                     all_ready = False
@@ -1485,7 +1469,7 @@ class SqlAlchemyRetrievalService:
                         try:
                             self._cache.delete(
                                 object_path=receipt.object_path,
-                                version_id=receipt.version_id,
+                                revision=receipt.revision,
                             )
                         except Exception as cleanup_error:
                             raise RuntimeError(
@@ -1500,7 +1484,7 @@ class SqlAlchemyRetrievalService:
                                 collection_id=collection_id,
                                 object_id=object_identity.object_id,
                                 object_path=receipt.object_path,
-                                version_id=receipt.version_id,
+                                revision=receipt.revision,
                                 stored_bytes=receipt.stored_bytes,
                                 stored_sha256=receipt.stored_sha256,
                                 cached_at=receipt.cached_at,
@@ -1702,27 +1686,27 @@ class _CachedArchiveRangeStore:
         *,
         archive_object_path: str,
         cache_object_path: str,
-        cache_version_id: str | None,
+        cache_revision: str,
     ) -> None:
         self._cache = cache
         self._archive_object_path = archive_object_path
         self._cache_object_path = cache_object_path
-        self._cache_version_id = cache_version_id
+        self._cache_revision = cache_revision
 
     def iter_object_range(
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
-        _ = version_id
+        _ = revision
         if object_path != self._archive_object_path:
             raise ValueError("retrieval cache archive object identity changed")
         return self._cache.iter_object_range(
             object_path=self._cache_object_path,
-            version_id=self._cache_version_id,
+            revision=self._cache_revision,
             offset=offset,
             size=size,
         )
@@ -1746,13 +1730,13 @@ class _TrackedArchiveRangeStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
         content = self._store.iter_object_range(
             object_path=object_path,
-            version_id=version_id,
+            revision=revision,
             offset=offset,
             size=size,
         )
@@ -1772,7 +1756,7 @@ class _DispatchArchiveRangeStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
@@ -1782,7 +1766,7 @@ class _DispatchArchiveRangeStore:
             raise ValueError("raw retrieval object range store is missing") from exc
         return store.iter_object_range(
             object_path=object_path,
-            version_id=version_id,
+            revision=revision,
             offset=offset,
             size=size,
         )
@@ -1804,7 +1788,7 @@ def _stored_parts(content: str) -> tuple[StoredPartReceipt, ...]:
                 plaintext_sha256=str(value["plaintext_sha256"]),
                 stored_bytes=int(value["stored_bytes"]),
                 stored_sha256=str(value["stored_sha256"]),
-                etag=str(value["etag"]),
+                part_token=str(value["part_token"]),
             )
             for value in values
             if isinstance(value, dict)
@@ -1835,11 +1819,6 @@ def _normalize_restore_policy(value: str) -> str:
     if normalized not in {"allow", "never"}:
         raise BadRequest("restore_policy must be allow or never")
     return normalized
-
-
-def _provider_hold_days(value: timedelta) -> int:
-    seconds = value.total_seconds()
-    return max(1, int((seconds + 86_399) // 86_400))
 
 
 def _active_cache_lease_summary(now: str) -> Any:
@@ -1944,7 +1923,7 @@ def _object_identity(row: CollectionArchiveObjectRecord) -> ArchiveObjectIdentit
         stored_bytes=row.stored_bytes,
         sha256=row.sha256,
         stored_sha256=row.stored_sha256,
-        version_id=row.version_id,
+        revision=row.revision,
     )
 
 

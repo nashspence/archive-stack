@@ -443,7 +443,7 @@ def _validate_part_receipts(
             raise ValueError("sealed archive volume part order is invalid")
         if current.plaintext_start != expected_plaintext_start or current.plaintext_bytes < 0:
             raise ValueError("sealed archive volume plaintext ranges are not contiguous")
-        if current.stored_bytes <= 0 or not current.etag:
+        if current.stored_bytes <= 0 or not current.part_token:
             raise ValueError("sealed archive volume stored part must not be empty")
         if _SHA256_RE.fullmatch(current.plaintext_sha256) is None:
             raise ValueError("sealed archive volume plaintext part sha256 is invalid")

@@ -19,6 +19,8 @@ MISE_IMAGE = (
 )
 MISE_CONTAINER_TOOLS = {
     "riverhog": {"minisign", "uv"},
+    "riverhog-aws-storage-adapter": {"uv"},
+    "riverhog-backblaze-storage-adapter": {"uv"},
     "riverhog-ftp-adapter": {"uv"},
     "stove0": {"uv"},
     "stove0-ffprobe-sampling-observer": {"uv"},
@@ -26,6 +28,7 @@ MISE_CONTAINER_TOOLS = {
     "stove0-opus-target": {"uv"},
     "stove0-review-target": {"uv"},
     "mango-fish": {"uv"},
+    "garage-storage-adapter": {"uv"},
     "test": {"age", "http:exiftool", "minisign", "uv"},
 }
 
@@ -39,6 +42,20 @@ IMAGE_CONTRACTS = {
             ("riverhog/server/compose.yaml", "state"),
             ("riverhog/server/compose.yaml", "app"),
         ),
+    },
+    "riverhog-aws-storage-adapter": {
+        "dockerfile": "riverhog/aws-storage-adapter/Dockerfile",
+        "tag": "riverhog-aws-storage-adapter:dev",
+        "title": "Riverhog AWS storage adapter",
+        "license": "Apache-2.0",
+        "compose": (),
+    },
+    "riverhog-backblaze-storage-adapter": {
+        "dockerfile": "riverhog/backblaze-storage-adapter/Dockerfile",
+        "tag": "riverhog-backblaze-storage-adapter:dev",
+        "title": "Riverhog Backblaze storage adapter",
+        "license": "Apache-2.0",
+        "compose": (),
     },
     "riverhog-ftp-adapter": {
         "dockerfile": "riverhog/ftp-adapter/Dockerfile",
@@ -99,6 +116,13 @@ IMAGE_CONTRACTS = {
         "title": "Mango Fish",
         "license": "Apache-2.0",
         "compose": (),
+    },
+    "garage-storage-adapter": {
+        "dockerfile": "riverhog/garage-storage-adapter/Dockerfile",
+        "tag": "riverhog-garage-storage-adapter:dev",
+        "title": "Riverhog Garage storage adapter",
+        "license": "Apache-2.0",
+        "compose": (("riverhog/server/compose.yaml", "garage-storage-adapter"),),
     },
     "test": {
         "dockerfile": "tests/Dockerfile",

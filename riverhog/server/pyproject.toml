@@ -21,12 +21,8 @@ urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "
 dependencies = [
   "alembic>=1.18.5,<2.0",
   "application-access>=0.1,<0.2",
-  "boto3>=1.35,<2.0",
-  "botocore>=1.35,<2.0",
-  "cryptography>=50.0.0,<51",
   "fastapi>=0.111,<1.0",
   "http-api-contracts>=0.1,<0.2",
-  "httpx[http2]>=0.27,<1.0",
   "lifecycle-events>=0.1,<0.2",
   "opentimestamps-client>=0.7,<1.0",
   "psycopg[binary]>=3.3.4,<4.0",
@@ -34,6 +30,8 @@ dependencies = [
   "riverhog-age>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
   "riverhog-provenance>=0.1,<0.2",
+  "riverhog-storage-adapter-protocol>=0.1,<0.2",
+  "riverhog-storage-adapter-support>=0.1,<0.2",
   "sqlalchemy>=2.0,<3.0",
   "starlette>=0.37,<2.0",
   "state-schema>=0.1,<0.2",
@@ -51,6 +49,8 @@ lifecycle-events = { workspace = true }
 riverhog-age = { workspace = true }
 riverhog-protocol = { workspace = true }
 riverhog-provenance = { workspace = true }
+riverhog-storage-adapter-protocol = { workspace = true }
+riverhog-storage-adapter-support = { workspace = true }
 state-schema = { workspace = true }
 time-formats = { workspace = true }
 

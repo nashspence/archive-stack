@@ -4,7 +4,6 @@ import hashlib
 import json
 
 import pytest
-from riverhog_age import S3_MIN_PART_SIZE
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.domain.archive import ArchiveFile
 from riverhog_core.incremental_plan import (
@@ -14,6 +13,8 @@ from riverhog_core.incremental_plan import (
     new_incremental_volume_planner,
     parse_incremental_volume_planner_checkpoint,
 )
+
+TEST_PART_BYTES = 5 * 1024**2
 
 
 def _ordered(order: int, path: str, byte_count: int) -> OrderedArchiveFile:
@@ -33,8 +34,8 @@ def _policy() -> CollectionVolumePolicy:
         pack_files=2,
         pack_member_bytes=8,
         pack_part_plaintext_bytes=5 * 1024 * 1024,
-        raw_volume_plaintext_bytes=S3_MIN_PART_SIZE,
-        raw_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        raw_volume_plaintext_bytes=TEST_PART_BYTES,
+        raw_part_plaintext_bytes=TEST_PART_BYTES,
     )
 
 
@@ -60,7 +61,7 @@ def test_incremental_planner_restart_reproduces_volume_boundaries() -> None:
 def test_large_file_flushes_pending_pack_and_emits_canonical_segments() -> None:
     batch = advance_incremental_volume_plan(
         new_incremental_volume_planner(policy=_policy()),
-        (_ordered(0, "small.txt", 3), _ordered(1, "large.bin", 2 * S3_MIN_PART_SIZE + 4)),
+        (_ordered(0, "small.txt", 3), _ordered(1, "large.bin", 2 * TEST_PART_BYTES + 4)),
         final=True,
     )
 

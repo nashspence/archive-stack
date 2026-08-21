@@ -41,11 +41,13 @@ class MirroredArchiveMultipartObjectStore:
         object_path: str,
         content_type: str,
         metadata: dict[str, str],
+        expected_bytes: int,
     ) -> MultipartUpload:
         archive_upload = self._archive.create_multipart_upload(
             object_path=object_path,
             content_type=content_type,
             metadata=metadata,
+            expected_bytes=expected_bytes,
         )
         try:
             cache_completed = self._cache_objects.head_completed_object(
@@ -59,6 +61,7 @@ class MirroredArchiveMultipartObjectStore:
                     object_path=object_path,
                     content_type=content_type,
                     metadata=metadata,
+                    expected_bytes=expected_bytes,
                 )
             )
         except BaseException:
@@ -66,7 +69,7 @@ class MirroredArchiveMultipartObjectStore:
             raise
         return MultipartUpload(
             object_path=object_path,
-            upload_id=_encode_upload_id(
+            transfer_id=_encode_transfer_id(
                 archive_upload=archive_upload,
                 cache_upload=cache_upload,
             ),
@@ -79,12 +82,8 @@ class MirroredArchiveMultipartObjectStore:
         number: int,
         content: bytes,
     ) -> MultipartPartReceipt:
-        archive_upload, cache_upload = _decode_upload_id(upload)
-        cache_completed = self._cache_objects.head_completed_object(
-            object_path=upload.object_path,
-            expected_metadata={},
-        )
-        if cache_completed is not None:
+        archive_upload, cache_upload = _decode_transfer_id(upload)
+        if cache_upload is None:
             return self._archive.upload_part(
                 upload=archive_upload,
                 number=number,
@@ -112,19 +111,15 @@ class MirroredArchiveMultipartObjectStore:
             cache_receipt = cache_future.result()
         if (
             archive_receipt.number != cache_receipt.number
-            or archive_receipt.bytes != cache_receipt.bytes
+            or archive_receipt.stored_bytes != cache_receipt.stored_bytes
         ):
             raise RuntimeError("archive and retrieval cache multipart receipts disagree")
         return archive_receipt
 
     def list_parts(self, *, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
-        archive_upload, cache_upload = _decode_upload_id(upload)
+        archive_upload, cache_upload = _decode_transfer_id(upload)
         archive_parts = self._archive.list_parts(upload=archive_upload)
-        cache_completed = self._cache_objects.head_completed_object(
-            object_path=upload.object_path,
-            expected_metadata={},
-        )
-        if cache_completed is not None:
+        if cache_upload is None:
             return archive_parts
         if cache_upload is None:
             raise RuntimeError("retrieval cache mirror has no upload or completed object")
@@ -136,7 +131,8 @@ class MirroredArchiveMultipartObjectStore:
             current
             for current in archive_parts
             if (mirrored := cache_parts.get(current.number)) is not None
-            and mirrored.bytes == current.bytes
+            and mirrored.stored_bytes == current.stored_bytes
+            and mirrored.stored_sha256 == current.stored_sha256
         )
 
     def complete_multipart_upload(
@@ -147,7 +143,7 @@ class MirroredArchiveMultipartObjectStore:
         expected_bytes: int,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
-        archive_upload, cache_upload = _decode_upload_id(upload)
+        archive_upload, cache_upload = _decode_transfer_id(upload)
         cache_completed = self._cache_objects.head_completed_object(
             object_path=upload.object_path,
             expected_metadata=expected_metadata,
@@ -163,7 +159,7 @@ class MirroredArchiveMultipartObjectStore:
                 expected_bytes=expected_bytes,
                 expected_metadata=expected_metadata,
             )
-        if cache_completed.bytes != expected_bytes:
+        if cache_completed.stored_bytes != expected_bytes:
             raise RuntimeError("retrieval cache mirror byte count differs from archive upload")
         cache_receipt = self._cache.verify_multipart_object(
             completed=cache_completed,
@@ -193,7 +189,10 @@ class MirroredArchiveMultipartObjectStore:
             object_path=object_path,
             expected_metadata=expected_metadata,
         )
-        if cache_completed is None or cache_completed.bytes != archive_completed.bytes:
+        if (
+            cache_completed is None
+            or cache_completed.stored_bytes != archive_completed.stored_bytes
+        ):
             raise RuntimeError("completed archive object is missing its required retrieval cache")
         return replace(
             archive_completed,
@@ -201,7 +200,7 @@ class MirroredArchiveMultipartObjectStore:
         )
 
     def abort_multipart_upload(self, *, upload: MultipartUpload) -> None:
-        archive_upload, cache_upload = _decode_upload_id(upload)
+        archive_upload, cache_upload = _decode_transfer_id(upload)
         archive_completed = self._archive.head_completed_object(
             object_path=upload.object_path,
             expected_metadata={},
@@ -220,13 +219,13 @@ class MirroredArchiveMultipartObjectStore:
         if cache_completed is not None and archive_completed is None:
             self._cache.delete(
                 object_path=cache_completed.object_path,
-                version_id=cache_completed.version_id,
+                revision=cache_completed.revision,
             )
         if archive_error is not None:
             raise archive_error
 
 
-def _encode_upload_id(
+def _encode_transfer_id(
     *,
     archive_upload: MultipartUpload,
     cache_upload: MultipartUpload | None,
@@ -236,12 +235,12 @@ def _encode_upload_id(
             "schema": _UPLOAD_SCHEMA,
             "archive": {
                 "object_path": archive_upload.object_path,
-                "upload_id": archive_upload.upload_id,
+                "transfer_id": archive_upload.transfer_id,
             },
             "cache": (
                 {
                     "object_path": cache_upload.object_path,
-                    "upload_id": cache_upload.upload_id,
+                    "transfer_id": cache_upload.transfer_id,
                 }
                 if cache_upload is not None
                 else None
@@ -252,9 +251,9 @@ def _encode_upload_id(
     )
 
 
-def _decode_upload_id(upload: MultipartUpload) -> tuple[MultipartUpload, MultipartUpload | None]:
+def _decode_transfer_id(upload: MultipartUpload) -> tuple[MultipartUpload, MultipartUpload | None]:
     try:
-        payload = json.loads(upload.upload_id)
+        payload = json.loads(upload.transfer_id)
     except json.JSONDecodeError as exc:
         raise ValueError("archive-cache mirror upload id is invalid") from exc
     if not isinstance(payload, dict) or payload.get("schema") != _UPLOAD_SCHEMA:
@@ -271,17 +270,23 @@ def _upload_from_payload(value: object, *, label: str) -> MultipartUpload:
     if not isinstance(value, dict):
         raise ValueError(f"archive-cache mirror {label} upload is invalid")
     object_path = str(value.get("object_path", ""))
-    upload_id = str(value.get("upload_id", ""))
-    if not object_path or not upload_id:
+    transfer_id = str(value.get("transfer_id", ""))
+    if not object_path or not transfer_id:
         raise ValueError(f"archive-cache mirror {label} upload identity is invalid")
-    return MultipartUpload(object_path, upload_id)
+    return MultipartUpload(object_path, transfer_id)
 
 
 def _require_matching_parts(
     archive: tuple[MultipartPartReceipt, ...],
     cache: tuple[MultipartPartReceipt, ...],
 ) -> None:
-    archive_shape = tuple((current.number, current.bytes) for current in archive)
-    cache_shape = tuple((current.number, current.bytes) for current in cache)
+    archive_shape = tuple(
+        (current.number, current.stored_bytes, current.stored_sha256)
+        for current in archive
+    )
+    cache_shape = tuple(
+        (current.number, current.stored_bytes, current.stored_sha256)
+        for current in cache
+    )
     if archive_shape != cache_shape:
         raise RuntimeError("retrieval cache multipart parts do not match the archive upload")

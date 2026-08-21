@@ -7,7 +7,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from riverhog_age import CHUNK_SIZE, ResumableAgeScryptSession, S3PartPlan, UploadState
+from riverhog_age import CHUNK_SIZE, MultipartPartPlan, ResumableAgeScryptSession, UploadState
 
 from riverhog_core.throughput import (
     DEFAULT_AGE_DERIVATION_CONCURRENCY,
@@ -141,11 +141,11 @@ class ResumableAgeSessionCache:
 def prepare_age_part(
     *,
     session: ResumableAgeScryptSession,
-    plan: S3PartPlan,
+    plan: MultipartPartPlan,
     total_plaintext_bytes: int,
     plaintext_chunks: Iterable[bytes],
 ) -> PreparedAgePart:
-    """Encrypt one age/S3 part without materializing its complete plaintext.
+    """Encrypt one age multipart unit without materializing its complete plaintext.
 
     Only the final ciphertext body is buffered because botocore's portable UploadPart API
     needs a replayable body. Plaintext is consumed, hashed, and encrypted in 64 KiB age

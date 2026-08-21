@@ -18,14 +18,20 @@ members = [
     "mango-fish",
     "riverhog-age",
     "riverhog-api-client",
+    "riverhog-aws-storage-adapter",
+    "riverhog-backblaze-storage-adapter",
     "riverhog-cli-support",
     "riverhog-client",
     "riverhog-ftp-adapter",
     "riverhog-ftp-adapter-api-client",
+    "riverhog-garage-storage-adapter",
     "riverhog-protocol",
     "riverhog-provenance",
     "riverhog-recover",
     "riverhog-server",
+    "riverhog-storage-adapter-protocol",
+    "riverhog-storage-adapter-s3-support",
+    "riverhog-storage-adapter-support",
     "riverhog-transform-sdk",
     "state-schema",
     "stove0-api-client",
@@ -1542,6 +1548,50 @@ requires-dist = [
 ]
 
 [[package]]
+name = "riverhog-aws-storage-adapter"
+version = "0.1.0"
+source = { editable = "riverhog/aws-storage-adapter" }
+dependencies = [
+    { name = "botocore" },
+    { name = "cryptography" },
+    { name = "httpx", extra = ["http2"] },
+    { name = "riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-s3-support" },
+    { name = "riverhog-storage-adapter-support" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "botocore", specifier = ">=1.35,<2.0" },
+    { name = "cryptography", specifier = ">=50.0.0,<51" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
+    { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-s3-support", editable = "packages/riverhog-storage-adapter-s3-support" },
+    { name = "riverhog-storage-adapter-support", editable = "packages/riverhog-storage-adapter-support" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
+name = "riverhog-backblaze-storage-adapter"
+version = "0.1.0"
+source = { editable = "riverhog/backblaze-storage-adapter" }
+dependencies = [
+    { name = "riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-s3-support" },
+    { name = "riverhog-storage-adapter-support" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-s3-support", editable = "packages/riverhog-storage-adapter-s3-support" },
+    { name = "riverhog-storage-adapter-support", editable = "packages/riverhog-storage-adapter-support" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
 name = "riverhog-cli-support"
 version = "0.1.0"
 source = { editable = "packages/riverhog-cli-support" }
@@ -1626,6 +1676,25 @@ requires-dist = [
 ]
 
 [[package]]
+name = "riverhog-garage-storage-adapter"
+version = "0.1.0"
+source = { editable = "riverhog/garage-storage-adapter" }
+dependencies = [
+    { name = "riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-s3-support" },
+    { name = "riverhog-storage-adapter-support" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-s3-support", editable = "packages/riverhog-storage-adapter-s3-support" },
+    { name = "riverhog-storage-adapter-support", editable = "packages/riverhog-storage-adapter-support" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
 name = "riverhog-protocol"
 version = "0.1.0"
 source = { editable = "packages/riverhog-protocol" }
@@ -1653,12 +1722,8 @@ source = { editable = "riverhog/server" }
 dependencies = [
     { name = "alembic" },
     { name = "application-access" },
-    { name = "boto3" },
-    { name = "botocore" },
-    { name = "cryptography" },
     { name = "fastapi" },
     { name = "http-api-contracts" },
-    { name = "httpx", extra = ["http2"] },
     { name = "lifecycle-events" },
     { name = "opentimestamps-client" },
     { name = "psycopg", extra = ["binary"] },
@@ -1666,6 +1731,8 @@ dependencies = [
     { name = "riverhog-age" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
+    { name = "riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-support" },
     { name = "sqlalchemy" },
     { name = "starlette" },
     { name = "state-schema" },
@@ -1677,12 +1744,8 @@ dependencies = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.18.5,<2.0" },
     { name = "application-access", editable = "packages/application-access" },
-    { name = "boto3", specifier = ">=1.35,<2.0" },
-    { name = "botocore", specifier = ">=1.35,<2.0" },
-    { name = "cryptography", specifier = ">=50.0.0,<51" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
-    { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "opentimestamps-client", specifier = ">=0.7,<1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4.0" },
@@ -1690,11 +1753,66 @@ requires-dist = [
     { name = "riverhog-age", editable = "packages/riverhog-age" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-support", editable = "packages/riverhog-storage-adapter-support" },
     { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
     { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
+]
+
+[[package]]
+name = "riverhog-storage-adapter-protocol"
+version = "0.1.0"
+source = { editable = "packages/riverhog-storage-adapter-protocol" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "riverhog-protocol" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+]
+
+[[package]]
+name = "riverhog-storage-adapter-s3-support"
+version = "0.1.0"
+source = { editable = "packages/riverhog-storage-adapter-s3-support" }
+dependencies = [
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-support" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", specifier = ">=1.35,<2.0" },
+    { name = "botocore", specifier = ">=1.35,<2.0" },
+    { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
+    { name = "riverhog-storage-adapter-support", editable = "packages/riverhog-storage-adapter-support" },
+]
+
+[[package]]
+name = "riverhog-storage-adapter-support"
+version = "0.1.0"
+source = { editable = "packages/riverhog-storage-adapter-support" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx", extra = ["http2"] },
+    { name = "pydantic" },
+    { name = "riverhog-storage-adapter-protocol" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
 ]
 
 [[package]]

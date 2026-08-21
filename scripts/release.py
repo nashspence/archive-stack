@@ -61,6 +61,14 @@ RUNTIME_IMAGE_TARGETS = {
         "distribution": "riverhog-server",
         "repository": "ghcr.io/nashspence/riverhog",
     },
+    "riverhog-aws-storage-adapter": {
+        "distribution": "riverhog-aws-storage-adapter",
+        "repository": "ghcr.io/nashspence/riverhog-aws-storage-adapter",
+    },
+    "riverhog-backblaze-storage-adapter": {
+        "distribution": "riverhog-backblaze-storage-adapter",
+        "repository": "ghcr.io/nashspence/riverhog-backblaze-storage-adapter",
+    },
     "riverhog-ftp-adapter": {
         "distribution": "riverhog-ftp-adapter",
         "repository": "ghcr.io/nashspence/riverhog-ftp-adapter",
@@ -90,7 +98,10 @@ RUNTIME_IMAGE_TARGETS = {
         "repository": "ghcr.io/nashspence/riverhog-stove0-review-target",
     },
 }
-TEST_IMAGE_TARGETS = {"test": {"local_tag": "riverhog-test:dev"}}
+TEST_IMAGE_TARGETS = {
+    "garage-storage-adapter": {"local_tag": "riverhog-garage-storage-adapter:dev"},
+    "test": {"local_tag": "riverhog-test:dev"},
+}
 RELEASE_IMAGE_PLATFORMS = ["linux/amd64"]
 END_USER_ARTIFACT_PLATFORMS = ["linux-x64", "macos-arm64", "windows-x64"]
 SIGNING_POLICY_KEYS = {

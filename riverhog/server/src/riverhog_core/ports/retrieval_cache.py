@@ -35,7 +35,7 @@ class RetrievalCache(Protocol):
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str,
         expected_bytes: int,
         expected_sha256: str,
     ) -> Iterator[bytes]: ...
@@ -44,12 +44,12 @@ class RetrievalCache(Protocol):
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str,
         offset: int,
         size: int,
     ) -> Iterator[bytes]: ...
 
-    def delete(self, *, object_path: str, version_id: str | None) -> None: ...
+    def delete(self, *, object_path: str, revision: str) -> None: ...
 
     def multipart_object_store(
         self,

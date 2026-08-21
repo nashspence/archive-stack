@@ -4,7 +4,6 @@ import hashlib
 from dataclasses import dataclass
 
 import pytest
-from riverhog_age import S3_MIN_PART_SIZE
 from riverhog_core.domain.archive import ArchiveFile
 from riverhog_core.pack_upload import (
     PackUploadCheckpoint,
@@ -17,6 +16,8 @@ from riverhog_core.ports.archive_objects import (
     MultipartPartReceipt,
     MultipartUpload,
 )
+
+TEST_PART_BYTES = 5 * 1024**2
 
 
 def _file(path: str, content: bytes) -> ArchiveFile:
@@ -50,7 +51,7 @@ class _UploadRow:
     content_type: str
     metadata: dict[str, str]
     parts: dict[int, bytes]
-    etags: dict[int, str]
+    part_tokens: dict[int, str]
 
 
 class MemoryMultipartStore:
@@ -67,11 +68,13 @@ class MemoryMultipartStore:
         object_path: str,
         content_type: str,
         metadata: dict[str, str],
+        expected_bytes: int,
     ) -> MultipartUpload:
-        upload_id = f"upload-{self.next_id}"
+        _ = expected_bytes
+        transfer_id = f"upload-{self.next_id}"
         self.next_id += 1
-        self.uploads[upload_id] = _UploadRow(object_path, content_type, dict(metadata), {}, {})
-        return MultipartUpload(object_path, upload_id)
+        self.uploads[transfer_id] = _UploadRow(object_path, content_type, dict(metadata), {}, {})
+        return MultipartUpload(object_path, transfer_id)
 
     def upload_part(
         self,
@@ -80,16 +83,21 @@ class MemoryMultipartStore:
         number: int,
         content: bytes,
     ) -> MultipartPartReceipt:
-        row = self.uploads[upload.upload_id]
-        etag = f'"{hashlib.md5(content, usedforsecurity=False).hexdigest()}"'
+        row = self.uploads[upload.transfer_id]
+        digest = hashlib.sha256(content).hexdigest()
         row.parts[number] = content
-        row.etags[number] = etag
-        return MultipartPartReceipt(number=number, etag=etag, bytes=len(content))
+        row.part_tokens[number] = digest
+        return MultipartPartReceipt(number, digest, len(content), digest)
 
     def list_parts(self, *, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
-        row = self.uploads[upload.upload_id]
+        row = self.uploads[upload.transfer_id]
         return tuple(
-            MultipartPartReceipt(number, row.etags[number], len(row.parts[number]))
+            MultipartPartReceipt(
+                number,
+                row.part_tokens[number],
+                len(row.parts[number]),
+                hashlib.sha256(row.parts[number]).hexdigest(),
+            )
             for number in sorted(row.parts)
         )
 
@@ -102,19 +110,19 @@ class MemoryMultipartStore:
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
         self.complete_calls += 1
-        row = self.uploads[upload.upload_id]
+        row = self.uploads[upload.transfer_id]
         assert all(row.metadata.get(key) == value for key, value in expected_metadata.items())
         content = b"".join(row.parts[current.number] for current in parts)
         assert len(content) == expected_bytes
         receipt = CompletedObjectReceipt(
             object_path=upload.object_path,
-            version_id="version-1",
-            etag='"completed"',
-            bytes=len(content),
+            revision="version-1",
+            stored_bytes=len(content),
+            stored_sha256=hashlib.sha256(content).hexdigest(),
             completed_at="2026-08-03T00:00:00Z",
         )
         self.objects[upload.object_path] = (content, row.metadata, receipt)
-        del self.uploads[upload.upload_id]
+        del self.uploads[upload.transfer_id]
         if self.lose_complete_response:
             self.lose_complete_response = False
             raise ConnectionError("completion response lost")
@@ -134,7 +142,7 @@ class MemoryMultipartStore:
         return found[2]
 
     def abort_multipart_upload(self, *, upload: MultipartUpload) -> None:
-        self.uploads.pop(upload.upload_id, None)
+        self.uploads.pop(upload.transfer_id, None)
 
 
 def _uploader(
@@ -179,7 +187,7 @@ def test_pack_is_acknowledged_only_after_final_multipart_completion() -> None:
     assert store.complete_calls == 1
     assert receipt.volume_id == plan.volume_id
     assert receipt.parts[0].plaintext_bytes == plan.plaintext_bytes
-    assert receipt.stored_bytes == checkpoint.completed.bytes
+    assert receipt.stored_bytes == checkpoint.completed.stored_bytes
 
 
 def test_pack_upload_revalidates_the_registered_source_identity() -> None:
@@ -208,7 +216,7 @@ def test_checkpoint_resumes_between_whole_file_units() -> None:
     plan = plan_pack_volume(
         [_file(path, value) for path, value in contents.items()],
         sequence=0,
-        part_plaintext_bytes=S3_MIN_PART_SIZE,
+        part_plaintext_bytes=TEST_PART_BYTES,
     )
     assert len(plan.units) >= 2
     store = MemoryMultipartStore()
@@ -337,7 +345,7 @@ def test_lost_part_response_is_retried_at_the_same_deterministic_part_number() -
 
     persisted = PackUploadCheckpoint.from_json(checkpoints.rows[(1, plan.volume_id)])
     assert persisted.parts == ()
-    assert store.uploads[persisted.upload_id].parts.keys() == {1}
+    assert store.uploads[persisted.transfer_id].parts.keys() == {1}
 
     resumed_uploader = _uploader(store, checkpoints)
     resumed = resumed_uploader.open(

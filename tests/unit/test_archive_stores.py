@@ -13,7 +13,7 @@ from riverhog_core.catalog_models import (
     CollectionMetadataPublicationRecord,
     CollectionRecord,
 )
-from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.runtime_config import DEV_STORAGE_PROFILE, RuntimeConfig
 from riverhog_core.services.archive_stores import SqlAlchemyArchiveStoreService
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 
@@ -25,7 +25,6 @@ def _config(path: Path) -> RuntimeConfig:
     deep = replace(
         config.archive_store("archive"),
         name="deep",
-        storage_class="DEEP_ARCHIVE",
     )
     return replace(
         config,
@@ -63,8 +62,15 @@ def _seed(path: Path) -> None:
             store="deep",
             state="uploaded",
             archive_storage_prefix="collections/1",
-            backend="s3",
-            storage_class="DEEP_ARCHIVE",
+            storage_adapter="archive",
+            storage_profile_id="riverhog.garage-development/v1",
+            storage_profile_contract_sha256=DEV_STORAGE_PROFILE.profile_contract_sha256,
+            egress_accounting_id="riverhog-garage-development",
+            read_mode="immediate",
+            adapter_implementation_id="riverhog.garage-storage-adapter/v1",
+            adapter_implementation_version="1.0.0",
+            adapter_source_revision="fixture",
+            adapter_runtime_descriptor_sha256="2" * 64,
             last_uploaded_at="2026-01-01T00:00:00.000000Z",
             last_verified_at="2026-01-01T00:00:00.000000Z",
         )
@@ -84,8 +90,7 @@ def _seed(path: Path) -> None:
                     stored_bytes=size,
                     sha256=chr(ord("a") + order) * 64,
                     stored_sha256=chr(ord("a") + order) * 64,
-                    backend="s3",
-                    storage_class="DEEP_ARCHIVE" if kind == "pack" else "STANDARD",
+                    revision=f"revision-{order}",
                     uploaded_at="2026-01-01T00:00:00.000000Z",
                     verified_at="2026-01-01T00:00:00.000000Z",
                 )
@@ -136,8 +141,6 @@ def test_archive_store_list_is_bounded_filterable_and_sorted(tmp_path: Path) -> 
             "b2": replace(
                 archive,
                 name="b2",
-                storage_class="STANDARD",
-                read_mode="immediate",
             ),
         },
         archive_write_store="deep",
@@ -156,7 +159,7 @@ def test_archive_store_list_is_bounded_filterable_and_sorted(tmp_path: Path) -> 
     filtered = SqlAlchemyArchiveStoreService(config).list(
         page=1,
         per_page=25,
-        q="standard",
+        q="b2",
         sort="store",
         order="asc",
     )

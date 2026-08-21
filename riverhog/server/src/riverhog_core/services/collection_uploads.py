@@ -242,6 +242,7 @@ class SqlAlchemyCollectionUploadService:
                 .with_for_update()
             )
             if upload is not None:
+                evidence = archive_binding.store.storage_execution_evidence()
                 if (
                     _upload_tags(upload) != normalized_tags
                     or upload.archive_store != store_name
@@ -250,9 +251,17 @@ class SqlAlchemyCollectionUploadService:
                     or upload.provenance_omission_reason != normalized_omission_reason
                 ):
                     raise Conflict("collection upload idempotency identity changed")
+                if (
+                    upload.storage_adapter_runtime_descriptor_sha256
+                    != evidence.adapter_runtime_descriptor_sha256
+                ):
+                    raise Conflict(
+                        "collection upload storage-adapter runtime descriptor changed"
+                    )
                 return _upload_payload(session, upload)
 
             _require_tags(session, normalized_tags)
+            evidence = archive_binding.store.storage_execution_evidence()
             now = utc_timestamp_now()
             checkpoint = new_incremental_volume_planner(policy=self._policy)
             upload = CollectionUploadRecord(
@@ -265,6 +274,9 @@ class SqlAlchemyCollectionUploadService:
                 event_context_json=context_json,
                 state="open",
                 archive_store=store_name,
+                storage_adapter_runtime_descriptor_sha256=(
+                    evidence.adapter_runtime_descriptor_sha256
+                ),
                 opened_at=now,
                 last_activity_at=now,
                 archive_phase="planning",
@@ -952,7 +964,8 @@ class SqlAlchemyCollectionUploadService:
         if (
             not self._config.retrieval_cache_new_archive_enabled
             or self._retrieval_cache is None
-            or self._config.archive_store(store_name).read_mode != "restore_required"
+            or self._archive_stores.require(store_name).store.read_mode()
+            != "restore_required"
         ):
             return archive
         return MirroredArchiveMultipartObjectStore(
@@ -1472,14 +1485,33 @@ class SqlAlchemyCollectionUploadService:
                 )
                 for tag in tags
             )
-            store_config = self._config.archive_store(upload.archive_store)
+            binding = self._archive_stores.require(upload.archive_store)
+            evidence = binding.store.storage_execution_evidence()
+            if (
+                upload.storage_adapter_runtime_descriptor_sha256
+                != evidence.adapter_runtime_descriptor_sha256
+            ):
+                raise RuntimeError(
+                    "collection upload storage-adapter runtime descriptor changed"
+                )
             copy = CollectionArchiveCopyRecord(
                 collection_id=collection_id,
                 store=upload.archive_store,
                 state="uploaded",
                 archive_storage_prefix=projection.root.archive_storage_prefix,
-                backend=store_config.backend,
-                storage_class=store_config.storage_class,
+                storage_adapter=evidence.storage_adapter,
+                storage_profile_id=evidence.storage_profile_id,
+                storage_profile_contract_sha256=(
+                    evidence.storage_profile_contract_sha256
+                ),
+                egress_accounting_id=evidence.egress_accounting_id,
+                read_mode=evidence.read_mode,
+                adapter_implementation_id=evidence.adapter_implementation_id,
+                adapter_implementation_version=evidence.adapter_implementation_version,
+                adapter_source_revision=evidence.adapter_source_revision,
+                adapter_runtime_descriptor_sha256=(
+                    evidence.adapter_runtime_descriptor_sha256
+                ),
                 last_uploaded_at=now,
                 last_verified_at=now,
             )
@@ -1489,7 +1521,7 @@ class SqlAlchemyCollectionUploadService:
             cache_required = (
                 self._config.retrieval_cache_new_archive_enabled
                 and self._retrieval_cache is not None
-                and store_config.read_mode == "restore_required"
+                and evidence.read_mode == "restore_required"
             )
             for volume in projection.volumes:
                 if cache_required and volume.retrieval_cache is None:
@@ -1508,13 +1540,11 @@ class SqlAlchemyCollectionUploadService:
                         stored_bytes=volume.stored_bytes,
                         sha256=None,
                         stored_sha256=None,
-                        version_id=volume.version_id,
+                        revision=volume.revision,
                         age_state_json=volume.age_state_json,
                         part_receipts_json=volume.part_receipts_json,
                         plan_sha256=volume.plan_sha256,
                         index_sha256=volume.index_sha256,
-                        backend=store_config.backend,
-                        storage_class=store_config.storage_class,
                         uploaded_at=volume.completed_at,
                         verified_at=now,
                     )
@@ -1537,7 +1567,7 @@ class SqlAlchemyCollectionUploadService:
                         collection_id=collection_id,
                         object_id=volume.volume_id,
                         object_path=receipt.object_path,
-                        version_id=receipt.version_id,
+                        revision=receipt.revision,
                         stored_bytes=receipt.stored_bytes,
                         stored_sha256=receipt.stored_sha256,
                         cached_at=receipt.cached_at,
@@ -1573,9 +1603,7 @@ class SqlAlchemyCollectionUploadService:
                             stored_bytes=current.stored_bytes,
                             sha256=current.plaintext_sha256,
                             stored_sha256=current.stored_sha256,
-                            version_id=current.version_id,
-                            backend=store_config.backend,
-                            storage_class=store_config.storage_class,
+                            revision=current.revision,
                             uploaded_at=current.completed_at,
                             verified_at=now,
                         )
@@ -1594,9 +1622,7 @@ class SqlAlchemyCollectionUploadService:
                         stored_bytes=root.stored_bytes,
                         sha256=root.plaintext_sha256,
                         stored_sha256=root.stored_sha256,
-                        version_id=root.version_id,
-                        backend=store_config.backend,
-                        storage_class=store_config.storage_class,
+                        revision=root.revision,
                         uploaded_at=root.completed_at,
                         verified_at=now,
                     ),
@@ -1611,9 +1637,7 @@ class SqlAlchemyCollectionUploadService:
                         stored_bytes=proof_receipt.stored_bytes,
                         sha256=hashlib.sha256(proof_bytes).hexdigest(),
                         stored_sha256=proof_receipt.stored_sha256,
-                        version_id=proof_receipt.version_id,
-                        backend=store_config.backend,
-                        storage_class=store_config.storage_class,
+                        revision=proof_receipt.revision,
                         uploaded_at=proof_receipt.completed_at,
                         verified_at=now,
                     ),
@@ -2072,7 +2096,7 @@ def _part_payload(part: StoredPartReceipt) -> dict[str, object]:
         "plaintext_sha256": part.plaintext_sha256,
         "stored_bytes": part.stored_bytes,
         "stored_sha256": part.stored_sha256,
-        "etag": part.etag,
+        "part_token": part.part_token,
     }
 
 
@@ -2154,7 +2178,7 @@ def _sealed_volume_json(receipt: SealedPackVolume | SealedRawVolume) -> str:
         "plaintext_bytes": receipt.plaintext_bytes,
         "age_state": json.loads(receipt.age_state_json),
         "parts": [_part_payload(current) for current in receipt.parts],
-        "version_id": receipt.version_id,
+        "revision": receipt.revision,
         "completed_at": receipt.completed_at,
         "retrieval_cache": retrieval_cache_receipt_payload(receipt.retrieval_cache),
     }
@@ -2190,7 +2214,7 @@ def _parse_parts(values: Sequence[Mapping[str, object]]) -> tuple[StoredPartRece
             plaintext_sha256=str(value["plaintext_sha256"]),
             stored_bytes=_stored_int(value["stored_bytes"], "part stored bytes"),
             stored_sha256=str(value["stored_sha256"]),
-            etag=str(value["etag"]),
+            part_token=str(value["part_token"]),
         )
         for value in values
     )
@@ -2215,7 +2239,7 @@ def _parse_sealed_pack(content: str) -> SealedPackVolume:
         index_sha256=str(value["index_sha256"]),
         plan_sha256=str(value["plan_sha256"]),
         parts=_parse_parts(value["parts"]),
-        version_id=str(value["version_id"]) if value["version_id"] is not None else None,
+        revision=_stored_revision(value["revision"]),
         completed_at=str(value["completed_at"]),
         retrieval_cache=parse_retrieval_cache_receipt(value.get("retrieval_cache")),
     )
@@ -2234,10 +2258,17 @@ def _parse_sealed_raw(content: str) -> SealedRawVolume:
         file_sha256=str(value["file_sha256"]),
         age_state_json=json.dumps(value["age_state"], sort_keys=True, separators=(",", ":")),
         parts=_parse_parts(value["parts"]),
-        version_id=str(value["version_id"]) if value["version_id"] is not None else None,
+        revision=_stored_revision(value["revision"]),
         completed_at=str(value["completed_at"]),
         retrieval_cache=parse_retrieval_cache_receipt(value.get("retrieval_cache")),
     )
+
+
+def _stored_revision(value: object) -> str:
+    revision = str(value) if value is not None else ""
+    if not revision:
+        raise ValueError("sealed archive object revision is missing")
+    return revision
 
 
 def _custodied_bytes(session: Session, collection_id: int) -> int:

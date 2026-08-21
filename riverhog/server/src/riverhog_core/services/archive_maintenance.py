@@ -165,7 +165,7 @@ class SqlAlchemyArchiveMaintenanceService:
                     return
                 publication.published_revision = revision
                 publication.object_path = receipt.object_path
-                publication.version_id = receipt.version_id
+                publication.revision = receipt.revision
                 publication.stored_bytes = receipt.stored_bytes
                 publication.stored_sha256 = receipt.stored_sha256
                 publication.published_at = receipt.published_at

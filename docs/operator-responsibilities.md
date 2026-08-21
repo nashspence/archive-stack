@@ -6,11 +6,11 @@ recovery, or independent recoverability. These checks remain operator work.
 ## Maintain access
 
 Keep account recovery, multi-factor authentication, payment, billing alerts, credentials,
-bucket permissions, provider contacts, and archive-passphrase safeguards current.
+configured-target permissions, provider contacts, and archive-passphrase safeguards current.
 Periodically exercise object listing, metadata reads, retrieval requests, and downloads in
 every store.
 
-After account, credential, provider, or storage-class changes, inspect the affected store
+After account, credential, storage-profile, or adapter-deployment changes, inspect the affected store
 with `riverhog archive store show` and retrieve known files through the application
 interface. A storage summary or object listing alone does not establish recoverability.
 

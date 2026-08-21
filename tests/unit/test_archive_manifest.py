@@ -39,7 +39,7 @@ def _pack_receipt(plan, contents: dict[str, bytes]) -> SealedPackVolume:
                 plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
                 stored_bytes=len(plaintext) + 100,
                 stored_sha256=hashlib.sha256(b"stored" + plaintext).hexdigest(),
-                etag=f'"etag-{unit.unit + 1}"',
+                part_token=f"part-{unit.unit + 1}",
             )
         )
     return SealedPackVolume(
@@ -53,7 +53,7 @@ def _pack_receipt(plan, contents: dict[str, bytes]) -> SealedPackVolume:
         index_sha256=plan.index_sha256,
         plan_sha256=plan.plan_sha256,
         parts=tuple(parts),
-        version_id="v1",
+        revision="v1",
         completed_at="2026-08-03T00:00:00Z",
     )
 
@@ -103,10 +103,10 @@ def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() 
                     plaintext_sha256=hashlib.sha256(first).hexdigest(),
                     stored_bytes=10,
                     stored_sha256=hashlib.sha256(b"first").hexdigest(),
-                    etag="first",
+                    part_token="first",
                 ),
             ),
-            version_id=None,
+            revision=None,
             completed_at="2026-08-03T00:00:00Z",
         ),
         SealedRawVolume(
@@ -127,10 +127,10 @@ def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() 
                     plaintext_sha256=hashlib.sha256(second).hexdigest(),
                     stored_bytes=11,
                     stored_sha256=hashlib.sha256(b"second").hexdigest(),
-                    etag="second",
+                    part_token="second",
                 ),
             ),
-            version_id=None,
+            revision=None,
             completed_at="2026-08-03T00:00:00Z",
         ),
     )
@@ -177,10 +177,10 @@ def test_manifest_rejects_gapped_raw_segments() -> None:
                 plaintext_sha256=hashlib.sha256(content[2:]).hexdigest(),
                 stored_bytes=7,
                 stored_sha256=hashlib.sha256(b"stored").hexdigest(),
-                etag="etag",
+                part_token="part",
             ),
         ),
-        version_id=None,
+        revision=None,
         completed_at="2026-08-03T00:00:00Z",
     )
 

@@ -6,9 +6,21 @@ import riverhog_api.deps as deps
 from riverhog_core.runtime_config import RuntimeConfig
 
 
-class _Adapter:
-    def __init__(self, _config: RuntimeConfig, store: object, **_kwargs: object) -> None:
+class _ArchiveAdapter:
+    def __init__(
+        self,
+        _config: RuntimeConfig,
+        store: object,
+        runtime: object,
+        **_kwargs: object,
+    ) -> None:
         self.store_config = store
+        self.runtime = runtime
+
+
+class _ObjectAdapter:
+    def __init__(self, runtime: object) -> None:
+        self.runtime = runtime
 
 
 def test_composition_binds_every_capability_to_each_configured_archive_store(
@@ -22,13 +34,13 @@ def test_composition_binds_every_capability_to_each_configured_archive_store(
         archive_stores={"archive": primary, "secondary": secondary},
         archive_read_order=("secondary", "archive"),
     )
-    monkeypatch.setattr(deps, "S3ArchiveStore", _Adapter)
-    monkeypatch.setattr(deps, "S3ArchiveMultipartObjectStore", _Adapter)
-    monkeypatch.setattr(deps, "S3ImmutableArchiveObjectStore", _Adapter)
-    monkeypatch.setattr(deps, "S3ArchiveObjectRangeStore", _Adapter)
+    monkeypatch.setattr(deps, "StorageAdapterArchiveStore", _ArchiveAdapter)
+    monkeypatch.setattr(deps, "StorageAdapterObjectStore", _ObjectAdapter)
+    runtime = object()
 
     registry = deps._archive_store_registry(
         config,
+        runtimes={"archive": runtime},  # type: ignore[dict-item]
         retrieval_cache=None,
         download_allowance=object(),  # type: ignore[arg-type]
     )
@@ -38,6 +50,7 @@ def test_composition_binds_every_capability_to_each_configured_archive_store(
         binding = registry.require(name)
         expected = config.archive_store(name)
         assert binding.store.store_config is expected  # type: ignore[attr-defined]
-        assert binding.multipart_objects.store_config is expected  # type: ignore[attr-defined]
-        assert binding.immutable_objects.store_config is expected  # type: ignore[attr-defined]
-        assert binding.object_ranges.store_config is expected  # type: ignore[attr-defined]
+        assert binding.store.runtime is runtime  # type: ignore[attr-defined]
+        assert binding.multipart_objects is binding.immutable_objects
+        assert binding.multipart_objects is binding.object_ranges
+        assert binding.multipart_objects.runtime is runtime  # type: ignore[attr-defined]

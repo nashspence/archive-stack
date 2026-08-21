@@ -62,7 +62,7 @@ def _part(plaintext: bytes, ciphertext: bytes) -> tuple[StoredPartReceipt, ...]:
             plaintext_sha256=_sha256(plaintext),
             stored_bytes=len(ciphertext),
             stored_sha256=_sha256(ciphertext),
-            etag="fixture-etag",
+            part_token="fixture-part-token",
         ),
     )
 
@@ -123,7 +123,7 @@ def _write_archive(
         index_sha256=pack_plan.index_sha256,
         plan_sha256=pack_plan.plan_sha256,
         parts=_part(pack_plaintext, pack_ciphertext),
-        version_id="pack-version",
+        revision="pack-revision",
         completed_at="2026-08-08T00:00:00Z",
     )
 
@@ -148,7 +148,7 @@ def _write_archive(
                 file_sha256=raw_file.sha256,
                 age_state_json=age_state_json(len(plaintext)),
                 parts=_part(plaintext, ciphertext),
-                version_id=f"segment-version-{sequence}",
+                revision=f"segment-revision-{sequence}",
                 completed_at="2026-08-08T00:00:00Z",
             )
         )
@@ -232,7 +232,7 @@ def _write_archive(
                     plaintext_sha256=_sha256(plaintext),
                     stored_bytes=len(ciphertext),
                     stored_sha256=_sha256(ciphertext),
-                    version_id=f"{object_id}-version",
+                    revision=f"{object_id}-revision",
                     completed_at="2026-08-08T00:00:00Z",
                 )
             )

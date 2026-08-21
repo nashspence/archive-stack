@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 
 import pytest
-from riverhog_age import CHUNK_SIZE, S3_MIN_PART_SIZE, ResumableAgeScryptSession
+from riverhog_age import CHUNK_SIZE, ResumableAgeScryptSession
 from riverhog_core.domain.archive import RawVolumePlan
 from riverhog_core.ports.archive_objects import (
     CompletedObjectReceipt,
@@ -17,7 +17,9 @@ from riverhog_core.raw_upload import (
     RawVolumeUploader,
     merge_raw_upload_checkpoints,
 )
-from riverhog_core.raw_volume import raw_s3_part_plans
+from riverhog_core.raw_volume import raw_multipart_part_plans
+
+TEST_PART_BYTES = 5 * 1024**2
 
 
 class MemoryRawCheckpointStore:
@@ -47,7 +49,7 @@ class _Upload:
     content_type: str
     metadata: dict[str, str]
     parts: dict[int, bytes]
-    etags: dict[int, str]
+    part_tokens: dict[int, str]
 
 
 class MemoryMultipartStore:
@@ -62,17 +64,19 @@ class MemoryMultipartStore:
         object_path: str,
         content_type: str,
         metadata: dict[str, str],
+        expected_bytes: int,
     ) -> MultipartUpload:
-        upload_id = f"raw-{self.next_id}"
+        _ = expected_bytes
+        transfer_id = f"raw-{self.next_id}"
         self.next_id += 1
-        self.uploads[upload_id] = _Upload(
+        self.uploads[transfer_id] = _Upload(
             object_path,
             content_type,
             dict(metadata),
             {},
             {},
         )
-        return MultipartUpload(object_path, upload_id)
+        return MultipartUpload(object_path, transfer_id)
 
     def upload_part(
         self,
@@ -81,16 +85,21 @@ class MemoryMultipartStore:
         number: int,
         content: bytes,
     ) -> MultipartPartReceipt:
-        row = self.uploads[upload.upload_id]
-        etag = f'"part-{number}-{hashlib.sha256(content).hexdigest()[:16]}"'
+        row = self.uploads[upload.transfer_id]
+        digest = hashlib.sha256(content).hexdigest()
         row.parts[number] = content
-        row.etags[number] = etag
-        return MultipartPartReceipt(number, etag, len(content))
+        row.part_tokens[number] = digest
+        return MultipartPartReceipt(number, digest, len(content), digest)
 
     def list_parts(self, *, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
-        row = self.uploads[upload.upload_id]
+        row = self.uploads[upload.transfer_id]
         return tuple(
-            MultipartPartReceipt(number, row.etags[number], len(row.parts[number]))
+            MultipartPartReceipt(
+                number,
+                row.part_tokens[number],
+                len(row.parts[number]),
+                hashlib.sha256(row.parts[number]).hexdigest(),
+            )
             for number in sorted(row.parts)
         )
 
@@ -102,19 +111,19 @@ class MemoryMultipartStore:
         expected_bytes: int,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
-        row = self.uploads[upload.upload_id]
+        row = self.uploads[upload.transfer_id]
         assert all(row.metadata.get(key) == value for key, value in expected_metadata.items())
         content = b"".join(row.parts[current.number] for current in parts)
         assert len(content) == expected_bytes
         receipt = CompletedObjectReceipt(
             object_path=upload.object_path,
-            version_id="version-raw",
-            etag='"complete-raw"',
-            bytes=len(content),
+            revision="version-raw",
+            stored_bytes=len(content),
+            stored_sha256=hashlib.sha256(content).hexdigest(),
             completed_at="2026-08-03T00:00:00Z",
         )
         self.objects[upload.object_path] = (content, row.metadata, receipt)
-        del self.uploads[upload.upload_id]
+        del self.uploads[upload.transfer_id]
         return receipt
 
     def head_completed_object(
@@ -131,7 +140,7 @@ class MemoryMultipartStore:
         return found[2]
 
     def abort_multipart_upload(self, *, upload: MultipartUpload) -> None:
-        self.uploads.pop(upload.upload_id, None)
+        self.uploads.pop(upload.transfer_id, None)
 
 
 def _plan(content: bytes) -> RawVolumePlan:
@@ -169,13 +178,13 @@ def test_raw_upload_resumes_on_server_defined_age_part_boundaries() -> None:
         plan=plan,
         object_path="archives/opaque/volumes/segment-000000000000.bin.age",
         relative_path="volumes/segment-000000000000.bin.age",
-        target_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_part_plaintext_bytes=TEST_PART_BYTES,
     )
     session = ResumableAgeScryptSession.from_state("archive passphrase", checkpoint.age_state_json)
-    part_plans = raw_s3_part_plans(
+    part_plans = raw_multipart_part_plans(
         plan,
         session,
-        target_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_plaintext_bytes=TEST_PART_BYTES,
     )
     assert len(part_plans) == 2
 
@@ -190,7 +199,7 @@ def test_raw_upload_resumes_on_server_defined_age_part_boundaries() -> None:
         plan=plan,
         object_path=checkpoint.object_path,
         relative_path=checkpoint.relative_path,
-        target_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_part_plaintext_bytes=TEST_PART_BYTES,
     )
     assert resumed.next_part == 1
 
@@ -222,7 +231,7 @@ def test_raw_upload_revalidates_the_registered_part_identity() -> None:
         plan=plan,
         object_path="archives/opaque/volumes/segment-000000000000.bin.age",
         relative_path="volumes/segment-000000000000.bin.age",
-        target_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_part_plaintext_bytes=TEST_PART_BYTES,
         expected_part_sha256s=(hashlib.sha256(content).hexdigest(),),
     )
 
@@ -245,7 +254,7 @@ def test_raw_checkpoint_round_trips_and_rejects_unaligned_part_target() -> None:
         plan=plan,
         object_path="archives/opaque/volumes/segment-000000000000.bin.age",
         relative_path="volumes/segment-000000000000.bin.age",
-        target_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_part_plaintext_bytes=TEST_PART_BYTES,
     )
 
     payload = json.loads(checkpoint.to_json())

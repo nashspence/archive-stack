@@ -7,14 +7,6 @@ setup_test_compose_project
 configure_compose_tty
 export COMPOSE_PROFILES=development
 export RIVERHOG_API_PORT="${RIVERHOG_API_PORT:-0}"
-export RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND="${RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND:-aws}"
-export RIVERHOG_ARCHIVE_STORE_ARCHIVE_READ_MODE="${RIVERHOG_ARCHIVE_STORE_ARCHIVE_READ_MODE:-restore_required}"
-export RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL="${RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL:-http://garage:3900}"
-export RIVERHOG_RETRIEVAL_CACHE_REGION="${RIVERHOG_RETRIEVAL_CACHE_REGION:-garage}"
-export RIVERHOG_RETRIEVAL_CACHE_BUCKET="${RIVERHOG_RETRIEVAL_CACHE_BUCKET:-riverhog-cache}"
-export RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID="${RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID:-GK000000000000000000000002}"
-export RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY="${RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY:-2222222222222222222222222222222222222222222222222222222222222222}"
-export RIVERHOG_RETRIEVAL_CACHE_FORCE_PATH_STYLE="${RIVERHOG_RETRIEVAL_CACHE_FORCE_PATH_STYLE:-true}"
 
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/riverhog-compose-smoke.XXXXXX")"
 stove0_project="${COMPOSE_PROJECT_NAME}-stove0"
@@ -55,10 +47,11 @@ cleanup() {
 trap cleanup EXIT
 
 "${ROOT_DIR}/scripts/bootstrap_garage.sh"
-compose run --rm \
-  --env RIVERHOG_GARAGE_ARCHIVE_INGRESS_TEST=1 \
-  --entrypoint python \
-  test -m pytest -q tests/integration/test_garage_encrypted_archive_store.py
+compose run --rm --entrypoint riverhog-storage-adapter-conformance test \
+  http://garage-storage-adapter:8080 \
+  --token-file /run/secrets/riverhog-storage-adapter-token \
+  --allow-insecure-http \
+  --object-prefix compose-conformance >/dev/null
 ensure_compose_image app
 compose up --detach --wait app
 compose exec -T postgres createdb --username riverhog --owner riverhog stove0

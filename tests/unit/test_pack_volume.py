@@ -5,7 +5,7 @@ import json
 import tarfile
 from io import BytesIO
 
-from riverhog_age import CHUNK_SIZE, S3_MIN_PART_SIZE
+from riverhog_age import CHUNK_SIZE
 from riverhog_core.domain.archive import ArchiveFile, PackMemberPlan, PackVolumePlan
 from riverhog_core.pack_volume import (
     PACK_INDEX_PATH,
@@ -20,6 +20,8 @@ from riverhog_core.pack_volume import (
     plan_pack_volume,
 )
 from riverhog_protocol.pack_ingress import canonical_json_bytes
+
+TEST_PART_BYTES = 5 * 1024**2
 
 
 def _file(path: str, content: bytes) -> ArchiveFile:
@@ -115,11 +117,11 @@ def test_sequential_pack_seal_matches_canonical_v1_pack() -> None:
         plan = plan_pack_volume(
             files,
             sequence=sequence,
-            part_plaintext_bytes=S3_MIN_PART_SIZE,
+            part_plaintext_bytes=TEST_PART_BYTES,
         )
         assembler = _SequentialPackAssembler(
             sequence=sequence,
-            part_plaintext_bytes=S3_MIN_PART_SIZE,
+            part_plaintext_bytes=TEST_PART_BYTES,
         )
         for current in files:
             assembler.append(current, contents[current.path])
@@ -152,18 +154,18 @@ def test_pack_plan_uses_age_aligned_nonfinal_units_and_is_deterministic() -> Non
     first = plan_pack_volume(
         files,
         sequence=0,
-        part_plaintext_bytes=S3_MIN_PART_SIZE,
+        part_plaintext_bytes=TEST_PART_BYTES,
     )
     second = plan_pack_volume(
         list(reversed(files)),
         sequence=0,
-        part_plaintext_bytes=S3_MIN_PART_SIZE,
+        part_plaintext_bytes=TEST_PART_BYTES,
     )
 
     assert first == second
     assert len(first.units) >= 2
     assert all(
-        current.plaintext_bytes >= S3_MIN_PART_SIZE and current.plaintext_end % CHUNK_SIZE == 0
+        current.plaintext_bytes >= TEST_PART_BYTES and current.plaintext_end % CHUNK_SIZE == 0
         for current in first.units[:-1]
     )
     assert first.units[-1].final
@@ -181,7 +183,7 @@ def test_rendered_pack_is_standard_tar_with_embedded_verified_index() -> None:
     plan = plan_pack_volume(
         [_file(path, content) for path, content in contents.items()],
         sequence=3,
-        part_plaintext_bytes=S3_MIN_PART_SIZE,
+        part_plaintext_bytes=TEST_PART_BYTES,
     )
 
     plaintext = _pack_plaintext(plan, contents)
@@ -263,7 +265,7 @@ def test_server_pack_plan_recipe_round_trips() -> None:
     plan = plan_pack_volume(
         [_file(path, content) for path, content in contents.items()],
         sequence=7,
-        part_plaintext_bytes=S3_MIN_PART_SIZE,
+        part_plaintext_bytes=TEST_PART_BYTES,
     )
     payload = pack_volume_plan_payload(plan)
     rebuilt = parse_pack_volume_plan(canonical_json_bytes(payload))

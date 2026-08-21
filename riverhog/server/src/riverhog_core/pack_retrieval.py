@@ -39,7 +39,7 @@ _VOLUME_ID_RE = re.compile(r"pack-[0-9]{12}")
 class PackVolumeRetrievalSource:
     volume_id: str
     object_path: str
-    version_id: str | None
+    revision: str
     plaintext_bytes: int
     stored_bytes: int
     age_state_json: str
@@ -321,7 +321,7 @@ class PackMemberRangeReader:
             with self._request_gate.reserve() as request_wait_seconds:
                 raw = self._store.iter_object_range(
                     object_path=source.object_path,
-                    version_id=source.version_id,
+                    revision=source.revision,
                     offset=age_plan.ciphertext_offset,
                     size=age_plan.ciphertext_bytes,
                 )
@@ -554,7 +554,7 @@ class PackRangeBatchReader:
             with self._request_gate.reserve() as request_wait_seconds:
                 raw = self._store.iter_object_range(
                     object_path=plan.source.object_path,
-                    version_id=plan.source.version_id,
+                    revision=plan.source.revision,
                     offset=request.ciphertext_offset,
                     size=request.ciphertext_bytes,
                 )

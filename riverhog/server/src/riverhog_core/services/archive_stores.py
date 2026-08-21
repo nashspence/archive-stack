@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from riverhog_protocol.errors import BadRequest, NotFound
 from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
@@ -20,12 +22,14 @@ from riverhog_core.domain.models import (
 from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
+from riverhog_core.stores.storage_adapter_object_store import StorageAdapterRuntime
 
 _SORT_FIELDS = {
     "store",
-    "backend",
-    "storage_class",
+    "storage_adapter",
+    "storage_profile_id",
     "read_mode",
+    "adapter_status",
     "read_priority",
     "collections",
     "objects",
@@ -38,6 +42,7 @@ class SqlAlchemyArchiveStoreService:
         self,
         config: RuntimeConfig,
         *,
+        adapter_runtimes: Mapping[str, StorageAdapterRuntime] | None = None,
         download_allowance: DownloadAllowance | None = None,
         session_factory: SessionFactory | None = None,
     ) -> None:
@@ -47,6 +52,7 @@ class SqlAlchemyArchiveStoreService:
             config,
             session_factory=self._session_factory,
         )
+        self._adapter_runtimes = dict(adapter_runtimes or {})
         self._read_priorities = {
             name: priority for priority, name in enumerate(config.archive_read_order, start=1)
         }
@@ -100,7 +106,16 @@ class SqlAlchemyArchiveStoreService:
             if needle is None
             or needle
             in " ".join(
-                (current.name, current.backend, current.storage_class, current.read_mode)
+                (
+                    current.name,
+                    current.storage_adapter,
+                    self._config.storage_adapter(
+                        current.storage_adapter
+                    ).expected_profile_id,
+                    self._config.storage_adapter(
+                        current.storage_adapter
+                    ).expected_profile_read_mode,
+                )
             ).casefold()
         ]
         with session_scope(self._session_factory) as session:
@@ -151,11 +166,36 @@ class SqlAlchemyArchiveStoreService:
         allowances: dict[str, ArchiveDownloadAllowance],
     ) -> ArchiveStoreSummary:
         collections, objects, stored_bytes = aggregate
+        registration = self._config.storage_adapter(config.storage_adapter)
+        runtime = self._adapter_runtimes.get(config.storage_adapter)
+        descriptor = None
+        if runtime is not None:
+            try:
+                descriptor = runtime.refresh_descriptor()
+            except Exception:
+                descriptor = None
         return ArchiveStoreSummary(
             store=config.name,
-            backend=config.backend,
-            storage_class=config.storage_class,
-            read_mode=config.read_mode,
+            storage_adapter=config.storage_adapter,
+            storage_profile_id=registration.expected_profile_id,
+            storage_profile_contract_sha256=(
+                registration.expected_profile_contract_sha256
+            ),
+            egress_accounting_id=registration.expected_egress_accounting_id,
+            read_mode=registration.expected_profile_read_mode,
+            adapter_status="ready" if descriptor is not None else "unavailable",
+            adapter_implementation_id=(
+                descriptor.implementation_id if descriptor is not None else None
+            ),
+            adapter_implementation_version=(
+                descriptor.implementation_version if descriptor is not None else None
+            ),
+            adapter_source_revision=(
+                descriptor.source_revision if descriptor is not None else None
+            ),
+            adapter_runtime_descriptor_sha256=(
+                descriptor.runtime_descriptor_sha256 if descriptor is not None else None
+            ),
             read_priority=self._read_priorities[config.name],
             write_target=config.name == self._config.archive_write_store,
             collections=collections,

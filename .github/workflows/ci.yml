@@ -128,6 +128,8 @@ jobs:
       matrix:
         target:
           - riverhog
+          - riverhog-aws-storage-adapter
+          - riverhog-backblaze-storage-adapter
           - riverhog-ftp-adapter
           - stove0
           - stove0-ffprobe-sampling-observer
@@ -135,6 +137,7 @@ jobs:
           - stove0-opus-target
           - stove0-review-target
           - mango-fish
+          - garage-storage-adapter
           - test
     steps:
       - name: Check out repository

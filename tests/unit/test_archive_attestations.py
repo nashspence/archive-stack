@@ -143,7 +143,7 @@ def test_publishes_signs_and_matures_exact_archive_ciphertext_inventory(tmp_path
             "signature-proof",
         }
         assert all(
-            current.version_id is not None
+            current.revision is not None
             for current in objects
             if current.object_id in {"checksums", "signature", "signature-proof"}
         )

@@ -11,8 +11,15 @@ class ArchiveCopyOut(RiverhogModel):
     storage_prefix: str | None
     object_count: int
     stored_bytes: int | None
-    backend: str | None
-    storage_class: str | None
+    storage_adapter: str | None
+    storage_profile_id: str | None
+    storage_profile_contract_sha256: str | None
+    egress_accounting_id: str | None
+    read_mode: Literal["immediate", "restore_required"] | None
+    adapter_implementation_id: str | None
+    adapter_implementation_version: str | None
+    adapter_source_revision: str | None
+    adapter_runtime_descriptor_sha256: str | None
     last_uploaded_at: str | None
     last_verified_at: str | None
     failure: str | None

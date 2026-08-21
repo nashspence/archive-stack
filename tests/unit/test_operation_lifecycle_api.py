@@ -73,16 +73,10 @@ def _container(tmp_path: Path) -> ServiceContainer:
     primary_config = replace(
         baseline.archive_store("archive"),
         name="primary",
-        endpoint_url="http://127.0.0.1:9001",
-        bucket="primary",
-        prefix="primary",
     )
     secondary_config = replace(
         baseline.archive_store("archive"),
         name="secondary",
-        endpoint_url="http://127.0.0.1:9002",
-        bucket="secondary",
-        prefix="secondary",
     )
     config = replace(
         baseline,

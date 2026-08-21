@@ -129,6 +129,8 @@ def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
 
     image_targets = [
         "riverhog",
+        "riverhog-aws-storage-adapter",
+        "riverhog-backblaze-storage-adapter",
         "riverhog-ftp-adapter",
         "stove0",
         "stove0-ffprobe-sampling-observer",
@@ -136,6 +138,7 @@ def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
         "stove0-opus-target",
         "stove0-review-target",
         "mango-fish",
+        "garage-storage-adapter",
         "test",
     ]
     sbom_generator = (

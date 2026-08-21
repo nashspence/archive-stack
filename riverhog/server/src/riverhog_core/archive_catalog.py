@@ -29,7 +29,7 @@ class ArchiveRootProjection:
     store: str
     archive_storage_prefix: str
     manifest_object_path: str
-    manifest_version_id: str | None
+    manifest_revision: str
     manifest_stored_bytes: int
     manifest_stored_sha256: str
     manifest_plaintext_sha256: str
@@ -49,7 +49,7 @@ class ArchiveVolumeProjection:
     kind: str
     relative_path: str
     object_path: str
-    version_id: str | None
+    revision: str
     plaintext_bytes: int
     stored_bytes: int
     age_state_json: str
@@ -152,7 +152,7 @@ def build_archive_catalog_projection(
                 kind="pack",
                 relative_path=relative_path,
                 object_path=f"{prefix}/{relative_path}",
-                version_id=pack_receipt.version_id,
+                revision=pack_receipt.revision,
                 plaintext_bytes=pack_receipt.plaintext_bytes,
                 stored_bytes=pack_receipt.stored_bytes,
                 age_state_json=pack_receipt.age_state_json,
@@ -189,7 +189,7 @@ def build_archive_catalog_projection(
                 kind="segment",
                 relative_path=relative_path,
                 object_path=f"{prefix}/{relative_path}",
-                version_id=raw_receipt.version_id,
+                revision=raw_receipt.revision,
                 plaintext_bytes=raw_receipt.plaintext_bytes,
                 stored_bytes=raw_receipt.stored_bytes,
                 age_state_json=raw_receipt.age_state_json,
@@ -226,7 +226,7 @@ def build_archive_catalog_projection(
         store=store,
         archive_storage_prefix=prefix,
         manifest_object_path=root.object_path,
-        manifest_version_id=root.version_id,
+        manifest_revision=root.revision,
         manifest_stored_bytes=root.stored_bytes,
         manifest_stored_sha256=root.stored_sha256,
         manifest_plaintext_sha256=root.plaintext_sha256,
@@ -256,7 +256,7 @@ def _part_receipts_json(parts: Sequence[StoredPartReceipt]) -> str:
                 "plaintext_sha256": current.plaintext_sha256,
                 "stored_bytes": current.stored_bytes,
                 "stored_sha256": current.stored_sha256,
-                "etag": current.etag,
+                "part_token": current.part_token,
             }
             for current in parts
         ]

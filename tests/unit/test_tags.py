@@ -224,8 +224,9 @@ def test_tag_deletion_plan_reports_only_bounded_catalog_dependencies(tmp_path: P
             provenance_mode="omitted",
             provenance_omission_reason="fixture does not exercise source observation",
             initiated_by_app="uploader",
-            archive_store="archive",
-            state="open",
+                archive_store="archive",
+                storage_adapter_runtime_descriptor_sha256="0" * 64,
+                state="open",
             opened_at=now,
             last_activity_at=now,
             archive_phase="planning",
@@ -236,7 +237,7 @@ def test_tag_deletion_plan_reports_only_bounded_catalog_dependencies(tmp_path: P
         )
         session.add(upload)
         session.flush()
-        upload_id = upload.collection_id
+        transfer_id = upload.collection_id
 
     plan = tags.plan_deletion("photos")
 
@@ -246,14 +247,14 @@ def test_tag_deletion_plan_reports_only_bounded_catalog_dependencies(tmp_path: P
     assert dependencies["collections"]["count"] == 0
     assert dependencies["upload_sessions"] == {
         "count": 1,
-        "sample": [str(upload_id)],
+        "sample": [str(transfer_id)],
         "truncated": False,
     }
     assert dependencies["app_key_access"]["count"] == 1
     assert "clients, companions, and automation" in plan["warning"]
 
     with session_scope(make_session_factory(config.database_url)) as session:
-        session.delete(session.get(CollectionUploadRecord, upload_id))
+        session.delete(session.get(CollectionUploadRecord, transfer_id))
     keys.revoke(app="reader", key_id=str(active["id"]))
     ready = tags.plan_deletion("photos")
     assert ready["status"] == "ready"

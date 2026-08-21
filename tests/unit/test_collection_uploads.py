@@ -97,10 +97,10 @@ class _MemoryMultipartCache:
     ) -> RetrievalCacheReceipt:
         assert parts
         content = self.multipart.objects[completed.object_path][0]
-        assert len(content) == completed.bytes
+        assert len(content) == completed.stored_bytes
         return RetrievalCacheReceipt(
             object_path=completed.object_path,
-            version_id=completed.version_id,
+            revision=completed.revision,
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
             cached_at=completed.completed_at,
@@ -187,25 +187,11 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
     tmp_path: Path,
 ) -> None:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
-    baseline = RuntimeConfig(database_url=database_url)
-    archive = replace(
-        baseline.archive_store("archive"),
-        backend="aws",
-        storage_class="DEEP_ARCHIVE",
-        read_mode="restore_required",
-    )
     config = RuntimeConfig(
         database_url=database_url,
         archive_passphrase="test archive secret",
         archive_scrypt_work_factor=1,
-        archive_stores={"archive": archive},
-        retrieval_cache=RetrievalCacheConfig(
-            endpoint_url="https://cache.invalid",
-            region="us-east-1",
-            bucket="cache",
-            access_key_id="fixture",
-            secret_access_key="fixture",
-        ),
+        retrieval_cache=RetrievalCacheConfig(storage_adapter="archive"),
     )
     initialize_db(database_url)
     with session_scope(make_session_factory(database_url)) as session:
@@ -219,7 +205,7 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
     archive_multipart = MemoryMultipartStore()
     cache = _MemoryMultipartCache()
     binding = replace(
-        archive_store_binding(MemoryArchiveStore()),
+        archive_store_binding(MemoryArchiveStore(read_mode="restore_required")),
         multipart_objects=archive_multipart,
         immutable_objects=MemoryImmutableStore(),
         object_ranges=_UnusedRangeStore(),
@@ -298,27 +284,14 @@ def test_restore_required_ingress_uses_archive_only_when_new_archive_cache_is_di
     tmp_path: Path,
 ) -> None:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
-    baseline = RuntimeConfig(database_url=database_url)
-    archive = replace(
-        baseline.archive_store("archive"),
-        backend="aws",
-        read_mode="restore_required",
-    )
     config = RuntimeConfig(
         database_url=database_url,
-        archive_stores={"archive": archive},
-        retrieval_cache=RetrievalCacheConfig(
-            endpoint_url="https://cache.invalid",
-            region="us-east-1",
-            bucket="cache",
-            access_key_id="fixture",
-            secret_access_key="fixture",
-        ),
+        retrieval_cache=RetrievalCacheConfig(storage_adapter="archive"),
         retrieval_cache_new_archive_enabled=False,
     )
     archive_multipart = MemoryMultipartStore()
     binding = replace(
-        archive_store_binding(MemoryArchiveStore()),
+        archive_store_binding(MemoryArchiveStore(read_mode="restore_required")),
         multipart_objects=archive_multipart,
     )
     service = SqlAlchemyCollectionUploadService(

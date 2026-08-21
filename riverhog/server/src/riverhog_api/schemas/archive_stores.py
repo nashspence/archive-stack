@@ -20,9 +20,16 @@ class ArchiveDownloadAllowanceOut(RiverhogModel):
 
 class ArchiveStoreOut(RiverhogModel):
     store: str
-    backend: Literal["aws", "b2", "s3"]
-    storage_class: str
+    storage_adapter: str
+    storage_profile_id: str
+    storage_profile_contract_sha256: str
+    egress_accounting_id: str
     read_mode: Literal["immediate", "restore_required"]
+    adapter_status: Literal["ready", "unavailable"]
+    adapter_implementation_id: str | None
+    adapter_implementation_version: str | None
+    adapter_source_revision: str | None
+    adapter_runtime_descriptor_sha256: str | None
     read_priority: int
     write_target: bool
     collections: int

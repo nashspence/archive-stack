@@ -12,7 +12,7 @@ def retrieval_cache_receipt_payload(
         return None
     return {
         "object_path": receipt.object_path,
-        "version_id": receipt.version_id,
+        "revision": receipt.revision,
         "stored_bytes": receipt.stored_bytes,
         "stored_sha256": receipt.stored_sha256,
         "cached_at": receipt.cached_at,
@@ -41,10 +41,12 @@ def parse_retrieval_cache_receipt(value: object) -> RetrievalCacheReceipt | None
         or not verified_at
     ):
         raise ValueError("retrieval cache receipt fields are invalid")
-    version_id = value.get("version_id")
+    revision = str(value.get("revision", ""))
+    if not revision:
+        raise ValueError("retrieval cache receipt revision is invalid")
     return RetrievalCacheReceipt(
         object_path=object_path,
-        version_id=str(version_id) if version_id is not None else None,
+        revision=revision,
         stored_bytes=stored_bytes,
         stored_sha256=stored_sha256,
         cached_at=cached_at,

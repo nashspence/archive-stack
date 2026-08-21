@@ -25,11 +25,11 @@ class MemoryRangeStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         offset: int,
         size: int,
     ):
-        self.requests.append((object_path, version_id, offset, size))
+        self.requests.append((object_path, revision, offset, size))
         yield self.content[offset : offset + size]
 
 
@@ -70,7 +70,7 @@ def _archive(
     source = PackVolumeRetrievalSource(
         volume_id=plan.volume_id,
         object_path=f"archives/x/volumes/{plan.volume_id}.tar.age",
-        version_id="v1",
+        revision="v1",
         plaintext_bytes=len(plaintext),
         stored_bytes=len(ciphertext),
         age_state_json=state,
@@ -209,7 +209,7 @@ def test_batch_reader_uses_parallel_range_requests_under_a_byte_budget() -> None
             self.requests.append(
                 (
                     kwargs["object_path"],
-                    kwargs["version_id"],
+                    kwargs["revision"],
                     kwargs["offset"],
                     kwargs["size"],
                 )

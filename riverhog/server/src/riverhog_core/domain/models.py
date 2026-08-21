@@ -13,8 +13,15 @@ class ArchiveCopyStatus:
     storage_prefix: str | None = None
     object_count: int = 0
     stored_bytes: int | None = None
-    backend: str | None = None
-    storage_class: str | None = None
+    storage_adapter: str | None = None
+    storage_profile_id: str | None = None
+    storage_profile_contract_sha256: str | None = None
+    egress_accounting_id: str | None = None
+    read_mode: str | None = None
+    adapter_implementation_id: str | None = None
+    adapter_implementation_version: str | None = None
+    adapter_source_revision: str | None = None
+    adapter_runtime_descriptor_sha256: str | None = None
     last_uploaded_at: str | None = None
     last_verified_at: str | None = None
     failure: str | None = None
@@ -47,9 +54,16 @@ class ArchiveDownloadAllowance:
 @dataclass(frozen=True)
 class ArchiveStoreSummary:
     store: str
-    backend: str
-    storage_class: str
+    storage_adapter: str
+    storage_profile_id: str
+    storage_profile_contract_sha256: str
+    egress_accounting_id: str
     read_mode: str
+    adapter_status: str
+    adapter_implementation_id: str | None
+    adapter_implementation_version: str | None
+    adapter_source_revision: str | None
+    adapter_runtime_descriptor_sha256: str | None
     read_priority: int
     write_target: bool
     collections: int

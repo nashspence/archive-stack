@@ -46,11 +46,11 @@ class MemoryArchiveRangeStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
-        _ = version_id
+        _ = revision
         self.requests.append((object_path, offset, size))
         yield self._multipart.objects[object_path][0][offset : offset + size]
 
@@ -64,16 +64,14 @@ class DirectArchiveStore(MemoryArchiveStore):
     ) -> None:
         super().__init__(read_mode=read_mode)
         self._multipart = multipart
-        self.prepare_holds: list[int] = []
+        self.prepare_calls = 0
 
     def prepare_archive_objects_read(
         self,
-        *,
-        hold_days: int,
         **kwargs: object,
     ):  # type: ignore[no-untyped-def]
-        self.prepare_holds.append(hold_days)
-        return super().prepare_archive_objects_read(hold_days=hold_days, **kwargs)
+        self.prepare_calls += 1
+        return super().prepare_archive_objects_read(**kwargs)
 
     def iter_stored_archive_object(
         self,
@@ -108,7 +106,7 @@ class MemoryRetrievalCache:
         self.objects[(path, version)] = payload
         return RetrievalCacheReceipt(
             object_path=path,
-            version_id=version,
+            revision=version,
             stored_bytes=len(payload),
             stored_sha256=hashlib.sha256(payload).hexdigest(),
             cached_at="2026-08-08T00:00:00.000000Z",
@@ -119,11 +117,11 @@ class MemoryRetrievalCache:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         expected_sha256: str,
     ) -> Iterator[bytes]:
-        payload = self.objects[(object_path, version_id)]
+        payload = self.objects[(object_path, revision)]
         assert len(payload) == expected_bytes
         assert hashlib.sha256(payload).hexdigest() == expected_sha256
         yield payload
@@ -132,16 +130,16 @@ class MemoryRetrievalCache:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
         self.range_requests.append((object_path, offset, size))
-        yield self.objects[(object_path, version_id)][offset : offset + size]
+        yield self.objects[(object_path, revision)][offset : offset + size]
 
-    def delete(self, *, object_path: str, version_id: str | None) -> None:
-        self.deleted.append((object_path, version_id))
-        del self.objects[(object_path, version_id)]
+    def delete(self, *, object_path: str, revision: str | None) -> None:
+        self.deleted.append((object_path, revision))
+        del self.objects[(object_path, revision)]
 
 
 class RecordingDownloadAllowance:
@@ -196,7 +194,6 @@ def _seed_collection(
     cache: MemoryRetrievalCache | None = None,
     allowance: RecordingDownloadAllowance | None = None,
     pending_timeout: timedelta | None = None,
-    restore_hold: timedelta | None = None,
 ) -> tuple[
     SqlAlchemyRetrievalService,
     int,
@@ -208,7 +205,6 @@ def _seed_collection(
         database_url=database_url,
         archive_scrypt_work_factor=1,
         retrieval_pending_timeout=pending_timeout or timedelta(hours=72),
-        retrieval_restore_hold=restore_hold or timedelta(hours=24),
     )
     initialize_db(database_url)
     with session_scope(make_session_factory(database_url)) as session:
@@ -527,19 +523,18 @@ def test_restore_policy_never_is_atomic_and_never_requests_archive_restore(
     assert store.prepared == []
 
 
-def test_requested_retrieval_uses_the_independent_provider_hold(tmp_path: Path) -> None:
+def test_requested_retrieval_delegates_read_preparation_to_adapter(tmp_path: Path) -> None:
     cache = MemoryRetrievalCache()
     service, collection_id, _ranges, store = _seed_collection(
         tmp_path,
         {"document.txt": b"document"},
         read_mode="restore_required",
         cache=cache,
-        restore_hold=timedelta(hours=49),
     )
     _ready_job(service, collection_id, "document.txt")
 
     assert service.process_due() == 1
-    assert store.prepare_holds == [3]
+    assert store.prepare_calls == 1
 
 
 def test_requested_retrieval_converges_after_its_pending_timeout(tmp_path: Path) -> None:
@@ -717,7 +712,6 @@ def test_cache_status_reports_effective_new_archive_insertion(tmp_path: Path) ->
         "retrieval_default_lease_seconds": 24 * 60 * 60,
         "retrieval_max_lease_seconds": 7 * 24 * 60 * 60,
         "pending_timeout_seconds": 72 * 60 * 60,
-        "restore_hold_seconds": 24 * 60 * 60,
         "sweep_interval_seconds": 5 * 60,
         "restore_poll_interval_seconds": 5 * 60,
     }

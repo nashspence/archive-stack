@@ -4,14 +4,16 @@ import hashlib
 import threading
 import time
 
-from riverhog_age import S3_MIN_PART_SIZE, ResumableAgeScryptSession
+from riverhog_age import ResumableAgeScryptSession
 from riverhog_core.domain.archive import RawVolumePlan, StoredPartReceipt
 from riverhog_core.raw_retrieval import (
     RawFileRangeReader,
     RawVolumeRangeReader,
     RawVolumeRetrievalSource,
 )
-from riverhog_core.raw_volume import raw_s3_part_plans
+from riverhog_core.raw_volume import raw_multipart_part_plans
+
+TEST_PART_BYTES = 5 * 1024**2
 
 
 class SlowRangeStore:
@@ -25,11 +27,11 @@ class SlowRangeStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         offset: int,
         size: int,
     ):
-        del object_path, version_id
+        del object_path, revision
         with self.lock:
             self.active += 1
             self.maximum_active = max(self.maximum_active, self.active)
@@ -56,10 +58,10 @@ def _source(content: bytes):
     )
     receipts = []
     stored = []
-    for part in raw_s3_part_plans(
+    for part in raw_multipart_part_plans(
         plan,
         session,
-        target_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_plaintext_bytes=TEST_PART_BYTES,
     ):
         plaintext = content[part.plaintext_start : part.plaintext_end]
         ciphertext = session.encrypt_part(
@@ -76,14 +78,14 @@ def _source(content: bytes):
                 plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
                 stored_bytes=len(ciphertext),
                 stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
-                etag=f"part-{part.part_number}",
+                part_token=f"part-{part.part_number}",
             )
         )
     state = session.export_state(plaintext_size=len(content)).to_json_bytes().decode("utf-8")
     source = RawVolumeRetrievalSource(
         volume_id=plan.volume_id,
         object_path="archives/x/volumes/segment-000000000000.bin.age",
-        version_id="v1",
+        revision="v1",
         source_path=plan.source_path,
         file_offset=0,
         plaintext_bytes=len(content),

@@ -100,8 +100,12 @@ def format_collection_summary(
     ]
     for archive in _items(payload, "archive_copies"):
         store = archive.get("store", "unknown")
-        if archive.get("storage_class"):
-            lines.append(f"{store} storage class: {archive['storage_class']}")
+        if archive.get("storage_adapter"):
+            lines.append(f"{store} storage adapter: {archive['storage_adapter']}")
+        if archive.get("storage_profile_id"):
+            lines.append(f"{store} storage profile: {archive['storage_profile_id']}")
+        if archive.get("read_mode"):
+            lines.append(f"{store} read mode: {archive['read_mode']}")
         if archive.get("last_verified_at"):
             lines.append(f"{store} verified: {archive['last_verified_at']}")
     return "\n".join(lines)
@@ -395,8 +399,9 @@ def format_collection_upload_plan(payload: Mapping[str, object]) -> str:
 def format_archive_store(payload: Mapping[str, object]) -> str:
     lines = [
         f"archive store {payload.get('store', 'unknown')}",
-        f"backend: {payload.get('backend', 'unknown')}",
-        f"storage class: {payload.get('storage_class', 'unknown')}",
+        f"storage adapter: {payload.get('storage_adapter', 'unknown')}",
+        f"storage profile: {payload.get('storage_profile_id', 'unknown')}",
+        f"adapter status: {payload.get('adapter_status', 'unknown')}",
         f"read mode: {payload.get('read_mode', 'unknown')}",
         f"read priority: {payload.get('read_priority', 'unknown')}",
         f"write target: {'yes' if payload.get('write_target') else 'no'}",
@@ -422,8 +427,9 @@ def format_archive_stores(payload: Mapping[str, object]) -> str:
     for store in _items(payload, "stores"):
         lines.append(
             f"- {store.get('store', 'unknown')}  "
-            f"backend={store.get('backend', 'unknown')}  "
-            f"class={store.get('storage_class', 'unknown')}  "
+            f"adapter={store.get('storage_adapter', 'unknown')}  "
+            f"profile={store.get('storage_profile_id', 'unknown')}  "
+            f"status={store.get('adapter_status', 'unknown')}  "
             f"read={store.get('read_mode', 'unknown')}  "
             f"read-priority={store.get('read_priority', 'unknown')}  "
             f"write={'yes' if store.get('write_target') else 'no'}  "
@@ -451,7 +457,6 @@ def format_retrieval_cache_status(payload: Mapping[str, object]) -> str:
             f"retrieval lease: {values.get('retrieval_default_lease_seconds', 0)}s default, "
             f"{values.get('retrieval_max_lease_seconds', 0)}s maximum",
             f"pending timeout: {values.get('pending_timeout_seconds', 0)}s",
-            f"provider restore hold: {values.get('restore_hold_seconds', 0)}s",
             f"sweep interval: {values.get('sweep_interval_seconds', 0)}s",
             f"restore poll interval: {values.get('restore_poll_interval_seconds', 0)}s",
         ]

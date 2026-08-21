@@ -28,7 +28,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
 
     inspector = inspect(create_catalog_engine(database_url))
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0004"
+    assert upgraded.current_revision == validated.current_revision == "v1_0005"
     assert set(inspector.get_table_names()) == {*Base.metadata.tables, STATE_VERSION_TABLE}
     assert {column["name"] for column in inspector.get_columns("archive_download_usage")} == {
         "store",
@@ -58,6 +58,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "initiated_by_key_id",
         "event_context_json",
         "completed_at",
+        "storage_adapter_runtime_descriptor_sha256",
     }
     assert {column["name"] for column in inspector.get_columns("archive_copy_object_uploads")} == {
         "collection_id",
@@ -67,7 +68,8 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "object_path",
         "plaintext_bytes",
         "sha256",
-        "multipart_upload_id",
+        "multipart_transfer_id",
+        "adapter_runtime_descriptor_sha256",
         "multipart_content_length",
         "multipart_parts_json",
         "uploaded_bytes",
@@ -98,7 +100,21 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "failure",
     }
     assert {column["name"] for column in inspector.get_columns("collection_archive_objects")} >= {
-        "stored_sha256"
+        "revision",
+        "stored_sha256",
+    }
+    assert {
+        column["name"] for column in inspector.get_columns("collection_archive_copies")
+    } >= {
+        "storage_adapter",
+        "storage_profile_id",
+        "storage_profile_contract_sha256",
+        "egress_accounting_id",
+        "read_mode",
+        "adapter_implementation_id",
+        "adapter_implementation_version",
+        "adapter_source_revision",
+        "adapter_runtime_descriptor_sha256",
     }
     assert {column["name"] for column in inspector.get_columns("app_keys")} == {
         "id",

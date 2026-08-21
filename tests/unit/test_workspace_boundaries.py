@@ -15,9 +15,21 @@ REPO = Path(__file__).resolve().parents[2]
 
 IMPLEMENTATION_OWNERS = {
     "riverhog-server": (REPO / "riverhog/server/src", {"riverhog_api", "riverhog_core"}),
+    "riverhog-aws-storage-adapter": (
+        REPO / "riverhog/aws-storage-adapter/src",
+        {"riverhog_aws_storage_adapter"},
+    ),
+    "riverhog-backblaze-storage-adapter": (
+        REPO / "riverhog/backblaze-storage-adapter/src",
+        {"riverhog_backblaze_storage_adapter"},
+    ),
     "riverhog-client": (REPO / "riverhog/client/src", {"riverhog_cli"}),
     "riverhog-recover": (REPO / "riverhog/recovery/src", {"riverhog_recover"}),
     "riverhog-ftp-adapter": (REPO / "riverhog/ftp-adapter/src", {"riverhog_ftp_adapter"}),
+    "riverhog-garage-storage-adapter": (
+        REPO / "riverhog/garage-storage-adapter/src",
+        {"riverhog_garage_storage_adapter"},
+    ),
     "stove0-server": (
         REPO / "companions/stove0/server/src",
         {"stove0_api", "stove0_core"},
@@ -248,6 +260,49 @@ def test_shared_packages_do_not_import_implementation_projects() -> None:
     assert not violations, "\n".join(violations)
 
 
+def test_riverhog_current_storage_surfaces_are_provider_neutral() -> None:
+    roots = (
+        REPO / "riverhog/server/src",
+        REPO / "riverhog/client/src",
+        REPO / "riverhog/recovery/src",
+    )
+    forbidden = re.compile(
+        r"\b(?:s3|aws|backblaze|b2|bucket|cloudfront|storage_class|version_id)\b",
+        flags=re.IGNORECASE,
+    )
+    violations: list[str] = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            if "state_migrations" in path.parts:
+                continue
+            for line_number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(),
+                start=1,
+            ):
+                if forbidden.search(line):
+                    violations.append(f"{path.relative_to(REPO)}:{line_number}: {line.strip()}")
+    assert not violations, "\n".join(violations)
+
+
+def test_riverhog_server_distribution_has_no_provider_runtime_dependency() -> None:
+    config = tomllib.loads((REPO / "riverhog/server/pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = {
+        normalize_distribution_name(dependency.split("[", 1)[0].split(">", 1)[0].split("=", 1)[0])
+        for dependency in config["project"]["dependencies"]
+    }
+
+    assert dependencies.isdisjoint(
+        {
+            "boto3",
+            "botocore",
+            "riverhog-aws-storage-adapter",
+            "riverhog-backblaze-storage-adapter",
+            "riverhog-garage-storage-adapter",
+            "riverhog-storage-adapter-s3-support",
+        }
+    )
+
+
 def test_riverhog_collection_workflows_use_application_agnostic_outcomes() -> None:
     surface = {
         path.relative_to(REPO): path.read_text(encoding="utf-8")
@@ -414,7 +469,12 @@ def test_compose_timezone_defaults_are_configurable_utc() -> None:
 def test_images_copy_their_complete_internal_dependency_closure() -> None:
     images = {
         REPO / "riverhog/server/Dockerfile": "riverhog-server",
+        REPO / "riverhog/aws-storage-adapter/Dockerfile": "riverhog-aws-storage-adapter",
+        REPO / "riverhog/backblaze-storage-adapter/Dockerfile": (
+            "riverhog-backblaze-storage-adapter"
+        ),
         REPO / "riverhog/ftp-adapter/Dockerfile": "riverhog-ftp-adapter",
+        REPO / "riverhog/garage-storage-adapter/Dockerfile": ("riverhog-garage-storage-adapter"),
         REPO / "companions/stove0/server/Dockerfile": "stove0-server",
         REPO / "companions/stove0-ffprobe-sampling-observer/Dockerfile": (
             "stove0-ffprobe-sampling-observer"

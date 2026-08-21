@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import replace
 
-from riverhog_age import CHUNK_SIZE, S3_MIN_PART_SIZE
+from riverhog_age import CHUNK_SIZE
 from riverhog_protocol.pack_ingress import (
     PackUnitDescriptor,
     PackUnitPayloadReader,
@@ -96,8 +96,8 @@ def plan_pack_volume(
     normalized = _normalized_files(files, max_member_bytes=max_member_bytes)
     if sequence < 0:
         raise ValueError("pack sequence must be non-negative")
-    if part_plaintext_bytes < S3_MIN_PART_SIZE:
-        raise ValueError("pack multipart plaintext target is below the S3 minimum part size")
+    if part_plaintext_bytes <= 0:
+        raise ValueError("pack multipart plaintext target must be positive")
     if part_plaintext_bytes % CHUNK_SIZE:
         raise ValueError("pack multipart plaintext target must align to the age chunk size")
 
@@ -144,8 +144,6 @@ def plan_pack_volume(
                     padding=padding,
                 )
             )
-            if units[-1].plaintext_bytes < S3_MIN_PART_SIZE:
-                raise RuntimeError("planned a non-final multipart part below the S3 minimum")
             unit_index += 1
             unit_start = cursor
             unit_sources = []

@@ -7,7 +7,6 @@ import time
 from riverhog_core.throughput import (
     ArchiveThroughputTuning,
     ArchiveTransferResources,
-    S3TransportTuning,
     TransferConcurrencyGate,
     TransferTiming,
     WeightedByteSemaphore,
@@ -19,8 +18,8 @@ def test_archive_throughput_tuning_exposes_only_effective_runtime_controls() -> 
     tuning = ArchiveThroughputTuning.from_env({})
 
     assert tuning.upload_prepare_concurrency == 8
-    assert tuning.s3_part_concurrency == 4
-    assert tuning.s3_upload_request_concurrency == 4
+    assert tuning.multipart_part_concurrency == 4
+    assert tuning.upload_request_concurrency == 4
     assert tuning.upload_max_inflight_bytes == 1280 * 1024 * 1024
     assert tuning.source_read_chunk_bytes == 8 * 1024 * 1024
     assert tuning.retrieval_request_concurrency == 8
@@ -45,8 +44,8 @@ def test_archive_throughput_tuning_exposes_only_effective_runtime_controls() -> 
     )
 
     assert customized.upload_prepare_concurrency == 12
-    assert customized.s3_part_concurrency == 8
-    assert customized.s3_upload_request_concurrency == 16
+    assert customized.multipart_part_concurrency == 8
+    assert customized.upload_request_concurrency == 16
     assert customized.upload_max_inflight_bytes == 2 * 1024**3
     assert customized.source_read_chunk_bytes == 16 * 1024**2
     assert customized.retrieval_request_concurrency == 16
@@ -63,7 +62,7 @@ def test_shared_transfer_resources_use_process_wide_tuning_limits() -> None:
     assert resources.upload_bytes.capacity == tuning.upload_max_inflight_bytes
     assert resources.retrieval_bytes.capacity == tuning.retrieval_max_inflight_bytes
     assert resources.upload_preparations.capacity == tuning.upload_prepare_concurrency
-    assert resources.upload_requests.capacity == tuning.s3_upload_request_concurrency
+    assert resources.upload_requests.capacity == tuning.upload_request_concurrency
     assert resources.retrieval_requests.capacity == tuning.retrieval_request_concurrency
     assert resources.age_derivations.capacity == tuning.age_derivation_concurrency
 
@@ -102,37 +101,6 @@ def test_transfer_timing_log_separates_phases_without_raw_identity(
     assert "checkpoint_seconds=0.500000" in message
     assert "downstream_seconds=0.600000" in message
     assert "private/path.bin" not in message
-
-
-def test_s3_transport_tuning_has_operator_timeouts_retries_and_keepalive() -> None:
-    tuning = S3TransportTuning.from_env(
-        {
-            "RIVERHOG_S3_MAX_POOL_CONNECTIONS": "96",
-            "RIVERHOG_S3_CONNECT_TIMEOUT_SECONDS": "4.5",
-            "RIVERHOG_S3_READ_TIMEOUT_SECONDS": "900",
-            "RIVERHOG_S3_MAX_ATTEMPTS": "12",
-            "RIVERHOG_S3_RETRY_MODE": "adaptive",
-            "RIVERHOG_S3_TCP_KEEPALIVE": "false",
-        }
-    )
-
-    assert tuning.max_pool_connections == 96
-    assert tuning.connect_timeout_seconds == 4.5
-    assert tuning.read_timeout_seconds == 900
-    assert tuning.max_attempts == 12
-    assert tuning.retry_mode == "adaptive"
-    assert not tuning.tcp_keepalive
-
-    scoped = S3TransportTuning.from_env(
-        {
-            "RIVERHOG_S3_MAX_POOL_CONNECTIONS": "32",
-            "RIVERHOG_ARCHIVE_STORE_B2_S3_MAX_POOL_CONNECTIONS": "128",
-            "RIVERHOG_ARCHIVE_STORE_B2_S3_READ_TIMEOUT_SECONDS": "1800",
-        },
-        store_name="b2",
-    )
-    assert scoped.max_pool_connections == 128
-    assert scoped.read_timeout_seconds == 1800
 
 
 def test_weighted_byte_budget_blocks_only_until_capacity_is_released() -> None:

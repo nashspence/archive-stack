@@ -52,7 +52,7 @@ INITIATOR = ApplicationPrincipal(
 
 class _ArchiveCopyCache:
     def __init__(self) -> None:
-        self.store = MemoryArchiveStore(backend="b2")
+        self.store = MemoryArchiveStore()
 
     def multipart_object_store(self, **_: object) -> MemoryArchiveStore:
         return self.store
@@ -67,7 +67,7 @@ class _ArchiveCopyCache:
         content = self.store.objects[completed.object_path]
         return RetrievalCacheReceipt(
             object_path=completed.object_path,
-            version_id=completed.version_id,
+            revision=completed.revision,
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
             cached_at=completed.completed_at,
@@ -102,7 +102,7 @@ def _multipart_archive(files: dict[str, bytes], *, parts: int = 4) -> FixtureArc
                 "plaintext_sha256": hashlib.sha256(plain).hexdigest(),
                 "stored_bytes": len(stored),
                 "stored_sha256": hashlib.sha256(stored).hexdigest(),
-                "etag": f"source-part-{number}",
+                "part_token": f"source-part-{number}",
             }
         )
         plaintext_start += len(plain)
@@ -129,15 +129,13 @@ def _service(
     b2_config = replace(
         config.archive_store("deep"),
         name="b2",
-        backend="b2",
-        storage_class="STANDARD",
     )
     config = replace(
         config,
         archive_stores={"deep": config.archive_store("deep"), "b2": b2_config},
     )
     source = MemoryArchiveStore(archive, ready=source_ready)
-    destination = destination or MemoryArchiveStore(backend="b2")
+    destination = destination or MemoryArchiveStore()
     service = SqlAlchemyArchiveCopyService(
         config,
         ArchiveStoreRegistry(
@@ -167,7 +165,7 @@ def test_archive_copy_preserves_the_independent_object_manifest(
     assert service.process_due(limit=1) == 1
 
     assert requested["state"] == "requested"
-    prefix = "archives/b2/new-copy"
+    prefix = "archives/archive/new-copy"
     assert destination.objects == {
         f"{prefix}/{relative_path}": content
         for relative_path, content in archive.stored_objects.items()
@@ -232,7 +230,7 @@ def test_archive_copy_pipelines_source_parts_into_parallel_destination_requests(
 
     class ConcurrentDestination(MemoryArchiveStore):
         def __init__(self) -> None:
-            super().__init__(backend="b2")
+            super().__init__()
             self.lock = threading.Lock()
             self.rendezvous = threading.Barrier(2)
             self.active = 0
@@ -272,7 +270,7 @@ def test_archive_copy_pipelines_source_parts_into_parallel_destination_requests(
     assert service.process_due(limit=1) == 1
     assert destination.maximum_active >= 2
     assert (
-        destination.objects[f"archives/b2/new-copy/volumes/{archive.pack_plan.volume_id}.tar.age"]
+        destination.objects[f"archives/archive/new-copy/volumes/{archive.pack_plan.volume_id}.tar.age"]
         == archive.stored_objects[f"volumes/{archive.pack_plan.volume_id}.tar.age"]
     )
 
@@ -300,7 +298,7 @@ def test_archive_copy_preserves_immutable_provenance_objects(tmp_path: Path) -> 
         "manifest",
         "proof",
     )
-    prefix = "archives/b2/new-copy"
+    prefix = "archives/archive/new-copy"
     assert destination.objects == {
         f"{prefix}/{relative_path}": content
         for relative_path, content in archive.stored_objects.items()
@@ -326,31 +324,19 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         tmp_path / "catalog.sqlite3",
         FILES,
         store="b2",
-        backend="b2",
     )
     deep = replace(
         config.archive_store("b2"),
         name="deep",
-        backend="aws",
-        storage_class="DEEP_ARCHIVE",
-        read_mode="restore_required",
     )
     config = replace(
         config,
         archive_stores={"b2": config.archive_store("b2"), "deep": deep},
         archive_read_order=("b2", "deep"),
-        retrieval_cache=RetrievalCacheConfig(
-            endpoint_url="https://cache.example",
-            region="us-east-1",
-            bucket="cache",
-            access_key_id="key",
-            secret_access_key="secret",
-        ),
+        retrieval_cache=RetrievalCacheConfig(storage_adapter="archive"),
     )
-    source = MemoryArchiveStore(archive, backend="b2")
+    source = MemoryArchiveStore(archive)
     destination = MemoryArchiveStore(
-        backend="aws",
-        storage_class="DEEP_ARCHIVE",
         read_mode="restore_required",
     )
     cache = _ArchiveCopyCache()
@@ -377,7 +363,8 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "deep"))
         checkpoints = session.scalars(select(ArchiveCopyObjectUploadRecord)).all()
         assert copy is not None
-        assert copy.storage_class == "DEEP_ARCHIVE"
+        assert copy.storage_adapter == "archive"
+        assert copy.read_mode == "restore_required"
         assert checkpoints == []
         cached = session.get(
             RetrievalCacheObjectRecord,
@@ -390,11 +377,11 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         assert cached is not None
         assert lease is not None
     assert set(destination.objects) == {
-        "archives/aws/new-copy/volumes/pack-000000000000.tar.age",
-        "archives/aws/new-copy/manifest.json.age",
-        "archives/aws/new-copy/manifest.json.ots.age",
+        "archives/archive/new-copy/volumes/pack-000000000000.tar.age",
+        "archives/archive/new-copy/manifest.json.age",
+        "archives/archive/new-copy/manifest.json.ots.age",
     }
-    pack_path = "archives/aws/new-copy/volumes/pack-000000000000.tar.age"
+    pack_path = "archives/archive/new-copy/volumes/pack-000000000000.tar.age"
     assert cache.store.objects[pack_path] == destination.objects[pack_path]
 
 
@@ -405,28 +392,19 @@ def test_restore_required_copy_uses_archive_only_when_new_archive_cache_is_disab
         tmp_path / "catalog.sqlite3",
         FILES,
         store="b2",
-        backend="b2",
     )
     deep = replace(
         config.archive_store("b2"),
         name="deep",
-        backend="aws",
-        read_mode="restore_required",
     )
     config = replace(
         config,
         archive_stores={"b2": config.archive_store("b2"), "deep": deep},
-        retrieval_cache=RetrievalCacheConfig(
-            endpoint_url="https://cache.example",
-            region="us-east-1",
-            bucket="cache",
-            access_key_id="fixture",
-            secret_access_key="fixture",
-        ),
+        retrieval_cache=RetrievalCacheConfig(storage_adapter="archive"),
         retrieval_cache_new_archive_enabled=False,
     )
-    source = MemoryArchiveStore(archive, backend="b2")
-    destination = MemoryArchiveStore(backend="aws")
+    source = MemoryArchiveStore(archive)
+    destination = MemoryArchiveStore(read_mode="restore_required")
     service = SqlAlchemyArchiveCopyService(
         config,
         ArchiveStoreRegistry(
@@ -518,7 +496,7 @@ def test_archive_copy_canceled_during_source_check_cleans_the_requested_read(
     assert service.process_due(limit=1) == 1
     assert service.get(COLLECTION_ID, destination_store="b2")["state"] == "canceled"
     assert source.cleaned == [("pack-000000000000", "manifest", "proof")]
-    assert destination.discarded_uploads == ["archives/b2/new-copy"]
+    assert destination.discarded_uploads == ["archives/archive/new-copy"]
 
 
 def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
@@ -535,7 +513,7 @@ def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
     assert canceled["state"] == "canceled"
     assert canceled["completed_at"] is not None
     assert source.cleaned == [("pack-000000000000", "manifest", "proof")]
-    assert destination.discarded_uploads == ["archives/b2/new-copy"]
+    assert destination.discarded_uploads == ["archives/archive/new-copy"]
     filtered = service.list(
         page=1,
         per_page=25,
@@ -587,7 +565,7 @@ def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
             assert release.wait(timeout=5)
             return super().upload_part(upload=upload, number=number, content=content)
 
-    destination = BlockingDestination(backend="b2")
+    destination = BlockingDestination()
     config, _archive, _source, _destination, service = _service(
         tmp_path / "catalog.sqlite3",
         destination=destination,
@@ -607,7 +585,7 @@ def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
     assert canceled["state"] == "canceled"
     assert canceled["completed_at"] is not None
     assert destination.objects == {}
-    assert destination.discarded_uploads == ["archives/b2/new-copy"]
+    assert destination.discarded_uploads == ["archives/archive/new-copy"]
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2")) is None
 

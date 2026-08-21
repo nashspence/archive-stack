@@ -156,25 +156,27 @@ def test_compose_has_unique_keys_and_runtime_owned_environment() -> None:
     configured_names = {
         name for name in compose["services"]["app"]["environment"] if name.startswith("RIVERHOG_")
     }
-    dynamic_archive_store_names = {
-        name for name in configured_names if name.startswith("RIVERHOG_ARCHIVE_STORE_")
+    dynamic_names = {
+        name
+        for name in configured_names
+        if name.startswith("RIVERHOG_ARCHIVE_STORE_")
+        or (
+            name.startswith("RIVERHOG_STORAGE_ADAPTER_")
+            and name != "RIVERHOG_STORAGE_ADAPTER_MAX_CONNECTIONS"
+        )
     }
-    assert all(name in runtime_source for name in configured_names - dynamic_archive_store_names)
+    assert all(name in runtime_source for name in configured_names - dynamic_names)
     assert "RIVERHOG_ARCHIVE_STORE_" in runtime_source
-    assert {name.rsplit("_", 1)[-1] for name in dynamic_archive_store_names} <= {
+    assert "RIVERHOG_STORAGE_ADAPTER_" in runtime_source
+    assert {name.rsplit("_", 1)[-1] for name in dynamic_names} <= {
         "URL",
-        "REGION",
-        "BUCKET",
         "ID",
-        "KEY",
-        "STYLE",
-        "PREFIX",
-        "BACKEND",
-        "CLASS",
-        "PATH",
+        "FILE",
         "MODE",
         "BYTES",
-        "TOKEN",
+        "SHA256",
+        "HTTP",
+        "ADAPTER",
     }
 
 
@@ -210,12 +212,17 @@ def test_bundled_garage_is_development_only_and_not_an_application_dependency() 
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
 
     assert compose["services"]["garage"]["profiles"] == ["development"]
+    assert compose["services"]["garage-storage-adapter"]["profiles"] == ["development"]
     assert "garage" not in compose["services"]["app"]["depends_on"]
+    assert "garage-storage-adapter" not in compose["services"]["app"]["depends_on"]
+    assert "garage" in compose["services"]["garage-storage-adapter"]["depends_on"]
 
     bootstrap = (REPO_ROOT / "scripts" / "bootstrap_garage.sh").read_text(encoding="utf-8")
     smoke = (REPO_ROOT / "scripts" / "test_compose_smoke.sh").read_text(encoding="utf-8")
     assert "export COMPOSE_PROFILES=development" in bootstrap
     assert "export COMPOSE_PROFILES=development" in smoke
+    assert "garage-storage-adapter" in bootstrap
+    assert "riverhog-storage-adapter-conformance" in smoke
 
 
 def test_compose_host_interpolation_is_complete_without_an_env_file() -> None:
@@ -250,18 +257,10 @@ def test_compose_policy_defaults_match_runtime_defaults() -> None:
         "public_base_url",
         "retrieval_cache",
     }
-    archive_topology_fields = {
-        "access_key_id",
-        "bucket",
-        "endpoint_url",
-        "region",
-        "secret_access_key",
-        "prefix",
-    }
     for defaults in (runtime_defaults, compose_defaults):
-        for store in defaults["archive_stores"].values():
-            for field in archive_topology_fields:
-                store.pop(field)
+        for adapter in defaults["storage_adapters"].values():
+            adapter.pop("endpoint_url")
+            adapter.pop("token_file")
     for field in topology_fields:
         runtime_defaults.pop(field)
         compose_defaults.pop(field)
@@ -274,19 +273,17 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_STORES",
         "RIVERHOG_ARCHIVE_WRITE_STORE",
         "RIVERHOG_ARCHIVE_READ_ORDER",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ENDPOINT_URL",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_REGION",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_BUCKET",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ACCESS_KEY_ID",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_SECRET_ACCESS_KEY",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_FORCE_PATH_STYLE",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_STORAGE_CLASS",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_READ_MODE",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PUBLIC_KEY_ID",
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PRIVATE_KEY_PATH",
+        "RIVERHOG_STORAGE_ADAPTERS",
+        "RIVERHOG_STORAGE_ADAPTER_MAX_CONNECTIONS",
+        "RIVERHOG_STORAGE_ADAPTER_ARCHIVE_ENDPOINT_URL",
+        "RIVERHOG_STORAGE_ADAPTER_ARCHIVE_TOKEN_FILE",
+        "RIVERHOG_STORAGE_ADAPTER_ARCHIVE_EXPECTED_PROFILE_ID",
+        "RIVERHOG_STORAGE_ADAPTER_ARCHIVE_EXPECTED_PROFILE_READ_MODE",
+        "RIVERHOG_STORAGE_ADAPTER_ARCHIVE_EXPECTED_EGRESS_ACCOUNTING_ID",
+        "RIVERHOG_STORAGE_ADAPTER_ARCHIVE_EXPECTED_PROFILE_CONTRACT_SHA256",
+        "RIVERHOG_STORAGE_ADAPTER_ARCHIVE_ALLOW_INSECURE_HTTP",
+        "RIVERHOG_STORAGE_ADAPTER_ARCHIVE_EXPECTED_IMPLEMENTATION_ID",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_STORAGE_ADAPTER",
         "RIVERHOG_ARCHIVE_STORE_ARCHIVE_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
         "RIVERHOG_ARCHIVE_STORE_ARCHIVE_DOWNLOAD_SAFETY_BUFFER_BYTES",
         "RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
@@ -300,31 +297,21 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR",
         "RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL",
         "RIVERHOG_BOOTSTRAP_TOKEN",
-        "RIVERHOG_S3_MAX_POOL_CONNECTIONS",
         "RIVERHOG_INGRESS_MAX_INFLIGHT_BYTES",
         "RIVERHOG_INGRESS_SOURCE_READ_CHUNK_BYTES",
         "RIVERHOG_AGE_SESSION_CACHE_ENTRIES",
         "RIVERHOG_AGE_SESSION_DERIVATION_CONCURRENCY",
-        "RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL",
-        "RIVERHOG_RETRIEVAL_CACHE_BUCKET",
+        "RIVERHOG_RETRIEVAL_CACHE_STORAGE_ADAPTER",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED",
         "RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE",
         "RIVERHOG_RETRIEVAL_DEFAULT_LEASE",
         "RIVERHOG_RETRIEVAL_MAX_LEASE",
         "RIVERHOG_RETRIEVAL_PENDING_TIMEOUT",
-        "RIVERHOG_RETRIEVAL_RESTORE_HOLD",
         "RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL",
         "RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL",
-        "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY",
-        "RIVERHOG_RETRIEVAL_TIER",
         "RIVERHOG_RETRIEVAL_REQUEST_CONCURRENCY",
         "RIVERHOG_RETRIEVAL_MAX_INFLIGHT_BYTES",
         "RIVERHOG_RETRIEVAL_READ_CHUNK_BYTES",
-        "RIVERHOG_S3_CONNECT_TIMEOUT_SECONDS",
-        "RIVERHOG_S3_READ_TIMEOUT_SECONDS",
-        "RIVERHOG_S3_MAX_ATTEMPTS",
-        "RIVERHOG_S3_RETRY_MODE",
-        "RIVERHOG_S3_TCP_KEEPALIVE",
         "RIVERHOG_EVENT_SOURCE",
         "RIVERHOG_EVENT_CONTEXT_RETENTION",
         "RIVERHOG_OTS_STAMP_COMMAND",
@@ -338,23 +325,13 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
     for service in ("app", "test"):
         assert required <= set(compose["services"][service]["environment"])
-        assert (
-            compose["services"][service]["environment"]["RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX"]
-            == "${RIVERHOG_ARCHIVE_STORE_ARCHIVE_PREFIX-}"
-        )
         assert compose["services"][service]["env_file"] == [
             {
                 "path": "${RIVERHOG_COMPOSE_ENV_FILE:-../../.env.compose}",
                 "required": False,
             }
         ]
-        mounts = compose["services"][service].get("volumes", [])
-        assert {
-            "type": "bind",
-            "source": "${RIVERHOG_CLOUDFRONT_PRIVATE_KEY_HOST_PATH:-/dev/null}",
-            "target": "/run/secrets/riverhog-cloudfront.pem",
-            "read_only": True,
-        } in mounts
+        assert "riverhog-storage-adapter-token" in compose["services"][service]["secrets"]
 
     compose_helper = (REPO_ROOT / "scripts" / "_compose_env.sh").read_text(encoding="utf-8")
     assert 'export RIVERHOG_COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE}"' in compose_helper
@@ -571,6 +548,8 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
     ).stdout.strip()
     targets = (
         "riverhog",
+        "riverhog-aws-storage-adapter",
+        "riverhog-backblaze-storage-adapter",
         "riverhog-ftp-adapter",
         "stove0",
         "stove0-ffprobe-sampling-observer",
@@ -578,6 +557,7 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
         "stove0-opus-target",
         "stove0-review-target",
         "mango-fish",
+        "garage-storage-adapter",
         "test",
     )
     assert _read_log_lines(docker_log_path) == [
@@ -651,8 +631,7 @@ def test_bootstrap_garage_is_available_as_a_standalone_target(tmp_path: Path) ->
     docker_log = "\n".join(_read_log_lines(docker_log_path))
     assert " up --detach garage" in docker_log
     assert " exec -T garage /garage -c /etc/garage.toml node id" in docker_log
-    assert " run --rm --entrypoint python" in docker_log
-    assert "tests/harness/configure_garage.py" in docker_log
+    assert " up --detach --build --wait garage-storage-adapter" in docker_log
 
 
 def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
@@ -667,6 +646,8 @@ def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
     docker_log = "\n".join(_read_log_lines(docker_log_path))
     assert f" build --sbom=generator={SBOM_GENERATOR} test" in docker_log
     assert " up --detach garage" in docker_log
+    assert " up --detach --build --wait garage-storage-adapter" in docker_log
+    assert " run --rm --entrypoint riverhog-storage-adapter-conformance" in docker_log
     assert f" build --sbom=generator={SBOM_GENERATOR} app" in docker_log
     assert " up --detach --wait app" in docker_log
     assert " exec -T postgres createdb --username riverhog --owner riverhog stove0" in docker_log
@@ -917,6 +898,8 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert "make bootstrap-garage" in completed.stdout
     assert "make build-riverhog" in completed.stdout
+    assert "make build-riverhog-aws-storage-adapter" in completed.stdout
+    assert "make build-riverhog-backblaze-storage-adapter" in completed.stdout
     assert "make build-riverhog-ftp-adapter" in completed.stdout
     assert "make build-stove0" in completed.stdout
     assert "make build-stove0-ffprobe-sampling-observer" in completed.stdout
@@ -924,6 +907,7 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make build-stove0-opus-target" in completed.stdout
     assert "make build-stove0-review-target" in completed.stdout
     assert "make build-mango-fish" in completed.stdout
+    assert "make build-garage-storage-adapter" in completed.stdout
     assert "make mango-fish-smoke" in completed.stdout
     assert "make build-test" in completed.stdout
     assert "make dist-smoke" in completed.stdout

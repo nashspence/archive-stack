@@ -48,6 +48,7 @@ from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
     ArchiveStore,
     CollectionArchiveIdentity,
+    StorageExecutionEvidence,
 )
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.raw_upload import RAW_VOLUME_CONTENT_TYPE
@@ -89,7 +90,7 @@ _COPY_OBJECT_KINDS = frozenset(
 class _CopiedObject:
     object_id: str
     object_path: str
-    version_id: str | None
+    revision: str
     completed_at: str
     part_receipts_json: str | None = None
     retrieval_cache: RetrievalCacheReceipt | None = None
@@ -185,6 +186,7 @@ class SqlAlchemyArchiveCopyService:
             )
             if existing is not None and archive_copy_is_complete(existing):
                 return _completed_payload(existing)
+            destination_evidence = destination_archive_store.storage_execution_evidence()
             source_copy = _select_source_copy(
                 collection,
                 config=self._config,
@@ -200,6 +202,9 @@ class SqlAlchemyArchiveCopyService:
                     destination_storage_prefix=(
                         destination_archive_store.new_collection_archive_storage_prefix()
                     ),
+                    storage_adapter_runtime_descriptor_sha256=(
+                        destination_evidence.adapter_runtime_descriptor_sha256
+                    ),
                     initiated_by_app=initiator.app,
                     initiated_by_key_id=initiator.key_id,
                     event_context_json=normalized_context_json,
@@ -213,6 +218,9 @@ class SqlAlchemyArchiveCopyService:
                 if job.state == "canceling":
                     raise Conflict("archive copy cancellation cleanup is still in progress")
                 job.source_store = source_copy.store
+                job.storage_adapter_runtime_descriptor_sha256 = (
+                    destination_evidence.adapter_runtime_descriptor_sha256
+                )
                 job.initiated_by_app = initiator.app
                 job.initiated_by_key_id = initiator.key_id
                 job.event_context_json = normalized_context_json
@@ -222,6 +230,11 @@ class SqlAlchemyArchiveCopyService:
                 job.completed_at = None
                 job.failure = None
                 self._emit(job, type="archive_copy.requested", session=session)
+            elif (
+                job.storage_adapter_runtime_descriptor_sha256
+                != destination_evidence.adapter_runtime_descriptor_sha256
+            ):
+                raise Conflict("archive copy storage-adapter runtime descriptor changed")
             return _job_payload(job)
 
     def cancel(
@@ -477,9 +490,10 @@ class SqlAlchemyArchiveCopyService:
                 current for current in source_identity.objects if current.kind in _COPY_OBJECT_KINDS
             )
             read_requested_at = job.read_requested_at
-            ready_at = job.ready_at
-            expires_at = job.expires_at
             destination_storage_prefix = job.destination_storage_prefix
+            destination_runtime_descriptor_sha256 = (
+                job.storage_adapter_runtime_descriptor_sha256
+            )
             job.state = "checking"
             job.next_attempt_at = None
 
@@ -488,21 +502,12 @@ class SqlAlchemyArchiveCopyService:
             status = source_store.prepare_archive_objects_read(
                 collection_id=collection_id,
                 objects=data_objects,
-                retrieval_tier=self._config.retrieval_tier,
-                hold_days=_read_hold_days(self._config),
-                requested_at=current_text,
-                estimated_ready_at=format_utc_timestamp(
-                    current + self._config.retrieval_estimated_latency
-                ),
             )
             read_requested_at = current_text
         else:
             status = source_store.get_archive_objects_read_status(
                 collection_id=collection_id,
                 objects=data_objects,
-                requested_at=read_requested_at,
-                estimated_ready_at=ready_at,
-                estimated_expires_at=expires_at,
             )
 
         canceled = False
@@ -552,6 +557,16 @@ class SqlAlchemyArchiveCopyService:
             )
             return
 
+        destination_archive_store = self._archive_stores.require(
+            destination_store_name
+        ).store
+        destination_evidence = destination_archive_store.storage_execution_evidence()
+        if (
+            destination_evidence.adapter_runtime_descriptor_sha256
+            != destination_runtime_descriptor_sha256
+        ):
+            raise Conflict("archive copy storage-adapter runtime descriptor changed")
+
         copied = self._copy_immutable_objects(
             collection_id=collection_id,
             source_store_name=source_store_name,
@@ -579,6 +594,7 @@ class SqlAlchemyArchiveCopyService:
                 destination_store=destination_store,
                 destination_storage_prefix=destination_storage_prefix,
                 copied=copied,
+                destination_evidence=destination_evidence,
             )
             session.execute(
                 delete(ArchiveCopyObjectUploadRecord).where(
@@ -646,6 +662,9 @@ class SqlAlchemyArchiveCopyService:
         destination_storage_prefix: str,
         objects: Sequence[CollectionArchiveObjectRecord],
     ) -> None:
+        evidence = self._archive_stores.require(
+            destination_store
+        ).store.storage_execution_evidence()
         expected = {
             current.object_id: current for current in objects if current.kind in {"pack", "segment"}
         }
@@ -676,6 +695,9 @@ class SqlAlchemyArchiveCopyService:
                             ),
                             plaintext_bytes=current.plaintext_bytes,
                             sha256=current.sha256,
+                            adapter_runtime_descriptor_sha256=(
+                                evidence.adapter_runtime_descriptor_sha256
+                            ),
                             multipart_content_length=current.stored_bytes,
                         )
                     )
@@ -685,6 +707,8 @@ class SqlAlchemyArchiveCopyService:
                     or record.plaintext_bytes != current.plaintext_bytes
                     or record.sha256 != current.sha256
                     or record.multipart_content_length != current.stored_bytes
+                    or record.adapter_runtime_descriptor_sha256
+                    != evidence.adapter_runtime_descriptor_sha256
                 ):
                     raise Conflict("archive copy upload checkpoint does not match its manifest")
 
@@ -780,12 +804,15 @@ class SqlAlchemyArchiveCopyService:
             expected_metadata=metadata,
         )
         if completed is not None:
-            if completed.bytes != source.stored_bytes:
+            if (
+                completed.stored_bytes != source.stored_bytes
+                or completed.stored_sha256 != source.stored_sha256
+            ):
                 raise Conflict("completed archive-copy volume has a different byte count")
             return _CopiedObject(
                 source.object_id,
                 completed.object_path,
-                completed.version_id,
+                completed.revision,
                 completed.completed_at,
                 source.part_receipts_json,
                 completed.retrieval_cache,
@@ -799,8 +826,8 @@ class SqlAlchemyArchiveCopyService:
             if checkpoint is None:
                 raise Conflict("archive copy upload checkpoint disappeared")
             upload = (
-                MultipartUpload(destination_path, checkpoint.multipart_upload_id)
-                if checkpoint.multipart_upload_id
+                MultipartUpload(destination_path, checkpoint.multipart_transfer_id)
+                if checkpoint.multipart_transfer_id
                 else None
             )
         if upload is None:
@@ -808,6 +835,7 @@ class SqlAlchemyArchiveCopyService:
                 object_path=destination_path,
                 content_type=content_type,
                 metadata=metadata,
+                expected_bytes=source.stored_bytes,
             )
             with session_scope(self._session_factory) as session:
                 checkpoint = session.get(
@@ -816,7 +844,7 @@ class SqlAlchemyArchiveCopyService:
                 )
                 if checkpoint is None:
                     raise Conflict("archive copy upload checkpoint disappeared")
-                checkpoint.multipart_upload_id = upload.upload_id
+                checkpoint.multipart_transfer_id = upload.transfer_id
                 checkpoint.object_path = destination_path
 
         remote_parts = {
@@ -845,7 +873,7 @@ class SqlAlchemyArchiveCopyService:
         return _CopiedObject(
             source.object_id,
             completed.object_path,
-            completed.version_id,
+            completed.revision,
             completed.completed_at,
             _part_rows_json(part_rows, committed),
             completed.retrieval_cache,
@@ -862,7 +890,8 @@ class SqlAlchemyArchiveCopyService:
         if (
             not self._config.retrieval_cache_new_archive_enabled
             or self._retrieval_cache is None
-            or self._config.archive_store(store_name).read_mode != "restore_required"
+            or self._archive_stores.require(store_name).store.read_mode()
+            != "restore_required"
         ):
             return archive
         return MirroredArchiveMultipartObjectStore(
@@ -886,7 +915,7 @@ class SqlAlchemyArchiveCopyService:
         part_rows: Sequence[dict[str, object]],
         remote_parts: Mapping[int, MultipartPartReceipt],
     ) -> tuple[MultipartPartReceipt, ...]:
-        worker_count = min(self._throughput.s3_part_concurrency, len(part_rows))
+        worker_count = min(self._throughput.multipart_part_concurrency, len(part_rows))
         window = min(len(part_rows), worker_count * 2)
         source_chunks = iter(
             source_store.iter_stored_archive_object(
@@ -952,9 +981,11 @@ class SqlAlchemyArchiveCopyService:
                         content=content,
                     )
                     remote_seconds = time.perf_counter() - remote_started
-            if receipt.bytes != len(content):
+            if (
+                receipt.stored_bytes != len(content)
+                or receipt.stored_sha256 != str(row["stored_sha256"])
+            ):
                 raise Conflict("archive copy multipart part byte count changed")
-            receipt = replace(receipt, sha256=str(row["stored_sha256"]))
             return _CopiedPart(
                 receipt=receipt,
                 timing=TransferTiming(
@@ -1128,7 +1159,7 @@ class SqlAlchemyArchiveCopyService:
         return _CopiedObject(
             source.object_id,
             receipt.object_path,
-            receipt.version_id,
+            receipt.revision,
             receipt.completed_at,
         )
 
@@ -1150,13 +1181,18 @@ class SqlAlchemyArchiveCopyService:
                 raise Conflict("archive copy upload checkpoint disappeared")
             record.multipart_parts_json = json.dumps(
                 [
-                    {"number": current.number, "etag": current.etag, "bytes": current.bytes}
+                    {
+                        "number": current.number,
+                        "part_token": current.part_token,
+                        "stored_bytes": current.stored_bytes,
+                        "stored_sha256": current.stored_sha256,
+                    }
                     for current in parts
                 ],
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            record.uploaded_bytes = sum(current.bytes for current in parts)
+            record.uploaded_bytes = sum(current.stored_bytes for current in parts)
             record.uploaded_parts = len(parts)
             record.total_parts = total_parts
 
@@ -1174,6 +1210,7 @@ class SqlAlchemyArchiveCopyService:
         destination_store: str,
         destination_storage_prefix: str,
         copied: Mapping[str, _CopiedObject],
+        destination_evidence: StorageExecutionEvidence,
     ) -> None:
         destination = session.get(
             CollectionArchiveCopyRecord,
@@ -1186,13 +1223,12 @@ class SqlAlchemyArchiveCopyService:
             )
             session.add(destination)
         destination.objects.clear()
-        store_config = self._config.archive_store(destination_store)
         uploaded_at: list[str] = []
         cache_receipts: list[tuple[CollectionArchiveObjectRecord, RetrievalCacheReceipt]] = []
         cache_required = (
             self._config.retrieval_cache_new_archive_enabled
             and self._retrieval_cache is not None
-            and store_config.read_mode == "restore_required"
+            and destination_evidence.read_mode == "restore_required"
         )
         for current in sorted(source.objects, key=lambda value: value.object_order):
             if current.kind not in _COPY_OBJECT_KINDS:
@@ -1216,13 +1252,11 @@ class SqlAlchemyArchiveCopyService:
                 stored_bytes=current.stored_bytes,
                 sha256=current.sha256,
                 stored_sha256=current.stored_sha256,
-                version_id=receipt.version_id,
+                revision=receipt.revision,
                 age_state_json=current.age_state_json,
                 part_receipts_json=receipt.part_receipts_json,
                 plan_sha256=current.plan_sha256,
                 index_sha256=current.index_sha256,
-                backend=store_config.backend,
-                storage_class=store_config.storage_class,
                 uploaded_at=receipt.completed_at,
                 verified_at=receipt.completed_at,
             )
@@ -1263,7 +1297,7 @@ class SqlAlchemyArchiveCopyService:
                     collection_id=source.collection_id,
                     object_id=copied_record.object_id,
                     object_path=cache_receipt.object_path,
-                    version_id=cache_receipt.version_id,
+                    revision=cache_receipt.revision,
                     stored_bytes=cache_receipt.stored_bytes,
                     stored_sha256=cache_receipt.stored_sha256,
                     cached_at=cache_receipt.cached_at,
@@ -1286,8 +1320,23 @@ class SqlAlchemyArchiveCopyService:
             raise Conflict("archive copy result has no root and proof")
         destination.state = "uploaded"
         destination.archive_storage_prefix = destination_storage_prefix
-        destination.backend = store_config.backend
-        destination.storage_class = store_config.storage_class
+        destination.storage_adapter = destination_evidence.storage_adapter
+        destination.storage_profile_id = destination_evidence.storage_profile_id
+        destination.storage_profile_contract_sha256 = (
+            destination_evidence.storage_profile_contract_sha256
+        )
+        destination.egress_accounting_id = destination_evidence.egress_accounting_id
+        destination.read_mode = destination_evidence.read_mode
+        destination.adapter_implementation_id = (
+            destination_evidence.adapter_implementation_id
+        )
+        destination.adapter_implementation_version = (
+            destination_evidence.adapter_implementation_version
+        )
+        destination.adapter_source_revision = destination_evidence.adapter_source_revision
+        destination.adapter_runtime_descriptor_sha256 = (
+            destination_evidence.adapter_runtime_descriptor_sha256
+        )
         destination.last_uploaded_at = max(uploaded_at)
         destination.last_verified_at = max(uploaded_at)
         destination.failure = None
@@ -1491,6 +1540,9 @@ def _volume_metadata(source: CollectionArchiveObjectRecord) -> dict[str, str]:
         "riverhog-plaintext-bytes": str(source.plaintext_bytes),
         "riverhog-age-state-sha256": hashlib.sha256(state.to_json_bytes()).hexdigest(),
     }
+    if not source.stored_sha256:
+        raise Conflict("archive volume has no stored SHA-256")
+    metadata["riverhog-stored-sha256"] = source.stored_sha256
     if source.kind == "pack":
         if not source.plan_sha256 or not source.index_sha256:
             raise Conflict("archive pack has no plan or index identity")
@@ -1533,7 +1585,7 @@ def _part_rows(value: str | None) -> list[dict[str, object]]:
         "plaintext_sha256",
         "stored_bytes",
         "stored_sha256",
-        "etag",
+        "part_token",
     }
     for number, current in enumerate(raw, start=1):
         if not isinstance(current, dict) or set(current) != expected_keys:
@@ -1591,10 +1643,11 @@ def _part_rows_json(
     for row, receipt in zip(rows, receipts, strict=True):
         if (
             _part_int(row, "number") != receipt.number
-            or _part_int(row, "stored_bytes") != receipt.bytes
+            or _part_int(row, "stored_bytes") != receipt.stored_bytes
+            or str(row["stored_sha256"]) != receipt.stored_sha256
         ):
             raise Conflict("destination archive part identity changed")
-        payload.append({**row, "etag": receipt.etag})
+        payload.append({**row, "part_token": receipt.part_token})
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
@@ -1642,8 +1695,3 @@ def _completed_payload(copy: CollectionArchiveCopyRecord) -> dict[str, object]:
         "completed_at": copy.last_verified_at,
         "failure": None,
     }
-
-
-def _read_hold_days(config: RuntimeConfig) -> int:
-    seconds = config.retrieval_restore_hold.total_seconds()
-    return max(1, int((seconds + 86_399) // 86_400))

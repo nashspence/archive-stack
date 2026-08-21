@@ -135,7 +135,7 @@ class BlockingArchiveStore:
         self.published_metadata.append(manifest)
         return MutableManifestReceipt(
             object_path=f"{archive_storage_prefix}/metadata.json.age",
-            version_id="metadata-version",
+            revision="metadata-revision",
             stored_bytes=len(manifest),
             stored_sha256=hashlib.sha256(manifest).hexdigest(),
             published_at="2026-07-18T00:00:00.000000Z",
@@ -255,8 +255,15 @@ def _seed(database_url: str) -> None:
             store="deep",
             state="uploaded",
             archive_storage_prefix="archives/opaque-docs",
-            backend="s3",
-            storage_class="STANDARD",
+            storage_adapter="archive",
+            storage_profile_id="riverhog.garage-development/v1",
+            storage_profile_contract_sha256="1" * 64,
+            egress_accounting_id="garage-development",
+            read_mode="immediate",
+            adapter_implementation_id="riverhog.garage-storage-adapter/v1",
+            adapter_implementation_version="1.0.0",
+            adapter_source_revision="fixture",
+            adapter_runtime_descriptor_sha256="2" * 64,
             last_uploaded_at="2026-07-18T00:00:00.000000Z",
             last_verified_at="2026-07-18T00:00:00.000000Z",
         )
@@ -280,8 +287,7 @@ def _seed(database_url: str) -> None:
                     stored_bytes=stored_bytes,
                     sha256=chr(ord("a") + order) * 64,
                     stored_sha256=chr(ord("d") + order) * 64,
-                    backend="s3",
-                    storage_class="STANDARD",
+                    revision=f"deep-{object_id}-revision",
                     uploaded_at="2026-07-18T00:00:00.000000Z",
                     verified_at="2026-07-18T00:00:00.000000Z",
                 )
@@ -333,8 +339,15 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
             store="deep",
             state="uploaded",
             archive_storage_prefix="archives/opaque-second",
-            backend="s3",
-            storage_class="STANDARD",
+            storage_adapter="archive",
+            storage_profile_id="riverhog.garage-development/v1",
+            storage_profile_contract_sha256="1" * 64,
+            egress_accounting_id="garage-development",
+            read_mode="immediate",
+            adapter_implementation_id="riverhog.garage-storage-adapter/v1",
+            adapter_implementation_version="1.0.0",
+            adapter_source_revision="fixture",
+            adapter_runtime_descriptor_sha256="2" * 64,
             last_uploaded_at="2026-07-18T00:00:00.000000Z",
             last_verified_at="2026-07-18T00:00:00.000000Z",
         )
@@ -358,8 +371,7 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
                     stored_bytes=10,
                     sha256=("f" if object_id == "manifest" else "e") * 64,
                     stored_sha256=("9" if object_id == "manifest" else "8") * 64,
-                    backend="s3",
-                    storage_class="STANDARD",
+                    revision=f"deep-second-{object_id}-revision",
                     uploaded_at="2026-07-18T00:00:00.000000Z",
                     verified_at="2026-07-18T00:00:00.000000Z",
                 )
@@ -551,8 +563,15 @@ def _seed_derived_output(
                 store="deep",
                 state="uploaded",
                 archive_storage_prefix=f"archives/derived-{output_collection_id}",
-                backend="s3",
-                storage_class="STANDARD",
+                storage_adapter="archive",
+                storage_profile_id="riverhog.garage-development/v1",
+                storage_profile_contract_sha256="1" * 64,
+                egress_accounting_id="garage-development",
+                read_mode="immediate",
+                adapter_implementation_id="riverhog.garage-storage-adapter/v1",
+                adapter_implementation_version="1.0.0",
+                adapter_source_revision="fixture",
+                adapter_runtime_descriptor_sha256="2" * 64,
                 last_uploaded_at="2026-01-01T00:00:00.000000Z",
                 last_verified_at="2026-01-01T00:00:00.000000Z",
             )
@@ -569,8 +588,7 @@ def _seed_derived_output(
                 stored_bytes=2,
                 sha256="1" * 64,
                 stored_sha256="0" * 64,
-                backend="s3",
-                storage_class="STANDARD",
+                revision=f"derived-{output_collection_id}-manifest-revision",
                 uploaded_at="2026-01-01T00:00:00.000000Z",
                 verified_at="2026-01-01T00:00:00.000000Z",
             )
@@ -667,8 +685,15 @@ def _seed_multi_input_derived_output(
             store="deep",
             state="uploaded",
             archive_storage_prefix="archives/derived-multi",
-            backend="s3",
-            storage_class="STANDARD",
+            storage_adapter="archive",
+            storage_profile_id="riverhog.garage-development/v1",
+            storage_profile_contract_sha256="1" * 64,
+            egress_accounting_id="garage-development",
+            read_mode="immediate",
+            adapter_implementation_id="riverhog.garage-storage-adapter/v1",
+            adapter_implementation_version="1.0.0",
+            adapter_source_revision="fixture",
+            adapter_runtime_descriptor_sha256="2" * 64,
             last_uploaded_at="2026-01-01T00:00:00.000000Z",
             last_verified_at="2026-01-01T00:00:00.000000Z",
         )
@@ -685,8 +710,7 @@ def _seed_multi_input_derived_output(
                 stored_bytes=2,
                 sha256="1" * 64,
                 stored_sha256="0" * 64,
-                backend="s3",
-                storage_class="STANDARD",
+                revision="derived-multi-manifest-revision",
                 uploaded_at="2026-01-01T00:00:00.000000Z",
                 verified_at="2026-01-01T00:00:00.000000Z",
             )
@@ -694,47 +718,53 @@ def _seed_multi_input_derived_output(
     return derivation
 
 
-def _seed_b2_copy(database_url: str) -> None:
+def _seed_replica_copy(database_url: str) -> None:
     with session_scope(make_session_factory(database_url)) as session:
         deep = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "deep"))
         assert deep is not None
-        b2 = CollectionArchiveCopyRecord(
+        replica = CollectionArchiveCopyRecord(
             collection_id=COLLECTION_ID,
-            store="b2",
+            store="replica",
             state="uploaded",
-            archive_storage_prefix="archives/b2-opaque-docs",
-            backend="b2",
-            storage_class="STANDARD",
+            archive_storage_prefix="archives/replica-opaque-docs",
+            storage_adapter="archive",
+            storage_profile_id=deep.storage_profile_id,
+            storage_profile_contract_sha256=deep.storage_profile_contract_sha256,
+            egress_accounting_id=deep.egress_accounting_id,
+            read_mode=deep.read_mode,
+            adapter_implementation_id=deep.adapter_implementation_id,
+            adapter_implementation_version=deep.adapter_implementation_version,
+            adapter_source_revision=deep.adapter_source_revision,
+            adapter_runtime_descriptor_sha256=deep.adapter_runtime_descriptor_sha256,
             last_uploaded_at=deep.last_uploaded_at,
             last_verified_at=deep.last_verified_at,
         )
-        session.add(b2)
+        session.add(replica)
         for current in sorted(deep.objects, key=lambda item: item.object_order):
             copied = CollectionArchiveObjectRecord(
                 collection_id=COLLECTION_ID,
-                store="b2",
+                store="replica",
                 object_id=current.object_id,
                 object_order=current.object_order,
                 kind=current.kind,
                 object_path=current.object_path.replace(
                     "archives/opaque-docs",
-                    "archives/b2-opaque-docs",
+                    "archives/replica-opaque-docs",
                 ),
                 plaintext_bytes=current.plaintext_bytes,
                 stored_bytes=current.stored_bytes,
                 sha256=current.sha256,
                 stored_sha256=current.stored_sha256,
-                backend="b2",
-                storage_class="STANDARD",
+                revision=f"replica-{current.object_id}-revision",
                 uploaded_at=current.uploaded_at,
                 verified_at=current.verified_at,
             )
-            b2.objects.append(copied)
+            replica.objects.append(copied)
             for placement in current.placements:
                 copied.placements.append(
                     CollectionArchiveFileObjectRecord(
                         collection_id=COLLECTION_ID,
-                        store="b2",
+                        store="replica",
                         path=placement.path,
                         sequence=placement.sequence,
                         object_id=current.object_id,
@@ -1486,28 +1516,29 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
     database_url: str,
 ) -> None:
     _seed(database_url)
-    _seed_b2_copy(database_url)
+    _seed_replica_copy(database_url)
     base = RuntimeConfig(database_url=database_url)
     archive = base.archive_store("archive")
-    b2_config = replace(
+    replica_config = replace(
         archive,
-        name="b2",
-        backend="b2",
-        storage_class="STANDARD",
+        name="replica",
     )
     config = replace(
         base,
-        archive_stores={"deep": replace(archive, name="deep"), "b2": b2_config},
+        archive_stores={
+            "deep": replace(archive, name="deep"),
+            "replica": replica_config,
+        },
         archive_write_store="deep",
-        archive_read_order=("deep", "b2"),
+        archive_read_order=("deep", "replica"),
     )
     deep = BlockingArchiveStore()
-    b2 = BlockingArchiveStore()
-    b2.allow_delete.set()
+    replica = BlockingArchiveStore()
+    replica.allow_delete.set()
     stores = ArchiveStoreRegistry(
         {
             "deep": _archive_store_binding(deep),
-            "b2": _archive_store_binding(b2),
+            "replica": _archive_store_binding(replica),
         }
     )
     retirement = SqlAlchemyArchiveCopyRetirementService(config, stores)
@@ -1535,7 +1566,7 @@ def test_retirement_marker_forces_retrieval_to_replan_onto_a_retained_copy(
     try:
         current_plan = retrieval.plan(files)
         current_objects = cast(list[dict[str, object]], current_plan["objects"])
-        assert {str(item["source_store"]) for item in current_objects} == {"b2"}
+        assert {str(item["source_store"]) for item in current_objects} == {"replica"}
         with pytest.raises(Conflict, match="retrieval plan changed"):
             retrieval.create(
                 app="local",

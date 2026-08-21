@@ -8,12 +8,10 @@ import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Literal
 
 DEFAULT_UPLOAD_PREPARE_CONCURRENCY = 8
-DEFAULT_S3_PART_CONCURRENCY = 4
-DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY = 4
-DEFAULT_S3_MAX_POOL_CONNECTIONS = 32
+DEFAULT_MULTIPART_PART_CONCURRENCY = 4
+DEFAULT_UPLOAD_REQUEST_CONCURRENCY = 4
 DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES = 1280 * 1024 * 1024
 DEFAULT_RETRIEVAL_REQUEST_CONCURRENCY = 8
 DEFAULT_RETRIEVAL_MAX_INFLIGHT_BYTES = 1024 * 1024 * 1024
@@ -27,83 +25,6 @@ _TRANSFER_LOG = logging.getLogger("riverhog.transfer")
 
 
 @dataclass(frozen=True, slots=True)
-class S3TransportTuning:
-    max_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS
-    connect_timeout_seconds: float = 10.0
-    read_timeout_seconds: float = 300.0
-    max_attempts: int = 8
-    retry_mode: Literal["standard", "adaptive"] = "standard"
-    tcp_keepalive: bool = True
-
-    def __post_init__(self) -> None:
-        _bounded_int(
-            self.max_pool_connections,
-            name="S3 maximum pool connections",
-            minimum=1,
-            maximum=4096,
-        )
-        if self.connect_timeout_seconds <= 0 or self.read_timeout_seconds <= 0:
-            raise ValueError("S3 timeouts must be positive")
-        _bounded_int(
-            self.max_attempts,
-            name="S3 maximum attempts",
-            minimum=1,
-            maximum=100,
-        )
-        if self.retry_mode not in {"standard", "adaptive"}:
-            raise ValueError("S3 retry mode must be standard or adaptive")
-
-    @classmethod
-    def from_env(
-        cls,
-        values: Mapping[str, str],
-        *,
-        default_pool_connections: int = DEFAULT_S3_MAX_POOL_CONNECTIONS,
-        store_name: str | None = None,
-    ) -> S3TransportTuning:
-        return cls(
-            max_pool_connections=_scoped_env_int(
-                values,
-                "RIVERHOG_S3_MAX_POOL_CONNECTIONS",
-                default_pool_connections,
-                store_name=store_name,
-            ),
-            connect_timeout_seconds=_scoped_env_float(
-                values,
-                "RIVERHOG_S3_CONNECT_TIMEOUT_SECONDS",
-                10.0,
-                store_name=store_name,
-            ),
-            read_timeout_seconds=_scoped_env_float(
-                values,
-                "RIVERHOG_S3_READ_TIMEOUT_SECONDS",
-                300.0,
-                store_name=store_name,
-            ),
-            max_attempts=_scoped_env_int(
-                values,
-                "RIVERHOG_S3_MAX_ATTEMPTS",
-                8,
-                store_name=store_name,
-            ),
-            retry_mode=_s3_retry_mode(
-                _scoped_env_value(
-                    values,
-                    "RIVERHOG_S3_RETRY_MODE",
-                    "standard",
-                    store_name=store_name,
-                )
-            ),
-            tcp_keepalive=_scoped_env_bool(
-                values,
-                "RIVERHOG_S3_TCP_KEEPALIVE",
-                True,
-                store_name=store_name,
-            ),
-        )
-
-
-@dataclass(frozen=True, slots=True)
 class ArchiveThroughputTuning:
     """Runtime-only transfer controls.
 
@@ -113,8 +34,8 @@ class ArchiveThroughputTuning:
     """
 
     upload_prepare_concurrency: int = DEFAULT_UPLOAD_PREPARE_CONCURRENCY
-    s3_part_concurrency: int = DEFAULT_S3_PART_CONCURRENCY
-    s3_upload_request_concurrency: int = DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY
+    multipart_part_concurrency: int = DEFAULT_MULTIPART_PART_CONCURRENCY
+    upload_request_concurrency: int = DEFAULT_UPLOAD_REQUEST_CONCURRENCY
     upload_max_inflight_bytes: int = DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES
     source_read_chunk_bytes: int = DEFAULT_SOURCE_READ_CHUNK_BYTES
     retrieval_request_concurrency: int = DEFAULT_RETRIEVAL_REQUEST_CONCURRENCY
@@ -131,14 +52,14 @@ class ArchiveThroughputTuning:
             maximum=MAX_WORKER_CONCURRENCY,
         )
         _bounded_int(
-            self.s3_part_concurrency,
-            name="S3 part concurrency",
+            self.multipart_part_concurrency,
+            name="multipart part concurrency",
             minimum=1,
             maximum=MAX_WORKER_CONCURRENCY,
         )
         _bounded_int(
-            self.s3_upload_request_concurrency,
-            name="S3 upload request concurrency",
+            self.upload_request_concurrency,
+            name="upload request concurrency",
             minimum=1,
             maximum=MAX_WORKER_CONCURRENCY,
         )
@@ -178,15 +99,15 @@ class ArchiveThroughputTuning:
                 "RIVERHOG_ARCHIVE_PREPARE_CONCURRENCY",
                 DEFAULT_UPLOAD_PREPARE_CONCURRENCY,
             ),
-            s3_part_concurrency=_env_int(
+            multipart_part_concurrency=_env_int(
                 values,
                 "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
-                DEFAULT_S3_PART_CONCURRENCY,
+                DEFAULT_MULTIPART_PART_CONCURRENCY,
             ),
-            s3_upload_request_concurrency=_env_int(
+            upload_request_concurrency=_env_int(
                 values,
                 "RIVERHOG_ARCHIVE_UPLOAD_REQUEST_CONCURRENCY",
-                DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY,
+                DEFAULT_UPLOAD_REQUEST_CONCURRENCY,
             ),
             upload_max_inflight_bytes=_env_bytes(
                 values,
@@ -342,7 +263,7 @@ class ArchiveTransferResources:
             upload_bytes=WeightedByteSemaphore(tuning.upload_max_inflight_bytes),
             retrieval_bytes=WeightedByteSemaphore(tuning.retrieval_max_inflight_bytes),
             upload_preparations=TransferConcurrencyGate(tuning.upload_prepare_concurrency),
-            upload_requests=TransferConcurrencyGate(tuning.s3_upload_request_concurrency),
+            upload_requests=TransferConcurrencyGate(tuning.upload_request_concurrency),
             retrieval_requests=TransferConcurrencyGate(tuning.retrieval_request_concurrency),
             age_derivations=TransferConcurrencyGate(tuning.age_derivation_concurrency),
         )
@@ -424,111 +345,6 @@ def _bounded_int(value: int, *, name: str, minimum: int, maximum: int) -> int:
     if isinstance(value, bool) or value < minimum or value > maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return value
-
-
-def _store_scoped_env_name(global_name: str, store_name: str) -> str:
-    normalized = store_name.strip().casefold()
-    if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", normalized):
-        raise ValueError("archive store name is invalid for a scoped tuning value")
-    suffix = normalized.upper().replace("-", "_")
-    setting = global_name.removeprefix("RIVERHOG_")
-    return f"RIVERHOG_ARCHIVE_STORE_{suffix}_{setting}"
-
-
-def _scoped_env_value(
-    values: Mapping[str, str],
-    global_name: str,
-    default: str,
-    *,
-    store_name: str | None,
-) -> str:
-    if store_name is not None:
-        scoped_name = _store_scoped_env_name(global_name, store_name)
-        scoped = values.get(scoped_name)
-        if scoped is not None and scoped.strip():
-            return scoped
-    global_value = values.get(global_name)
-    return global_value if global_value is not None and global_value.strip() else default
-
-
-def _scoped_env_int(
-    values: Mapping[str, str],
-    global_name: str,
-    default: int,
-    *,
-    store_name: str | None,
-) -> int:
-    raw = _scoped_env_value(values, global_name, str(default), store_name=store_name)
-    try:
-        return int(raw.strip())
-    except ValueError as exc:
-        raise ValueError(f"{global_name} must be an integer") from exc
-
-
-def _s3_retry_mode(value: str) -> Literal["standard", "adaptive"]:
-    normalized = value.strip().casefold()
-    if normalized == "standard":
-        return "standard"
-    if normalized == "adaptive":
-        return "adaptive"
-    raise ValueError("S3 retry mode must be standard or adaptive")
-
-
-def _scoped_env_float(
-    values: Mapping[str, str],
-    global_name: str,
-    default: float,
-    *,
-    store_name: str | None,
-) -> float:
-    raw = _scoped_env_value(values, global_name, str(default), store_name=store_name)
-    try:
-        return float(raw.strip())
-    except ValueError as exc:
-        raise ValueError(f"{global_name} must be a number") from exc
-
-
-def _scoped_env_bool(
-    values: Mapping[str, str],
-    global_name: str,
-    default: bool,
-    *,
-    store_name: str | None,
-) -> bool:
-    raw = _scoped_env_value(
-        values,
-        global_name,
-        "true" if default else "false",
-        store_name=store_name,
-    )
-    normalized = raw.strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{global_name} must be true or false")
-
-
-def _env_float(values: Mapping[str, str], name: str, default: float) -> float:
-    raw = values.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return float(raw.strip())
-    except ValueError as exc:
-        raise ValueError(f"{name} must be a number") from exc
-
-
-def _env_bool(values: Mapping[str, str], name: str, default: bool) -> bool:
-    raw = values.get(name)
-    if raw is None or not raw.strip():
-        return default
-    normalized = raw.strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be true or false")
 
 
 def _env_int(values: Mapping[str, str], name: str, default: int) -> int:

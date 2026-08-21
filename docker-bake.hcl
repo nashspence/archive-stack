@@ -1,6 +1,8 @@
 group "default" {
   targets = [
     "riverhog",
+    "riverhog-aws-storage-adapter",
+    "riverhog-backblaze-storage-adapter",
     "riverhog-ftp-adapter",
     "stove0",
     "stove0-ffprobe-sampling-observer",
@@ -8,6 +10,7 @@ group "default" {
     "stove0-opus-target",
     "stove0-review-target",
     "mango-fish",
+    "garage-storage-adapter",
     "test",
   ]
 }
@@ -28,6 +31,22 @@ target "riverhog" {
   context    = "."
   dockerfile = "riverhog/server/Dockerfile"
   tags       = ["riverhog-app:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "riverhog-aws-storage-adapter" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "riverhog/aws-storage-adapter/Dockerfile"
+  tags       = ["riverhog-aws-storage-adapter:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "riverhog-backblaze-storage-adapter" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "riverhog/backblaze-storage-adapter/Dockerfile"
+  tags       = ["riverhog-backblaze-storage-adapter:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 
@@ -84,6 +103,14 @@ target "mango-fish" {
   context    = "."
   dockerfile = "utilities/mango-fish/Dockerfile"
   tags       = ["mango-fish:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "garage-storage-adapter" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "riverhog/garage-storage-adapter/Dockerfile"
+  tags       = ["riverhog-garage-storage-adapter:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 

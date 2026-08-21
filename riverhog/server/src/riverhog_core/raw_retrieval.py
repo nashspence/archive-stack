@@ -34,7 +34,7 @@ TransferTimingObserver = Callable[[TransferTiming], None]
 class RawVolumeRetrievalSource:
     volume_id: str
     object_path: str
-    version_id: str | None
+    revision: str
     source_path: str
     file_offset: int
     plaintext_bytes: int
@@ -253,7 +253,7 @@ class RawVolumeRangeReader:
                 request_wait_seconds = waited
                 yield from self._store.iter_object_range(
                     object_path=source.object_path,
-                    version_id=source.version_id,
+                    revision=source.revision,
                     offset=stored_offset,
                     size=part.stored_bytes,
                 )

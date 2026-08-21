@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 
-from riverhog_age import S3_MIN_PART_SIZE
 from riverhog_core.collection_plan import (
     CollectionVolumePolicy,
     plan_collection_volumes,
 )
 from riverhog_core.domain.archive import ArchiveFile
+
+TEST_PART_BYTES = 5 * 1024**2
 
 
 def _file(path: str, byte_count: int, marker: bytes) -> ArchiveFile:
@@ -20,14 +21,14 @@ def test_collection_planner_assigns_canonical_pack_then_segment_sequences() -> N
         pack_source_bytes=10,
         pack_files=2,
         pack_member_bytes=8,
-        pack_part_plaintext_bytes=S3_MIN_PART_SIZE,
-        raw_volume_plaintext_bytes=S3_MIN_PART_SIZE,
-        raw_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        pack_part_plaintext_bytes=TEST_PART_BYTES,
+        raw_volume_plaintext_bytes=TEST_PART_BYTES,
+        raw_part_plaintext_bytes=TEST_PART_BYTES,
     )
     plan = plan_collection_volumes(
         (
             _file("small-b", 4, b"b"),
-            _file("large", 2 * S3_MIN_PART_SIZE + 2, b"l"),
+            _file("large", 2 * TEST_PART_BYTES + 2, b"l"),
             _file("small-a", 3, b"a"),
         ),
         policy=policy,
@@ -37,8 +38,8 @@ def test_collection_planner_assigns_canonical_pack_then_segment_sequences() -> N
     assert [current.sequence for current in plan.raw_volumes] == [1, 2, 3]
     assert [current.file_offset for current in plan.raw_volumes] == [
         0,
-        S3_MIN_PART_SIZE,
-        2 * S3_MIN_PART_SIZE,
+        TEST_PART_BYTES,
+        2 * TEST_PART_BYTES,
     ]
     assert plan.volume_count == 4
 

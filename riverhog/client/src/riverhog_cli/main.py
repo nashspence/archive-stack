@@ -1965,9 +1965,10 @@ def provenance_verify_cmd(
 
 _ARCHIVE_STORE_SORT_FIELDS = {
     "store",
-    "backend",
-    "storage_class",
+    "storage_adapter",
+    "storage_profile_id",
     "read_mode",
+    "adapter_status",
     "read_priority",
     "collections",
     "objects",

@@ -8,14 +8,25 @@ from pathlib import Path
 
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.pack_retrieval import PackRangeRetrievalPolicy
-from riverhog_core.runtime_config import ArchiveStoreConfig, RetrievalCacheConfig, RuntimeConfig
-from riverhog_core.throughput import ArchiveThroughputTuning, S3TransportTuning
+from riverhog_core.runtime_config import (
+    ArchiveStoreConfig,
+    RetrievalCacheConfig,
+    RuntimeConfig,
+    StorageAdapterRegistration,
+)
+from riverhog_core.throughput import ArchiveThroughputTuning
+from riverhog_aws_storage_adapter.config import AwsStorageAdapterConfig
+from riverhog_backblaze_storage_adapter.config import BackblazeStorageAdapterConfig
 from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
+from riverhog_garage_storage_adapter.config import GarageStorageAdapterConfig
 from stove0_core import EndpointRegistration, Stove0RuntimeConfig
 
 REPO_ROOT = Path(__file__).parents[2]
 STOVE0_SOURCE = REPO_ROOT / "companions" / "stove0" / "server" / "src"
-ADAPTER_SOURCE = REPO_ROOT / "riverhog" / "ftp-adapter" / "src"
+FTP_ADAPTER_SOURCE = REPO_ROOT / "riverhog" / "ftp-adapter" / "src"
+AWS_STORAGE_ADAPTER_SOURCE = REPO_ROOT / "riverhog" / "aws-storage-adapter" / "src"
+BACKBLAZE_STORAGE_ADAPTER_SOURCE = REPO_ROOT / "riverhog" / "backblaze-storage-adapter" / "src"
+GARAGE_STORAGE_ADAPTER_SOURCE = REPO_ROOT / "riverhog" / "garage-storage-adapter" / "src"
 PRODUCTION_ROOTS = (
     REPO_ROOT / "packages",
     REPO_ROOT / "riverhog",
@@ -157,8 +168,20 @@ def test_stove0_and_adapter_configuration_fields_have_consumers_and_witnesses() 
             | set(EndpointRegistration.__dataclass_fields__),
         ),
         "riverhog-ftp-adapter": (
-            _trees(ADAPTER_SOURCE),
+            _trees(FTP_ADAPTER_SOURCE),
             set(FtpAdapterConfig.model_fields) | set(SourceConfig.model_fields),
+        ),
+        "riverhog-aws-storage-adapter": (
+            _trees(AWS_STORAGE_ADAPTER_SOURCE),
+            {field.name for field in fields(AwsStorageAdapterConfig)},
+        ),
+        "riverhog-backblaze-storage-adapter": (
+            _trees(BACKBLAZE_STORAGE_ADAPTER_SOURCE),
+            {field.name for field in fields(BackblazeStorageAdapterConfig)},
+        ),
+        "riverhog-garage-storage-adapter": (
+            _trees(GARAGE_STORAGE_ADAPTER_SOURCE),
+            {field.name for field in fields(GarageStorageAdapterConfig)},
         ),
     }
 
@@ -187,9 +210,9 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
                 RuntimeConfig,
                 ArchiveStoreConfig,
                 RetrievalCacheConfig,
+                StorageAdapterRegistration,
                 CollectionVolumePolicy,
                 PackRangeRetrievalPolicy,
-                S3TransportTuning,
                 ArchiveThroughputTuning,
             )
             for field in fields(model)
@@ -199,6 +222,13 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
             *EndpointRegistration.__dataclass_fields__,
         ],
         "riverhog-ftp-adapter": [*FtpAdapterConfig.model_fields, *SourceConfig.model_fields],
+        "riverhog-aws-storage-adapter": [field.name for field in fields(AwsStorageAdapterConfig)],
+        "riverhog-backblaze-storage-adapter": [
+            field.name for field in fields(BackblazeStorageAdapterConfig)
+        ],
+        "riverhog-garage-storage-adapter": [
+            field.name for field in fields(GarageStorageAdapterConfig)
+        ],
     }
     counts = {
         component: {
@@ -208,6 +238,13 @@ def test_parser_owned_settings_have_an_explicit_stable_classification() -> None:
         for component, names in components.items()
     }
 
-    assert set(counts) == {"riverhog", "stove0", "riverhog-ftp-adapter"}
+    assert set(counts) == {
+        "riverhog",
+        "stove0",
+        "riverhog-ftp-adapter",
+        "riverhog-aws-storage-adapter",
+        "riverhog-backblaze-storage-adapter",
+        "riverhog-garage-storage-adapter",
+    }
     assert all(sum(component.values()) > 0 for component in counts.values())
     assert all(set(component) == set(_SETTING_CLASSIFICATIONS) for component in counts.values())

@@ -41,10 +41,10 @@ def _sealed_segment(
                 plaintext_sha256=digest,
                 stored_bytes=len(content),
                 stored_sha256=digest,
-                etag=f'"part-{sequence}"',
+                part_token=f"part-{sequence}",
             ),
         ),
-        version_id=f"v-{sequence}",
+        revision=f"v-{sequence}",
         completed_at="2026-08-03T00:00:00Z",
     )
 
@@ -131,7 +131,7 @@ def test_raw_volume_set_digest_changes_with_immutable_object_identity() -> None:
         plaintext_sha256=first.parts[0].plaintext_sha256,
         stored_bytes=first.parts[0].stored_bytes,
         stored_sha256=hashlib.sha256(b"different ciphertext").hexdigest(),
-        etag='"different"',
+        part_token="different",
     )
     changed = SealedRawVolume(
         volume_id=first.volume_id,
@@ -144,7 +144,7 @@ def test_raw_volume_set_digest_changes_with_immutable_object_identity() -> None:
         file_bytes=first.file_bytes,
         file_sha256=first.file_sha256,
         parts=(changed_part,),
-        version_id="new-version",
+        revision="new-version",
         completed_at="2026-08-03T00:00:02Z",
     )
 

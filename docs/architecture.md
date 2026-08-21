@@ -1,8 +1,7 @@
 # Architecture
 
-Riverhog is an encrypted archive platform with independently packaged clients, adapters,
-orchestration, extensions, utilities, and shared packages. Executable contracts define exact
-interfaces, configuration, formats, and commands; this page records ownership and authority.
+Riverhog is an encrypted archive platform. Executable contracts define interfaces,
+configuration, formats, and commands; this page records ownership and authority.
 
 ## Authority model
 
@@ -54,6 +53,10 @@ Workspace dependency and import checks enforce the implementation-owner boundari
   maintain client-owned local materialization.
 - [`riverhog/ftp-adapter`](../riverhog/ftp-adapter/) is the maintained content-opaque FTP
   collection producer and reference adapter boundary.
+- [`riverhog/aws-storage-adapter`](../riverhog/aws-storage-adapter/),
+  [`riverhog/backblaze-storage-adapter`](../riverhog/backblaze-storage-adapter/), and
+  [`riverhog/garage-storage-adapter`](../riverhog/garage-storage-adapter/) are independently
+  packaged storage-adapter implementations; Garage is test-only.
 - [`riverhog/recovery`](../riverhog/recovery/) provides an independently packaged,
   permissively licensed reference implementation; Riverhog archives remain recoverable
   without Riverhog using standard tools.

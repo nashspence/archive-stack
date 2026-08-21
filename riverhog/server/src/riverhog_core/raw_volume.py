@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Sequence
 
-from riverhog_age import CHUNK_SIZE, ResumableAgeScryptSession, S3PartPlan
+from riverhog_age import CHUNK_SIZE, MultipartPartPlan, ResumableAgeScryptSession
 from riverhog_protocol.pack_ingress import RESERVED_ARCHIVE_PREFIX, canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
 
@@ -133,17 +133,17 @@ def parse_raw_volume_plan(content: bytes | str) -> RawVolumePlan:
     )
 
 
-def raw_s3_part_plans(
+def raw_multipart_part_plans(
     plan: RawVolumePlan,
     session: ResumableAgeScryptSession,
     *,
     target_plaintext_bytes: int = DEFAULT_RAW_PART_PLAINTEXT_BYTES,
-) -> tuple[S3PartPlan, ...]:
+) -> tuple[MultipartPartPlan, ...]:
     if target_plaintext_bytes <= 0 or target_plaintext_bytes % CHUNK_SIZE:
         raise ValueError("raw part target must be a positive age-chunk multiple")
     chunks_per_part = max(1, target_plaintext_bytes // CHUNK_SIZE)
     return tuple(
-        session.s3_part_plans(
+        session.multipart_part_plans(
             plan.plaintext_bytes,
             chunks_per_part=chunks_per_part,
         )

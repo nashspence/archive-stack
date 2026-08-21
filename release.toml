@@ -15,8 +15,11 @@ required_check_integration_id = 15368
 required_checks = [
   "Analyze (actions)",
   "Analyze (python)",
+  "build garage-storage-adapter",
   "build mango-fish",
   "build riverhog",
+  "build riverhog-aws-storage-adapter",
+  "build riverhog-backblaze-storage-adapter",
   "build riverhog-ftp-adapter",
   "build stove0",
   "build stove0-ffprobe-sampling-observer",
@@ -140,6 +143,8 @@ deployed_implementation = [
   "companions/stove0-opus-target",
   "companions/stove0-review-target",
   "companions/stove0/server",
+  "riverhog/aws-storage-adapter",
+  "riverhog/backblaze-storage-adapter",
   "riverhog/ftp-adapter",
   "riverhog/server",
   "utilities/mango-fish",
@@ -152,6 +157,9 @@ reusable_library = [
   "packages/riverhog-api-client",
   "packages/riverhog-protocol",
   "packages/riverhog-provenance",
+  "packages/riverhog-storage-adapter-protocol",
+  "packages/riverhog-storage-adapter-s3-support",
+  "packages/riverhog-storage-adapter-support",
   "packages/riverhog-transform-sdk",
   "packages/stove0-observer-protocol",
   "packages/stove0-observer-support",
@@ -172,7 +180,9 @@ internal_build_unit = [
   "packages/state-schema",
   "packages/time-formats",
 ]
-test_only_artifact = []
+test_only_artifact = [
+  "riverhog/garage-storage-adapter",
+]
 
 [platforms]
 end_user_artifacts = ["linux-x64", "macos-arm64", "windows-x64"]
@@ -183,6 +193,8 @@ platforms = ["linux/amd64"]
 
 [images.runtime]
 riverhog = { distribution = "riverhog-server", repository = "ghcr.io/nashspence/riverhog" }
+riverhog-aws-storage-adapter = { distribution = "riverhog-aws-storage-adapter", repository = "ghcr.io/nashspence/riverhog-aws-storage-adapter" }
+riverhog-backblaze-storage-adapter = { distribution = "riverhog-backblaze-storage-adapter", repository = "ghcr.io/nashspence/riverhog-backblaze-storage-adapter" }
 mango-fish = { distribution = "mango-fish", repository = "ghcr.io/nashspence/riverhog-mango-fish" }
 riverhog-ftp-adapter = { distribution = "riverhog-ftp-adapter", repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
 stove0 = { distribution = "stove0-server", repository = "ghcr.io/nashspence/riverhog-stove0" }
@@ -192,4 +204,5 @@ stove0-opus-target = { distribution = "stove0-opus-target", repository = "ghcr.i
 stove0-review-target = { distribution = "stove0-review-target", repository = "ghcr.io/nashspence/riverhog-stove0-review-target" }
 
 [images.test_only]
+garage-storage-adapter = { local_tag = "riverhog-garage-storage-adapter:dev" }
 test = { local_tag = "riverhog-test:dev" }

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "riverhog-aws-storage-adapter"
+version = "0.1.0"
+description = "Scoped AWS S3, Deep Archive, and CloudFront storage adapter for Riverhog."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "cryptography>=50.0.0,<51",
+  "botocore>=1.35,<2.0",
+  "httpx[http2]>=0.27,<1.0",
+  "riverhog-storage-adapter-protocol>=0.1,<0.2",
+  "riverhog-storage-adapter-s3-support>=0.1,<0.2",
+  "riverhog-storage-adapter-support>=0.1,<0.2",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.scripts]
+riverhog-aws-storage-adapter = "riverhog_aws_storage_adapter.app:main"
+riverhog-aws-storage-adapter-export = "riverhog_aws_storage_adapter.recovery:main"
+
+[tool.uv.sources]
+riverhog-storage-adapter-protocol = { workspace = true }
+riverhog-storage-adapter-s3-support = { workspace = true }
+riverhog-storage-adapter-support = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riverhog_aws_storage_adapter"]

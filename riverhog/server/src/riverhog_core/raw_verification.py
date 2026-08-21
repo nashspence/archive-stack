@@ -265,7 +265,7 @@ def _validate_part_receipts(
             or part.stored_bytes < 1
             or _SHA256_RE.fullmatch(part.plaintext_sha256) is None
             or _SHA256_RE.fullmatch(part.stored_sha256) is None
-            or not part.etag
+            or not part.part_token
         ):
             raise ValueError("raw volume part receipt is invalid")
         expected_start += part.plaintext_bytes

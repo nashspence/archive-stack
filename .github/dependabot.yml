@@ -53,6 +53,9 @@ updates:
       - /companions/stove0-review-target
       - /companions/stove0/server
       - /riverhog/ftp-adapter
+      - /riverhog/garage-storage-adapter
+      - /riverhog/aws-storage-adapter
+      - /riverhog/backblaze-storage-adapter
       - /riverhog/server
       - /tests
       - /utilities/mango-fish

@@ -15,8 +15,9 @@ from riverhog_core.catalog_db import (
 )
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.ports.download_allowance import DownloadAllowance
+from riverhog_core.ports.retrieval_cache import RetrievalCache
 from riverhog_core.proofs import CommandProofStamper, CommandProofUpgrader, CommandProofVerifier
-from riverhog_core.runtime_config import RuntimeConfig, load_runtime_config
+from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig, load_runtime_config
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_attestations import SqlAlchemyArchiveAttestationService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
@@ -52,12 +53,14 @@ from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
-from riverhog_core.stores.s3_archive_multipart_object_store import S3ArchiveMultipartObjectStore
-from riverhog_core.stores.s3_archive_object_range_store import S3ArchiveObjectRangeStore
-from riverhog_core.stores.s3_archive_store import S3ArchiveStore
-from riverhog_core.stores.s3_immutable_archive_object_store import S3ImmutableArchiveObjectStore
-from riverhog_core.stores.s3_retrieval_cache import S3RetrievalCache
-from riverhog_core.stores.s3_support import ensure_bucket_exists
+from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArchiveStore
+from riverhog_core.stores.storage_adapter_object_store import (
+    StorageAdapterObjectStore,
+    StorageAdapterRuntime,
+)
+from riverhog_core.stores.storage_adapter_retrieval_cache import (
+    StorageAdapterRetrievalCache,
+)
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
 
 
@@ -90,24 +93,44 @@ class ServiceContainer:
 def _archive_store_registry(
     config: RuntimeConfig,
     *,
-    retrieval_cache: S3RetrievalCache | None,
+    runtimes: dict[str, StorageAdapterRuntime],
+    retrieval_cache: RetrievalCache | None,
     download_allowance: DownloadAllowance,
 ) -> ArchiveStoreRegistry:
     return ArchiveStoreRegistry(
         {
-            name: ArchiveStoreBinding(
-                store=S3ArchiveStore(
-                    config,
-                    store,
-                    retrieval_cache=retrieval_cache,
-                    download_allowance=download_allowance,
-                ),
-                multipart_objects=S3ArchiveMultipartObjectStore(config, store),
-                immutable_objects=S3ImmutableArchiveObjectStore(config, store),
-                object_ranges=S3ArchiveObjectRangeStore(config, store),
+            name: _archive_store_binding(
+                config,
+                store,
+                runtime=runtimes[store.storage_adapter],
+                retrieval_cache=retrieval_cache,
+                download_allowance=download_allowance,
             )
             for name, store in config.archive_stores.items()
         }
+    )
+
+
+def _archive_store_binding(
+    config: RuntimeConfig,
+    store: ArchiveStoreConfig,
+    *,
+    runtime: StorageAdapterRuntime,
+    retrieval_cache: RetrievalCache | None,
+    download_allowance: DownloadAllowance,
+) -> ArchiveStoreBinding:
+    objects = StorageAdapterObjectStore(runtime)
+    return ArchiveStoreBinding(
+        store=StorageAdapterArchiveStore(
+            config,
+            store,
+            runtime,
+            retrieval_cache=retrieval_cache,
+            download_allowance=download_allowance,
+        ),
+        multipart_objects=objects,
+        immutable_objects=objects,
+        object_ranges=objects,
     )
 
 
@@ -115,15 +138,20 @@ def _archive_store_registry(
 def default_container() -> ServiceContainer:
     config = load_runtime_config()
     validate_db(config.database_url)
-    ensure_bucket_exists(config)
     session_factory = make_session_factory(config.database_url)
     throughput_tuning = ArchiveThroughputTuning.from_env(os.environ)
     transfer_resources = ArchiveTransferResources.from_tuning(throughput_tuning)
-    retrieval_cache = (
-        S3RetrievalCache(
-            config,
-            throughput_tuning=throughput_tuning,
-            transfer_resources=transfer_resources,
+    runtimes = {
+        name: StorageAdapterRuntime.connect(
+            registration,
+            max_connections=config.storage_adapter_max_connections,
+        )
+        for name, registration in config.storage_adapters.items()
+    }
+    retrieval_cache: RetrievalCache | None = (
+        StorageAdapterRetrievalCache(
+            runtimes[config.retrieval_cache.storage_adapter],
+            multipart_part_bytes=config.archive_multipart_part_bytes,
         )
         if config.retrieval_cache is not None
         else None
@@ -134,6 +162,7 @@ def default_container() -> ServiceContainer:
     )
     archive_stores = _archive_store_registry(
         config,
+        runtimes=runtimes,
         retrieval_cache=retrieval_cache,
         download_allowance=download_allowance,
     )
@@ -203,6 +232,7 @@ def default_container() -> ServiceContainer:
         ),
         archive_stores=SqlAlchemyArchiveStoreService(
             config,
+            adapter_runtimes=runtimes,
             download_allowance=download_allowance,
             session_factory=session_factory,
         ),

@@ -50,20 +50,27 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
 
     projects = module.validate_release_contract(REPO_ROOT)
 
-    assert len(projects) == 36
+    assert len(projects) == 42
     assert {project.version for project in projects} == {"0.1.0"}
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
-        "deployed_implementation": 8,
-        "reusable_library": 18,
+        "deployed_implementation": 10,
+        "reusable_library": 21,
         "internal_build_unit": 6,
+        "test_only_artifact": 1,
     }
     assert {project.name for project in projects} >= {
         "riverhog-client",
+        "riverhog-aws-storage-adapter",
+        "riverhog-backblaze-storage-adapter",
+        "riverhog-garage-storage-adapter",
         "riverhog-ftp-adapter",
         "riverhog-ftp-adapter-api-client",
         "riverhog-recover",
         "riverhog-server",
+        "riverhog-storage-adapter-protocol",
+        "riverhog-storage-adapter-s3-support",
+        "riverhog-storage-adapter-support",
         "stove0-server",
         "stove0-client",
         "stove0-ffprobe-sampling-observer",
@@ -121,7 +128,7 @@ def test_dry_run_can_write_the_same_sha_bound_summary_it_prints(
     assert module.json.loads(capsys.readouterr().out) == payload
 
 
-def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
+def test_release_plan_is_exact_sha_bound_and_excludes_test_images() -> None:
     module = load_script()
 
     plan = module.build_release_plan(REPO_ROOT, "1.0.0", allow_dirty=True)
@@ -129,7 +136,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert plan["tag"] == "v1.0.0"
     assert len(plan["source_sha"]) == 40
     assert all(character in "0123456789abcdef" for character in plan["source_sha"])
-    assert len(plan["python"]) == 36
+    assert len(plan["python"]) == 42
     assert all(len(project["artifacts"]) == 2 for project in plan["python"])
     assert {image["target"] for image in plan["images"]} == set(module.RUNTIME_IMAGE_TARGETS)
     assert all(image["platforms"] == ["linux/amd64"] for image in plan["images"])
@@ -142,6 +149,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
         for image in plan["images"]
     )
     assert "riverhog-test:dev" not in str(plan)
+    assert "riverhog-garage-storage-adapter:dev" not in str(plan)
     assert plan["supporting_artifacts"] == {
         "documentation": "riverhog-docs-v1.0.0.tar.gz",
         "source": "riverhog-source-v1.0.0.tar.gz",

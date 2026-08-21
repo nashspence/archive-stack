@@ -31,7 +31,7 @@ ROOT_MANIFEST_CONTENT_TYPE = "application/vnd.riverhog.collection-manifest+age"
 class SealedArchiveRoot:
     object_path: str
     relative_path: str
-    version_id: str | None
+    revision: str
     plaintext_bytes: int
     plaintext_sha256: str
     stored_bytes: int
@@ -110,7 +110,7 @@ class ArchiveRootPublisher:
         return SealedArchiveRoot(
             object_path=receipt.object_path,
             relative_path=normalize_relpath(ROOT_MANIFEST_RELATIVE_PATH),
-            version_id=receipt.version_id,
+            revision=receipt.revision,
             plaintext_bytes=len(manifest),
             plaintext_sha256=plaintext_sha256,
             stored_bytes=receipt.stored_bytes,

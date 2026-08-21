@@ -14,23 +14,23 @@ class ArchiveObjectIdentityConflict(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class MultipartPartReceipt:
     number: int
-    etag: str
-    bytes: int
-    sha256: str | None = None
+    part_token: str
+    stored_bytes: int
+    stored_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
 class MultipartUpload:
     object_path: str
-    upload_id: str
+    transfer_id: str
 
 
 @dataclass(frozen=True, slots=True)
 class CompletedObjectReceipt:
     object_path: str
-    version_id: str | None
-    etag: str | None
-    bytes: int
+    revision: str
+    stored_bytes: int
+    stored_sha256: str
     completed_at: str
     retrieval_cache: RetrievalCacheReceipt | None = None
 
@@ -42,6 +42,7 @@ class ArchiveMultipartObjectStore(Protocol):
         object_path: str,
         content_type: str,
         metadata: dict[str, str],
+        expected_bytes: int,
     ) -> MultipartUpload: ...
 
     def upload_part(
@@ -76,8 +77,7 @@ class ArchiveMultipartObjectStore(Protocol):
 @dataclass(frozen=True, slots=True)
 class ImmutableObjectReceipt:
     object_path: str
-    version_id: str | None
-    etag: str | None
+    revision: str
     stored_bytes: int
     stored_sha256: str
     completed_at: str
@@ -101,7 +101,7 @@ class ArchiveObjectRangeStore(Protocol):
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str,
         offset: int,
         size: int,
     ) -> Iterator[bytes]: ...

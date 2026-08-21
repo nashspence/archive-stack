@@ -32,7 +32,9 @@ def test_collection_list_json_emits_the_api_response_without_a_second_model(
                     {
                         "store": "deep",
                         "state": "uploaded",
-                        "storage_class": "DEEP_ARCHIVE",
+                        "storage_adapter": "archive",
+                        "storage_profile_id": "riverhog.aws-archive/v1",
+                        "read_mode": "restore_required",
                         "stored_bytes": 128,
                         "storage_prefix": "riverhog/archives/opaque",
                     }
@@ -86,9 +88,16 @@ def test_archive_store_views_project_the_same_api_models_in_human_and_json(
 ) -> None:
     store = {
         "store": "deep",
-        "backend": "aws",
-        "storage_class": "DEEP_ARCHIVE",
+        "storage_adapter": "archive",
+        "storage_profile_id": "riverhog.aws-archive/v1",
+        "storage_profile_contract_sha256": "a" * 64,
+        "egress_accounting_id": "aws-archive",
         "read_mode": "restore_required",
+        "adapter_status": "ready",
+        "adapter_implementation_id": "riverhog.aws-storage-adapter/v1",
+        "adapter_implementation_version": "1.0.0",
+        "adapter_source_revision": "abc123",
+        "adapter_runtime_descriptor_sha256": "b" * 64,
         "read_priority": 2,
         "write_target": False,
         "collections": 2,
@@ -126,10 +135,16 @@ def test_archive_store_views_project_the_same_api_models_in_human_and_json(
     json_show = runner.invoke(app, ["archive", "store", "show", "deep", "--json"])
 
     assert human_list.exit_code == 0
+    assert "adapter=archive" in human_list.stdout
+    assert "profile=riverhog.aws-archive/v1" in human_list.stdout
+    assert "status=ready" in human_list.stdout
     assert "collections=2" in human_list.stdout
     assert "read-priority=2" in human_list.stdout
     assert json.loads(json_list.stdout) == page
     assert human_show.exit_code == 0
+    assert "storage adapter: archive" in human_show.stdout
+    assert "storage profile: riverhog.aws-archive/v1" in human_show.stdout
+    assert "adapter status: ready" in human_show.stdout
     assert "stored: 2.0 KB" in human_show.stdout
     assert "read priority: 2" in human_show.stdout
     assert json.loads(json_show.stdout) == store

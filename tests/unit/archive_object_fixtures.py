@@ -50,9 +50,13 @@ from riverhog_core.ports.archive_store import (
     CollectionArchiveIdentity,
     CollectionArchiveUploadReceipt,
     MutableManifestReceipt,
+    StorageExecutionEvidence,
 )
 from riverhog_core.ports.download_allowance import DownloadAttribution
-from riverhog_core.runtime_config import DEV_ARCHIVE_PASSPHRASE, RuntimeConfig
+from riverhog_core.runtime_config import (
+    DEV_ARCHIVE_PASSPHRASE,
+    RuntimeConfig,
+)
 from riverhog_provenance import (
     FileProvenanceBinding,
     ProvenanceArchive,
@@ -66,6 +70,9 @@ from tests.unit.db_helpers import sqlite_url
 
 COLLECTION_ID = 1
 UPLOADED_AT = "2026-07-15T00:00:00.000000Z"
+FIXTURE_PROFILE_ID = "riverhog.memory-test/v1"
+FIXTURE_PROFILE_SHA256 = "1" * 64
+FIXTURE_RUNTIME_SHA256 = "2" * 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +118,7 @@ def make_archive(
         plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
         stored_bytes=len(pack_ciphertext),
         stored_sha256=hashlib.sha256(pack_ciphertext).hexdigest(),
-        etag="fixture-pack-etag",
+        part_token="fixture-pack-part",
     )
     state_json = (
         age_session.export_state(plaintext_size=len(plaintext)).to_json_bytes().decode("utf-8")
@@ -127,7 +134,7 @@ def make_archive(
         index_sha256=plan.index_sha256,
         plan_sha256=plan.plan_sha256,
         parts=(part,),
-        version_id="fixture-pack-version",
+        revision="fixture-pack-revision",
         completed_at=UPLOADED_AT,
     )
     sealed_provenance: list[SealedProvenanceObject] = []
@@ -161,7 +168,7 @@ def make_archive(
                     plaintext_sha256=hashlib.sha256(content).hexdigest(),
                     stored_bytes=len(provenance_ciphertext),
                     stored_sha256=hashlib.sha256(provenance_ciphertext).hexdigest(),
-                    version_id=f"fixture-{object_id}-version",
+                    revision=f"fixture-{object_id}-revision",
                     completed_at=UPLOADED_AT,
                 )
             )
@@ -186,7 +193,7 @@ def make_archive(
                 "plaintext_sha256": part.plaintext_sha256,
                 "stored_bytes": part.stored_bytes,
                 "stored_sha256": part.stored_sha256,
-                "etag": part.etag,
+                "part_token": part.part_token,
             }
         ],
         sort_keys=True,
@@ -256,12 +263,12 @@ def make_captured_provenance_archive(
 def archive_receipt(
     archive: FixtureArchive,
     *,
-    backend: str = "s3",
-    storage_class: str = "STANDARD",
+    storage_adapter: str = "archive",
     prefix: str = "archives/opaque-docs",
 ) -> CollectionArchiveUploadReceipt:
+    evidence = _storage_evidence(storage_adapter)
     rows: list[ArchiveObjectUploadReceipt] = [
-        ArchiveObjectUploadReceipt(
+        _upload_receipt(
             object_id=archive.pack_plan.volume_id,
             kind="pack",
             object_path=f"{prefix}/volumes/{archive.pack_plan.volume_id}.tar.age",
@@ -269,11 +276,12 @@ def archive_receipt(
             stored_bytes=len(
                 archive.stored_objects[f"volumes/{archive.pack_plan.volume_id}.tar.age"]
             ),
-            sha256=None,
-            stored_sha256=None,
-            version_id=f"fixture-{archive.pack_plan.volume_id}-version",
-            backend=backend,
-            storage_class=storage_class,
+            sha256=hashlib.sha256(archive.pack_plaintext).hexdigest(),
+            stored_sha256=hashlib.sha256(
+                archive.stored_objects[f"volumes/{archive.pack_plan.volume_id}.tar.age"]
+            ).hexdigest(),
+            revision=f"fixture-{archive.pack_plan.volume_id}-revision",
+            evidence=evidence,
             uploaded_at=UPLOADED_AT,
             verified_at=UPLOADED_AT,
         )
@@ -298,7 +306,7 @@ def archive_receipt(
         ):
             stored = archive.stored_objects[relative_path]
             rows.append(
-                ArchiveObjectUploadReceipt(
+                _upload_receipt(
                     object_id=object_id,
                     kind=kind,
                     object_path=f"{prefix}/{relative_path}",
@@ -306,16 +314,15 @@ def archive_receipt(
                     stored_bytes=len(stored),
                     sha256=hashlib.sha256(plaintext).hexdigest(),
                     stored_sha256=hashlib.sha256(stored).hexdigest(),
-                    version_id=f"fixture-{object_id}-version",
-                    backend=backend,
-                    storage_class=storage_class,
+                    revision=f"fixture-{object_id}-revision",
+                    evidence=evidence,
                     uploaded_at=UPLOADED_AT,
                     verified_at=UPLOADED_AT,
                 )
             )
     rows.extend(
         (
-            ArchiveObjectUploadReceipt(
+            _upload_receipt(
                 object_id="manifest",
                 kind="manifest",
                 object_path=f"{prefix}/manifest.json.age",
@@ -325,13 +332,12 @@ def archive_receipt(
                 stored_sha256=hashlib.sha256(
                     archive.stored_objects["manifest.json.age"]
                 ).hexdigest(),
-                version_id="fixture-manifest-version",
-                backend=backend,
-                storage_class=storage_class,
+                revision="fixture-manifest-revision",
+                evidence=evidence,
                 uploaded_at=UPLOADED_AT,
                 verified_at=UPLOADED_AT,
             ),
-            ArchiveObjectUploadReceipt(
+            _upload_receipt(
                 object_id="proof",
                 kind="proof",
                 object_path=f"{prefix}/manifest.json.ots.age",
@@ -341,9 +347,8 @@ def archive_receipt(
                 stored_sha256=hashlib.sha256(
                     archive.stored_objects["manifest.json.ots.age"]
                 ).hexdigest(),
-                version_id="fixture-proof-version",
-                backend=backend,
-                storage_class=storage_class,
+                revision="fixture-proof-revision",
+                evidence=evidence,
                 uploaded_at=UPLOADED_AT,
                 verified_at=UPLOADED_AT,
             ),
@@ -357,8 +362,7 @@ def add_archive_copy(
     archive: FixtureArchive,
     *,
     store: str,
-    backend: str,
-    storage_class: str,
+    storage_adapter: str = "archive",
 ) -> CollectionArchiveCopyRecord:
     copy = CollectionArchiveCopyRecord(collection_id=archive.collection_id, store=store)
     session.add(copy)
@@ -366,14 +370,14 @@ def add_archive_copy(
     prefix = f"archives/{store}/opaque-docs"
     receipt = archive_receipt(
         archive,
-        backend=backend,
-        storage_class=storage_class,
+        storage_adapter=storage_adapter,
         prefix=prefix,
     )
+    evidence = _storage_evidence(storage_adapter)
     copy.state = "uploaded"
     copy.archive_storage_prefix = prefix
-    copy.backend = backend
-    copy.storage_class = storage_class
+    for field_name, value in _evidence_fields(evidence).items():
+        setattr(copy, field_name, value)
     copy.last_uploaded_at = UPLOADED_AT
     copy.last_verified_at = UPLOADED_AT
     pack_receipt = receipt.require_object(archive.pack_plan.volume_id)
@@ -386,15 +390,13 @@ def add_archive_copy(
         object_path=pack_receipt.object_path,
         plaintext_bytes=pack_receipt.plaintext_bytes,
         stored_bytes=pack_receipt.stored_bytes,
-        sha256=None,
-        stored_sha256=None,
-        version_id="fixture-pack-version",
+        sha256=pack_receipt.sha256,
+        stored_sha256=pack_receipt.stored_sha256,
+        revision="fixture-pack-revision",
         age_state_json=archive.pack_age_state_json,
         part_receipts_json=archive.pack_parts_json,
         plan_sha256=archive.pack_plan_sha256,
         index_sha256=archive.pack_index_sha256,
-        backend=backend,
-        storage_class=storage_class,
         uploaded_at=UPLOADED_AT,
         verified_at=UPLOADED_AT,
     )
@@ -434,9 +436,7 @@ def add_archive_copy(
                 stored_bytes=object_receipt.stored_bytes,
                 sha256=object_receipt.sha256,
                 stored_sha256=object_receipt.stored_sha256,
-                version_id=f"fixture-{object_id}-version",
-                backend=backend,
-                storage_class=storage_class,
+                revision=f"fixture-{object_id}-revision",
                 uploaded_at=UPLOADED_AT,
                 verified_at=UPLOADED_AT,
             )
@@ -449,8 +449,7 @@ def seed_archive_copy(
     files: dict[str, bytes],
     *,
     store: str = "deep",
-    backend: str = "s3",
-    storage_class: str = "STANDARD",
+    storage_adapter: str = "archive",
     archive: FixtureArchive | None = None,
 ) -> tuple[RuntimeConfig, FixtureArchive]:
     database_url = sqlite_url(path)
@@ -512,8 +511,7 @@ def seed_archive_copy(
             session,
             current,
             store=store,
-            backend=backend,
-            storage_class=storage_class,
+            storage_adapter=storage_adapter,
         )
     config = RuntimeConfig(database_url=database_url)
     if store == "archive":
@@ -521,8 +519,7 @@ def seed_archive_copy(
     configured_store = replace(
         config.archive_store("archive"),
         name=store,
-        backend=backend,
-        storage_class=storage_class,
+        storage_adapter=storage_adapter,
     )
     return (
         replace(
@@ -561,14 +558,12 @@ class MemoryArchiveStore:
         self,
         archive: FixtureArchive | None = None,
         *,
-        backend: str = "s3",
-        storage_class: str = "STANDARD",
+        storage_adapter: str = "archive",
         ready: bool = True,
         read_mode: str = "immediate",
     ) -> None:
         self.archive = archive
-        self.backend = backend
-        self.storage_class = storage_class
+        self.storage_adapter = storage_adapter
         self.ready = ready
         self._read_mode = read_mode
         self.prepared: list[tuple[str, ...]] = []
@@ -588,6 +583,9 @@ class MemoryArchiveStore:
     def read_mode(self) -> str:
         return self._read_mode
 
+    def storage_execution_evidence(self) -> StorageExecutionEvidence:
+        return _storage_evidence(self.storage_adapter, read_mode=self._read_mode)
+
     def abort_incomplete_multipart_uploads(self, **_: object) -> int:
         return 0
 
@@ -599,13 +597,13 @@ class MemoryArchiveStore:
             if not path.startswith(f"{archive_storage_prefix}/")
         }
         self._uploads = {
-            upload_id: current
-            for upload_id, current in self._uploads.items()
+            transfer_id: current
+            for transfer_id, current in self._uploads.items()
             if not current[0].startswith(f"{archive_storage_prefix}/")
         }
 
     def new_collection_archive_storage_prefix(self) -> str:
-        return f"archives/{self.backend}/new-copy"
+        return f"archives/{self.storage_adapter}/new-copy"
 
     def create_multipart_upload(
         self,
@@ -613,12 +611,13 @@ class MemoryArchiveStore:
         object_path: str,
         content_type: str,
         metadata: dict[str, str],
+        expected_bytes: int,
     ) -> MultipartUpload:
-        _ = content_type
-        upload_id = f"upload-{self._next_upload}"
+        _ = (content_type, expected_bytes)
+        transfer_id = f"upload-{self._next_upload}"
         self._next_upload += 1
-        self._uploads[upload_id] = (object_path, dict(metadata), {})
-        return MultipartUpload(object_path=object_path, upload_id=upload_id)
+        self._uploads[transfer_id] = (object_path, dict(metadata), {})
+        return MultipartUpload(object_path=object_path, transfer_id=transfer_id)
 
     def upload_part(
         self,
@@ -627,23 +626,26 @@ class MemoryArchiveStore:
         number: int,
         content: bytes,
     ) -> MultipartPartReceipt:
-        object_path, metadata, parts = self._uploads[upload.upload_id]
+        object_path, metadata, parts = self._uploads[upload.transfer_id]
         assert object_path == upload.object_path
         parts[number] = content
-        self._uploads[upload.upload_id] = (object_path, metadata, parts)
+        self._uploads[upload.transfer_id] = (object_path, metadata, parts)
+        digest = hashlib.sha256(content).hexdigest()
         return MultipartPartReceipt(
             number=number,
-            etag=hashlib.sha256(content).hexdigest(),
-            bytes=len(content),
+            part_token=digest,
+            stored_bytes=len(content),
+            stored_sha256=digest,
         )
 
     def list_parts(self, *, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
-        _path, _metadata, parts = self._uploads[upload.upload_id]
+        _path, _metadata, parts = self._uploads[upload.transfer_id]
         return tuple(
             MultipartPartReceipt(
                 number=number,
-                etag=hashlib.sha256(content).hexdigest(),
-                bytes=len(content),
+                part_token=hashlib.sha256(content).hexdigest(),
+                stored_bytes=len(content),
+                stored_sha256=hashlib.sha256(content).hexdigest(),
             )
             for number, content in sorted(parts.items())
         )
@@ -656,7 +658,7 @@ class MemoryArchiveStore:
         expected_bytes: int,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
-        object_path, metadata, uploaded_parts = self._uploads.pop(upload.upload_id)
+        object_path, metadata, uploaded_parts = self._uploads.pop(upload.transfer_id)
         assert metadata == expected_metadata
         content = b"".join(uploaded_parts[current.number] for current in parts)
         assert len(content) == expected_bytes
@@ -678,7 +680,7 @@ class MemoryArchiveStore:
         return self._completed_receipt(object_path, content)
 
     def abort_multipart_upload(self, *, upload: MultipartUpload) -> None:
-        self._uploads.pop(upload.upload_id, None)
+        self._uploads.pop(upload.transfer_id, None)
 
     def put_immutable_object(
         self,
@@ -698,8 +700,7 @@ class MemoryArchiveStore:
         self.object_metadata[object_path] = dict(identity_metadata)
         return ImmutableObjectReceipt(
             object_path=object_path,
-            version_id=self._version(content),
-            etag=hashlib.md5(content, usedforsecurity=False).hexdigest(),
+            revision=self._version(content),
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
             completed_at=UPLOADED_AT,
@@ -709,11 +710,11 @@ class MemoryArchiveStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
-        _ = version_id
+        _ = revision
         content = self.objects.get(object_path)
         if content is None:
             if self.archive is None:
@@ -748,12 +749,14 @@ class MemoryArchiveStore:
         collection_id: int,
         archive_storage_prefix: str,
         manifest: bytes,
+        prior_revision: str | None = None,
     ) -> MutableManifestReceipt:
+        _ = prior_revision
         self.published_metadata.append((collection_id, archive_storage_prefix, manifest))
         object_path = f"{archive_storage_prefix}/metadata.json.age"
         return MutableManifestReceipt(
             object_path=object_path,
-            version_id=f"v{len(self.published_metadata)}",
+            revision=f"v{len(self.published_metadata)}",
             stored_bytes=len(manifest),
             stored_sha256=hashlib.sha256(manifest).hexdigest(),
             published_at=UPLOADED_AT,
@@ -769,7 +772,7 @@ class MemoryArchiveStore:
         assert self.archive is not None
         stored = self._stored_object(object)
         content = decrypt_age_scrypt(stored, DEV_ARCHIVE_PASSPHRASE)
-        receipt = ArchiveObjectUploadReceipt(
+        receipt = _upload_receipt(
             object_id=object.object_id,
             kind=object.kind,
             object_path=object.object_path,
@@ -777,9 +780,8 @@ class MemoryArchiveStore:
             stored_bytes=len(stored),
             sha256=hashlib.sha256(content).hexdigest(),
             stored_sha256=hashlib.sha256(stored).hexdigest(),
-            version_id=object.version_id,
-            backend=self.backend,
-            storage_class=self.storage_class,
+            revision=object.revision,
+            evidence=self.storage_execution_evidence(),
             uploaded_at=UPLOADED_AT,
             verified_at=UPLOADED_AT,
         )
@@ -807,7 +809,7 @@ class MemoryArchiveStore:
                 "manifest.json.ots.age": ciphertext,
             },
         )
-        return ArchiveObjectUploadReceipt(
+        return _upload_receipt(
             object_id="proof",
             kind="proof",
             object_path=object.object_path,
@@ -815,9 +817,8 @@ class MemoryArchiveStore:
             stored_bytes=len(ciphertext),
             sha256=hashlib.sha256(proof_bytes).hexdigest(),
             stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
-            version_id=self._version(ciphertext),
-            backend=self.backend,
-            storage_class=self.storage_class,
+            revision=self._version(ciphertext),
+            evidence=self.storage_execution_evidence(),
             uploaded_at=UPLOADED_AT,
             verified_at=UPLOADED_AT,
         )
@@ -864,8 +865,8 @@ class MemoryArchiveStore:
                     object_id=object_id,
                     object_path=f"{archive_storage_prefix}/{filenames[object_id]}",
                     content=content,
-                    backend=self.backend,
-                    version_id=self._version(content),
+                    storage_adapter=self.storage_adapter,
+                    revision=self._version(content),
                 )
                 for object_id, content in content_by_id.items()
             )
@@ -884,8 +885,8 @@ class MemoryArchiveStore:
                 object_id=object.object_id,
                 object_path=object.object_path,
                 content=content,
-                backend=self.backend,
-                version_id=object.version_id,
+                storage_adapter=self.storage_adapter,
+                revision=object.revision,
             ),
             content=content,
         )
@@ -904,8 +905,8 @@ class MemoryArchiveStore:
             object_id=object.object_id,
             object_path=object.object_path,
             content=proof_bytes,
-            backend=self.backend,
-            version_id=self._version(proof_bytes),
+            storage_adapter=self.storage_adapter,
+            revision=self._version(proof_bytes),
         )
 
     def prepare_archive_objects_read(
@@ -975,9 +976,9 @@ class MemoryArchiveStore:
     def _completed_receipt(cls, object_path: str, content: bytes) -> CompletedObjectReceipt:
         return CompletedObjectReceipt(
             object_path=object_path,
-            version_id=cls._version(content),
-            etag=hashlib.md5(content, usedforsecurity=False).hexdigest(),
-            bytes=len(content),
+            revision=cls._version(content),
+            stored_bytes=len(content),
+            stored_sha256=hashlib.sha256(content).hexdigest(),
             completed_at=UPLOADED_AT,
         )
 
@@ -996,11 +997,11 @@ def _plaintext_receipt(
     object_id: str,
     object_path: str,
     content: bytes,
-    backend: str,
-    version_id: str | None,
+    storage_adapter: str,
+    revision: str,
 ) -> ArchiveObjectUploadReceipt:
     digest = hashlib.sha256(content).hexdigest()
-    return ArchiveObjectUploadReceipt(
+    return _upload_receipt(
         object_id=object_id,
         kind=object_id,
         object_path=object_path,
@@ -1008,9 +1009,77 @@ def _plaintext_receipt(
         stored_bytes=len(content),
         sha256=digest,
         stored_sha256=digest,
-        version_id=version_id,
-        backend=backend,
-        storage_class="STANDARD",
+        revision=revision,
+        evidence=_storage_evidence(storage_adapter),
         uploaded_at=UPLOADED_AT,
         verified_at=UPLOADED_AT,
     )
+
+
+def _storage_evidence(
+    storage_adapter: str,
+    *,
+    read_mode: str = "immediate",
+) -> StorageExecutionEvidence:
+    return StorageExecutionEvidence(
+        storage_adapter=storage_adapter,
+        storage_profile_id=FIXTURE_PROFILE_ID,
+        storage_profile_contract_sha256=FIXTURE_PROFILE_SHA256,
+        egress_accounting_id="riverhog-memory-test",
+        read_mode=read_mode,
+        adapter_implementation_id="riverhog.memory-test-storage-adapter/v1",
+        adapter_implementation_version="1.0.0",
+        adapter_source_revision="fixture",
+        adapter_runtime_descriptor_sha256=FIXTURE_RUNTIME_SHA256,
+    )
+
+
+def _upload_receipt(
+    *,
+    object_id: str,
+    kind: str,
+    object_path: str,
+    plaintext_bytes: int,
+    stored_bytes: int,
+    sha256: str | None,
+    stored_sha256: str | None,
+    revision: str,
+    evidence: StorageExecutionEvidence,
+    uploaded_at: str,
+    verified_at: str | None,
+) -> ArchiveObjectUploadReceipt:
+    return ArchiveObjectUploadReceipt(
+        object_id=object_id,
+        kind=kind,
+        object_path=object_path,
+        plaintext_bytes=plaintext_bytes,
+        stored_bytes=stored_bytes,
+        sha256=sha256,
+        stored_sha256=stored_sha256,
+        revision=revision,
+        storage_adapter=evidence.storage_adapter,
+        storage_profile_id=evidence.storage_profile_id,
+        storage_profile_contract_sha256=evidence.storage_profile_contract_sha256,
+        egress_accounting_id=evidence.egress_accounting_id,
+        adapter_implementation_id=evidence.adapter_implementation_id,
+        adapter_implementation_version=evidence.adapter_implementation_version,
+        adapter_source_revision=evidence.adapter_source_revision,
+        adapter_runtime_descriptor_sha256=evidence.adapter_runtime_descriptor_sha256,
+        read_mode=evidence.read_mode,
+        uploaded_at=uploaded_at,
+        verified_at=verified_at,
+    )
+
+
+def _evidence_fields(evidence: StorageExecutionEvidence) -> dict[str, str]:
+    return {
+        "storage_adapter": evidence.storage_adapter,
+        "storage_profile_id": evidence.storage_profile_id,
+        "storage_profile_contract_sha256": evidence.storage_profile_contract_sha256,
+        "egress_accounting_id": evidence.egress_accounting_id,
+        "read_mode": evidence.read_mode,
+        "adapter_implementation_id": evidence.adapter_implementation_id,
+        "adapter_implementation_version": evidence.adapter_implementation_version,
+        "adapter_source_revision": evidence.adapter_source_revision,
+        "adapter_runtime_descriptor_sha256": evidence.adapter_runtime_descriptor_sha256,
+    }
