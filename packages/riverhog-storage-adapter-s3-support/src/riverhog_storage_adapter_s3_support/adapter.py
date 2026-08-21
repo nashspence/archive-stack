@@ -1,0 +1,834 @@
+"""S3 object operations preserving Riverhog's established storage semantics."""
+
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Iterator
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, Protocol, cast
+
+from botocore.exceptions import ClientError, ConnectionClosedError
+from riverhog_storage_adapter_protocol import (
+    AbortIncompleteUploadsRequest,
+    AdapterDescriptor,
+    CompletedObjectReceipt,
+    DeleteObjectRequest,
+    DeletePrefixRequest,
+    ImmutableObjectReceipt,
+    MultipartCompleteRequest,
+    MultipartCreateRequest,
+    MultipartHeadRequest,
+    MultipartPartReceipt,
+    MultipartUpload,
+    ObjectLocator,
+    ObjectMetadataReceipt,
+    ObjectPlacement,
+    ObjectReadRequest,
+    ReadMode,
+    ReadPreparationRequest,
+    ReadStatus,
+    SmallObjectWriteRequest,
+    StorageAdapterRejection,
+)
+from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
+
+_MINIMUM_NONFINAL_PART_BYTES = 5 * 1024 * 1024
+_MAXIMUM_PART_BYTES = 5 * 1024 * 1024 * 1024
+_MAXIMUM_PART_COUNT = 10_000
+_DEFAULT_READ_CHUNK_BYTES = 8 * 1024 * 1024
+_STORED_SHA256_METADATA = "riverhog-adapter-stored-sha256"
+_PLACEMENT_METADATA = "riverhog-adapter-placement"
+_RESERVED_METADATA = frozenset({_STORED_SHA256_METADATA, _PLACEMENT_METADATA})
+
+
+@dataclass(frozen=True, slots=True)
+class S3StorageAdapterConfig:
+    implementation_id: str
+    implementation_version: str
+    bucket: str
+    root_prefix: str = ""
+    read_mode: ReadMode = "immediate"
+    archive_storage_class: str | None = None
+    immediate_storage_class: str | None = None
+    read_chunk_bytes: int = _DEFAULT_READ_CHUNK_BYTES
+
+    def __post_init__(self) -> None:
+        if not self.implementation_id or not self.implementation_version:
+            raise ValueError("S3 adapter implementation identity must be nonempty")
+        if not self.bucket.strip():
+            raise ValueError("S3 adapter bucket must be nonempty")
+        normalized_root = self.root_prefix.strip("/")
+        if normalized_root != self.root_prefix:
+            raise ValueError("S3 adapter root prefix must be normalized without slashes")
+        if self.read_chunk_bytes < 64 * 1024:
+            raise ValueError("S3 adapter read chunk bytes must be at least 64 KiB")
+
+
+class S3ReadPreparation(Protocol):
+    """Provider-specific read preparation configured wholly inside an adapter."""
+
+    def prepare(
+        self,
+        *,
+        client: Any,
+        bucket: str,
+        objects: tuple[tuple[str, str | None], ...],
+    ) -> ReadStatus: ...
+
+    def status(
+        self,
+        *,
+        client: Any,
+        bucket: str,
+        objects: tuple[tuple[str, str | None], ...],
+    ) -> ReadStatus: ...
+
+    def cleanup(
+        self,
+        *,
+        client: Any,
+        bucket: str,
+        objects: tuple[tuple[str, str | None], ...],
+    ) -> None: ...
+
+
+class S3ObjectReader(Protocol):
+    """Optional provider-owned delivery path such as exact CloudFront reads."""
+
+    def iter_object(
+        self,
+        *,
+        client: Any,
+        bucket: str,
+        key: str,
+        revision: str | None,
+        offset: int | None,
+        size: int | None,
+        expected_bytes: int,
+        chunk_bytes: int,
+    ) -> Iterator[bytes]: ...
+
+
+class S3StorageAdapter:
+    """One configured S3 target implementing direct opaque-object capabilities."""
+
+    def __init__(
+        self,
+        client: Any,
+        config: S3StorageAdapterConfig,
+        *,
+        read_preparation: S3ReadPreparation | None = None,
+        object_reader: S3ObjectReader | None = None,
+    ) -> None:
+        if config.read_mode == "restore_required" and read_preparation is None:
+            raise ValueError("restore-required S3 adapter needs a read-preparation implementation")
+        if config.read_mode == "immediate" and read_preparation is not None:
+            raise ValueError("immediate S3 adapter must not configure read preparation")
+        self._client = client
+        self._config = config
+        self._read_preparation = read_preparation
+        self._object_reader = object_reader or _DirectS3ObjectReader()
+        self._conditional_put_supported: bool | None = None
+
+    def descriptor(self) -> AdapterDescriptor:
+        return AdapterDescriptor(
+            implementation_id=self._config.implementation_id,
+            implementation_version=self._config.implementation_version,
+            read_mode=self._config.read_mode,
+            minimum_nonfinal_part_bytes=_MINIMUM_NONFINAL_PART_BYTES,
+            maximum_part_bytes=_MAXIMUM_PART_BYTES,
+            maximum_part_count=_MAXIMUM_PART_COUNT,
+        )
+
+    def create_multipart_upload(self, request: MultipartCreateRequest) -> MultipartUpload:
+        metadata = self._stored_metadata(
+            request.identity_metadata,
+            placement=request.placement,
+        )
+        provider_request: dict[str, Any] = {
+            "Bucket": self._config.bucket,
+            "Key": self._key(request.object_path),
+            "ContentType": request.content_type,
+            "Metadata": metadata,
+        }
+        if storage_class := self._storage_class(request.placement):
+            provider_request["StorageClass"] = storage_class
+        response = cast(dict[str, Any], self._client.create_multipart_upload(**provider_request))
+        upload_id = str(response.get("UploadId", ""))
+        if not upload_id:
+            raise RuntimeError("S3 did not return a multipart upload id")
+        return MultipartUpload(object_path=request.object_path, upload_id=upload_id)
+
+    def upload_part(
+        self,
+        *,
+        upload: MultipartUpload,
+        number: int,
+        content: bytes,
+    ) -> MultipartPartReceipt:
+        if number < 1 or number > _MAXIMUM_PART_COUNT:
+            raise StorageAdapterRejection(
+                "invalid_request",
+                "multipart part number is outside the adapter limit",
+            )
+        if not content or len(content) > _MAXIMUM_PART_BYTES:
+            raise StorageAdapterRejection(
+                "invalid_request",
+                "multipart part size is outside the adapter limit",
+            )
+        response = cast(
+            dict[str, Any],
+            self._client.upload_part(
+                Bucket=self._config.bucket,
+                Key=self._key(upload.object_path),
+                UploadId=upload.upload_id,
+                PartNumber=number,
+                Body=content,
+                ContentLength=len(content),
+            ),
+        )
+        token = str(response.get("ETag", ""))
+        if not token:
+            raise RuntimeError("S3 did not return a multipart part token")
+        return MultipartPartReceipt(
+            number=number,
+            part_token=token,
+            stored_bytes=len(content),
+        )
+
+    def list_parts(self, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
+        request: dict[str, Any] = {
+            "Bucket": self._config.bucket,
+            "Key": self._key(upload.object_path),
+            "UploadId": upload.upload_id,
+        }
+        parts: list[MultipartPartReceipt] = []
+        while True:
+            response = cast(dict[str, Any], self._client.list_parts(**request))
+            for raw in response.get("Parts") or ():
+                if not isinstance(raw, dict):
+                    continue
+                parts.append(
+                    MultipartPartReceipt(
+                        number=int(str(raw["PartNumber"])),
+                        part_token=str(raw["ETag"]),
+                        stored_bytes=int(str(raw["Size"])),
+                    )
+                )
+            if not response.get("IsTruncated"):
+                break
+            marker = response.get("NextPartNumberMarker")
+            if marker is None:
+                raise RuntimeError("S3 multipart listing omitted its next marker")
+            request["PartNumberMarker"] = int(str(marker))
+        parts.sort(key=lambda current: current.number)
+        return tuple(parts)
+
+    def complete_multipart_upload(
+        self,
+        request: MultipartCompleteRequest,
+    ) -> CompletedObjectReceipt:
+        if len(request.parts) > _MAXIMUM_PART_COUNT or any(
+            part.stored_bytes > _MAXIMUM_PART_BYTES for part in request.parts
+        ):
+            raise StorageAdapterRejection(
+                "invalid_request",
+                "multipart completion exceeds the S3 adapter limits",
+            )
+        if any(part.stored_bytes < _MINIMUM_NONFINAL_PART_BYTES for part in request.parts[:-1]):
+            raise StorageAdapterRejection(
+                "invalid_request",
+                "multipart completion contains an undersized non-final part",
+            )
+        provider_request = {
+            "Bucket": self._config.bucket,
+            "Key": self._key(request.upload.object_path),
+            "UploadId": request.upload.upload_id,
+            "MultipartUpload": {
+                "Parts": [
+                    {"PartNumber": part.number, "ETag": part.part_token} for part in request.parts
+                ]
+            },
+            "IfNoneMatch": "*",
+        }
+        try:
+            self._client.complete_multipart_upload(**provider_request)
+        except ClientError as exc:
+            status, code = _client_error_identity(exc)
+            if status == 501 or code in {"NotImplemented", "UnsupportedHeader"}:
+                raise RuntimeError(
+                    "S3 target must support conditional multipart completion"
+                ) from exc
+            if status not in {409, 412} and code not in {
+                "ConditionalRequestConflict",
+                "NoSuchUpload",
+                "PreconditionFailed",
+            }:
+                raise
+            recovered = self.head_completed_object(
+                MultipartHeadRequest(
+                    object_path=request.upload.object_path,
+                    expected_identity_metadata=request.expected_identity_metadata,
+                    expected_placement=request.expected_placement,
+                )
+            )
+            if recovered is None:
+                raise RuntimeError(
+                    "conditional multipart completion failed without a completed object"
+                ) from exc
+            if recovered.stored_bytes != request.expected_bytes:
+                raise StorageAdapterRejection(
+                    "identity_conflict",
+                    "completed object byte count differs from the upload checkpoint",
+                ) from exc
+            return recovered
+        completed = self.head_completed_object(
+            MultipartHeadRequest(
+                object_path=request.upload.object_path,
+                expected_identity_metadata=request.expected_identity_metadata,
+                expected_placement=request.expected_placement,
+            )
+        )
+        if completed is None:
+            raise RuntimeError("S3 completion succeeded but the object is not readable")
+        if completed.stored_bytes != request.expected_bytes:
+            raise RuntimeError("completed S3 object length differs from its parts")
+        return completed
+
+    def head_completed_object(
+        self,
+        request: MultipartHeadRequest,
+    ) -> CompletedObjectReceipt | None:
+        head = self._head(request.object_path)
+        if head is None:
+            return None
+        metadata = _normalized_metadata(head)
+        if any(
+            metadata.get(key) != value for key, value in request.expected_identity_metadata.items()
+        ):
+            raise StorageAdapterRejection(
+                "identity_conflict",
+                "object already exists with different identity metadata",
+            )
+        self._validate_placement(head, request.expected_placement)
+        return self._completed_receipt(request.object_path, head)
+
+    def abort_multipart_upload(self, upload: MultipartUpload) -> None:
+        try:
+            self._client.abort_multipart_upload(
+                Bucket=self._config.bucket,
+                Key=self._key(upload.object_path),
+                UploadId=upload.upload_id,
+            )
+        except ClientError as exc:
+            status, code = _client_error_identity(exc)
+            if status == 404 or code in {"NoSuchUpload", "NotFound"}:
+                return
+            raise
+
+    def put_small_object(
+        self,
+        request: SmallObjectWriteRequest,
+        content: bytes,
+    ) -> ImmutableObjectReceipt:
+        if len(content) != request.stored_bytes:
+            raise StorageAdapterRejection(
+                "integrity_failure",
+                "small object length differs from its declaration",
+            )
+        if hashlib.sha256(content).hexdigest() != request.stored_sha256:
+            raise StorageAdapterRejection(
+                "integrity_failure",
+                "small object digest differs from its declaration",
+            )
+        existing = self._head(request.object_path)
+        if existing is not None:
+            recovered = self._matching_small_receipt(request, existing)
+            if recovered is not None:
+                return recovered
+            if request.mode == "create_only":
+                raise StorageAdapterRejection(
+                    "identity_conflict",
+                    "object already exists with a different identity",
+                )
+        metadata = self._stored_metadata(
+            request.identity_metadata,
+            placement=request.placement,
+            stored_sha256=request.stored_sha256,
+        )
+        provider_request: dict[str, Any] = {
+            "Bucket": self._config.bucket,
+            "Key": self._key(request.object_path),
+            "Body": content,
+            "ContentLength": len(content),
+            "ContentType": request.content_type,
+            "Metadata": metadata,
+        }
+        if storage_class := self._storage_class(request.placement):
+            provider_request["StorageClass"] = storage_class
+        if request.mode == "create_only":
+            provider_request["IfNoneMatch"] = "*"
+        try:
+            if request.mode == "create_only":
+                self._put_create_only(provider_request)
+            else:
+                self._client.put_object(**provider_request)
+        except ClientError as exc:
+            status, code = _client_error_identity(exc)
+            if status not in {409, 412} and code not in {
+                "ConditionalRequestConflict",
+                "PreconditionFailed",
+            }:
+                raise
+            recovered_head = self._head(request.object_path)
+            recovered = (
+                self._matching_small_receipt(request, recovered_head)
+                if recovered_head is not None
+                else None
+            )
+            if recovered is None:
+                raise StorageAdapterRejection(
+                    "identity_conflict",
+                    "object already exists with a different identity",
+                ) from exc
+            return recovered
+        persisted = self._head(request.object_path)
+        if persisted is None:
+            raise RuntimeError("S3 put succeeded but the object is not readable")
+        receipt = self._immutable_receipt(request.object_path, persisted)
+        if (
+            receipt.stored_bytes != request.stored_bytes
+            or receipt.stored_sha256 != request.stored_sha256
+        ):
+            raise RuntimeError("persisted S3 object differs from its input")
+        self._validate_placement(persisted, request.placement)
+        return receipt
+
+    def head_object(self, object: ObjectLocator) -> ObjectMetadataReceipt | None:
+        head = self._head(object.object_path, revision=object.revision)
+        if head is None:
+            return None
+        metadata = _normalized_metadata(head)
+        stored_sha256 = metadata.get(_STORED_SHA256_METADATA)
+        if stored_sha256 is not None and not _valid_sha256(stored_sha256):
+            raise RuntimeError("S3 object has invalid stored-digest metadata")
+        return ObjectMetadataReceipt(
+            object_path=object.object_path,
+            revision=_provider_revision(head),
+            entity_token=_provider_entity_token(head),
+            content_type=(
+                str(head["ContentType"]) if head.get("ContentType") is not None else None
+            ),
+            stored_bytes=int(str(head["ContentLength"])),
+            stored_sha256=stored_sha256,
+            identity_metadata={
+                key: value for key, value in metadata.items() if key not in _RESERVED_METADATA
+            },
+            completed_at=_provider_timestamp(head),
+        )
+
+    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
+        yield from self._object_reader.iter_object(
+            client=self._client,
+            bucket=self._config.bucket,
+            key=self._key(request.object.object_path),
+            revision=request.object.revision,
+            offset=request.offset,
+            size=request.size,
+            expected_bytes=request.expected_bytes,
+            chunk_bytes=self._config.read_chunk_bytes,
+        )
+
+    def delete_object(self, request: DeleteObjectRequest) -> None:
+        key = self._key(request.object.object_path)
+        if request.mode == "all_versions":
+            _delete_exact_all_versions(self._client, bucket=self._config.bucket, key=key)
+            return
+        provider_request: dict[str, Any] = {"Bucket": self._config.bucket, "Key": key}
+        if request.mode == "exact_revision":
+            provider_request["VersionId"] = request.object.revision
+        self._client.delete_object(**provider_request)
+
+    def delete_prefix(self, request: DeletePrefixRequest) -> int:
+        return _delete_prefix_all_versions(
+            self._client,
+            bucket=self._config.bucket,
+            prefix=self._key(request.object_prefix),
+        )
+
+    def prepare_read(self, request: ReadPreparationRequest) -> ReadStatus:
+        if self._read_preparation is None:
+            return ReadStatus(state="ready")
+        return self._read_preparation.prepare(
+            client=self._client,
+            bucket=self._config.bucket,
+            objects=self._provider_objects(request),
+        )
+
+    def read_status(self, request: ReadPreparationRequest) -> ReadStatus:
+        if self._read_preparation is None:
+            return ReadStatus(state="ready")
+        return self._read_preparation.status(
+            client=self._client,
+            bucket=self._config.bucket,
+            objects=self._provider_objects(request),
+        )
+
+    def cleanup_read(self, request: ReadPreparationRequest) -> None:
+        if self._read_preparation is not None:
+            self._read_preparation.cleanup(
+                client=self._client,
+                bucket=self._config.bucket,
+                objects=self._provider_objects(request),
+            )
+
+    def abort_incomplete_uploads(self, request: AbortIncompleteUploadsRequest) -> int:
+        cutoff = parse_utc_timestamp(request.initiated_before).astimezone(UTC)
+        provider_request: dict[str, Any] = {
+            "Bucket": self._config.bucket,
+            "Prefix": self._key(request.object_prefix),
+        }
+        aborted = 0
+        while True:
+            response = cast(dict[str, Any], self._client.list_multipart_uploads(**provider_request))
+            for upload in response.get("Uploads") or ():
+                if not isinstance(upload, dict):
+                    continue
+                key = str(upload.get("Key", ""))
+                upload_id = str(upload.get("UploadId", ""))
+                initiated = upload.get("Initiated")
+                if (
+                    not key.startswith(str(provider_request["Prefix"]))
+                    or not upload_id
+                    or not isinstance(initiated, datetime)
+                    or initiated.tzinfo is None
+                    or initiated.astimezone(UTC) >= cutoff
+                ):
+                    continue
+                self._client.abort_multipart_upload(
+                    Bucket=self._config.bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                )
+                aborted += 1
+            if not response.get("IsTruncated"):
+                return aborted
+            next_key = str(response.get("NextKeyMarker", ""))
+            next_upload = str(response.get("NextUploadIdMarker", ""))
+            if not next_key or not next_upload:
+                raise RuntimeError("S3 multipart listing omitted pagination markers")
+            provider_request["KeyMarker"] = next_key
+            provider_request["UploadIdMarker"] = next_upload
+
+    def _key(self, object_path: str) -> str:
+        return "/".join(
+            part for part in (self._config.root_prefix, object_path.lstrip("/")) if part
+        )
+
+    def _provider_objects(
+        self,
+        request: ReadPreparationRequest,
+    ) -> tuple[tuple[str, str | None], ...]:
+        return tuple((self._key(item.object_path), item.revision) for item in request.objects)
+
+    def _storage_class(self, placement: ObjectPlacement) -> str | None:
+        return (
+            self._config.archive_storage_class
+            if placement == "archive"
+            else self._config.immediate_storage_class
+        )
+
+    def _stored_metadata(
+        self,
+        identity: dict[str, str],
+        *,
+        placement: ObjectPlacement,
+        stored_sha256: str | None = None,
+    ) -> dict[str, str]:
+        if _RESERVED_METADATA.intersection(identity):
+            raise StorageAdapterRejection(
+                "invalid_request",
+                "identity metadata uses an adapter-reserved key",
+            )
+        metadata = {**identity, _PLACEMENT_METADATA: placement}
+        if stored_sha256 is not None:
+            metadata[_STORED_SHA256_METADATA] = stored_sha256
+        return metadata
+
+    def _validate_placement(self, head: dict[str, Any], expected: ObjectPlacement) -> None:
+        metadata = _normalized_metadata(head)
+        if marker := metadata.get(_PLACEMENT_METADATA):
+            if marker != expected:
+                raise RuntimeError("S3 object placement marker differs from its request")
+            return
+        expected_class = (self._storage_class(expected) or "STANDARD").upper()
+        actual_class = str(head.get("StorageClass") or "STANDARD").upper()
+        if expected_class != actual_class:
+            raise RuntimeError("S3 object storage placement differs from its request")
+
+    def _matching_small_receipt(
+        self,
+        request: SmallObjectWriteRequest,
+        head: dict[str, Any],
+    ) -> ImmutableObjectReceipt | None:
+        metadata = _normalized_metadata(head)
+        if any(metadata.get(key) != value for key, value in request.identity_metadata.items()):
+            return None
+        self._validate_placement(head, request.placement)
+        return self._immutable_receipt(request.object_path, head)
+
+    def _put_create_only(self, request: dict[str, Any]) -> None:
+        if self._conditional_put_supported is False:
+            self._put_create_only_multipart(request)
+            return
+        try:
+            self._client.put_object(**request)
+        except ConnectionClosedError:
+            self._conditional_put_supported = False
+            self._put_create_only_multipart(request)
+        except ClientError as exc:
+            status, code = _client_error_identity(exc)
+            if status != 501 and code not in {"NotImplemented", "UnsupportedHeader"}:
+                raise
+            self._conditional_put_supported = False
+            self._put_create_only_multipart(request)
+        else:
+            self._conditional_put_supported = True
+
+    def _put_create_only_multipart(self, request: dict[str, Any]) -> None:
+        create_request = {
+            key: request[key]
+            for key in ("Bucket", "Key", "ContentType", "Metadata", "StorageClass")
+            if key in request
+        }
+        created = cast(dict[str, Any], self._client.create_multipart_upload(**create_request))
+        upload_id = str(created.get("UploadId", ""))
+        if not upload_id:
+            raise RuntimeError("S3 did not return a multipart upload id")
+        upload_request = {
+            "Bucket": request["Bucket"],
+            "Key": request["Key"],
+            "UploadId": upload_id,
+        }
+        try:
+            part = cast(
+                dict[str, Any],
+                self._client.upload_part(
+                    **upload_request,
+                    PartNumber=1,
+                    Body=request["Body"],
+                    ContentLength=request["ContentLength"],
+                ),
+            )
+            token = str(part.get("ETag", ""))
+            if not token:
+                raise RuntimeError("S3 did not return a multipart part token")
+            self._client.complete_multipart_upload(
+                **upload_request,
+                MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": token}]},
+                IfNoneMatch="*",
+            )
+        except Exception:
+            try:
+                self._client.abort_multipart_upload(**upload_request)
+            except ClientError as abort_exc:
+                status, code = _client_error_identity(abort_exc)
+                if status != 404 and code not in {"NoSuchUpload", "NotFound"}:
+                    raise
+            raise
+
+    def _head(
+        self,
+        object_path: str,
+        *,
+        revision: str | None = None,
+    ) -> dict[str, Any] | None:
+        request: dict[str, Any] = {
+            "Bucket": self._config.bucket,
+            "Key": self._key(object_path),
+        }
+        if revision is not None:
+            request["VersionId"] = revision
+        try:
+            return cast(dict[str, Any], self._client.head_object(**request))
+        except ClientError as exc:
+            status, code = _client_error_identity(exc)
+            if status == 404 or code in {"404", "NoSuchKey", "NoSuchVersion", "NotFound"}:
+                return None
+            raise
+
+    @staticmethod
+    def _completed_receipt(
+        object_path: str,
+        head: dict[str, Any],
+    ) -> CompletedObjectReceipt:
+        return CompletedObjectReceipt(
+            object_path=object_path,
+            revision=_provider_revision(head),
+            entity_token=_provider_entity_token(head),
+            stored_bytes=int(str(head["ContentLength"])),
+            completed_at=_provider_timestamp(head),
+        )
+
+    @staticmethod
+    def _immutable_receipt(
+        object_path: str,
+        head: dict[str, Any],
+    ) -> ImmutableObjectReceipt:
+        stored_sha256 = _normalized_metadata(head).get(_STORED_SHA256_METADATA, "")
+        if not _valid_sha256(stored_sha256):
+            raise RuntimeError("S3 immutable object is missing its stored digest")
+        return ImmutableObjectReceipt(
+            object_path=object_path,
+            revision=_provider_revision(head),
+            entity_token=_provider_entity_token(head),
+            stored_bytes=int(str(head["ContentLength"])),
+            stored_sha256=stored_sha256,
+            completed_at=_provider_timestamp(head),
+        )
+
+
+class _DirectS3ObjectReader:
+    def iter_object(
+        self,
+        *,
+        client: Any,
+        bucket: str,
+        key: str,
+        revision: str | None,
+        offset: int | None,
+        size: int | None,
+        expected_bytes: int,
+        chunk_bytes: int,
+    ) -> Iterator[bytes]:
+        request: dict[str, Any] = {"Bucket": bucket, "Key": key}
+        if revision is not None:
+            request["VersionId"] = revision
+        expected = expected_bytes
+        if offset is not None and size is not None:
+            if size == 0:
+                return
+            request["Range"] = f"bytes={offset}-{offset + size - 1}"
+            expected = size
+        response = cast(dict[str, Any], client.get_object(**request))
+        if int(str(response.get("ContentLength", -1))) != expected:
+            raise RuntimeError("S3 object response length differs from its request")
+        if offset is not None and size is not None:
+            expected_range = f"bytes {offset}-{offset + size - 1}/{expected_bytes}"
+            if str(response.get("ContentRange", "")) != expected_range:
+                raise RuntimeError("S3 object response range differs from its request")
+        body = response["Body"]
+        emitted = 0
+        try:
+            for chunk in body.iter_chunks(chunk_size=chunk_bytes):
+                if not chunk:
+                    continue
+                emitted += len(chunk)
+                if emitted > expected:
+                    raise RuntimeError("S3 object response contains trailing bytes")
+                yield bytes(chunk)
+        finally:
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
+        if emitted != expected:
+            raise RuntimeError("S3 object response ended before its declared length")
+
+
+def _normalized_metadata(head: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(key).casefold(): str(value)
+        for key, value in cast(dict[str, Any], head.get("Metadata") or {}).items()
+    }
+
+
+def _valid_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _provider_revision(head: dict[str, Any]) -> str | None:
+    value = head.get("VersionId")
+    return str(value) if value is not None else None
+
+
+def _provider_entity_token(head: dict[str, Any]) -> str | None:
+    value = head.get("ETag")
+    return str(value) if value is not None else None
+
+
+def _provider_timestamp(head: dict[str, Any]) -> str:
+    value = head.get("LastModified")
+    return (
+        format_utc_timestamp(value)
+        if isinstance(value, datetime)
+        else format_utc_timestamp(utc_now())
+    )
+
+
+def _client_error_identity(exc: ClientError) -> tuple[int, str]:
+    return (
+        int(exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode", 0)),
+        str(exc.response.get("Error", {}).get("Code", "")),
+    )
+
+
+def _delete_exact_all_versions(client: Any, *, bucket: str, key: str) -> int:
+    return _delete_prefix_all_versions(client, bucket=bucket, prefix=key, exact_key=key)
+
+
+def _delete_prefix_all_versions(
+    client: Any,
+    *,
+    bucket: str,
+    prefix: str,
+    exact_key: str | None = None,
+) -> int:
+    deleted: set[tuple[str, str | None]] = set()
+    current = client.get_paginator("list_objects_v2")
+    for page in current.paginate(Bucket=bucket, Prefix=prefix):
+        objects = [
+            {"Key": entry["Key"]}
+            for entry in page.get("Contents", [])
+            if exact_key is None or entry.get("Key") == exact_key
+        ]
+        if objects:
+            client.delete_objects(Bucket=bucket, Delete={"Objects": objects})
+            deleted.update((str(item["Key"]), None) for item in objects)
+    try:
+        paginator = client.get_paginator("list_object_versions")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            versions = [
+                {"Key": entry["Key"], "VersionId": entry["VersionId"]}
+                for entry in [
+                    *(page.get("Versions") or ()),
+                    *(page.get("DeleteMarkers") or ()),
+                ]
+                if exact_key is None or entry.get("Key") == exact_key
+            ]
+            if versions:
+                client.delete_objects(Bucket=bucket, Delete={"Objects": versions})
+                deleted.update((str(item["Key"]), str(item["VersionId"])) for item in versions)
+    except Exception as exc:
+        if not _version_listing_unsupported(exc):
+            raise
+    return len(deleted)
+
+
+def _version_listing_unsupported(exc: Exception) -> bool:
+    if not isinstance(exc, ClientError):
+        return False
+    status, code = _client_error_identity(exc)
+    return status in {400, 405, 501} or code in {
+        "MethodNotAllowed",
+        "NotImplemented",
+        "UnsupportedOperation",
+    }
+
+
+__all__ = [
+    "S3ObjectReader",
+    "S3ReadPreparation",
+    "S3StorageAdapter",
+    "S3StorageAdapterConfig",
+]

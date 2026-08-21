@@ -26,6 +26,7 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterErrorBody,
     StorageAdapterErrorCode,
     StorageAdapterPort,
+    StorageAdapterRejection,
 )
 
 from riverhog_storage_adapter_support.framing import parse_framed_request
@@ -174,12 +175,13 @@ class StorageAdapterHttpBinding:
                 if hashlib.sha256(content).hexdigest() != small_request.stored_sha256:
                     return _error(400, "integrity_failure", "small object digest differs")
                 small_receipt = self.adapter.put_small_object(small_request, content)
-                if (
-                    small_receipt.object_path != small_request.object_path
-                    or small_receipt.stored_bytes != small_request.stored_bytes
+                if small_receipt.object_path != small_request.object_path:
+                    raise RuntimeError("adapter small-object receipt differs from its request")
+                if small_request.mode == "replace_current" and (
+                    small_receipt.stored_bytes != small_request.stored_bytes
                     or small_receipt.stored_sha256 != small_request.stored_sha256
                 ):
-                    raise RuntimeError("adapter small-object receipt differs from its request")
+                    raise RuntimeError("adapter replacement receipt differs from its request")
                 return _model_response(small_receipt)
             if normalized_method == "POST" and path == "/v1/objects/head":
                 metadata_receipt = self.adapter.head_object(self._parse(body, ObjectLocator))
@@ -245,6 +247,8 @@ class StorageAdapterHttpBinding:
             return _error(404, "not_found", "adapter endpoint was not found")
         except StorageAdapterServiceError as exc:
             return _error(exc.status, exc.code, exc.message)
+        except StorageAdapterRejection as exc:
+            return _error(_ERROR_STATUS[exc.code], exc.code, exc.message)
         except (ValidationError, ValueError):
             return _error(400, "invalid_request", "adapter request is invalid")
         except Exception:
@@ -280,6 +284,22 @@ _HTTP_PATHS = frozenset(
         "/v1/maintenance/abort-incomplete",
     }
 )
+
+_ERROR_STATUS: dict[StorageAdapterErrorCode, int] = {
+    "unauthorized": 401,
+    "invalid_request": 400,
+    "not_found": 404,
+    "method_not_allowed": 405,
+    "request_too_large": 413,
+    "identity_conflict": 409,
+    "invalid_path": 400,
+    "invalid_range": 416,
+    "read_not_ready": 409,
+    "read_expired": 409,
+    "integrity_failure": 409,
+    "provider_unavailable": 503,
+    "internal_failure": 500,
+}
 
 
 def _model_response(model: BaseModel) -> StorageAdapterHttpResponse:
