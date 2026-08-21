@@ -43,6 +43,7 @@ RUN uv sync --frozen --package riverhog-server --no-dev --no-editable
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 
 ENV DEBIAN_FRONTEND=noninteractive \
+    HOME=/tmp \
     PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -73,5 +74,6 @@ RUN test "$(minisign -v)" = "minisign 0.12" \
 
 COPY --from=build /opt/venv /opt/venv
 
+USER 65532:65532
 EXPOSE 8000
 ENTRYPOINT ["riverhog-api"]
