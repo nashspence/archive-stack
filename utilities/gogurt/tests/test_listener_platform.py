@@ -160,8 +160,11 @@ def test_systemd_registration_enables_login_resume_and_cleans_up(tmp_path: Path)
 
     adapter.register(paths, command)
     assert registration.is_file()
-    assert ["systemctl", "--user", "enable", registration.name] in adapter.commands
-    assert ["systemctl", "--user", "restart", registration.name] in adapter.commands
+    assert adapter.commands == [
+        ["systemctl", "--user", "daemon-reload"],
+        ["systemctl", "--user", "enable", registration.name],
+        ["systemctl", "--user", "start", registration.name],
+    ]
     assert adapter.status(paths).running is True
 
     adapter.unregister(paths)
@@ -221,7 +224,7 @@ def test_launchd_registration_bootstraps_and_removes_the_agent(tmp_path: Path) -
 
     adapter.register(paths, command)
     assert registration.is_file()
-    assert ["launchctl", "bootstrap", "gui/501", str(registration)] in adapter.commands
+    assert adapter.commands == [["launchctl", "bootstrap", "gui/501", str(registration)]]
     assert adapter.status(paths) == NativeListenerStatus(
         installed=True,
         enabled=True,
