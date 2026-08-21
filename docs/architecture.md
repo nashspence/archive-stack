@@ -1,8 +1,8 @@
 # Architecture
 
 Riverhog is an encrypted archive platform with independently packaged clients, adapters,
-orchestration, extensions, utilities, and shared packages. Executable contracts define exact
-interfaces, configuration, formats, and commands; this page records ownership and authority.
+orchestration, utilities, and shared packages. Executable contracts define interfaces,
+configuration, formats, and commands; this page records ownership and authority.
 
 ## Authority model
 
@@ -49,16 +49,18 @@ Workspace dependency and import checks enforce the implementation-owner boundari
 
 ## Repository map
 
-- [`riverhog/server`](../riverhog/server/) is the archive platform service.
+- [`riverhog/server`](../riverhog/server/) is the archive service.
 - [`riverhog/client`](../riverhog/client/) is the direct platform CLI. Its `local` commands
   maintain client-owned local materialization.
 - [`riverhog/ftp-adapter`](../riverhog/ftp-adapter/) is the maintained content-opaque FTP
   collection producer and reference adapter boundary.
-- [`riverhog/recovery`](../riverhog/recovery/) provides an independently packaged,
-  permissively licensed reference implementation; Riverhog archives remain recoverable
-  without Riverhog using standard tools.
+- [`riverhog/storage-adapter-aws`](../riverhog/storage-adapter-aws/) and
+  [`riverhog/storage-adapter-backblaze`](../riverhog/storage-adapter-backblaze/) are isolated
+  maintained implementations of the provider-neutral storage-adapter contract.
+- [`riverhog/recovery`](../riverhog/recovery/) is a permissively licensed reference;
+  archives remain recoverable with standard tools.
 - [`companions`](../companions/) contains content-opaque Stove0 orchestration plus isolated
   maintained observer, sampler, and target examples.
 - [`utilities`](../utilities/) contains portable operator and event tools.
-- [`packages`](../packages/) contains focused reusable libraries and protocol, client,
+- [`packages`](../packages/) contains reusable libraries and protocol, client,
   configuration, event, transport, and CLI primitives.

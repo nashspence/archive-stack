@@ -11,8 +11,6 @@ class ArchiveCopyOut(RiverhogModel):
     storage_prefix: str | None
     object_count: int
     stored_bytes: int | None
-    backend: str | None
-    storage_class: str | None
     last_uploaded_at: str | None
     last_verified_at: str | None
     failure: str | None

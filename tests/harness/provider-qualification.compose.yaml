@@ -1,0 +1,67 @@
+services:
+  aws-deep-archive-adapter:
+    image: riverhog-storage-adapter-aws:dev
+    restart: unless-stopped
+    env_file:
+      - path: ${RIVERHOG_QUALIFICATION_AWS_ADAPTER_ENV_FILE}
+        required: true
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_STORAGE_ADAPTER_TOKEN_HOST_PATH}
+        target: /run/secrets/riverhog-storage-adapter.token
+        read_only: true
+      - type: bind
+        source: ${RIVERHOG_AWS_STORAGE_ADAPTER_CLOUDFRONT_PRIVATE_KEY_HOST_PATH}
+        target: /run/secrets/riverhog-cloudfront.pem
+        read_only: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  b2-archive-adapter:
+    image: riverhog-storage-adapter-backblaze:dev
+    restart: unless-stopped
+    env_file:
+      - path: ${RIVERHOG_QUALIFICATION_B2_ARCHIVE_ADAPTER_ENV_FILE}
+        required: true
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_STORAGE_ADAPTER_TOKEN_HOST_PATH}
+        target: /run/secrets/riverhog-storage-adapter.token
+        read_only: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  b2-retrieval-cache-adapter:
+    image: riverhog-storage-adapter-backblaze:dev
+    restart: unless-stopped
+    env_file:
+      - path: ${RIVERHOG_QUALIFICATION_B2_CACHE_ADAPTER_ENV_FILE}
+        required: true
+    volumes:
+      - type: bind
+        source: ${RIVERHOG_STORAGE_ADAPTER_TOKEN_HOST_PATH}
+        target: /run/secrets/riverhog-storage-adapter.token
+        read_only: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  app:
+    depends_on:
+      aws-deep-archive-adapter:
+        condition: service_healthy
+      b2-archive-adapter:
+        condition: service_healthy
+      b2-retrieval-cache-adapter:
+        condition: service_healthy

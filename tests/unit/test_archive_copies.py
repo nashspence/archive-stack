@@ -27,7 +27,7 @@ from riverhog_core.ports.archive_objects import (
 )
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveReadStatus
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
-from riverhog_core.runtime_config import RetrievalCacheConfig, RuntimeConfig
+from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from sqlalchemy import select
@@ -52,7 +52,7 @@ INITIATOR = ApplicationPrincipal(
 
 class _ArchiveCopyCache:
     def __init__(self) -> None:
-        self.store = MemoryArchiveStore(backend="b2")
+        self.store = MemoryArchiveStore(new_archive_prefix="archives/cache/new-copy")
 
     def multipart_object_store(self, **_: object) -> MemoryArchiveStore:
         return self.store
@@ -129,15 +129,14 @@ def _service(
     b2_config = replace(
         config.archive_store("deep"),
         name="b2",
-        backend="b2",
-        storage_class="STANDARD",
+        base_url="http://127.0.0.1/b2",
     )
     config = replace(
         config,
         archive_stores={"deep": config.archive_store("deep"), "b2": b2_config},
     )
     source = MemoryArchiveStore(archive, ready=source_ready)
-    destination = destination or MemoryArchiveStore(backend="b2")
+    destination = destination or MemoryArchiveStore(new_archive_prefix="archives/b2/new-copy")
     service = SqlAlchemyArchiveCopyService(
         config,
         ArchiveStoreRegistry(
@@ -232,7 +231,7 @@ def test_archive_copy_pipelines_source_parts_into_parallel_destination_requests(
 
     class ConcurrentDestination(MemoryArchiveStore):
         def __init__(self) -> None:
-            super().__init__(backend="b2")
+            super().__init__(new_archive_prefix="archives/b2/new-copy")
             self.lock = threading.Lock()
             self.rendezvous = threading.Barrier(2)
             self.active = 0
@@ -326,31 +325,20 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         tmp_path / "catalog.sqlite3",
         FILES,
         store="b2",
-        backend="b2",
     )
     deep = replace(
         config.archive_store("b2"),
         name="deep",
-        backend="aws",
-        storage_class="DEEP_ARCHIVE",
-        read_mode="restore_required",
+        base_url="http://127.0.0.1/deep",
     )
     config = replace(
         config,
         archive_stores={"b2": config.archive_store("b2"), "deep": deep},
         archive_read_order=("b2", "deep"),
-        retrieval_cache=RetrievalCacheConfig(
-            endpoint_url="https://cache.example",
-            region="us-east-1",
-            bucket="cache",
-            access_key_id="key",
-            secret_access_key="secret",
-        ),
     )
-    source = MemoryArchiveStore(archive, backend="b2")
+    source = MemoryArchiveStore(archive, new_archive_prefix="archives/b2/new-copy")
     destination = MemoryArchiveStore(
-        backend="aws",
-        storage_class="DEEP_ARCHIVE",
+        new_archive_prefix="archives/deep/new-copy",
         read_mode="restore_required",
     )
     cache = _ArchiveCopyCache()
@@ -377,7 +365,6 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "deep"))
         checkpoints = session.scalars(select(ArchiveCopyObjectUploadRecord)).all()
         assert copy is not None
-        assert copy.storage_class == "DEEP_ARCHIVE"
         assert checkpoints == []
         cached = session.get(
             RetrievalCacheObjectRecord,
@@ -390,11 +377,11 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         assert cached is not None
         assert lease is not None
     assert set(destination.objects) == {
-        "archives/aws/new-copy/volumes/pack-000000000000.tar.age",
-        "archives/aws/new-copy/manifest.json.age",
-        "archives/aws/new-copy/manifest.json.ots.age",
+        "archives/deep/new-copy/volumes/pack-000000000000.tar.age",
+        "archives/deep/new-copy/manifest.json.age",
+        "archives/deep/new-copy/manifest.json.ots.age",
     }
-    pack_path = "archives/aws/new-copy/volumes/pack-000000000000.tar.age"
+    pack_path = "archives/deep/new-copy/volumes/pack-000000000000.tar.age"
     assert cache.store.objects[pack_path] == destination.objects[pack_path]
 
 
@@ -405,28 +392,22 @@ def test_restore_required_copy_uses_archive_only_when_new_archive_cache_is_disab
         tmp_path / "catalog.sqlite3",
         FILES,
         store="b2",
-        backend="b2",
     )
     deep = replace(
         config.archive_store("b2"),
         name="deep",
-        backend="aws",
-        read_mode="restore_required",
+        base_url="http://127.0.0.1/deep",
     )
     config = replace(
         config,
         archive_stores={"b2": config.archive_store("b2"), "deep": deep},
-        retrieval_cache=RetrievalCacheConfig(
-            endpoint_url="https://cache.example",
-            region="us-east-1",
-            bucket="cache",
-            access_key_id="fixture",
-            secret_access_key="fixture",
-        ),
         retrieval_cache_new_archive_enabled=False,
     )
-    source = MemoryArchiveStore(archive, backend="b2")
-    destination = MemoryArchiveStore(backend="aws")
+    source = MemoryArchiveStore(archive, new_archive_prefix="archives/b2/new-copy")
+    destination = MemoryArchiveStore(
+        new_archive_prefix="archives/deep/new-copy",
+        read_mode="restore_required",
+    )
     service = SqlAlchemyArchiveCopyService(
         config,
         ArchiveStoreRegistry(
@@ -587,7 +568,7 @@ def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
             assert release.wait(timeout=5)
             return super().upload_part(upload=upload, number=number, content=content)
 
-    destination = BlockingDestination(backend="b2")
+    destination = BlockingDestination(new_archive_prefix="archives/b2/new-copy")
     config, _archive, _source, _destination, service = _service(
         tmp_path / "catalog.sqlite3",
         destination=destination,

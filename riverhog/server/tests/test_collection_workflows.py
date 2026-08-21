@@ -104,8 +104,6 @@ def _collection(
             store="hot",
             state="uploaded",
             archive_storage_prefix=f"collections/{collection_id}",
-            backend="s3",
-            storage_class="STANDARD",
             last_uploaded_at=NOW,
             last_verified_at=NOW,
             failure=None,
@@ -129,8 +127,6 @@ def _collection(
             part_receipts_json=None,
             plan_sha256=None,
             index_sha256=None,
-            backend="s3",
-            storage_class="STANDARD",
             uploaded_at=NOW,
             verified_at=NOW,
         )

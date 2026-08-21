@@ -5,6 +5,7 @@ from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
 
 from riverhog_core.app_permissions import ARCHIVES_READ, ApplicationPrincipal
+from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -18,13 +19,11 @@ from riverhog_core.domain.models import (
     ArchiveStoreSummary,
 )
 from riverhog_core.ports.download_allowance import DownloadAllowance
-from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
+from riverhog_core.runtime_config import RuntimeConfig, StorageAdapterRegistration
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 
 _SORT_FIELDS = {
     "store",
-    "backend",
-    "storage_class",
     "read_mode",
     "read_priority",
     "collections",
@@ -37,11 +36,13 @@ class SqlAlchemyArchiveStoreService:
     def __init__(
         self,
         config: RuntimeConfig,
+        archive_stores: ArchiveStoreRegistry,
         *,
         download_allowance: DownloadAllowance | None = None,
         session_factory: SessionFactory | None = None,
     ) -> None:
         self._config = config
+        self._archive_stores = archive_stores
         self._session_factory = session_factory or make_session_factory(config.database_url)
         self._download_allowance = download_allowance or SqlAlchemyDownloadAllowance(
             config,
@@ -69,6 +70,7 @@ class SqlAlchemyArchiveStoreService:
             )
         return self._summary(
             config,
+            read_mode=self._archive_stores.require(normalized).store.read_mode(),
             aggregate=aggregates.get(normalized, (0, 0, 0)),
             allowances=self._allowances(),
         )
@@ -100,7 +102,7 @@ class SqlAlchemyArchiveStoreService:
             if needle is None
             or needle
             in " ".join(
-                (current.name, current.backend, current.storage_class, current.read_mode)
+                (current.name, self._archive_stores.require(current.name).store.read_mode())
             ).casefold()
         ]
         with session_scope(self._session_factory) as session:
@@ -113,6 +115,7 @@ class SqlAlchemyArchiveStoreService:
         summaries = [
             self._summary(
                 current,
+                read_mode=self._archive_stores.require(current.name).store.read_mode(),
                 aggregate=aggregates.get(current.name, (0, 0, 0)),
                 allowances=allowances,
             )
@@ -145,17 +148,16 @@ class SqlAlchemyArchiveStoreService:
 
     def _summary(
         self,
-        config: ArchiveStoreConfig,
+        config: StorageAdapterRegistration,
         *,
+        read_mode: str,
         aggregate: tuple[int, int, int],
         allowances: dict[str, ArchiveDownloadAllowance],
     ) -> ArchiveStoreSummary:
         collections, objects, stored_bytes = aggregate
         return ArchiveStoreSummary(
             store=config.name,
-            backend=config.backend,
-            storage_class=config.storage_class,
-            read_mode=config.read_mode,
+            read_mode=read_mode,
             read_priority=self._read_priorities[config.name],
             write_target=config.name == self._config.archive_write_store,
             collections=collections,

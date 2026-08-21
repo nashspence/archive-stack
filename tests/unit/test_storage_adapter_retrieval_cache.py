@@ -171,8 +171,8 @@ class _Adapter:
 
 def _cache(adapter: _Adapter) -> StorageAdapterRetrievalCache:
     tuning = ArchiveThroughputTuning(
-        s3_part_concurrency=2,
-        s3_upload_request_concurrency=2,
+        multipart_concurrency=2,
+        upload_request_concurrency=2,
         upload_max_inflight_bytes=3 * _PART_BYTES,
     )
     return StorageAdapterRetrievalCache(

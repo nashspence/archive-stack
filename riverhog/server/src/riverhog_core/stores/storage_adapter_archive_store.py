@@ -266,7 +266,6 @@ class StorageAdapterArchiveStore:
             plaintext_bytes=len(proof_bytes),
             plaintext_sha256=plaintext_sha256,
             stored=stored,
-            placement="immediate",
         )
 
     def stored_archive_object_sha256(
@@ -528,7 +527,6 @@ class StorageAdapterArchiveStore:
                         _required_stored_sha256(existing, object_path=object_path),
                     ),
                     metadata=existing,
-                    placement="immediate",
                     verified=False,
                 )
             if not replace:
@@ -546,7 +544,6 @@ class StorageAdapterArchiveStore:
             plaintext_bytes=len(content),
             plaintext_sha256=sha256,
             stored=stored,
-            placement="immediate",
         )
 
     def _put_archive_root_guidance(self) -> None:
@@ -592,7 +589,6 @@ class StorageAdapterArchiveStore:
             plaintext_bytes=object.plaintext_bytes,
             plaintext_sha256=object.sha256,
             metadata=metadata,
-            placement=_object_placement(object.kind),
             verified=verified,
         )
 
@@ -604,7 +600,6 @@ class StorageAdapterArchiveStore:
         plaintext_bytes: int,
         plaintext_sha256: str | None,
         stored: ImmutableObjectReceipt,
-        placement: ObjectPlacement,
     ) -> ArchiveObjectUploadReceipt:
         return ArchiveObjectUploadReceipt(
             object_id=object_id,
@@ -615,8 +610,6 @@ class StorageAdapterArchiveStore:
             sha256=plaintext_sha256,
             stored_sha256=stored.stored_sha256,
             version_id=stored.revision,
-            backend="adapter",
-            storage_class=placement.upper(),
             uploaded_at=stored.completed_at,
             verified_at=stored.completed_at,
         )
@@ -629,7 +622,6 @@ class StorageAdapterArchiveStore:
         plaintext_bytes: int,
         plaintext_sha256: str | None,
         metadata: ObjectMetadataReceipt,
-        placement: ObjectPlacement,
         verified: bool,
     ) -> ArchiveObjectUploadReceipt:
         return ArchiveObjectUploadReceipt(
@@ -643,8 +635,6 @@ class StorageAdapterArchiveStore:
                 metadata.stored_sha256 or metadata.identity_metadata.get("riverhog-stored-sha256")
             ),
             version_id=metadata.revision,
-            backend="adapter",
-            storage_class=placement.upper(),
             uploaded_at=metadata.completed_at,
             verified_at=utc_timestamp_now() if verified else None,
         )

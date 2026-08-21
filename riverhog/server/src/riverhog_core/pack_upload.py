@@ -10,8 +10,8 @@ from dataclasses import dataclass, replace
 from riverhog_age import (
     AEAD_TAG_SIZE,
     CHUNK_SIZE,
+    MultipartPartPlan,
     ResumableAgeScryptSession,
-    S3PartPlan,
     UploadState,
 )
 from riverhog_protocol.pack_ingress import canonical_json_bytes
@@ -46,10 +46,10 @@ from riverhog_core.streaming_age import (
 from riverhog_core.throughput import (
     DEFAULT_AGE_DERIVATION_CONCURRENCY,
     DEFAULT_AGE_SESSION_CACHE_ENTRIES,
-    DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY,
     DEFAULT_SOURCE_READ_CHUNK_BYTES,
     DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES,
     DEFAULT_UPLOAD_PREPARE_CONCURRENCY,
+    DEFAULT_UPLOAD_REQUEST_CONCURRENCY,
     ArchiveTransferResources,
     TransferConcurrencyGate,
     TransferTiming,
@@ -253,7 +253,7 @@ class PackVolumeUploader:
         self._request_gate = (
             resources.upload_requests
             if resources is not None
-            else request_gate or TransferConcurrencyGate(DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY)
+            else request_gate or TransferConcurrencyGate(DEFAULT_UPLOAD_REQUEST_CONCURRENCY)
         )
         self._timing_observer = timing_observer
         self._derivation_gate = (
@@ -765,7 +765,7 @@ def _age_part_plan(
     session: ResumableAgeScryptSession,
     total_plaintext_bytes: int,
     unit: PackUploadUnitPlan,
-) -> S3PartPlan:
+) -> MultipartPartPlan:
     start = int(unit.plaintext_start)
     end = int(unit.plaintext_end)
     if start < 0 or end <= start or end > total_plaintext_bytes:
@@ -782,7 +782,7 @@ def _age_part_plan(
     )
     ciphertext_bytes = (prefix_bytes if includes_prefix else 0) + (end - start)
     ciphertext_bytes += chunk_count * AEAD_TAG_SIZE
-    return S3PartPlan(
+    return MultipartPartPlan(
         part_number=int(unit.unit) + 1,
         first_chunk=first_chunk,
         chunk_count=chunk_count,

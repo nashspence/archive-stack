@@ -50,8 +50,6 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                     store="archive",
                     state="uploaded",
                     archive_storage_prefix=f"archives/{collection_id}",
-                    backend="s3",
-                    storage_class="STANDARD",
                     last_uploaded_at=NOW,
                     last_verified_at=NOW,
                 )
@@ -72,8 +70,6 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                         sha256="a" * 64,
                         stored_sha256="b" * 64,
                         version_id=f"version-{collection_id}-{object_id}",
-                        backend="s3",
-                        storage_class="STANDARD",
                         uploaded_at=NOW,
                         verified_at=NOW,
                     )

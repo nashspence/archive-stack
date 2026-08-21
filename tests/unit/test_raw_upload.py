@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 
 import pytest
-from riverhog_age import CHUNK_SIZE, S3_MIN_PART_SIZE, ResumableAgeScryptSession
+from riverhog_age import CHUNK_SIZE, PORTABLE_MULTIPART_MIN_PART_BYTES, ResumableAgeScryptSession
 from riverhog_core.domain.archive import RawVolumePlan
 from riverhog_core.ports.archive_objects import (
     CompletedObjectReceipt,
@@ -17,7 +17,7 @@ from riverhog_core.raw_upload import (
     RawVolumeUploader,
     merge_raw_upload_checkpoints,
 )
-from riverhog_core.raw_volume import raw_s3_part_plans
+from riverhog_core.raw_volume import raw_multipart_part_plans
 
 
 class MemoryRawCheckpointStore:
@@ -169,13 +169,13 @@ def test_raw_upload_resumes_on_server_defined_age_part_boundaries() -> None:
         plan=plan,
         object_path="archives/opaque/volumes/segment-000000000000.bin.age",
         relative_path="volumes/segment-000000000000.bin.age",
-        target_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_part_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
     )
     session = ResumableAgeScryptSession.from_state("archive passphrase", checkpoint.age_state_json)
-    part_plans = raw_s3_part_plans(
+    part_plans = raw_multipart_part_plans(
         plan,
         session,
-        target_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
     )
     assert len(part_plans) == 2
 
@@ -190,7 +190,7 @@ def test_raw_upload_resumes_on_server_defined_age_part_boundaries() -> None:
         plan=plan,
         object_path=checkpoint.object_path,
         relative_path=checkpoint.relative_path,
-        target_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_part_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
     )
     assert resumed.next_part == 1
 
@@ -222,7 +222,7 @@ def test_raw_upload_revalidates_the_registered_part_identity() -> None:
         plan=plan,
         object_path="archives/opaque/volumes/segment-000000000000.bin.age",
         relative_path="volumes/segment-000000000000.bin.age",
-        target_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_part_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
         expected_part_sha256s=(hashlib.sha256(content).hexdigest(),),
     )
 
@@ -245,7 +245,7 @@ def test_raw_checkpoint_round_trips_and_rejects_unaligned_part_target() -> None:
         plan=plan,
         object_path="archives/opaque/volumes/segment-000000000000.bin.age",
         relative_path="volumes/segment-000000000000.bin.age",
-        target_part_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_part_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
     )
 
     payload = json.loads(checkpoint.to_json())

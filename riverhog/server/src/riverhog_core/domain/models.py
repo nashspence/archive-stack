@@ -13,8 +13,6 @@ class ArchiveCopyStatus:
     storage_prefix: str | None = None
     object_count: int = 0
     stored_bytes: int | None = None
-    backend: str | None = None
-    storage_class: str | None = None
     last_uploaded_at: str | None = None
     last_verified_at: str | None = None
     failure: str | None = None
@@ -47,8 +45,6 @@ class ArchiveDownloadAllowance:
 @dataclass(frozen=True)
 class ArchiveStoreSummary:
     store: str
-    backend: str
-    storage_class: str
     read_mode: str
     read_priority: int
     write_target: bool

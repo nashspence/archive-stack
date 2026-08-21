@@ -4,14 +4,14 @@ import hashlib
 import threading
 import time
 
-from riverhog_age import S3_MIN_PART_SIZE, ResumableAgeScryptSession
+from riverhog_age import PORTABLE_MULTIPART_MIN_PART_BYTES, ResumableAgeScryptSession
 from riverhog_core.domain.archive import RawVolumePlan, StoredPartReceipt
 from riverhog_core.raw_retrieval import (
     RawFileRangeReader,
     RawVolumeRangeReader,
     RawVolumeRetrievalSource,
 )
-from riverhog_core.raw_volume import raw_s3_part_plans
+from riverhog_core.raw_volume import raw_multipart_part_plans
 
 
 class SlowRangeStore:
@@ -58,10 +58,10 @@ def _source(content: bytes):
     )
     receipts = []
     stored = []
-    for part in raw_s3_part_plans(
+    for part in raw_multipart_part_plans(
         plan,
         session,
-        target_plaintext_bytes=S3_MIN_PART_SIZE,
+        target_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
     ):
         plaintext = content[part.plaintext_start : part.plaintext_end]
         ciphertext = session.encrypt_part(

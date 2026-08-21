@@ -16,6 +16,8 @@ REPOSITORY_MAP_TARGETS = {
     REPO / "riverhog/client",
     REPO / "riverhog/recovery",
     REPO / "riverhog/ftp-adapter",
+    REPO / "riverhog/storage-adapter-aws",
+    REPO / "riverhog/storage-adapter-backblaze",
     REPO / "companions",
     REPO / "utilities",
     REPO / "packages",

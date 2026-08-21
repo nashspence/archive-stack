@@ -41,14 +41,11 @@ def _service(
             session,
             archive,
             store="b2",
-            backend="b2",
-            storage_class="STANDARD",
         )
     b2 = replace(
         config.archive_store("deep"),
         name="b2",
-        backend="b2",
-        storage_class="STANDARD",
+        base_url="http://127.0.0.1/b2",
     )
     config = replace(
         config,
@@ -56,7 +53,7 @@ def _service(
         archive_read_order=("b2", "deep"),
     )
     deep_store = MemoryArchiveStore(archive)
-    b2_store = MemoryArchiveStore(archive, backend="b2")
+    b2_store = MemoryArchiveStore(archive, new_archive_prefix="archives/b2/new-copy")
     service = SqlAlchemyArchiveCopyRetirementService(
         config,
         ArchiveStoreRegistry(

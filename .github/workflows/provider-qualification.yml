@@ -322,21 +322,24 @@ jobs:
         run: |
           printf 'created=%s\nepoch=%s\n' \
             "$(git show -s --format=%cI HEAD)" "$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Build the disposable Riverhog image
+      - name: Build the disposable Riverhog storage boundary
         uses: docker/bake-action@d3418bd7d0e9324001bca92fa8ba175ea7e6dc9b # v7.3.0
         with:
           source: .
           files: docker-bake.hcl
-          targets: riverhog
+          targets: >-
+            riverhog,
+            riverhog-storage-adapter-aws,
+            riverhog-storage-adapter-backblaze
           load: true
           set: |
             *.args.SOURCE_REVISION=${{ needs.resolve.outputs.source_sha }}
             *.args.BUILD_CREATED=${{ steps.image-metadata.outputs.created }}
             *.args.SOURCE_DATE_EPOCH=${{ steps.image-metadata.outputs.epoch }}
             *.args.RELEASE_VERSION=development
-            *.cache-from=type=gha,scope=provider-qualification-riverhog
-            *.cache-to=type=gha,scope=provider-qualification-riverhog,mode=min,ignore-error=true
-      - name: Materialize CloudFront signing keys
+            *.cache-from=type=gha,scope=provider-qualification-storage-boundary
+            *.cache-to=type=gha,scope=provider-qualification-storage-boundary,mode=min,ignore-error=true
+      - name: Materialize adapter authentication and CloudFront signing keys
         env:
           CLOUDFRONT_PRIVATE_KEY: ${{ secrets.RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY }}
           CLOUDFRONT_PUBLIC_KEY: ${{ vars.RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY }}
@@ -344,12 +347,16 @@ jobs:
           set -euo pipefail
           private_key="$RUNNER_TEMP/provider-cloudfront-private.pem"
           public_key="$RUNNER_TEMP/provider-cloudfront-public.pem"
+          adapter_token="$RUNNER_TEMP/provider-storage-adapter.token"
           umask 077
           printf '%s\n' "$CLOUDFRONT_PRIVATE_KEY" > "$private_key"
           printf '%s\n' "$CLOUDFRONT_PUBLIC_KEY" > "$public_key"
-          chmod 600 "$private_key" "$public_key"
+          python -c 'import secrets, sys; print(secrets.token_hex(32), file=sys.stdout)' \
+            > "$adapter_token"
+          chmod 600 "$private_key" "$public_key" "$adapter_token"
           printf 'RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY_PATH=%s\n' "$private_key" >> "$GITHUB_ENV"
           printf 'RIVERHOG_QUALIFICATION_CLOUDFRONT_PUBLIC_KEY_PATH=%s\n' "$public_key" >> "$GITHUB_ENV"
+          printf 'RIVERHOG_QUALIFICATION_STORAGE_ADAPTER_TOKEN_PATH=%s\n' "$adapter_token" >> "$GITHUB_ENV"
       - name: Configure AWS runtime identity
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
@@ -411,9 +418,11 @@ jobs:
         run: |
           set -euo pipefail
           docker compose --env-file "$RUNTIME_ENV" --project-name "$COMPOSE_PROJECT_NAME" \
-            -f riverhog/server/compose.yaml up -d --wait postgres
+            -f riverhog/server/compose.yaml \
+            -f tests/harness/provider-qualification.compose.yaml up -d --wait postgres
           docker compose --env-file "$RUNTIME_ENV" --project-name "$COMPOSE_PROJECT_NAME" \
-            -f riverhog/server/compose.yaml exec -T postgres \
+            -f riverhog/server/compose.yaml \
+            -f tests/harness/provider-qualification.compose.yaml exec -T postgres \
             pg_restore --username riverhog --dbname riverhog --clean --if-exists --no-owner \
             < "$STATE_DIR/database.dump"
       - name: Start the disposable Riverhog deployment
@@ -421,10 +430,12 @@ jobs:
         run: |
           set -euo pipefail
           compose=(docker compose --env-file "$RUNTIME_ENV" --project-name "$COMPOSE_PROJECT_NAME" \
-            -f riverhog/server/compose.yaml)
+            -f riverhog/server/compose.yaml \
+            -f tests/harness/provider-qualification.compose.yaml)
           if ! "${compose[@]}" up -d --wait app; then
             "${compose[@]}" ps
-            "${compose[@]}" logs --no-color --tail 80 app state
+            "${compose[@]}" logs --no-color --tail 80 \
+              app state aws-deep-archive-adapter b2-archive-adapter b2-retrieval-cache-adapter
             timeout 30s "${compose[@]}" exec -T app python -c \
               'from riverhog_api.deps import default_container; default_container()' \
               || true
@@ -457,7 +468,8 @@ jobs:
         run: |
           set -euo pipefail
           docker compose --env-file "$RUNTIME_ENV" --project-name "$COMPOSE_PROJECT_NAME" \
-            -f riverhog/server/compose.yaml exec -T postgres \
+            -f riverhog/server/compose.yaml \
+            -f tests/harness/provider-qualification.compose.yaml exec -T postgres \
             pg_dump --username riverhog --dbname riverhog --format custom \
             > "$STATE_DIR/database.dump"
           test -s "$STATE_DIR/database.dump"
@@ -511,7 +523,9 @@ jobs:
         if: always() && env.RUNTIME_ENV != ''
         run: |
           docker compose --env-file "$RUNTIME_ENV" --project-name "$COMPOSE_PROJECT_NAME" \
-            -f riverhog/server/compose.yaml down --volumes --remove-orphans
+            -f riverhog/server/compose.yaml \
+            -f tests/harness/provider-qualification.compose.yaml \
+            down --volumes --remove-orphans
       - name: Preserve qualification failure after state upload
         if: steps.operate.outcome == 'failure'
         run: |
