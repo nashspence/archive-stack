@@ -90,6 +90,7 @@ def _check_release_ruleset(
         "allowed_merge_methods": ["squash", "rebase"],
         "dismiss_stale_reviews_on_push": False,
         "require_code_owner_review": False,
+        "require_extra_approval_for_unattributed_changes": True,
         "require_last_push_approval": False,
         "required_approving_review_count": 0,
         "required_reviewers": [],
@@ -137,6 +138,28 @@ def _immutable_release_status(repository: str, *, scope: str) -> str:
         return "operator-preflight-required"
     _check_immutable_releases(_gh(f"repos/{repository}/immutable-releases"))
     return "enabled"
+
+
+def _git_ref_sha(repository: str, ref: str) -> str:
+    payload = _gh(f"repos/{repository}/git/ref/heads/{ref}")
+    value = payload.get("object", {}).get("sha")
+    if (
+        not isinstance(value, str)
+        or len(value) != 40
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise GovernanceError(f"{ref} does not resolve to an exact commit SHA")
+    return value
+
+
+def _check_pre_v1_lockstep(repository: str) -> str:
+    main_sha = _git_ref_sha(repository, "main")
+    release_sha = _git_ref_sha(repository, "release/v1")
+    if main_sha != release_sha:
+        raise GovernanceError(
+            "pre-v1 lockstep requires main and release/v1 to resolve to the same commit"
+        )
+    return main_sha
 
 
 def _check_environment(
@@ -193,6 +216,8 @@ def check(*, scope: str = "complete") -> dict[str, Any]:
     config = tomllib.loads((ROOT / "release.toml").read_text(encoding="utf-8"))
     governance = config["governance"]
     repository = str(governance["repository"])
+    if governance.get("branch_delivery") != "pre-v1-lockstep":
+        raise GovernanceError("release.toml must declare pre-v1 lockstep delivery")
     required_checks = list(governance["required_checks"])
     summaries = _gh(f"repos/{repository}/rulesets")
     by_name = {item["name"]: item for item in summaries}
@@ -209,6 +234,7 @@ def check(*, scope: str = "complete") -> dict[str, Any]:
         int(governance["required_check_integration_id"]),
     )
     _check_tag_ruleset(tag_ruleset)
+    governed_sha = _check_pre_v1_lockstep(repository)
     immutable_release_status = _immutable_release_status(repository, scope=scope)
 
     environments = governance["environments"]
@@ -243,8 +269,10 @@ def check(*, scope: str = "complete") -> dict[str, Any]:
         "scope": scope,
         "repository": repository,
         "source_sha": _git_sha(),
-        "main": "protected-direct-delivery",
-        "release_branch": "protected-pull-request-delivery",
+        "branch_delivery": "pre-v1-lockstep",
+        "governed_sha": governed_sha,
+        "main": "lockstep-fast-forward-target",
+        "release_branch": "protected-lockstep-authority",
         "required_checks": required_checks,
         "tag_policy": "immutable-v1",
         "immutable_releases": immutable_release_status,

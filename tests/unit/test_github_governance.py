@@ -38,6 +38,7 @@ def _release_ruleset(required_checks: list[str]) -> dict[str, object]:
                     "allowed_merge_methods": ["squash", "rebase"],
                     "dismiss_stale_reviews_on_push": False,
                     "require_code_owner_review": False,
+                    "require_extra_approval_for_unattributed_changes": True,
                     "require_last_push_approval": False,
                     "required_approving_review_count": 0,
                     "required_reviewers": [],
@@ -163,6 +164,21 @@ def test_complete_scope_requires_live_immutable_release_state() -> None:
     )
 
     assert module._immutable_release_status("nashspence/riverhog", scope="complete") == "enabled"
+
+
+def test_pre_v1_lockstep_requires_the_same_exact_commit() -> None:
+    module = load_script()
+    refs = {
+        "repos/nashspence/riverhog/git/ref/heads/main": {"object": {"sha": "a" * 40}},
+        "repos/nashspence/riverhog/git/ref/heads/release/v1": {"object": {"sha": "a" * 40}},
+    }
+    module._gh = refs.__getitem__
+
+    assert module._check_pre_v1_lockstep("nashspence/riverhog") == "a" * 40
+
+    refs["repos/nashspence/riverhog/git/ref/heads/release/v1"] = {"object": {"sha": "b" * 40}}
+    with pytest.raises(module.GovernanceError, match="resolve to the same commit"):
+        module._check_pre_v1_lockstep("nashspence/riverhog")
 
 
 @pytest.mark.parametrize("reviewer_required", [False, True])
