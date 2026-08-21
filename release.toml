@@ -11,6 +11,7 @@ documentation_url = "https://nashspence.github.io/riverhog/v1/"
 repository = "nashspence/riverhog"
 maintainer = "nashspence"
 workflow_source_branch = "main"
+branch_delivery = "pre-v1-lockstep"
 required_check_integration_id = 15368
 required_checks = [
   "Analyze (actions)",
@@ -40,19 +41,15 @@ required_checks = [
 ]
 
 [governance.main]
-delivery = "authorized direct fast-forward push followed by exact-SHA GitHub check validation"
+delivery = "Fast-forward only to the exact commit accepted by protected release/v1, followed by exact-SHA GitHub check validation."
 protection = "An active no-bypass ruleset requires linear history and rejects force-push and deletion; it has no pull-request or pre-push status gate."
 
 [governance.release]
-delivery = "Pull requests into release/v1 with every required check passing against the current head."
+delivery = "Pull requests into release/v1 with every required check passing against the current head; the accepted commit is then fast-forwarded unchanged to main."
 required_approvals = 0
 review_policy = "The sole maintainer must inspect the diff and check result; add approval requirements when another maintainer can provide meaningful review."
-contents = "Stabilization and deliberate v1 backports only; main remains the development line."
-selection = "Backport only fixes needed for supported v1 security, archive recovery, data integrity, or documented v1 behavior."
-provenance = "Prefer git cherry-pick -x from main; otherwise record the originating commit or issue in the pull request."
-conflicts = "Resolve for the current v1 design, rerun every required check, and never preserve retired behavior solely to simplify a backport."
-return_to_main = "Fix on main first when affected; if an emergency release fix lands first, forward-port it to main before publication completes."
-support = "Maintain eligible v1 fixes until v2.0.0, then critical security, archive-recovery, and data-integrity fixes for twelve months."
+contents = "Current pre-v1 stabilization and release corrections; main and release/v1 remain commit-identical."
+synchronization = "Provider qualification stays disabled between release/v1 acceptance and the immediate fast-forward of main to the same commit."
 
 [governance.tags]
 release_candidate = "v{version}-rc.{candidate}"

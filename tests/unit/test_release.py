@@ -92,6 +92,7 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "governance"
     ]
     assert governance["workflow_source_branch"] == "main"
+    assert governance["branch_delivery"] == "pre-v1-lockstep"
     assert governance["required_check_integration_id"] == 15368
     assert governance["release"]["required_approvals"] == 0
     assert governance["tags"]["release_candidate"] == "v{version}-rc.{candidate}"
