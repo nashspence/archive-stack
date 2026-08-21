@@ -68,6 +68,7 @@ def test_multipart_completion_preserves_optional_part_digests() -> None:
         ),
         expected_bytes=12,
         expected_identity_metadata={"Riverhog-Format": "riverhog-pack-volume/v1"},
+        expected_placement="archive",
     )
 
     assert request.expected_identity_metadata == {"riverhog-format": "riverhog-pack-volume/v1"}
@@ -147,7 +148,6 @@ def test_object_metadata_keeps_large_object_digest_optional() -> None:
         object_path="archives/id/volumes/pack.tar.age",
         stored_bytes=100,
         identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
-        placement="archive",
         completed_at="2026-08-21T00:00:00Z",
     )
 

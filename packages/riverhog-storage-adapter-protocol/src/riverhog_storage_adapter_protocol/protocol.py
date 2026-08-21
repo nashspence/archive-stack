@@ -166,6 +166,7 @@ class MultipartCompleteRequest(StorageAdapterModel):
     parts: tuple[MultipartPartReceipt, ...] = Field(min_length=1)
     expected_bytes: int = Field(ge=1)
     expected_identity_metadata: OpaqueIdentityMetadata
+    expected_placement: ObjectPlacement
 
     @field_validator("parts")
     @classmethod
@@ -194,6 +195,7 @@ class MultipartCompleteRequest(StorageAdapterModel):
 class MultipartHeadRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
     expected_identity_metadata: OpaqueIdentityMetadata
+    expected_placement: ObjectPlacement
 
     @field_validator("object_path")
     @classmethod
@@ -261,7 +263,6 @@ class ObjectMetadataReceipt(StorageAdapterModel):
     stored_bytes: int = Field(ge=0)
     stored_sha256: Sha256 | None = None
     identity_metadata: OpaqueIdentityMetadata
-    placement: ObjectPlacement
     completed_at: str = Field(min_length=1, max_length=100)
 
     @field_validator("object_path")
@@ -349,6 +350,15 @@ class StorageAdapterErrorBody(StorageAdapterModel):
 
 class StorageAdapterError(StorageAdapterModel):
     error: StorageAdapterErrorBody
+
+
+class StorageAdapterRejection(RuntimeError):
+    """Provider-neutral expected refusal from a transport-neutral adapter."""
+
+    def __init__(self, code: StorageAdapterErrorCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 class MaintenanceResult(StorageAdapterModel):
@@ -439,5 +449,6 @@ __all__ = [
     "StorageAdapterErrorCode",
     "StorageAdapterModel",
     "StorageAdapterPort",
+    "StorageAdapterRejection",
     "normalize_object_path",
 ]

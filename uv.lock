@@ -27,6 +27,7 @@ members = [
     "riverhog-recover",
     "riverhog-server",
     "riverhog-storage-adapter-protocol",
+    "riverhog-storage-adapter-s3-support",
     "riverhog-storage-adapter-support",
     "riverhog-transform-sdk",
     "state-schema",
@@ -1709,6 +1710,25 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.7,<3.0" }]
+
+[[package]]
+name = "riverhog-storage-adapter-s3-support"
+version = "0.1.0"
+source = { editable = "packages/riverhog-storage-adapter-s3-support" }
+dependencies = [
+    { name = "boto3" },
+    { name = "botocore" },
+    { name = "riverhog-storage-adapter-protocol" },
+    { name = "time-formats" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", specifier = ">=1.35,<2.0" },
+    { name = "botocore", specifier = ">=1.35,<2.0" },
+    { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
+    { name = "time-formats", editable = "packages/time-formats" },
+]
 
 [[package]]
 name = "riverhog-storage-adapter-support"

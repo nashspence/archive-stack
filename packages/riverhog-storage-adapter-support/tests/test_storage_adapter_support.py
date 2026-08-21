@@ -25,13 +25,13 @@ from riverhog_storage_adapter_protocol import (
     ReadPreparationRequest,
     ReadStatus,
     SmallObjectWriteRequest,
+    StorageAdapterRejection,
 )
 from riverhog_storage_adapter_support import (
     StorageAdapterClient,
     StorageAdapterConformanceResult,
     StorageAdapterHttpBinding,
     StorageAdapterProtocolError,
-    StorageAdapterServiceError,
     run_storage_adapter_conformance,
     storage_adapter_schema_bundle,
 )
@@ -139,12 +139,19 @@ class MemoryAdapter:
         existing = self.objects.get(request.object_path)
         if existing is not None and request.mode == "create_only":
             existing_content, existing_metadata, _revision, _placement = existing
-            if existing_content != content or existing_metadata != request.identity_metadata:
-                raise StorageAdapterServiceError(
-                    409,
+            if existing_metadata != request.identity_metadata:
+                raise StorageAdapterRejection(
                     "identity_conflict",
                     "object already exists with a different identity",
                 )
+            return ImmutableObjectReceipt(
+                object_path=request.object_path,
+                revision="small-version",
+                entity_token="small-token",
+                stored_bytes=len(existing_content),
+                stored_sha256=hashlib.sha256(existing_content).hexdigest(),
+                completed_at="2026-08-21T00:00:00Z",
+            )
         self.objects[request.object_path] = (
             content,
             request.identity_metadata,
@@ -165,7 +172,7 @@ class MemoryAdapter:
         stored = self.objects.get(object.object_path)
         if stored is None:
             return None
-        content, metadata, revision, placement = stored
+        content, metadata, revision, _placement = stored
         return ObjectMetadataReceipt(
             object_path=object.object_path,
             revision=revision,
@@ -177,7 +184,6 @@ class MemoryAdapter:
                 else None
             ),
             identity_metadata=metadata,
-            placement=placement,  # type: ignore[arg-type]
             completed_at="2026-08-21T00:00:00Z",
         )
 
@@ -262,12 +268,14 @@ def test_client_preserves_multipart_receipts_without_whole_object_hashing() -> N
                 parts=(first, second),
                 expected_bytes=11,
                 expected_identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
+                expected_placement="archive",
             )
         )
         recovered = client.head_completed_object(
             MultipartHeadRequest(
                 object_path=created.object_path,
                 expected_identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
+                expected_placement="archive",
             )
         )
 
