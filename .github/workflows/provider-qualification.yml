@@ -421,6 +421,15 @@ jobs:
           fi
           printf 'RUNTIME_ENV=%s\nCOMPOSE_PROJECT_NAME=%s\n' \
             "$runtime_env" "$compose_project" >> "$GITHUB_ENV"
+      - name: Hand adapter secrets to the non-root runtime
+        run: |
+          set -euo pipefail
+          sudo chown 65532:65532 \
+            "$RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY_PATH" \
+            "$RIVERHOG_QUALIFICATION_STORAGE_ADAPTER_TOKEN_PATH"
+          sudo chmod 0400 \
+            "$RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY_PATH" \
+            "$RIVERHOG_QUALIFICATION_STORAGE_ADAPTER_TOKEN_PATH"
       - name: Restore disposable database state
         if: needs.resolve.outputs.action == 'poll'
         run: |
