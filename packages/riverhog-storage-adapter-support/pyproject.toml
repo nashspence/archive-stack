@@ -26,6 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
+riverhog-storage-adapter-conformance = "riverhog_storage_adapter_support.conformance:main"
 riverhog-storage-adapter-schemas = "riverhog_storage_adapter_support.schemas:main"
 
 [tool.uv.sources]
