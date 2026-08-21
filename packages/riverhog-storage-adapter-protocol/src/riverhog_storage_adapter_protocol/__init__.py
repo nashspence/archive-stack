@@ -32,6 +32,7 @@ from riverhog_storage_adapter_protocol.protocol import (
     StorageAdapterErrorCode,
     StorageAdapterModel,
     StorageAdapterPort,
+    StorageAdapterRejection,
     normalize_object_path,
 )
 
@@ -67,5 +68,6 @@ __all__ = [
     "StorageAdapterErrorCode",
     "StorageAdapterModel",
     "StorageAdapterPort",
+    "StorageAdapterRejection",
     "normalize_object_path",
 ]

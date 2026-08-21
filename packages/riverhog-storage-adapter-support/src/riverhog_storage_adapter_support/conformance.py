@@ -80,7 +80,14 @@ def run_storage_adapter_conformance(
     )
     try:
         first_small = client.put_small_object(small_request, small_content)
-        retried_small = client.put_small_object(small_request, small_content)
+        retry_content = small_content + b"randomized-ciphertext"
+        retry_request = small_request.model_copy(
+            update={
+                "stored_bytes": len(retry_content),
+                "stored_sha256": hashlib.sha256(retry_content).hexdigest(),
+            }
+        )
+        retried_small = client.put_small_object(retry_request, retry_content)
         if retried_small != first_small:
             raise AssertionError("create-only retry did not return the original object receipt")
         checks.append("create-only-retry")
@@ -112,11 +119,11 @@ def run_storage_adapter_conformance(
             raise AssertionError("exact range differs from the stored object")
         checks.append("exact-range")
 
-        conflicting = small_request.model_copy(
+        conflicting = retry_request.model_copy(
             update={"identity_metadata": {"riverhog-conformance": "different/v1"}}
         )
         try:
-            client.put_small_object(conflicting, small_content)
+            client.put_small_object(conflicting, retry_content)
         except StorageAdapterProtocolError as exc:
             if exc.code != "identity_conflict":
                 raise AssertionError("changed identity returned the wrong error code") from exc
@@ -153,6 +160,7 @@ def run_storage_adapter_conformance(
             parts=listed_parts,
             expected_bytes=total_bytes,
             expected_identity_metadata=multipart_request.identity_metadata,
+            expected_placement=multipart_request.placement,
         )
         completed = client.complete_multipart_upload(completion_request)
         recovered_completion = client.complete_multipart_upload(completion_request)
@@ -162,6 +170,7 @@ def run_storage_adapter_conformance(
             MultipartHeadRequest(
                 object_path=multipart_path,
                 expected_identity_metadata=multipart_request.identity_metadata,
+                expected_placement=multipart_request.placement,
             )
         )
         if headed_completion != completed:
