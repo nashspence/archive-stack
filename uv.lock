@@ -26,6 +26,7 @@ members = [
     "riverhog-provenance",
     "riverhog-recover",
     "riverhog-server",
+    "riverhog-storage-adapter-protocol",
     "riverhog-transform-sdk",
     "state-schema",
     "stove0-api-client",
@@ -1696,6 +1697,17 @@ requires-dist = [
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
+
+[[package]]
+name = "riverhog-storage-adapter-protocol"
+version = "0.1.0"
+source = { editable = "packages/riverhog-storage-adapter-protocol" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.7,<3.0" }]
 
 [[package]]
 name = "riverhog-transform-sdk"
