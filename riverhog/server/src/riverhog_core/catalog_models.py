@@ -266,8 +266,6 @@ class CollectionArchiveCopyRecord(Base):
     store: Mapped[str] = mapped_column(String, primary_key=True)
     state: Mapped[str] = mapped_column(String, default="pending")
     archive_storage_prefix: Mapped[str | None] = mapped_column(String, nullable=True)
-    backend: Mapped[str | None] = mapped_column(String, nullable=True)
-    storage_class: Mapped[str | None] = mapped_column(String, nullable=True)
     last_uploaded_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_verified_at: Mapped[str | None] = mapped_column(String, nullable=True)
     failure: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -418,8 +416,6 @@ class CollectionArchiveObjectRecord(Base):
     part_receipts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     plan_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     index_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    backend: Mapped[str] = mapped_column(String)
-    storage_class: Mapped[str] = mapped_column(String)
     uploaded_at: Mapped[str] = mapped_column(String)
     verified_at: Mapped[str | None] = mapped_column(String, nullable=True)
 

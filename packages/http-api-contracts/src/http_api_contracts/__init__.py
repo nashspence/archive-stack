@@ -99,6 +99,8 @@ def safe_http_base_url(
         raise ValueError(f"{setting} must be an absolute HTTP or HTTPS URL")
     if parsed.username is not None or parsed.password is not None:
         raise ValueError(f"{setting} must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError(f"{setting} must not contain a query or fragment")
     if parsed.scheme == "https" or allow_insecure_http or _is_loopback_host(parsed.hostname):
         return normalized
     raise ValueError(

@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 
-from riverhog_age import CHUNK_SIZE, ResumableAgeScryptSession, S3PartPlan, UploadState
+from riverhog_age import CHUNK_SIZE, MultipartPartPlan, ResumableAgeScryptSession, UploadState
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
 
@@ -25,7 +25,7 @@ from riverhog_core.ports.archive_objects import (
 )
 from riverhog_core.ports.archive_upload_checkpoints import RawUploadCheckpointStore
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
-from riverhog_core.raw_volume import raw_s3_part_plans
+from riverhog_core.raw_volume import raw_multipart_part_plans
 from riverhog_core.retrieval_cache_receipts import (
     parse_retrieval_cache_receipt,
     retrieval_cache_receipt_payload,
@@ -39,10 +39,10 @@ from riverhog_core.streaming_age import (
 from riverhog_core.throughput import (
     DEFAULT_AGE_DERIVATION_CONCURRENCY,
     DEFAULT_AGE_SESSION_CACHE_ENTRIES,
-    DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY,
     DEFAULT_SOURCE_READ_CHUNK_BYTES,
     DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES,
     DEFAULT_UPLOAD_PREPARE_CONCURRENCY,
+    DEFAULT_UPLOAD_REQUEST_CONCURRENCY,
     ArchiveTransferResources,
     TransferConcurrencyGate,
     TransferTiming,
@@ -278,7 +278,7 @@ class RawVolumeUploader:
         self._request_gate = (
             resources.upload_requests
             if resources is not None
-            else request_gate or TransferConcurrencyGate(DEFAULT_S3_UPLOAD_REQUEST_CONCURRENCY)
+            else request_gate or TransferConcurrencyGate(DEFAULT_UPLOAD_REQUEST_CONCURRENCY)
         )
         self._timing_observer = timing_observer
         self._derivation_gate = (
@@ -355,7 +355,7 @@ class RawVolumeUploader:
                 plaintext_size=plan.plaintext_bytes,
             )
             crypto_seconds = time.perf_counter() - crypto_started
-        planned_parts = raw_s3_part_plans(
+        planned_parts = raw_multipart_part_plans(
             plan,
             session,
             target_plaintext_bytes=target_part_plaintext_bytes,
@@ -421,7 +421,7 @@ class RawVolumeUploader:
         if checkpoint.completed is not None:
             return checkpoint
         session = self._session_cache.get(checkpoint.age_state_json)
-        plans = raw_s3_part_plans(
+        plans = raw_multipart_part_plans(
             plan,
             session,
             target_plaintext_bytes=checkpoint.target_part_plaintext_bytes,
@@ -500,7 +500,7 @@ class RawVolumeUploader:
         *,
         plan: RawVolumePlan,
         checkpoint: RawUploadCheckpoint,
-        part: S3PartPlan,
+        part: MultipartPartPlan,
         plaintext_chunks: Iterable[bytes],
     ) -> _UploadedRawPart:
         started = time.perf_counter()
@@ -632,9 +632,9 @@ class RawVolumeUploader:
         self,
         plan: RawVolumePlan,
         checkpoint: RawUploadCheckpoint,
-    ) -> tuple[S3PartPlan, ...]:
+    ) -> tuple[MultipartPartPlan, ...]:
         session = self._session_cache.get(checkpoint.age_state_json)
-        return raw_s3_part_plans(
+        return raw_multipart_part_plans(
             plan,
             session,
             target_plaintext_bytes=checkpoint.target_part_plaintext_bytes,
@@ -797,7 +797,7 @@ def _checkpoint_plan(checkpoint: RawUploadCheckpoint) -> RawVolumePlan:
 
 
 def _stored_part_receipt(
-    part: S3PartPlan,
+    part: MultipartPartPlan,
     prepared: PreparedAgePart,
     remote: MultipartPartReceipt,
 ) -> StoredPartReceipt:

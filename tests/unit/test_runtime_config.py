@@ -10,13 +10,11 @@ from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.pack_retrieval import PackRangeRetrievalPolicy
 from riverhog_core.runtime_config import (
     DEFAULT_DATABASE_URL,
-    DEV_ARCHIVE_PASSPHRASE,
-    ArchiveStoreConfig,
-    RetrievalCacheConfig,
     RuntimeConfig,
+    StorageAdapterRegistration,
     load_runtime_config,
 )
-from riverhog_core.throughput import ArchiveThroughputTuning, S3TransportTuning
+from riverhog_core.throughput import ArchiveThroughputTuning
 
 from tests.unit.db_helpers import sqlite_url
 
@@ -40,11 +38,9 @@ def test_runtime_configuration_fields_have_explicit_production_consumers() -> No
         field.name
         for model in (
             RuntimeConfig,
-            ArchiveStoreConfig,
-            RetrievalCacheConfig,
+            StorageAdapterRegistration,
             CollectionVolumePolicy,
             PackRangeRetrievalPolicy,
-            S3TransportTuning,
             ArchiveThroughputTuning,
         )
         for field in fields(model)
@@ -71,6 +67,10 @@ def test_runtime_configuration_fields_have_explicit_production_consumers() -> No
         node.attr
         for node in ast.walk(ast.parse(Path(__file__).read_text()))
         if isinstance(node, ast.Attribute)
+    } | {
+        node.arg
+        for node in ast.walk(ast.parse(Path(__file__).read_text()))
+        if isinstance(node, ast.keyword) and node.arg is not None
     }
     assert configuration_fields - witnessed - locally_witnessed == set()
 
@@ -95,56 +95,36 @@ def test_retrieval_max_lease_covers_the_default_lease(tmp_path: Path) -> None:
         )
 
 
-def test_restore_required_store_requires_retrieval_cache(tmp_path: Path) -> None:
-    archive = _config(tmp_path).archive_store("archive")
-    with pytest.raises(ValueError, match="RIVERHOG_RETRIEVAL_CACHE"):
-        _config(
-            tmp_path,
-            archive_stores={
-                "archive": replace(archive, backend="aws", read_mode="restore_required")
-            },
-        )
+def test_storage_adapter_registration_is_provider_neutral() -> None:
+    assert {field.name for field in fields(StorageAdapterRegistration)} == {
+        "name",
+        "base_url",
+        "token_file",
+        "allow_insecure_http",
+        "maximum_connections",
+        "timeout_seconds",
+        "monthly_download_allowance_bytes",
+        "download_safety_buffer_bytes",
+    }
+    assert RuntimeConfig().archive_store("archive").allow_insecure_http is False
 
 
-def test_retrieval_cache_prefix_is_normalized(tmp_path: Path) -> None:
-    cache = RetrievalCacheConfig(
-        endpoint_url="http://127.0.0.1:9000",
-        region="us-east-1",
-        bucket="work",
-        access_key_id="minioadmin",
-        secret_access_key="minioadmin",
-        force_path_style=True,
-        prefix="/retrieval//",
+def test_storage_adapter_http_requires_explicit_opt_in(tmp_path: Path) -> None:
+    registration = StorageAdapterRegistration(
+        name="archive",
+        base_url="http://adapter.example.test",
+        token_file=tmp_path / "adapter.token",
     )
 
-    config = _config(tmp_path, retrieval_cache=cache)
+    with pytest.raises(ValueError, match="archive store archive adapter URL"):
+        _config(tmp_path, archive_stores={"archive": registration})
 
-    assert config.retrieval_cache is not None
-    assert config.retrieval_cache.prefix == "retrieval"
-
-
-@pytest.mark.parametrize("backend", ("garage", "minio"))
-def test_archive_store_backend_must_use_a_supported_profile(
-    tmp_path: Path,
-    backend: str,
-) -> None:
-    archive = _config(tmp_path).archive_store("archive")
-
-    with pytest.raises(ValueError, match="archive store archive backend"):
-        _config(tmp_path, archive_stores={"archive": replace(archive, backend=backend)})
-
-
-@pytest.mark.parametrize("backend", ("b2", "s3"))
-def test_restore_required_reads_are_aws_specific(tmp_path: Path, backend: str) -> None:
-    archive = _config(tmp_path).archive_store("archive")
-
-    with pytest.raises(ValueError, match="restore_required reads require the aws backend"):
-        _config(
-            tmp_path,
-            archive_stores={
-                "archive": replace(archive, backend=backend, read_mode="restore_required")
-            },
-        )
+    configured = _config(
+        tmp_path,
+        archive_stores={"archive": replace(registration, allow_insecure_http=True)},
+        archive_passphrase="archive-secret",
+    )
+    assert configured.archive_store("archive").base_url == "http://adapter.example.test"
 
 
 def test_load_runtime_config_parses_archive_security_settings(
@@ -248,26 +228,22 @@ def test_load_runtime_config_parses_retrieval_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "6h")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_TIER", "standard")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED", "false")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE", "3d")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_DEFAULT_LEASE", "2d")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_MAX_LEASE", "20d")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_PENDING_TIMEOUT", "4d")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_RESTORE_HOLD", "36h")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL", "7m")
     monkeypatch.setenv("RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL", "11m")
 
     config = load_runtime_config()
 
     assert config.retrieval_estimated_latency == timedelta(hours=6)
-    assert config.retrieval_tier == "standard"
     assert config.retrieval_cache_new_archive_enabled is False
     assert config.retrieval_cache_new_archive_lease == timedelta(days=3)
     assert config.retrieval_default_lease == timedelta(days=2)
     assert config.retrieval_max_lease == timedelta(days=20)
     assert config.retrieval_pending_timeout == timedelta(days=4)
-    assert config.retrieval_restore_hold == timedelta(hours=36)
     assert config.retrieval_cache_sweep_interval == timedelta(minutes=7)
     assert config.retrieval_restore_poll_interval == timedelta(minutes=11)
 
@@ -278,15 +254,12 @@ def test_load_runtime_config_builds_named_archive_stores(
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORES", "deep,b2")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_WRITE_STORE", "deep")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_READ_ORDER", "b2,deep")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ENDPOINT_URL", "https://s3.example.test")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_REGION", "us-west-004")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_BUCKET", "riverhog-b2")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ACCESS_KEY_ID", "b2-key")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_SECRET_ACCESS_KEY", "b2-secret")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_FORCE_PATH_STYLE", "false")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_PREFIX", "")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_BACKEND", "b2")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_STORAGE_CLASS", "STANDARD")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_ADAPTER_URL", "https://deep.example.test")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_ADAPTER_TOKEN_FILE", "/run/secrets/deep.token")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ADAPTER_URL", "https://b2.example.test/")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ADAPTER_TOKEN_FILE", "/run/secrets/b2.token")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ADAPTER_MAX_CONNECTIONS", "48")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ADAPTER_TIMEOUT_SECONDS", "75.5")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_PASSPHRASE", "archive-secret")
 
     config = load_runtime_config()
@@ -294,34 +267,13 @@ def test_load_runtime_config_builds_named_archive_stores(
     assert tuple(config.archive_stores) == ("deep", "b2")
     assert config.archive_write_store == "deep"
     assert config.archive_read_order == ("b2", "deep")
-    assert config.archive_store("b2").bucket == "riverhog-b2"
-    assert config.archive_store("b2").backend == "b2"
-    assert config.archive_store("b2").storage_class == "STANDARD"
-    assert config.archive_store("b2").prefix == ""
-
-
-def test_load_runtime_config_enables_cloudfront_downloads_per_aws_store(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND", "aws")
-    monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL",
-        "https://archive.example.test/",
+    assert config.archive_store("b2") == StorageAdapterRegistration(
+        name="b2",
+        base_url="https://b2.example.test",
+        token_file=Path("/run/secrets/b2.token"),
+        maximum_connections=48,
+        timeout_seconds=75.5,
     )
-    monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PUBLIC_KEY_ID",
-        "example-key-id",
-    )
-    monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PRIVATE_KEY_PATH",
-        "/run/secrets/cloudfront.pem",
-    )
-
-    store = load_runtime_config().archive_store("archive")
-
-    assert store.cloudfront_base_url == "https://archive.example.test"
-    assert store.cloudfront_public_key_id == "example-key-id"
-    assert store.cloudfront_private_key_path == Path("/run/secrets/cloudfront.pem")
 
 
 def test_load_runtime_config_enables_a_monthly_download_allowance_per_store(
@@ -370,19 +322,6 @@ def test_download_safety_buffer_must_leave_a_positive_effective_limit(
         load_runtime_config()
 
 
-def test_cloudfront_download_configuration_is_atomic(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND", "aws")
-    monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL",
-        "https://archive.example.test",
-    )
-
-    with pytest.raises(ValueError, match="must set base URL, public key id, and private key path"):
-        load_runtime_config()
-
-
 def test_metered_download_source_cannot_be_bypassed_through_a_store_alias(
     tmp_path: Path,
 ) -> None:
@@ -398,26 +337,6 @@ def test_metered_download_source_cannot_be_bypassed_through_a_store_alias(
         _config(tmp_path, archive_stores={"archive": metered, "alias": alias})
 
 
-def test_cloudfront_downloads_require_an_aws_store(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL",
-        "https://archive.example.test",
-    )
-    monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PUBLIC_KEY_ID",
-        "example-key-id",
-    )
-    monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PRIVATE_KEY_PATH",
-        "/run/secrets/cloudfront.pem",
-    )
-
-    with pytest.raises(ValueError, match="require the aws backend"):
-        load_runtime_config()
-
-
 @pytest.mark.parametrize(
     "base_url",
     (
@@ -427,94 +346,70 @@ def test_cloudfront_downloads_require_an_aws_store(
         "https://archive.example.test#fragment",
     ),
 )
-def test_cloudfront_base_url_requires_a_private_https_origin_contract(
+def test_storage_adapter_url_requires_an_unambiguous_https_authority(
     monkeypatch: pytest.MonkeyPatch,
     base_url: str,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_BACKEND", "aws")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_BASE_URL", base_url)
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_ADAPTER_URL", base_url)
     monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PUBLIC_KEY_ID",
-        "example-key-id",
+        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ADAPTER_TOKEN_FILE", "/run/secrets/archive.token"
     )
-    monkeypatch.setenv(
-        "RIVERHOG_ARCHIVE_STORE_ARCHIVE_CLOUDFRONT_PRIVATE_KEY_PATH",
-        "/run/secrets/cloudfront.pem",
-    )
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_PASSPHRASE", "archive-secret")
 
-    with pytest.raises(ValueError, match="must be an HTTPS URL"):
+    with pytest.raises(ValueError, match="archive store archive adapter URL"):
         load_runtime_config()
-
-
-def test_remote_archive_store_requires_non_development_passphrase(tmp_path: Path) -> None:
-    remote = ArchiveStoreConfig(
-        name="b2",
-        endpoint_url="https://s3.example.test",
-        region="example-region",
-        bucket="riverhog",
-        access_key_id="example-key",
-        secret_access_key="example-secret",
-        force_path_style=False,
-        prefix="",
-        backend="b2",
-        storage_class="STANDARD",
-    )
-
-    with pytest.raises(ValueError, match="non-development secret for archive store.*b2"):
-        _config(
-            tmp_path,
-            archive_write_store="b2",
-            archive_read_order=("b2",),
-            archive_stores={"b2": remote},
-            archive_passphrase=DEV_ARCHIVE_PASSPHRASE,
-        )
-
-    config = _config(
-        tmp_path,
-        archive_write_store="b2",
-        archive_read_order=("b2",),
-        archive_stores={"b2": remote},
-        archive_passphrase="archive-secret",
-    )
-    assert config.archive_passphrase == "archive-secret"
 
 
 def test_configured_archive_store_requires_complete_connection_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORES", "deep,b2")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ENDPOINT_URL", "")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_ADAPTER_URL", "https://deep.example.test")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_DEEP_ADAPTER_TOKEN_FILE", "/run/secrets/deep.token")
 
-    with pytest.raises(ValueError, match="archive store b2 has blank required fields"):
+    with pytest.raises(ValueError, match="archive store b2 adapter connection is incomplete"):
         load_runtime_config()
 
 
-def test_temporary_s3_credentials_include_session_tokens(
+def test_load_runtime_config_builds_retrieval_cache_adapter_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_ARCHIVE_SESSION_TOKEN", "archive-session")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ENDPOINT_URL", "https://cache.example.test")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_REGION", "us-west-2")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_BUCKET", "cache")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ACCESS_KEY_ID", "cache-key")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SECRET_ACCESS_KEY", "cache-secret")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SESSION_TOKEN", "cache-session")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_FORCE_PATH_STYLE", "true")
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_PREFIX", "/cache//objects/")
+    monkeypatch.setenv(
+        "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL", "https://cache.example.test/adapter/"
+    )
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE", "/run/secrets/cache.token")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS", "24")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS", "90")
 
     config = load_runtime_config()
 
-    assert config.archive_store("archive").session_token == "archive-session"
-    assert config.retrieval_cache is not None
-    assert config.retrieval_cache.session_token == "cache-session"
-    assert config.retrieval_cache.force_path_style is True
-    assert config.retrieval_cache.prefix == "cache/objects"
+    assert config.retrieval_cache == StorageAdapterRegistration(
+        name="retrieval-cache",
+        base_url="https://cache.example.test/adapter",
+        token_file=Path("/run/secrets/cache.token"),
+        maximum_connections=24,
+        timeout_seconds=90,
+    )
 
 
-def test_retrieval_cache_session_token_alone_is_incomplete(
+def test_retrieval_cache_adapter_allows_explicit_remote_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_SESSION_TOKEN", "orphan-session")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL", "http://cache.example.test")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE", "/run/secrets/cache.token")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP", "true")
+
+    config = load_runtime_config()
+
+    assert config.retrieval_cache is not None
+    assert config.retrieval_cache.base_url == "http://cache.example.test"
+    assert config.retrieval_cache.allow_insecure_http is True
+
+
+def test_retrieval_cache_adapter_connection_is_atomic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE", "/run/secrets/cache.token")
 
     with pytest.raises(ValueError, match="RIVERHOG_RETRIEVAL_CACHE_.*incomplete"):
         load_runtime_config()

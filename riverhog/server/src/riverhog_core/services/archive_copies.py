@@ -853,11 +853,12 @@ class SqlAlchemyArchiveCopyService:
         collection_id: int,
         object_id: str,
     ) -> ArchiveMultipartObjectStore:
-        archive = self._archive_stores.require(store_name).multipart_objects
+        binding = self._archive_stores.require(store_name)
+        archive = binding.multipart_objects
         if (
             not self._config.retrieval_cache_new_archive_enabled
             or self._retrieval_cache is None
-            or self._config.archive_store(store_name).read_mode != "restore_required"
+            or binding.store.read_mode() != "restore_required"
         ):
             return archive
         return MirroredArchiveMultipartObjectStore(
@@ -881,7 +882,7 @@ class SqlAlchemyArchiveCopyService:
         part_rows: Sequence[dict[str, object]],
         remote_parts: Mapping[int, MultipartPartReceipt],
     ) -> tuple[MultipartPartReceipt, ...]:
-        worker_count = min(self._throughput.s3_part_concurrency, len(part_rows))
+        worker_count = min(self._throughput.multipart_concurrency, len(part_rows))
         window = min(len(part_rows), worker_count * 2)
         source_chunks = iter(
             source_store.iter_stored_archive_object(
@@ -1182,13 +1183,13 @@ class SqlAlchemyArchiveCopyService:
             )
             session.add(destination)
         destination.objects.clear()
-        store_config = self._config.archive_store(destination_store)
+        destination_binding = self._archive_stores.require(destination_store)
         uploaded_at: list[str] = []
         cache_receipts: list[tuple[CollectionArchiveObjectRecord, RetrievalCacheReceipt]] = []
         cache_required = (
             self._config.retrieval_cache_new_archive_enabled
             and self._retrieval_cache is not None
-            and store_config.read_mode == "restore_required"
+            and destination_binding.store.read_mode() == "restore_required"
         )
         for current in sorted(source.objects, key=lambda value: value.object_order):
             if current.kind not in _COPY_OBJECT_KINDS:
@@ -1217,8 +1218,6 @@ class SqlAlchemyArchiveCopyService:
                 part_receipts_json=receipt.part_receipts_json,
                 plan_sha256=current.plan_sha256,
                 index_sha256=current.index_sha256,
-                backend=store_config.backend,
-                storage_class=store_config.storage_class,
                 uploaded_at=receipt.completed_at,
                 verified_at=receipt.completed_at,
             )
@@ -1282,8 +1281,6 @@ class SqlAlchemyArchiveCopyService:
             raise Conflict("archive copy result has no root and proof")
         destination.state = "uploaded"
         destination.archive_storage_prefix = destination_storage_prefix
-        destination.backend = store_config.backend
-        destination.storage_class = store_config.storage_class
         destination.last_uploaded_at = max(uploaded_at)
         destination.last_verified_at = max(uploaded_at)
         destination.failure = None

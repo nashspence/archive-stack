@@ -12,7 +12,43 @@ CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 CODEQL_WORKFLOW = REPO_ROOT / ".github/workflows/codeql.yml"
 QUALIFICATION_WORKFLOW = REPO_ROOT / ".github/workflows/release-qualification.yml"
 PROVIDER_QUALIFICATION_WORKFLOW = REPO_ROOT / ".github/workflows/provider-qualification.yml"
+PROVIDER_QUALIFICATION_COMPOSE = REPO_ROOT / "tests/harness/provider-qualification.compose.yaml"
 MISE_LOCK = REPO_ROOT / "mise.lock"
+
+
+def test_provider_qualification_runs_isolated_storage_adapter_images() -> None:
+    compose = yaml.safe_load(PROVIDER_QUALIFICATION_COMPOSE.read_text(encoding="utf-8"))
+    services = compose["services"]
+
+    assert services["aws-deep-archive-adapter"]["image"] == ("riverhog-storage-adapter-aws:dev")
+    assert services["b2-archive-adapter"]["image"] == ("riverhog-storage-adapter-backblaze:dev")
+    assert services["b2-retrieval-cache-adapter"]["image"] == (
+        "riverhog-storage-adapter-backblaze:dev"
+    )
+    assert set(services["app"]["depends_on"]) == {
+        "aws-deep-archive-adapter",
+        "b2-archive-adapter",
+        "b2-retrieval-cache-adapter",
+    }
+    for name in (
+        "aws-deep-archive-adapter",
+        "b2-archive-adapter",
+        "b2-retrieval-cache-adapter",
+    ):
+        service = services[name]
+        assert "environment" not in service
+        assert service["env_file"] == [
+            {
+                "path": {
+                    "aws-deep-archive-adapter": ("${RIVERHOG_QUALIFICATION_AWS_ADAPTER_ENV_FILE}"),
+                    "b2-archive-adapter": ("${RIVERHOG_QUALIFICATION_B2_ARCHIVE_ADAPTER_ENV_FILE}"),
+                    "b2-retrieval-cache-adapter": (
+                        "${RIVERHOG_QUALIFICATION_B2_CACHE_ADAPTER_ENV_FILE}"
+                    ),
+                }[name],
+                "required": True,
+            }
+        ]
 
 
 def test_codeql_covers_every_governed_branch_with_stable_checks() -> None:
@@ -473,6 +509,14 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     assert b2_check["run"] == 'make provider-qualification args="b2-check $CONFIG_PATH"'
 
     state = next(step for step in steps if step["name"] == "Create and verify deterministic state")
+    image_build = next(
+        step for step in steps if step["name"] == "Build the disposable Riverhog storage boundary"
+    )
+    key_material = next(
+        step
+        for step in steps
+        if step["name"] == "Materialize adapter authentication and CloudFront signing keys"
+    )
     deployment_env = next(
         step for step in steps if step["name"] == "Generate the disposable deployment environment"
     )
@@ -483,11 +527,21 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
         step for step in steps if step["name"] == "Snapshot bounded disposable database state"
     )
     assert "corpus-create" in state["run"] and "checkpoint-start" in state["run"]
+    assert {
+        "riverhog",
+        "riverhog-storage-adapter-aws",
+        "riverhog-storage-adapter-backblaze",
+    } == {item.strip() for item in image_build["with"]["targets"].split(",")}
+    assert "RIVERHOG_QUALIFICATION_STORAGE_ADAPTER_TOKEN_PATH" in key_material["run"]
     assert 'test -z "${RIVERHOG_DATABASE_URL:-}"' in deployment_env["run"]
     assert "RIVERHOG_DATABASE_URL=" in deployment_env["run"]
     assert "docker volume ls" in deployment_env["run"]
     assert "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog" in deployment["run"]
-    assert "logs --no-color --tail 80 app state" in deployment["run"]
+    assert "tests/harness/provider-qualification.compose.yaml" in deployment["run"]
+    assert "logs --no-color --tail 80" in deployment["run"]
+    assert "aws-deep-archive-adapter" in deployment["run"]
+    assert "b2-archive-adapter" in deployment["run"]
+    assert "b2-retrieval-cache-adapter" in deployment["run"]
     assert "default_container; default_container()" in deployment["run"]
     assert "timeout 30s" in deployment["run"]
     assert "pg_dump" in snapshot["run"]

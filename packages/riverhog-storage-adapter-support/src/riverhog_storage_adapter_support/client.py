@@ -78,6 +78,7 @@ class StorageAdapterClient:
             allow_insecure_http=allow_insecure_http,
         )
         self._headers = {"Authorization": f"Bearer {credential}"}
+        self._descriptor: AdapterDescriptor | None = None
         self._owns_client = client is None
         self._client = client or httpx.Client(
             http2=True,
@@ -113,7 +114,12 @@ class StorageAdapterClient:
             self._client.close()
 
     def descriptor(self) -> AdapterDescriptor:
-        return self._model("GET", "/v1/adapter", AdapterDescriptor)
+        if self._descriptor is None:
+            self._descriptor = self._model("GET", "/v1/adapter", AdapterDescriptor)
+        return self._descriptor
+
+    def check_readiness(self) -> None:
+        self._require_success(self._request("GET", "/health/ready"))
 
     def create_multipart_upload(self, request: MultipartCreateRequest) -> MultipartUpload:
         return self._model("POST", "/v1/multipart/create", MultipartUpload, request)

@@ -225,8 +225,6 @@ def _archive_copy_status(
         storage_prefix=archive.archive_storage_prefix,
         object_count=object_count,
         stored_bytes=stored_bytes,
-        backend=archive.backend,
-        storage_class=archive.storage_class,
         last_uploaded_at=archive.last_uploaded_at,
         last_verified_at=archive.last_verified_at,
         failure=archive.failure,

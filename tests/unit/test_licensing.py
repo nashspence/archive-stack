@@ -85,8 +85,8 @@ def test_reference_recovery_is_independent_and_advertised() -> None:
 
     assert config["project"]["dependencies"] == []
     assert config["project"]["scripts"] == {"riverhog-recover": "riverhog_recover.cli:main"}
-    assert "independently packaged, permissively licensed reference implementation" in architecture
-    assert "recoverable without Riverhog using standard tools" in architecture
+    assert "permissively licensed reference" in architecture
+    assert "archives remain recoverable with standard tools" in architecture
 
 
 def test_published_images_carry_source_and_license_identity() -> None:

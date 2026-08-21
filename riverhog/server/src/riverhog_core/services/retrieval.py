@@ -306,7 +306,6 @@ class SqlAlchemyRetrievalService:
                 "pending_timeout_seconds": int(
                     self._config.retrieval_pending_timeout.total_seconds()
                 ),
-                "restore_hold_seconds": int(self._config.retrieval_restore_hold.total_seconds()),
                 "sweep_interval_seconds": int(
                     self._config.retrieval_cache_sweep_interval.total_seconds()
                 ),

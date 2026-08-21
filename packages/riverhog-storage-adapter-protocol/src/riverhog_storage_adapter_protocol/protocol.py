@@ -176,8 +176,6 @@ class MultipartCompleteRequest(StorageAdapterModel):
     ) -> tuple[MultipartPartReceipt, ...]:
         if [part.number for part in value] != list(range(1, len(value) + 1)):
             raise ValueError("multipart parts must be contiguous and ordered from one")
-        if len({part.part_token for part in value}) != len(value):
-            raise ValueError("multipart part tokens must be unique")
         return value
 
     @field_validator("expected_identity_metadata")

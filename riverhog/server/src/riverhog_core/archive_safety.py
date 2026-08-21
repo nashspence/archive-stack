@@ -19,10 +19,10 @@ an exact mutation and confirms the resulting loss. Opaque names are intentional
 and do not mean that an object is unused.
 
 - Listing and reading objects are safe inspection operations.
-- Never infer cleanup from object age, storage class, opaque naming, or an
+- Never infer cleanup from object age, provider attributes, opaque naming, or an
   unfamiliar encrypted format.
-- Deletion, movement, renaming, overwriting, lifecycle expiration, storage-class
-  changes, and object-version removal are mutations.
+- Deletion, movement, renaming, overwriting, lifecycle expiration, provider
+  attribute changes, and object-version removal are mutations.
 - Use each `archives/ARCHIVE_ID/metadata.json.age` to identify an opaque archive.
 - Use Riverhog's guarded archive workflows for authorized collection or archive-copy
   retirement. Do not mutate archive objects directly as a shortcut.

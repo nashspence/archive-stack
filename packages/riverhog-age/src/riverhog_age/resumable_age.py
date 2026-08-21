@@ -6,7 +6,7 @@ This module is intentionally small and Riverhog-oriented. It supports:
 * standard age v1 scrypt recipient files, no compression, no armor;
 * deterministic regeneration of payload chunk ciphertext once a session is created;
 * export/import of upload-session state without persisting the plaintext file key;
-* S3-multipart-friendly part planning that aligns every part to age chunk boundaries.
+* portable multipart planning that aligns every unit to age chunk boundaries.
 
 It does NOT implement X25519 recipients, plugins, armor, or general age CLI UX.
 """
@@ -37,12 +37,12 @@ FILE_KEY_SIZE = 16
 SCRYPT_SALT_SIZE = 16
 ZERO_AEAD_NONCE = b"\x00" * 12
 DEFAULT_SCRYPT_LOG_N = 18
-S3_MIN_PART_SIZE = 5 * 1024 * 1024
-S3_MAX_PART_SIZE = 5 * 1024 * 1024 * 1024
-S3_MAX_PARTS = 10_000
-# 1024 age chunks is about 64 MiB per S3 part, safely above the 5 MiB
+PORTABLE_MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024
+PORTABLE_MULTIPART_MAX_PART_BYTES = 5 * 1024 * 1024 * 1024
+PORTABLE_MULTIPART_MAX_PARTS = 10_000
+# 1024 age chunks is about 64 MiB per part, safely above the 5 MiB
 # minimum and low enough to keep 70--500 GiB archives under 10,000 parts.
-DEFAULT_CHUNKS_PER_S3_PART = 1024
+DEFAULT_CHUNKS_PER_MULTIPART_PART = 1024
 
 
 class AgeFormatError(ValueError):
@@ -124,8 +124,8 @@ def plaintext_bytes_for_ciphertext_offset(
 
 
 @dataclass(frozen=True)
-class S3PartPlan:
-    """A single S3 multipart part whose contents align to age chunk boundaries."""
+class MultipartPartPlan:
+    """A portable multipart unit whose contents align to age chunk boundaries."""
 
     part_number: int
     first_chunk: int
@@ -294,29 +294,29 @@ class ResumableAgeScryptSession:
             out.extend(self.encrypt_chunk(idx, plaintext[start:end], final=final))
         return bytes(out)
 
-    def s3_part_plans(
+    def multipart_part_plans(
         self,
         plaintext_size: int,
         *,
-        chunks_per_part: int = DEFAULT_CHUNKS_PER_S3_PART,
-        enforce_s3_limits: bool = True,
-    ) -> list[S3PartPlan]:
-        return make_s3_part_plans(
+        chunks_per_part: int = DEFAULT_CHUNKS_PER_MULTIPART_PART,
+        enforce_portable_limits: bool = True,
+    ) -> list[MultipartPartPlan]:
+        return make_multipart_part_plans(
             plaintext_size,
             age_prefix_len=len(self.age_prefix),
             chunks_per_part=chunks_per_part,
-            enforce_s3_limits=enforce_s3_limits,
+            enforce_portable_limits=enforce_portable_limits,
         )
 
     def encrypt_part(
         self,
-        plan: S3PartPlan,
+        plan: MultipartPartPlan,
         plaintext_chunk_provider: Callable[[int, int, int], bytes],
         *,
         plaintext_size: int,
     ) -> bytes:
         """
-        Encrypt bytes for one S3 part from deterministic plaintext chunks.
+        Encrypt bytes for one multipart unit from deterministic plaintext chunks.
 
         `plaintext_chunk_provider(chunk_index, start, end)` must return plaintext
         bytes for [start:end] in the original tar stream.
@@ -561,15 +561,15 @@ def age_ciphertext_len_for_plaintext_len(plaintext_size: int, *, age_prefix_len:
     return age_prefix_len + payload_ciphertext
 
 
-def make_s3_part_plans(
+def make_multipart_part_plans(
     plaintext_size: int,
     *,
     age_prefix_len: int,
-    chunks_per_part: int = DEFAULT_CHUNKS_PER_S3_PART,
-    enforce_s3_limits: bool = True,
-) -> list[S3PartPlan]:
+    chunks_per_part: int = DEFAULT_CHUNKS_PER_MULTIPART_PART,
+    enforce_portable_limits: bool = True,
+) -> list[MultipartPartPlan]:
     """
-    Build S3 multipart plans aligned to age chunks.
+    Build portable multipart plans aligned to age chunks.
 
     Part 1 includes the age header and 16-byte payload nonce, followed by a fixed
     group of encrypted age chunks. Later parts contain only encrypted chunks.
@@ -583,7 +583,7 @@ def make_s3_part_plans(
         raise ValueError("chunks_per_part must be positive")
 
     chunk_count = age_chunk_count_for_plaintext_len(plaintext_size)
-    plans: list[S3PartPlan] = []
+    plans: list[MultipartPartPlan] = []
     ciphertext_offset = 0
     part_number = 1
     for first_chunk in range(0, chunk_count, chunks_per_part):
@@ -602,7 +602,7 @@ def make_s3_part_plans(
             + (this_count * AEAD_TAG_SIZE)
         )
         plans.append(
-            S3PartPlan(
+            MultipartPartPlan(
                 part_number=part_number,
                 first_chunk=first_chunk,
                 chunk_count=this_count,
@@ -615,27 +615,29 @@ def make_s3_part_plans(
         )
         ciphertext_offset += part_len
         part_number += 1
-    if enforce_s3_limits:
-        _validate_s3_part_plans(plans)
+    if enforce_portable_limits:
+        _validate_multipart_part_plans(plans)
     return plans
 
 
-def _validate_s3_part_plans(plans: Sequence[S3PartPlan]) -> None:
-    if len(plans) > S3_MAX_PARTS:
+def _validate_multipart_part_plans(plans: Sequence[MultipartPartPlan]) -> None:
+    if len(plans) > PORTABLE_MULTIPART_MAX_PARTS:
         raise ValueError(
-            f"S3 multipart upload supports at most {S3_MAX_PARTS} parts; "
+            f"portable multipart construction supports at most {PORTABLE_MULTIPART_MAX_PARTS} "
+            "parts; "
             f"plan has {len(plans)} parts. Increase chunks_per_part."
         )
     for plan in plans[:-1]:
-        if plan.ciphertext_len < S3_MIN_PART_SIZE:
+        if plan.ciphertext_len < PORTABLE_MULTIPART_MIN_PART_BYTES:
             raise ValueError(
-                f"S3 part {plan.part_number} is below the 5 MiB minimum; "
+                f"multipart unit {plan.part_number} is below the 5 MiB portable minimum; "
                 f"increase chunks_per_part or disable enforcement for tests"
             )
     for plan in plans:
-        if plan.ciphertext_len > S3_MAX_PART_SIZE:
+        if plan.ciphertext_len > PORTABLE_MULTIPART_MAX_PART_BYTES:
             raise ValueError(
-                f"S3 part {plan.part_number} exceeds the 5 GiB maximum; decrease chunks_per_part"
+                f"multipart unit {plan.part_number} exceeds the 5 GiB portable maximum; "
+                "decrease chunks_per_part"
             )
 
 

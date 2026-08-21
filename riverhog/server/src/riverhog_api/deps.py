@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import ExitStack
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Annotated
@@ -16,7 +17,11 @@ from riverhog_core.catalog_db import (
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.proofs import CommandProofStamper, CommandProofUpgrader, CommandProofVerifier
-from riverhog_core.runtime_config import RuntimeConfig, load_runtime_config
+from riverhog_core.runtime_config import (
+    RuntimeConfig,
+    StorageAdapterRegistration,
+    load_runtime_config,
+)
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.archive_attestations import SqlAlchemyArchiveAttestationService
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
@@ -52,13 +57,15 @@ from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
-from riverhog_core.stores.s3_archive_multipart_object_store import S3ArchiveMultipartObjectStore
-from riverhog_core.stores.s3_archive_object_range_store import S3ArchiveObjectRangeStore
-from riverhog_core.stores.s3_archive_store import S3ArchiveStore
-from riverhog_core.stores.s3_immutable_archive_object_store import S3ImmutableArchiveObjectStore
-from riverhog_core.stores.s3_retrieval_cache import S3RetrievalCache
-from riverhog_core.stores.s3_support import ensure_bucket_exists
+from riverhog_core.stores.storage_adapter_archive_objects import (
+    StorageAdapterArchiveMultipartObjectStore,
+    StorageAdapterArchiveObjectRangeStore,
+    StorageAdapterImmutableArchiveObjectStore,
+)
+from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArchiveStore
+from riverhog_core.stores.storage_adapter_retrieval_cache import StorageAdapterRetrievalCache
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
+from riverhog_storage_adapter_support import StorageAdapterClient
 
 
 @dataclass(slots=True)
@@ -82,59 +89,112 @@ class ServiceContainer:
     lifecycle_events: LifecycleEventService
     download_quotas: DownloadAllowance
     session_factory: SessionFactory
+    storage_adapter_clients: tuple[StorageAdapterClient, ...] = ()
 
     def close(self) -> None:
         dispose_session_factory(self.session_factory)
+        for client in self.storage_adapter_clients:
+            client.close()
 
 
 def _archive_store_registry(
     config: RuntimeConfig,
     *,
-    retrieval_cache: S3RetrievalCache | None,
+    adapters: dict[str, StorageAdapterClient],
     download_allowance: DownloadAllowance,
 ) -> ArchiveStoreRegistry:
     return ArchiveStoreRegistry(
         {
             name: ArchiveStoreBinding(
-                store=S3ArchiveStore(
+                store=StorageAdapterArchiveStore(
                     config,
-                    store,
-                    retrieval_cache=retrieval_cache,
+                    name=name,
+                    adapter=adapters[name],
                     download_allowance=download_allowance,
                 ),
-                multipart_objects=S3ArchiveMultipartObjectStore(config, store),
-                immutable_objects=S3ImmutableArchiveObjectStore(config, store),
-                object_ranges=S3ArchiveObjectRangeStore(config, store),
+                multipart_objects=StorageAdapterArchiveMultipartObjectStore(adapters[name]),
+                immutable_objects=StorageAdapterImmutableArchiveObjectStore(adapters[name]),
+                object_ranges=StorageAdapterArchiveObjectRangeStore(adapters[name]),
             )
-            for name, store in config.archive_stores.items()
+            for name in config.archive_stores
         }
     )
 
 
-@lru_cache(maxsize=1)
-def default_container() -> ServiceContainer:
-    config = load_runtime_config()
-    validate_db(config.database_url)
-    ensure_bucket_exists(config)
-    session_factory = make_session_factory(config.database_url)
+def _adapter_client(registration: StorageAdapterRegistration) -> StorageAdapterClient:
+    return StorageAdapterClient.from_token_file(
+        registration.base_url,
+        token_file=registration.token_file,
+        allow_insecure_http=registration.allow_insecure_http,
+        timeout=registration.timeout_seconds,
+        maximum_connections=registration.maximum_connections,
+    )
+
+
+def _require_compatible_part_size(
+    config: RuntimeConfig,
+    *,
+    name: str,
+    client: StorageAdapterClient,
+) -> None:
+    descriptor = client.descriptor()
+    if not (
+        descriptor.minimum_nonfinal_part_bytes
+        <= config.archive_multipart_part_bytes
+        <= descriptor.maximum_part_bytes
+    ):
+        raise ValueError(f"storage adapter {name} does not accept the configured multipart size")
+
+
+def _build_default_container(
+    config: RuntimeConfig,
+    *,
+    session_factory: SessionFactory,
+    startup_cleanup: ExitStack,
+) -> ServiceContainer:
     throughput_tuning = ArchiveThroughputTuning.from_env(os.environ)
     transfer_resources = ArchiveTransferResources.from_tuning(throughput_tuning)
+    adapters: dict[str, StorageAdapterClient] = {}
+    for name, store in config.archive_stores.items():
+        client = _adapter_client(store)
+        startup_cleanup.callback(client.close)
+        adapters[name] = client
+    for name, client in adapters.items():
+        client.check_readiness()
+        _require_compatible_part_size(config, name=name, client=client)
+    cache_client = (
+        _adapter_client(config.retrieval_cache) if config.retrieval_cache is not None else None
+    )
+    if cache_client is not None:
+        startup_cleanup.callback(cache_client.close)
+        cache_client.check_readiness()
     retrieval_cache = (
-        S3RetrievalCache(
-            config,
+        StorageAdapterRetrievalCache(
+            cache_client,
+            multipart_part_bytes=config.archive_multipart_part_bytes,
             throughput_tuning=throughput_tuning,
             transfer_resources=transfer_resources,
         )
-        if config.retrieval_cache is not None
+        if cache_client is not None
         else None
     )
+    restore_required = [
+        name
+        for name, client in adapters.items()
+        if client.descriptor().read_mode == "restore_required"
+    ]
+    if restore_required and retrieval_cache is None:
+        raise ValueError(
+            "restore-required archive adapters require a retrieval cache adapter: "
+            + ", ".join(restore_required)
+        )
     download_allowance = SqlAlchemyDownloadAllowance(
         config,
         session_factory=session_factory,
     )
     archive_stores = _archive_store_registry(
         config,
-        retrieval_cache=retrieval_cache,
+        adapters=adapters,
         download_allowance=download_allowance,
     )
     proof_stamper = CommandProofStamper(config.ots_stamp_command)
@@ -203,6 +263,7 @@ def default_container() -> ServiceContainer:
         ),
         archive_stores=SqlAlchemyArchiveStoreService(
             config,
+            archive_stores,
             download_allowance=download_allowance,
             session_factory=session_factory,
         ),
@@ -221,7 +282,30 @@ def default_container() -> ServiceContainer:
         ),
         download_quotas=download_allowance,
         session_factory=session_factory,
+        storage_adapter_clients=tuple(
+            [*adapters.values(), *([cache_client] if cache_client is not None else [])]
+        ),
     )
+
+
+@lru_cache(maxsize=1)
+def default_container() -> ServiceContainer:
+    config = load_runtime_config()
+    validate_db(config.database_url)
+    session_factory = make_session_factory(config.database_url)
+    startup_cleanup = ExitStack()
+    startup_cleanup.callback(dispose_session_factory, session_factory)
+    try:
+        container = _build_default_container(
+            config,
+            session_factory=session_factory,
+            startup_cleanup=startup_cleanup,
+        )
+    except BaseException:
+        startup_cleanup.close()
+        raise
+    startup_cleanup.pop_all()
+    return container
 
 
 def get_container() -> ServiceContainer:

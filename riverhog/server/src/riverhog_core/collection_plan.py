@@ -53,11 +53,11 @@ class CollectionVolumePolicy:
             raise ValueError("pack part plaintext target must align to age chunks")
         if self.raw_part_plaintext_bytes % CHUNK_SIZE:
             raise ValueError("raw part plaintext target must align to age chunks")
-        s3_min_part_bytes = 5 * 1024 * 1024
-        if self.pack_part_plaintext_bytes < s3_min_part_bytes:
-            raise ValueError("pack part plaintext target is below the S3 multipart minimum")
-        if self.raw_part_plaintext_bytes < s3_min_part_bytes:
-            raise ValueError("raw part plaintext target is below the S3 multipart minimum")
+        portable_min_part_bytes = 5 * 1024 * 1024
+        if self.pack_part_plaintext_bytes < portable_min_part_bytes:
+            raise ValueError("pack part plaintext target is below the portable multipart minimum")
+        if self.raw_part_plaintext_bytes < portable_min_part_bytes:
+            raise ValueError("raw part plaintext target is below the portable multipart minimum")
         if self.raw_volume_plaintext_bytes < self.raw_part_plaintext_bytes:
             raise ValueError("raw volume must contain at least one configured raw part")
         if self.raw_volume_plaintext_bytes % self.raw_part_plaintext_bytes:
@@ -66,11 +66,11 @@ class CollectionVolumePolicy:
         if max(self.pack_part_plaintext_bytes, self.raw_part_plaintext_bytes) > (
             maximum_part_bytes
         ):
-            raise ValueError("archive part plaintext target exceeds the safe S3 bound")
+            raise ValueError("archive part plaintext target exceeds the portable bound")
         if self.raw_volume_plaintext_bytes > 4 * 1024**4:
-            raise ValueError("raw volume plaintext target exceeds the safe S3 object bound")
+            raise ValueError("raw volume plaintext target exceeds the portable object bound")
         if self.raw_volume_plaintext_bytes // self.raw_part_plaintext_bytes > 10_000:
-            raise ValueError("raw volume policy would exceed the S3 multipart part limit")
+            raise ValueError("raw volume policy would exceed the portable multipart part limit")
 
     @classmethod
     def from_env(cls, values: Mapping[str, str]) -> CollectionVolumePolicy:

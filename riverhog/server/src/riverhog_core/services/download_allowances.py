@@ -22,7 +22,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.domain.models import ArchiveDownloadAllowance
 from riverhog_core.ports.download_allowance import DownloadAttribution
-from riverhog_core.runtime_config import ArchiveStoreConfig, RuntimeConfig
+from riverhog_core.runtime_config import RuntimeConfig, StorageAdapterRegistration
 
 _RESERVATION_LEASE = timedelta(hours=1)
 _RESERVATION_HEARTBEAT_SECONDS = 5 * 60
@@ -350,7 +350,7 @@ class SqlAlchemyDownloadAllowance:
                         )
                     )
 
-    def _reserve(self, *, policy: ArchiveStoreConfig, expected_bytes: int) -> str:
+    def _reserve(self, *, policy: StorageAdapterRegistration, expected_bytes: int) -> str:
         now = self._current_time()
         now_text = format_utc_timestamp(now)
         with self._locks[policy.name]:
@@ -705,7 +705,7 @@ class SqlAlchemyDownloadAllowance:
                 usage.updated_at = now_text
                 session.delete(reservation)
 
-    def _status(self, policy: ArchiveStoreConfig) -> ArchiveDownloadAllowance:
+    def _status(self, policy: StorageAdapterRegistration) -> ArchiveDownloadAllowance:
         now = self._current_time()
         now_text = format_utc_timestamp(now)
         month_started_at = format_utc_timestamp(_month_start(now))
@@ -849,7 +849,7 @@ class SqlAlchemyDownloadAllowance:
         return now.astimezone(UTC)
 
 
-def _effective_limit(policy: ArchiveStoreConfig) -> int:
+def _effective_limit(policy: StorageAdapterRegistration) -> int:
     allowance = policy.monthly_download_allowance_bytes
     if allowance is None:
         raise RuntimeError("download allowance policy is incomplete")

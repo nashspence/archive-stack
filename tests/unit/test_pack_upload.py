@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass
 
 import pytest
-from riverhog_age import S3_MIN_PART_SIZE
+from riverhog_age import PORTABLE_MULTIPART_MIN_PART_BYTES
 from riverhog_core.domain.archive import ArchiveFile
 from riverhog_core.pack_upload import (
     PackUploadCheckpoint,
@@ -208,7 +208,7 @@ def test_checkpoint_resumes_between_whole_file_units() -> None:
     plan = plan_pack_volume(
         [_file(path, value) for path, value in contents.items()],
         sequence=0,
-        part_plaintext_bytes=S3_MIN_PART_SIZE,
+        part_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
     )
     assert len(plan.units) >= 2
     store = MemoryMultipartStore()
