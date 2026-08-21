@@ -1,4 +1,3 @@
-from stove0_observer_support.client import ContentObserverClient, ObserverProtocolError
 from stove0_observer_support.conformance import ObserverClient, conformance_report
 from stove0_observer_support.http_binding import ObserverHttpBinding, ObserverHttpResponse
 from stove0_observer_support.results import ObservationResultBuilder
@@ -16,7 +15,6 @@ from stove0_observer_support.schemas import (
 __all__ = [
     "CancellationCheck",
     "ContentObserver",
-    "ContentObserverClient",
     "Heartbeat",
     "ObservationRuntime",
     "ObservationResultBuilder",
@@ -24,7 +22,6 @@ __all__ = [
     "ObserverHttpBinding",
     "ObserverHttpResponse",
     "ObserverClient",
-    "ObserverProtocolError",
     "conformance_report",
     "observer_schema_bundle",
 ]

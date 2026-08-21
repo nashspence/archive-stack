@@ -25,7 +25,7 @@ from stove0_protocol import (
     WorkflowPreviewRequestPayload,
     validate_observation_result,
 )
-from stove0_target_support import validate_preflight_response_against_request
+from stove0_target_protocol import validate_preflight_response_against_request
 
 from stove0_core.coordinator import ObserverPort, PlanningPort, TargetPort
 from stove0_core.work_state import ClaimBinding, WorkInapplicable

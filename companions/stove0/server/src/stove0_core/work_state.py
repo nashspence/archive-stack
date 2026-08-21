@@ -31,7 +31,7 @@ from stove0_protocol import (
     WorkIdentity,
     validate_observation_result,
 )
-from stove0_target_support import (
+from stove0_target_protocol import (
     AcceptedTargetJob,
     OperationContract,
     OutputCollectionRef,

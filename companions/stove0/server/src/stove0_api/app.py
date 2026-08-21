@@ -51,14 +51,9 @@ from stove0_core import (
     scheduler_role,
     stove0_state_schema,
 )
-from stove0_observer_support import ContentObserverClient
+from stove0_observer_client import ContentObserverClient
 from stove0_protocol import CollectionRootRef, EvaluationDefinition, WorkIdentity
-from stove0_review_contracts import (
-    REVIEW_MATERIALIZE_OPERATION_ID,
-    review_operation_intent,
-    review_target_options,
-)
-from stove0_target_support import TransformTargetClient
+from stove0_target_client import TransformTargetClient
 from time_formats import utc_timestamp_now
 
 from stove0_api.schemas import (
@@ -138,12 +133,6 @@ class Stove0Composition:
             riverhog=riverhog_api,
             observers=observers,
             targets=targets,
-            operation_compilers={
-                REVIEW_MATERIALIZE_OPERATION_ID: lambda work: (
-                    review_operation_intent(work),
-                    review_target_options(work),
-                )
-            },
         )
         work = Stove0WorkService(state)
         authority = Stove0RiverhogClient(

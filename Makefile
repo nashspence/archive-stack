@@ -17,10 +17,12 @@ BAKE_FILE = docker-bake.hcl
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 MYPY_SOURCES = \
 	companions/stove0/client/src \
-	companions/stove0-ffprobe-sampling-observer/src \
-	companions/stove0-nvenc-av1-opus-target/src \
-	companions/stove0-opus-target/src \
-	companions/stove0-review-target/src \
+	extensions/stove0/ffprobe-sampling-observer/src \
+	extensions/stove0/nvenc-av1-opus-review-sampler/src \
+	extensions/stove0/nvenc-av1-opus-target/src \
+	extensions/stove0/opus-review-sampler/src \
+	extensions/stove0/opus-target/src \
+	extensions/stove0/review-target/src \
 	companions/stove0/server/src \
 	packages/application-access/src \
 	packages/config-validation/src \
@@ -38,13 +40,16 @@ MYPY_SOURCES = \
 	packages/riverhog-storage-adapter-s3-support/src \
 	packages/riverhog-storage-adapter-support/src \
 	packages/stove0-api-client/src \
+	packages/stove0-observer-client/src \
 	packages/stove0-observer-protocol/src \
 	packages/stove0-observer-support/src \
-	packages/stove0-media-contracts/src \
+	packages/stove0-media-archive-contracts/src \
 	packages/stove0-protocol/src \
 	packages/stove0-review-contracts/src \
-	packages/stove0-sampler-protocol/src \
-	packages/stove0-sampler-support/src \
+	packages/stove0-review-sampler-client/src \
+	packages/stove0-review-sampler-protocol/src \
+	packages/stove0-review-sampler-support/src \
+	packages/stove0-target-client/src \
 	packages/stove0-target-protocol/src \
 	packages/stove0-target-support/src \
 	packages/riverhog-provenance/src \

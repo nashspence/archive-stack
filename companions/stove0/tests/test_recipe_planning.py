@@ -8,11 +8,12 @@ from riverhog_protocol.collection_workflows import canonical_json_sha256
 from stove0_core import ObserverPort, RecipeCatalog, RecipeDefinition, RecipePlanner, TargetPort
 from stove0_core.recipes import (
     ArtifactRule,
+    OperationProjection,
     RecipeJoin,
     RecipeJoinMember,
     RecipeRoute,
 )
-from stove0_media_contracts import (
+from stove0_media_archive_contracts import (
     AUDIO_ARCHIVE_OPERATION,
     AV1_OPUS_ARCHIVE_OPERATION,
 )
@@ -27,15 +28,12 @@ from stove0_protocol import (
 )
 from stove0_review_contracts import (
     REVIEW_MATERIALIZE_OPERATION,
-    REVIEW_MATERIALIZE_OPERATION_ID,
     REVIEW_SOURCE_ROLE,
     ReviewSamplePlan,
     ReviewSamplePlanPayload,
     ReviewSampleWindow,
     ReviewVariant,
     review_evaluation_definition,
-    review_operation_intent,
-    review_target_options,
 )
 from stove0_target_support import (
     InputArtifactContract,
@@ -82,7 +80,7 @@ class Targets:
         return self._contract
 
 
-def test_review_compiler_binds_semantic_intent_and_options_before_preflight() -> None:
+def test_review_recipe_projects_semantic_intent_and_options_before_preflight() -> None:
     target = TargetContract.seal(
         TargetContractPayload(
             implementation_id="riverhog.review-ffmpeg/v1",
@@ -125,6 +123,32 @@ def test_review_compiler_binds_semantic_intent_and_options_before_preflight() ->
                     ),
                 ),
                 target_options={"threads": 2},
+                projections=(
+                    OperationProjection(
+                        source="work-effective-intent",
+                        source_pointer="/review_sample_plan",
+                        destination="intent",
+                        destination_pointer="/sample_plan",
+                    ),
+                    OperationProjection(
+                        source="work-evaluation",
+                        source_pointer="/variant_id",
+                        destination="intent",
+                        destination_pointer="/variant/id",
+                    ),
+                    OperationProjection(
+                        source="work-evaluation",
+                        source_pointer="/parameters/review_variant/portable_intent",
+                        destination="intent",
+                        destination_pointer="/variant/portable_intent",
+                    ),
+                    OperationProjection(
+                        source="work-evaluation",
+                        source_pointer="/parameters/review_variant/target_options",
+                        destination="target-options",
+                        destination_pointer="",
+                    ),
+                ),
                 output_tags=("review-output",),
             ),
         ),
@@ -172,12 +196,6 @@ def test_review_compiler_binds_semantic_intent_and_options_before_preflight() ->
         riverhog=cast(ApiClient, CatalogApi()),
         observers=cast(ObserverPort, object()),
         targets=cast(TargetPort, Targets(target)),
-        operation_compilers={
-            REVIEW_MATERIALIZE_OPERATION_ID: lambda work: (
-                review_operation_intent(work),
-                review_target_options(work),
-            )
-        },
     )
 
     work = definition.child_work("crf-30")

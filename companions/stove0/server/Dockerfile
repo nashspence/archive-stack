@@ -28,13 +28,11 @@ COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance packages/riverhog-provenance
-COPY packages/riverhog-transform-sdk packages/riverhog-transform-sdk
+COPY packages/stove0-observer-client packages/stove0-observer-client
 COPY packages/stove0-observer-protocol packages/stove0-observer-protocol
-COPY packages/stove0-observer-support packages/stove0-observer-support
 COPY packages/stove0-protocol packages/stove0-protocol
-COPY packages/stove0-review-contracts packages/stove0-review-contracts
+COPY packages/stove0-target-client packages/stove0-target-client
 COPY packages/stove0-target-protocol packages/stove0-target-protocol
-COPY packages/stove0-target-support packages/stove0-target-support
 COPY packages/state-schema packages/state-schema
 COPY packages/time-formats packages/time-formats
 RUN uv sync --frozen --package stove0-server --no-dev --no-editable

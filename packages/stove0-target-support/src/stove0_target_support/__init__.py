@@ -39,7 +39,6 @@ from stove0_target_protocol import (
 )
 from stove0_target_protocol.jcs import canonical_json_bytes, canonical_json_sha256
 
-from stove0_target_support.client import TargetProtocolError, TransformTargetClient
 from stove0_target_support.conformance import TargetClient, conformance_report
 from stove0_target_support.http_binding import (
     TargetHttpBinding,
@@ -97,14 +96,12 @@ __all__ = [
     "TargetPreflightRequest",
     "TargetPreflightResponse",
     "TargetProgress",
-    "TargetProtocolError",
     "TargetServiceError",
     "TargetProtocolModel",
     "TargetRuntimeAuthority",
     "TransformDeclaration",
     "TransformPlan",
     "TransformPlanPayload",
-    "TransformTargetClient",
     "TransformTargetService",
     "WorkspaceAssurance",
     "canonical_json_bytes",

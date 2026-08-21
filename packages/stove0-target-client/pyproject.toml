@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stove0-target-client"
+version = "0.1.0"
+description = "Narrow HTTP client for Stove0 transform targets."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "http-api-contracts>=0.1,<0.2",
+  "httpx>=0.27,<1.0",
+  "pydantic>=2.7,<3.0",
+  "stove0-target-protocol>=0.1,<0.2",
+]
+
+[tool.uv.sources]
+http-api-contracts = { workspace = true }
+stove0-target-protocol = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stove0_target_client"]

@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from stove0_observer_support import ContentObserverClient
+from stove0_observer_client import ContentObserverClient
 from stove0_protocol import (
     ArtifactSelection,
     BranchSetDecision,
@@ -30,7 +30,8 @@ from stove0_protocol import (
     WorkflowPreview,
     WorkIdentity,
 )
-from stove0_target_support import (
+from stove0_target_client import TransformTargetClient
+from stove0_target_protocol import (
     OperationContract,
     OutputCollectionRef,
     TargetCancelRequest,
@@ -42,7 +43,6 @@ from stove0_target_support import (
     TargetPreflightResponse,
     TargetRuntimeAuthority,
     TransformPlan,
-    TransformTargetClient,
     validate_preflight_response_against_request,
 )
 

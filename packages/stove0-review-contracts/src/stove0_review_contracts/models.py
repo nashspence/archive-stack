@@ -13,7 +13,6 @@ from stove0_protocol import (
     EvaluationMatrixPayload,
     EvaluationVariant,
     RecipeRef,
-    WorkIdentity,
     canonical_json_sha256,
 )
 
@@ -206,44 +205,6 @@ def review_evaluation_definition(
     )
 
 
-def review_operation_intent(work: WorkIdentity) -> dict[str, JsonValue]:
-    """Compile one review evaluation child into the portable operation intent."""
-
-    binding = work.evaluation
-    if binding is None:
-        raise ValueError("review operation intent requires evaluation-bound work")
-    raw_plan = work.effective_intent.get("review_sample_plan")
-    raw_variant = binding.parameters.get("review_variant")
-    if not isinstance(raw_plan, dict) or not isinstance(raw_variant, dict):
-        raise ValueError("review work is missing its sample plan or variant")
-    variant_id = raw_variant.get("id")
-    portable_intent = raw_variant.get("portable_intent")
-    if variant_id != binding.variant_id or not isinstance(portable_intent, dict):
-        raise ValueError("review variant parameters differ from the evaluation binding")
-    return {
-        "sample_plan": dict(raw_plan),
-        "variant": {
-            "id": binding.variant_id,
-            "portable_intent": dict(portable_intent),
-        },
-    }
-
-
-def review_target_options(work: WorkIdentity) -> dict[str, JsonValue]:
-    """Return target-owned options without adding them to portable intent."""
-
-    binding = work.evaluation
-    if binding is None:
-        raise ValueError("review target options require evaluation-bound work")
-    raw_variant = binding.parameters.get("review_variant")
-    if not isinstance(raw_variant, dict):
-        raise ValueError("review work is missing its variant parameters")
-    options = raw_variant.get("target_options")
-    if not isinstance(options, dict):
-        raise ValueError("review variant target options must be a JSON object")
-    return dict(options)
-
-
 def _map_position(domains: list[tuple[int, int]], position: int) -> int:
     remaining = position
     for start, positions in domains:
@@ -263,6 +224,4 @@ __all__ = [
     "SampleableRange",
     "evenly_spaced_sample_plan",
     "review_evaluation_definition",
-    "review_operation_intent",
-    "review_target_options",
 ]

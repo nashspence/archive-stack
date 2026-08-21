@@ -31,6 +31,7 @@ from stove0_protocol import (
     WorkIdentity,
     WorkPayload,
 )
+from stove0_target_client import TransformTargetClient
 from stove0_target_support import (
     InputArtifact,
     InputArtifactContract,
@@ -58,7 +59,6 @@ from stove0_target_support import (
     TargetRuntimeAuthority,
     TransformPlan,
     TransformPlanPayload,
-    TransformTargetClient,
     canonical_json_bytes,
     canonical_json_sha256,
     conformance_report,

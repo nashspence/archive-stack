@@ -32,7 +32,7 @@ from stove0_protocol import (
     WorkflowPreviewRequest,
     WorkIdentity,
 )
-from stove0_target_support import (
+from stove0_target_protocol import (
     InputArtifact,
     OutputCollectionRef,
     TargetRuntimeAuthority,

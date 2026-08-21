@@ -9,14 +9,13 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from jsonschema import Draft202012Validator
+from stove0_observer_client.client import ContentObserverClient
 from stove0_observer_protocol import (
     ObservationInvocation,
     ObserverDescriptor,
     canonical_json_bytes,
     validate_observation_result,
 )
-
-from stove0_observer_support.client import ContentObserverClient
 
 
 class ObserverClient(Protocol):

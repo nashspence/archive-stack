@@ -10,6 +10,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BAKE_FILE = REPO_ROOT / "docker-bake.hcl"
 CI_FILE = REPO_ROOT / ".github/workflows/ci.yml"
+IMAGE_ROLES_FILE = REPO_ROOT / "image-roles.toml"
 SBOM_GENERATOR = (
     "docker.io/docker/buildkit-syft-scanner:stable-1@"
     "sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
@@ -77,34 +78,34 @@ IMAGE_CONTRACTS = {
         ),
     },
     "stove0-ffprobe-sampling-observer": {
-        "dockerfile": "companions/stove0-ffprobe-sampling-observer/Dockerfile",
+        "dockerfile": "extensions/stove0/ffprobe-sampling-observer/Dockerfile",
         "tag": "stove0-ffprobe-sampling-observer:dev",
         "title": "stove0 FFprobe sampling observer",
         "license": "CAL-1.0",
         "compose": (("companions/stove0/compose.yaml", "ffprobe-sampling-observer"),),
     },
     "stove0-nvenc-av1-opus-target": {
-        "dockerfile": "companions/stove0-nvenc-av1-opus-target/Dockerfile",
+        "dockerfile": "extensions/stove0/nvenc-av1-opus-target/Dockerfile",
         "tag": "stove0-nvenc-av1-opus-target:dev",
         "title": "stove0 NVENC AV1 + Opus target",
         "license": "CAL-1.0",
         "compose": (
             ("companions/stove0/compose.yaml", "nvenc-av1-opus-target"),
-            ("companions/stove0/compose.yaml", "nvenc-av1-opus-sampler"),
+            ("companions/stove0/compose.yaml", "nvenc-av1-opus-review-sampler"),
         ),
     },
     "stove0-opus-target": {
-        "dockerfile": "companions/stove0-opus-target/Dockerfile",
+        "dockerfile": "extensions/stove0/opus-target/Dockerfile",
         "tag": "stove0-opus-target:dev",
         "title": "stove0 Opus target",
         "license": "CAL-1.0",
         "compose": (
             ("companions/stove0/compose.yaml", "opus-target"),
-            ("companions/stove0/compose.yaml", "opus-sampler"),
+            ("companions/stove0/compose.yaml", "opus-review-sampler"),
         ),
     },
     "stove0-review-target": {
-        "dockerfile": "companions/stove0-review-target/Dockerfile",
+        "dockerfile": "extensions/stove0/review-target/Dockerfile",
         "tag": "stove0-review-target:dev",
         "title": "stove0 review target",
         "license": "CAL-1.0",
@@ -139,6 +140,16 @@ PINNED_EXTERNAL_COMPOSE_IMAGES = {
     "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777",
     "stilliard/pure-ftpd:trixie-latest@sha256:12b5aeb1a371b789e77d0b6217434a7a5ded9a3b251d52dab1f2e85ccde4cbf8",
 }
+
+
+def test_reviewed_stove0_image_roles_cover_every_maintained_stove0_image() -> None:
+    inventory = tomllib.loads(IMAGE_ROLES_FILE.read_text(encoding="utf-8"))
+    assert inventory["format"] == "riverhog-image-roles/v1"
+    assert set(inventory["images"]) == {
+        name for name in IMAGE_CONTRACTS if name == "stove0" or name.startswith("stove0-")
+    }
+    workflow = CI_FILE.read_text(encoding="utf-8")
+    assert 'python3 scripts/check_image_roles.py "$IMAGE_TARGET"' in workflow
 
 
 def _bake_graph() -> dict[str, object]:

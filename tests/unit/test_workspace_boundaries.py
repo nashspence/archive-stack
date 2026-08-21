@@ -32,19 +32,27 @@ IMPLEMENTATION_OWNERS = {
     ),
     "stove0-client": (REPO / "companions/stove0/client/src", {"stove0_cli"}),
     "stove0-ffprobe-sampling-observer": (
-        REPO / "companions/stove0-ffprobe-sampling-observer/src",
+        REPO / "extensions/stove0/ffprobe-sampling-observer/src",
         {"stove0_ffprobe_sampling_observer"},
     ),
     "stove0-nvenc-av1-opus-target": (
-        REPO / "companions/stove0-nvenc-av1-opus-target/src",
+        REPO / "extensions/stove0/nvenc-av1-opus-target/src",
         {"stove0_nvenc_av1_opus_target"},
     ),
+    "stove0-nvenc-av1-opus-review-sampler": (
+        REPO / "extensions/stove0/nvenc-av1-opus-review-sampler/src",
+        {"stove0_nvenc_av1_opus_review_sampler"},
+    ),
+    "stove0-opus-review-sampler": (
+        REPO / "extensions/stove0/opus-review-sampler/src",
+        {"stove0_opus_review_sampler"},
+    ),
     "stove0-opus-target": (
-        REPO / "companions/stove0-opus-target/src",
+        REPO / "extensions/stove0/opus-target/src",
         {"stove0_opus_target"},
     ),
     "stove0-review-target": (
-        REPO / "companions/stove0-review-target/src",
+        REPO / "extensions/stove0/review-target/src",
         {"stove0_review_target"},
     ),
     "mango-fish": (REPO / "utilities/mango-fish/src", {"mango_fish"}),
@@ -372,17 +380,21 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
             "riverhog/storage-adapter-backblaze"
         ),
         REPO / "companions/stove0/server/Dockerfile": "companions/stove0/server",
-        REPO / "companions/stove0-ffprobe-sampling-observer/Dockerfile": (
-            "companions/stove0-ffprobe-sampling-observer"
+        REPO / "extensions/stove0/ffprobe-sampling-observer/Dockerfile": (
+            "extensions/stove0/ffprobe-sampling-observer"
         ),
-        REPO / "companions/stove0-nvenc-av1-opus-target/Dockerfile": (
-            "companions/stove0-nvenc-av1-opus-target"
+        REPO / "extensions/stove0/nvenc-av1-opus-target/Dockerfile": (
+            "extensions/stove0/nvenc-av1-opus-target",
+            "extensions/stove0/nvenc-av1-opus-review-sampler",
         ),
-        REPO / "companions/stove0-opus-target/Dockerfile": "companions/stove0-opus-target",
-        REPO / "companions/stove0-review-target/Dockerfile": ("companions/stove0-review-target"),
+        REPO / "extensions/stove0/opus-target/Dockerfile": (
+            "extensions/stove0/opus-target",
+            "extensions/stove0/opus-review-sampler",
+        ),
+        REPO / "extensions/stove0/review-target/Dockerfile": ("extensions/stove0/review-target"),
         REPO / "utilities/mango-fish/Dockerfile": "utilities/mango-fish",
     }
-    implementation_prefix = re.compile(r"^(?:companions|riverhog|utilities)/")
+    implementation_prefix = re.compile(r"^(?:companions|extensions|riverhog|utilities)/")
     for dockerfile, expected in dockerfiles.items():
         copied = {
             source
@@ -390,7 +402,45 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
             if implementation_prefix.match(source)
         }
         assert copied
-        assert all(source == expected or source.startswith(f"{expected}/") for source in copied)
+        allowed = (expected,) if isinstance(expected, str) else expected
+        assert all(
+            any(source == root or source.startswith(f"{root}/") for root in allowed)
+            for source in copied
+        )
+
+
+def test_stove0_server_has_only_protocol_and_caller_side_extension_dependencies() -> None:
+    _projects, graph = workspace_project_graph()
+    closure = dependency_closure("stove0-server", graph)
+    assert {"stove0-observer-client", "stove0-target-client"} <= closure
+    assert not closure & {
+        "riverhog-transform-sdk",
+        "stove0-media-archive-contracts",
+        "stove0-observer-support",
+        "stove0-review-contracts",
+        "stove0-review-sampler-support",
+        "stove0-target-support",
+    }
+
+
+def test_paired_target_and_review_sampler_distributions_do_not_import_each_other() -> None:
+    pairs = (
+        ("stove0_opus_target", "stove0_opus_review_sampler"),
+        ("stove0_nvenc_av1_opus_target", "stove0_nvenc_av1_opus_review_sampler"),
+    )
+    for target, sampler in pairs:
+        target_source = next(
+            path for path, modules in IMPLEMENTATION_OWNERS.values() if target in modules
+        )
+        sampler_source = next(
+            path for path, modules in IMPLEMENTATION_OWNERS.values() if sampler in modules
+        )
+        assert sampler not in {
+            root for path in target_source.rglob("*.py") for root in imported_roots(path)
+        }
+        assert target not in {
+            root for path in sampler_source.rglob("*.py") for root in imported_roots(path)
+        }
 
 
 def test_locally_built_compose_services_use_development_image_tags() -> None:
@@ -433,19 +483,23 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
             "riverhog-storage-adapter-backblaze"
         ),
         REPO / "companions/stove0/server/Dockerfile": "stove0-server",
-        REPO / "companions/stove0-ffprobe-sampling-observer/Dockerfile": (
+        REPO / "extensions/stove0/ffprobe-sampling-observer/Dockerfile": (
             "stove0-ffprobe-sampling-observer"
         ),
-        REPO / "companions/stove0-nvenc-av1-opus-target/Dockerfile": (
-            "stove0-nvenc-av1-opus-target"
+        REPO / "extensions/stove0/nvenc-av1-opus-target/Dockerfile": (
+            "stove0-nvenc-av1-opus-target",
+            "stove0-nvenc-av1-opus-review-sampler",
         ),
-        REPO / "companions/stove0-opus-target/Dockerfile": "stove0-opus-target",
-        REPO / "companions/stove0-review-target/Dockerfile": "stove0-review-target",
+        REPO / "extensions/stove0/opus-target/Dockerfile": (
+            "stove0-opus-target",
+            "stove0-opus-review-sampler",
+        ),
+        REPO / "extensions/stove0/review-target/Dockerfile": "stove0-review-target",
         REPO / "utilities/mango-fish/Dockerfile": "mango-fish",
     }
     projects, graph = workspace_project_graph()
 
-    for dockerfile, distribution in images.items():
+    for dockerfile, distributions in images.items():
         copied_sources: set[str] = set()
         for raw_line in dockerfile.read_text(encoding="utf-8").splitlines():
             if not raw_line.startswith("COPY "):
@@ -455,10 +509,12 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
                 continue
             copied_sources.update(tokens[1:-1])
 
-        expected = {
-            str(projects[dependency].relative_to(REPO))
-            for dependency in dependency_closure(distribution, graph)
-        }
+        roots = (distributions,) if isinstance(distributions, str) else distributions
+        closure = set(roots)
+        for distribution in roots:
+            closure.update(dependency_closure(distribution, graph))
+        expected = {str(projects[dependency].relative_to(REPO)) for dependency in closure}
+        expected = {path for path in expected if path.startswith("packages/")}
         copied_packages = {source for source in copied_sources if source.startswith("packages/")}
         missing = expected - copied_packages
         extra = copied_packages - expected

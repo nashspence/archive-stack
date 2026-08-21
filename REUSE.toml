@@ -12,10 +12,12 @@ path = [
   "riverhog/storage-adapter-aws/**",
   "riverhog/storage-adapter-backblaze/**",
   "companions/stove0/server/**",
-  "companions/stove0-ffprobe-sampling-observer/**",
-  "companions/stove0-nvenc-av1-opus-target/**",
-  "companions/stove0-opus-target/**",
-  "companions/stove0-review-target/**",
+  "extensions/stove0/ffprobe-sampling-observer/**",
+  "extensions/stove0/nvenc-av1-opus-review-sampler/**",
+  "extensions/stove0/nvenc-av1-opus-target/**",
+  "extensions/stove0/opus-target/**",
+  "extensions/stove0/opus-review-sampler/**",
+  "extensions/stove0/review-target/**",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2026 Nash Spence"

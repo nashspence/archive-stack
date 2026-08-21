@@ -16,9 +16,9 @@ def test_reference_topology_uses_one_postgres_authority_and_distinct_roles() -> 
         "api",
         "controller",
         "ffprobe-sampling-observer",
-        "nvenc-av1-opus-sampler",
+        "nvenc-av1-opus-review-sampler",
         "nvenc-av1-opus-target",
-        "opus-sampler",
+        "opus-review-sampler",
         "opus-target",
         "review-target",
         "state",
@@ -54,9 +54,9 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
         "worker",
         "state",
         "ffprobe-sampling-observer",
-        "nvenc-av1-opus-sampler",
+        "nvenc-av1-opus-review-sampler",
         "nvenc-av1-opus-target",
-        "opus-sampler",
+        "opus-review-sampler",
         "opus-target",
         "review-target",
     ):
@@ -66,23 +66,26 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
         assert services[name]["cap_drop"] == ["ALL"]
     for name in (
         "ffprobe-sampling-observer",
-        "nvenc-av1-opus-sampler",
+        "nvenc-av1-opus-review-sampler",
         "nvenc-av1-opus-target",
-        "opus-sampler",
+        "opus-review-sampler",
         "opus-target",
         "review-target",
     ):
         assert "ports" not in services[name]
     assert services["nvenc-av1-opus-target"]["profiles"] == ["nvenc"]
-    assert services["nvenc-av1-opus-sampler"]["profiles"] == ["nvenc"]
+    assert services["nvenc-av1-opus-review-sampler"]["profiles"] == ["nvenc"]
     assert services["ffprobe-sampling-observer"]["command"][0] == (
         "stove0-ffprobe-sampling-observer"
     )
     assert services["opus-target"]["command"][0] == "stove0-opus-target"
-    assert services["opus-sampler"]["command"][0] == "stove0-opus-sampler"
+    assert services["opus-review-sampler"]["command"][0] == "stove0-opus-review-sampler"
     assert services["review-target"]["command"][0] == "stove0-review-target"
     assert services["nvenc-av1-opus-target"]["command"][0] == "stove0-nvenc-av1-opus-target"
-    assert services["nvenc-av1-opus-sampler"]["command"][0] == "stove0-nvenc-av1-opus-sampler"
+    assert (
+        services["nvenc-av1-opus-review-sampler"]["command"][0]
+        == "stove0-nvenc-av1-opus-review-sampler"
+    )
     assert payload["networks"]["stove0-internal"]["internal"] is True
     assert payload["networks"]["review-sampler"]["internal"] is True
     assert set(payload["volumes"]) == {
@@ -96,7 +99,7 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
 def test_sampler_containers_share_only_ephemeral_workspace_and_no_authority() -> None:
     payload = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     services = payload["services"]
-    for name in ("opus-sampler", "nvenc-av1-opus-sampler"):
+    for name in ("opus-review-sampler", "nvenc-av1-opus-review-sampler"):
         service = services[name]
         assert service["networks"] == ["review-sampler"]
         assert service["volumes"] == ["stove0-review-workspace:/run/stove0-review-target"]
@@ -115,26 +118,29 @@ def test_sampler_containers_share_only_ephemeral_workspace_and_no_authority() ->
 def test_paired_target_and_sampler_roles_bind_the_same_image_digest() -> None:
     payload = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     services = payload["services"]
-    assert services["opus-target"]["image"] == services["opus-sampler"]["image"]
+    assert services["opus-target"]["image"] == services["opus-review-sampler"]["image"]
     assert (
         services["opus-target"]["environment"]["STOVE0_OPUS_TARGET_IMAGE_DIGEST"]
-        == services["opus-sampler"]["environment"]["STOVE0_OPUS_SAMPLER_IMAGE_DIGEST"]
+        == services["opus-review-sampler"]["environment"]["STOVE0_OPUS_REVIEW_SAMPLER_IMAGE_DIGEST"]
     )
-    assert services["nvenc-av1-opus-target"]["image"] == services["nvenc-av1-opus-sampler"]["image"]
+    assert (
+        services["nvenc-av1-opus-target"]["image"]
+        == services["nvenc-av1-opus-review-sampler"]["image"]
+    )
     assert (
         services["nvenc-av1-opus-target"]["environment"][
             "STOVE0_NVENC_AV1_OPUS_TARGET_IMAGE_DIGEST"
         ]
-        == services["nvenc-av1-opus-sampler"]["environment"][
-            "STOVE0_NVENC_AV1_OPUS_SAMPLER_IMAGE_DIGEST"
+        == services["nvenc-av1-opus-review-sampler"]["environment"][
+            "STOVE0_NVENC_AV1_OPUS_REVIEW_SAMPLER_IMAGE_DIGEST"
         ]
     )
     assert services["opus-target"]["image"] != services["nvenc-av1-opus-target"]["image"]
     assert services["opus-target"]["build"]["dockerfile"] == (
-        "companions/stove0-opus-target/Dockerfile"
+        "extensions/stove0/opus-target/Dockerfile"
     )
     assert services["nvenc-av1-opus-target"]["build"]["dockerfile"] == (
-        "companions/stove0-nvenc-av1-opus-target/Dockerfile"
+        "extensions/stove0/nvenc-av1-opus-target/Dockerfile"
     )
     assert "gpus" not in services["opus-target"]
     assert "profiles" not in services["opus-target"]
