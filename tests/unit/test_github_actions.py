@@ -524,6 +524,9 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     deployment_env = next(
         step for step in steps if step["name"] == "Generate the disposable deployment environment"
     )
+    runtime_secrets = next(
+        step for step in steps if step["name"] == "Hand adapter secrets to the non-root runtime"
+    )
     deployment = next(
         step for step in steps if step["name"] == "Start the disposable Riverhog deployment"
     )
@@ -540,6 +543,10 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     assert 'test -z "${RIVERHOG_DATABASE_URL:-}"' in deployment_env["run"]
     assert "RIVERHOG_DATABASE_URL=" in deployment_env["run"]
     assert "docker volume ls" in deployment_env["run"]
+    assert "sudo chown 65532:65532" in runtime_secrets["run"]
+    assert "sudo chmod 0400" in runtime_secrets["run"]
+    assert "RIVERHOG_QUALIFICATION_CLOUDFRONT_PRIVATE_KEY_PATH" in runtime_secrets["run"]
+    assert "RIVERHOG_QUALIFICATION_STORAGE_ADAPTER_TOKEN_PATH" in runtime_secrets["run"]
     assert "postgresql+psycopg://riverhog:riverhog@postgres:5432/riverhog" in deployment["run"]
     assert "tests/harness/provider-qualification.compose.yaml" in deployment["run"]
     assert "logs --no-color --tail 80" in deployment["run"]
