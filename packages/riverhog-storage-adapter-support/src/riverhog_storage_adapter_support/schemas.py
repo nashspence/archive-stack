@@ -68,7 +68,6 @@ def storage_adapter_schema_bundle() -> dict[str, Any]:
         "compatibility": {
             "unknown_fields": "reject",
             "provider_ontology": "private",
-            "multipart_whole_stored_sha256": "optional",
         },
         "http_binding": {
             "GET /v1/adapter": "AdapterDescriptor",

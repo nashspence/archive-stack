@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import tempfile
 from datetime import timedelta
@@ -247,38 +248,6 @@ class SqlAlchemyArchiveAttestationService:
         try:
             archive_store = self._archive_stores.require(store).store
             copy, objects = self._copy_objects(collection_id=collection_id, store=store)
-            for current in objects:
-                if current.kind not in {
-                    "pack",
-                    "file",
-                    "segment",
-                    "provenance-bundle",
-                    "provenance-index",
-                    "manifest",
-                    "proof",
-                }:
-                    continue
-                if current.stored_sha256:
-                    continue
-                _LOG.info(
-                    "hashing existing archive ciphertext: collection_id=%s store=%s object=%s "
-                    "bytes=%s",
-                    collection_id,
-                    store,
-                    current.object_id,
-                    current.stored_bytes,
-                )
-                digest = archive_store.stored_archive_object_sha256(
-                    collection_id=collection_id,
-                    object=current,
-                )
-                self._record_stored_sha256(
-                    collection_id=collection_id,
-                    store=store,
-                    object_id=current.object_id,
-                    stored_sha256=digest,
-                )
-            copy, objects = self._copy_objects(collection_id=collection_id, store=store)
             checksums = archive_copy_checksums(
                 archive_storage_prefix=copy.archive_storage_prefix or "",
                 objects=objects,
@@ -295,27 +264,16 @@ class SqlAlchemyArchiveAttestationService:
                 signature=signature,
                 proof=proof,
             )
-            persisted = {
-                current.object_id: archive_store.read_archive_attestation_artifact(
-                    collection_id=collection_id,
-                    object=_identity_from_receipt(current),
-                )
-                for current in receipt.objects
-            }
-            if persisted["checksums"].content != checksums:
-                raise RuntimeError("persisted archive checksums differ from their input")
-            if persisted["signature"].content != signature:
-                raise RuntimeError("persisted archive signature differs from its input")
-            self._signature_verifier.verify(
-                checksums=persisted["checksums"].content,
-                signature=persisted["signature"].content,
+            _verify_attestation_receipts(
+                receipt,
+                checksums=checksums,
+                signature=signature,
+                proof=proof,
             )
             self._record_published(
                 collection_id=collection_id,
                 store=store,
-                receipt=CollectionArchiveUploadReceipt(
-                    objects=tuple(current.receipt for current in persisted.values())
-                ),
+                receipt=receipt,
             )
             _LOG.info(
                 "collection archive attestation published: collection_id=%s store=%s",
@@ -437,23 +395,6 @@ class SqlAlchemyArchiveAttestationService:
             signature_path.write_bytes(signature)
             return self._proof_stamper.stamp(signature_path).read_bytes()
 
-    def _record_stored_sha256(
-        self,
-        *,
-        collection_id: int,
-        store: str,
-        object_id: str,
-        stored_sha256: str,
-    ) -> None:
-        with session_scope(self._session_factory) as session:
-            record = session.get(
-                CollectionArchiveObjectRecord,
-                (collection_id, store, object_id),
-            )
-            if record is None:
-                raise RuntimeError("archive object disappeared while hashing")
-            record.stored_sha256 = stored_sha256
-
     def _record_published(
         self,
         *,
@@ -565,6 +506,32 @@ def _identity_from_receipt(receipt: ArchiveObjectUploadReceipt) -> ArchiveObject
         stored_sha256=receipt.stored_sha256,
         version_id=receipt.version_id,
     )
+
+
+def _verify_attestation_receipts(
+    receipt: CollectionArchiveUploadReceipt,
+    *,
+    checksums: bytes,
+    signature: bytes,
+    proof: bytes,
+) -> None:
+    expected = {
+        "checksums": checksums,
+        "signature": signature,
+        "signature-proof": proof,
+    }
+    if {current.object_id for current in receipt.objects} != set(expected):
+        raise RuntimeError("archive attestation receipt set is incomplete")
+    for current in receipt.objects:
+        content = expected[current.object_id]
+        digest = hashlib.sha256(content).hexdigest()
+        if (
+            current.plaintext_bytes != len(content)
+            or current.stored_bytes != len(content)
+            or current.sha256 != digest
+            or current.stored_sha256 != digest
+        ):
+            raise RuntimeError("archive attestation receipt differs from its input")
 
 
 def _apply_receipt(

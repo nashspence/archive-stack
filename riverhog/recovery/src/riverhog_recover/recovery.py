@@ -167,10 +167,10 @@ def recover_archive(
         )
         _verify_timestamp(manifest_path, proof_path, command=ots_command)
         manifest = _parse_manifest(manifest_path.read_bytes())
+        _verify_attestation_inventory(checksums, manifest)
 
         for volume in manifest.volumes:
             encrypted = _archive_file(archive, volume.path)
-            _verify_inventory_file(encrypted, volume.path, checksums)
             _verify_stored_parts(encrypted, volume.parts)
             plaintext = scratch / f"{volume.id}.plaintext"
             _age_decrypt(encrypted, plaintext, passphrase=passphrase, command=age_command)
@@ -854,6 +854,21 @@ def _verify_inventory_file(
         raise RecoveryError(f"SHA256SUMS does not cover {relative}")
     if _sha256(path) != expected:
         raise RecoveryError(f"ciphertext checksum mismatch: {relative}")
+
+
+def _verify_attestation_inventory(
+    checksums: Mapping[str, str] | None,
+    manifest: Manifest,
+) -> None:
+    if checksums is None:
+        return
+    expected = {"manifest.json.age", "manifest.json.ots.age"}
+    if manifest.provenance is not None:
+        expected.update(
+            current.path for current in (manifest.provenance.index, *manifest.provenance.bundles)
+        )
+    if set(checksums) != expected:
+        raise RecoveryError("SHA256SUMS does not match the immutable root inventory")
 
 
 def _verify_minisign(archive: Path, *, public_key: Path, command: str) -> None:
