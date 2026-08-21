@@ -478,31 +478,26 @@ class SqlAlchemyArchiveCopyService:
             )
             read_requested_at = job.read_requested_at
             ready_at = job.ready_at
-            expires_at = job.expires_at
             destination_storage_prefix = job.destination_storage_prefix
             job.state = "checking"
             job.next_attempt_at = None
 
         source_store = self._archive_stores.require(source_store_name).store
+        estimated_ready_at: str | None
         if read_requested_at is None:
+            estimated_ready_at = format_utc_timestamp(
+                current + self._config.retrieval_estimated_latency
+            )
             status = source_store.prepare_archive_objects_read(
                 collection_id=collection_id,
                 objects=data_objects,
-                retrieval_tier=self._config.retrieval_tier,
-                hold_days=_read_hold_days(self._config),
-                requested_at=current_text,
-                estimated_ready_at=format_utc_timestamp(
-                    current + self._config.retrieval_estimated_latency
-                ),
             )
             read_requested_at = current_text
         else:
+            estimated_ready_at = ready_at
             status = source_store.get_archive_objects_read_status(
                 collection_id=collection_id,
                 objects=data_objects,
-                requested_at=read_requested_at,
-                estimated_ready_at=ready_at,
-                estimated_expires_at=expires_at,
             )
 
         canceled = False
@@ -520,7 +515,7 @@ class SqlAlchemyArchiveCopyService:
             if job.state not in {"checking", "canceling"}:
                 raise Conflict("archive copy changed while checking source availability")
             job.read_requested_at = read_requested_at
-            job.ready_at = status.ready_at or job.ready_at
+            job.ready_at = status.ready_at or job.ready_at or estimated_ready_at
             job.expires_at = status.expires_at or job.expires_at
             if job.state == "canceling":
                 canceled = True
@@ -1643,8 +1638,3 @@ def _completed_payload(copy: CollectionArchiveCopyRecord) -> dict[str, object]:
         "completed_at": copy.last_verified_at,
         "failure": None,
     }
-
-
-def _read_hold_days(config: RuntimeConfig) -> int:
-    seconds = config.retrieval_restore_hold.total_seconds()
-    return max(1, int((seconds + 86_399) // 86_400))
