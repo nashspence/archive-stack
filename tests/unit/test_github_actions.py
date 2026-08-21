@@ -476,9 +476,13 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     assert "needs.resolve.outputs.action == 'restart'" in download["if"]
     assert "actions/artifacts/$ARTIFACT_ID/zip" in download["run"]
     assert ".active == true" in download["run"]
+    assert "SUPERSEDED_SOURCE_SHA" in download["run"]
+    assert 'git merge-base --is-ancestor "$superseded_source_sha" "$SOURCE_SHA"' in download["run"]
     cleanup = next(step for step in steps if step["name"] == "Clean superseded dummy B2 state")
     assert cleanup["if"] == "needs.resolve.outputs.action == 'restart'"
     assert "cleanup-b2" in cleanup["run"]
+    assert 'git worktree add --detach "$cleanup_root" "$SUPERSEDED_SOURCE_SHA"' in cleanup["run"]
+    assert 'MISE_TRUSTED_CONFIG_PATHS="$cleanup_root" make -C "$cleanup_root"' in cleanup["run"]
     exact = next(step for step in steps if step["name"] == "Check out verified exact source")
     assert 'test "$(git rev-parse --verify HEAD)" = "$SOURCE_SHA"' in exact["run"]
 
