@@ -138,13 +138,6 @@ class ArchiveStore(Protocol):
         proof_bytes: bytes,
     ) -> ArchiveObjectUploadReceipt: ...
 
-    def stored_archive_object_sha256(
-        self,
-        *,
-        collection_id: int,
-        object: ArchiveObjectIdentity,
-    ) -> str: ...
-
     def publish_archive_attestation(
         self,
         *,

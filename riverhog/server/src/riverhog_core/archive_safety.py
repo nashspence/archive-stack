@@ -50,7 +50,9 @@ Use `archives/ARCHIVE_ID/metadata.json.age` to identify an opaque archive, then
 recover from its `manifest.json.age` and required proof. If present, verify
 `SHA256SUMS` with `SHA256SUMS.minisig` and an independently obtained public key,
 then verify `SHA256SUMS.minisig.ots`. The root `minisign.pub` is a convenience
-copy, not an independent trust anchor.
+copy, not an independent trust anchor. The signed checksums cover the immutable
+root artifacts; the encrypted manifest binds every volume's ordered stored-part
+lengths and SHA-256 values.
 """
 
 

@@ -82,7 +82,7 @@ class _WaitingUpgrader:
         return ProofUpgradeResult(proof_bytes=proof_bytes, complete=False)
 
 
-def test_publishes_signs_and_matures_exact_archive_ciphertext_inventory(tmp_path) -> None:
+def test_publishes_from_upload_evidence_and_matures_exact_archive_root(tmp_path) -> None:
     files = {"docs/readme.txt": b"hi"}
     archive = make_captured_provenance_archive(files, tmp_path / "source")
     config, archive = seed_archive_copy(
@@ -104,11 +104,17 @@ def test_publishes_signs_and_matures_exact_archive_ciphertext_inventory(tmp_path
 
     assert service.process_due(limit=10) == 1
     checksums = store.attestation_artifacts["checksums"]
+    directly_attested = {
+        relative_path: content
+        for relative_path, content in archive.stored_objects.items()
+        if not relative_path.startswith("volumes/")
+    }
     assert checksums.decode().splitlines() == [
         f"{_sha256(content)}  {relative_path}"
-        for relative_path, content in sorted(archive.stored_objects.items())
+        for relative_path, content in sorted(directly_attested.items())
     ]
     assert store.attestation_artifacts["signature"] == _Signer().sign(checksums)
+    assert store.read == []
 
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:

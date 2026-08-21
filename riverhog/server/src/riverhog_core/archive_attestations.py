@@ -16,9 +16,7 @@ ATTESTATION_FILENAMES = {
     "signature": "SHA256SUMS.minisig",
     "signature-proof": "SHA256SUMS.minisig.ots",
 }
-ATTESTED_KINDS = frozenset(
-    {"pack", "segment", "provenance-bundle", "provenance-index", "manifest", "proof"}
-)
+DIRECTLY_ATTESTED_KINDS = frozenset({"provenance-bundle", "provenance-index", "manifest", "proof"})
 TRUSTED_COMMENT = "riverhog archive-copy attestation/v1"
 
 
@@ -46,7 +44,7 @@ def archive_copy_checksums(
     prefix = f"{archive_storage_prefix.strip('/')}/"
     rows: list[tuple[str, str]] = []
     for current in objects:
-        if current.kind not in ATTESTED_KINDS:
+        if current.kind not in DIRECTLY_ATTESTED_KINDS:
             continue
         if not current.stored_sha256 or len(current.stored_sha256) != 64:
             raise ValueError(f"archive object has no stored sha256: {current.object_id}")
@@ -56,8 +54,11 @@ def archive_copy_checksums(
         if not relative_path or "\n" in relative_path or "\r" in relative_path:
             raise ValueError(f"archive object path is not attestable: {current.object_id}")
         rows.append((relative_path, current.stored_sha256))
-    if not rows:
-        raise ValueError("archive copy has no immutable objects to attest")
+    attested_kinds = {
+        current.kind for current in objects if current.kind in DIRECTLY_ATTESTED_KINDS
+    }
+    if not {"manifest", "proof"}.issubset(attested_kinds):
+        raise ValueError("archive copy has no complete immutable root to attest")
     return "".join(f"{sha256}  {relative_path}\n" for relative_path, sha256 in sorted(rows)).encode(
         "utf-8"
     )

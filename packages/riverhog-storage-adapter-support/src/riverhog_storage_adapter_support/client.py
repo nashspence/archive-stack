@@ -34,7 +34,7 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterRejection,
 )
 
-from riverhog_storage_adapter_support.framing import framed_request
+from riverhog_storage_adapter_support.framing import framed_request, framed_request_length
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 _PARTS = TypeAdapter(tuple[MultipartPartReceipt, ...])
@@ -141,6 +141,7 @@ class StorageAdapterClient:
             "/v1/multipart/part",
             MultipartPartReceipt,
             content=framed_request(request, content),
+            headers={"Content-Length": str(framed_request_length(request, content))},
         )
 
     def list_parts(self, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
@@ -186,6 +187,7 @@ class StorageAdapterClient:
             "/v1/objects/put",
             ImmutableObjectReceipt,
             content=framed_request(request, content),
+            headers={"Content-Length": str(framed_request_length(request, content))},
         )
 
     def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None:
@@ -277,8 +279,15 @@ class StorageAdapterClient:
         payload: BaseModel | None = None,
         *,
         content: Iterable[bytes] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> ModelT:
-        response = self._request(method, path, payload=payload, content=content)
+        response = self._request(
+            method,
+            path,
+            payload=payload,
+            content=content,
+            headers=headers,
+        )
         self._require_success(response)
         try:
             return model.model_validate_json(response.content)

@@ -277,11 +277,6 @@ def test_verification_is_metadata_only_and_explicit_hashing_reads_once() -> None
     )
     assert adapter.reads == 0
 
-    assert store.stored_archive_object_sha256(collection_id=17, object=identity) == (
-        hashlib.sha256(content).hexdigest()
-    )
-    assert adapter.reads == 1
-
 
 def test_read_preparation_carries_only_exact_opaque_objects() -> None:
     adapter = _MemoryAdapter(read_mode="restore_required")

@@ -223,11 +223,17 @@ class MemoryAdapter:
         return 0
 
 
-def _client(adapter: MemoryAdapter) -> tuple[StorageAdapterClient, httpx.Client]:
+def _client(
+    adapter: MemoryAdapter,
+    *,
+    requests: list[httpx.Request] | None = None,
+) -> tuple[StorageAdapterClient, httpx.Client]:
     binding = StorageAdapterHttpBinding(adapter)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["Authorization"] == "Bearer fixture-token"
+        if requests is not None:
+            requests.append(request)
         result = binding.handle(request.method, request.url.path, request.read())
         content = result.body if isinstance(result.body, bytes) else b"".join(result.body)
         return httpx.Response(
@@ -249,9 +255,10 @@ def _client(adapter: MemoryAdapter) -> tuple[StorageAdapterClient, httpx.Client]
     )
 
 
-def test_client_preserves_multipart_receipts_without_whole_object_hashing() -> None:
+def test_client_preserves_multipart_unit_receipts_and_declares_body_lengths() -> None:
     adapter = MemoryAdapter()
-    client, http = _client(adapter)
+    requests: list[httpx.Request] = []
+    client, http = _client(adapter, requests=requests)
     try:
         created = client.create_multipart_upload(
             MultipartCreateRequest(
@@ -284,8 +291,16 @@ def test_client_preserves_multipart_receipts_without_whole_object_hashing() -> N
 
         assert completed == recovered
         assert completed.stored_bytes == 11
-        assert not hasattr(completed, "stored_sha256")
         assert adapter.objects[created.object_path][0] == b"firstsecond"
+        part_requests = [
+            request for request in requests if request.url.path == "/v1/multipart/part"
+        ]
+        assert len(part_requests) == 2
+        assert all(
+            int(request.headers["Content-Length"]) == len(request.content)
+            for request in part_requests
+        )
+        assert all("Transfer-Encoding" not in request.headers for request in part_requests)
     finally:
         client.close()
         http.close()
@@ -293,7 +308,8 @@ def test_client_preserves_multipart_receipts_without_whole_object_hashing() -> N
 
 def test_small_object_and_exact_range_round_trip() -> None:
     adapter = MemoryAdapter()
-    client, http = _client(adapter)
+    requests: list[httpx.Request] = []
+    client, http = _client(adapter, requests=requests)
     content = b"opaque-ciphertext"
     try:
         receipt = client.put_small_object(
@@ -331,6 +347,9 @@ def test_small_object_and_exact_range_round_trip() -> None:
         assert metadata is not None
         assert metadata.stored_sha256 == receipt.stored_sha256
         assert ranged == content[7:13]
+        put_request = next(request for request in requests if request.url.path == "/v1/objects/put")
+        assert int(put_request.headers["Content-Length"]) == len(put_request.content)
+        assert "Transfer-Encoding" not in put_request.headers
     finally:
         client.close()
         http.close()
