@@ -26,6 +26,18 @@ def framed_request(model: BaseModel, content: bytes) -> Iterable[bytes]:
         yield content
 
 
+def framed_request_length(model: BaseModel, content: bytes) -> int:
+    """Return the exact HTTP body length without joining the payload chunks."""
+
+    stored_bytes = getattr(model, "stored_bytes", None)
+    if stored_bytes != len(content):
+        raise ValueError("framed content length differs from its declaration")
+    header = model.model_dump_json(exclude_none=True).encode("utf-8")
+    if len(header) > DEFAULT_MAXIMUM_HEADER_BYTES:
+        raise ValueError("framed request declaration exceeds its size bound")
+    return _HEADER_LENGTH_BYTES + len(header) + len(content)
+
+
 def parse_framed_request[ModelT: BaseModel](
     body: bytes,
     model: type[ModelT],
@@ -54,5 +66,6 @@ def parse_framed_request[ModelT: BaseModel](
 __all__ = [
     "DEFAULT_MAXIMUM_HEADER_BYTES",
     "framed_request",
+    "framed_request_length",
     "parse_framed_request",
 ]

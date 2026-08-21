@@ -268,27 +268,6 @@ class StorageAdapterArchiveStore:
             stored=stored,
         )
 
-    def stored_archive_object_sha256(
-        self,
-        *,
-        collection_id: int,
-        object: ArchiveObjectIdentity,
-    ) -> str:
-        digest = hashlib.sha256()
-        received = 0
-        for chunk in self.iter_stored_archive_object(
-            collection_id=collection_id,
-            object=object,
-        ):
-            received += len(chunk)
-            digest.update(chunk)
-        if received != object.stored_bytes:
-            raise RuntimeError(f"Archive ciphertext byte count mismatch: {object.object_path}")
-        actual = digest.hexdigest()
-        if object.stored_sha256 is not None and actual != object.stored_sha256:
-            raise RuntimeError(f"Archive ciphertext sha256 mismatch: {object.object_path}")
-        return actual
-
     def publish_archive_attestation(
         self,
         *,

@@ -262,7 +262,9 @@ def _write_archive(
         destination.write_bytes(content)
     (root / "SHA256SUMS").write_text(
         "".join(
-            f"{_sha256(content)}  {relative}\n" for relative, content in sorted(ciphertext.items())
+            f"{_sha256(content)}  {relative}\n"
+            for relative, content in sorted(ciphertext.items())
+            if not relative.startswith("volumes/")
         ),
         encoding="utf-8",
     )
@@ -377,7 +379,7 @@ def test_ciphertext_corruption_fails_without_publishing_partial_output(
     output = tmp_path / "recovered"
     ots = _write_ots_command(tmp_path / "ots-fixture")
 
-    with pytest.raises(RecoveryError, match="ciphertext checksum mismatch"):
+    with pytest.raises(RecoveryError, match="stored volume byte count mismatch"):
         recover_archive(
             archive,
             output,

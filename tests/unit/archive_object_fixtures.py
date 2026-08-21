@@ -793,21 +793,6 @@ class MemoryArchiveStore:
             verified_at=UPLOADED_AT,
         )
 
-    def stored_archive_object_sha256(
-        self,
-        *,
-        collection_id: int,
-        object: ArchiveObjectIdentity,
-    ) -> str:
-        return hashlib.sha256(
-            b"".join(
-                self.iter_stored_archive_object(
-                    collection_id=collection_id,
-                    object=object,
-                )
-            )
-        ).hexdigest()
-
     def publish_archive_attestation(
         self,
         *,
