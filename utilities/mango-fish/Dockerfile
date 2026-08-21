@@ -52,6 +52,10 @@ COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
 COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
 COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
 
+RUN install -d -o 65532 -g 65532 -m 0700 /state \
+    && ! command -v mise
+
 COPY --from=build /opt/venv /opt/venv
 
+USER 65532:65532
 ENTRYPOINT ["mango-fish"]

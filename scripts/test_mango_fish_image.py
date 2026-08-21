@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -14,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 IMAGE = os.environ.get("MANGO_FISH_IMAGE", "mango-fish:dev")
 CONTAINER_HOST = "host.docker.internal"
@@ -97,19 +97,20 @@ class SmokePeer:
         return Handler
 
 
-def _run_container(config: Path, state: Path, port: int, *args: str) -> None:
+def _run_container(config: Path, state_volume: str, port: int, *args: str) -> None:
     command = [
         "docker",
         "run",
         "--rm",
+        "--read-only",
         "--add-host",
         f"{CONTAINER_HOST}:host-gateway",
-        "--user",
-        f"{os.getuid()}:{os.getgid()}",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=64m,uid=65532,gid=65532,mode=700",
         "--volume",
         f"{config}:/config/mango-fish.yaml:ro",
         "--volume",
-        f"{state}:/state",
+        f"{state_volume}:/state",
         "--env",
         f"EVENT_TOKEN={SOURCE_TOKEN}",
         "--env",
@@ -135,18 +136,87 @@ def _run_container(config: Path, state: Path, port: int, *args: str) -> None:
         )
 
 
+def _check_runtime_contract(state_volume: str) -> None:
+    configured_user = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Config.User}}", IMAGE],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if configured_user != "65532:65532":
+        raise RuntimeError(f"unexpected Mango Fish image user: {configured_user!r}")
+
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--read-only",
+            "--volume",
+            f"{state_volume}:/state",
+            "--entrypoint",
+            "sh",
+            IMAGE,
+            "-c",
+            (
+                'test "$(id -u)" = 65532 '
+                '&& test "$(id -g)" = 65532 '
+                "&& touch /state/.runtime-write-proof "
+                "&& rm /state/.runtime-write-proof "
+                "&& test ! -w /usr/share/doc/riverhog"
+            ),
+        ],
+        check=True,
+    )
+
+
+def _read_cursor(state_volume: str) -> tuple[str] | None:
+    completed = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--read-only",
+            "--volume",
+            f"{state_volume}:/state",
+            "--entrypoint",
+            "python",
+            IMAGE,
+            "-c",
+            (
+                "import json, sqlite3; "
+                "connection = sqlite3.connect("
+                "'file:/state/mango-fish.sqlite3?mode=ro', uri=True); "
+                "print(json.dumps(connection.execute("
+                '"SELECT cursor FROM source_cursors WHERE source = ?", '
+                "('smoke',)).fetchone()))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    row = json.loads(completed.stdout)
+    return tuple(row) if row is not None else None
+
+
 def main() -> int:
     peer = SmokePeer()
     server = ThreadingHTTPServer(("0.0.0.0", 0), peer.handler())
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    state_volume = f"riverhog-mango-fish-smoke-{uuid4().hex}"
+    subprocess.run(
+        ["docker", "volume", "create", state_volume],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     try:
         port = int(server.server_address[1])
         with tempfile.TemporaryDirectory(prefix="riverhog-mango-fish-smoke-") as scratch:
             root = Path(scratch)
             config = root / "mango-fish.yaml"
-            state = root / "state"
-            state.mkdir()
             config.write_text(
                 "\n".join(
                     (
@@ -166,15 +236,12 @@ def main() -> int:
                 encoding="utf-8",
             )
 
-            _run_container(config, state, port, "state", "upgrade", "--json")
-            _run_container(config, state, port, "--once")
-            _run_container(config, state, port, "--once")
-            _run_container(config, state, port, "state", "verify", "--json")
-
-            with sqlite3.connect(state / "mango-fish.sqlite3") as connection:
-                cursor = connection.execute(
-                    "SELECT cursor FROM source_cursors WHERE source = ?", ("smoke",)
-                ).fetchone()
+            _check_runtime_contract(state_volume)
+            _run_container(config, state_volume, port, "state", "upgrade", "--json")
+            _run_container(config, state_volume, port, "--once")
+            _run_container(config, state_volume, port, "--once")
+            _run_container(config, state_volume, port, "state", "verify", "--json")
+            cursor = _read_cursor(state_volume)
 
             if peer.requested_after != ["0", "1"]:
                 raise RuntimeError(f"unexpected source cursors: {peer.requested_after!r}")
@@ -183,6 +250,12 @@ def main() -> int:
             if cursor != ("1",):
                 raise RuntimeError(f"Mango Fish did not persist the expected cursor: {cursor!r}")
     finally:
+        subprocess.run(
+            ["docker", "volume", "rm", "--force", state_volume],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

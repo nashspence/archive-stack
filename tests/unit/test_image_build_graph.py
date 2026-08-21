@@ -30,6 +30,7 @@ MISE_CONTAINER_TOOLS = {
     "mango-fish": {"uv"},
     "test": {"age", "http:exiftool", "minisign", "uv"},
 }
+NON_ROOT_RUNTIME_IMAGES = set(MISE_CONTAINER_TOOLS) - {"test"}
 
 IMAGE_CONTRACTS = {
     "riverhog": {
@@ -311,6 +312,30 @@ def test_mise_artifacts_match_each_image_role() -> None:
     for binary in ("age", "age-keygen", "age-plugin-batchpass", "minisign", "uv"):
         assert f'"$(mise which {binary})" /opt/riverhog-tools/bin/{binary}' in test
     assert 'test "$(exiftool -ver)" = "13.59"' in test
+
+
+def test_production_images_use_the_common_unprivileged_runtime_identity() -> None:
+    for name in NON_ROOT_RUNTIME_IMAGES:
+        contract = IMAGE_CONTRACTS[name]
+        dockerfile = (REPO_ROOT / contract["dockerfile"]).read_text(encoding="utf-8")
+        final_stage = dockerfile.rsplit("\nFROM ", maxsplit=1)[1]
+        assert "\nUSER 65532:65532\n" in final_stage
+
+    mango_fish = (REPO_ROOT / IMAGE_CONTRACTS["mango-fish"]["dockerfile"]).read_text(
+        encoding="utf-8"
+    )
+    assert "install -d -o 65532 -g 65532 -m 0700 /state" in mango_fish
+
+    riverhog = (REPO_ROOT / IMAGE_CONTRACTS["riverhog"]["dockerfile"]).read_text(encoding="utf-8")
+    assert "HOME=/tmp" in riverhog
+
+    compose = yaml.safe_load(
+        (REPO_ROOT / "riverhog/server/compose.yaml").read_text(encoding="utf-8")
+    )
+    for service_name in ("state", "app"):
+        service = compose["services"][service_name]
+        assert service["read_only"] is True
+        assert service["tmpfs"] == ["/tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532"]
 
 
 def test_container_python_ownership_matches_the_supported_runtime_minor() -> None:
