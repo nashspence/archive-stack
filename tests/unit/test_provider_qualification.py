@@ -1197,6 +1197,7 @@ def test_operator_advances_across_short_restore_invocations(
     values["RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE"] = "passphrase"
     values["RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN"] = "bootstrap"
     calls: list[str] = []
+    provider_roots: list[tuple[str, str]] = []
 
     class _Api:
         ready = False
@@ -1291,24 +1292,19 @@ def test_operator_advances_across_short_restore_invocations(
             name,
             lambda *_args, _name=name, **_kwargs: calls.append(_name),
         )
-    monkeypatch.setattr(
-        module,
-        "_independent_provider_recovery",
-        lambda *_args, **_kwargs: (
-            calls.append("_independent_provider_recovery") or "a" * 64,
-            (f"object:7:{'b' * 64}",),
-            7,
-        ),
-    )
-    monkeypatch.setattr(
-        module,
-        "_verify_cloudfront_egress",
-        lambda *_args, **_kwargs: (
-            calls.append("_verify_cloudfront_egress") or "a" * 64,
-            1,
-            7,
-        ),
-    )
+
+    def independent_provider_recovery(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append("_independent_provider_recovery")
+        provider_roots.append(("independent", kwargs["adapter_root_prefix"]))
+        return "a" * 64, (f"object:7:{'b' * 64}",), 7
+
+    def verify_cloudfront_egress(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append("_verify_cloudfront_egress")
+        provider_roots.append(("cloudfront", kwargs["adapter_root_prefix"]))
+        return "a" * 64, 1, 7
+
+    monkeypatch.setattr(module, "_independent_provider_recovery", independent_provider_recovery)
+    monkeypatch.setattr(module, "_verify_cloudfront_egress", verify_cloudfront_egress)
 
     first = module.operate_qualification(
         config=config,
@@ -1355,6 +1351,46 @@ def test_operator_advances_across_short_restore_invocations(
         "b2-archive",
         "cloudfront-egress",
     }
+    assert provider_roots == [
+        ("independent", checkpoint.namespace),
+        ("cloudfront", checkpoint.namespace),
+        ("independent", checkpoint.namespace),
+    ]
+
+
+def test_provider_archive_prefix_combines_adapter_and_riverhog_authority() -> None:
+    module = load_script()
+
+    class _Api:
+        def get_collection(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == 42
+            return {
+                "archive_copies": [
+                    {
+                        "store": "b2-archive",
+                        "state": "uploaded",
+                        "storage_prefix": "archives/opaque",
+                    }
+                ]
+            }
+
+    assert (
+        module._provider_archive_prefix(
+            _Api(),
+            collection_id=42,
+            store="b2-archive",
+            adapter_root_prefix="/qualification/run-id/",
+        )
+        == "qualification/run-id/archives/opaque"
+    )
+
+    with pytest.raises(module.QualificationError, match="adapter root prefix is empty"):
+        module._provider_archive_prefix(
+            _Api(),
+            collection_id=42,
+            store="b2-archive",
+            adapter_root_prefix="/",
+        )
 
 
 def test_qualification_api_rotates_one_durable_job_owner(

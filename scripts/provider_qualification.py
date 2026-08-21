@@ -3153,6 +3153,19 @@ def _archive_copy_prefix(api: Any, collection_id: int, store: str) -> str:
     return prefix
 
 
+def _provider_archive_prefix(
+    api: Any,
+    *,
+    collection_id: int,
+    store: str,
+    adapter_root_prefix: str,
+) -> str:
+    root = adapter_root_prefix.strip("/")
+    if not root:
+        raise QualificationError("storage adapter root prefix is empty")
+    return f"{root}/{_archive_copy_prefix(api, collection_id, store).strip('/')}"
+
+
 def _list_archive_keys(client: object, *, bucket: str, prefix: str) -> tuple[str, ...]:
     request: dict[str, object] = {"Bucket": bucket, "Prefix": f"{prefix.rstrip('/')}/"}
     keys: list[str] = []
@@ -3214,6 +3227,7 @@ def _independent_provider_recovery(
     bucket: ResolvedBucket,
     collection_id: int,
     store: str,
+    adapter_root_prefix: str,
     corpus: CorpusManifest,
     passphrase: str,
     scratch: Path,
@@ -3221,7 +3235,12 @@ def _independent_provider_recovery(
 ) -> tuple[str, tuple[str, ...], int]:
     from riverhog_recover import recover_archive
 
-    prefix = _archive_copy_prefix(api, collection_id, store)
+    prefix = _provider_archive_prefix(
+        api,
+        collection_id=collection_id,
+        store=store,
+        adapter_root_prefix=adapter_root_prefix,
+    )
     client = _runtime_s3_client(bucket, values)
     archive = scratch / f"{store}-archive"
     archive.mkdir(parents=True)
@@ -3291,6 +3310,7 @@ def _verify_cloudfront_egress(
     *,
     bucket: ResolvedBucket,
     collection_id: int,
+    adapter_root_prefix: str,
     config: QualificationConfig,
     cloudfront: CloudFrontManager,
     values: Mapping[str, str],
@@ -3298,7 +3318,12 @@ def _verify_cloudfront_egress(
     from datetime import timedelta as _timedelta
     from urllib.parse import quote as _quote
 
-    prefix = _archive_copy_prefix(api, collection_id, "aws-deep-archive")
+    prefix = _provider_archive_prefix(
+        api,
+        collection_id=collection_id,
+        store="aws-deep-archive",
+        adapter_root_prefix=adapter_root_prefix,
+    )
     client = _runtime_s3_client(bucket, values)
     base_url, key_id = cloudfront.runtime_configuration()
     signer = _cloudfront_signer(config, values, key_id)
@@ -3448,6 +3473,7 @@ def operate_qualification(
                     bucket=by_name["b2-archive"],
                     collection_id=collection_id,
                     store="b2-archive",
+                    adapter_root_prefix=checkpoint.namespace,
                     corpus=corpus,
                     passphrase=passphrase,
                     scratch=scratch,
@@ -3670,6 +3696,7 @@ def operate_qualification(
                 api,
                 bucket=by_name["aws-deep-archive"],
                 collection_id=collection_id,
+                adapter_root_prefix=checkpoint.namespace,
                 config=config,
                 cloudfront=cloudfront,
                 values=values,
@@ -3681,6 +3708,7 @@ def operate_qualification(
                     bucket=by_name["aws-deep-archive"],
                     collection_id=collection_id,
                     store="aws-deep-archive",
+                    adapter_root_prefix=checkpoint.namespace,
                     corpus=corpus,
                     passphrase=passphrase,
                     scratch=scratch,
