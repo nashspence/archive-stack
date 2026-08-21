@@ -572,6 +572,8 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
     targets = (
         "riverhog",
         "riverhog-ftp-adapter",
+        "riverhog-storage-adapter-aws",
+        "riverhog-storage-adapter-backblaze",
         "stove0",
         "stove0-ffprobe-sampling-observer",
         "stove0-nvenc-av1-opus-target",
