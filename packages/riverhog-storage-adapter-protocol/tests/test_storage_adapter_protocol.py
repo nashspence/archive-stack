@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from riverhog_storage_adapter_protocol import (
     AdapterDescriptor,
     DeleteObjectRequest,
+    DeletePrefixRequest,
     MultipartCompleteRequest,
     MultipartCreateRequest,
     MultipartPartReceipt,
@@ -135,6 +136,12 @@ def test_revision_and_deletion_modes_preserve_versioned_and_unversioned_targets(
         DeleteObjectRequest(object=versioned, mode="all_versions")
 
 
+def test_prefix_deletion_is_explicitly_version_aware() -> None:
+    request = DeletePrefixRequest(object_prefix="archives/collection/")
+
+    assert request.mode == "all_versions"
+
+
 def test_object_metadata_keeps_large_object_digest_optional() -> None:
     receipt = ObjectMetadataReceipt(
         object_path="archives/id/volumes/pack.tar.age",
@@ -150,9 +157,11 @@ def test_object_metadata_keeps_large_object_digest_optional() -> None:
 
 def test_range_requires_both_offset_and_size() -> None:
     locator = ObjectLocator(object_path="archives/id/volumes/pack.tar.age")
-    assert ObjectReadRequest(object=locator, offset=0, size=0).size == 0
+    assert ObjectReadRequest(object=locator, expected_bytes=10, offset=0, size=0).size == 0
     with pytest.raises(ValidationError, match="requires both"):
-        ObjectReadRequest(object=locator, offset=0)
+        ObjectReadRequest(object=locator, expected_bytes=10, offset=0)
+    with pytest.raises(ValidationError, match="exceeds"):
+        ObjectReadRequest(object=locator, expected_bytes=10, offset=8, size=3)
 
 
 def test_descriptor_exposes_only_runtime_facts_needed_by_riverhog() -> None:

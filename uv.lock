@@ -27,6 +27,7 @@ members = [
     "riverhog-recover",
     "riverhog-server",
     "riverhog-storage-adapter-protocol",
+    "riverhog-storage-adapter-support",
     "riverhog-transform-sdk",
     "state-schema",
     "stove0-api-client",
@@ -1708,6 +1709,25 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.7,<3.0" }]
+
+[[package]]
+name = "riverhog-storage-adapter-support"
+version = "0.1.0"
+source = { editable = "packages/riverhog-storage-adapter-support" }
+dependencies = [
+    { name = "http-api-contracts" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "riverhog-storage-adapter-protocol" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
+    { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
+]
 
 [[package]]
 name = "riverhog-transform-sdk"
