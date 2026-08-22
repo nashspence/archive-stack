@@ -59,8 +59,9 @@ Workspace dependency and import checks enforce the implementation-owner boundari
   maintained implementations of the provider-neutral storage-adapter contract.
 - [`riverhog/recovery`](../riverhog/recovery/) is a permissively licensed reference;
   archives remain recoverable with standard tools.
-- [`companions`](../companions/) contains content-opaque Stove0 orchestration plus isolated
-  maintained observer, sampler, and target examples.
+- [`companions`](../companions/) contains content-opaque applications.
+- [`extensions`](../extensions/) contains maintained reference observer, sampler,
+  and target implementations.
 - [`utilities`](../utilities/) contains portable operator and event tools.
-- [`packages`](../packages/) contains reusable libraries and protocol, client,
+- [`packages`](../packages/) contains reusable protocol, client,
   configuration, event, transport, and CLI primitives.

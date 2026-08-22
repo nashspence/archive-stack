@@ -55,8 +55,7 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     assert pyproject["tool"]["uv"]["workspace"]["members"] == [
         "companions/*/client",
         "companions/*/server",
-        "companions/stove0-*-observer",
-        "companions/stove0-*-target",
+        "extensions/stove0/*",
         "packages/*",
         "riverhog/*",
         "utilities/*",

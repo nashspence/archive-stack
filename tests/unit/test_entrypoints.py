@@ -19,6 +19,7 @@ REPOSITORY_MAP_TARGETS = {
     REPO / "riverhog/storage-adapter-aws",
     REPO / "riverhog/storage-adapter-backblaze",
     REPO / "companions",
+    REPO / "extensions",
     REPO / "utilities",
     REPO / "packages",
 }
