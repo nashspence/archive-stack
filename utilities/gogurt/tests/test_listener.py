@@ -289,6 +289,30 @@ def test_unexpected_worker_failure_terminates_with_failed_runtime_health(
     assert "dispatch worker" in heartbeat["runtime"]["diagnostic"]
 
 
+def test_listener_process_logs_an_unhandled_runtime_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    config.write(paths.config_file)
+
+    def fail_runtime(_runtime: ListenerRuntime) -> None:
+        raise ListenerError("qualification fatal fixture")
+
+    monkeypatch.setattr(ListenerRuntime, "run", fail_runtime)
+
+    with pytest.raises(ListenerError, match="qualification fatal fixture"):
+        listener_module.run_listener(paths.config_file)
+
+    logger = listener_module.logging.getLogger("gogurt.listener")
+    for handler in logger.handlers:
+        handler.close()
+    logger.handlers.clear()
+    log = paths.log_file.read_text(encoding="utf-8")
+    assert "listener failed pid=" in log
+    assert "runtime: ListenerError: qualification fatal fixture" in log
+
+
 def test_interrupted_dispatch_becomes_observable_uncertain_state(tmp_path: Path) -> None:
     config, paths, mount, _counter = _fixture(tmp_path)
     store = ListenerStore(paths.database_file)

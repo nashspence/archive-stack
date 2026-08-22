@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -90,9 +91,18 @@ def test_gogurt_failure_evidence_is_bounded_to_status_and_listener_logs(
         command: list[str],
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
+        if command[:2] == ["launchctl", "print"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "state = running\n\tpid = 123\n\truns = 4\n\tlast exit code = 1\n",
+                "private native diagnostic",
+            )
         return subprocess.CompletedProcess(command, 0, '{"health":"failed"}\n', "")
 
     monkeypatch.setattr(module.subprocess, "run", status)
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module.os, "getuid", lambda: 501)
     module._retain_gogurt_failure_evidence(
         tmp_path / "gogurt",
         state_dir=state,
@@ -105,11 +115,16 @@ def test_gogurt_failure_evidence_is_bounded_to_status_and_listener_logs(
 
     assert {path.name for path in evidence.iterdir()} == {
         "lifecycle-failure.txt",
+        "lifecycle-native.json",
         "lifecycle-status.json",
         "listener.log",
         "listener.log.1",
     }
     assert "bounded failure" in (evidence / "lifecycle-failure.txt").read_text(encoding="utf-8")
+    assert json.loads((evidence / "lifecycle-native.json").read_text(encoding="utf-8")) == {
+        "fields": {"last exit code": 1, "pid": 123, "runs": 4, "state": "running"},
+        "returncode": 0,
+    }
     assert "private state" not in "".join(
         path.read_text(encoding="utf-8") for path in evidence.iterdir()
     )

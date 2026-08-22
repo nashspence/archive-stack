@@ -1013,8 +1013,17 @@ def run_listener(config_file: Path) -> None:
     signal.signal(signal.SIGINT, stop)
     with ListenerLock(paths.lock_file):
         runtime.logger.info("listener started pid=%s version=%s", os.getpid(), _package_version())
-        runtime.run()
-        runtime.logger.info("listener stopped pid=%s", os.getpid())
+        try:
+            runtime.run()
+        except BaseException as exc:
+            runtime.logger.error(
+                "listener failed pid=%s diagnostic=%s",
+                os.getpid(),
+                _safe_diagnostic("runtime", exc),
+            )
+            raise
+        else:
+            runtime.logger.info("listener stopped pid=%s", os.getpid())
 
 
 def _read_heartbeat_result(path: Path) -> tuple[dict[str, object] | None, str | None]:
