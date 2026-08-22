@@ -713,6 +713,7 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
         "COPY tests tests"
     )
     assert "COPY companions companions" in test_dockerfile
+    assert "COPY extensions extensions" in test_dockerfile
     assert "COPY packages packages" in test_dockerfile
     assert "COPY riverhog riverhog" in test_dockerfile
     assert "COPY utilities utilities" in test_dockerfile
@@ -724,6 +725,7 @@ def test_dockerfile_copy_sources_are_git_owned() -> None:
     dockerfiles = [
         REPO_ROOT / "tests" / "Dockerfile",
         *sorted((REPO_ROOT / "companions").rglob("Dockerfile")),
+        *sorted((REPO_ROOT / "extensions").rglob("Dockerfile")),
         *sorted((REPO_ROOT / "riverhog").rglob("Dockerfile")),
         *sorted((REPO_ROOT / "utilities").rglob("Dockerfile")),
     ]
