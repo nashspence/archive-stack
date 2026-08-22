@@ -40,6 +40,7 @@ from stove0_target_protocol import (
 from stove0_target_protocol.jcs import canonical_json_bytes, canonical_json_sha256
 
 from stove0_target_support.conformance import TargetClient, conformance_report
+from stove0_target_support.execution import TargetExecutionSession
 from stove0_target_support.http_binding import (
     TargetHttpBinding,
     TargetHttpResponse,
@@ -50,6 +51,7 @@ from stove0_target_support.persistent import (
     JobExecutor,
     PersistentTargetService,
     TargetExecutionCanceled,
+    TargetExecutionFailure,
     TargetExecutionInapplicable,
 )
 from stove0_target_support.runtime import TargetExecutionRuntime
@@ -82,8 +84,10 @@ __all__ = [
     "TargetContractPayload",
     "TargetExecutionEvidence",
     "TargetExecutionCanceled",
+    "TargetExecutionFailure",
     "TargetExecutionInapplicable",
     "TargetExecutionRuntime",
+    "TargetExecutionSession",
     "TargetFailure",
     "TargetInapplicable",
     "TargetHttpBinding",

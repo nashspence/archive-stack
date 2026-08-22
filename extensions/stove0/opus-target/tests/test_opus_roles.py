@@ -5,11 +5,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from riverhog_protocol import canonical_json_sha256
 from stove0_media_archive_contracts import AUDIO_ARCHIVE_OPERATION
 from stove0_opus_review_sampler import OpusReviewSampler
 from stove0_opus_review_sampler.app import create_app as create_sampler_app
 from stove0_opus_target import OpusTargetService
 from stove0_opus_target import app as opus_app
+from stove0_opus_target import target as opus_target
 from stove0_opus_target.app import create_target_app
 from stove0_review_sampler_protocol import (
     SamplerInput,
@@ -18,7 +20,7 @@ from stove0_review_sampler_protocol import (
     SamplerWindow,
 )
 from stove0_review_sampler_support import SamplerHttpBinding
-from stove0_target_support import TargetHttpBinding
+from stove0_target_support import OutputArtifact, TargetHttpBinding
 
 
 def _sha(character: str) -> str:
@@ -101,6 +103,28 @@ def test_opus_target_uses_configured_ffmpeg(monkeypatch: Any) -> None:
 
     assert opus_app.target_main([]) == 0
     assert configured["ffmpeg"] == "fixture-ffmpeg"
+
+
+def test_opus_execution_identity_is_the_canonical_semantic_result() -> None:
+    output = OutputArtifact(
+        id="opus-source",
+        role="stove0.media.audio-archive/v1",
+        path="audio/source.opus",
+        bytes=12,
+        sha256=_sha("3"),
+        media_type="audio/ogg",
+        derived_from=("source",),
+    )
+    expected = canonical_json_sha256(
+        {
+            "format": "stove0-opus-target-execution/v1",
+            "plan_sha256": _sha("1"),
+            "image_digest": _sha("2"),
+            "outputs": [output.model_dump(mode="json")],
+        }
+    )
+
+    assert opus_target._execution_sha256(_sha("1"), _sha("2"), (output,)) == expected
 
 
 def _request(workspace_root: Path, sampler: OpusReviewSampler) -> SamplerRequest:

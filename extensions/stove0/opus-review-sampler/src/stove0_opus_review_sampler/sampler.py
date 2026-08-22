@@ -12,6 +12,7 @@ from stove0_review_sampler_protocol import (
     SamplerDescriptor,
     SamplerDescriptorPayload,
     SamplerFailure,
+    SamplerInapplicable,
     SamplerOutput,
     SamplerRequest,
     SamplerResult,
@@ -104,9 +105,9 @@ class OpusReviewSampler:
                     temporary.unlink(missing_ok=True)
                     return self._result(
                         request,
-                        state="failed",
-                        failure=SamplerFailure(
-                            code="opus-inapplicable", message=str(exc), retryable=False
+                        state="inapplicable",
+                        inapplicable=SamplerInapplicable(
+                            code="opus-inapplicable", message=str(exc)
                         ),
                     )
                 os.replace(temporary, destination)
@@ -116,11 +117,10 @@ class OpusReviewSampler:
                     destination.unlink(missing_ok=True)
                     return self._result(
                         request,
-                        state="failed",
-                        failure=SamplerFailure(
+                        state="inapplicable",
+                        inapplicable=SamplerInapplicable(
                             code="output-limit-exceeded",
                             message="Opus samples exceed the sealed output limit.",
-                            retryable=False,
                         ),
                     )
                 outputs.append(
@@ -152,6 +152,7 @@ class OpusReviewSampler:
         state: str,
         outputs: tuple[SamplerOutput, ...] = (),
         failure: SamplerFailure | None = None,
+        inapplicable: SamplerInapplicable | None = None,
     ) -> SamplerResult:
         return SamplerResult.seal(
             SamplerResultPayload(
@@ -160,6 +161,7 @@ class OpusReviewSampler:
                 state=state,  # type: ignore[arg-type]
                 outputs=outputs,
                 failure=failure,
+                inapplicable=inapplicable,
                 execution_evidence={
                     "ffmpeg": tool_version(self.ffmpeg),
                     "image_digest": self._descriptor.image_digest,

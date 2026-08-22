@@ -12,6 +12,7 @@ from stove0_review_sampler_protocol import (
     SamplerDescriptor,
     SamplerDescriptorPayload,
     SamplerFailure,
+    SamplerInapplicable,
     SamplerOutput,
     SamplerRequest,
     SamplerResult,
@@ -115,11 +116,10 @@ class NvencAv1OpusReviewSampler:
                     temporary.unlink(missing_ok=True)
                     return self._result(
                         request,
-                        state="failed",
-                        failure=SamplerFailure(
+                        state="inapplicable",
+                        inapplicable=SamplerInapplicable(
                             code="nvenc-av1-opus-inapplicable",
                             message=str(exc),
-                            retryable=False,
                         ),
                     )
                 os.replace(temporary, destination)
@@ -129,11 +129,10 @@ class NvencAv1OpusReviewSampler:
                     destination.unlink(missing_ok=True)
                     return self._result(
                         request,
-                        state="failed",
-                        failure=SamplerFailure(
+                        state="inapplicable",
+                        inapplicable=SamplerInapplicable(
                             code="output-limit-exceeded",
                             message="NVENC AV1 + Opus samples exceed the sealed output limit.",
-                            retryable=False,
                         ),
                     )
                 outputs.append(
@@ -165,6 +164,7 @@ class NvencAv1OpusReviewSampler:
         state: str,
         outputs: tuple[SamplerOutput, ...] = (),
         failure: SamplerFailure | None = None,
+        inapplicable: SamplerInapplicable | None = None,
     ) -> SamplerResult:
         return SamplerResult.seal(
             SamplerResultPayload(
@@ -173,6 +173,7 @@ class NvencAv1OpusReviewSampler:
                 state=state,  # type: ignore[arg-type]
                 outputs=outputs,
                 failure=failure,
+                inapplicable=inapplicable,
                 execution_evidence={
                     "ffmpeg": tool_version(self.ffmpeg),
                     "image_digest": self._descriptor.image_digest,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import subprocess
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Any, Final
 
 from jsonschema import Draft202012Validator
+from riverhog_protocol import RiverhogError, ServiceUnavailable
+from riverhog_transform_sdk import TransformRuntimeRegistry
 from stove0_target_protocol import (
     AcceptedTargetJob,
     OperationContract,
@@ -29,13 +32,17 @@ from stove0_target_protocol import (
     validate_declaration_against_operation,
 )
 
+from stove0_target_support.execution import TargetExecutionSession
 from stove0_target_support.http_binding import TargetServiceError
 from stove0_target_support.jcs import canonical_json_bytes
 
 _ACTIVE_STATES: Final = frozenset({"queued", "running", "canceling"})
 _TERMINAL_STATES: Final = frozenset({"inapplicable", "succeeded", "failed", "canceled"})
 
-JobExecutor = Callable[[TargetJobRequest, int, threading.Event], TargetJobStatus]
+JobExecutor = Callable[
+    [TargetJobRequest, int, threading.Event, TargetExecutionSession],
+    TargetJobStatus,
+]
 
 
 class TargetExecutionCanceled(RuntimeError):
@@ -51,13 +58,23 @@ class TargetExecutionInapplicable(RuntimeError):
         self.message = message
 
 
+class TargetExecutionFailure(RuntimeError):
+    """The target classified a non-content execution failure explicitly."""
+
+    def __init__(self, code: str, message: str, *, retryable: bool) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+
+
 class PersistentTargetService:
     """Persist non-secret job identity and converge identical restart requests.
 
-    Capability tokens remain only in the active request closure. Accepted
-    declarations and statuses are atomically persisted beneath one target-owned
-    state root; an active job found after process loss becomes ``interrupted``
-    and only an identical request may resume it.
+    Capability tokens remain only in process memory. Accepted declarations and
+    statuses are atomically persisted beneath one target-owned state root; an
+    active job found after process loss becomes ``interrupted`` and only an
+    identical request may resume it.
     """
 
     def __init__(
@@ -86,6 +103,10 @@ class PersistentTargetService:
         self._operator_canceled: set[str] = set()
         self._shutdown_interrupted: set[str] = set()
         self._futures: dict[str, Future[TargetJobStatus]] = {}
+        self._runtime_registry = TransformRuntimeRegistry()
+        self._runtime_contexts: dict[str, dict[str, object]] = {}
+        self._runtime_token_fingerprints: dict[str, bytes] = {}
+        self._sessions: dict[str, TargetExecutionSession] = {}
         self._recover_interrupted()
 
     def contract(self) -> TargetContract:
@@ -131,9 +152,31 @@ class PersistentTargetService:
             if existing is None:
                 self._write_model(self._accepted_path(job_id), request.accepted())
             status = self._load_status(job_id)
+            if status is None or status.state not in _TERMINAL_STATES:
+                runtime_context = request.runtime.model_dump(
+                    mode="json",
+                    exclude={"capability_token"},
+                )
+                prior_context = self._runtime_contexts.get(job_id)
+                if prior_context is not None and prior_context != runtime_context:
+                    raise TargetServiceError(
+                        409,
+                        "target-runtime-mismatch",
+                        "active target runtime endpoint changed",
+                    )
+                self._runtime_contexts[job_id] = runtime_context
+                token_fingerprint = hashlib.sha256(
+                    request.runtime.capability_token.encode()
+                ).digest()
+                if self._runtime_token_fingerprints.get(job_id) != token_fingerprint:
+                    self._runtime_token_fingerprints[job_id] = token_fingerprint
+                    self._runtime_registry.refresh(
+                        job_id,
+                        request.runtime.capability_token,
+                    )
             if status is None:
                 status = self._status(request, state="queued", attempt=1, phase="queued")
-                self._write_status(status)
+                status = self._commit_status(status)
                 self._submit(request, status.attempt)
             elif status.state == "interrupted":
                 status = self._status(
@@ -142,7 +185,7 @@ class PersistentTargetService:
                     attempt=status.attempt + 1,
                     phase="restarting",
                 )
-                self._write_status(status)
+                status = self._commit_status(status)
                 self._submit(request, status.attempt)
             return status
 
@@ -175,8 +218,7 @@ class PersistentTargetService:
                 plan_sha256=accepted.declaration.plan.plan_sha256,
                 progress=TargetProgress(phase="canceling", completed=0),
             )
-            self._write_status(canceling)
-            return canceling
+            return self._commit_status(canceling)
 
     def close(self) -> None:
         with self._lock:
@@ -206,54 +248,69 @@ class PersistentTargetService:
         self._operator_canceled.discard(job_id)
         self._shutdown_interrupted.discard(job_id)
         cancellation.clear()
-        self._futures[job_id] = self._pool.submit(self._run, request, attempt, cancellation)
+        session = TargetExecutionSession(
+            request,
+            attempt,
+            self._runtime_registry,
+        )
+        self._sessions[job_id] = session
+        self._futures[job_id] = self._pool.submit(
+            self._run,
+            request,
+            attempt,
+            cancellation,
+            session,
+        )
 
     def _run(
         self,
         request: TargetJobRequest,
         attempt: int,
         cancellation: threading.Event,
+        session: TargetExecutionSession,
     ) -> TargetJobStatus:
-        if cancellation.is_set():
-            terminal = self._stop_status(request, attempt)
-            self._write_status(terminal)
-            return terminal
-        self._write_status(
-            self._status(request, state="running", attempt=attempt, phase="preparing-inputs")
-        )
         try:
-            terminal = self._execute(request, attempt, cancellation)
-        except TargetExecutionCanceled:
-            terminal = self._stop_status(request, attempt)
-        except TargetExecutionInapplicable as exc:
-            terminal = TargetJobStatus(
-                job_id=request.declaration.job_id,
-                state="inapplicable",
-                attempt=attempt,
-                request_sha256=request.request_sha256,
-                plan_sha256=request.declaration.plan.plan_sha256,
-                progress=TargetProgress(phase="inapplicable", completed=0),
-                inapplicable=TargetInapplicable(code=exc.code, message=exc.message),
+            if cancellation.is_set():
+                return self._commit_status(self._stop_status(request, attempt))
+            active = self._commit_status(
+                self._status(
+                    request,
+                    state="running",
+                    attempt=attempt,
+                    phase="preparing-inputs",
+                )
             )
-        except Exception as exc:
-            retryable = isinstance(exc, (OSError, TimeoutError, subprocess.TimeoutExpired))
-            terminal = TargetJobStatus(
-                job_id=request.declaration.job_id,
-                state="failed",
-                attempt=attempt,
-                request_sha256=request.request_sha256,
-                plan_sha256=request.declaration.plan.plan_sha256,
-                progress=TargetProgress(phase="failed", completed=0),
-                failure=TargetFailure(
-                    code="target-infrastructure" if retryable else "target-content",
-                    message=f"{type(exc).__name__}: {exc}"[:1000],
-                    retryable=retryable,
-                ),
-            )
-        if cancellation.is_set():
-            terminal = self._stop_status(request, attempt)
-        self._write_status(terminal)
-        return terminal
+            if active.state == "canceling" or cancellation.is_set():
+                return self._commit_status(self._stop_status(request, attempt))
+            try:
+                terminal = self._execute(request, attempt, cancellation, session)
+            except TargetExecutionCanceled:
+                terminal = self._stop_status(request, attempt)
+            except TargetExecutionInapplicable as exc:
+                terminal = TargetJobStatus(
+                    job_id=request.declaration.job_id,
+                    state="inapplicable",
+                    attempt=attempt,
+                    request_sha256=request.request_sha256,
+                    plan_sha256=request.declaration.plan.plan_sha256,
+                    progress=TargetProgress(phase="inapplicable", completed=0),
+                    inapplicable=TargetInapplicable(code=exc.code, message=exc.message),
+                )
+            except Exception as exc:
+                terminal = _failure_status(request, attempt=attempt, failure=exc)
+            published = session.published_status
+            if published is not None:
+                terminal = published
+            elif cancellation.is_set() and terminal.state != "succeeded":
+                terminal = self._stop_status(request, attempt)
+            return self._commit_status(terminal)
+        finally:
+            with self._lock:
+                if self._sessions.get(request.declaration.job_id) is session:
+                    self._sessions.pop(request.declaration.job_id, None)
+                self._runtime_contexts.pop(request.declaration.job_id, None)
+                self._runtime_token_fingerprints.pop(request.declaration.job_id, None)
+                self._runtime_registry.discard(request.declaration.job_id)
 
     def _stop_status(self, request: TargetJobRequest, attempt: int) -> TargetJobStatus:
         job_id = request.declaration.job_id
@@ -287,7 +344,7 @@ class PersistentTargetService:
                 raise ValueError("target state paths must not be symlinks")
             status = TargetJobStatus.model_validate_json(path.read_text(encoding="utf-8"))
             if status.state in _ACTIVE_STATES:
-                self._write_status(
+                self._commit_status(
                     status.model_copy(
                         update={
                             "state": "interrupted",
@@ -318,9 +375,18 @@ class PersistentTargetService:
             else TargetJobStatus.model_validate_json(path.read_text(encoding="utf-8"))
         )
 
-    def _write_status(self, status: TargetJobStatus) -> None:
+    def _commit_status(self, status: TargetJobStatus) -> TargetJobStatus:
         with self._lock:
+            current = self._load_status(status.job_id)
+            if current is not None:
+                if current.state in _TERMINAL_STATES:
+                    return current
+                if current.attempt > status.attempt:
+                    return current
+                if current.state == "canceling" and status.state in {"queued", "running"}:
+                    return current
             self._write_model(self._status_path(status.job_id), status)
+            return status
 
     def _write_model(self, path: Path, model: Any) -> None:
         if path.is_symlink():
@@ -353,9 +419,58 @@ def _job_id(value: str) -> str:
     return value
 
 
+def _failure_status(
+    request: TargetJobRequest,
+    *,
+    attempt: int,
+    failure: Exception,
+) -> TargetJobStatus:
+    if isinstance(failure, TargetExecutionFailure):
+        code = failure.code
+        message = failure.message
+        retryable = failure.retryable
+    elif isinstance(failure, RiverhogError):
+        status = failure.status
+        if status in {401, 403} or failure.code in {"unauthorized", "forbidden"}:
+            code = "target-authorization"
+            retryable = True
+        elif status == 409 or failure.code in {"conflict", "invalid_state"}:
+            code = "target-conflict"
+            retryable = True
+        elif isinstance(failure, ServiceUnavailable) or (status is not None and status >= 500):
+            code = "target-infrastructure"
+            retryable = True
+        else:
+            code = "target-api"
+            retryable = False
+        message = f"{type(failure).__name__}: {failure}"
+    elif isinstance(failure, (OSError, TimeoutError, subprocess.TimeoutExpired)):
+        code = "target-infrastructure"
+        message = f"{type(failure).__name__}: {failure}"
+        retryable = True
+    else:
+        code = "target-software"
+        message = f"{type(failure).__name__}: {failure}"
+        retryable = True
+    return TargetJobStatus(
+        job_id=request.declaration.job_id,
+        state="failed",
+        attempt=attempt,
+        request_sha256=request.request_sha256,
+        plan_sha256=request.declaration.plan.plan_sha256,
+        progress=TargetProgress(phase="failed", completed=0),
+        failure=TargetFailure(
+            code=code,
+            message=message[:1000],
+            retryable=retryable,
+        ),
+    )
+
+
 __all__ = [
     "JobExecutor",
     "PersistentTargetService",
     "TargetExecutionCanceled",
+    "TargetExecutionFailure",
     "TargetExecutionInapplicable",
 ]

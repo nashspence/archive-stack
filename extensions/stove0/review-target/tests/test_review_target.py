@@ -5,14 +5,30 @@ from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
+from riverhog_protocol import canonical_json_sha256
 from stove0_protocol import CollectionRootRef, JsonSchemaDocument
 from stove0_review_contracts import REVIEW_MATERIALIZE_OPERATION, REVIEW_SOURCE_ROLE
 from stove0_review_sampler_client import ReviewSamplerClient
-from stove0_review_sampler_protocol import SamplerDescriptor, SamplerDescriptorPayload
+from stove0_review_sampler_protocol import (
+    SamplerDescriptor,
+    SamplerDescriptorPayload,
+    SamplerFailure,
+    SamplerInapplicable,
+    SamplerResult,
+    SamplerResultPayload,
+)
 from stove0_review_target import ReviewTargetService, SamplerRegistration
 from stove0_review_target import app as review_app
+from stove0_review_target import target as review_target
 from stove0_review_target.app import create_app
-from stove0_target_support import InputArtifact, TargetPreflightRequest
+from stove0_target_support import (
+    InputArtifact,
+    OutputArtifact,
+    TargetExecutionCanceled,
+    TargetExecutionFailure,
+    TargetExecutionInapplicable,
+    TargetPreflightRequest,
+)
 
 
 def _sha(character: str) -> str:
@@ -167,6 +183,75 @@ def test_review_process_exposes_only_target_contract(tmp_path: Path) -> None:
             ).status_code
             == 404
         )
+
+
+def test_review_target_preserves_sampler_terminal_classification() -> None:
+    registration, _client = _sampler()
+    common = {
+        "request_sha256": _sha("1"),
+        "sampler_descriptor_sha256": registration.descriptor_sha256,
+    }
+    retryable = SamplerResult.seal(
+        SamplerResultPayload(
+            **common,
+            state="failed",
+            failure=SamplerFailure(
+                code="sampler-infrastructure",
+                message="temporary sampler failure",
+                retryable=True,
+            ),
+        )
+    )
+    inapplicable = SamplerResult.seal(
+        SamplerResultPayload(
+            **common,
+            state="inapplicable",
+            inapplicable=SamplerInapplicable(
+                code="unsupported-content",
+                message="fixture content is unsupported",
+            ),
+        )
+    )
+    canceled = SamplerResult.seal(SamplerResultPayload(**common, state="canceled"))
+
+    with pytest.raises(TargetExecutionFailure) as retryable_error:
+        review_target._require_sampler_success(retryable)
+    assert retryable_error.value.retryable is True
+    with pytest.raises(TargetExecutionInapplicable, match="fixture content"):
+        review_target._require_sampler_success(inapplicable)
+    with pytest.raises(TargetExecutionCanceled, match="canceled"):
+        review_target._require_sampler_success(canceled)
+
+
+def test_review_execution_identity_is_the_canonical_semantic_result() -> None:
+    output = OutputArtifact(
+        id="review-index",
+        role="stove0.review.index/v1",
+        path="review/index.json",
+        bytes=12,
+        sha256=_sha("4"),
+        media_type="application/json",
+        derived_from=("source",),
+    )
+    expected = canonical_json_sha256(
+        {
+            "format": "stove0-review-target-execution/v1",
+            "plan_sha256": _sha("1"),
+            "image_digest": _sha("2"),
+            "sampler_result_sha256": _sha("3"),
+            "outputs": [output.model_dump(mode="json")],
+        }
+    )
+
+    assert (
+        review_target._execution_sha256(
+            _sha("1"),
+            _sha("2"),
+            _sha("3"),
+            (output,),
+        )
+        == expected
+    )
 
 
 def test_review_process_environment_is_connected(

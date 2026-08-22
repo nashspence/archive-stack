@@ -11,6 +11,8 @@ from stove0_review_sampler_client import ReviewSamplerClient
 from stove0_review_sampler_protocol import (
     SamplerDescriptor,
     SamplerDescriptorPayload,
+    SamplerFailure,
+    SamplerInapplicable,
     SamplerInput,
     SamplerOutput,
     SamplerRequest,
@@ -194,3 +196,36 @@ def test_protocol_identities_reject_undeclared_or_ambiguous_results() -> None:
         json.dumps({"format": "stove0-review-sampler-request/v1"}).encode(),
     )
     assert error.status == 400
+
+
+def test_sampler_terminal_outcomes_keep_inapplicability_and_failure_distinct() -> None:
+    descriptor = _descriptor()
+    request = _request(descriptor)
+    inapplicable = SamplerResult.seal(
+        SamplerResultPayload(
+            request_sha256=request.request_sha256,
+            sampler_descriptor_sha256=descriptor.descriptor_sha256,
+            state="inapplicable",
+            inapplicable=SamplerInapplicable(
+                code="fixture-content",
+                message="fixture cannot be sampled",
+            ),
+        )
+    )
+    failed = SamplerResult.seal(
+        SamplerResultPayload(
+            request_sha256=request.request_sha256,
+            sampler_descriptor_sha256=descriptor.descriptor_sha256,
+            state="failed",
+            failure=SamplerFailure(
+                code="fixture-infrastructure",
+                message="fixture service is unavailable",
+                retryable=True,
+            ),
+        )
+    )
+
+    assert inapplicable.inapplicable is not None
+    assert inapplicable.failure is None
+    assert failed.failure is not None and failed.failure.retryable is True
+    assert failed.inapplicable is None
