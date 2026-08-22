@@ -34,6 +34,8 @@ from stove0_target_protocol import (
     validate_status_against_request,
 )
 
+from stove0_target_support.execution import TargetExecutionSession
+
 CancellationCheck = Callable[[], None]
 
 
@@ -44,9 +46,15 @@ class TargetExecutionRuntime:
         self,
         request: TargetJobRequest,
         runtime: CollectionTransformRuntime,
+        *,
+        session: TargetExecutionSession | None = None,
     ) -> None:
         self.request = request
         self.runtime = runtime
+        self.session = session
+        self._runtime_binding: Any = None
+        self._workspaces: list[TransformWorkspace] = []
+        self._published = False
 
     @classmethod
     def from_request(
@@ -55,6 +63,7 @@ class TargetExecutionRuntime:
         *,
         cancellation_check: CancellationCheck | None = None,
         producer_version: str = "development",
+        session: TargetExecutionSession | None = None,
     ) -> TargetExecutionRuntime:
         declaration = request.declaration
         evidence = declaration.controller_evidence
@@ -93,17 +102,50 @@ class TargetExecutionRuntime:
             cancellation_check=cancellation_check,
             input_retrieval_policy=workflow.input_retrieval_policy,
         )
-        return cls(request, runtime)
+        return cls(request, runtime, session=session)
 
     def __enter__(self) -> Self:
         self.runtime.__enter__()
+        if self.session is not None:
+            self._runtime_binding = self.session.runtime_registry.bind(
+                self.request.declaration.job_id,
+                self.runtime,
+            )
+            self._runtime_binding.__enter__()
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.runtime.__exit__(exc_type, exc, tb)
+        failures: list[Exception] = []
+        for workspace in reversed(self._workspaces):
+            if not workspace.root.exists() and not workspace.root.is_symlink():
+                continue
+            try:
+                workspace.release()
+            except Exception as cleanup_exc:
+                failures.append(cleanup_exc)
+        if self._runtime_binding is not None:
+            try:
+                self._runtime_binding.__exit__(exc_type, exc, tb)
+            except Exception as cleanup_exc:
+                failures.append(cleanup_exc)
+            self._runtime_binding = None
+        try:
+            self.runtime.__exit__(exc_type, exc, tb)
+        except Exception as cleanup_exc:
+            failures.append(cleanup_exc)
+        if exc is None and failures and not self._published:
+            raise RuntimeError("target execution cleanup failed before publication") from failures[
+                0
+            ]
 
     def refresh_capability(self, token: str) -> None:
         self.runtime.refresh_capability(token)
+
+    @property
+    def published(self) -> bool:
+        """Whether Riverhog has finalized this attempt's exact output."""
+
+        return self._published
 
     def inputs(self) -> tuple[tuple[InputArtifact, ClaimedArtifact], ...]:
         inventory = {item.key: item for item in self.runtime.inventory()}
@@ -139,10 +181,12 @@ class TargetExecutionRuntime:
         return self.runtime.prepare_inputs(artifacts, **kwargs)
 
     def open_workspace(self, root: Path) -> TransformWorkspace:
-        return self.runtime.open_workspace(
+        workspace = self.runtime.open_workspace(
             root,
             assurance=self.request.declaration.workspace_assurance,
         )
+        self._workspaces.append(workspace)
+        return workspace
 
     def publish(
         self,
@@ -184,6 +228,7 @@ class TargetExecutionRuntime:
             },
             **kwargs,
         )
+        self._published = True
         return receipt, OutputCollectionRef(
             collection_id=receipt.collection_id,
             manifest_sha256=receipt.manifest_sha256,
@@ -242,6 +287,8 @@ class TargetExecutionRuntime:
             derivation=receipt.derivation.as_dict(),
         )
         validate_status_against_request(status, self.request, operation)
+        if self.session is not None:
+            self.session.record_published(status)
         return status
 
 

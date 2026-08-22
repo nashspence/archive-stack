@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from riverhog_protocol import canonical_json_sha256
 from stove0_media_archive_contracts import AV1_OPUS_ARCHIVE_OPERATION
 from stove0_nvenc_av1_opus_review_sampler import NvencAv1OpusReviewSampler
 from stove0_nvenc_av1_opus_review_sampler.app import create_app as create_sampler_app
 from stove0_nvenc_av1_opus_target import NvencAv1OpusTargetService, source_artifacts
+from stove0_nvenc_av1_opus_target import target as nvenc_target
 from stove0_nvenc_av1_opus_target.app import create_target_app
 from stove0_nvenc_av1_opus_target.common import NvencContentError, run_ffmpeg
 from stove0_review_sampler_protocol import (
@@ -20,7 +22,7 @@ from stove0_review_sampler_protocol import (
     SamplerWindow,
 )
 from stove0_review_sampler_support import SamplerHttpBinding
-from stove0_target_support import TargetHttpBinding
+from stove0_target_support import OutputArtifact, TargetHttpBinding
 
 
 def _sha(character: str) -> str:
@@ -32,6 +34,28 @@ def test_source_artifact_zstd_command_is_configurable(monkeypatch: Any) -> None:
     monkeypatch.setattr(source_artifacts.shutil, "which", lambda command: f"/tools/{command}")
 
     assert source_artifacts._zstd_command() == "/tools/fixture-zstd"
+
+
+def test_nvenc_execution_identity_is_the_canonical_semantic_result() -> None:
+    output = OutputArtifact(
+        id="archive-source",
+        role="stove0.media.video-archive/v1",
+        path="video/source.mkv",
+        bytes=12,
+        sha256=_sha("3"),
+        media_type="video/x-matroska",
+        derived_from=("source",),
+    )
+    expected = canonical_json_sha256(
+        {
+            "format": "stove0-nvenc-av1-opus-target-execution/v1",
+            "plan_sha256": _sha("1"),
+            "image_digest": _sha("2"),
+            "outputs": [output.model_dump(mode="json")],
+        }
+    )
+
+    assert nvenc_target._execution_sha256(_sha("1"), _sha("2"), (output,)) == expected
 
 
 def test_paired_nvenc_roles_bind_av1_opus_semantics_and_isolated_contracts(

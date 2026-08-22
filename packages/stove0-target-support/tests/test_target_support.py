@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
+from riverhog_protocol import Conflict, Unauthorized
 from riverhog_protocol.collection_workflows import (
     ArtifactDisposition,
     CollectionDerivation,
@@ -15,7 +16,7 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
-from riverhog_transform_sdk import DerivedCollectionReceipt
+from riverhog_transform_sdk import DerivedCollectionReceipt, TransformRuntimeRegistry
 from stove0_protocol import (
     CollectionRootRef,
     ControllerEvidence,
@@ -46,8 +47,10 @@ from stove0_target_support import (
     TargetContractPayload,
     TargetExecutionCanceled,
     TargetExecutionEvidence,
+    TargetExecutionFailure,
     TargetExecutionInapplicable,
     TargetExecutionRuntime,
+    TargetExecutionSession,
     TargetHttpBinding,
     TargetJobDeclaration,
     TargetJobRequest,
@@ -357,7 +360,12 @@ def test_target_runtime_builds_complete_success_status(
     derivation = CollectionDerivation.from_mapping(expected.derivation)
     output_collection = expected.output_collection
     assert output_collection is not None
-    runtime = TargetExecutionRuntime(request, object())  # type: ignore[arg-type]
+    session = TargetExecutionSession(request, 1, TransformRuntimeRegistry())
+    runtime = TargetExecutionRuntime(
+        request,
+        object(),  # type: ignore[arg-type]
+        session=session,
+    )
 
     def publish(*_args: object, **_kwargs: object) -> tuple[DerivedCollectionReceipt, object]:
         return (
@@ -380,6 +388,7 @@ def test_target_runtime_builds_complete_success_status(
         runtime_evidence={"tool": "fixture"},
     )
     assert result == expected
+    assert session.published_status == expected
 
 
 class FixtureTargetClient:
@@ -582,6 +591,7 @@ def test_persistent_target_resumes_exact_declaration_without_storing_authority(
         _request: TargetJobRequest,
         _attempt: int,
         _cancellation: threading.Event,
+        _session: TargetExecutionSession,
     ) -> TargetJobStatus:
         raise TargetExecutionInapplicable("unsupported-content", "fixture input")
 
@@ -617,6 +627,7 @@ def test_persistent_target_shutdown_and_operator_cancel_have_distinct_state(
         _request: TargetJobRequest,
         _attempt: int,
         cancellation: threading.Event,
+        _session: TargetExecutionSession,
     ) -> TargetJobStatus:
         started.set()
         assert cancellation.wait(timeout=5)
@@ -656,3 +667,300 @@ def test_persistent_target_shutdown_and_operator_cancel_have_distinct_state(
             time.sleep(0.01)
     finally:
         canceled.close()
+
+
+def test_running_target_receives_capability_refresh_without_persisting_secrets(
+    tmp_path: Path,
+) -> None:
+    operation, target, request = _request()
+    state_root = tmp_path / "state"
+    bound = threading.Event()
+    refreshed = threading.Event()
+    finish = threading.Event()
+    tokens: list[str] = []
+
+    class Runtime:
+        def refresh_capability(self, token: str) -> None:
+            tokens.append(token)
+            if token == "replacement-secret":
+                refreshed.set()
+
+        def close(self) -> None:
+            pass
+
+    def execute(
+        _request: TargetJobRequest,
+        _attempt: int,
+        _cancellation: threading.Event,
+        session: TargetExecutionSession,
+    ) -> TargetJobStatus:
+        with session.runtime_registry.bind(request.declaration.job_id, Runtime()):  # type: ignore[arg-type]
+            bound.set()
+            assert finish.wait(timeout=5)
+        raise TargetExecutionInapplicable("fixture-inapplicable", "fixture input")
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=execute,
+    )
+    try:
+        service.put_job(request)
+        assert bound.wait(timeout=5)
+        replacement = TargetJobRequest.seal(
+            request.declaration,
+            request.runtime.model_copy(update={"capability_token": "replacement-secret"}),
+        )
+        assert service.put_job(replacement).state == "running"
+        assert refreshed.wait(timeout=5)
+        assert service.put_job(replacement).state == "running"
+        finish.set()
+        deadline = time.monotonic() + 5
+        while service.get_job(request.declaration.job_id).state != "inapplicable":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        finish.set()
+        service.close()
+
+    assert tokens == ["first-secret", "replacement-secret"]
+    persisted = b"\n".join(path.read_bytes() for path in state_root.iterdir())
+    assert b"first-secret" not in persisted
+    assert b"replacement-secret" not in persisted
+    assert b"riverhog.invalid" not in persisted
+
+
+def test_restart_before_publication_preserves_semantic_execution_identity(
+    tmp_path: Path,
+) -> None:
+    operation, target, request = _request()
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    job_id = request.declaration.job_id
+    _write_model(state_root / f"{job_id}.accepted.json", request.accepted())
+    _write_model(
+        state_root / f"{job_id}.status.json",
+        TargetJobStatus(
+            job_id=job_id,
+            state="running",
+            attempt=1,
+            request_sha256=request.request_sha256,
+            plan_sha256=request.declaration.plan.plan_sha256,
+            progress=TargetProgress(phase="publishing", completed=0),
+        ),
+    )
+    first_attempt = _success_status(operation, request)
+
+    def execute(
+        _request: TargetJobRequest,
+        attempt: int,
+        _cancellation: threading.Event,
+        session: TargetExecutionSession,
+    ) -> TargetJobStatus:
+        restarted = first_attempt.model_copy(update={"attempt": attempt})
+        session.record_published(restarted)
+        return restarted
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=execute,
+    )
+    try:
+        assert service.get_job(job_id).state == "interrupted"
+        assert service.put_job(request).attempt == 2
+        deadline = time.monotonic() + 5
+        restarted = service.get_job(job_id)
+        while restarted.state != "succeeded":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+            restarted = service.get_job(job_id)
+    finally:
+        service.close()
+
+    assert restarted.attempt == 2
+    assert restarted.request_sha256 == first_attempt.request_sha256
+    assert restarted.execution_evidence == first_attempt.execution_evidence
+    assert restarted.output_collection == first_attempt.output_collection
+    assert restarted.derivation == first_attempt.derivation
+
+
+def test_persisted_publication_survives_lost_response_and_process_restart(
+    tmp_path: Path,
+) -> None:
+    operation, target, request = _request()
+    state_root = tmp_path / "state"
+    finished = threading.Event()
+    success = _success_status(operation, request)
+
+    def publish(
+        _request: TargetJobRequest,
+        _attempt: int,
+        _cancellation: threading.Event,
+        session: TargetExecutionSession,
+    ) -> TargetJobStatus:
+        session.record_published(success)
+        finished.set()
+        return success
+
+    first = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=publish,
+    )
+    first.put_job(request)
+    assert finished.wait(timeout=5)
+    deadline = time.monotonic() + 5
+    while first.get_job(request.declaration.job_id).state != "succeeded":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    first.close()
+
+    called = False
+
+    def unexpected_execution(
+        _request: TargetJobRequest,
+        _attempt: int,
+        _cancellation: threading.Event,
+        _session: TargetExecutionSession,
+    ) -> TargetJobStatus:
+        nonlocal called
+        called = True
+        raise AssertionError("published target output must not execute again")
+
+    restarted = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=unexpected_execution,
+    )
+    try:
+        replacement = TargetJobRequest.seal(
+            request.declaration,
+            request.runtime.model_copy(update={"capability_token": "replacement-secret"}),
+        )
+        assert restarted.put_job(replacement) == success
+        assert not called
+    finally:
+        restarted.close()
+
+    persisted = b"\n".join(path.read_bytes() for path in state_root.iterdir())
+    assert b"first-secret" not in persisted
+    assert b"replacement-secret" not in persisted
+
+
+def test_published_success_wins_late_cancel_and_cleanup_failure(tmp_path: Path) -> None:
+    operation, target, request = _request()
+    published = threading.Event()
+    release = threading.Event()
+    success = _success_status(operation, request)
+
+    def execute(
+        _request: TargetJobRequest,
+        _attempt: int,
+        _cancellation: threading.Event,
+        session: TargetExecutionSession,
+    ) -> TargetJobStatus:
+        session.record_published(success)
+        published.set()
+        assert release.wait(timeout=5)
+        raise RuntimeError("post-publication cleanup failed")
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=tmp_path / "state",
+        execute=execute,
+    )
+    try:
+        service.put_job(request)
+        assert published.wait(timeout=5)
+        assert (
+            service.cancel_job(
+                request.declaration.job_id,
+                TargetCancelRequest(reason="late operator request"),
+            ).state
+            == "canceling"
+        )
+        release.set()
+        deadline = time.monotonic() + 5
+        while service.get_job(request.declaration.job_id).state != "succeeded":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert (
+            service.cancel_job(
+                request.declaration.job_id,
+                TargetCancelRequest(reason="later operator request"),
+            )
+            == success
+        )
+    finally:
+        release.set()
+        service.close()
+
+
+@pytest.mark.parametrize(
+    ("failure", "state", "code", "retryable"),
+    [
+        (
+            TargetExecutionInapplicable("fixture-content", "unsupported fixture"),
+            "inapplicable",
+            "fixture-content",
+            None,
+        ),
+        (
+            TargetExecutionFailure("fixture-tool", "tool unavailable", retryable=True),
+            "failed",
+            "fixture-tool",
+            True,
+        ),
+        (Unauthorized("expired capability", status=401), "failed", "target-authorization", True),
+        (Conflict("stale fence", status=409), "failed", "target-conflict", True),
+        (OSError("storage unavailable"), "failed", "target-infrastructure", True),
+        (ValueError("unexpected implementation defect"), "failed", "target-software", True),
+    ],
+)
+def test_target_failure_classes_remain_distinct_from_content_inapplicability(
+    tmp_path: Path,
+    failure: Exception,
+    state: str,
+    code: str,
+    retryable: bool | None,
+) -> None:
+    operation, target, request = _request()
+
+    def execute(
+        _request: TargetJobRequest,
+        _attempt: int,
+        _cancellation: threading.Event,
+        _session: TargetExecutionSession,
+    ) -> TargetJobStatus:
+        raise failure
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=tmp_path / code,
+        execute=execute,
+    )
+    try:
+        service.put_job(request)
+        deadline = time.monotonic() + 5
+        status = service.get_job(request.declaration.job_id)
+        while status.state not in {"inapplicable", "failed"}:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+            status = service.get_job(request.declaration.job_id)
+    finally:
+        service.close()
+
+    assert status.state == state
+    if state == "inapplicable":
+        assert status.inapplicable is not None
+        assert status.inapplicable.code == code
+    else:
+        assert status.failure is not None
+        assert (status.failure.code, status.failure.retryable) == (code, retryable)

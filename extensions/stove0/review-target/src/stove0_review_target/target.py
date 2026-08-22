@@ -6,6 +6,7 @@ import hashlib
 import importlib.metadata
 import os
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -34,8 +35,10 @@ from stove0_target_support import (
     TargetContract,
     TargetContractPayload,
     TargetExecutionCanceled,
+    TargetExecutionFailure,
     TargetExecutionInapplicable,
     TargetExecutionRuntime,
+    TargetExecutionSession,
     TargetJobRequest,
     TargetJobStatus,
     TargetOperationSupport,
@@ -168,6 +171,7 @@ class ReviewTargetService(PersistentTargetService):
         request: TargetJobRequest,
         attempt: int,
         cancellation: threading.Event,
+        session: TargetExecutionSession,
     ) -> TargetJobStatus:
         intent = request.declaration.plan.intent
         raw_plan = intent.get("sample_plan")
@@ -206,7 +210,10 @@ class ReviewTargetService(PersistentTargetService):
                 raise TargetExecutionCanceled("review target was canceled")
 
         with TargetExecutionRuntime.from_request(
-            request, cancellation_check=check, producer_version=_version()
+            request,
+            cancellation_check=check,
+            producer_version=_version(),
+            session=session,
         ) as execution:
             workspace = execution.open_workspace(self.workspace_root)
             try:
@@ -259,14 +266,7 @@ class ReviewTargetService(PersistentTargetService):
                     cancellation=cancellation,
                     workspace=workspace,
                 )
-                if sampler_result.state == "canceled":
-                    raise TargetExecutionCanceled("review sampler was canceled")
-                if sampler_result.state == "failed":
-                    failure = sampler_result.failure
-                    raise TargetExecutionInapplicable(
-                        failure.code if failure is not None else "sampler-failed",
-                        failure.message if failure is not None else "Review sampler failed.",
-                    )
+                _require_sampler_success(sampler_result)
                 artifacts: list[OutputArtifact] = []
                 producers: dict[str, ProducerFile] = {}
                 samples: list[dict[str, object]] = []
@@ -339,15 +339,11 @@ class ReviewTargetService(PersistentTargetService):
                     )
                     for artifact, _claimed in resolved
                 )
-                execution_sha256 = canonical_json_sha256(
-                    {
-                        "format": "stove0-review-target-execution/v1",
-                        "plan_sha256": request.declaration.plan.plan_sha256,
-                        "attempt": attempt,
-                        "image_digest": self.image_digest,
-                        "sampler_result_sha256": sampler_result.result_sha256,
-                        "outputs": [item.model_dump(mode="json") for item in declared],
-                    }
+                execution_sha256 = _execution_sha256(
+                    request.declaration.plan.plan_sha256,
+                    self.image_digest,
+                    sampler_result.result_sha256,
+                    declared,
                 )
                 return execution.publish_success(
                     producers,
@@ -364,7 +360,8 @@ class ReviewTargetService(PersistentTargetService):
                     },
                 )
             finally:
-                workspace.release()
+                if not execution.published:
+                    workspace.release()
 
     @staticmethod
     def _sample(
@@ -398,6 +395,45 @@ def _suffix(descriptor: SamplerDescriptor) -> str:
     if descriptor.output_role.endswith("video/v1"):
         return ".mkv"
     raise ValueError("sampler descriptor has an unsupported review output role")
+
+
+def _require_sampler_success(result: SamplerResult) -> None:
+    if result.state == "succeeded":
+        return
+    if result.state == "canceled":
+        raise TargetExecutionCanceled("review sampler was canceled")
+    if result.state == "inapplicable":
+        outcome = result.inapplicable
+        if outcome is None:
+            raise RuntimeError("review sampler omitted its inapplicable outcome")
+        raise TargetExecutionInapplicable(outcome.code, outcome.message)
+    failure = result.failure
+    if failure is None:
+        raise RuntimeError("review sampler omitted its failure outcome")
+    raise TargetExecutionFailure(
+        failure.code,
+        failure.message,
+        retryable=failure.retryable,
+    )
+
+
+def _execution_sha256(
+    plan_sha256: str,
+    image_digest: str,
+    sampler_result_sha256: str,
+    outputs: Sequence[OutputArtifact],
+) -> str:
+    """Identify exact review execution semantics independently of an attempt."""
+
+    return canonical_json_sha256(
+        {
+            "format": "stove0-review-target-execution/v1",
+            "plan_sha256": plan_sha256,
+            "image_digest": image_digest,
+            "sampler_result_sha256": sampler_result_sha256,
+            "outputs": [item.model_dump(mode="json") for item in outputs],
+        }
+    )
 
 
 def _identity(path: Path) -> tuple[int, str]:

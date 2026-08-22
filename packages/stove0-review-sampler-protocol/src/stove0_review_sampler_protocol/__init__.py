@@ -163,14 +163,20 @@ class SamplerFailure(SamplerModel):
     retryable: bool
 
 
+class SamplerInapplicable(SamplerModel):
+    code: str = Field(pattern=SEMANTIC_ID_PATTERN)
+    message: str = Field(min_length=1, max_length=1000)
+
+
 class SamplerResultPayload(SamplerModel):
     format: Literal["stove0-review-sampler-result/v1"] = "stove0-review-sampler-result/v1"
     request_sha256: str = Field(pattern=SHA256_PATTERN)
     sampler_descriptor_sha256: str = Field(pattern=SHA256_PATTERN)
-    state: Literal["succeeded", "failed", "canceled"]
+    state: Literal["succeeded", "inapplicable", "failed", "canceled"]
     outputs: tuple[SamplerOutput, ...] = ()
     execution_evidence: dict[str, JsonValue] = Field(default_factory=dict)
     failure: SamplerFailure | None = None
+    inapplicable: SamplerInapplicable | None = None
 
     @field_validator("outputs")
     @classmethod
@@ -183,12 +189,22 @@ class SamplerResultPayload(SamplerModel):
 
     @model_validator(mode="after")
     def state_shape(self) -> Self:
-        if self.state == "succeeded" and (not self.outputs or self.failure is not None):
-            raise ValueError("successful sampler result requires outputs and no failure")
-        if self.state == "failed" and (self.failure is None or self.outputs):
+        if self.state == "succeeded" and (
+            not self.outputs or self.failure is not None or self.inapplicable is not None
+        ):
+            raise ValueError("successful sampler result requires only outputs")
+        if self.state == "inapplicable" and (
+            self.inapplicable is None or self.failure is not None or self.outputs
+        ):
+            raise ValueError("inapplicable sampler result requires only its outcome")
+        if self.state == "failed" and (
+            self.failure is None or self.inapplicable is not None or self.outputs
+        ):
             raise ValueError("failed sampler result requires failure and no outputs")
-        if self.state == "canceled" and (self.failure is not None or self.outputs):
-            raise ValueError("canceled sampler result has no outputs or failure")
+        if self.state == "canceled" and (
+            self.failure is not None or self.inapplicable is not None or self.outputs
+        ):
+            raise ValueError("canceled sampler result has no outputs or outcome")
         return self
 
 
@@ -231,6 +247,7 @@ __all__ = [
     "SamplerDescriptor",
     "SamplerDescriptorPayload",
     "SamplerFailure",
+    "SamplerInapplicable",
     "SamplerInput",
     "SamplerOutput",
     "SamplerRequest",

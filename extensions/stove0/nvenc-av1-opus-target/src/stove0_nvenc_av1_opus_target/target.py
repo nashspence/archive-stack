@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import threading
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
 from riverhog_api_client import ProducerFile
@@ -24,6 +25,7 @@ from stove0_target_support import (
     TargetExecutionCanceled,
     TargetExecutionInapplicable,
     TargetExecutionRuntime,
+    TargetExecutionSession,
     TargetJobRequest,
     TargetJobStatus,
     TargetOperationSupport,
@@ -101,6 +103,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
         request: TargetJobRequest,
         attempt: int,
         cancellation: threading.Event,
+        session: TargetExecutionSession,
     ) -> TargetJobStatus:
         intent = Av1OpusArchiveIntent.model_validate(request.declaration.plan.intent)
         options = request.declaration.plan.target_options
@@ -114,7 +117,10 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                 raise TargetExecutionCanceled("NVENC AV1 + Opus target was canceled")
 
         with TargetExecutionRuntime.from_request(
-            request, cancellation_check=check, producer_version=_version()
+            request,
+            cancellation_check=check,
+            producer_version=_version(),
+            session=session,
         ) as execution:
             workspace = execution.open_workspace(self.workspace_root)
             try:
@@ -226,14 +232,10 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                     )
                     for artifact, _claimed in resolved
                 )
-                execution_sha256 = canonical_json_sha256(
-                    {
-                        "format": "stove0-nvenc-av1-opus-target-execution/v1",
-                        "plan_sha256": request.declaration.plan.plan_sha256,
-                        "attempt": attempt,
-                        "image_digest": self.image_digest,
-                        "outputs": [item.model_dump(mode="json") for item in declared],
-                    }
+                execution_sha256 = _execution_sha256(
+                    request.declaration.plan.plan_sha256,
+                    self.image_digest,
+                    declared,
                 )
                 return execution.publish_success(
                     sources,
@@ -248,7 +250,8 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                     },
                 )
             finally:
-                workspace.release()
+                if not execution.published:
+                    workspace.release()
 
     def _command(
         self,
@@ -301,6 +304,23 @@ class NvencAv1OpusTargetService(PersistentTargetService):
             media_type=media_type,
             derived_from=derived_from,
         )
+
+
+def _execution_sha256(
+    plan_sha256: str,
+    image_digest: str,
+    outputs: Sequence[OutputArtifact],
+) -> str:
+    """Identify exact AV1/Opus execution semantics independently of an attempt."""
+
+    return canonical_json_sha256(
+        {
+            "format": "stove0-nvenc-av1-opus-target-execution/v1",
+            "plan_sha256": plan_sha256,
+            "image_digest": image_digest,
+            "outputs": [item.model_dump(mode="json") for item in outputs],
+        }
+    )
 
 
 __all__ = ["OPTIONS", "NvencAv1OpusTargetService"]

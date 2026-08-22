@@ -6,12 +6,21 @@ import uuid
 from collections.abc import Iterator
 
 import pytest
+from riverhog_protocol.collection_workflows import (
+    ArtifactDisposition,
+    CollectionDerivation,
+)
+from riverhog_protocol.collection_workflows import (
+    canonical_json_sha256 as riverhog_canonical_json_sha256,
+)
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from stove0_core import (
     ConcurrentWorkUpdate,
     SqlAlchemyStateStore,
+    Stove0StateError,
     Stove0WorkService,
+    WorkRecord,
     stove0_state_schema,
 )
 from stove0_protocol import (
@@ -25,12 +34,35 @@ from stove0_protocol import (
     JoinDeclaration,
     JoinMemberDeclaration,
     JoinPlan,
+    JsonSchemaDocument,
     OperationRef,
     RecipeRef,
+    WorkflowPlan,
     WorkflowPlanIntent,
+    WorkflowPlanPayload,
     WorkIdentity,
     WorkPayload,
     resolve_join_plan,
+)
+from stove0_target_support import (
+    InputArtifact,
+    InputArtifactContract,
+    OperationContract,
+    OperationContractPayload,
+    OutputArtifact,
+    OutputArtifactContract,
+    OutputCollectionRef,
+    TargetContract,
+    TargetContractPayload,
+    TargetExecutionEvidence,
+    TargetJobDeclaration,
+    TargetJobRequest,
+    TargetJobStatus,
+    TargetOperationSupport,
+    TargetProgress,
+    TargetRuntimeAuthority,
+    TransformPlan,
+    TransformPlanPayload,
 )
 
 pytestmark = pytest.mark.integration
@@ -87,6 +119,212 @@ def _work() -> WorkIdentity:
             ),
         )
     )
+
+
+def _target_contracts() -> tuple[OperationContract, TargetContract, TransformPlan]:
+    operation = OperationContract.seal(
+        OperationContractPayload(
+            id="fixture.copy/v1",
+            intent_schema=JsonSchemaDocument.from_schema(
+                "fixture.copy-intent/v1",
+                {
+                    "type": "object",
+                    "properties": {"suffix": {"type": "string"}},
+                    "required": ["suffix"],
+                    "additionalProperties": False,
+                },
+            ),
+            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            outputs=(
+                OutputArtifactContract(
+                    role="fixture.output/v1",
+                    derived_from_roles=("fixture.source/v1",),
+                ),
+            ),
+        )
+    )
+    target = TargetContract.seal(
+        TargetContractPayload(
+            implementation_id="fixture.target/v1",
+            implementation_version="1.0.0",
+            source_revision="fixture",
+            image_digest="9" * 64,
+            operations=(
+                TargetOperationSupport(
+                    operation_id=operation.id,
+                    operation_contract_sha256=operation.contract_sha256,
+                    options_schema=JsonSchemaDocument.from_schema(
+                        "fixture.target-options/v1",
+                        {"type": "object", "additionalProperties": False},
+                    ),
+                ),
+            ),
+        )
+    )
+    plan = TransformPlan.seal(
+        TransformPlanPayload(
+            target_implementation_id=target.implementation_id,
+            target_contract_sha256=target.contract_sha256,
+            operation_id=operation.id,
+            operation_contract_sha256=operation.contract_sha256,
+            inputs=(
+                InputArtifact(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=_work().inputs[0],
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256="d" * 64,
+                ),
+            ),
+            intent={"suffix": ".copy"},
+            target_options={},
+        )
+    )
+    return operation, target, plan
+
+
+def _active_target_work(
+    service: Stove0WorkService,
+) -> tuple[WorkRecord, OperationContract, TargetJobStatus, TargetJobStatus]:
+    work = _work()
+    operation, target, plan = _target_contracts()
+    record = service.create_or_resume(work)
+    record = service.bind_claim(
+        work.work_id,
+        claim_id=work.work_id,
+        fence=1,
+        expected_revision=record.revision,
+    )
+    record = service.begin_planning(work.work_id, expected_revision=record.revision)
+    workflow = WorkflowPlan.seal(
+        WorkflowPlanPayload(
+            work=work,
+            operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
+            target_registration_id="fixture-target",
+            target_contract_sha256=target.contract_sha256,
+            output_tags=("fixture-output",),
+            retirement_policy="retain",
+        )
+    )
+    record = service.seal_workflow_plan(
+        work.work_id,
+        workflow,
+        expected_revision=record.revision,
+    )
+    record = service.seal_target_plan(
+        work.work_id,
+        target=target,
+        plan=plan,
+        expected_revision=record.revision,
+    )
+    assert record.controller_evidence is not None
+    declaration = TargetJobDeclaration(
+        job_id=record.controller_evidence.execution_envelope.execution_envelope_sha256,
+        claim_id=work.work_id,
+        fence=1,
+        controller_evidence=record.controller_evidence,
+        plan=plan,
+        workspace_assurance="ephemeral",
+    )
+    request = TargetJobRequest.seal(
+        declaration,
+        TargetRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="fixture-secret",
+        ),
+    )
+    record = service.bind_target_request(
+        work.work_id,
+        request,
+        expected_revision=record.revision,
+    )
+    running = TargetJobStatus(
+        job_id=declaration.job_id,
+        state="running",
+        attempt=1,
+        request_sha256=request.request_sha256,
+        plan_sha256=plan.plan_sha256,
+        progress=TargetProgress(phase="transforming", completed=0),
+    )
+    record = service.record_target_status(
+        work.work_id,
+        running,
+        operation=operation,
+        expected_revision=record.revision,
+    )
+    canceling = TargetJobStatus(
+        job_id=declaration.job_id,
+        state="canceling",
+        attempt=1,
+        request_sha256=request.request_sha256,
+        plan_sha256=plan.plan_sha256,
+        progress=TargetProgress(phase="canceling", completed=0),
+    )
+    output = OutputArtifact(
+        id="output",
+        role="fixture.output/v1",
+        path="output/result.bin",
+        bytes=12,
+        sha256="5" * 64,
+        derived_from=("source",),
+    )
+    derivation = CollectionDerivation(
+        execution_id=declaration.job_id,
+        claim_id=declaration.claim_id,
+        fence=declaration.fence,
+        recipe=workflow.work.recipe.to_identity(),
+        operation=workflow.operation.to_identity(),
+        inputs=tuple(item.to_identity() for item in workflow.work.inputs),
+        output_tags=workflow.output_tags,
+        execution_envelope_sha256=declaration.job_id,
+        execution_sha256="8" * 64,
+        controller_evidence=record.controller_evidence.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+        ),
+        controller_evidence_sha256=riverhog_canonical_json_sha256(
+            record.controller_evidence.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_none=True,
+            )
+        ),
+        dispositions=(
+            ArtifactDisposition(
+                input_collection_id=work.inputs[0].collection_id,
+                input_manifest_sha256=work.inputs[0].manifest_sha256,
+                input_path="source/input.bin",
+                status="transformed",
+                outputs=(output.path,),
+            ),
+        ),
+    )
+    output_collection = OutputCollectionRef(
+        collection_id=7,
+        manifest_sha256="6" * 64,
+        content_etag="7" * 64,
+        derivation_sha256=derivation.sha256,
+    )
+    succeeded = TargetJobStatus(
+        job_id=declaration.job_id,
+        state="succeeded",
+        attempt=1,
+        request_sha256=request.request_sha256,
+        plan_sha256=plan.plan_sha256,
+        progress=TargetProgress(phase="done", completed=1, total=1, unit="artifacts"),
+        outputs=(output,),
+        output_collection=output_collection,
+        execution_evidence=TargetExecutionEvidence(
+            target_contract_sha256=target.contract_sha256,
+            operation_contract_sha256=operation.contract_sha256,
+            plan_sha256=plan.plan_sha256,
+            execution_sha256=derivation.execution_sha256,
+        ),
+        derivation=derivation.as_dict(),
+    )
+    return record, operation, canceling, succeeded
 
 
 def _branch_decision() -> BranchSetDecision:
@@ -330,6 +568,62 @@ def test_postgres_concurrent_branch_set_and_join_admission_converge_exactly_once
     assert parent is not None and parent.join_plan == join_plan
     child = second.load(join_plan.work.work_id)
     assert child is not None and child.workflow_plan == join_plan.workflow_plan
+
+
+def test_postgres_cancel_completion_race_converges_to_immutable_published_success(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    record, operation, canceling, succeeded = _active_target_work(Stove0WorkService(first))
+    barrier = threading.Barrier(2)
+    winners: list[WorkRecord] = []
+    stale: list[ConcurrentWorkUpdate] = []
+
+    def settle(store: SqlAlchemyStateStore, status: TargetJobStatus) -> None:
+        try:
+            barrier.wait(timeout=5)
+            winners.append(
+                Stove0WorkService(store).record_target_status(
+                    record.work_id,
+                    status,
+                    operation=operation,
+                    expected_revision=record.revision,
+                )
+            )
+        except ConcurrentWorkUpdate as exc:
+            stale.append(exc)
+
+    threads = [
+        threading.Thread(target=settle, args=(first, canceling)),
+        threading.Thread(target=settle, args=(second, succeeded)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert len(winners) == 1
+    assert len(stale) == 1
+    current = first.load(record.work_id)
+    assert current is not None
+    if current.target_status == canceling:
+        current = Stove0WorkService(second).record_target_status(
+            record.work_id,
+            succeeded,
+            operation=operation,
+            expected_revision=current.revision,
+        )
+    assert current.phase == "verifying"
+    assert current.target_status == succeeded
+    assert current.output == succeeded.output_collection
+    with pytest.raises(Stove0StateError, match="terminal target status is immutable"):
+        Stove0WorkService(first).record_target_status(
+            record.work_id,
+            canceling,
+            operation=operation,
+            expected_revision=current.revision,
+        )
 
 
 def test_postgres_event_cursor_compare_and_swap_prevents_replayed_cursor_regression(
