@@ -183,7 +183,7 @@ def test_ci_uses_thin_repository_and_image_build_adapters() -> None:
         "matrix": {
             "include": [
                 {"os": "ubuntu-24.04", "listener_repetitions": "1"},
-                {"os": "macos-15", "listener_repetitions": "3"},
+                {"os": "macos-15", "listener_repetitions": "12"},
                 {"os": "windows-2025", "listener_repetitions": "1"},
             ],
         },
