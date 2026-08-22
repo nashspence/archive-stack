@@ -10,6 +10,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import string
@@ -548,6 +549,41 @@ def _retain_gogurt_failure_evidence(
             json.dumps(status_payload, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        getuid = getattr(os, "getuid", None)
+        if sys.platform == "darwin" and getuid is not None:
+            native = subprocess.run(
+                [
+                    "launchctl",
+                    "print",
+                    f"gui/{getuid()}/io.github.nashspence.gogurt",
+                ],
+                cwd=scratch,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            fields: dict[str, str | int] = {}
+            for key, value in re.findall(
+                r"(?m)^\s*(state|pid|runs|last exit code|last terminating signal)\s*=\s*([^\n]+)$",
+                native.stdout,
+            ):
+                normalized = value.strip()
+                if key == "state":
+                    if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", normalized):
+                        fields[key] = normalized
+                elif re.fullmatch(r"-?[0-9]{1,20}", normalized):
+                    fields[key] = int(normalized)
+            (evidence_dir / f"{phase}-native.json").write_text(
+                json.dumps(
+                    {"returncode": native.returncode, "fields": fields},
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         for source in sorted(state_dir.glob("listener.log*")):
             if source.is_symlink():
                 continue
