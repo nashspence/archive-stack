@@ -672,6 +672,46 @@ def test_install_binds_absolute_executable_and_rolls_back_failed_startup(tmp_pat
     assert not paths.config_file.exists()
 
 
+def test_exact_healthy_install_is_idempotent_without_native_process_churn(
+    tmp_path: Path,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    executable = tmp_path / "installed" / "gogurt"
+    executable.parent.mkdir()
+    executable.write_text("fixture", encoding="utf-8")
+    executable.chmod(0o755)
+    adapter = FakeAdapter()
+
+    install_listener(
+        config.routes_file,
+        actions_dir=None,
+        interval_seconds=0.1,
+        executable=executable,
+        paths=paths,
+        adapter=adapter,
+        wait_for_health=False,
+    )
+    persisted = ListenerConfig.read(paths.config_file)
+    runtime = ListenerRuntime(persisted, paths, discover=lambda: [])
+    runtime.store.create()
+    runtime._heartbeat()
+    existing_content = paths.config_file.read_bytes()
+
+    status = install_listener(
+        config.routes_file,
+        actions_dir=None,
+        interval_seconds=0.1,
+        executable=executable,
+        paths=paths,
+        adapter=adapter,
+    )
+
+    assert status["health"] == "healthy"
+    assert adapter.register_calls == 1
+    assert adapter.stop_calls == 0
+    assert paths.config_file.read_bytes() == existing_content
+
+
 def test_install_rejects_invalid_marker_name_before_registration(tmp_path: Path) -> None:
     config, paths, _mount, _counter = _fixture(tmp_path)
     executable = tmp_path / "installed" / "gogurt"

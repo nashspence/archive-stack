@@ -584,6 +584,48 @@ def _retain_gogurt_failure_evidence(
                 + "\n",
                 encoding="utf-8",
             )
+        elif sys.platform.startswith("linux"):
+            native = subprocess.run(
+                [
+                    "systemctl",
+                    "--user",
+                    "show",
+                    "gogurt-listener.service",
+                    "--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts",
+                ],
+                cwd=scratch,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            fields: dict[str, str | int] = {}
+            for line in native.stdout.splitlines():
+                key, separator, value = line.partition("=")
+                if separator != "=" or key not in {
+                    "ActiveState",
+                    "SubState",
+                    "Result",
+                    "ExecMainCode",
+                    "ExecMainStatus",
+                    "NRestarts",
+                }:
+                    continue
+                normalized = value.strip()
+                if re.fullmatch(r"-?[0-9]{1,20}", normalized):
+                    fields[key] = int(normalized)
+                elif re.fullmatch(r"[A-Za-z0-9_-]{1,64}", normalized):
+                    fields[key] = normalized
+            (evidence_dir / f"{phase}-native.json").write_text(
+                json.dumps(
+                    {"returncode": native.returncode, "fields": fields},
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         for source in sorted(state_dir.glob("listener.log*")):
             if source.is_symlink():
                 continue
@@ -781,6 +823,11 @@ def _run_gogurt_listener_lifecycle(
                         f"Gogurt listener replayed a completed observation after {operation}"
                     )
 
+            before_reinstall = _listener_status(
+                executable,
+                scratch=scratch,
+                environment=environment,
+            )
             reinstalled = json.loads(
                 _run(
                     [
@@ -801,6 +848,14 @@ def _run_gogurt_listener_lifecycle(
             )
             if reinstalled.get("health") != "healthy":
                 raise QualificationError("same-version listener reinstall did not become healthy")
+            before_heartbeat = before_reinstall.get("heartbeat")
+            after_heartbeat = reinstalled.get("heartbeat")
+            if (
+                not isinstance(before_heartbeat, dict)
+                or not isinstance(after_heartbeat, dict)
+                or before_heartbeat.get("pid") != after_heartbeat.get("pid")
+            ):
+                raise QualificationError("exact healthy listener reinstall churned its process")
             time.sleep(0.5)
             if sentinel.read_text(encoding="utf-8").splitlines() != ["run"]:
                 raise QualificationError("same-version listener reinstall replayed completed work")

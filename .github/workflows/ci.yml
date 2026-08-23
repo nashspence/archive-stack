@@ -80,11 +80,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            listener_repetitions: 1
+            listener_repetitions: 12
           - os: macos-15
             listener_repetitions: 12
           - os: windows-2025
-            listener_repetitions: 1
+            listener_repetitions: 12
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
