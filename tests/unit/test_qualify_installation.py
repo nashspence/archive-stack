@@ -328,6 +328,7 @@ def test_windows_trace_uses_one_persistent_native_monitor(
 
     assert len(created) == 1
     assert created[0][:3] == ["powershell.exe", "-NoProfile", "-NonInteractive"]
+    assert "Start-Sleep -Milliseconds 1000" in created[0][-1]
     assert events == (
         {"elapsed_milliseconds": 0, "returncode": 3, "fields": {}},
         {

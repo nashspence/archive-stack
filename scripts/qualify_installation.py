@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "riverhog-installation-qualification/v1"
 EVENT_SUBJECT = "qualification-sentinel"
 NATIVE_TRACE_INTERVAL_SECONDS = 0.2
+WINDOWS_NATIVE_TRACE_INTERVAL_SECONDS = 1.0
 NATIVE_TRACE_EVENT_LIMIT = 128
 EVENT_PAGE = {
     "events": [
@@ -740,7 +741,8 @@ class _WindowsNativeLifecycleTrace(_NativeLifecycleTrace):
             "$json=$result|ConvertTo-Json -Compress -Depth 3;"
             "if ($json -ne $previous) {"
             "[Console]::Out.WriteLine($json);[Console]::Out.Flush();$previous=$json};"
-            f"Start-Sleep -Milliseconds {int(NATIVE_TRACE_INTERVAL_SECONDS * 1000)}"
+            "Start-Sleep -Milliseconds "
+            f"{int(WINDOWS_NATIVE_TRACE_INTERVAL_SECONDS * 1000)}"
             "}"
         )
         try:
