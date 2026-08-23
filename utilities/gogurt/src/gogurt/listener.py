@@ -68,7 +68,6 @@ LISTENER_DIAGNOSTIC_LIMIT = 512
 LISTENER_STATUS_DB_TIMEOUT_SECONDS = 0.25
 LISTENER_ACTION_TERMINATE_SECONDS = 2.0
 LISTENER_ACTION_KILL_SECONDS = 2.0
-LISTENER_HEARTBEAT_LOCK_SECONDS = 2.0
 LISTENER_CONTROL_POLL_SECONDS = 0.2
 LISTENER_HEARTBEAT_FUTURE_SECONDS = 10.0
 LISTENER_MAX_JSON_INTEGER = (1 << 63) - 1
@@ -299,7 +298,6 @@ def _secure_listener_state(paths: ListenerPaths) -> None:
             paths.config_file,
             paths.database_file,
             paths.heartbeat_file,
-            _heartbeat_lock_path(paths.heartbeat_file),
             paths.lock_file,
             paths.log_file,
             paths.stop_file,
@@ -703,21 +701,6 @@ class ListenerLock(_FileLock):
         )
 
 
-def _heartbeat_lock_path(heartbeat_file: Path) -> Path:
-    return heartbeat_file.with_name("heartbeat.lock")
-
-
-class _HeartbeatLock(_FileLock):
-    """Serialize official heartbeat readers with atomic publication."""
-
-    def __init__(self, heartbeat_file: Path) -> None:
-        super().__init__(
-            _heartbeat_lock_path(heartbeat_file),
-            timeout_seconds=LISTENER_HEARTBEAT_LOCK_SECONDS,
-            diagnostic="Gogurt heartbeat publication did not settle",
-        )
-
-
 class ListenerRuntime:
     def __init__(
         self,
@@ -861,12 +844,14 @@ class ListenerRuntime:
             },
             "mount_attention": mount_attention,
         }
-        with _HeartbeatLock(self.paths.heartbeat_file):
-            atomic_write(
-                self.paths.heartbeat_file,
-                (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-                mode=PRIVATE_FILE_MODE,
-            )
+        # Readers may observe either complete snapshot. They must not hold a
+        # publication lock: atomic_write stages the replacement, and its
+        # Windows promotion path settles transient open-reader conflicts.
+        atomic_write(
+            self.paths.heartbeat_file,
+            (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            mode=PRIVATE_FILE_MODE,
+        )
 
     def _stop_requested(self) -> bool:
         try:
@@ -1216,13 +1201,12 @@ def _read_heartbeat_result(path: Path) -> tuple[dict[str, object] | None, str | 
     if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
         return None, "listener heartbeat: path is not a regular file"
     try:
-        with _HeartbeatLock(path):
-            value = json.loads(
-                path.read_text(encoding="utf-8"),
-                object_pairs_hook=_strict_json_object,
-                parse_constant=_reject_json_constant,
-                parse_int=_strict_json_integer,
-            )
+        value = json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_strict_json_object,
+            parse_constant=_reject_json_constant,
+            parse_int=_strict_json_integer,
+        )
         return _validate_heartbeat(value), None
     except (ListenerError, OSError, json.JSONDecodeError, UnicodeError) as exc:
         return None, _safe_diagnostic("listener heartbeat", exc)

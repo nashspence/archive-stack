@@ -452,36 +452,30 @@ def test_process_signal_can_stop_while_heartbeat_samples_action_custody(
     assert runtime.stop_event.is_set()
 
 
-def test_heartbeat_publication_waits_for_an_official_reader(tmp_path: Path) -> None:
+def test_official_heartbeat_observation_does_not_own_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config, paths, _mount, _counter = _fixture(tmp_path)
     runtime = ListenerRuntime(config, paths, discover=lambda: [])
     runtime.store.create()
-    reader_acquired = threading.Event()
-    release_reader = threading.Event()
-    publication_finished = threading.Event()
+    runtime._heartbeat()
+    real_atomic_write = listener_module.atomic_write
+    observed_during_publication: dict[str, object] | None = None
 
-    def read_snapshot() -> None:
-        with listener_module._HeartbeatLock(paths.heartbeat_file):
-            reader_acquired.set()
-            assert release_reader.wait(timeout=5)
+    def publish(destination: Path, content: bytes, *, mode: int) -> None:
+        nonlocal observed_during_publication
+        observed_during_publication = listener_module._read_heartbeat(paths.heartbeat_file)
+        real_atomic_write(destination, content, mode=mode)
 
-    def publish() -> None:
-        runtime._heartbeat()
-        publication_finished.set()
+    monkeypatch.setattr(listener_module, "atomic_write", publish)
+    runtime._heartbeat()
 
-    reader = threading.Thread(target=read_snapshot)
-    writer = threading.Thread(target=publish)
-    reader.start()
-    assert reader_acquired.wait(timeout=5)
-    writer.start()
-    assert not publication_finished.wait(timeout=0.1)
-    release_reader.set()
-    reader.join(timeout=5)
-    writer.join(timeout=5)
-
-    assert not reader.is_alive()
-    assert not writer.is_alive()
-    assert publication_finished.is_set()
+    assert observed_during_publication is not None
+    assert observed_during_publication["runtime"] == {
+        "diagnostic": None,
+        "status": "running",
+    }
     assert _heartbeat_payload(paths)["runtime"] == {
         "diagnostic": None,
         "status": "running",
@@ -609,7 +603,6 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
     for path in (
         paths.database_file,
         paths.heartbeat_file,
-        paths.state_dir / "heartbeat.lock",
         paths.lock_file,
         paths.log_file,
         paths.state_dir / "listener.log.1",
@@ -650,7 +643,6 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
         paths.config_file,
         paths.database_file,
         paths.heartbeat_file,
-        paths.state_dir / "heartbeat.lock",
         paths.lock_file,
         paths.log_file,
         paths.state_dir / "listener.log.1",

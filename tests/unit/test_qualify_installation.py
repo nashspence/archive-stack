@@ -74,6 +74,94 @@ def test_distribution_builds_are_serialized_into_a_clean_output(
     ]
 
 
+def test_macos_qualification_mount_reports_the_exact_failed_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    commands: list[list[str]] = []
+
+    def run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 1, "create output", "create error")
+
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    with pytest.raises(
+        module.QualificationError,
+        match="macOS qualification disk-image creation failed with exit 1",
+    ) as captured:
+        with module._qualification_mount(tmp_path):
+            pytest.fail("a failed disk-image creation exposed a mount")
+
+    diagnostic = str(captured.value)
+    assert "stdout='create output'" in diagnostic
+    assert "stderr='create error'" in diagnostic
+    assert commands == [
+        [
+            "hdiutil",
+            "create",
+            "-size",
+            "16m",
+            "-fs",
+            "HFS+",
+            "-volname",
+            "GogurtQualification",
+            str(tmp_path / "gogurt-listener.dmg"),
+        ]
+    ]
+
+
+def test_macos_qualification_mount_checks_detachment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+
+    def run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[1] == "detach":
+            return subprocess.CompletedProcess(command, 9, "detach output", "detach error")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module.os, "getpid", lambda: 123)
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    with pytest.raises(
+        module.QualificationError,
+        match="macOS qualification disk-image detachment failed with exit 9",
+    ) as captured:
+        with module._qualification_mount(tmp_path) as mounted:
+            assert mounted == Path("/Volumes/GogurtQualification-123")
+
+    diagnostic = str(captured.value)
+    assert "stdout='detach output'" in diagnostic
+    assert "stderr='detach error'" in diagnostic
+
+
+def test_qualification_mount_preserves_body_and_cleanup_failures(tmp_path: Path) -> None:
+    module = load_script()
+
+    def fail_cleanup() -> None:
+        raise module.QualificationError("detach failed")
+
+    with pytest.raises(module.QualificationError) as captured:
+        with module._settled_qualification_mount(tmp_path, fail_cleanup):
+            raise RuntimeError("lifecycle failed")
+
+    assert str(captured.value) == (
+        "qualification failed with RuntimeError: lifecycle failed; "
+        "mount cleanup also failed with QualificationError: detach failed"
+    )
+
+
 def test_gogurt_failure_evidence_is_bounded_to_status_and_listener_logs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
