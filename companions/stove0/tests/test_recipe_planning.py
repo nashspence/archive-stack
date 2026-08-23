@@ -16,6 +16,8 @@ from stove0_core import (
 )
 from stove0_core.recipes import (
     ArtifactRule,
+    FactPredicate,
+    ObserverUse,
     OperationProjection,
     RecipeJoin,
     RecipeJoinMember,
@@ -24,7 +26,13 @@ from stove0_core.recipes import (
 from stove0_media_archive_contracts import (
     AUDIO_ARCHIVE_OPERATION,
     AV1_OPUS_ARCHIVE_OPERATION,
+    MEDIA_METADATA_OBSERVER_CONTRACT,
+    MediaArtifactFacts,
+    MediaFactEvidence,
+    MediaMetadataFact,
+    MediaMetadataFacts,
 )
+from stove0_observer_support import ObservationResultBuilder
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSubject,
@@ -32,6 +40,10 @@ from stove0_protocol import (
     BranchSettlement,
     CollectionRootRef,
     JsonSchemaDocument,
+    ObservationEvidence,
+    ObserverContractSupport,
+    ObserverDescriptor,
+    ObserverDescriptorPayload,
     resolve_join_plan,
 )
 from stove0_review_contracts import (
@@ -88,6 +100,66 @@ class Targets:
         return self._contract
 
 
+class MediaObservers:
+    def __init__(self) -> None:
+        self.value = ObserverDescriptor.seal(
+            ObserverDescriptorPayload(
+                implementation_id="fixture.exiftool-observer/v1",
+                implementation_version="1.0.0",
+                source_revision="fixture",
+                image_digest=_sha("9"),
+                contracts=(
+                    ObserverContractSupport.from_contract(MEDIA_METADATA_OBSERVER_CONTRACT),
+                ),
+            )
+        )
+
+    def descriptor(self, registration_id: str) -> ObserverDescriptor:
+        assert registration_id == "exiftool"
+        return self.value
+
+
+class ArchiveTargets:
+    def __init__(self) -> None:
+        options = JsonSchemaDocument.from_schema(
+            "fixture.archive-options/v1",
+            {"type": "object", "additionalProperties": False},
+        )
+        self.value = TargetContract.seal(
+            TargetContractPayload(
+                implementation_id="fixture.archive-target/v1",
+                implementation_version="1.0.0",
+                source_revision="fixture",
+                image_digest=_sha("8"),
+                operations=(
+                    TargetOperationSupport(
+                        operation_id=AUDIO_ARCHIVE_OPERATION.id,
+                        operation_contract_sha256=AUDIO_ARCHIVE_OPERATION.contract_sha256,
+                        options_schema=options,
+                    ),
+                ),
+            )
+        )
+
+    def contract(self, registration_id: str) -> TargetContract:
+        assert registration_id in {"opus", "fixture-target"}
+        return self.value
+
+
+class LargeCatalogApi(CatalogApi):
+    def search(self, **_kwargs: object) -> dict[str, object]:
+        return {
+            "files": [
+                {
+                    "path": f"camera/item-{index:03d}.xmp",
+                    "bytes": 100 + index,
+                    "sha256": f"{index % 16:x}" * 64,
+                }
+                for index in range(257)
+            ]
+        }
+
+
 def test_recipe_projection_count_is_defined_by_the_recipe() -> None:
     projections = tuple(
         OperationProjection(
@@ -108,6 +180,225 @@ def test_recipe_projection_count_is_defined_by_the_recipe() -> None:
     )
 
     assert route.projections == projections
+
+
+def test_observer_capacity_batches_unbounded_collection_work_without_omission() -> None:
+    recipe = RecipeDefinition(
+        id="fixture.large-observation/v1",
+        revision=1,
+        input_tags=("fixture",),
+        observers=(
+            ObserverUse(
+                registration_id="exiftool",
+                contract_id=MEDIA_METADATA_OBSERVER_CONTRACT.id,
+                artifact_rules=(ArtifactRule(role="stove0.media.source/v1"),),
+            ),
+        ),
+        routes=(
+            RecipeRoute(
+                id="archive",
+                operation_id=AUDIO_ARCHIVE_OPERATION.id,
+                target_registration_id="opus",
+                artifact_rules=(ArtifactRule(role="stove0.media.source/v1"),),
+                output_tags=("archive",),
+            ),
+            RecipeRoute(
+                id="incorrect-absence",
+                when=(
+                    FactPredicate(
+                        observation_contract_id=MEDIA_METADATA_OBSERVER_CONTRACT.id,
+                        pointer="/artifacts/63/state",
+                        operator="exists",
+                        value=False,
+                    ),
+                ),
+                operation_id=AUDIO_ARCHIVE_OPERATION.id,
+                target_registration_id="opus",
+                artifact_rules=(ArtifactRule(role="stove0.media.source/v1"),),
+                output_tags=("incorrect",),
+            ),
+            RecipeRoute(
+                id="observed-unsupported",
+                when=(
+                    FactPredicate(
+                        observation_contract_id=MEDIA_METADATA_OBSERVER_CONTRACT.id,
+                        pointer="/artifacts/0/state",
+                        operator="equals",
+                        value="unsupported",
+                    ),
+                ),
+                operation_id=AUDIO_ARCHIVE_OPERATION.id,
+                target_registration_id="opus",
+                artifact_rules=(ArtifactRule(role="stove0.media.source/v1"),),
+                output_tags=("observed",),
+            ),
+        ),
+    )
+    observers = MediaObservers()
+    planner = RecipePlanner(
+        catalog=RecipeCatalog(
+            operations=(AUDIO_ARCHIVE_OPERATION,),
+            recipes=(recipe,),
+        ),
+        riverhog=cast(ApiClient, LargeCatalogApi()),
+        observers=cast(ObserverPort, observers),
+        targets=cast(TargetPort, ArchiveTargets()),
+    )
+    root = CollectionRootRef(
+        collection_id=11,
+        manifest_sha256=_sha("1"),
+        content_etag=_sha("2"),
+    )
+    work = planner.create_work(recipe.id, (root,))
+
+    requests = planner.observation_requests(work)
+
+    assert sorted(len(request.subjects) for request in requests) == [1, 64, 64, 64, 64]
+    subjects = [subject for request in requests for subject in request.subjects]
+    assert len(subjects) == 257
+    assert len({subject.id for subject in subjects}) == 257
+    evidence = tuple(
+        ObservationEvidence(
+            request=request,
+            result=ObservationResultBuilder(observers.value, request).observed(
+                MediaMetadataFacts(
+                    artifacts=tuple(
+                        MediaArtifactFacts(artifact_id=subject.id, state="unsupported")
+                        for subject in request.subjects
+                    )
+                ).model_dump(mode="json")
+            ),
+        )
+        for request in requests
+    )
+
+    decision = planner.workflow_plan(work, evidence)
+
+    assert isinstance(decision, BranchSetDecision)
+    assert decision.plan.evidence_sha256s == tuple(
+        sorted(item.result.result_sha256 for item in evidence)
+    )
+    assert [branch.branch_id for branch in decision.plan.branches] == [
+        "archive",
+        "observed-unsupported",
+    ]
+    assert all(branch.workflow_plan.observations == evidence for branch in decision.plan.branches)
+
+
+class AssociatedMediaCatalogApi(CatalogApi):
+    def search(self, **_kwargs: object) -> dict[str, object]:
+        return {
+            "files": [
+                {"path": "camera/clip.mov", "bytes": 100, "sha256": _sha("3")},
+                {"path": "camera/clip.xmp", "bytes": 20, "sha256": _sha("4")},
+                {"path": "camera/retained.txt", "bytes": 10, "sha256": _sha("5")},
+            ]
+        }
+
+
+def test_media_observation_evidence_binds_exact_primary_sidecar_selection() -> None:
+    recipe = RecipeDefinition(
+        id="fixture.observed-media/v1",
+        revision=1,
+        input_tags=("fixture",),
+        observers=(
+            ObserverUse(
+                registration_id="exiftool",
+                contract_id=MEDIA_METADATA_OBSERVER_CONTRACT.id,
+                artifact_rules=(ArtifactRule(glob="camera/clip.*", role="stove0.media.source/v1"),),
+            ),
+        ),
+        routes=(
+            RecipeRoute(
+                id="archive",
+                operation_id=AUDIO_ARCHIVE_OPERATION.id,
+                target_registration_id="opus",
+                artifact_rules=(ArtifactRule(glob="camera/clip.*", role="stove0.media.source/v1"),),
+                output_tags=("archive",),
+            ),
+        ),
+    )
+    observers = MediaObservers()
+    planner = RecipePlanner(
+        catalog=RecipeCatalog(
+            operations=(AUDIO_ARCHIVE_OPERATION,),
+            recipes=(recipe,),
+        ),
+        riverhog=cast(ApiClient, AssociatedMediaCatalogApi()),
+        observers=cast(ObserverPort, observers),
+        targets=cast(TargetPort, ArchiveTargets()),
+    )
+    root = CollectionRootRef(
+        collection_id=11,
+        manifest_sha256=_sha("1"),
+        content_etag=_sha("2"),
+    )
+    work = planner.create_work(recipe.id, (root,))
+    request = planner.observation_requests(work)[0]
+    observed_facts = MediaMetadataFacts(
+        artifacts=tuple(
+            MediaArtifactFacts(
+                artifact_id=subject.id,
+                state="observed",
+                facts=(
+                    MediaMetadataFact(
+                        name="capture-time",
+                        value="2025:02:03 04:05:06-08:00",
+                        evidence=MediaFactEvidence(
+                            artifact_id=subject.id,
+                            field="XMP-xmp:CreateDate",
+                        ),
+                    ),
+                ),
+            )
+            for subject in request.subjects
+        )
+    )
+    result = ObservationResultBuilder(observers.value, request).observed(
+        observed_facts.model_dump(mode="json")
+    )
+    evidence = ObservationEvidence(request=request, result=result)
+
+    decision = planner.workflow_plan(work, (evidence,))
+
+    assert isinstance(decision, BranchSetDecision)
+    selection = decision.selection_documents[
+        decision.plan.branches[0].artifact_selection.selection_sha256
+    ]
+    assert {artifact.path for artifact in selection.artifacts} == {
+        "camera/clip.mov",
+        "camera/clip.xmp",
+    }
+    assert decision.plan.retirement_policy == "retain"
+    assert decision.plan.evidence_sha256s == (result.result_sha256,)
+    assert all(
+        branch.workflow_plan.observations == (evidence,) for branch in decision.plan.branches
+    )
+    changed_facts = observed_facts.model_copy(
+        update={
+            "artifacts": (
+                observed_facts.artifacts[0].model_copy(
+                    update={
+                        "facts": (
+                            observed_facts.artifacts[0]
+                            .facts[0]
+                            .model_copy(update={"value": "2025:02:03 04:05:07-08:00"}),
+                        )
+                    }
+                ),
+                *observed_facts.artifacts[1:],
+            )
+        }
+    )
+    changed_result = ObservationResultBuilder(observers.value, request).observed(
+        changed_facts.model_dump(mode="json")
+    )
+    changed = planner.workflow_plan(
+        work,
+        (ObservationEvidence(request=request, result=changed_result),),
+    )
+    assert isinstance(changed, BranchSetDecision)
+    assert changed.plan.branch_set_sha256 != decision.plan.branch_set_sha256
 
 
 def test_review_recipe_projects_semantic_intent_and_options_before_preflight() -> None:

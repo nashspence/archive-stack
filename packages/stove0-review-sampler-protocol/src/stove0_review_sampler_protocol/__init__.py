@@ -65,7 +65,7 @@ class SamplerWindow(SamplerModel):
     id: str = Field(pattern=ARTIFACT_ID_PATTERN)
     input_id: str = Field(pattern=ARTIFACT_ID_PATTERN)
     start_ms: int = Field(ge=0)
-    duration_ms: int = Field(ge=1, le=60 * 60 * 1000)
+    duration_ms: int = Field(ge=1)
     output_path: str = Field(min_length=1, max_length=4096)
 
     @field_validator("output_path")
@@ -80,8 +80,8 @@ class SamplerRequestPayload(SamplerModel):
     format: Literal["stove0-review-sampler-request/v1"] = "stove0-review-sampler-request/v1"
     sampler_descriptor_sha256: str = Field(pattern=SHA256_PATTERN)
     workspace_id: str = Field(pattern=SHA256_PATTERN)
-    inputs: tuple[SamplerInput, ...] = Field(min_length=1, max_length=128)
-    windows: tuple[SamplerWindow, ...] = Field(min_length=1, max_length=8192)
+    inputs: tuple[SamplerInput, ...] = Field(min_length=1)
+    windows: tuple[SamplerWindow, ...] = Field(min_length=1)
     portable_intent: dict[str, JsonValue]
     maximum_output_bytes: int = Field(ge=1, le=1024**4)
     timeout_seconds: int = Field(ge=1, le=86400)
@@ -140,7 +140,7 @@ class SamplerOutput(SamplerModel):
     bytes: int = Field(ge=0)
     sha256: str = Field(pattern=SHA256_PATTERN)
     media_type: str = Field(min_length=1, max_length=255)
-    derived_from: tuple[str, ...] = Field(min_length=1, max_length=128)
+    derived_from: tuple[str, ...] = Field(min_length=1)
 
     @field_validator("path")
     @classmethod

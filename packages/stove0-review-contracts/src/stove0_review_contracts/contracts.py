@@ -51,7 +51,6 @@ MEDIA_SAMPLING_FACTS_SCHEMA = JsonSchemaDocument.from_schema(
             "artifacts": {
                 "type": "array",
                 "minItems": 1,
-                "maxItems": 128,
                 "items": {
                     "type": "object",
                     "required": [
@@ -65,7 +64,6 @@ MEDIA_SAMPLING_FACTS_SCHEMA = JsonSchemaDocument.from_schema(
                         "sampleable_ranges": {
                             "type": "array",
                             "minItems": 1,
-                            "maxItems": 4096,
                             "items": {
                                 "type": "object",
                                 "required": ["start_ms", "duration_ms"],
@@ -108,17 +106,14 @@ REVIEW_MATERIALIZE_INTENT_SCHEMA = JsonSchemaDocument.from_schema(
                     "samples_per_artifact": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 64,
                     },
                     "window_duration_ms": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 3600000,
                     },
                     "windows": {
                         "type": "array",
                         "minItems": 1,
-                        "maxItems": 8192,
                         "items": {
                             "type": "object",
                             "required": ["artifact_id", "start_ms", "duration_ms"],
@@ -172,7 +167,6 @@ REVIEW_MATERIALIZE_OPERATION = OperationContract.seal(
             InputArtifactContract(
                 role=REVIEW_SOURCE_ROLE,
                 minimum=1,
-                maximum=128,
                 allowed_dispositions=("preserved", "transformed"),
             ),
         ),
@@ -180,7 +174,6 @@ REVIEW_MATERIALIZE_OPERATION = OperationContract.seal(
             OutputArtifactContract(
                 role=REVIEW_AUDIO_ROLE,
                 minimum=0,
-                maximum=512,
                 derived_from_roles=(REVIEW_SOURCE_ROLE,),
             ),
             OutputArtifactContract(
@@ -192,7 +185,6 @@ REVIEW_MATERIALIZE_OPERATION = OperationContract.seal(
             OutputArtifactContract(
                 role=REVIEW_VIDEO_ROLE,
                 minimum=0,
-                maximum=512,
                 derived_from_roles=(REVIEW_SOURCE_ROLE,),
             ),
         ),

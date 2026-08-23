@@ -139,6 +139,7 @@ printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-api-riverhog-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-controller-riverhog-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/stove0-worker-riverhog-token"
 printf '%s\n' 'stove0-compose-ffprobe-observer-token' > "${secret_root}/stove0-ffprobe-sampling-observer-token"
+printf '%s\n' 'stove0-compose-exiftool-observer-token' > "${secret_root}/stove0-exiftool-observer-token"
 printf '%s\n' 'stove0-compose-nvenc-target-token' > "${secret_root}/stove0-nvenc-av1-opus-target-token"
 printf '%s\n' 'stove0-compose-nvenc-sampler-token' > "${secret_root}/stove0-nvenc-av1-opus-review-sampler-token"
 printf '%s\n' 'stove0-compose-opus-target-token' > "${secret_root}/stove0-opus-target-token"
@@ -185,12 +186,14 @@ export STOVE0_API_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-api-riverhog-token"
 export STOVE0_CONTROLLER_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-controller-riverhog-token"
 export STOVE0_WORKER_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-worker-riverhog-token"
 export STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE="${secret_root}/stove0-ffprobe-sampling-observer-token"
+export STOVE0_EXIFTOOL_OBSERVER_TOKEN_FILE="${secret_root}/stove0-exiftool-observer-token"
 export STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE="${secret_root}/stove0-nvenc-av1-opus-target-token"
 export STOVE0_NVENC_AV1_OPUS_REVIEW_SAMPLER_TOKEN_FILE="${secret_root}/stove0-nvenc-av1-opus-review-sampler-token"
 export STOVE0_OPUS_TARGET_TOKEN_FILE="${secret_root}/stove0-opus-target-token"
 export STOVE0_OPUS_REVIEW_SAMPLER_TOKEN_FILE="${secret_root}/stove0-opus-review-sampler-token"
 export STOVE0_REVIEW_TARGET_TOKEN_FILE="${secret_root}/stove0-review-target-token"
 export STOVE0_FFPROBE_IMAGE_DIGEST="$(printf '1%.0s' {1..64})"
+export STOVE0_EXIFTOOL_IMAGE_DIGEST="$(printf '6%.0s' {1..64})"
 export STOVE0_NVENC_AV1_OPUS_IMAGE_DIGEST="$(printf '2%.0s' {1..64})"
 export STOVE0_OPUS_IMAGE_DIGEST="$(printf '3%.0s' {1..64})"
 export STOVE0_REVIEW_IMAGE_DIGEST="$(printf '4%.0s' {1..64})"
@@ -217,7 +220,7 @@ compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --entrypoint riverhog test tag create archive-audio --json >/dev/null
 
 stove0_compose up --detach --build --wait \
-  state api controller worker ffprobe-sampling-observer opus-target
+  state api controller worker ffprobe-sampling-observer exiftool-observer opus-target
 adapter_compose up --detach --build --wait intake-init ftp-adapter ftp-daemon
 
 adapter_run_code="from ftplib import FTP, all_errors
@@ -434,6 +437,6 @@ print(json.dumps({'format': 'stove0-transfer-phases/v1', **asdict(summary)}, sor
     "${smoke_root}/riverhog-transfer.log"
 fi
 
-stove0_compose restart api controller worker ffprobe-sampling-observer opus-target
-stove0_compose up --detach --wait api controller worker ffprobe-sampling-observer opus-target
+stove0_compose restart api controller worker ffprobe-sampling-observer exiftool-observer opus-target
+stove0_compose up --detach --wait api controller worker ffprobe-sampling-observer exiftool-observer opus-target
 stove0_compose exec -T api python -c "${wait_code}"

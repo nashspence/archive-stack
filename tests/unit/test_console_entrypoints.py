@@ -20,6 +20,7 @@ CONSOLE_DISTRIBUTIONS = {
     "riverhog-ftp-adapter": "riverhog-ftp-adapter",
     "stove0": "stove0-client",
     "stove0-server": "stove0-server",
+    "stove0-exiftool-observer": "stove0-exiftool-observer",
     "stove0-ffprobe-sampling-observer": "stove0-ffprobe-sampling-observer",
     "stove0-nvenc-av1-opus-target": "stove0-nvenc-av1-opus-target",
     "stove0-nvenc-av1-opus-review-sampler": "stove0-nvenc-av1-opus-review-sampler",

@@ -102,7 +102,7 @@ operations:
 - id: stove0.review.materialize/v1
   intent_schema:
     id: stove0.review.materialize-intent/v1
-    sha256: 9c1757fd841e4d40e438bcb1a0ac04bca21395306c577ffd6496547d7e2a5949
+    sha256: f38621476c23845144af1222566aafa8031d6487e082860c66f7b559be17aeed
     document:
       $schema: https://json-schema.org/draft/2020-12/schema
       type: object
@@ -127,15 +127,12 @@ operations:
             samples_per_artifact:
               type: integer
               minimum: 1
-              maximum: 64
             window_duration_ms:
               type: integer
               minimum: 1
-              maximum: 3600000
             windows:
               type: array
               minItems: 1
-              maxItems: 8192
               items:
                 type: object
                 required:
@@ -173,14 +170,12 @@ operations:
   inputs:
   - role: stove0.review.source/v1
     minimum: 1
-    maximum: 128
     allowed_dispositions:
     - preserved
     - transformed
   outputs:
   - role: stove0.review.audio/v1
     minimum: 0
-    maximum: 512
     derived_from_roles:
     - stove0.review.source/v1
   - role: stove0.review.index/v1
@@ -190,11 +185,10 @@ operations:
     - stove0.review.source/v1
   - role: stove0.review.video/v1
     minimum: 0
-    maximum: 512
     derived_from_roles:
     - stove0.review.source/v1
   source_retirement_permitted: false
-  contract_sha256: 0bb209878f9baebd4bc23898c13e2ba661f9715634d53a747e13cf7a64f41b79
+  contract_sha256: 1ac1e34e47f1f54571af1ce05200b8efad367d9e0ddc5d0c4d114802c5358bd7
 recipes:
 - id: stove0.audio-archive/v1
   revision: 1
@@ -203,6 +197,13 @@ recipes:
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
   source_retirement_policy: retain
+  observers:
+  - registration_id: exiftool
+    contract_id: stove0.media.metadata/v1
+    artifact_rules:
+    - glob: '*'
+      role: stove0.media.source/v1
+    retrieval_policy: allow
   routes:
   - id: archive-audio
     operation_id: stove0.media.audio-archive/v1
@@ -268,6 +269,13 @@ recipes:
   allow_derived_inputs: false
   source_retirement_policy: retire-after-verified-output
   retirement_grace_seconds: 86400
+  observers:
+  - registration_id: exiftool
+    contract_id: stove0.media.metadata/v1
+    artifact_rules:
+    - glob: '*'
+      role: stove0.media.source/v1
+    retrieval_policy: allow
   routes:
   - id: archive-video
     operation_id: stove0.media.av1-opus-archive/v1

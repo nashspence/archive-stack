@@ -12,15 +12,23 @@ forbidden_commands = ["ffmpeg", "ffprobe", "git", "gcc", "make", "mise", "uv"]
 tag = "stove0-ffprobe-sampling-observer:dev"
 roles = ["content-observer"]
 required_distributions = ["stove0-ffprobe-sampling-observer", "stove0-observer-support"]
-forbidden_distributions = ["stove0-media-archive-contracts", "stove0-review-sampler-support", "stove0-target-support"]
+forbidden_distributions = ["stove0-exiftool-observer", "stove0-media-archive-contracts", "stove0-review-sampler-support", "stove0-target-support"]
 required_commands = ["ffprobe", "stove0-ffprobe-sampling-observer"]
 forbidden_commands = ["ffmpeg", "git", "gcc", "make", "mise", "uv"]
+
+[images.stove0-exiftool-observer]
+tag = "stove0-exiftool-observer:dev"
+roles = ["content-observer"]
+required_distributions = ["stove0-exiftool-observer", "stove0-media-archive-contracts", "stove0-observer-support"]
+forbidden_distributions = ["stove0-ffprobe-sampling-observer", "stove0-review-sampler-support", "stove0-target-support"]
+required_commands = ["exiftool", "stove0-exiftool-observer"]
+forbidden_commands = ["ffmpeg", "ffprobe", "git", "gcc", "make", "mise", "uv"]
 
 [images.stove0-review-target]
 tag = "stove0-review-target:dev"
 roles = ["review-target", "review-sampler-caller"]
 required_distributions = ["stove0-review-sampler-client", "stove0-review-target", "stove0-target-support"]
-forbidden_distributions = ["stove0-ffprobe-sampling-observer", "stove0-media-archive-contracts", "stove0-review-sampler-support"]
+forbidden_distributions = ["stove0-exiftool-observer", "stove0-ffprobe-sampling-observer", "stove0-media-archive-contracts", "stove0-review-sampler-support"]
 required_commands = ["stove0-review-target"]
 forbidden_commands = ["ffmpeg", "ffprobe", "git", "gcc", "make", "mise", "uv"]
 
@@ -28,7 +36,7 @@ forbidden_commands = ["ffmpeg", "ffprobe", "git", "gcc", "make", "mise", "uv"]
 tag = "stove0-opus-target:dev"
 roles = ["archive-target", "review-sampler"]
 required_distributions = ["stove0-opus-review-sampler", "stove0-opus-target", "stove0-review-sampler-support", "stove0-target-support"]
-forbidden_distributions = ["stove0-ffprobe-sampling-observer", "stove0-review-target"]
+forbidden_distributions = ["stove0-exiftool-observer", "stove0-ffprobe-sampling-observer", "stove0-review-target"]
 required_commands = ["ffmpeg", "stove0-opus-review-sampler", "stove0-opus-target"]
 forbidden_commands = ["git", "gcc", "make", "mise", "uv"]
 
@@ -36,6 +44,6 @@ forbidden_commands = ["git", "gcc", "make", "mise", "uv"]
 tag = "stove0-nvenc-av1-opus-target:dev"
 roles = ["archive-target", "review-sampler"]
 required_distributions = ["stove0-nvenc-av1-opus-review-sampler", "stove0-nvenc-av1-opus-target", "stove0-review-sampler-support", "stove0-target-support"]
-forbidden_distributions = ["stove0-ffprobe-sampling-observer", "stove0-review-target"]
+forbidden_distributions = ["stove0-exiftool-observer", "stove0-ffprobe-sampling-observer", "stove0-review-target"]
 required_commands = ["ffmpeg", "stove0-nvenc-av1-opus-review-sampler", "stove0-nvenc-av1-opus-target"]
 forbidden_commands = ["git", "gcc", "make", "mise", "uv"]

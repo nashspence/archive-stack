@@ -24,6 +24,7 @@ MISE_CONTAINER_TOOLS = {
     "riverhog-storage-adapter-aws": {"uv"},
     "riverhog-storage-adapter-backblaze": {"uv"},
     "stove0": {"uv"},
+    "stove0-exiftool-observer": {"http:exiftool", "uv"},
     "stove0-ffprobe-sampling-observer": {"uv"},
     "stove0-nvenc-av1-opus-target": {"uv"},
     "stove0-opus-target": {"uv"},
@@ -76,6 +77,13 @@ IMAGE_CONTRACTS = {
             ("companions/stove0/compose.yaml", "controller"),
             ("companions/stove0/compose.yaml", "worker"),
         ),
+    },
+    "stove0-exiftool-observer": {
+        "dockerfile": "extensions/stove0/exiftool-observer/Dockerfile",
+        "tag": "stove0-exiftool-observer:dev",
+        "title": "stove0 ExifTool observer",
+        "license": "CAL-1.0",
+        "compose": (("companions/stove0/compose.yaml", "exiftool-observer"),),
     },
     "stove0-ffprobe-sampling-observer": {
         "dockerfile": "extensions/stove0/ffprobe-sampling-observer/Dockerfile",
@@ -323,6 +331,10 @@ def test_mise_artifacts_match_each_image_role() -> None:
     for binary in ("age", "age-keygen", "age-plugin-batchpass", "minisign", "uv"):
         assert f'"$(mise which {binary})" /opt/riverhog-tools/bin/{binary}' in test
     assert 'test "$(exiftool -ver)" = "13.59"' in test
+    observer = (REPO_ROOT / IMAGE_CONTRACTS["stove0-exiftool-observer"]["dockerfile"]).read_text(
+        encoding="utf-8"
+    )
+    assert 'test "$(exiftool -ver)" = "13.59"' in observer
 
 
 def test_production_images_use_the_common_unprivileged_runtime_identity() -> None:
