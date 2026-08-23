@@ -90,7 +90,6 @@ def _contract() -> ObserverContract:
             id="camera.probe/v1",
             options_schema=options,
             facts_schema=facts,
-            maximum_subjects=8,
             maximum_result_bytes=8192,
         )
     )
@@ -483,7 +482,7 @@ def test_workflow_preview_and_evaluation_contracts_are_deterministic() -> None:
         )
 
 
-def test_declared_observer_capacity_and_evaluation_size_have_no_global_ceiling() -> None:
+def test_observer_batch_preference_and_large_evaluation_are_supported() -> None:
     contract = ObserverContract.seal(
         ObserverContractPayload(
             id="fixture.large-observer/v1",
@@ -495,7 +494,6 @@ def test_declared_observer_capacity_and_evaluation_size_have_no_global_ceiling()
                 "fixture.large-observer-facts/v1",
                 {"type": "object", "additionalProperties": True},
             ),
-            maximum_subjects=10_001,
             maximum_result_bytes=1024,
         )
     )
@@ -505,5 +503,9 @@ def test_declared_observer_capacity_and_evaluation_size_have_no_global_ceiling()
         )
     )
 
-    assert ObserverContractSupport.from_contract(contract).maximum_subjects == 10_001
+    support = ObserverContractSupport.from_contract(
+        contract,
+        preferred_subject_batch_size=10_001,
+    )
+    assert support.preferred_subject_batch_size == 10_001
     assert len(matrix.variants) == 257

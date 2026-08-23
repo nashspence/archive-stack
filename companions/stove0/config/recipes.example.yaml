@@ -3,8 +3,94 @@ operations:
 - id: stove0.media.audio-archive/v1
   intent_schema:
     id: stove0.media.audio-archive-intent/v1
-    sha256: b6c871d5da18b885bae71c6e6bf21291c58b643b089f726b22142fc7327844a6
+    sha256: 7f49832949e43b0f22ca57b9cd334178dd1f688bcd3bc0ca61b0eb00087ca068
     document:
+      $defs:
+        MediaFieldPreference:
+          additionalProperties: false
+          properties:
+            name:
+              enum:
+              - capture-time
+              - container-format
+              - creator
+              - device-make
+              - device-model
+              - gps-latitude
+              - gps-longitude
+              title: Name
+              type: string
+            fields:
+              items:
+                type: string
+              minItems: 1
+              title: Fields
+              type: array
+          required:
+          - name
+          - fields
+          title: MediaFieldPreference
+          type: object
+        MediaGps:
+          additionalProperties: false
+          properties:
+            latitude:
+              title: Latitude
+              type: number
+            longitude:
+              title: Longitude
+              type: number
+          required:
+          - latitude
+          - longitude
+          title: MediaGps
+          type: object
+        MediaProjectionPolicy:
+          additionalProperties: false
+          description: Portable recipe-owned choices; omitted values are never manufactured.
+          properties:
+            format:
+              const: stove0-media-projection-policy/v1
+              default: stove0-media-projection-policy/v1
+              title: Format
+              type: string
+            device_make:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default: null
+              title: Device Make
+            device_model:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default: null
+              title: Device Model
+            gps:
+              anyOf:
+              - $ref: '#/$defs/MediaGps'
+              - type: 'null'
+              default: null
+            creators:
+              default: []
+              items:
+                type: string
+              title: Creators
+              type: array
+            tags:
+              default: []
+              items:
+                type: string
+              title: Tags
+              type: array
+            field_preferences:
+              default: []
+              items:
+                $ref: '#/$defs/MediaFieldPreference'
+              title: Field Preferences
+              type: array
+          title: MediaProjectionPolicy
+          type: object
       additionalProperties: false
       properties:
         codec:
@@ -23,6 +109,8 @@ operations:
           minimum: 16
           title: Bitrate Kbps
           type: integer
+        metadata_projection:
+          $ref: '#/$defs/MediaProjectionPolicy'
       title: AudioArchiveIntent
       type: object
   inputs:
@@ -30,18 +118,118 @@ operations:
     minimum: 1
     allowed_dispositions:
     - transformed
+  - role: stove0.media.xmp-source/v1
+    minimum: 0
+    allowed_dispositions:
+    - transformed
   outputs:
   - role: stove0.media.audio-archive/v1
     minimum: 1
     derived_from_roles:
     - stove0.media.source/v1
+    - stove0.media.xmp-source/v1
+  - role: stove0.media.metadata-xmp/v1
+    minimum: 1
+    derived_from_roles:
+    - stove0.media.source/v1
+    - stove0.media.xmp-source/v1
+  - role: stove0.media.source-artifact/v1
+    minimum: 0
+    derived_from_roles:
+    - stove0.media.xmp-source/v1
   source_retirement_permitted: false
-  contract_sha256: 458b788648245b9c4981091621321addc02694fda5afcb8a281584c9c99474c5
+  contract_sha256: eec14604874b9177d683de10c6c2a8e2cd83f0e809b59dcbd33a3d35fc663c01
 - id: stove0.media.av1-opus-archive/v1
   intent_schema:
     id: stove0.media.av1-opus-archive-intent/v1
-    sha256: 71f39645f7dfbeaddf7223aa47aad75ede968381c5f681ac893f1a19ea976c4b
+    sha256: 0c50c1d7bbef98370fd940fc9d5b8a8930e18dec0080c263540368a5ecb807a3
     document:
+      $defs:
+        MediaFieldPreference:
+          additionalProperties: false
+          properties:
+            name:
+              enum:
+              - capture-time
+              - container-format
+              - creator
+              - device-make
+              - device-model
+              - gps-latitude
+              - gps-longitude
+              title: Name
+              type: string
+            fields:
+              items:
+                type: string
+              minItems: 1
+              title: Fields
+              type: array
+          required:
+          - name
+          - fields
+          title: MediaFieldPreference
+          type: object
+        MediaGps:
+          additionalProperties: false
+          properties:
+            latitude:
+              title: Latitude
+              type: number
+            longitude:
+              title: Longitude
+              type: number
+          required:
+          - latitude
+          - longitude
+          title: MediaGps
+          type: object
+        MediaProjectionPolicy:
+          additionalProperties: false
+          description: Portable recipe-owned choices; omitted values are never manufactured.
+          properties:
+            format:
+              const: stove0-media-projection-policy/v1
+              default: stove0-media-projection-policy/v1
+              title: Format
+              type: string
+            device_make:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default: null
+              title: Device Make
+            device_model:
+              anyOf:
+              - type: string
+              - type: 'null'
+              default: null
+              title: Device Model
+            gps:
+              anyOf:
+              - $ref: '#/$defs/MediaGps'
+              - type: 'null'
+              default: null
+            creators:
+              default: []
+              items:
+                type: string
+              title: Creators
+              type: array
+            tags:
+              default: []
+              items:
+                type: string
+              title: Tags
+              type: array
+            field_preferences:
+              default: []
+              items:
+                $ref: '#/$defs/MediaFieldPreference'
+              title: Field Preferences
+              type: array
+          title: MediaProjectionPolicy
+          type: object
       additionalProperties: false
       properties:
         codec:
@@ -81,6 +269,8 @@ operations:
           - safe-remux
           title: Salvage
           type: string
+        metadata_projection:
+          $ref: '#/$defs/MediaProjectionPolicy'
       title: Av1OpusArchiveIntent
       type: object
   inputs:
@@ -88,17 +278,28 @@ operations:
     minimum: 1
     allowed_dispositions:
     - transformed
+  - role: stove0.media.xmp-source/v1
+    minimum: 0
+    allowed_dispositions:
+    - transformed
   outputs:
   - role: stove0.media.av1-opus-archive/v1
     minimum: 1
     derived_from_roles:
     - stove0.media.source/v1
+    - stove0.media.xmp-source/v1
+  - role: stove0.media.metadata-xmp/v1
+    minimum: 1
+    derived_from_roles:
+    - stove0.media.source/v1
+    - stove0.media.xmp-source/v1
   - role: stove0.media.source-artifact/v1
     minimum: 1
     derived_from_roles:
     - stove0.media.source/v1
+    - stove0.media.xmp-source/v1
   source_retirement_permitted: true
-  contract_sha256: e3153dba84540a4b11edaf4dd632a6e6a7b84241233a89b07fa72bd5863a0f86
+  contract_sha256: c5e1a97048d1a830792affa29f781543447039c16abc6ffb110119219584d3fd
 - id: stove0.review.materialize/v1
   intent_schema:
     id: stove0.review.materialize-intent/v1
@@ -201,6 +402,12 @@ recipes:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
     artifact_rules:
+    - glob: '*.XMP'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    - glob: '*.xmp'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
     - glob: '*'
       role: stove0.media.source/v1
     retrieval_policy: allow
@@ -209,6 +416,12 @@ recipes:
     operation_id: stove0.media.audio-archive/v1
     target_registration_id: opus
     artifact_rules:
+    - glob: '*.XMP'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    - glob: '*.xmp'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
     - glob: '*'
       role: stove0.media.source/v1
     intent:
@@ -273,6 +486,12 @@ recipes:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
     artifact_rules:
+    - glob: '*.XMP'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    - glob: '*.xmp'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
     - glob: '*'
       role: stove0.media.source/v1
     retrieval_policy: allow
@@ -281,6 +500,12 @@ recipes:
     operation_id: stove0.media.av1-opus-archive/v1
     target_registration_id: nvenc-av1-opus
     artifact_rules:
+    - glob: '*.XMP'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    - glob: '*.xmp'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
     - glob: '*'
       role: stove0.media.source/v1
     intent:

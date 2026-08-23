@@ -220,6 +220,8 @@ def _target(operation: OperationContract) -> TargetContract:
 def _target_plan(
     operation: OperationContract,
     target: TargetContract,
+    *,
+    observation_result_sha256s: tuple[str, ...] = (),
 ) -> TransformPlan:
     return TransformPlan.seal(
         TransformPlanPayload(
@@ -239,6 +241,7 @@ def _target_plan(
             ),
             intent={"suffix": ".copy"},
             target_options={},
+            observation_result_sha256s=observation_result_sha256s,
         )
     )
 
@@ -330,7 +333,11 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
         workflow,
         expected_revision=record.revision,
     )
-    plan = _target_plan(operation, target)
+    plan = _target_plan(
+        operation,
+        target,
+        observation_result_sha256s=(result.result_sha256,),
+    )
     record = service.seal_target_plan(
         work.work_id,
         target=target,

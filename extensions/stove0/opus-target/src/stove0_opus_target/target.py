@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+import shutil
 import threading
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
@@ -13,7 +14,13 @@ from riverhog_protocol import ArtifactDisposition, canonical_json_sha256
 from stove0_media_archive_contracts import (
     AUDIO_ARCHIVE_OPERATION,
     AUDIO_ARCHIVE_ROLE,
+    METADATA_XMP_ROLE,
+    SOURCE_ARTIFACT_ROLE,
     AudioArchiveIntent,
+    MediaArchiveProjection,
+    ffmpeg_container_metadata_args,
+    render_projection_xmp,
+    resolve_media_archive_projection,
 )
 from stove0_protocol import JsonSchemaDocument
 from stove0_target_support import (
@@ -29,18 +36,25 @@ from stove0_target_support import (
     TargetJobRequest,
     TargetJobStatus,
     TargetOperationSupport,
+    TargetPreflightRequest,
+    TargetPreflightResponse,
 )
 
 from stove0_opus_target.common import OpusContentError, file_identity, run_ffmpeg, tool_version
 
+_PROJECTION_SCHEMA = MediaArchiveProjection.model_json_schema()
 OPTIONS = JsonSchemaDocument.from_schema(
     "stove0.opus-target-options/v1",
     {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-            "ffmpeg_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400}
+            "ffmpeg_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+            "media_projection": {
+                key: value for key, value in _PROJECTION_SCHEMA.items() if key != "$defs"
+            },
         },
+        "$defs": _PROJECTION_SCHEMA.get("$defs", {}),
         "additionalProperties": False,
     },
 )
@@ -92,6 +106,28 @@ class OpusTargetService(PersistentTargetService):
             terminal_state_retention_seconds=terminal_state_retention_seconds,
         )
 
+    def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
+        intent = AudioArchiveIntent.model_validate(request.intent)
+        projection = resolve_media_archive_projection(
+            inputs=request.inputs,
+            observations=request.observations,
+            policy=intent.metadata_projection,
+            archive_directory="audio",
+            archive_suffix=".opus",
+        )
+        supplied = request.target_options.get("media_projection")
+        if supplied is not None and MediaArchiveProjection.model_validate(supplied) != projection:
+            raise ValueError("configured media projection differs from exact observation evidence")
+        effective = request.model_copy(
+            update={
+                "target_options": {
+                    **request.target_options,
+                    "media_projection": projection.model_dump(mode="json"),
+                }
+            }
+        )
+        return super().preflight(effective)
+
     def _execute(
         self,
         request: TargetJobRequest,
@@ -100,9 +136,15 @@ class OpusTargetService(PersistentTargetService):
         session: TargetExecutionSession,
     ) -> TargetJobStatus:
         intent = AudioArchiveIntent.model_validate(request.declaration.plan.intent)
-        timeout = request.declaration.plan.target_options.get("ffmpeg_timeout_seconds", 86400)
+        options = request.declaration.plan.target_options
+        timeout = options.get("ffmpeg_timeout_seconds", 86400)
         if isinstance(timeout, bool) or not isinstance(timeout, int):
             raise ValueError("ffmpeg_timeout_seconds must be an integer")
+        projection = MediaArchiveProjection.model_validate(options["media_projection"])
+        try:
+            projection.validate_plan_evidence(request.declaration.plan.observation_result_sha256s)
+        except ValueError as error:
+            raise RuntimeError("media projection differs from the target plan evidence") from error
 
         def check() -> None:
             if cancellation.is_set():
@@ -119,6 +161,7 @@ class OpusTargetService(PersistentTargetService):
                 resolved = execution.inputs()
                 outputs: list[OutputArtifact] = []
                 sources: dict[str, ProducerFile] = {}
+                materialized: dict[str, Path] = {}
                 with execution.prepare_inputs(
                     tuple(item for item, _claimed in resolved)
                 ) as retrieval:
@@ -128,7 +171,10 @@ class OpusTargetService(PersistentTargetService):
                         source = workspace.resolve(f"input/{artifact.id}{suffix}")
                         source.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                         retrieval.download(claimed, source)
-                        relative = f"audio/{artifact.id}.opus"
+                        materialized[artifact.id] = source
+                    for item in projection.items:
+                        check()
+                        relative = item.archive_path
                         destination = workspace.resolve(f"output/{relative}")
                         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                         temporary = destination.with_name(f".{destination.name}.part.opus")
@@ -140,12 +186,13 @@ class OpusTargetService(PersistentTargetService):
                                     "-nostdin",
                                     "-y",
                                     "-i",
-                                    str(source),
+                                    str(materialized[item.input_artifact_id]),
                                     "-vn",
                                     "-c:a",
                                     "libopus",
                                     "-b:a",
                                     f"{intent.bitrate_kbps}k",
+                                    *ffmpeg_container_metadata_args(item),
                                     str(temporary),
                                 ],
                                 log_root=workspace.root,
@@ -159,16 +206,53 @@ class OpusTargetService(PersistentTargetService):
                         os.replace(temporary, destination)
                         size, sha256 = file_identity(destination)
                         output = OutputArtifact(
-                            id=f"opus-{artifact.id}",
+                            id=_output_id("opus", item.derived_from),
                             role=AUDIO_ARCHIVE_ROLE,
                             path=relative,
                             bytes=size,
                             sha256=sha256,
                             media_type="audio/ogg",
-                            derived_from=(artifact.id,),
+                            derived_from=item.derived_from,
                         )
                         outputs.append(output)
                         sources[output.id] = ProducerFile(destination, relative)
+                        xmp = workspace.resolve(f"output/{item.xmp_path}")
+                        xmp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        xmp.write_bytes(
+                            render_projection_xmp(item, tags=intent.metadata_projection.tags)
+                        )
+                        xmp_size, xmp_sha256 = file_identity(xmp)
+                        xmp_output = OutputArtifact(
+                            id=_output_id("metadata-xmp", item.derived_from),
+                            role=METADATA_XMP_ROLE,
+                            path=item.xmp_path,
+                            bytes=xmp_size,
+                            sha256=xmp_sha256,
+                            media_type="application/rdf+xml",
+                            derived_from=item.derived_from,
+                        )
+                        outputs.append(xmp_output)
+                        sources[xmp_output.id] = ProducerFile(xmp, item.xmp_path)
+                    for retained in projection.retained_xmp_sidecars:
+                        source = materialized[retained.input_artifact_id]
+                        destination = workspace.resolve(f"output/{retained.output_path}")
+                        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        shutil.copyfile(source, destination)
+                        retained_size, retained_sha256 = file_identity(destination)
+                        retained_output = OutputArtifact(
+                            id=_output_id("source-xmp", (retained.input_artifact_id,)),
+                            role=SOURCE_ARTIFACT_ROLE,
+                            path=retained.output_path,
+                            bytes=retained_size,
+                            sha256=retained_sha256,
+                            media_type="application/rdf+xml",
+                            derived_from=(retained.input_artifact_id,),
+                        )
+                        outputs.append(retained_output)
+                        sources[retained_output.id] = ProducerFile(
+                            destination,
+                            retained.output_path,
+                        )
                 declared = tuple(sorted(outputs, key=lambda item: item.id))
                 dispositions = tuple(
                     ArtifactDisposition(
@@ -218,6 +302,12 @@ def _execution_sha256(
             "image_digest": image_digest,
             "outputs": [item.model_dump(mode="json") for item in outputs],
         }
+    )
+
+
+def _output_id(kind: str, derived_from: Sequence[str]) -> str:
+    return (
+        f"{kind}-{canonical_json_sha256({'kind': kind, 'derived_from': sorted(derived_from)})[:32]}"
     )
 
 

@@ -250,7 +250,6 @@ class ObserverContractPayload(Stove0ProtocolModel):
     id: SemanticId
     options_schema: JsonSchemaDocument
     facts_schema: JsonSchemaDocument
-    maximum_subjects: int = Field(default=128, ge=1)
     maximum_result_bytes: int = Field(default=1024 * 1024, ge=1, le=64 * 1024 * 1024)
 
 
@@ -274,17 +273,22 @@ class ObserverContractSupport(Stove0ProtocolModel):
     contract_sha256: Sha256
     options_schema: JsonSchemaDocument
     facts_schema: JsonSchemaDocument
-    maximum_subjects: int = Field(ge=1)
+    preferred_subject_batch_size: int = Field(default=128, ge=1)
     maximum_result_bytes: int = Field(ge=1, le=64 * 1024 * 1024)
 
     @classmethod
-    def from_contract(cls, value: ObserverContract) -> ObserverContractSupport:
+    def from_contract(
+        cls,
+        value: ObserverContract,
+        *,
+        preferred_subject_batch_size: int = 128,
+    ) -> ObserverContractSupport:
         return cls(
             contract_id=value.id,
             contract_sha256=value.contract_sha256,
             options_schema=value.options_schema,
             facts_schema=value.facts_schema,
-            maximum_subjects=value.maximum_subjects,
+            preferred_subject_batch_size=preferred_subject_batch_size,
             maximum_result_bytes=value.maximum_result_bytes,
         )
 
@@ -517,8 +521,6 @@ def validate_observation_result(
         raise ValueError("observation result does not bind the accepted observer contract")
     if result.subjects != request.subjects:
         raise ValueError("observation result subjects differ from the request")
-    if len(request.subjects) > support.maximum_subjects:
-        raise ValueError("observation request exceeds the observer contract subject limit")
     if request.maximum_result_bytes > support.maximum_result_bytes:
         raise ValueError("observation request exceeds the observer contract result limit")
     if result.state == "observed" and result.facts_schema != support.facts_schema:

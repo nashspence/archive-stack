@@ -154,7 +154,6 @@ MEDIA_SAMPLING_OBSERVER_CONTRACT = ObserverContract.seal(
         id=MEDIA_SAMPLING_OBSERVATION_ID,
         options_schema=MEDIA_SAMPLING_OPTIONS_SCHEMA,
         facts_schema=MEDIA_SAMPLING_FACTS_SCHEMA,
-        maximum_subjects=128,
         maximum_result_bytes=256 * 1024,
     )
 )

@@ -2163,6 +2163,7 @@ version = "0.1.0"
 source = { editable = "packages/stove0-media-archive-contracts" }
 dependencies = [
     { name = "pydantic" },
+    { name = "riverhog-protocol" },
     { name = "stove0-observer-protocol" },
     { name = "stove0-protocol" },
     { name = "stove0-target-protocol" },
@@ -2171,6 +2172,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "stove0-observer-protocol", editable = "packages/stove0-observer-protocol" },
     { name = "stove0-protocol", editable = "packages/stove0-protocol" },
     { name = "stove0-target-protocol", editable = "packages/stove0-target-protocol" },

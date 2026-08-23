@@ -25,7 +25,8 @@ if ! [[ "${smoke_audio_frames}" =~ ^[0-9]+$ ]] ||
   printf '%s\n' 'STOVE0_SMOKE_AUDIO_FRAMES must be between 1 and 10000000.' >&2
   exit 2
 fi
-smoke_max_bytes=$((smoke_file_count * (smoke_audio_frames * 2 + 4096)))
+smoke_claim_file_count=$((smoke_file_count + 1))
+smoke_max_bytes=$((smoke_file_count * (smoke_audio_frames * 2 + 4096) + 16384))
 stove0_project="${COMPOSE_PROJECT_NAME}-stove0"
 adapter_project="${COMPOSE_PROJECT_NAME}-ftp-adapter"
 stove0_compose_file="${ROOT_DIR}/companions/stove0/compose.yaml"
@@ -164,7 +165,7 @@ printf '%s\n' '{' \
   '      "tags": ["stove0-audio-archive"],' \
   '      "close_mode": "explicit-flush",' \
   '      "stable_seconds": 1,' \
-  "      \"max_files\": ${smoke_file_count}," \
+  "      \"max_files\": ${smoke_claim_file_count}," \
   "      \"max_bytes\": ${smoke_max_bytes}," \
   '      "provenance": "omit",' \
   '      "provenance_omission_reason": "The FTP producer cannot observe the source host filesystem."' \
@@ -241,21 +242,30 @@ sources = [
     Path(f'/intake/ftp/smoke-{index:04}.wav')
     for index in range(int(os.environ['STOVE0_SMOKE_FILE_COUNT']))
 ]
+sidecar = Path('/intake/ftp/smoke-0000.xmp')
+sidecar_payload = b'''<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+                   xmp:CreateDate="2026-08-23T00:00:00Z"/>
+ </rdf:RDF>
+</x:xmpmeta>
+'''
+uploads = [(source, expected) for source in sources] + [(sidecar, sidecar_payload)]
 deadline = time.monotonic() + 30
 last_error = None
 while time.monotonic() < deadline:
     try:
         with FTP('ftp-daemon', timeout=10) as ftp:
             ftp.login('ftp-intake', 'riverhog-ftp-adapter-compose-smoke-password')
-            for source in sources:
-                ftp.storbinary('STOR ' + source.name, BytesIO(expected))
+            for source, content in uploads:
+                ftp.storbinary('STOR ' + source.name, BytesIO(content))
         break
     except all_errors as error:
         last_error = error
         time.sleep(0.25)
 else:
     raise RuntimeError('FTP listener did not become ready') from last_error
-assert all(source.read_bytes() == expected for source in sources)
+assert all(source.read_bytes() == content for source, content in uploads)
 with RiverhogFtpAdapterClient(
     base_url='http://127.0.0.1:8080',
     token='riverhog-ftp-adapter-compose-smoke-token',
@@ -267,7 +277,7 @@ with RiverhogFtpAdapterClient(
     assert result['failed'] == [], result
     status = client.get_ftp_adapter_status()
     assert status['sources'][0]['claims'] == 0, status
-assert all(not source.exists() for source in sources)
+assert all(not source.exists() for source, _content in uploads)
 assert list(Path('/intake/ftp/.riverhog-ftp-adapter/receipts').glob('*.json'))"
 scale_started_ns="$(date +%s%N)"
 adapter_compose exec -T \
@@ -288,6 +298,22 @@ compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --entrypoint python test -c "${cache_code}"
 
 wait_code="import json, time, urllib.request
+def diagnostic(row):
+    if row is None:
+        return None
+    target = row.get('target_status') or {}
+    return {
+        'work_id': row.get('work', {}).get('work_id'),
+        'phase': row.get('phase'),
+        'revision': row.get('revision'),
+        'failure': row.get('failure'),
+        'inapplicable': row.get('inapplicable'),
+        'abandon_outcome': row.get('abandon_outcome'),
+        'target_state': target.get('state'),
+        'target_attempt': target.get('attempt'),
+        'target_failure': target.get('failure'),
+        'target_inapplicable': target.get('inapplicable'),
+    }
 deadline = time.monotonic() + 180
 last = None
 while time.monotonic() < deadline:
@@ -302,8 +328,8 @@ while time.monotonic() < deadline:
         if last['phase'] == 'complete':
             assert last['output']['collection_id'] > 0
             break
-        if last['phase'] in {'failed', 'canceled', 'inapplicable'}:
-            raise RuntimeError(json.dumps(last, sort_keys=True))
+        if last['phase'] in {'failed', 'canceled', 'inapplicable', 'abandon_pending'}:
+            raise RuntimeError(json.dumps(diagnostic(last), sort_keys=True))
     time.sleep(0.5)
 else:
     request = urllib.request.Request(
@@ -315,8 +341,10 @@ else:
         },
         method='POST',
     )
-    diagnostic = json.load(urllib.request.urlopen(request, timeout=30))
-    raise TimeoutError(json.dumps({'work': last, 'scheduler': diagnostic}, sort_keys=True))"
+    scheduler_diagnostic = json.load(urllib.request.urlopen(request, timeout=30))
+    raise TimeoutError(
+        json.dumps({'work': diagnostic(last), 'scheduler': scheduler_diagnostic}, sort_keys=True)
+    )"
 stove0_compose exec -T api python -c "${wait_code}"
 scale_elapsed_ns=$(( $(date +%s%N) - scale_started_ns ))
 
@@ -334,8 +362,21 @@ with ApiClient() as client:
         row for row in client.search(collection=outputs[0]['id'], all_items=True)['files']
         if not row['path'].startswith('riverhog/')
     ]
-    assert len(input_files) == int(os.environ['STOVE0_SMOKE_FILE_COUNT'])
-    assert len(output_files) == len(input_files)
+    audio_count = int(os.environ['STOVE0_SMOKE_FILE_COUNT'])
+    assert len(input_files) == audio_count + 1
+    archive_outputs = [row for row in output_files if row['path'].endswith('.opus')]
+    projected_xmp = [row for row in output_files if row['path'].endswith('.opus.xmp')]
+    retained_xmp = [
+        row for row in output_files
+        if row['path'].startswith('source-artifacts/') and row['path'].endswith('.xmp')
+    ]
+    assert len(archive_outputs) == audio_count
+    assert len(projected_xmp) == audio_count
+    assert len(retained_xmp) == 1
+    assert len(output_files) == audio_count * 2 + 1
+    source_xmp = next(row for row in input_files if row['path'] == 'smoke-0000.xmp')
+    assert retained_xmp[0]['bytes'] == source_xmp['bytes']
+    assert retained_xmp[0]['sha256'] == source_xmp['sha256']
     elapsed_seconds = int(os.environ['STOVE0_SMOKE_ELAPSED_NS']) / 1_000_000_000
     input_bytes = sum(row['bytes'] for row in input_files)
     derivation = client.get_collection_derivation(outputs[0]['id'])

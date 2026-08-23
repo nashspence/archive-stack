@@ -44,7 +44,7 @@ def conformance_report(
                 "contract_sha256": support.contract_sha256,
                 "options_schema_sha256": support.options_schema.sha256,
                 "facts_schema_sha256": support.facts_schema.sha256,
-                "maximum_subjects": support.maximum_subjects,
+                "preferred_subject_batch_size": support.preferred_subject_batch_size,
                 "maximum_result_bytes": support.maximum_result_bytes,
             }
             for support in descriptor.contracts

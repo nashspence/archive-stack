@@ -139,6 +139,9 @@ class PersistentTargetService:
                 target_options=request.target_options,
                 target_implementation_id=self._contract.implementation_id,
                 target_contract_sha256=self._contract.contract_sha256,
+                observation_result_sha256s=tuple(
+                    sorted(item.result.result_sha256 for item in request.observations)
+                ),
             )
         )
         return TargetPreflightResponse(target=self._contract, plan=plan)
