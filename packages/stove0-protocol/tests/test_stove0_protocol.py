@@ -481,3 +481,29 @@ def test_workflow_preview_and_evaluation_contracts_are_deterministic() -> None:
             output_tags=("review-output",),
             retirement_policy="retire-after-verified-output",
         )
+
+
+def test_declared_observer_capacity_and_evaluation_size_have_no_global_ceiling() -> None:
+    contract = ObserverContract.seal(
+        ObserverContractPayload(
+            id="fixture.large-observer/v1",
+            options_schema=JsonSchemaDocument.from_schema(
+                "fixture.large-observer-options/v1",
+                {"type": "object", "additionalProperties": False},
+            ),
+            facts_schema=JsonSchemaDocument.from_schema(
+                "fixture.large-observer-facts/v1",
+                {"type": "object", "additionalProperties": True},
+            ),
+            maximum_subjects=10_001,
+            maximum_result_bytes=1024,
+        )
+    )
+    matrix = EvaluationMatrix.seal(
+        EvaluationMatrixPayload(
+            variants=tuple(EvaluationVariant(id=f"variant-{index:04}") for index in range(257))
+        )
+    )
+
+    assert ObserverContractSupport.from_contract(contract).maximum_subjects == 10_001
+    assert len(matrix.variants) == 257

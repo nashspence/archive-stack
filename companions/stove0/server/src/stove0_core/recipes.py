@@ -572,8 +572,6 @@ class RecipePlanner:
 
 
 def _validate_projections(projections: tuple[OperationProjection, ...]) -> None:
-    if len(projections) > 64:
-        raise ValueError("operation projections are limited to 64 bounded copies")
     keys = [(item.destination, item.destination_pointer) for item in projections]
     if keys != sorted(keys) or len(keys) != len(set(keys)):
         raise ValueError("operation projections must be unique and canonically ordered")

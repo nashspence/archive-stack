@@ -21,6 +21,7 @@ from riverhog_protocol.paths import (
     normalize_relpath,
 )
 from riverhog_protocol.raw_ingress import RawSourceDigestManifest, raw_volume_part_sha256s
+from riverhog_protocol.transport import COLLECTION_UPLOAD_FILE_BATCH_MAX
 from riverhog_provenance import (
     FileProvenanceBinding,
     ProvenanceArchive,
@@ -321,8 +322,11 @@ class SqlAlchemyCollectionUploadService:
         files: Sequence[Mapping[str, object]],
     ) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
-        if not files or len(files) > 100:
-            raise BadRequest("collection upload file batch must contain 1 to 100 files")
+        if not files or len(files) > COLLECTION_UPLOAD_FILE_BATCH_MAX:
+            raise BadRequest(
+                "collection upload file batch must contain "
+                f"1 to {COLLECTION_UPLOAD_FILE_BATCH_MAX} files"
+            )
 
         with session_scope(self._session_factory) as session:
             upload = session.scalar(

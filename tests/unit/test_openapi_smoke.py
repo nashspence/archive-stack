@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from riverhog_api.app import create_app
 from riverhog_api.mappers import map_collection
+from riverhog_api.schemas.workflows import (
+    CollectionArtifactIdentityIn,
+    CollectionRootIdentityIn,
+    OperationIdentityIn,
+    ProcessingClaimCreateIn,
+    ProcessingClaimPlanSealIn,
+)
 from riverhog_core.domain.models import CollectionSummary
 from riverhog_core.domain.types import CollectionId
+from riverhog_protocol import COLLECTION_UPLOAD_FILE_BATCH_MAX, RETRIEVAL_FILE_BATCH_MAX
 
 
 def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
@@ -79,6 +87,53 @@ def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:
     assert {"lease_seconds", "restore_policy", "requires_restore"} <= set(
         schemas["RetrievalJobOut"]["required"]
     )
+
+
+def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> None:
+    schemas = create_app().openapi()["components"]["schemas"]
+
+    assert (
+        schemas["RegisterCollectionUploadSessionFilesRequest"]["properties"]["files"]["maxItems"]
+        == COLLECTION_UPLOAD_FILE_BATCH_MAX
+    )
+    assert (
+        schemas["RetrievalPlanRequest"]["properties"]["files"]["maxItems"]
+        == RETRIEVAL_FILE_BATCH_MAX
+    )
+
+    roots = [
+        CollectionRootIdentityIn(
+            collection_id=index,
+            manifest_sha256="1" * 64,
+            content_etag="2" * 64,
+        )
+        for index in range(1, 1002)
+    ]
+    claim = ProcessingClaimCreateIn(
+        work_id="3" * 64,
+        work_document={"format": "fixture-work/v1"},
+        work_document_sha256="4" * 64,
+        inputs=roots,
+    )
+    sealed = ProcessingClaimPlanSealIn(
+        fence=1,
+        execution_id="5" * 64,
+        controller_evidence={"format": "fixture-controller-evidence/v1"},
+        controller_evidence_sha256="6" * 64,
+        operation=OperationIdentityIn(id="fixture.operation/v1", sha256="7" * 64),
+        input_artifacts=[
+            CollectionArtifactIdentityIn(
+                collection=roots[0],
+                path="fixture.bin",
+                bytes=1,
+                sha256="8" * 64,
+            )
+        ],
+        output_tags=[f"fixture/tag-{index:03}" for index in range(101)],
+    )
+
+    assert len(claim.inputs) == 1001
+    assert len(sealed.output_tags) == 101
 
 
 def test_retrieval_cache_contract_exposes_indexer_state_and_filters() -> None:

@@ -250,7 +250,7 @@ class ObserverContractPayload(Stove0ProtocolModel):
     id: SemanticId
     options_schema: JsonSchemaDocument
     facts_schema: JsonSchemaDocument
-    maximum_subjects: int = Field(default=128, ge=1, le=10000)
+    maximum_subjects: int = Field(default=128, ge=1)
     maximum_result_bytes: int = Field(default=1024 * 1024, ge=1, le=64 * 1024 * 1024)
 
 
@@ -274,7 +274,7 @@ class ObserverContractSupport(Stove0ProtocolModel):
     contract_sha256: Sha256
     options_schema: JsonSchemaDocument
     facts_schema: JsonSchemaDocument
-    maximum_subjects: int = Field(ge=1, le=10000)
+    maximum_subjects: int = Field(ge=1)
     maximum_result_bytes: int = Field(ge=1, le=64 * 1024 * 1024)
 
     @classmethod
@@ -722,7 +722,7 @@ class EvaluationVariant(Stove0ProtocolModel):
 
 class EvaluationMatrixPayload(Stove0ProtocolModel):
     format: Literal["stove0-evaluation-matrix/v1"] = EVALUATION_MATRIX_FORMAT
-    variants: tuple[EvaluationVariant, ...] = Field(min_length=1, max_length=256)
+    variants: tuple[EvaluationVariant, ...] = Field(min_length=1)
 
     @field_validator("variants")
     @classmethod

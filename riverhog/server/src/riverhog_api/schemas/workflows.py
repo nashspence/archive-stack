@@ -33,7 +33,7 @@ class ProcessingClaimCreateIn(RiverhogModel):
     work_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     work_document: dict[str, Any]
     work_document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    inputs: list[CollectionRootIdentityIn] = Field(min_length=1, max_length=1000)
+    inputs: list[CollectionRootIdentityIn] = Field(min_length=1)
     lease_seconds: int = Field(default=1800, ge=30, le=86400)
     purpose: str = Field(default="collection-work/v1", min_length=1, max_length=160)
 
@@ -55,7 +55,7 @@ class ProcessingClaimPlanSealIn(RiverhogModel):
     controller_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     operation: OperationIdentityIn
     input_artifacts: list[CollectionArtifactIdentityIn] = Field(min_length=1)
-    output_tags: list[str] = Field(min_length=1, max_length=100)
+    output_tags: list[str] = Field(min_length=1)
     retirement_policy: Literal["retain", "retire-after-verified-output"] = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
 

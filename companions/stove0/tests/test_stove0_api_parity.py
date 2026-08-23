@@ -10,6 +10,7 @@ from riverhog_api_client import ApiClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from stove0_api.app import Stove0Composition, _log_scheduler_failures, create_app
+from stove0_api.schemas import WorkflowPreviewIn
 from stove0_api_client import Stove0ApiClient
 from stove0_core import (
     EvaluationService,
@@ -372,6 +373,15 @@ def test_every_stove0_api_operation_has_one_current_official_client_method() -> 
         if not name.startswith("_") and callable(getattr(Stove0ApiClient, name))
     }
     assert public_methods - set(operations) == {"close", "health_live", "health_ready"}
+
+
+def test_workflow_request_accepts_the_complete_exact_input_set() -> None:
+    request = WorkflowPreviewIn(
+        recipe_id="fixture.recipe/v1",
+        collection_ids=tuple(range(1, 1002)),
+    )
+
+    assert len(request.collection_ids) == 1001
 
 
 def test_scheduler_work_failures_are_operator_visible(

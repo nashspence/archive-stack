@@ -233,9 +233,7 @@ class _LifecycleRiverhog:
 def test_controller_prunes_expired_operational_state_on_a_bounded_interval() -> None:
     state = _State(())
     scheduler = Stove0Scheduler(
-        riverhog=_LifecycleRiverhog(
-            EventPage(events=[], next_cursor="0", has_more=False)
-        ),  # type: ignore[arg-type]
+        riverhog=_LifecycleRiverhog(EventPage(events=[], next_cursor="0", has_more=False)),  # type: ignore[arg-type]
         catalog=cast(object, None),  # type: ignore[arg-type]
         planner=cast(object, None),  # type: ignore[arg-type]
         coordinator=_Coordinator(()),  # type: ignore[arg-type]

@@ -18,6 +18,7 @@ from typing import Annotated, Any, Literal, TypedDict, cast
 import httpx
 import typer
 from riverhog_api_client.client import ApiClient
+from riverhog_api_client.producer import COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES
 from riverhog_api_client.uploads import (
     configured_upload_concurrency,
     configured_upload_window,
@@ -127,7 +128,6 @@ retrieval_app.add_typer(retrieval_cache_app, name="cache")
 app.add_typer(local_app, name="local")
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
-UPLOAD_REGISTRATION_BATCH_MAX = 16
 UPLOAD_FILE_LOG_BYTES = 1 * 1024 * 1024
 UPLOAD_PROGRESS_INTERVAL_SECONDS = 5.0
 UPLOAD_FINALIZE_POLL_SECONDS = 5.0
@@ -1446,8 +1446,8 @@ def _upload_collection_via_session(
             progress.notice("Uploading validated provenance journals", phase="registering")
             _put_provenance_journals(api, collection_id, manifest)
             progress.notice("Registering the canonical file manifest", phase="registering")
-            for start in range(0, len(manifest), UPLOAD_REGISTRATION_BATCH_MAX):
-                batch = manifest[start : start + UPLOAD_REGISTRATION_BATCH_MAX]
+            for start in range(0, len(manifest), COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES):
+                batch = manifest[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES]
                 _register_collection_upload_session_files(api, collection_id, batch)
                 for _ in batch:
                     progress.registered_file()

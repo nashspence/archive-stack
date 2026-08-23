@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal
 
 from pydantic import Field
+from riverhog_protocol import COLLECTION_UPLOAD_FILE_BATCH_MAX
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
@@ -49,7 +50,10 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
 
 
 class RegisterCollectionUploadSessionFilesRequest(RiverhogModel):
-    files: list[CollectionUploadFileIn] = Field(min_length=1, max_length=100)
+    files: list[CollectionUploadFileIn] = Field(
+        min_length=1,
+        max_length=COLLECTION_UPLOAD_FILE_BATCH_MAX,
+    )
 
 
 class CompleteCollectionUploadSessionRequest(RiverhogModel):

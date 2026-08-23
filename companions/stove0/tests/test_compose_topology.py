@@ -163,10 +163,12 @@ def test_reference_topology_connects_bounded_operational_state_retention() -> No
     payload = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     services = payload["services"]
     for name in ("api", "controller", "worker"):
-        assert services[name]["environment"][
-            "STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS"
-        ] == "${STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS:-2592000}"
+        assert (
+            services[name]["environment"]["STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS"]
+            == "${STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS:-2592000}"
+        )
     for name in ("opus-target", "nvenc-av1-opus-target", "review-target"):
-        assert services[name]["environment"][
-            "STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS"
-        ] == "${STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:-2592000}"
+        assert (
+            services[name]["environment"]["STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS"]
+            == "${STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:-2592000}"
+        )

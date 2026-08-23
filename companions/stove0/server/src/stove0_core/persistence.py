@@ -58,9 +58,7 @@ class _Base(DeclarativeBase):
 
 class _WorkRow(_Base):
     __tablename__ = "stove0_work_records"
-    __table_args__ = (
-        Index("ix_stove0_work_records_phase_work_id", "phase", "work_id"),
-    )
+    __table_args__ = (Index("ix_stove0_work_records_phase_work_id", "phase", "work_id"),)
 
     work_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)

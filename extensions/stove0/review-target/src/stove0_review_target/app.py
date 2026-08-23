@@ -46,7 +46,7 @@ class SamplerConfig(BaseModel):
 class ReviewTargetConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    samplers: tuple[SamplerConfig, ...] = Field(min_length=1, max_length=32)
+    samplers: tuple[SamplerConfig, ...] = Field(min_length=1)
 
     @field_validator("samplers")
     @classmethod
