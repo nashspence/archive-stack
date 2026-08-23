@@ -287,6 +287,52 @@ def test_windows_native_snapshot_retains_only_numeric_task_state(
     }
 
 
+def test_windows_task_definition_verifies_normalized_current_user_semantics(
+    tmp_path: Path,
+) -> None:
+    module = load_script()
+    executable = tmp_path / "gogurt.exe"
+    executable.write_bytes(b"fixture")
+    sid = "S-1-5-21-101-202-303-1001"
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Task xmlns="{module.WINDOWS_TASK_XML_NAMESPACE}">
+  <Triggers><LogonTrigger><UserId>runner\\person</UserId></LogonTrigger></Triggers>
+  <Principals><Principal>
+    <UserId>person</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>
+  </Principal></Principals>
+  <Settings>
+    <AllowStartOnDemand>1</AllowStartOnDemand>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>0</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>0</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>
+  </Settings>
+  <Actions><Exec><Command>{executable}</Command></Exec></Actions>
+</Task>
+"""
+
+    def run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[0] == "powershell.exe":
+            return subprocess.CompletedProcess(command, 0, sid, "")
+        if command[0] == "schtasks.exe":
+            return subprocess.CompletedProcess(command, 0, xml, "")
+        assert command == ["whoami.exe"]
+        return subprocess.CompletedProcess(command, 0, "runner\\person\n", "")
+
+    module._run = run
+    module._verify_windows_task_definition(
+        executable,
+        scratch=tmp_path,
+        environment={"USERNAME": "person", "USERDOMAIN": "runner"},
+    )
+
+
 def test_windows_trace_defers_to_durable_failure_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

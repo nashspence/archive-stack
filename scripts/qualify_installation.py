@@ -544,6 +544,34 @@ def _windows_task_name(
     return "Riverhog.Gogurt." + hashlib.sha256(sid.encode("ascii")).hexdigest()
 
 
+def _windows_current_user_aliases(
+    sid: str,
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+) -> frozenset[str]:
+    aliases = {sid.casefold()}
+    username = environment.get("USERNAME", "").strip()
+    domain = environment.get("USERDOMAIN", "").strip()
+    if username:
+        aliases.add(username.casefold())
+        if domain:
+            aliases.add(f"{domain}\\{username}".casefold())
+    completed = _run(
+        ["whoami.exe"],
+        cwd=scratch,
+        env=environment,
+        capture=True,
+    )
+    account = completed.stdout.strip()
+    if account:
+        aliases.add(account.casefold())
+        _, separator, unqualified = account.rpartition("\\")
+        if separator and unqualified:
+            aliases.add(unqualified.casefold())
+    return frozenset(aliases)
+
+
 def _verify_windows_task_definition(
     executable: Path,
     *,
@@ -560,25 +588,60 @@ def _verify_windows_task_definition(
     )
     task = ET.fromstring(completed.stdout)
     ns = {"task": WINDOWS_TASK_XML_NAMESPACE}
+    identity_paths = (
+        "task:Triggers/task:LogonTrigger/task:UserId",
+        "task:Principals/task:Principal/task:UserId",
+    )
     expected = {
-        "task:Triggers/task:LogonTrigger/task:UserId": sid,
-        "task:Principals/task:Principal/task:UserId": sid,
         "task:Principals/task:Principal/task:LogonType": "InteractiveToken",
         "task:Principals/task:Principal/task:RunLevel": "LeastPrivilege",
-        "task:Settings/task:AllowStartOnDemand": "true",
         "task:Settings/task:MultipleInstancesPolicy": "IgnoreNew",
-        "task:Settings/task:DisallowStartIfOnBatteries": "false",
-        "task:Settings/task:StopIfGoingOnBatteries": "false",
-        "task:Settings/task:AllowHardTerminate": "false",
-        "task:Settings/task:StartWhenAvailable": "true",
         "task:Settings/task:ExecutionTimeLimit": "PT0S",
         "task:Settings/task:RestartOnFailure/task:Interval": "PT1M",
         "task:Settings/task:RestartOnFailure/task:Count": "3",
-        "task:Actions/task:Exec/task:Command": str(executable),
     }
-    observed = {path: task.findtext(path, namespaces=ns) for path in expected}
-    if observed != expected:
-        raise QualificationError("installed Windows listener task settings differ from v1")
+    expected_booleans = {
+        "task:Settings/task:AllowStartOnDemand": True,
+        "task:Settings/task:DisallowStartIfOnBatteries": False,
+        "task:Settings/task:StopIfGoingOnBatteries": False,
+        "task:Settings/task:AllowHardTerminate": False,
+        "task:Settings/task:StartWhenAvailable": True,
+    }
+    mismatches = [
+        path for path, value in expected.items() if task.findtext(path, namespaces=ns) != value
+    ]
+    aliases = _windows_current_user_aliases(
+        sid,
+        scratch=scratch,
+        environment=environment,
+    )
+    mismatches.extend(
+        path
+        for path in identity_paths
+        if (task.findtext(path, namespaces=ns) or "").casefold() not in aliases
+    )
+    boolean_values = {True: frozenset({"true", "1"}), False: frozenset({"false", "0"})}
+    mismatches.extend(
+        path
+        for path, value in expected_booleans.items()
+        if (task.findtext(path, namespaces=ns) or "").casefold() not in boolean_values[value]
+    )
+    command_path = "task:Actions/task:Exec/task:Command"
+    observed_command = task.findtext(command_path, namespaces=ns)
+    try:
+        same_executable = observed_command is not None and os.path.samefile(
+            observed_command,
+            executable,
+        )
+    except OSError:
+        same_executable = False
+    if not same_executable:
+        mismatches.append(command_path)
+    if mismatches:
+        fields = ", ".join(sorted(set(mismatches)))
+        raise QualificationError(
+            f"installed Windows listener task settings differ from v1: {fields}"
+        )
 
 
 def _native_registration_file(environment: dict[str, str]) -> Path | None:
