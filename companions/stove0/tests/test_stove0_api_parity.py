@@ -84,13 +84,27 @@ class _LifecycleState:
             "sort": "updated_at",
             "order": "desc",
             "filters": {},
-            "work": [{"work_id": "work-1", "phase": "eligible", "revision": 1}],
+            "work": [self._effect_work()],
         }
 
     def load(self, work_id: str) -> _Document | None:
         if work_id == "work-1":
-            return _Document(work_id=work_id, phase="eligible", revision=1)
+            return _Document(**self._effect_work())
         return None
+
+    @staticmethod
+    def _effect_work() -> dict[str, object]:
+        return {
+            "work_id": "work-1",
+            "phase": "complete",
+            "revision": 1,
+            "workflow_plan": {"result_kind": "external-effect"},
+            "target_status": {
+                "protocol": "stove0-effect-target/v1",
+                "state": "succeeded",
+                "effect_receipt": {"receipt_sha256": "e" * 64},
+            },
+        }
 
     def list_evaluations(self, **_kwargs: object) -> dict[str, object]:
         return {
@@ -315,7 +329,9 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert client.list_events().next_cursor == "0"
         assert client.list_recipes()["recipes"]
         assert client.get_recipe("fixture.recipe/v1")["revision"] == 1
-        assert client.list_work(all_items=True)["total"] == 1
+        listed = client.list_work(all_items=True)
+        assert listed["total"] == 1
+        assert listed["work"][0]["target_status"]["effect_receipt"]["receipt_sha256"] == ("e" * 64)
         assert (
             client.create_work(
                 "fixture.recipe/v1",
@@ -324,7 +340,10 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
             )["work_id"]
             == "work-1"
         )
-        assert client.get_work("work-1")["work_id"] == "work-1"
+        fetched = client.get_work("work-1")
+        assert fetched["work_id"] == "work-1"
+        assert fetched["workflow_plan"]["result_kind"] == "external-effect"
+        assert fetched["target_status"]["effect_receipt"]["receipt_sha256"] == "e" * 64
         assert client.inspect_work_coordination("work-1")["branch_set_succeeded"] is True
         assert client.get_artifact_selection("c" * 64)["total"] == 1
         assert client.step_work("work-1")["phase"] == "claimed"

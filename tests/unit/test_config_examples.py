@@ -62,6 +62,7 @@ def test_every_checked_example_runs_through_its_real_consumer(
     recipes = RecipeCatalog.load(REPO_ROOT / "companions/stove0/config/recipes.example.yaml")
     assert {recipe.id for recipe in recipes.recipes} == {
         "stove0.audio-archive/v1",
+        "stove0.review-effect/v1",
         "stove0.review/v1",
         "stove0.video-archive/v1",
     }

@@ -38,7 +38,7 @@ from stove0_target_protocol import (
     TargetContract,
     TargetJobRequest,
     TargetJobStatus,
-    TransformPlan,
+    TargetPlan,
     validate_status_against_request,
 )
 
@@ -145,7 +145,7 @@ class WorkRecord(Stove0StateModel):
     join_plan: JoinPlan | None = None
     coordination_cancel_requested: bool = False
     workflow_plan: WorkflowPlan | None = None
-    target_plan: TransformPlan | None = None
+    target_plan: TargetPlan | None = None
     controller_evidence: ControllerEvidence | None = None
     target_request: AcceptedTargetJob | None = None
     target_status: TargetJobStatus | None = None
@@ -741,7 +741,7 @@ class Stove0WorkService:
         work_id: str,
         *,
         target: TargetContract,
-        plan: TransformPlan,
+        plan: TargetPlan,
         expected_revision: int,
     ) -> WorkRecord:
         record = self._load(work_id, expected_revision)
@@ -842,8 +842,11 @@ class Stove0WorkService:
         elif status.state in {"running", "canceling"}:
             phase = "executing"
         elif status.state == "succeeded":
-            phase = "verifying"
-            output = status.output_collection
+            if operation.result_kind == "external-effect":
+                phase = "settled"
+            else:
+                phase = "verifying"
+                output = status.output_collection
         elif status.state == "inapplicable":
             assert status.inapplicable is not None
             phase = "abandon_pending"

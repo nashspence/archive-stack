@@ -35,8 +35,8 @@ from stove0_protocol import (
 from stove0_target_protocol import (
     InputArtifact,
     OutputCollectionRef,
+    TargetPlan,
     TargetRuntimeAuthority,
-    TransformPlan,
 )
 
 from stove0_core.coordinator import (
@@ -158,7 +158,7 @@ class Stove0RiverhogClient:
         claim_lease_seconds: int = 30 * 60,
         capability_ttl_seconds: int = 15 * 60,
         workspace_assurance: WorkspaceAssurance = "encrypted",
-        claim_purpose: str = "stove0-collection-transform/v1",
+        claim_purpose: str = "stove0-collection-work/v1",
     ) -> None:
         if claim_lease_seconds < 30 or capability_ttl_seconds < 30:
             raise ValueError("Riverhog claim and capability lifetimes must be at least 30 seconds")
@@ -278,7 +278,7 @@ class Stove0RiverhogClient:
         claim: ClaimBinding,
         evidence: ControllerEvidence,
         plan: WorkflowPlan,
-        target_plan: TransformPlan,
+        target_plan: TargetPlan,
     ) -> None:
         envelope = evidence.execution_envelope
         if envelope.workflow_plan != plan:
@@ -287,6 +287,8 @@ class Stove0RiverhogClient:
             raise ValueError("controller evidence differs from the current Riverhog claim")
         if _target_binding(target_plan) != envelope.target_plan:
             raise ValueError("controller evidence differs from the exact target plan")
+        if plan.result_kind == "external-effect":
+            return
         document = evidence.model_dump(mode="json", by_alias=True, exclude_none=True)
         payload = self.api.seal_processing_claim_plan(
             claim.claim_id,
@@ -314,7 +316,7 @@ class Stove0RiverhogClient:
         self,
         claim: ClaimBinding,
         evidence: ControllerEvidence,
-        target_plan: TransformPlan,
+        target_plan: TargetPlan,
     ) -> TargetInvocationAuthority:
         envelope = evidence.execution_envelope
         if envelope.claim_id != claim.claim_id or envelope.fence != claim.fence:
@@ -322,15 +324,25 @@ class Stove0RiverhogClient:
         if _target_binding(target_plan) != envelope.target_plan:
             raise ValueError("target evidence differs from the exact target plan")
         execution_id = envelope.execution_envelope_sha256
+        actions = (
+            ("read-inputs",)
+            if envelope.workflow_plan.result_kind == "external-effect"
+            else ("read-inputs", "write-output")
+        )
         capability = self._capability(
             claim,
             audience=("stove0.target/" + envelope.workflow_plan.target_registration_id),
-            actions=("read-inputs", "write-output"),
+            actions=actions,
             artifacts=tuple(_artifact_identity(item) for item in target_plan.inputs),
         )
         principal = capability.get("principal_app")
-        if principal != f"transform:{execution_id}":
-            raise RuntimeError("Riverhog output capability has an unexpected principal")
+        expected_principal = (
+            f"claim:{claim.claim_id}"
+            if envelope.workflow_plan.result_kind == "external-effect"
+            else f"transform:{execution_id}"
+        )
+        if principal != expected_principal:
+            raise RuntimeError("Riverhog target capability has an unexpected principal")
         return TargetInvocationAuthority(
             runtime=TargetRuntimeAuthority(
                 riverhog_base_url=self.api.base_url,
@@ -592,7 +604,7 @@ def _artifact_identity(
     )
 
 
-def _target_binding(plan: TransformPlan) -> TargetPlanBinding:
+def _target_binding(plan: TargetPlan) -> TargetPlanBinding:
     return TargetPlanBinding(
         protocol=plan.protocol,
         target_implementation_id=plan.target_implementation_id,

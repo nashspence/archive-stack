@@ -11,6 +11,7 @@ import secrets
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal, cast
 
 import uvicorn
 from fastapi import FastAPI, Request, Response
@@ -20,7 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from stove0_review_sampler_client import ReviewSamplerClient
 from stove0_target_support import TargetHttpBinding, terminal_state_retention_seconds
 
-from stove0_review_target.target import ReviewTargetService, SamplerRegistration
+from stove0_review_target.target import (
+    RcloneReviewDestination,
+    ReviewTargetService,
+    SamplerRegistration,
+)
 
 SERVICE = "stove0-review-target"
 
@@ -172,6 +177,35 @@ def _image_digest() -> str:
     return value
 
 
+def _mode() -> Literal["collection", "rclone-effect"]:
+    value = os.getenv("STOVE0_REVIEW_TARGET_MODE", "").strip()
+    if value not in {"collection", "rclone-effect"}:
+        raise ValueError("STOVE0_REVIEW_TARGET_MODE must be collection or rclone-effect")
+    return cast(Literal["collection", "rclone-effect"], value)
+
+
+def _effect_destination(
+    mode: Literal["collection", "rclone-effect"],
+) -> RcloneReviewDestination | None:
+    identity = os.getenv("STOVE0_REVIEW_TARGET_DESTINATION_IDENTITY", "").strip()
+    remote = os.getenv("STOVE0_REVIEW_TARGET_RCLONE_REMOTE", "").strip()
+    config = os.getenv("STOVE0_REVIEW_TARGET_RCLONE_CONFIG_FILE", "").strip()
+    if mode == "collection":
+        if identity or remote or config:
+            raise ValueError("collection review mode cannot configure an rclone destination")
+        return None
+    if not identity or not remote:
+        raise ValueError("rclone-effect review mode requires destination identity and remote")
+    timeout = int(os.getenv("STOVE0_REVIEW_TARGET_RCLONE_TIMEOUT_SECONDS", "86400"))
+    return RcloneReviewDestination(
+        identity=identity,
+        remote=remote,
+        config_path=Path(config) if config else None,
+        executable=os.getenv("STOVE0_REVIEW_TARGET_RCLONE_BIN", "rclone").strip(),
+        timeout_seconds=timeout,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog=SERVICE)
     parser.add_argument("--version", action="version", version=importlib.metadata.version(SERVICE))
@@ -180,6 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--port", type=int, default=int(os.getenv("STOVE0_REVIEW_TARGET_PORT", "8080"))
     )
     args = parser.parse_args(argv)
+    mode = _mode()
     target = ReviewTargetService(
         state_root=Path(
             os.getenv("STOVE0_REVIEW_TARGET_STATE_ROOT", "/var/lib/stove0-review-target")
@@ -190,6 +225,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         samplers=_sampler_registrations(),
         source_revision=os.getenv("STOVE0_REVIEW_TARGET_SOURCE_REVISION", "unknown"),
         image_digest=_image_digest(),
+        mode=mode,
+        destination=_effect_destination(mode),
         terminal_state_retention_seconds=terminal_state_retention_seconds(),
     )
     token = _secret()

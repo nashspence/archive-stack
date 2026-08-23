@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "stove0-target-protocol"
 version = "0.1.0"
-description = "Dependency-light public contracts for external stove0 transform targets."
+description = "Dependency-light public contracts for external stove0 targets."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -19,6 +19,7 @@ classifiers = [
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
+  "jsonschema>=4.25,<5.0",
   "pydantic>=2.7,<3.0",
   "riverhog-protocol>=0.1,<0.2",
   "stove0-protocol>=0.1,<0.2",

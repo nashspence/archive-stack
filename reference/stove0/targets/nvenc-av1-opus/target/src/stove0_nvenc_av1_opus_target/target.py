@@ -344,7 +344,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                     },
                 )
             finally:
-                if not execution.published:
+                if not execution.completed:
                     workspace.release()
 
     def _command(

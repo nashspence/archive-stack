@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSubject,
+    BranchEffectSettlement,
     BranchOutcome,
     BranchOutcomeState,
     BranchPlan,
@@ -44,6 +45,7 @@ def project_coordination(parent: WorkRecord, store: WorkStore) -> CoordinationPr
 
     selections = _declared_selections(parent, store)
     settlements: list[BranchSettlement] = []
+    effect_settlements: list[BranchEffectSettlement] = []
     outcomes: list[BranchOutcome] = []
     for branch in plan.branches:
         child = _load_declared_work(store, branch.workflow_plan.work.work_id)
@@ -62,11 +64,15 @@ def project_coordination(parent: WorkRecord, store: WorkStore) -> CoordinationPr
                 )
             )
             continue
+        effect_settlement = _branch_effect_settlement(branch, child)
+        if effect_settlement is not None:
+            effect_settlements.append(effect_settlement)
+            continue
         outcome = _branch_outcome(branch, child)
         if outcome is not None:
             outcomes.append(outcome)
 
-    resolution = resolve_join_plan(plan, selections, settlements)
+    resolution = resolve_join_plan(plan, selections, settlements, effect_settlements)
     pending_join: JoinPlan | None = None
     pending_join_selections: tuple[ArtifactSelection, ...] = ()
     join_settlement: JoinSettlement | None = None
@@ -92,6 +98,7 @@ def project_coordination(parent: WorkRecord, store: WorkStore) -> CoordinationPr
         plan,
         selections,
         branch_settlements=settlements,
+        branch_effect_settlements=effect_settlements,
         branch_outcomes=outcomes,
         join_settlement=join_settlement,
         join_outcome=join_outcome,
@@ -131,8 +138,28 @@ def _branch_settlement(record: WorkRecord) -> OutputCollectionRef | None:
         return None
     output = record.output
     if output is None:
-        raise RuntimeError("verified branch work has no exact output collection")
+        return None
     return output
+
+
+def _branch_effect_settlement(
+    branch: BranchPlan,
+    record: WorkRecord,
+) -> BranchEffectSettlement | None:
+    if record.phase not in {"settled", "retirement_pending", "complete"}:
+        return None
+    status = record.target_status
+    if (
+        status is None
+        or status.state != "succeeded"
+        or status.effect_receipt is None
+        or record.output is not None
+    ):
+        raise RuntimeError("successful branch work has neither collection nor effect evidence")
+    return BranchEffectSettlement.seal(
+        branch=branch,
+        effect_receipt_sha256=status.effect_receipt.receipt_sha256,
+    )
 
 
 def _branch_outcome(branch: BranchPlan, record: WorkRecord) -> BranchOutcome | None:

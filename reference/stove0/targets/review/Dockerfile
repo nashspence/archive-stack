@@ -6,10 +6,12 @@ COPY --from=mise /usr/local/bin/mise /usr/local/bin/mise
 WORKDIR /workspace
 COPY mise.toml mise.lock ./
 RUN mise trust mise.toml \
-    && mise install --locked uv \
+    && mise install --locked uv rclone \
     && mkdir -p /opt/riverhog-tools/bin \
     && cp --preserve=mode,timestamps "$(mise which uv)" /opt/riverhog-tools/bin/uv \
-    && test "$(/opt/riverhog-tools/bin/uv --version)" = "$(mise exec uv -- uv --version)"
+    && cp --preserve=mode,timestamps "$(mise which rclone)" /opt/riverhog-tools/bin/rclone \
+    && test "$(/opt/riverhog-tools/bin/uv --version)" = "$(mise exec uv -- uv --version)" \
+    && /opt/riverhog-tools/bin/rclone version
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS build
 
@@ -65,11 +67,17 @@ COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
-    && install -d -o 65532 -g 65532 -m 0700 /var/lib/stove0-review-target \
-    && ! command -v mise \
-    && ! command -v ffmpeg
+    && install -d -o 65532 -g 65532 -m 0700 \
+        /var/lib/stove0-review-target \
+        /var/lib/stove0-review-effect-target \
+        /var/lib/stove0-review-delivery
 
 COPY --from=build /opt/venv /opt/venv
+COPY --from=locked-tools /opt/riverhog-tools/bin/rclone /usr/local/bin/rclone
+
+RUN rclone version \
+    && ! command -v mise \
+    && ! command -v ffmpeg
 
 USER 65532:65532
 EXPOSE 8080

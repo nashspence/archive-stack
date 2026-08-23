@@ -15,9 +15,12 @@ from typing import Any, Final
 
 from jsonschema import Draft202012Validator
 from riverhog_protocol import RiverhogError, ServiceUnavailable
-from riverhog_transform_sdk import TransformRuntimeRegistry
+from riverhog_transform_sdk import ClaimedCollectionRuntimeRegistry
 from stove0_target_protocol import (
+    EFFECT_TARGET_PROTOCOL,
     AcceptedTargetJob,
+    EffectPlan,
+    EffectPlanPayload,
     OperationContract,
     TargetCancelRequest,
     TargetContract,
@@ -70,13 +73,18 @@ class TargetExecutionFailure(RuntimeError):
         self.retryable = retryable
 
 
+class TargetEffectCommitUncertain(RuntimeError):
+    """An external-effect attempt may have committed and must not be repeated."""
+
+
 class PersistentTargetService:
     """Persist non-secret job identity and converge identical restart requests.
 
     Capability tokens remain only in process memory. Accepted declarations and
     statuses are atomically persisted beneath one target-owned state root; an
-    active job found after process loss becomes ``interrupted`` and only an
-    identical request may resume it.
+    active job found after process loss becomes ``interrupted``. An identical
+    transform request may resume it; effect jobs remain interrupted because
+    repeating an uncertain external commit could duplicate the semantic effect.
     """
 
     def __init__(
@@ -91,6 +99,15 @@ class PersistentTargetService:
     ) -> None:
         self._contract = contract
         self._operations = dict(operations)
+        if set(self._operations) != {item.operation_id for item in contract.operations}:
+            raise ValueError("target operation implementations differ from the advertised contract")
+        for support in contract.operations:
+            operation = self._operations[support.operation_id]
+            if (
+                operation.contract_sha256 != support.operation_contract_sha256
+                or operation.result_kind != support.result_kind
+            ):
+                raise ValueError("target operation implementation differs from its support binding")
         self.state_root = state_root.resolve()
         self.state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.state_root, 0o700)
@@ -112,7 +129,7 @@ class PersistentTargetService:
         self._operator_canceled: set[str] = set()
         self._shutdown_interrupted: set[str] = set()
         self._futures: dict[str, Future[TargetJobStatus]] = {}
-        self._runtime_registry = TransformRuntimeRegistry()
+        self._runtime_registry = ClaimedCollectionRuntimeRegistry()
         self._runtime_contexts: dict[str, dict[str, object]] = {}
         self._runtime_token_fingerprints: dict[str, bytes] = {}
         self._sessions: dict[str, TargetExecutionSession] = {}
@@ -123,6 +140,8 @@ class PersistentTargetService:
         return self._contract
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
+        if request.protocol != self._contract.protocol:
+            raise TargetServiceError(409, "target-protocol-mismatch", "target protocol changed")
         operation = self._operation(request.operation_id)
         validate_declaration_against_operation(request, operation)
         support = self._contract.support_for(request.operation_id)
@@ -130,28 +149,39 @@ class PersistentTargetService:
             raise TargetServiceError(409, "operation-contract-mismatch", "operation changed")
         Draft202012Validator(operation.intent_schema.document).validate(request.intent)
         Draft202012Validator(support.options_schema.document).validate(request.target_options)
-        plan = TransformPlan.seal(
-            TransformPlanPayload(
-                operation_id=request.operation_id,
-                operation_contract_sha256=request.operation_contract_sha256,
-                inputs=request.inputs,
-                intent=request.intent,
-                target_options=request.target_options,
-                target_implementation_id=self._contract.implementation_id,
-                target_contract_sha256=self._contract.contract_sha256,
-                observation_result_sha256s=tuple(
-                    sorted(item.result.result_sha256 for item in request.observations)
-                ),
-            )
+        plan_fields: dict[str, object] = {
+            "operation_id": request.operation_id,
+            "operation_contract_sha256": request.operation_contract_sha256,
+            "inputs": request.inputs,
+            "intent": request.intent,
+            "target_options": request.target_options,
+            "target_implementation_id": self._contract.implementation_id,
+            "target_contract_sha256": self._contract.contract_sha256,
+            "observation_result_sha256s": tuple(
+                sorted(item.result.result_sha256 for item in request.observations)
+            ),
+        }
+        plan = (
+            EffectPlan.seal(EffectPlanPayload.model_validate(plan_fields))
+            if self._contract.protocol == EFFECT_TARGET_PROTOCOL
+            else TransformPlan.seal(TransformPlanPayload.model_validate(plan_fields))
         )
         return TargetPreflightResponse(target=self._contract, plan=plan)
 
     def put_job(self, request: TargetJobRequest) -> TargetJobStatus:
         job_id = request.declaration.job_id
-        if request.declaration.plan.target_contract_sha256 != self._contract.contract_sha256:
+        plan = request.declaration.plan
+        if (
+            plan.target_contract_sha256 != self._contract.contract_sha256
+            or plan.target_implementation_id != self._contract.implementation_id
+            or plan.protocol != self._contract.protocol
+        ):
             raise TargetServiceError(409, "target-contract-mismatch", "target contract changed")
-        operation = self._operation(request.declaration.plan.operation_id)
-        validate_declaration_against_operation(request.declaration.plan, operation)
+        operation = self._operation(plan.operation_id)
+        validate_declaration_against_operation(plan, operation)
+        support = self._contract.support_for(plan.operation_id)
+        Draft202012Validator(operation.intent_schema.document).validate(plan.intent)
+        Draft202012Validator(support.options_schema.document).validate(plan.target_options)
         with self._lock:
             existing = self._load_accepted(job_id)
             if existing is not None and not secrets.compare_digest(
@@ -192,6 +222,8 @@ class PersistentTargetService:
                 status = self._commit_status(status)
                 self._submit(request, status.attempt)
             elif status.state == "interrupted":
+                if request.declaration.plan.protocol == EFFECT_TARGET_PROTOCOL:
+                    return status
                 status = self._status(
                     request,
                     state="queued",
@@ -215,6 +247,8 @@ class PersistentTargetService:
             status = self._load_status(job_id)
             if status is None:
                 raise TargetServiceError(404, "job-not-found", "target job was not found")
+            if status.state == "interrupted":
+                return status
             if status.state in _TERMINAL_STATES:
                 return status
             self._operator_canceled.add(job_id)
@@ -224,6 +258,7 @@ class PersistentTargetService:
             if accepted is None:
                 raise RuntimeError("target job status has no accepted declaration")
             canceling = TargetJobStatus(
+                protocol=accepted.declaration.plan.protocol,
                 job_id=job_id,
                 state="canceling",
                 attempt=status.attempt,
@@ -266,6 +301,8 @@ class PersistentTargetService:
                     status_path.read_text(encoding="utf-8")
                 )
                 if status.state not in _TERMINAL_STATES:
+                    continue
+                if status.protocol == EFFECT_TARGET_PROTOCOL and status.state == "succeeded":
                     continue
                 accepted_path = self._accepted_path(job_id)
                 removed_bytes += stat.st_size
@@ -365,6 +402,7 @@ class PersistentTargetService:
                 terminal = self._stop_status(request, attempt)
             except TargetExecutionInapplicable as exc:
                 terminal = TargetJobStatus(
+                    protocol=request.declaration.plan.protocol,
                     job_id=request.declaration.job_id,
                     state="inapplicable",
                     attempt=attempt,
@@ -373,12 +411,19 @@ class PersistentTargetService:
                     progress=TargetProgress(phase="inapplicable", completed=0),
                     inapplicable=TargetInapplicable(code=exc.code, message=exc.message),
                 )
+            except TargetEffectCommitUncertain:
+                terminal = self._status(
+                    request,
+                    state="interrupted",
+                    attempt=attempt,
+                    phase="external-commit-uncertain",
+                )
             except Exception as exc:
                 terminal = _failure_status(request, attempt=attempt, failure=exc)
-            published = session.published_status
-            if published is not None:
-                terminal = published
-            elif cancellation.is_set() and terminal.state != "succeeded":
+            completed = session.completed_status
+            if completed is not None:
+                terminal = completed
+            elif cancellation.is_set() and terminal.state not in {"succeeded", "interrupted"}:
                 terminal = self._stop_status(request, attempt)
             return self._commit_status(terminal)
         finally:
@@ -407,6 +452,7 @@ class PersistentTargetService:
         phase: str,
     ) -> TargetJobStatus:
         return TargetJobStatus(
+            protocol=request.declaration.plan.protocol,
             job_id=request.declaration.job_id,
             state=state,  # type: ignore[arg-type]
             attempt=attempt,
@@ -532,6 +578,7 @@ def _failure_status(
         message = f"{type(failure).__name__}: {failure}"
         retryable = True
     return TargetJobStatus(
+        protocol=request.declaration.plan.protocol,
         job_id=request.declaration.job_id,
         state="failed",
         attempt=attempt,
@@ -550,6 +597,7 @@ __all__ = [
     "DEFAULT_TERMINAL_STATE_RETENTION_SECONDS",
     "JobExecutor",
     "PersistentTargetService",
+    "TargetEffectCommitUncertain",
     "TargetExecutionCanceled",
     "TargetExecutionFailure",
     "TargetExecutionInapplicable",

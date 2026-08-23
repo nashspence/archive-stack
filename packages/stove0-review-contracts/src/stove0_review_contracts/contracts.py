@@ -24,7 +24,9 @@ MEDIA_SAMPLING_OBSERVATION_ID = "stove0.review.media-sampling/v1"
 MEDIA_SAMPLING_OPTIONS_SCHEMA_ID = "stove0.review.media-sampling-options/v1"
 MEDIA_SAMPLING_FACTS_SCHEMA_ID = "stove0.review.media-sampling-facts/v1"
 REVIEW_MATERIALIZE_OPERATION_ID = "stove0.review.materialize/v1"
+REVIEW_RCLONE_DELIVER_OPERATION_ID = "stove0.review.rclone-deliver/v1"
 REVIEW_MATERIALIZE_INTENT_SCHEMA_ID = "stove0.review.materialize-intent/v1"
+REVIEW_RCLONE_RECEIPT_SCHEMA_ID = "stove0.review.rclone-receipt/v1"
 
 REVIEW_SOURCE_ROLE = "stove0.review.source/v1"
 REVIEW_AUDIO_ROLE = "stove0.review.audio/v1"
@@ -191,6 +193,51 @@ REVIEW_MATERIALIZE_OPERATION = OperationContract.seal(
     )
 )
 
+REVIEW_RCLONE_RECEIPT_SCHEMA = JsonSchemaDocument.from_schema(
+    REVIEW_RCLONE_RECEIPT_SCHEMA_ID,
+    {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": [
+            "format",
+            "destination_identity",
+            "delivery_id",
+            "artifact_manifest_sha256",
+            "artifact_count",
+            "total_bytes",
+        ],
+        "properties": {
+            "format": {"const": "stove0-review-rclone-receipt/v1"},
+            "destination_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "delivery_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "artifact_manifest_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$",
+            },
+            "artifact_count": {"type": "integer", "minimum": 1},
+            "total_bytes": {"type": "integer", "minimum": 0},
+        },
+        "additionalProperties": False,
+    },
+)
+
+REVIEW_RCLONE_DELIVER_OPERATION = OperationContract.seal(
+    OperationContractPayload(
+        id=REVIEW_RCLONE_DELIVER_OPERATION_ID,
+        result_kind="external-effect",
+        intent_schema=REVIEW_MATERIALIZE_INTENT_SCHEMA,
+        inputs=(
+            InputArtifactContract(
+                role=REVIEW_SOURCE_ROLE,
+                minimum=1,
+                allowed_dispositions=None,
+            ),
+        ),
+        effect_receipt_schema=REVIEW_RCLONE_RECEIPT_SCHEMA,
+        source_retirement_permitted=False,
+    )
+)
+
 
 __all__ = [
     "MEDIA_SAMPLING_FACTS_SCHEMA",
@@ -205,6 +252,10 @@ __all__ = [
     "REVIEW_MATERIALIZE_INTENT_SCHEMA_ID",
     "REVIEW_MATERIALIZE_OPERATION",
     "REVIEW_MATERIALIZE_OPERATION_ID",
+    "REVIEW_RCLONE_DELIVER_OPERATION",
+    "REVIEW_RCLONE_DELIVER_OPERATION_ID",
+    "REVIEW_RCLONE_RECEIPT_SCHEMA",
+    "REVIEW_RCLONE_RECEIPT_SCHEMA_ID",
     "REVIEW_SOURCE_ROLE",
     "REVIEW_VIDEO_ROLE",
 ]

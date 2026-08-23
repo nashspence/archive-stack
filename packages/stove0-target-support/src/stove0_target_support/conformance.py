@@ -1,4 +1,4 @@
-"""Consumer-runnable conformance checks for stove0 transform targets."""
+"""Consumer-runnable conformance checks for stove0 targets."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from jsonschema import Draft202012Validator
-from stove0_target_client.client import TransformTargetClient
+from stove0_target_client.client import TargetClient as HttpTargetClient
 from stove0_target_protocol import (
     OperationContract,
     TargetContract,
@@ -53,6 +53,7 @@ def conformance_report(
             {
                 "operation_id": item.operation_id,
                 "operation_contract_sha256": item.operation_contract_sha256,
+                "result_kind": item.result_kind,
                 "options_schema_sha256": item.options_schema.sha256,
             }
             for item in contract.operations
@@ -73,6 +74,7 @@ def conformance_report(
     Draft202012Validator(operation.intent_schema.document).validate(declaration.plan.intent)
     Draft202012Validator(support.options_schema.document).validate(declaration.plan.target_options)
     preflight_request = TargetPreflightRequest(
+        protocol=declaration.plan.protocol,
         operation_id=declaration.plan.operation_id,
         operation_contract_sha256=declaration.plan.operation_contract_sha256,
         inputs=declaration.plan.inputs,
@@ -133,7 +135,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.job_request is not None:
         request = TargetJobRequest.model_validate_json(args.job_request.read_text(encoding="utf-8"))
     report = conformance_report(
-        TransformTargetClient(args.base_url),
+        HttpTargetClient(args.base_url),
         operation=operation,
         job_request=request,
     )

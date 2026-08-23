@@ -70,6 +70,25 @@ checksum = "sha256:f7cfa4ad072feb4578c8afca5ba9a54ad591d665a441dd0d63aa366edbe19
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20240415/cpython-3.12.3+20240415-x86_64-pc-windows-msvc-install_only.tar.gz"
 provenance = "github-attestations"
 
+[[tools.rclone]]
+version = "1.75.0"
+backend = "aqua:rclone/rclone"
+
+[tools.rclone."platforms.linux-x64"]
+checksum = "sha256:aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa"
+url = "https://github.com/rclone/rclone/releases/download/v1.75.0/rclone-v1.75.0-linux-amd64.zip"
+url_api = "https://api.github.com/repos/rclone/rclone/releases/assets/496932792"
+
+[tools.rclone."platforms.macos-arm64"]
+checksum = "sha256:35e8f2a666ce789b29111db0dd843ddabc0d59c6b609d07bcaae5d1a07cba6f8"
+url = "https://github.com/rclone/rclone/releases/download/v1.75.0/rclone-v1.75.0-osx-arm64.zip"
+url_api = "https://api.github.com/repos/rclone/rclone/releases/assets/496939862"
+
+[tools.rclone."platforms.windows-x64"]
+checksum = "sha256:203581f0a7baeae873f2347483a798c79e2eaf5c384a4e9d866aa374f1c89ac0"
+url = "https://github.com/rclone/rclone/releases/download/v1.75.0/rclone-v1.75.0-windows-amd64.zip"
+url_api = "https://api.github.com/repos/rclone/rclone/releases/assets/496941642"
+
 [[tools.uv]]
 version = "0.11.24"
 backend = "aqua:astral-sh/uv"

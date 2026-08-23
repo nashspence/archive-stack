@@ -1078,7 +1078,7 @@ def test_capability_client_refreshes_workers_without_closing_active_delegate() -
 
 
 def test_runtime_registry_applies_refresh_arriving_before_target_start() -> None:
-    from riverhog_transform_sdk import TransformRuntimeRegistry
+    from riverhog_transform_sdk import ClaimedCollectionRuntimeRegistry
 
     class Runtime:
         def __init__(self) -> None:
@@ -1091,7 +1091,7 @@ def test_runtime_registry_applies_refresh_arriving_before_target_start() -> None
         def close(self) -> None:
             self.closed = True
 
-    registry = TransformRuntimeRegistry()
+    registry = ClaimedCollectionRuntimeRegistry()
     runtime = Runtime()
     registry.refresh("job-1", "replacement")
 
@@ -1121,7 +1121,7 @@ def test_runtime_rejects_empty_capability_without_environment_fallback() -> None
 
 
 def test_runtime_registry_cleans_up_failed_pending_refresh() -> None:
-    from riverhog_transform_sdk import TransformRuntimeRegistry
+    from riverhog_transform_sdk import ClaimedCollectionRuntimeRegistry
 
     class FailingRuntime:
         def refresh_capability(self, _token: str) -> None:
@@ -1137,7 +1137,7 @@ def test_runtime_registry_cleans_up_failed_pending_refresh() -> None:
         def close(self) -> None:
             pass
 
-    registry = TransformRuntimeRegistry()
+    registry = ClaimedCollectionRuntimeRegistry()
     registry.refresh("job-1", "replacement")
     with pytest.raises(RuntimeError, match="refresh rejected"):
         with registry.bind("job-1", FailingRuntime()):  # type: ignore[arg-type]

@@ -284,7 +284,7 @@ class OpusTargetService(PersistentTargetService):
                     },
                 )
             finally:
-                if not execution.published:
+                if not execution.completed:
                     workspace.release()
 
 

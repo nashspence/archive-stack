@@ -53,7 +53,7 @@ from stove0_core import (
 )
 from stove0_observer_client import ContentObserverClient
 from stove0_protocol import CollectionRootRef, EvaluationDefinition, WorkIdentity
-from stove0_target_client import TransformTargetClient
+from stove0_target_client import TargetClient
 from time_formats import utc_timestamp_now
 
 from stove0_api.schemas import (
@@ -119,7 +119,7 @@ class Stove0Composition:
         )
         targets = HttpTargetPort(
             {
-                key: TransformTargetClient(
+                key: TargetClient(
                     value.base_url,
                     token=value.token,
                     allow_insecure_http=value.allow_insecure_http,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 
-from riverhog_transform_sdk import TransformRuntimeRegistry
+from riverhog_transform_sdk import ClaimedCollectionRuntimeRegistry
 from stove0_target_protocol import TargetJobRequest, TargetJobStatus
 
 
@@ -21,7 +21,7 @@ class TargetExecutionSession:
         self,
         request: TargetJobRequest,
         attempt: int,
-        runtime_registry: TransformRuntimeRegistry,
+        runtime_registry: ClaimedCollectionRuntimeRegistry,
     ) -> None:
         self.job_id = request.declaration.job_id
         self.request_sha256 = request.request_sha256
@@ -29,10 +29,10 @@ class TargetExecutionSession:
         self.attempt = attempt
         self.runtime_registry = runtime_registry
         self._lock = threading.RLock()
-        self._published_status: TargetJobStatus | None = None
+        self._completed_status: TargetJobStatus | None = None
 
-    def record_published(self, status: TargetJobStatus) -> None:
-        """Retain exact success after Riverhog has finalized the output."""
+    def record_completed(self, status: TargetJobStatus) -> None:
+        """Retain one exact, validated successful target result."""
 
         if (
             status.state != "succeeded"
@@ -41,16 +41,16 @@ class TargetExecutionSession:
             or status.plan_sha256 != self.plan_sha256
             or status.attempt != self.attempt
         ):
-            raise ValueError("published target status differs from the active attempt")
+            raise ValueError("completed target status differs from the active attempt")
         with self._lock:
-            if self._published_status is not None and self._published_status != status:
-                raise RuntimeError("target attempt published two different terminal outcomes")
-            self._published_status = status
+            if self._completed_status is not None and self._completed_status != status:
+                raise RuntimeError("target attempt produced two different terminal outcomes")
+            self._completed_status = status
 
     @property
-    def published_status(self) -> TargetJobStatus | None:
+    def completed_status(self) -> TargetJobStatus | None:
         with self._lock:
-            return self._published_status
+            return self._completed_status
 
 
 __all__ = ["TargetExecutionSession"]

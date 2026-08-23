@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
 from stove0_protocol import JsonSchemaDocument
 from stove0_target_protocol import (
     InputArtifactContract,
@@ -20,7 +21,12 @@ def test_target_contract_models_are_importable_without_runtime_support() -> None
                 "fixture.copy-intent/v1",
                 {"type": "object", "additionalProperties": False},
             ),
-            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
             outputs=(
                 OutputArtifactContract(
                     role="fixture.output/v1",
@@ -45,3 +51,39 @@ def test_target_contract_models_are_importable_without_runtime_support() -> None
         "assert not loaded, sorted(loaded)\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_operation_result_kind_owns_collection_disposition_semantics() -> None:
+    schema = JsonSchemaDocument.from_schema(
+        "fixture.effect-intent/v1",
+        {"type": "object", "additionalProperties": False},
+    )
+    receipt = JsonSchemaDocument.from_schema(
+        "fixture.effect-receipt/v1",
+        {"type": "object", "additionalProperties": False},
+    )
+    with pytest.raises(ValueError, match="cannot declare input dispositions"):
+        OperationContractPayload(
+            id="fixture.effect/v1",
+            result_kind="external-effect",
+            intent_schema=schema,
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("preserved",),
+                ),
+            ),
+            effect_receipt_schema=receipt,
+        )
+    with pytest.raises(ValueError, match="requires explicit input dispositions"):
+        OperationContractPayload(
+            id="fixture.collection/v1",
+            intent_schema=schema,
+            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            outputs=(
+                OutputArtifactContract(
+                    role="fixture.output/v1",
+                    derived_from_roles=("fixture.source/v1",),
+                ),
+            ),
+        )

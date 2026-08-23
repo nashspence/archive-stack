@@ -10,6 +10,7 @@ from stove0_protocol import (
     ArtifactSelection,
     ArtifactSelectionRef,
     ArtifactSubject,
+    BranchEffectSettlement,
     BranchOutcome,
     BranchOutcomeState,
     BranchPlan,
@@ -73,8 +74,10 @@ def workflow_intent(
     *,
     option: int = 1,
     retirement: RetirementPolicy = "retain",
+    result_kind: str = "collection",
 ) -> WorkflowPlanIntent:
     return WorkflowPlanIntent(
+        result_kind=result_kind,  # type: ignore[arg-type]
         operation=OperationRef(
             id=f"operation.{label}/v1",
             sha256=digest(f"operation:{label}"),
@@ -83,7 +86,7 @@ def workflow_intent(
         target_contract_sha256=digest(f"target-contract:{label}"),
         requested_target_options={"option": option},
         input_retrieval_policy="available-only",
-        output_tags=(f"output-{label}",),
+        output_tags=(f"output-{label}",) if result_kind == "collection" else (),
         retirement_policy=retirement,
         output_policy={"kind": label},
     )
@@ -260,6 +263,109 @@ def test_one_branch_and_many_branches_use_the_same_contract() -> None:
     assert len(single.branches) == 1
     assert isinstance(plan, BranchSetPlan)
     assert len(plan.branches) == 3
+
+
+def test_required_effect_branch_gates_completion_without_collection_or_retirement_credit() -> None:
+    plan, selections, branches = branch_set_fixture(with_join=False)
+    effect = BranchPlan.build(
+        parent_work=plan.parent_work,
+        branch_id="notify",
+        decision_sha256=plan.decision_sha256,
+        selection=selections[branches["metadata"].artifact_selection.selection_sha256],
+        recipe=recipe("notify"),
+        effective_intent={"effect": "notify"},
+        workflow_intent=workflow_intent("notify", result_kind="external-effect"),
+    )
+    effect_plan = BranchSetPlan.seal(
+        parent_work=plan.parent_work,
+        decision_sha256=plan.decision_sha256,
+        branches=(branches["audio"], effect),
+        retirement_policy="retain",
+        selections=selections,
+    )
+    audio, audio_selection = successful_branch(
+        branches["audio"], "audio-effect-fixture", "archive.audio/v1"
+    )
+    selections[audio_selection.selection_sha256] = audio_selection
+    waiting = evaluate_branch_set(
+        effect_plan,
+        selections,
+        branch_settlements=(audio,),
+    )
+    assert waiting.branch_set_succeeded is False
+    assert waiting.unsettled_branch_ids == ("notify",)
+
+    receipt = BranchEffectSettlement.seal(
+        branch=effect,
+        effect_receipt_sha256=digest("effect-receipt"),
+    )
+    complete = evaluate_branch_set(
+        effect_plan,
+        selections,
+        branch_settlements=(audio,),
+        branch_effect_settlements=(receipt,),
+    )
+    assert complete.succeeded_effects == (receipt,)
+    assert complete.branch_set_succeeded is True
+    assert complete.coordination_complete_for_retirement is False
+
+
+def test_effect_branches_cannot_join_or_enable_source_retirement() -> None:
+    plan, selections, branches = branch_set_fixture(with_join=False)
+    effect = BranchPlan.build(
+        parent_work=plan.parent_work,
+        branch_id="notify",
+        decision_sha256=plan.decision_sha256,
+        selection=selections[branches["metadata"].artifact_selection.selection_sha256],
+        recipe=recipe("notify"),
+        effective_intent={"effect": "notify"},
+        workflow_intent=workflow_intent("notify", result_kind="external-effect"),
+    )
+    join = JoinDeclaration.seal(
+        members=(
+            JoinMemberDeclaration(branch_id="audio", output_roles=("archive.audio/v1",)),
+            JoinMemberDeclaration(branch_id="notify", output_roles=("effect.invalid/v1",)),
+        ),
+        recipe=recipe("join-effect-invalid"),
+        effective_intent={},
+        workflow_intent=workflow_intent("join-effect-invalid"),
+    )
+    with pytest.raises(ValidationError, match="cannot be declared as join members"):
+        BranchSetPlan.seal(
+            parent_work=plan.parent_work,
+            decision_sha256=plan.decision_sha256,
+            branches=(branches["audio"], effect),
+            join=join,
+            selections=selections,
+        )
+    with pytest.raises(ValidationError, match="must retain"):
+        BranchSetPlan.seal(
+            parent_work=plan.parent_work,
+            decision_sha256=plan.decision_sha256,
+            branches=(branches["audio"], effect),
+            retirement_policy="retire-after-verified-output",
+            selections=selections,
+        )
+
+
+def test_branch_settlements_cannot_switch_the_declared_result_kind() -> None:
+    plan, selections, branches = branch_set_fixture(with_join=False)
+    effect = BranchPlan.build(
+        parent_work=plan.parent_work,
+        branch_id="notify",
+        decision_sha256=plan.decision_sha256,
+        selection=selections[branches["metadata"].artifact_selection.selection_sha256],
+        recipe=recipe("notify"),
+        effective_intent={"effect": "notify"},
+        workflow_intent=workflow_intent("notify", result_kind="external-effect"),
+    )
+    with pytest.raises(ValueError, match="collection-producing"):
+        successful_branch(effect, "invalid-effect-output", "archive.invalid/v1")
+    with pytest.raises(ValueError, match="effect-producing"):
+        BranchEffectSettlement.seal(
+            branch=branches["audio"],
+            effect_receipt_sha256=digest("invalid-collection-receipt"),
+        )
 
 
 def test_parent_work_may_contain_multiple_exact_collection_roots() -> None:

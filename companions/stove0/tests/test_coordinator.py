@@ -117,7 +117,12 @@ def _operation(*, source_retirement_permitted: bool = False) -> OperationContrac
                     "additionalProperties": False,
                 },
             ),
-            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
             outputs=(
                 OutputArtifactContract(
                     role="fixture.output/v1",
@@ -138,7 +143,12 @@ def _fork_join_operations() -> tuple[OperationContract, OperationContract]:
         OperationContractPayload(
             id="fixture.branch/v1",
             intent_schema=intent,
-            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
             outputs=(
                 OutputArtifactContract(
                     role="fixture.branch-output/v1",
@@ -151,7 +161,13 @@ def _fork_join_operations() -> tuple[OperationContract, OperationContract]:
         OperationContractPayload(
             id="fixture.join/v1",
             intent_schema=intent,
-            inputs=(InputArtifactContract(role="fixture.branch-output/v1", minimum=2),),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.branch-output/v1",
+                    minimum=2,
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
             outputs=(
                 OutputArtifactContract(
                     role="fixture.joined-output/v1",

@@ -30,7 +30,7 @@ from stove0_protocol import (
     WorkflowPreview,
     WorkIdentity,
 )
-from stove0_target_client import TransformTargetClient
+from stove0_target_client import TargetClient
 from stove0_target_protocol import (
     OperationContract,
     OutputCollectionRef,
@@ -39,10 +39,10 @@ from stove0_target_protocol import (
     TargetJobDeclaration,
     TargetJobRequest,
     TargetJobStatus,
+    TargetPlan,
     TargetPreflightRequest,
     TargetPreflightResponse,
     TargetRuntimeAuthority,
-    TransformPlan,
     validate_preflight_response_against_request,
 )
 
@@ -92,14 +92,14 @@ class RiverhogControlPort(Protocol):
         claim: ClaimBinding,
         evidence: ControllerEvidence,
         plan: WorkflowPlan,
-        target_plan: TransformPlan,
+        target_plan: TargetPlan,
     ) -> None: ...
 
     def target_authority(
         self,
         claim: ClaimBinding,
         evidence: ControllerEvidence,
-        target_plan: TransformPlan,
+        target_plan: TargetPlan,
     ) -> TargetInvocationAuthority: ...
 
     def verify_and_settle(
@@ -207,7 +207,7 @@ class HttpObserverPort:
 class HttpTargetPort:
     """Explicit configuration-backed target registry using the v1 HTTP client."""
 
-    def __init__(self, registrations: dict[str, TransformTargetClient]) -> None:
+    def __init__(self, registrations: dict[str, TargetClient]) -> None:
         self._registrations = dict(registrations)
 
     def contract(self, registration_id: str) -> TargetContract:
@@ -238,11 +238,11 @@ class HttpTargetPort:
     ) -> TargetJobStatus:
         return self._client(registration_id).cancel(job_id, request)
 
-    def _client(self, registration_id: str) -> TransformTargetClient:
+    def _client(self, registration_id: str) -> TargetClient:
         try:
             return self._registrations[registration_id]
         except KeyError as exc:
-            raise KeyError(f"unknown transform-target registration: {registration_id}") from exc
+            raise KeyError(f"unknown target registration: {registration_id}") from exc
 
 
 class Stove0Coordinator:
@@ -384,7 +384,11 @@ class Stove0Coordinator:
             if projection.evaluation.branch_set_succeeded:
                 if not self._successful_children_complete(record):
                     return record
-                self.riverhog.settle_outcomes(record, projection.evaluation)
+                if (
+                    projection.evaluation.succeeded_branches
+                    or projection.evaluation.join_settlement is not None
+                ):
+                    self.riverhog.settle_outcomes(record, projection.evaluation)
                 return self._begin_or_complete_retirement(record)
             return self._converge_coordination_outcome(record, projection.evaluation)
         if phase == "target_preflight":
