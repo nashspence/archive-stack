@@ -82,7 +82,11 @@ class FfprobeSamplingObserver:
                 )
                 duration = self._probe(source, timeout_seconds=request.timeout_seconds)
                 if duration is None:
-                    return builder.inapplicable(execution_evidence=self.execution_evidence())
+                    return builder.inapplicable(
+                        code="unsupported-media",
+                        message="FFprobe found no usable media duration for this artifact.",
+                        execution_evidence=self.execution_evidence(),
+                    )
                 facts.append(
                     MediaSamplingArtifactFacts(
                         artifact_id=subject.id,

@@ -407,6 +407,11 @@ class ObservationFailure(Stove0ProtocolModel):
     retryable: bool
 
 
+class ObservationInapplicable(Stove0ProtocolModel):
+    code: SemanticId
+    message: str = Field(min_length=1, max_length=1000)
+
+
 class ObservationResultPayload(Stove0ProtocolModel):
     format: Literal["stove0-observation-result/v1"] = OBSERVATION_RESULT_FORMAT
     request_id: Sha256
@@ -419,6 +424,7 @@ class ObservationResultPayload(Stove0ProtocolModel):
     facts: dict[str, JsonValue] | None = None
     facts_sha256: Sha256 | None = None
     execution_evidence: dict[str, JsonValue] = Field(default_factory=dict)
+    inapplicable: ObservationInapplicable | None = None
     failure: ObservationFailure | None = None
 
     @field_validator("subjects")
@@ -436,8 +442,8 @@ class ObservationResultPayload(Stove0ProtocolModel):
                 raise ValueError("observed result requires facts and their schema")
             if canonical_json_sha256(self.facts) != self.facts_sha256:
                 raise ValueError("observation facts digest does not match canonical facts")
-            if self.failure is not None:
-                raise ValueError("observed result cannot include failure details")
+            if self.inapplicable is not None or self.failure is not None:
+                raise ValueError("observed result cannot include a terminal outcome")
         else:
             has_facts = (
                 self.facts_schema is not None
@@ -446,6 +452,10 @@ class ObservationResultPayload(Stove0ProtocolModel):
             )
             if has_facts:
                 raise ValueError("non-observed result cannot include facts")
+            if self.state == "inapplicable" and self.inapplicable is None:
+                raise ValueError("inapplicable observation requires outcome details")
+            if self.state != "inapplicable" and self.inapplicable is not None:
+                raise ValueError("only inapplicable observation may include its outcome")
             if self.state == "failed" and self.failure is None:
                 raise ValueError("failed observation requires failure details")
             if self.state != "failed" and self.failure is not None:
@@ -476,6 +486,8 @@ class ObservationEvidence(Stove0ProtocolModel):
 
     @model_validator(mode="after")
     def bind_result(self) -> Self:
+        if self.result.state != "observed":
+            raise ValueError("only observed results may become planning evidence")
         if (
             self.result.request_id != self.request.request_id
             or self.result.observer_contract_id != self.request.observer_contract_id
@@ -873,6 +885,7 @@ __all__ = [
     "OBSERVATION_RESULT_FORMAT",
     "ObservationEvidence",
     "ObservationFailure",
+    "ObservationInapplicable",
     "ObservationInvocation",
     "ObservationRequest",
     "ObservationRequestPayload",

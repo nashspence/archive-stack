@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from stove0_core import (
     ClaimBinding,
     EvaluationService,
@@ -27,6 +28,8 @@ from stove0_protocol import (
     EvaluationVariant,
     JsonSchemaDocument,
     ObservationEvidence,
+    ObservationFailure,
+    ObservationInapplicable,
     ObservationInvocation,
     ObservationRequest,
     ObservationRequestPayload,
@@ -584,6 +587,75 @@ def test_workflow_preview_rejects_observer_result_that_does_not_bind_request() -
     assert preview.state == "failed"
     assert preview.outcome is not None
     assert "subjects differ" in preview.outcome.message
+    assert len(riverhog.abandoned) == 1
+
+
+@pytest.mark.parametrize(
+    ("state", "outcome", "retryable"),
+    [
+        (
+            "inapplicable",
+            {"inapplicable": ObservationInapplicable(code="unsupported", message="No match")},
+            None,
+        ),
+        (
+            "failed",
+            {"failure": ObservationFailure(code="temporary", message="Try again", retryable=True)},
+            True,
+        ),
+        ("canceled", {}, None),
+    ],
+)
+def test_workflow_preview_surfaces_each_terminal_observer_result(
+    state: str,
+    outcome: dict[str, object],
+    retryable: bool | None,
+) -> None:
+    operation = _operation()
+    target = _target(operation)
+    observer_value = _observer()
+    riverhog = PreviewRiverhog()
+
+    class TerminalObserver(PreviewObserver):
+        def observe(
+            self,
+            registration_id: str,
+            invocation: ObservationInvocation,
+        ) -> ObservationResult:
+            observed = super().observe(registration_id, invocation)
+            return ObservationResult.seal(
+                ObservationResultPayload(
+                    **observed.model_dump(
+                        mode="python",
+                        exclude_none=True,
+                        exclude={
+                            "result_sha256",
+                            "state",
+                            "facts_schema",
+                            "facts",
+                            "facts_sha256",
+                        },
+                    ),
+                    state=state,  # type: ignore[arg-type]
+                    **outcome,
+                )
+            )
+
+    target_port = PreviewTarget(operation, target)
+    service = WorkflowPreviewService(
+        riverhog=riverhog,
+        planning=PreviewPlanning(operation, target, observer_value),
+        observers=TerminalObserver(observer_value),
+        targets=target_port,
+    )
+
+    preview = service.preview(_work())
+
+    assert preview.state == state
+    assert preview.outcome is not None
+    assert preview.outcome.retryable is retryable
+    assert preview.observations == ()
+    assert target_port.preflights == 0
     assert len(riverhog.abandoned) == 1
 
 

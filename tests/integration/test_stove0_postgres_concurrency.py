@@ -4,6 +4,7 @@ import os
 import threading
 import uuid
 from collections.abc import Iterator
+from typing import cast
 
 import pytest
 from riverhog_protocol.collection_workflows import (
@@ -18,8 +19,10 @@ from sqlalchemy.engine import make_url
 from stove0_core import (
     ConcurrentWorkUpdate,
     SqlAlchemyStateStore,
+    Stove0Scheduler,
     Stove0StateError,
     Stove0WorkService,
+    WorkFailure,
     WorkRecord,
     stove0_state_schema,
 )
@@ -640,4 +643,93 @@ def test_postgres_event_cursor_compare_and_swap_prevents_replayed_cursor_regress
     assert second.compare_and_swap_cursor("riverhog/v1", expected_revision=1, cursor="11") == (
         "11",
         2,
+    )
+
+
+def test_postgres_concurrent_scheduler_ticks_admit_once_and_preserve_terminal_truth(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    record = Stove0WorkService(first).create_or_resume(_work())
+
+    class TransitionCoordinator:
+        def __init__(
+            self,
+            store: SqlAlchemyStateStore,
+            barrier: threading.Barrier,
+            transition: str,
+        ) -> None:
+            self.store = store
+            self.barrier = barrier
+            self.transition = transition
+
+        def step(self, work_id: str) -> WorkRecord:
+            current = self.store.load(work_id)
+            assert current is not None
+            self.barrier.wait(timeout=5)
+            service = Stove0WorkService(self.store)
+            if self.transition == "claim":
+                return service.bind_claim(
+                    work_id,
+                    claim_id="scheduler-claim",
+                    fence=1,
+                    expected_revision=current.revision,
+                )
+            return service.fail(
+                work_id,
+                WorkFailure(code="terminal", message="Cannot proceed", retryable=False),
+                expected_revision=current.revision,
+            )
+
+    def concurrent_tick(transition: str) -> list[dict[str, object]]:
+        barrier = threading.Barrier(2)
+        results: list[dict[str, object]] = []
+        failures: list[BaseException] = []
+
+        def advance(store: SqlAlchemyStateStore) -> None:
+            try:
+                scheduler = Stove0Scheduler(
+                    riverhog=cast(object, None),  # type: ignore[arg-type]
+                    catalog=cast(object, None),  # type: ignore[arg-type]
+                    planner=cast(object, None),  # type: ignore[arg-type]
+                    coordinator=TransitionCoordinator(
+                        store,
+                        barrier,
+                        transition,
+                    ),  # type: ignore[arg-type]
+                    state=store,
+                )
+                results.append(scheduler.advance(role="controller", limit=1))
+            except BaseException as exc:
+                failures.append(exc)
+
+        threads = [threading.Thread(target=advance, args=(store,)) for store in stores]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+        assert failures == []
+        assert len(results) == 2
+        assert all(result["failures"] == [] for result in results)
+        return results
+
+    admitted = concurrent_tick("claim")
+    current = first.load(record.work_id)
+    assert current is not None and current.phase == "claimed" and current.revision == 2
+    assert sum(len(cast(list[object], result["progressed"])) for result in admitted) == 1
+
+    terminal = concurrent_tick("fail")
+    current = second.load(record.work_id)
+    assert current is not None and current.phase == "abandon_pending" and current.revision == 3
+    assert sum(len(cast(list[object], result["progressed"])) for result in terminal) == 1
+    completed = Stove0WorkService(first).complete_abandon(
+        record.work_id,
+        expected_revision=current.revision,
+    )
+    assert completed.phase == "failed"
+    assert completed.failure == WorkFailure(
+        code="terminal",
+        message="Cannot proceed",
+        retryable=False,
     )

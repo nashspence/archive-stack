@@ -329,6 +329,14 @@ def test_result_builder_binds_schema_identity_and_size_limits() -> None:
     assert failed.state == "failed"
     assert failed.failure is not None and failed.failure.retryable is True
 
+    inapplicable = builder.inapplicable(
+        code="unsupported-input",
+        message="The fixture cannot inspect this input.",
+    )
+    assert inapplicable.state == "inapplicable"
+    assert inapplicable.inapplicable is not None
+    assert inapplicable.inapplicable.code == "unsupported-input"
+
 
 def test_observer_client_rejects_remote_plain_http_by_default() -> None:
     with pytest.raises(ValueError, match="must use HTTPS"):

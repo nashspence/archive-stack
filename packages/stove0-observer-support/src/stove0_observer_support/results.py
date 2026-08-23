@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator
 from pydantic import JsonValue
 from stove0_observer_protocol import (
     ObservationFailure,
+    ObservationInapplicable,
     ObservationRequest,
     ObservationResult,
     ObservationResultPayload,
@@ -59,10 +60,13 @@ class ObservationResultBuilder:
     def inapplicable(
         self,
         *,
+        code: str,
+        message: str,
         execution_evidence: Mapping[str, JsonValue] | None = None,
     ) -> ObservationResult:
         return self._seal(
             state="inapplicable",
+            inapplicable=ObservationInapplicable(code=code, message=message),
             execution_evidence=dict(execution_evidence or {}),
         )
 

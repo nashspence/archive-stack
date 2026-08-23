@@ -213,6 +213,7 @@ class WorkRecord(Stove0StateModel):
                 "abandon_pending",
                 "canceled",
                 "failed",
+                "inapplicable",
             }:
                 raise ValueError("branch-set plans appear only after atomic admission")
         if self.preview_acceptance is not None:
@@ -677,6 +678,39 @@ class Stove0WorkService:
             raise Stove0StateError("observation result identity changed")
         results[result.request_id] = result
         normalized = tuple(results[key] for key in sorted(results))
+        if result.state == "inapplicable":
+            assert result.inapplicable is not None
+            return self._replace(
+                record,
+                phase="abandon_pending",
+                observation_results=normalized,
+                inapplicable=WorkInapplicable(
+                    code=result.inapplicable.code,
+                    message=result.inapplicable.message,
+                ),
+                abandon_outcome="inapplicable",
+            )
+        if result.state == "failed":
+            assert result.failure is not None
+            failure = WorkFailure(
+                code=result.failure.code,
+                message=result.failure.message,
+                retryable=result.failure.retryable,
+            )
+            return self._replace(
+                record,
+                phase="failed" if failure.retryable else "abandon_pending",
+                observation_results=normalized,
+                failure=failure,
+                abandon_outcome=None if failure.retryable else "failed",
+            )
+        if result.state == "canceled":
+            return self._replace(
+                record,
+                phase="abandon_pending",
+                observation_results=normalized,
+                abandon_outcome="canceled",
+            )
         phase: WorkPhase = "planning" if set(results) == set(requests) else "observing"
         return self._replace(record, phase=phase, observation_results=normalized)
 
@@ -968,6 +1002,37 @@ class Stove0WorkService:
             abandon_outcome=None,
         )
 
+    def retry_coordination(
+        self,
+        work_id: str,
+        *,
+        claim_id: str,
+        fence: int,
+        expected_revision: int,
+    ) -> WorkRecord:
+        """Reopen the same retryable branch set under a newer claim fence."""
+
+        record = self._load(work_id, expected_revision)
+        if (
+            record.phase != "failed"
+            or record.failure is None
+            or not record.failure.retryable
+            or record.branch_set_plan is None
+            or record.claim is None
+        ):
+            raise Stove0StateError("only retryable failed coordination may be restarted")
+        replacement = ClaimBinding(claim_id=claim_id, fence=fence)
+        if replacement.claim_id != record.claim.claim_id:
+            raise Stove0StateError("coordination retry must retain the same claim identity")
+        if replacement.fence <= record.claim.fence:
+            raise Stove0StateError("coordination retry must advance the claim fence")
+        return self._replace(
+            record,
+            phase="coordinating",
+            claim=replacement,
+            failure=None,
+        )
+
     def mark_inapplicable(
         self,
         work_id: str,
@@ -976,7 +1041,13 @@ class Stove0WorkService:
         expected_revision: int,
     ) -> WorkRecord:
         record = self._load(work_id, expected_revision)
-        if record.phase not in {"claimed", "observing", "planning", "target_preflight"}:
+        if record.phase not in {
+            "claimed",
+            "observing",
+            "planning",
+            "target_preflight",
+            "coordinating",
+        }:
             raise Stove0StateError(f"work cannot become inapplicable from {record.phase}")
         return self._replace(
             record,

@@ -12,7 +12,7 @@ from stove0_protocol import CollectionRootRef
 from stove0_core.coordinator import Stove0Coordinator
 from stove0_core.persistence import SqlAlchemyStateStore
 from stove0_core.recipes import RecipeCatalog, RecipePlanner
-from stove0_core.work_state import WorkRecord
+from stove0_core.work_state import ConcurrentWorkUpdate, WorkRecord
 
 _COLLECTION_WAKE_TYPES = frozenset(
     {
@@ -69,26 +69,41 @@ class Stove0Scheduler:
         page = self.riverhog.list_lifecycle_events(after=cursor, limit=limit)
         page.require_progress_after(cursor)
         created: list[str] = []
+        failures: list[dict[str, str]] = []
         for event in page.events:
             if event.type not in _COLLECTION_WAKE_TYPES:
                 continue
-            collection_id = _collection_id(event.data, event.subject)
+            try:
+                collection_id = _collection_id(event.data, event.subject)
+            except ValueError as exc:
+                failures.append(
+                    {
+                        "event_id": event.id,
+                        "error": f"{type(exc).__name__}: {exc}"[:1000],
+                    }
+                )
+                continue
             created.extend(self.reconcile_collection(collection_id))
         if page.next_cursor != cursor:
-            self.state.compare_and_swap_cursor(
+            self._advance_cursor(
                 "riverhog-lifecycle/v1",
                 expected_revision=revision,
                 cursor=page.next_cursor,
+                require_exact=True,
             )
         return {
             "events": len(page.events),
             "next_cursor": page.next_cursor,
             "has_more": page.has_more,
             "work_ids": sorted(set(created)),
+            "failures": failures,
         }
 
     def reconcile_collection(self, collection_id: int) -> list[str]:
-        current = self.riverhog.get_collection(collection_id)
+        try:
+            current = self.riverhog.get_collection(collection_id)
+        except NotFound:
+            return []
         root = CollectionRootRef(
             collection_id=collection_id,
             manifest_sha256=str(current.get("manifest_sha256") or ""),
@@ -111,26 +126,52 @@ class Stove0Scheduler:
         role: SchedulerRole = "combined",
         limit: int = 25,
     ) -> dict[str, object]:
+        if limit < 1 or limit > 100:
+            raise ValueError("stove0 scheduler work limit must be between 1 and 100")
         phases = _phases_for_role(role)
+        stream = f"stove0-work-scan/{role}/v1"
+        saved = self.state.load_cursor(stream)
+        raw_cursor, revision = saved if saved is not None else ("1", None)
+        try:
+            requested_page = max(1, int(raw_cursor))
+        except ValueError:
+            requested_page = 1
         page = self.state.list_work(
-            all_items=True,
-            sort="updated_at",
+            page=requested_page,
+            per_page=limit,
+            all_items=False,
+            sort="work_id",
             order="asc",
         )
         raw_records = page.get("work")
         if not isinstance(raw_records, list):
             raise RuntimeError("stove0 work store returned an invalid page")
         records = [WorkRecord.model_validate(item) for item in raw_records]
+        pages = page.get("pages")
+        if not isinstance(pages, int) or pages < 0:
+            raise RuntimeError("stove0 work store returned invalid pagination")
+        next_page = requested_page + 1 if requested_page < pages else 1
         progressed: list[str] = []
         failures: list[dict[str, str]] = []
         for record in records:
-            if len(progressed) >= limit:
-                break
             if record.phase in _TERMINAL_PHASES or record.phase not in phases:
                 continue
             try:
-                self.coordinator.step(record.work_id)
-                progressed.append(record.work_id)
+                updated = self.coordinator.step(record.work_id)
+                if updated.revision > record.revision:
+                    progressed.append(record.work_id)
+            except ConcurrentWorkUpdate as exc:
+                current = self.state.load(record.work_id)
+                if current is not None and current.revision > record.revision:
+                    # Another scheduler owns the same compare-and-swap
+                    # transition. That is convergence, not a work failure.
+                    continue
+                failures.append(
+                    {
+                        "work_id": record.work_id,
+                        "error": f"{type(exc).__name__}: {exc}"[:1000],
+                    }
+                )
             except Exception as exc:
                 # A failed item never prevents later work from advancing. The
                 # original record remains retryable and exact; operator-visible
@@ -142,7 +183,19 @@ class Stove0Scheduler:
                         "error": f"{type(exc).__name__}: {exc}"[:1000],
                     }
                 )
-        return {"role": role, "progressed": progressed, "failures": failures}
+        self._advance_cursor(
+            stream,
+            expected_revision=revision,
+            cursor=str(next_page),
+            require_exact=False,
+        )
+        return {
+            "role": role,
+            "page": requested_page,
+            "next_page": next_page,
+            "progressed": progressed,
+            "failures": failures,
+        }
 
     def run_once(
         self,
@@ -165,6 +218,27 @@ class Stove0Scheduler:
         except NotFound:
             return False
         return True
+
+    def _advance_cursor(
+        self,
+        stream: str,
+        *,
+        expected_revision: int | None,
+        cursor: str,
+        require_exact: bool,
+    ) -> None:
+        try:
+            self.state.compare_and_swap_cursor(
+                stream,
+                expected_revision=expected_revision,
+                cursor=cursor,
+            )
+        except ConcurrentWorkUpdate:
+            current = self.state.load_cursor(stream)
+            if current is not None and current[0] == cursor:
+                return
+            if require_exact:
+                raise
 
 
 def _collection_id(data: Mapping[str, object], subject: str | None) -> int:

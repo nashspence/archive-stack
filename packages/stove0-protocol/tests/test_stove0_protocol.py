@@ -20,6 +20,8 @@ from stove0_protocol import (
     ExecutionEnvelopePayload,
     JsonSchemaDocument,
     ObservationEvidence,
+    ObservationFailure,
+    ObservationInapplicable,
     ObservationRequest,
     ObservationRequestPayload,
     ObservationResult,
@@ -225,6 +227,53 @@ def test_non_observed_results_cannot_smuggle_facts() -> None:
             facts={"streams": 0},
             facts_sha256=canonical_json_sha256({"streams": 0}),
         )
+
+
+@pytest.mark.parametrize(
+    ("state", "outcome"),
+    [
+        (
+            "inapplicable",
+            {"inapplicable": ObservationInapplicable(code="unsupported", message="No match")},
+        ),
+        (
+            "failed",
+            {
+                "failure": ObservationFailure(
+                    code="probe-failed", message="Probe failed", retryable=True
+                )
+            },
+        ),
+        ("canceled", {}),
+    ],
+)
+def test_only_observed_results_are_planning_evidence(
+    state: str,
+    outcome: dict[str, object],
+) -> None:
+    work = _work()
+    contract = _contract()
+    descriptor = _descriptor(contract)
+    request = _request(work, contract, descriptor)
+    result = ObservationResult.seal(
+        ObservationResultPayload(
+            request_id=request.request_id,
+            state=state,  # type: ignore[arg-type]
+            observer=ObserverImplementation(
+                id=descriptor.implementation_id,
+                version=descriptor.implementation_version,
+                source_revision=descriptor.source_revision,
+                descriptor_sha256=descriptor.descriptor_sha256,
+            ),
+            observer_contract_id=contract.id,
+            observer_contract_sha256=contract.contract_sha256,
+            subjects=request.subjects,
+            **outcome,
+        )
+    )
+
+    with pytest.raises(ValidationError, match="only observed results"):
+        ObservationEvidence(request=request, result=result)
 
 
 def test_workflow_target_and_controller_evidence_bind_one_another() -> None:
