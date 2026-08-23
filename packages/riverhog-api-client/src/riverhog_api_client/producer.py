@@ -6,7 +6,7 @@ import builtins
 import hashlib
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -86,6 +86,29 @@ class ProducerStream:
 ProducerInput = ProducerFile | ProducerStream
 
 
+@dataclass(frozen=True, order=True, slots=True)
+class ProducerArtifactIdentity:
+    """Exact artifact identity established by the producer's verification pass."""
+
+    path: str
+    bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProducerProvenance:
+    """Bindings and journals derived after exact producer identities are known."""
+
+    bindings: Mapping[str, Mapping[str, object]]
+    journals: Mapping[str, bytes]
+
+
+ProvenanceBuilder = Callable[
+    [int, bool, tuple[ProducerArtifactIdentity, ...]],
+    ProducerProvenance,
+]
+
+
 @dataclass(frozen=True, slots=True)
 class ProducedCollection:
     collection_id: int
@@ -160,6 +183,7 @@ class CollectionProducer:
         source_context: Mapping[str, object] | None = None,
         inline_evidence: Mapping[str, bytes] | None = None,
         provenance_journals: Mapping[str, bytes] | None = None,
+        provenance_builder: ProvenanceBuilder | None = None,
         idempotency_key: str | None = None,
         event_context: Mapping[str, object] | None = None,
         poll_seconds: float = 2.0,
@@ -172,6 +196,7 @@ class CollectionProducer:
             source_context=source_context,
             inline_evidence=inline_evidence,
             provenance_journals=provenance_journals,
+            provenance_builder=provenance_builder,
             idempotency_key=idempotency_key,
             event_context=event_context,
             poll_seconds=poll_seconds,
@@ -187,6 +212,7 @@ class CollectionProducer:
         source_context: Mapping[str, object] | None = None,
         inline_evidence: Mapping[str, bytes] | None = None,
         provenance_journals: Mapping[str, bytes] | None = None,
+        provenance_builder: ProvenanceBuilder | None = None,
         idempotency_key: str | None = None,
         event_context: Mapping[str, object] | None = None,
         poll_seconds: float = 2.0,
@@ -219,8 +245,10 @@ class CollectionProducer:
             str(key): bytes(value) for key, value in (provenance_journals or {}).items()
         }
         source_provenance = [_provenance(item.provenance, default=omitted) for item in files]
-        captured = bool(normalized_journals) or any(
-            current.get("status") == "captured" for current in source_provenance
+        captured = (
+            provenance_builder is not None
+            or bool(normalized_journals)
+            or any(current.get("status") == "captured" for current in source_provenance)
         )
         session = self.api.create_or_resume_collection_upload_session(
             key,
@@ -280,6 +308,47 @@ class CollectionProducer:
                 content=value,
                 provenance=omitted,
             )
+
+        if provenance_builder is not None:
+            built = provenance_builder(
+                collection_id,
+                bool(session.get("resumed")),
+                tuple(
+                    ProducerArtifactIdentity(
+                        path=sources[path].path,
+                        bytes=sources[path].bytes,
+                        sha256=sources[path].sha256,
+                    )
+                    for path in sorted(source_paths, key=lambda current: current.encode("utf-8"))
+                ),
+            )
+            supplied_by_path = {
+                item.path: item.provenance for item in files if item.provenance is not None
+            }
+            for path, binding in built.bindings.items():
+                current_source = sources.get(path)
+                if current_source is None or path not in source_paths:
+                    raise ValueError(
+                        f"producer provenance builder returned an unknown source path: {path}"
+                    )
+                normalized_binding = _provenance(binding, default=omitted)
+                supplied = supplied_by_path.get(path)
+                if supplied is not None and _provenance(supplied, default=omitted) != (
+                    normalized_binding
+                ):
+                    raise ValueError(
+                        f"producer provenance builder conflicts with source binding: {path}"
+                    )
+                sources[path] = replace(current_source, provenance=normalized_binding)
+            for journal_id, content in built.journals.items():
+                normalized_id = str(journal_id)
+                value = bytes(content)
+                existing = normalized_journals.get(normalized_id)
+                if existing is not None and existing != value:
+                    raise ValueError(
+                        f"producer provenance builder conflicts with journal: {normalized_id}"
+                    )
+                normalized_journals[normalized_id] = value
 
         registration = [
             {
@@ -610,7 +679,10 @@ __all__ = [
     "CollectionProducer",
     "ProducedCollection",
     "ProducerFile",
+    "ProducerArtifactIdentity",
     "ProducerInput",
+    "ProducerProvenance",
     "ProducerStream",
+    "ProvenanceBuilder",
     "RangeReader",
 ]

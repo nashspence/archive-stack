@@ -1821,12 +1821,14 @@ source = { editable = "packages/riverhog-transform-sdk" }
 dependencies = [
     { name = "riverhog-api-client" },
     { name = "riverhog-protocol" },
+    { name = "riverhog-provenance" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
 ]
 
 [[package]]

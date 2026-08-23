@@ -195,7 +195,6 @@ class TargetExecutionRuntime:
         artifacts: Sequence[OutputArtifact],
         execution_sha256: str,
         dispositions: Sequence[ArtifactDisposition],
-        provenance_journals: Mapping[str, bytes] | None = None,
         source_context: Mapping[str, object] | None = None,
         **kwargs: Any,
     ) -> tuple[DerivedCollectionReceipt, OutputCollectionRef]:
@@ -220,7 +219,6 @@ class TargetExecutionRuntime:
             ),
             execution_sha256=execution_sha256,
             dispositions=dispositions,
-            provenance_journals=provenance_journals,
             source_context={
                 **dict(source_context or {}),
                 "target_plan_sha256": self.request.declaration.plan.plan_sha256,
@@ -246,7 +244,6 @@ class TargetExecutionRuntime:
         dispositions: Sequence[ArtifactDisposition],
         attempt: int = 1,
         runtime_evidence: Mapping[str, object] | None = None,
-        provenance_journals: Mapping[str, bytes] | None = None,
         source_context: Mapping[str, object] | None = None,
         **kwargs: Any,
     ) -> TargetJobStatus:
@@ -258,7 +255,6 @@ class TargetExecutionRuntime:
             artifacts=declared,
             execution_sha256=execution_sha256,
             dispositions=dispositions,
-            provenance_journals=provenance_journals,
             source_context=source_context,
             **kwargs,
         )

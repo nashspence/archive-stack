@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .common import canonical_json, new_urn_uuid, utc_now
+from .common import (
+    canonical_json,
+    digest_assertion,
+    locator_from_path,
+    new_urn_uuid,
+    require_urn_uuid,
+    utc_now,
+)
 from .constants import PROVENANCE_ENTRY_SCHEMA, PROVENANCE_PROFILE
 from .factory import get_observer
 from .model import ObservationPolicy, ObservationRequest, PayloadBindingRequest
@@ -145,6 +152,7 @@ def validate_journal(content: bytes) -> JournalSummary:
 
     states: dict[str, JsonObject] = {}
     agents: set[str] = set()
+    establishing_events: set[str] = set()
     active_bindings: dict[str, JsonObject] = {}
     external_states: dict[tuple[str, str, str, str], ExternalStateReference] = {}
     entry_by_id: dict[str, JournalFrame] = {}
@@ -197,6 +205,9 @@ def validate_journal(content: bytes) -> JournalSummary:
 
         for agent in _object_rows(assertions, "agents"):
             agents.add(_required_string(agent, "id"))
+        for category in ("captures", "activities"):
+            for event in _object_rows(assertions, category):
+                establishing_events.add(_required_string(event, "id"))
         for state in _object_rows(assertions, "states"):
             state_id = _required_string(state, "id")
             previous_state = states.get(state_id)
@@ -209,6 +220,26 @@ def validate_journal(content: bytes) -> JournalSummary:
             if operation == "unbind":
                 active_bindings.pop(role, None)
             elif operation == "bind":
+                established_by = binding.get("established_by_capture_id") or binding.get(
+                    "established_by_activity_id"
+                )
+                if not isinstance(established_by, str) or not established_by:
+                    raise ProvenanceValidationError(
+                        "payload binding has no capture or activity authority"
+                    )
+                if established_by not in establishing_events:
+                    raise ProvenanceValidationError(
+                        "payload binding references an absent capture or activity"
+                    )
+                bound_state = binding.get("state")
+                if (
+                    not isinstance(bound_state, dict)
+                    or bound_state.get("scope") != "local"
+                    or bound_state.get("id") not in states
+                ):
+                    raise ProvenanceValidationError(
+                        "payload binding references an absent local state"
+                    )
                 active_bindings[role] = binding
         for reference in _external_state_references(assertions):
             key = (
@@ -666,6 +697,241 @@ def create_derivative_journal(
     candidate = content + encode_entry(entry)
     validate_journal(candidate)
     return candidate
+
+
+def create_derivative_journal_from_identity(
+    *,
+    relative_path: str,
+    byte_count: int,
+    sha256: str,
+    source_journals: Sequence[bytes],
+    agent_name: str,
+    agent_version: str,
+    event_label: str,
+    started_at: str,
+    ended_at: str,
+    journal_id: str | None = None,
+    derivation_kind: str = "transformation",
+    evidence: Sequence[Mapping[str, Any]] = (),
+) -> bytes:
+    """Create a derivative history from an already verified output identity.
+
+    This is the publication-boundary counterpart to :func:`create_derivative_journal`.
+    It records the exact logical payload identity and transform relationship without
+    rereading a file or claiming a host-filesystem observation.  That makes the same
+    provenance contract usable for regular files and verified range-readable streams.
+    """
+
+    allowed_kinds = {
+        "revision",
+        "transformation",
+        "copy",
+        "metadata_change",
+        "relocation",
+        "aggregation",
+        "extraction",
+    }
+    if derivation_kind not in allowed_kinds:
+        raise ProvenanceValidationError("unsupported derivative kind")
+    if isinstance(byte_count, bool) or byte_count < 0:
+        raise ProvenanceValidationError("derivative byte count must be non-negative")
+    normalized_sha256 = sha256.casefold()
+    if len(normalized_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized_sha256
+    ):
+        raise ProvenanceValidationError("derivative SHA-256 is invalid")
+    if not relative_path or relative_path.startswith("/"):
+        raise ProvenanceValidationError("derivative payload path must be relative")
+    if not source_journals:
+        raise ProvenanceValidationError("a derivative requires at least one source journal")
+
+    references = [current_state_reference(content) for content in source_journals]
+    if len({(item.journal_id, item.state_id) for item in references}) != len(references):
+        raise ProvenanceValidationError("a derivative source state must not be repeated")
+
+    resolved_journal_id = require_urn_uuid(
+        journal_id or new_urn_uuid(),
+        "journal_id",
+    )
+    lineage_id = new_urn_uuid()
+    agent = software_agent(agent_name, agent_version)
+    init: JsonObject = {
+        "$schema": PROVENANCE_ENTRY_SCHEMA,
+        "profile": PROVENANCE_PROFILE,
+        "schema_version": "1.0.0",
+        "id": new_urn_uuid(),
+        "type": JOURNAL_TYPE,
+        "journal_id": resolved_journal_id,
+        "sequence": 0,
+        "recorded_at": utc_now(),
+        "recorded_by_agent_id": agent["id"],
+        "entry_kind": "journal_init",
+        "body": {
+            "journal": {
+                "primary_lineage_id": lineage_id,
+                "scope": "primary_lineage_with_related_provenance",
+                "serialization": "rfc7464_json_text_sequence",
+                "entry_digest_algorithm": "sha-256",
+                "entry_digest_coverage": "json_text_octets_excluding_framing",
+                "state_representation": "full_snapshot",
+                "payload_semantics": "opaque_bytes",
+                "correction_model": "monotonic_entry_supersession",
+                "retention_intent": "permanent_archival",
+                "label": relative_path,
+            },
+            "assertions": {
+                "agents": [agent],
+                "lineages": [
+                    {
+                        "id": lineage_id,
+                        "type": "file_lineage",
+                        "continuity_basis": "repository_tracking",
+                        "asserted_by_agent_id": agent["id"],
+                        "label": relative_path,
+                    }
+                ],
+            },
+        },
+    }
+    init_json = canonical_json(init)
+    state_id = new_urn_uuid()
+    state: JsonObject = {
+        "id": state_id,
+        "type": "regular_file_state",
+        "lineage_id": lineage_id,
+        "locator": locator_from_path(relative_path, kind="relative"),
+        "content": {
+            "size_bytes": byte_count,
+            "digests": [
+                digest_assertion(
+                    normalized_sha256,
+                    agent_id=str(agent["id"]),
+                    purpose="fixity",
+                )
+            ],
+        },
+        "filesystem_metadata": {
+            "timestamps": [],
+            "native_identifiers": [],
+            "native_metadata": [],
+        },
+        "notes": [
+            "Exact payload identity verified by the publishing transform; no additional "
+            "host-filesystem snapshot was asserted."
+        ],
+    }
+    activity_id = new_urn_uuid()
+    activity: JsonObject = {
+        "id": activity_id,
+        "type": "file_state_transition",
+        "event_type": "transformation",
+        "event_label": event_label,
+        "time": {"status": "exact", "started_at": started_at, "ended_at": ended_at},
+        "associations": [
+            {
+                "agent_id": agent["id"],
+                "role": "executing_software",
+                "plan_id": PROVENANCE_PROFILE,
+            }
+        ],
+        "outcome": "success",
+        "evidence": (
+            [dict(item) for item in evidence]
+            if evidence
+            else [
+                {
+                    "id": new_urn_uuid(),
+                    "basis": "direct_process_record",
+                    "asserted_by_agent_id": agent["id"],
+                    "confidence": "high",
+                    "description": (
+                        "Recorded by the publication runtime that verified and committed "
+                        "the derivative."
+                    ),
+                }
+            ]
+        ),
+    }
+    local_state = {"id": state_id, "scope": "local"}
+    relations: list[JsonObject] = [
+        {
+            "id": new_urn_uuid(),
+            "type": "generation",
+            "activity_id": activity_id,
+            "state": local_state,
+            "role": "derivative",
+        }
+    ]
+    for reference in references:
+        external_state: JsonObject = {
+            "id": reference.state_id,
+            "scope": "external",
+            "journal_id": reference.journal_id,
+            "entry_id": reference.entry_id,
+            "entry_json_sha256": reference.entry_json_sha256,
+        }
+        relations.extend(
+            [
+                {
+                    "id": new_urn_uuid(),
+                    "type": "usage",
+                    "activity_id": activity_id,
+                    "state": external_state,
+                    "role": "source",
+                },
+                {
+                    "id": new_urn_uuid(),
+                    "type": "derivation",
+                    "activity_id": activity_id,
+                    "used_state": external_state,
+                    "generated_state": local_state,
+                    "derivation_kind": derivation_kind,
+                },
+            ]
+        )
+    assertion: JsonObject = {
+        "$schema": PROVENANCE_ENTRY_SCHEMA,
+        "profile": PROVENANCE_PROFILE,
+        "schema_version": "1.0.0",
+        "id": new_urn_uuid(),
+        "type": JOURNAL_TYPE,
+        "journal_id": resolved_journal_id,
+        "sequence": 1,
+        "recorded_at": utc_now(),
+        "recorded_by_agent_id": agent["id"],
+        "entry_kind": "assertion",
+        "previous_entry": {
+            "entry_id": init["id"],
+            "sequence": 0,
+            "json_sha256": hashlib.sha256(init_json).hexdigest(),
+        },
+        "body": {
+            "assertions": {
+                "states": [state],
+                "activities": [activity],
+                "relations": relations,
+                "payload_bindings": [
+                    {
+                        "id": new_urn_uuid(),
+                        "type": "payload_binding",
+                        "operation": "bind",
+                        "role": PRIMARY_PAYLOAD_ROLE,
+                        "state": local_state,
+                        "relative_payload_locator": locator_from_path(
+                            relative_path,
+                            kind="relative",
+                        ),
+                        "established_by_activity_id": activity_id,
+                        "basis": "size_and_sha256",
+                        "asserted_by_agent_id": agent["id"],
+                    }
+                ],
+            }
+        },
+    }
+    content = encode_entry(init) + encode_entry(assertion)
+    validate_journal(content)
+    return content
 
 
 def _assertion_entry(

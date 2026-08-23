@@ -51,6 +51,7 @@ from riverhog_protocol.manifest import collection_content_etag
 from riverhog_provenance import (
     FileProvenanceBinding,
     build_provenance_archive,
+    create_derivative_journal_from_identity,
     create_observation_journal,
     validate_journal,
 )
@@ -309,6 +310,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         ingest_source="disposable-test",
         archive_store="primary",
     )
+    assert opened["resumed"] is False
     collection_id = int(opened["collection_id"])
     assert operator.list_collection_upload_sessions(all_items=True)["total"] == 1
     operator.put_collection_upload_session_provenance_journal(
@@ -316,6 +318,13 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         journal_summary.journal_id,
         content=journal,
         sha256=journal_summary.journal_sha256,
+    )
+    assert (
+        operator.export_collection_upload_session_provenance_journal(
+            collection_id,
+            journal_summary.journal_id,
+        )
+        == journal
     )
     operator.register_collection_upload_session_files(
         collection_id,
@@ -670,7 +679,53 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         )
         for path, current in output_files.items()
     ]
+    output_payload_bytes = output_payload_path.stat().st_size
+    output_payload_sha256 = hashlib.sha256(output_payload_path.read_bytes()).hexdigest()
+    output_journal = create_derivative_journal_from_identity(
+        relative_path=output_relative_path,
+        byte_count=output_payload_bytes,
+        sha256=output_payload_sha256,
+        source_journals=(journal,),
+        agent_name="qualification.target/v1",
+        agent_version="1.0.0",
+        event_label=operation_identity.id,
+        started_at="2026-08-10T01:00:00Z",
+        ended_at="2026-08-10T01:01:00Z",
+    )
+    output_journal_summary = validate_journal(output_journal)
+    output_provenance_journals = {
+        journal_summary.journal_id: journal,
+        output_journal_summary.journal_id: output_journal,
+    }
+    output_provenance = build_provenance_archive(
+        bindings=(
+            FileProvenanceBinding(
+                path=output_relative_path,
+                bytes=output_payload_bytes,
+                sha256=output_payload_sha256,
+                status="captured",
+                journal_id=output_journal_summary.journal_id,
+                current_state_id=output_journal_summary.current_state_id,
+            ),
+            FileProvenanceBinding(
+                path=DERIVATION_EVIDENCE_PATH,
+                bytes=derivation_path.stat().st_size,
+                sha256=hashlib.sha256(derivation_path.read_bytes()).hexdigest(),
+                status="omitted",
+                omission_reason="Riverhog control evidence has no host provenance",
+            ),
+        ),
+        journals=output_provenance_journals,
+    )
     target = _api(transport, str(output_capability["token"]), observer=observer)
+    assert target.list_collection_provenance(collection_id, all_items=True)["total"] == 1
+    assert (
+        target.export_collection_provenance_journal(
+            collection_id,
+            journal_summary.journal_id,
+        )
+        == journal
+    )
     target_retrieval_plan = target.plan_retrieval(
         [(collection_id, "document.txt")],
         restore_policy="never",
@@ -711,18 +766,24 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         execution_id,
         ["reviewed"],
         ingest_source=f"transform:{execution_id}",
-        provenance_mode="omitted",
-        provenance_omission_reason="qualification transform evidence",
+        provenance_mode="captured",
     )
     output_collection_id = int(target_session["collection_id"])
     replayed_target_session = target.create_or_resume_collection_upload_session(
         execution_id,
         ["reviewed"],
         ingest_source=f"transform:{execution_id}",
-        provenance_mode="omitted",
-        provenance_omission_reason="qualification transform evidence",
+        provenance_mode="captured",
     )
+    assert replayed_target_session["resumed"] is True
     assert int(replayed_target_session["collection_id"]) == output_collection_id
+    for journal_id, content in output_provenance_journals.items():
+        target.put_collection_upload_session_provenance_journal(
+            output_collection_id,
+            journal_id,
+            content=content,
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
     target.register_collection_upload_session_files(
         output_collection_id,
         [
@@ -730,10 +791,18 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
                 "path": path,
                 "bytes": byte_count,
                 "sha256": sha256,
-                "provenance": {
-                    "status": "omitted",
-                    "omission_reason": "qualification transform evidence",
-                },
+                "provenance": (
+                    {
+                        "status": "captured",
+                        "journal_id": output_journal_summary.journal_id,
+                        "current_state_id": output_journal_summary.current_state_id,
+                    }
+                    if path == output_relative_path
+                    else {
+                        "status": "omitted",
+                        "omission_reason": "Riverhog control evidence has no host provenance",
+                    }
+                ),
             }
             for path, byte_count, sha256 in sorted(output_entries)
         ],
@@ -742,7 +811,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         output_collection_id,
         files_total=len(output_entries),
         content_etag=collection_content_etag(output_entries),
-        provenance_etag=None,
+        provenance_etag=output_provenance.identity,
     )
     for volume in target.list_collection_upload_session_volumes(output_collection_id)["volumes"]:
         shown = target.get_collection_upload_session_volume(
@@ -768,12 +837,34 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         execution_id,
         ["reviewed"],
         ingest_source=f"transform:{execution_id}",
-        provenance_mode="omitted",
-        provenance_omission_reason="qualification transform evidence",
+        provenance_mode="captured",
     )
     assert replayed_output["state"] == "finalized"
+    assert replayed_output["resumed"] is True
     assert int(replayed_output["collection_id"]) == output_collection_id
     target.close()
+
+    derived_provenance = operator.get_collection_file_provenance(
+        output_collection_id,
+        output_relative_path,
+    )
+    assert derived_provenance["journal"]["journal_id"] == (output_journal_summary.journal_id)
+    derived_trace = operator.trace_collection_file_provenance(
+        output_collection_id,
+        output_relative_path,
+    )
+    assert {item["journal_id"] for item in derived_trace["journals"]} == {
+        journal_summary.journal_id,
+        output_journal_summary.journal_id,
+    }
+    assert (
+        operator.export_collection_provenance_journal(
+            output_collection_id,
+            output_journal_summary.journal_id,
+        )
+        == output_journal
+    )
+    assert operator.verify_collection_provenance(output_collection_id)["valid"] is True
 
     settled = operator.settle_processing_claim(
         claim_id,
@@ -833,6 +924,16 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         )["status"]
         == "deleted"
     )
+    assert {
+        item["journal_id"]
+        for item in operator.trace_collection_file_provenance(
+            output_collection_id,
+            output_relative_path,
+        )["journals"]
+    } == {
+        journal_summary.journal_id,
+        output_journal_summary.journal_id,
+    }
     assert (
         operator.release_processing_claim(
             outcome_claim_id,

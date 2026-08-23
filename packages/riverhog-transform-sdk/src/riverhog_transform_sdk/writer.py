@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from riverhog_api_client.producer import CollectionProducer, ProducerInput
+from riverhog_api_client.producer import CollectionProducer, ProducerInput, ProvenanceBuilder
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     PRODUCER_EVIDENCE_PATH,
@@ -76,7 +76,7 @@ class DerivedCollectionWriter:
         execution_envelope_sha256: str,
         execution_sha256: str,
         dispositions: Sequence[ArtifactDisposition],
-        provenance_journals: Mapping[str, bytes] | None = None,
+        provenance_builder: ProvenanceBuilder | None = None,
         source_context: Mapping[str, object] | None = None,
         poll_seconds: float = 2.0,
         timeout_seconds: float = 24 * 60 * 60,
@@ -143,7 +143,7 @@ class DerivedCollectionWriter:
                 "execution_sha256": derivation.execution_sha256,
             },
             inline_evidence={DERIVATION_EVIDENCE_PATH: derivation.to_json_bytes()},
-            provenance_journals=provenance_journals,
+            provenance_builder=provenance_builder,
             idempotency_key=self.execution_id,
             event_context={
                 "initiator": {

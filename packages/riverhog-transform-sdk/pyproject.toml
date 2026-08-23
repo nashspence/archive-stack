@@ -21,11 +21,13 @@ urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "
 dependencies = [
   "riverhog-api-client>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
+  "riverhog-provenance>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
 riverhog-api-client = { workspace = true }
 riverhog-protocol = { workspace = true }
+riverhog-provenance = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riverhog_transform_sdk"]

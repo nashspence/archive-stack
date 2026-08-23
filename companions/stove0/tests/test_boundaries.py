@@ -22,6 +22,15 @@ CALLER_ROOTS = (
     REPO_ROOT / "packages" / "stove0-review-sampler-client" / "src",
 )
 IMPLEMENTATION_ROOT = REPO_ROOT / "extensions" / "stove0"
+MAINTAINED_TARGETS = (
+    IMPLEMENTATION_ROOT / "opus-target" / "src" / "stove0_opus_target" / "target.py",
+    IMPLEMENTATION_ROOT
+    / "nvenc-av1-opus-target"
+    / "src"
+    / "stove0_nvenc_av1_opus_target"
+    / "target.py",
+    IMPLEMENTATION_ROOT / "review-target" / "src" / "stove0_review_target" / "target.py",
+)
 EXTENSION_ROOTS = (
     OBSERVER_PROTOCOL_ROOT,
     OBSERVER_ROOT,
@@ -164,6 +173,24 @@ def test_caller_packages_do_not_pull_in_author_or_implementation_dependencies() 
 def test_maintained_extensions_do_not_import_product_internals() -> None:
     imports = {root for path in IMPLEMENTATION_ROOT.rglob("*.py") for root in _import_roots(path)}
     assert not imports & {"riverhog_api", "riverhog_core", "stove0_api", "stove0_core"}
+
+
+def test_maintained_targets_publish_exact_dispositions_through_shared_runtime() -> None:
+    for path in MAINTAINED_TARGETS:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "publish_success"
+        ]
+        assert len(calls) == 1, path
+        keyword_names = {item.arg for item in calls[0].keywords}
+        assert {"artifacts", "dispositions", "execution_sha256", "operation"} <= (keyword_names), (
+            path
+        )
+        assert "stove0_target_support" in _import_roots(path)
 
 
 def test_review_contract_pack_is_not_a_stove0_product_plugin() -> None:

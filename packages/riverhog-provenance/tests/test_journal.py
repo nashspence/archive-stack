@@ -9,6 +9,7 @@ from riverhog_provenance import (
     append_observation,
     append_replacement_transformation,
     create_derivative_journal,
+    create_derivative_journal_from_identity,
     create_observation_journal,
     validate_journal,
     validate_journal_set,
@@ -135,6 +136,49 @@ def test_derivative_gets_a_new_lineage_with_exact_multi_input_references(
         current.journal_id,
         *(validate_journal(item).journal_id for item in sources),
     }
+
+
+def test_identity_derivative_binds_stream_without_rereading_payload(
+    tmp_path: Path, urn_factory
+) -> None:
+    source_path = _payload(tmp_path / "source.bin", b"source")
+    source = create_observation_journal(
+        source_path,
+        relative_path="source.bin",
+        host_id=urn_factory(),
+        agent_name="riverhog-client",
+        agent_version="0.1.0",
+    )
+    output = b"generated range-readable output"
+    journal_id = urn_factory()
+
+    derivative = create_derivative_journal_from_identity(
+        relative_path="derived/output.bin",
+        byte_count=len(output),
+        sha256=hashlib.sha256(output).hexdigest(),
+        source_journals=(source,),
+        agent_name="fixture-target",
+        agent_version="0.1.0",
+        event_label="fixture.operation/v1",
+        started_at="2026-08-10T01:00:00Z",
+        ended_at="2026-08-10T01:01:00Z",
+        journal_id=journal_id,
+    )
+    summary = validate_journal(derivative)
+
+    assert summary.journal_id == journal_id
+    assert summary.current_path == "derived/output.bin"
+    assert summary.current_bytes == len(output)
+    assert summary.current_sha256 == hashlib.sha256(output).hexdigest()
+    source_summary = validate_journal(source)
+    assert len(summary.external_states) == 1
+    assert summary.external_states[0].journal_id == source_summary.journal_id
+    validate_journal_set(
+        {
+            source_summary.journal_id: source,
+            journal_id: derivative,
+        }
+    )
 
 
 def test_payload_binding_mismatch_is_rejected(tmp_path: Path, urn_factory) -> None:

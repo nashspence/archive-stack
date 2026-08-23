@@ -232,7 +232,12 @@ class SqlAlchemyCollectionUploadService:
                     and collection.provenance_mode == "omitted"
                 ):
                     raise Conflict("collection upload provenance identity changed")
-                return _finalized_payload(session, collection, store_name=store_name)
+                return _finalized_payload(
+                    session,
+                    collection,
+                    store_name=store_name,
+                    resumed=True,
+                )
             upload = session.scalar(
                 select(CollectionUploadRecord)
                 .where(
@@ -250,7 +255,7 @@ class SqlAlchemyCollectionUploadService:
                     or upload.provenance_omission_reason != normalized_omission_reason
                 ):
                     raise Conflict("collection upload idempotency identity changed")
-                return _upload_payload(session, upload)
+                return _upload_payload(session, upload, resumed=True)
 
             _require_tags(session, normalized_tags)
             now = utc_timestamp_now()
@@ -283,7 +288,7 @@ class SqlAlchemyCollectionUploadService:
                 for tag in normalized_tags
             )
             session.flush()
-            return _upload_payload(session, upload)
+            return _upload_payload(session, upload, resumed=False)
 
     def require_access(self, collection_id: int, principal: ApplicationPrincipal) -> None:
         normalized = _collection_id(collection_id)
@@ -471,6 +476,26 @@ class SqlAlchemyCollectionUploadService:
             upload.last_activity_at = utc_timestamp_now()
             session.flush()
             return _journal_payload(record)
+
+    def export_provenance_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+    ) -> tuple[bytes, str]:
+        """Return exact staged journal bytes for idempotent producer recovery."""
+
+        normalized_id = _collection_id(collection_id)
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized_id)
+            if upload is None:
+                raise NotFound(f"collection upload session not found: {normalized_id}")
+            record = session.get(
+                CollectionUploadProvenanceJournalRecord,
+                (normalized_id, journal_id),
+            )
+            if record is None:
+                raise NotFound(f"collection upload provenance journal not found: {journal_id}")
+            return record.journal_bytes, record.sha256
 
     def complete(
         self,
@@ -2251,6 +2276,7 @@ def _upload_payload(
     upload: CollectionUploadRecord,
     *,
     state: str | None = None,
+    resumed: bool | None = None,
 ) -> dict[str, object]:
     files_total, bytes_total = session.execute(
         select(
@@ -2266,7 +2292,7 @@ def _upload_payload(
             func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.total_parts), 0),
         ).where(CollectionArchiveObjectUploadRecord.collection_id == upload.collection_id)
     ).one()
-    return {
+    payload: dict[str, object] = {
         "collection_id": upload.collection_id,
         "created_at": upload.opened_at,
         "tags": list(_upload_tags(upload)),
@@ -2294,6 +2320,9 @@ def _upload_payload(
         "archive_total_parts": int(archive_progress[2]),
         "collection": None,
     }
+    if resumed is not None:
+        payload["resumed"] = resumed
+    return payload
 
 
 def _finalized_payload(
@@ -2301,6 +2330,7 @@ def _finalized_payload(
     collection: CollectionRecord,
     *,
     store_name: str,
+    resumed: bool | None = None,
 ) -> dict[str, object]:
     copy = next(
         (current for current in collection.archive_copies if current.store == store_name),
@@ -2326,7 +2356,7 @@ def _finalized_payload(
         "remote_storage_bytes": stored_bytes,
         "archive_copies": [],
     }
-    return {
+    payload: dict[str, object] = {
         "collection_id": collection.id,
         "created_at": collection.created_at,
         "tags": tags,
@@ -2356,3 +2386,6 @@ def _finalized_payload(
         "archive_total_parts": None,
         "collection": summary,
     }
+    if resumed is not None:
+        payload["resumed"] = resumed
+    return payload

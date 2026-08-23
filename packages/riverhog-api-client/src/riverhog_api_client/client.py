@@ -711,6 +711,22 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             timeout=self.upload_timeout_seconds,
         )
 
+    def export_collection_upload_session_provenance_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+    ) -> bytes:
+        response = self._request(
+            "GET",
+            f"/v1/collection-upload-sessions/{str(collection_id)}/provenance/journals/"
+            f"{quote(journal_id, safe='')}",
+        )
+        content = response.content
+        expected = response.headers.get("ETag", "").strip().strip('"')
+        if not expected or hashlib.sha256(content).hexdigest() != expected:
+            raise InvalidState("staged provenance journal does not match its ETag")
+        return content
+
     def list_collection_upload_sessions(
         self,
         *,
