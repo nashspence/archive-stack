@@ -3,9 +3,9 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "stove0-client"
+name = "stove0-recipe-config"
 version = "0.1.0"
-description = "Cross-platform command-line client for stove0."
+description = "Portable deployment-owned Stove0 recipe catalog contracts and validation."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -19,18 +19,16 @@ classifiers = [
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
-  "rich>=15.0,<16.0",
-  "stove0-api-client>=0.1,<0.2",
-  "stove0-recipe-config>=0.1,<0.2",
-  "typer>=0.12,<1.0",
+  "config-validation>=0.1,<0.2",
+  "pydantic>=2.7,<3.0",
+  "stove0-protocol>=0.1,<0.2",
+  "stove0-target-protocol>=0.1,<0.2",
 ]
 
-[project.scripts]
-stove0 = "stove0_cli.main:main"
-
 [tool.uv.sources]
-stove0-api-client = { workspace = true }
-stove0-recipe-config = { workspace = true }
+config-validation = { workspace = true }
+stove0-protocol = { workspace = true }
+stove0-target-protocol = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/stove0_cli"]
+packages = ["src/stove0_recipe_config"]

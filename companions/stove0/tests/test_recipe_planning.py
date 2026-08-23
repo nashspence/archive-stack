@@ -166,6 +166,302 @@ class LargeCatalogApi(CatalogApi):
         }
 
 
+class ConformanceCatalogApi(CatalogApi):
+    def search(self, **_kwargs: object) -> dict[str, object]:
+        return {
+            "files": [
+                {"path": "audio/take.XMP", "bytes": 21, "sha256": _sha("4")},
+                {"path": "audio/take.wav", "bytes": 101, "sha256": _sha("3")},
+                {"path": "audio/take.xmp", "bytes": 22, "sha256": _sha("5")},
+                {"path": "notes/retained.txt", "bytes": 10, "sha256": _sha("6")},
+                {"path": "video/clip.mov", "bytes": 201, "sha256": _sha("7")},
+                {"path": "video/clip.xmp", "bytes": 23, "sha256": _sha("8")},
+            ]
+        }
+
+
+class BatchMediaObservers:
+    def __init__(self, batch_size: int) -> None:
+        self.value = ObserverDescriptor.seal(
+            ObserverDescriptorPayload(
+                implementation_id="fixture.exiftool-observer/v1",
+                implementation_version="1.0.0",
+                source_revision="fixture",
+                image_digest=_sha("9"),
+                contracts=(
+                    ObserverContractSupport.from_contract(
+                        MEDIA_METADATA_OBSERVER_CONTRACT,
+                        preferred_subject_batch_size=batch_size,
+                    ),
+                ),
+            )
+        )
+
+    def descriptor(self, registration_id: str) -> ObserverDescriptor:
+        assert registration_id == "exiftool"
+        return self.value
+
+
+class ConformanceTargets:
+    def __init__(self) -> None:
+        empty_schema = JsonSchemaDocument.from_schema(
+            "fixture.target-options/v1",
+            {"type": "object"},
+        )
+        self.contracts = {
+            "opus": TargetContract.seal(
+                TargetContractPayload(
+                    implementation_id="fixture.opus-target/v1",
+                    implementation_version="1.0.0",
+                    source_revision="fixture",
+                    image_digest=_sha("a"),
+                    operations=(
+                        TargetOperationSupport(
+                            operation_id=AUDIO_ARCHIVE_OPERATION.id,
+                            operation_contract_sha256=AUDIO_ARCHIVE_OPERATION.contract_sha256,
+                            options_schema=empty_schema,
+                        ),
+                    ),
+                )
+            ),
+            "nvenc-av1-opus": TargetContract.seal(
+                TargetContractPayload(
+                    implementation_id="fixture.av1-target/v1",
+                    implementation_version="1.0.0",
+                    source_revision="fixture",
+                    image_digest=_sha("b"),
+                    operations=(
+                        TargetOperationSupport(
+                            operation_id=AV1_OPUS_ARCHIVE_OPERATION.id,
+                            operation_contract_sha256=AV1_OPUS_ARCHIVE_OPERATION.contract_sha256,
+                            options_schema=empty_schema,
+                        ),
+                    ),
+                )
+            ),
+        }
+
+    def contract(self, registration_id: str) -> TargetContract:
+        return self.contracts[registration_id]
+
+
+def _conformance_plan(
+    preferred_batch_size: int,
+) -> tuple[BranchSetDecision, BranchSetDecision]:
+    path = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+    catalog = RecipeCatalog.load(path)
+    observers = BatchMediaObservers(preferred_batch_size)
+    planner = RecipePlanner(
+        catalog=catalog,
+        riverhog=cast(ApiClient, ConformanceCatalogApi()),
+        observers=cast(ObserverPort, observers),
+        targets=cast(TargetPort, ConformanceTargets()),
+    )
+    root = CollectionRootRef(
+        collection_id=11,
+        manifest_sha256=_sha("1"),
+        content_identity=_sha("2"),
+    )
+    work = planner.create_work("stove0.conformance-media/v1", (root,))
+    requests = planner.observation_requests(work)
+    evidence = tuple(
+        ObservationEvidence(
+            request=request,
+            result=ObservationResultBuilder(observers.value, request).observed(
+                MediaMetadataFacts(
+                    artifacts=tuple(
+                        MediaArtifactFacts(artifact_id=subject.id, state="observed")
+                        for subject in request.subjects
+                    )
+                ).model_dump(mode="json")
+            ),
+        )
+        for request in requests
+    )
+    plan = planner.workflow_plan(work, evidence)
+    reversed_plan = planner.workflow_plan(work, tuple(reversed(evidence)))
+    assert isinstance(plan, BranchSetDecision)
+    assert isinstance(reversed_plan, BranchSetDecision)
+    return plan, reversed_plan
+
+
+def _selection_paths(decision: BranchSetDecision) -> dict[str, tuple[str, ...]]:
+    return {
+        branch.branch_id: tuple(
+            sorted(
+                artifact.path
+                for artifact in decision.selection_documents[
+                    branch.artifact_selection.selection_sha256
+                ].artifacts
+            )
+        )
+        for branch in decision.plan.branches
+    }
+
+
+def test_deployment_owned_conformance_catalog_routes_exact_artifacts_independent_of_batching() -> (
+    None
+):
+    single, single_reversed = _conformance_plan(1)
+    batched, batched_reversed = _conformance_plan(4)
+
+    expected = {
+        "archive-audio": ("audio/take.XMP", "audio/take.wav", "audio/take.xmp"),
+        "archive-audio-overlap": (
+            "audio/take.XMP",
+            "audio/take.wav",
+            "audio/take.xmp",
+        ),
+        "archive-video": ("video/clip.mov", "video/clip.xmp"),
+    }
+    assert _selection_paths(single) == expected
+    assert _selection_paths(single_reversed) == expected
+    assert _selection_paths(batched) == expected
+    assert _selection_paths(batched_reversed) == expected
+    assert single.plan.branch_set_sha256 == single_reversed.plan.branch_set_sha256
+    assert batched.plan.branch_set_sha256 == batched_reversed.plan.branch_set_sha256
+    assert single.plan.retirement_policy == "retain"
+    intents = {
+        branch.branch_id: branch.workflow_plan.work.effective_intent
+        for branch in single.plan.branches
+    }
+    assert intents["archive-audio"]["metadata_projection"] == {
+        "format": "stove0-media-projection-policy/v1",
+        "device_make": "Example Maker",
+        "device_model": "Model One",
+        "gps": {"latitude": 45.0, "longitude": -122.0},
+        "creators": ["Example Operator"],
+        "tags": ["conformance"],
+        "field_preferences": [{"name": "capture-time", "fields": ["XMP-xmp:CreateDate"]}],
+    }
+
+
+def test_installed_catalog_rejects_stale_observer_contract_before_observation() -> None:
+    path = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+    catalog = RecipeCatalog.load(path)
+    recipe = catalog.recipe("stove0.conformance-media/v1")
+    stale_observer = recipe.observers[0].model_copy(update={"contract_sha256": _sha("f")})
+    stale_recipe = recipe.model_copy(update={"observers": (stale_observer,)})
+    stale_catalog = RecipeCatalog(
+        operations=catalog.operations,
+        recipes=tuple(
+            stale_recipe if item.id == stale_recipe.id else item for item in catalog.recipes
+        ),
+    )
+    planner = RecipePlanner(
+        catalog=stale_catalog,
+        riverhog=cast(ApiClient, ConformanceCatalogApi()),
+        observers=cast(ObserverPort, BatchMediaObservers(4)),
+        targets=cast(TargetPort, ConformanceTargets()),
+    )
+    work = planner.create_work(
+        stale_recipe.id,
+        (
+            CollectionRootRef(
+                collection_id=11,
+                manifest_sha256=_sha("1"),
+                content_identity=_sha("2"),
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="another revision of the recipe contract"):
+        planner.observation_requests(work)
+
+
+def test_planning_rejects_stale_target_operation_contract_before_preflight() -> None:
+    changed_operation = OperationContract.seal(
+        OperationContractPayload(
+            id=AUDIO_ARCHIVE_OPERATION.id,
+            intent_schema=AUDIO_ARCHIVE_OPERATION.intent_schema,
+            inputs=AUDIO_ARCHIVE_OPERATION.inputs,
+            outputs=AUDIO_ARCHIVE_OPERATION.outputs,
+            source_retirement_permitted=True,
+        )
+    )
+    recipe = RecipeDefinition(
+        id="fixture.stale-target/v1",
+        revision=1,
+        input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
+        routes=(
+            RecipeRoute(
+                id="archive",
+                operation_id=changed_operation.id,
+                target_registration_id="opus",
+                artifact_rules=(ArtifactRule(role="stove0.media.source/v1"),),
+                output_tags=("archive",),
+            ),
+        ),
+    )
+    planner = RecipePlanner(
+        catalog=RecipeCatalog(operations=(changed_operation,), recipes=(recipe,)),
+        riverhog=cast(ApiClient, CatalogApi()),
+        observers=cast(ObserverPort, object()),
+        targets=cast(TargetPort, ArchiveTargets()),
+    )
+    work = planner.create_work(
+        recipe.id,
+        (
+            CollectionRootRef(
+                collection_id=11,
+                manifest_sha256=_sha("1"),
+                content_identity=_sha("2"),
+            ),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="another revision of the recipe operation"):
+        planner.workflow_plan(work, ())
+
+
+def test_recipe_explicitly_rejects_unmatched_primary_and_sidecar_artifacts() -> None:
+    recipe = RecipeDefinition(
+        id="fixture.reject-unmatched/v1",
+        revision=1,
+        input_tags=("fixture",),
+        unmatched_artifact_disposition="reject-work",
+        routes=(
+            RecipeRoute(
+                id="archive",
+                operation_id=AUDIO_ARCHIVE_OPERATION.id,
+                target_registration_id="opus",
+                artifact_rules=(
+                    ArtifactRule(
+                        glob="*.mov",
+                        role="stove0.media.source/v1",
+                        media_type="video/quicktime",
+                    ),
+                ),
+                output_tags=("archive",),
+            ),
+        ),
+    )
+    planner = RecipePlanner(
+        catalog=RecipeCatalog(operations=(AUDIO_ARCHIVE_OPERATION,), recipes=(recipe,)),
+        riverhog=cast(ApiClient, AssociatedMediaCatalogApi()),
+        observers=cast(ObserverPort, object()),
+        targets=cast(TargetPort, ArchiveTargets()),
+    )
+    work = planner.create_work(
+        recipe.id,
+        (
+            CollectionRootRef(
+                collection_id=11,
+                manifest_sha256=_sha("1"),
+                content_identity=_sha("2"),
+            ),
+        ),
+    )
+
+    decision = planner.workflow_plan(work, ())
+
+    assert isinstance(decision, WorkInapplicable)
+    assert decision.code == "unmatched-artifacts"
+    assert "camera/clip.xmp" in decision.message
+    assert "camera/retained.txt" in decision.message
+
+
 def test_recipe_projection_count_is_defined_by_the_recipe() -> None:
     projections = tuple(
         OperationProjection(
@@ -193,10 +489,12 @@ def test_observer_preference_batches_unbounded_collection_work_without_omission(
         id="fixture.large-observation/v1",
         revision=1,
         input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
         observers=(
             ObserverUse(
                 registration_id="exiftool",
                 contract_id=MEDIA_METADATA_OBSERVER_CONTRACT.id,
+                contract_sha256=MEDIA_METADATA_OBSERVER_CONTRACT.contract_sha256,
                 artifact_rules=(ArtifactRule(role="stove0.media.source/v1"),),
             ),
         ),
@@ -315,10 +613,12 @@ def test_media_observation_evidence_binds_exact_primary_sidecar_selection() -> N
         id="fixture.observed-media/v1",
         revision=1,
         input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
         observers=(
             ObserverUse(
                 registration_id="exiftool",
                 contract_id=MEDIA_METADATA_OBSERVER_CONTRACT.id,
+                contract_sha256=MEDIA_METADATA_OBSERVER_CONTRACT.contract_sha256,
                 artifact_rules=media_rules,
             ),
         ),
@@ -454,6 +754,7 @@ def test_review_recipe_projects_semantic_intent_and_options_before_preflight() -
         id="review-evaluation/v1",
         revision=1,
         input_tags=("review-source",),
+        unmatched_artifact_disposition="retain-in-source",
         routes=(
             RecipeRoute(
                 id="review",
@@ -655,6 +956,7 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
         id="fixture.fork-join/v1",
         revision=1,
         input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
         routes=tuple(
             RecipeRoute(
                 id=branch_id,
@@ -812,6 +1114,7 @@ def test_retirement_plan_accepts_overlapping_selections_covering_complete_invent
         id="fixture.retirement/v1",
         revision=1,
         input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
         source_retirement_policy="retire-after-verified-output",
         routes=(
             RecipeRoute(
@@ -854,6 +1157,7 @@ def test_retirement_plan_rejects_incomplete_inventory_before_target_preflight() 
         id="fixture.retirement/v1",
         revision=1,
         input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
         source_retirement_policy="retire-after-verified-output",
         routes=(
             RecipeRoute(
@@ -884,6 +1188,7 @@ def test_catalog_rejects_retirement_recipe_using_audio_only_operation() -> None:
         id="fixture.unsafe-audio-retirement/v1",
         revision=1,
         input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
         source_retirement_policy="retire-after-verified-output",
         routes=(
             RecipeRoute(

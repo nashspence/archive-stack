@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -12,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 from stove0_api.app import Stove0Composition, _log_scheduler_failures, create_app
 from stove0_api.schemas import WorkflowPreviewIn
 from stove0_api_client import Stove0ApiClient
+from stove0_cli import main as stove0_cli
 from stove0_core import (
     EvaluationService,
     RecipeCatalog,
@@ -31,6 +34,7 @@ from stove0_protocol import (
     EvaluationVariant,
     RecipeRef,
 )
+from typer.testing import CliRunner
 
 from tests.operation_observer import OperationObserver, TimeoutNeutralTestClient
 
@@ -140,10 +144,11 @@ class _LifecycleState:
 
 
 class _LifecycleRecipes:
-    recipes = (_Document(id="fixture.recipe/v1", revision=1),)
+    sha256 = "c" * 64
+    recipes = (_Document(id="fixture.recipe/v1", revision=1, sha256="d" * 64),)
 
     def recipe(self, recipe_id: str, revision: int | None) -> _Document:
-        return _Document(id=recipe_id, revision=revision or 1)
+        return _Document(id=recipe_id, revision=revision or 1, sha256="d" * 64)
 
 
 class _LifecyclePlanner:
@@ -327,8 +332,10 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert client.health_live()["status"] == "ok"
         assert client.health_ready()["status"] == "ok"
         assert client.list_events().next_cursor == "0"
-        assert client.list_recipes()["recipes"]
-        assert client.get_recipe("fixture.recipe/v1")["revision"] == 1
+        recipe_page = client.list_recipes()
+        assert recipe_page["catalog_sha256"] == "c" * 64
+        assert recipe_page["recipes"][0]["sha256"] == "d" * 64
+        assert client.get_recipe("fixture.recipe/v1")["sha256"] == "d" * 64
         listed = client.list_work(all_items=True)
         assert listed["total"] == 1
         assert listed["work"][0]["target_status"]["effect_receipt"]["receipt_sha256"] == ("e" * 64)
@@ -544,3 +551,51 @@ def test_stove0_client_transport_configuration_is_connected(
         assert client.timeout_seconds == 17
     finally:
         client.close()
+
+
+def test_installed_conformance_catalog_is_exact_through_api_client_and_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+    catalog = RecipeCatalog.load(path)
+    application = create_app(replace(_lifecycle_composition(), recipes=catalog))
+
+    with TestClient(application) as transport:
+        client = Stove0ApiClient(
+            "http://testserver",
+            "stove0-test-token",
+            allow_insecure_http=True,
+        )
+        client._client = cast(Any, TimeoutNeutralTestClient(transport))  # type: ignore[assignment]
+        page = client.list_recipes()
+        recipe = client.get_recipe("stove0.conformance-media/v1")
+        preview = client.preview_workflow("stove0.conformance-media/v1", [1])
+
+        def cli_client(*_args: object, **_kwargs: object) -> Stove0ApiClient:
+            value = Stove0ApiClient(
+                "http://testserver",
+                "stove0-test-token",
+                allow_insecure_http=True,
+            )
+            value._client = cast(  # type: ignore[assignment]
+                Any,
+                TimeoutNeutralTestClient(transport),
+            )
+            return value
+
+        monkeypatch.setattr(stove0_cli, "Stove0ApiClient", cli_client)
+        runner = CliRunner()
+        human = runner.invoke(stove0_cli.app, ["preview", "stove0.conformance-media/v1", "1"])
+        machine = runner.invoke(
+            stove0_cli.app,
+            ["--json", "preview", "stove0.conformance-media/v1", "1"],
+        )
+
+    assert page["catalog_sha256"] == catalog.sha256
+    identity = catalog.recipe("stove0.conformance-media/v1").identity_document()
+    assert recipe["sha256"] == identity["sha256"]
+    assert preview["state"] == "ready"
+    assert human.exit_code == 0, (human.output, human.exception)
+    assert "ready" in human.stdout
+    assert machine.exit_code == 0, (machine.output, machine.exception)
+    assert json.loads(machine.stdout)["state"] == "ready"
