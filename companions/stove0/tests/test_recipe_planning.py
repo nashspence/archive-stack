@@ -50,6 +50,7 @@ from stove0_protocol import (
 )
 from stove0_review_contracts import (
     REVIEW_MATERIALIZE_OPERATION,
+    REVIEW_RCLONE_DELIVER_OPERATION,
     REVIEW_SOURCE_ROLE,
     ReviewSamplePlan,
     ReviewSamplePlanPayload,
@@ -572,6 +573,7 @@ def test_reference_recipes_embed_exact_maintained_contracts_and_explicit_cost_po
                 AUDIO_ARCHIVE_OPERATION,
                 AV1_OPUS_ARCHIVE_OPERATION,
                 REVIEW_MATERIALIZE_OPERATION,
+                REVIEW_RCLONE_DELIVER_OPERATION,
             ),
             key=lambda operation: operation.id,
         )
@@ -594,7 +596,12 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
         OperationContractPayload(
             id="fixture.branch/v1",
             intent_schema=empty_schema,
-            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
             outputs=(
                 OutputArtifactContract(
                     role="fixture.branch-output/v1",
@@ -607,7 +614,13 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
         OperationContractPayload(
             id="fixture.join/v1",
             intent_schema=empty_schema,
-            inputs=(InputArtifactContract(role="fixture.branch-output/v1", minimum=2),),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.branch-output/v1",
+                    minimum=2,
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
             outputs=(
                 OutputArtifactContract(
                     role="fixture.join-output/v1",
@@ -739,7 +752,12 @@ def _retirement_operation() -> OperationContract:
                 "fixture.retirement-copy-options/v1",
                 {"type": "object", "additionalProperties": False},
             ),
-            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
             outputs=(
                 OutputArtifactContract(
                     role="fixture.output/v1",

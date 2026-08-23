@@ -1,16 +1,21 @@
-"""Thread-safe process-local transform runtime registration and token refresh."""
+"""Thread-safe process-local claimed-collection runtime registration."""
 
 from __future__ import annotations
 
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Protocol
 
-from riverhog_transform_sdk.runtime import CollectionTransformRuntime
+
+class RefreshableClaimedCollectionRuntime(Protocol):
+    def refresh_capability(self, capability_token: str) -> None: ...
+
+    def close(self, *, raise_errors: bool = True) -> None: ...
 
 
-class TransformRuntimeRegistry:
-    """Route controller capability refreshes to an executing target runtime.
+class ClaimedCollectionRuntimeRegistry:
+    """Route capability refreshes to one executing claimed-collection runtime.
 
     The registry contains bearer material only in memory. A refresh arriving just
     before target startup is retained until the runtime binds; a refresh arriving
@@ -19,19 +24,19 @@ class TransformRuntimeRegistry:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self._runtimes: dict[str, CollectionTransformRuntime] = {}
+        self._runtimes: dict[str, RefreshableClaimedCollectionRuntime] = {}
         self._pending_tokens: dict[str, str] = {}
 
     @contextmanager
     def bind(
         self,
         job_id: str,
-        runtime: CollectionTransformRuntime,
-    ) -> Iterator[CollectionTransformRuntime]:
+        runtime: RefreshableClaimedCollectionRuntime,
+    ) -> Iterator[RefreshableClaimedCollectionRuntime]:
         normalized = _job_id(job_id)
         with self._lock:
             if normalized in self._runtimes:
-                raise RuntimeError(f"transform runtime is already active: {normalized}")
+                raise RuntimeError(f"claimed collection runtime is already active: {normalized}")
             self._runtimes[normalized] = runtime
             pending = self._pending_tokens.pop(normalized, None)
             try:
@@ -52,7 +57,7 @@ class TransformRuntimeRegistry:
         normalized = _job_id(job_id)
         token = capability_token.strip()
         if not token:
-            raise ValueError("transform capability token must be nonempty")
+            raise ValueError("claimed collection capability token must be nonempty")
         with self._lock:
             runtime = self._runtimes.get(normalized)
             if runtime is None:
@@ -72,8 +77,8 @@ class TransformRuntimeRegistry:
 def _job_id(value: str) -> str:
     normalized = value.strip()
     if not normalized or normalized != value:
-        raise ValueError("transform runtime job id must be canonical")
+        raise ValueError("claimed collection runtime job id must be canonical")
     return normalized
 
 
-__all__ = ["TransformRuntimeRegistry"]
+__all__ = ["ClaimedCollectionRuntimeRegistry", "RefreshableClaimedCollectionRuntime"]

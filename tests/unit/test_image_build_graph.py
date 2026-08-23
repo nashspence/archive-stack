@@ -28,7 +28,7 @@ MISE_CONTAINER_TOOLS = {
     "stove0-ffprobe-sampling-observer": {"uv"},
     "stove0-nvenc-av1-opus-target": {"uv"},
     "stove0-opus-target": {"uv"},
-    "stove0-review-target": {"uv"},
+    "stove0-review-target": {"rclone", "uv"},
     "mango-fish": {"uv"},
     "test": {"age", "http:exiftool", "minisign", "uv"},
 }
@@ -117,7 +117,10 @@ IMAGE_CONTRACTS = {
         "tag": "stove0-review-target:dev",
         "title": "stove0 review target",
         "license": "CAL-1.0",
-        "compose": (("companions/stove0/compose.yaml", "review-target"),),
+        "compose": (
+            ("companions/stove0/compose.yaml", "review-target"),
+            ("companions/stove0/compose.yaml", "review-effect-target"),
+        ),
     },
     "mango-fish": {
         "dockerfile": "utilities/mango-fish/Dockerfile",

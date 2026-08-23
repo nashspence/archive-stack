@@ -26,10 +26,10 @@ forbidden_commands = ["ffmpeg", "ffprobe", "git", "gcc", "make", "mise", "uv"]
 
 [images.stove0-review-target]
 tag = "stove0-review-target:dev"
-roles = ["review-target", "review-sampler-caller"]
+roles = ["review-collection-target", "review-effect-target", "review-sampler-caller"]
 required_distributions = ["stove0-review-sampler-client", "stove0-review-target", "stove0-target-support"]
 forbidden_distributions = ["stove0-exiftool-observer", "stove0-ffprobe-sampling-observer", "stove0-media-archive-contracts", "stove0-review-sampler-support"]
-required_commands = ["stove0-review-target"]
+required_commands = ["rclone", "stove0-review-target"]
 forbidden_commands = ["ffmpeg", "ffprobe", "git", "gcc", "make", "mise", "uv"]
 
 [images.stove0-opus-target]

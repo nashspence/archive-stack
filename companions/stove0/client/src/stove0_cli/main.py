@@ -120,7 +120,10 @@ def list_work(
             order=order,
             all_items=all_items,
         ),
-        table=("work", ("work_id", "phase", "revision")),
+        table=(
+            "work",
+            ("work_id", "phase", "result_kind", "target_state", "result_identity", "revision"),
+        ),
     )
 
 
@@ -388,10 +391,36 @@ def _render(
         for item in payload[table[0]]:
             if not isinstance(item, dict):
                 continue
-            rendered.add_row(*(str(item.get(column, "")) for column in table[1]))
+            rendered.add_row(*(_table_value(item, column) for column in table[1]))
         console.print(rendered)
         return
     console.print(Pretty(payload, expand_all=False))
+
+
+def _table_value(item: dict[str, Any], column: str) -> str:
+    if column in item:
+        return str(item[column])
+    status = item.get("target_status")
+    workflow = item.get("workflow_plan")
+    if column == "result_kind":
+        if isinstance(workflow, dict) and workflow.get("result_kind") is not None:
+            return str(workflow["result_kind"])
+        if isinstance(status, dict):
+            return (
+                "external-effect"
+                if status.get("protocol") == "stove0-effect-target/v1"
+                else "collection"
+            )
+    if column == "target_state" and isinstance(status, dict):
+        return str(status.get("state", ""))
+    if column == "result_identity" and isinstance(status, dict):
+        receipt = status.get("effect_receipt")
+        if isinstance(receipt, dict):
+            return str(receipt.get("receipt_sha256", ""))
+        output = status.get("output_collection")
+        if isinstance(output, dict):
+            return str(output.get("content_identity", ""))
+    return ""
 
 
 def _fail(message: str) -> NoReturn:

@@ -22,6 +22,7 @@ def test_reference_topology_uses_one_postgres_authority_and_distinct_roles() -> 
         "nvenc-av1-opus-target",
         "opus-review-sampler",
         "opus-target",
+        "review-effect-target",
         "review-target",
         "state",
         "worker",
@@ -61,6 +62,7 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
         "nvenc-av1-opus-target",
         "opus-review-sampler",
         "opus-target",
+        "review-effect-target",
         "review-target",
     ):
         assert services[name]["read_only"] is True
@@ -74,6 +76,7 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
         "nvenc-av1-opus-target",
         "opus-review-sampler",
         "opus-target",
+        "review-effect-target",
         "review-target",
     ):
         assert "ports" not in services[name]
@@ -86,6 +89,7 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
     assert services["opus-target"]["command"][0] == "stove0-opus-target"
     assert services["opus-review-sampler"]["command"][0] == "stove0-opus-review-sampler"
     assert services["review-target"]["command"][0] == "stove0-review-target"
+    assert services["review-effect-target"]["command"][0] == "stove0-review-target"
     assert services["nvenc-av1-opus-target"]["command"][0] == "stove0-nvenc-av1-opus-target"
     assert (
         services["nvenc-av1-opus-review-sampler"]["command"][0]
@@ -97,6 +101,8 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
         "stove0-nvenc-av1-opus-target-state",
         "stove0-opus-target-state",
         "stove0-review-target-state",
+        "stove0-review-effect-target-state",
+        "stove0-review-effect-delivery",
         "stove0-review-workspace",
     }
 
@@ -111,11 +117,12 @@ def test_sampler_containers_share_only_ephemeral_workspace_and_no_authority() ->
         assert all("riverhog" not in item for item in service["secrets"])
         assert all("target_token" not in item for item in service["secrets"])
         assert "STOVE0_DATABASE_URL_FILE" not in service["environment"]
-    assert set(services["review-target"]["networks"]) == {
-        "review-sampler",
-        "riverhog-control",
-        "stove0-internal",
-    }
+    for name in ("review-target", "review-effect-target"):
+        assert set(services[name]["networks"]) == {
+            "review-sampler",
+            "riverhog-control",
+            "stove0-internal",
+        }
     workspace = payload["volumes"]["stove0-review-workspace"]
     assert workspace["driver_opts"]["type"] == "tmpfs"
 
@@ -141,6 +148,12 @@ def test_paired_target_and_sampler_roles_bind_the_same_image_digest() -> None:
         ]
     )
     assert services["opus-target"]["image"] != services["nvenc-av1-opus-target"]["image"]
+    assert services["review-target"]["image"] == services["review-effect-target"]["image"]
+    assert services["review-target"]["environment"]["STOVE0_REVIEW_TARGET_MODE"] == "collection"
+    assert (
+        services["review-effect-target"]["environment"]["STOVE0_REVIEW_TARGET_MODE"]
+        == "rclone-effect"
+    )
     assert services["opus-target"]["build"]["dockerfile"] == (
         "reference/stove0/targets/opus/Dockerfile"
     )
@@ -193,6 +206,26 @@ def test_reference_observer_registrations_connect_exact_one_role_services() -> N
             assert secret in service["secrets"]
 
 
+def test_reference_target_registrations_bind_fixed_review_result_modes() -> None:
+    payload = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    services = payload["services"]
+    for role in ("api", "controller", "worker"):
+        service = services[role]
+        registrations = json.loads(service["environment"]["STOVE0_TARGETS_JSON"])
+        assert registrations["review"] == {
+            "base_url": "http://review-target:8080",
+            "token_env": "STOVE0_REVIEW_TARGET_TOKEN",
+            "allow_insecure_http": True,
+        }
+        assert registrations["review-effect"] == {
+            "base_url": "http://review-effect-target:8080",
+            "token_env": "STOVE0_REVIEW_EFFECT_TARGET_TOKEN",
+            "allow_insecure_http": True,
+        }
+        assert "stove0_review_target_token" in service["secrets"]
+        assert "stove0_review_effect_target_token" in service["secrets"]
+
+
 def test_reference_topology_connects_bounded_operational_state_retention() -> None:
     payload = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
     services = payload["services"]
@@ -201,7 +234,12 @@ def test_reference_topology_connects_bounded_operational_state_retention() -> No
             services[name]["environment"]["STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS"]
             == "${STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS:-2592000}"
         )
-    for name in ("opus-target", "nvenc-av1-opus-target", "review-target"):
+    for name in (
+        "opus-target",
+        "nvenc-av1-opus-target",
+        "review-target",
+        "review-effect-target",
+    ):
         assert (
             services[name]["environment"]["STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS"]
             == "${STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:-2592000}"

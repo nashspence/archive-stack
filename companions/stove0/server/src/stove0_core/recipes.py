@@ -92,7 +92,7 @@ class RecipeRoute(RecipeModel):
     target_options: dict[str, JsonValue] = Field(default_factory=dict)
     projections: tuple[OperationProjection, ...] = ()
     input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
-    output_tags: tuple[str, ...] = Field(min_length=1)
+    output_tags: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def canonical_projections(self) -> Self:
@@ -190,6 +190,33 @@ class RecipeCatalog(RecipeModel):
                 raise ValueError(
                     f"recipe {recipe.id} references unknown operation(s): " + ", ".join(unknown)
                 )
+            for route in recipe.routes:
+                operation = operations[route.operation_id]
+                if operation.result_kind == "collection" and not route.output_tags:
+                    raise ValueError(
+                        f"recipe {recipe.id} collection branch {route.id} requires output tags"
+                    )
+                if operation.result_kind == "external-effect" and route.output_tags:
+                    raise ValueError(
+                        f"recipe {recipe.id} effect branch {route.id} cannot declare output tags"
+                    )
+            if recipe.join is not None:
+                join_operation = operations[recipe.join.operation_id]
+                if join_operation.result_kind != "collection":
+                    raise ValueError(f"recipe {recipe.id} join must produce a collection")
+                route_operations = {
+                    route.id: operations[route.operation_id] for route in recipe.routes
+                }
+                effect_members = [
+                    member.branch_id
+                    for member in recipe.join.members
+                    if route_operations[member.branch_id].result_kind == "external-effect"
+                ]
+                if effect_members:
+                    raise ValueError(
+                        f"recipe {recipe.id} join cannot consume effect branch(es): "
+                        + ", ".join(effect_members)
+                    )
             if recipe.source_retirement_policy == "retire-after-verified-output":
                 unsafe = sorted(
                     route.id
@@ -427,6 +454,8 @@ class RecipePlanner:
         support = target.support_for(operation.id)
         if support.operation_contract_sha256 != operation.contract_sha256:
             raise RuntimeError("target supports another revision of the recipe operation")
+        if support.result_kind != operation.result_kind:
+            raise RuntimeError("target supports another result kind for the recipe operation")
         compiled_intent, compiled_options = self._project_operation(parent, route.projections)
         effective_intent = {**route.intent, **compiled_intent}
         return BranchPlan.build(
@@ -438,6 +467,7 @@ class RecipePlanner:
             effective_intent=effective_intent,
             workflow_intent=WorkflowPlanIntent(
                 operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
+                result_kind=operation.result_kind,
                 target_registration_id=route.target_registration_id,
                 target_contract_sha256=target.contract_sha256,
                 requested_target_options={**route.target_options, **compiled_options},
@@ -463,6 +493,8 @@ class RecipePlanner:
         support = target.support_for(operation.id)
         if support.operation_contract_sha256 != operation.contract_sha256:
             raise RuntimeError("join target supports another revision of the recipe operation")
+        if support.result_kind != "collection" or operation.result_kind != "collection":
+            raise RuntimeError("join target operation must produce a collection")
         compiled_intent, compiled_options = self._project_operation(parent, join.projections)
         return JoinDeclaration.seal(
             members=tuple(
@@ -476,6 +508,7 @@ class RecipePlanner:
             effective_intent={**join.intent, **compiled_intent},
             workflow_intent=WorkflowPlanIntent(
                 operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
+                result_kind="collection",
                 target_registration_id=join.target_registration_id,
                 target_contract_sha256=target.contract_sha256,
                 requested_target_options={**join.target_options, **compiled_options},
@@ -503,6 +536,7 @@ class RecipePlanner:
         else:
             raise RuntimeError("target execution requires explicit branch or join work")
         return TargetPreflightRequest(
+            protocol=self.targets.contract(plan.target_registration_id).protocol,
             operation_id=plan.operation.id,
             operation_contract_sha256=plan.operation.sha256,
             inputs=artifacts,

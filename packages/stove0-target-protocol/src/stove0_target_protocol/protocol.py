@@ -1,4 +1,4 @@
-"""Published hardware-neutral target protocol for stove0 collection transforms."""
+"""Published hardware-neutral target protocols for stove0 operations."""
 
 from __future__ import annotations
 
@@ -26,10 +26,16 @@ from stove0_protocol import (
     ControllerEvidence,
     JsonSchemaDocument,
     ObservationEvidence,
+    OperationResultKind,
 )
-from stove0_protocol.jcs import canonical_json_sha256
+from stove0_protocol.jcs import canonical_json_bytes, canonical_json_sha256
 
-TARGET_PROTOCOL: Literal["stove0-transform-target/v1"] = "stove0-transform-target/v1"
+TRANSFORM_TARGET_PROTOCOL: Literal["stove0-transform-target/v1"] = "stove0-transform-target/v1"
+EFFECT_TARGET_PROTOCOL: Literal["stove0-effect-target/v1"] = "stove0-effect-target/v1"
+EFFECT_RECEIPT_FORMAT: Literal["stove0-external-effect-receipt/v1"] = (
+    "stove0-external-effect-receipt/v1"
+)
+MAXIMUM_EFFECT_RECEIPT_RESULT_BYTES = 64 * 1024
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 SEMANTIC_ID_PATTERN = r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$"
 ARTIFACT_ID_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,158}[A-Za-z0-9])?$"
@@ -48,6 +54,8 @@ TargetJobState = Literal[
 ]
 WorkspaceAssurance = Literal["encrypted", "ephemeral"]
 InputDisposition = Literal["transformed", "preserved", "omitted", "rejected"]
+TargetProtocol = Literal["stove0-transform-target/v1", "stove0-effect-target/v1"]
+TargetResultKind = OperationResultKind
 
 
 def _without_digest(model: BaseModel, field: str) -> dict[str, Any]:
@@ -62,14 +70,16 @@ class InputArtifactContract(TargetProtocolModel):
     role: SemanticId
     minimum: int = Field(default=1, ge=0)
     maximum: int | None = Field(default=None, ge=1)
-    allowed_dispositions: tuple[InputDisposition, ...] = ("transformed",)
+    allowed_dispositions: tuple[InputDisposition, ...] | None = None
 
     @field_validator("allowed_dispositions")
     @classmethod
     def canonical_dispositions(
         cls,
-        value: tuple[InputDisposition, ...],
-    ) -> tuple[InputDisposition, ...]:
+        value: tuple[InputDisposition, ...] | None,
+    ) -> tuple[InputDisposition, ...] | None:
+        if value is None:
+            return None
         if not value or value != tuple(sorted(value)) or len(value) != len(set(value)):
             raise ValueError("allowed input dispositions must be unique and ordered")
         return value
@@ -103,9 +113,11 @@ class OutputArtifactContract(TargetProtocolModel):
 
 class OperationContractPayload(TargetProtocolModel):
     id: SemanticId
+    result_kind: TargetResultKind = "collection"
     intent_schema: JsonSchemaDocument
     inputs: tuple[InputArtifactContract, ...] = Field(min_length=1)
-    outputs: tuple[OutputArtifactContract, ...] = Field(min_length=1)
+    outputs: tuple[OutputArtifactContract, ...] = ()
+    effect_receipt_schema: JsonSchemaDocument | None = None
     source_retirement_permitted: bool = False
 
     @model_validator(mode="after")
@@ -128,6 +140,24 @@ class OperationContractPayload(TargetProtocolModel):
             raise ValueError(
                 "output derivation references unknown input role(s): " + ", ".join(unknown)
             )
+        if self.result_kind == "collection":
+            if not self.outputs:
+                raise ValueError("collection-producing operation requires output contracts")
+            if self.effect_receipt_schema is not None:
+                raise ValueError("collection-producing operation cannot declare an effect receipt")
+            if any(item.allowed_dispositions is None for item in self.inputs):
+                raise ValueError(
+                    "collection-producing operation requires explicit input dispositions"
+                )
+        else:
+            if self.outputs:
+                raise ValueError("effect-producing operation cannot declare output artifacts")
+            if self.effect_receipt_schema is None:
+                raise ValueError("effect-producing operation requires a receipt schema")
+            if self.source_retirement_permitted:
+                raise ValueError("effect-producing operation cannot permit source retirement")
+            if any(item.allowed_dispositions is not None for item in self.inputs):
+                raise ValueError("effect-producing operation cannot declare input dispositions")
         return self
 
 
@@ -149,11 +179,12 @@ class OperationContract(OperationContractPayload):
 class TargetOperationSupport(TargetProtocolModel):
     operation_id: SemanticId
     operation_contract_sha256: Sha256
+    result_kind: TargetResultKind = "collection"
     options_schema: JsonSchemaDocument
 
 
 class TargetContractPayload(TargetProtocolModel):
-    protocol: Literal["stove0-transform-target/v1"] = TARGET_PROTOCOL
+    protocol: TargetProtocol = TRANSFORM_TARGET_PROTOCOL
     implementation_id: SemanticId
     implementation_version: str = Field(min_length=1, max_length=120)
     source_revision: str = Field(min_length=1, max_length=200)
@@ -170,6 +201,13 @@ class TargetContractPayload(TargetProtocolModel):
         if ids != sorted(ids) or len(ids) != len(set(ids)):
             raise ValueError("target operations must be unique and ordered by operation ID")
         return value
+
+    @model_validator(mode="after")
+    def bind_result_kind(self) -> Self:
+        expected = "collection" if self.protocol == TRANSFORM_TARGET_PROTOCOL else "external-effect"
+        if any(item.result_kind != expected for item in self.operations):
+            raise ValueError("target protocol and operation result kinds differ")
+        return self
 
 
 class TargetContract(TargetContractPayload):
@@ -242,7 +280,7 @@ class OutputArtifact(TargetProtocolModel):
         return value
 
 
-class TransformDeclaration(TargetProtocolModel):
+class TargetDeclaration(TargetProtocolModel):
     operation_id: SemanticId
     operation_contract_sha256: Sha256
     inputs: tuple[InputArtifact, ...] = Field(min_length=1)
@@ -261,8 +299,8 @@ class TransformDeclaration(TargetProtocolModel):
         return value
 
 
-class TargetPreflightRequest(TransformDeclaration):
-    protocol: Literal["stove0-transform-target/v1"] = TARGET_PROTOCOL
+class TargetPreflightRequest(TargetDeclaration):
+    protocol: TargetProtocol = TRANSFORM_TARGET_PROTOCOL
     observations: tuple[ObservationEvidence, ...] = ()
 
     @field_validator("observations")
@@ -277,8 +315,8 @@ class TargetPreflightRequest(TransformDeclaration):
         return value
 
 
-class TransformPlanPayload(TransformDeclaration):
-    protocol: Literal["stove0-transform-target/v1"] = TARGET_PROTOCOL
+class TransformPlanPayload(TargetDeclaration):
+    protocol: Literal["stove0-transform-target/v1"] = TRANSFORM_TARGET_PROTOCOL
     target_implementation_id: SemanticId
     target_contract_sha256: Sha256
     observation_result_sha256s: tuple[Sha256, ...] = ()
@@ -314,9 +352,55 @@ class TransformPlan(TransformPlanPayload):
         )
 
 
+class EffectPlanPayload(TargetDeclaration):
+    protocol: Literal["stove0-effect-target/v1"] = EFFECT_TARGET_PROTOCOL
+    target_implementation_id: SemanticId
+    target_contract_sha256: Sha256
+    observation_result_sha256s: tuple[Sha256, ...] = ()
+
+    @field_validator("observation_result_sha256s")
+    @classmethod
+    def canonical_observation_results(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != tuple(sorted(value)) or len(value) != len(set(value)):
+            raise ValueError("target plan observation results must be unique and ordered")
+        return value
+
+
+class EffectPlan(EffectPlanPayload):
+    plan_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "plan_sha256")) != self.plan_sha256:
+            raise ValueError("target plan digest does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: EffectPlanPayload) -> EffectPlan:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, plan_sha256=canonical_json_sha256(document))
+
+    def binding_document(self) -> dict[str, JsonValue]:
+        return self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"plan_sha256"},
+            exclude_none=True,
+        )
+
+
+TargetPlan = Annotated[TransformPlan | EffectPlan, Field(discriminator="protocol")]
+
+
 class TargetPreflightResponse(TargetProtocolModel):
     target: TargetContract
-    plan: TransformPlan
+    plan: TargetPlan
+
+    @model_validator(mode="after")
+    def bind_protocol(self) -> Self:
+        if self.target.protocol != self.plan.protocol:
+            raise ValueError("target contract and preflight plan protocols differ")
+        return self
 
 
 class TargetRuntimeAuthority(TargetProtocolModel):
@@ -331,7 +415,7 @@ class TargetJobDeclaration(TargetProtocolModel):
     claim_id: str = Field(min_length=1, max_length=160)
     fence: int = Field(ge=1)
     controller_evidence: ControllerEvidence
-    plan: TransformPlan
+    plan: TargetPlan
     workspace_assurance: WorkspaceAssurance
 
     @field_validator("claim_id")
@@ -465,8 +549,40 @@ class OutputCollectionRef(TargetProtocolModel):
     derivation_sha256: Sha256
 
 
+class ExternalEffectReceiptPayload(TargetProtocolModel):
+    format: Literal["stove0-external-effect-receipt/v1"] = EFFECT_RECEIPT_FORMAT
+    job_id: Sha256
+    request_sha256: Sha256
+    target_contract_sha256: Sha256
+    operation_contract_sha256: Sha256
+    plan_sha256: Sha256
+    execution_sha256: Sha256
+    result: dict[str, JsonValue]
+
+    @model_validator(mode="after")
+    def bounded_result(self) -> Self:
+        if len(canonical_json_bytes(self.result)) > MAXIMUM_EFFECT_RECEIPT_RESULT_BYTES:
+            raise ValueError("external-effect receipt result exceeds its bounded size")
+        return self
+
+
+class ExternalEffectReceipt(ExternalEffectReceiptPayload):
+    receipt_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "receipt_sha256")) != self.receipt_sha256:
+            raise ValueError("external-effect receipt digest does not match its canonical payload")
+        return self
+
+    @classmethod
+    def seal(cls, payload: ExternalEffectReceiptPayload) -> ExternalEffectReceipt:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, receipt_sha256=canonical_json_sha256(document))
+
+
 class TargetJobStatus(TargetProtocolModel):
-    protocol: Literal["stove0-transform-target/v1"] = TARGET_PROTOCOL
+    protocol: TargetProtocol = TRANSFORM_TARGET_PROTOCOL
     job_id: Sha256
     state: TargetJobState
     attempt: int = Field(ge=1)
@@ -477,6 +593,7 @@ class TargetJobStatus(TargetProtocolModel):
     output_collection: OutputCollectionRef | None = None
     execution_evidence: TargetExecutionEvidence | None = None
     derivation: dict[str, Any] | None = None
+    effect_receipt: ExternalEffectReceipt | None = None
     failure: TargetFailure | None = None
     inapplicable: TargetInapplicable | None = None
 
@@ -499,14 +616,27 @@ class TargetJobStatus(TargetProtocolModel):
     @model_validator(mode="after")
     def validate_terminal_shape(self) -> Self:
         if self.state == "succeeded":
-            if (
-                not self.outputs
-                or self.output_collection is None
+            if self.protocol == TRANSFORM_TARGET_PROTOCOL:
+                if (
+                    not self.outputs
+                    or self.output_collection is None
+                    or self.execution_evidence is None
+                    or self.derivation is None
+                ):
+                    raise ValueError(
+                        "succeeded transform status requires outputs and final collection evidence"
+                    )
+                if self.effect_receipt is not None:
+                    raise ValueError("succeeded transform status cannot include an effect receipt")
+            elif (
+                self.outputs
+                or self.output_collection is not None
+                or self.derivation is not None
                 or self.execution_evidence is None
-                or self.derivation is None
+                or self.effect_receipt is None
             ):
                 raise ValueError(
-                    "succeeded target status requires outputs and final collection evidence"
+                    "succeeded effect status requires only execution evidence and an effect receipt"
                 )
             if self.failure is not None:
                 raise ValueError("succeeded target status cannot include failure details")
@@ -515,25 +645,41 @@ class TargetJobStatus(TargetProtocolModel):
         elif self.state == "failed":
             if self.failure is None:
                 raise ValueError("failed target status requires failure details")
-            if self.outputs or self.output_collection is not None or self.derivation is not None:
-                raise ValueError("failed target status cannot publish outputs")
+            if (
+                self.outputs
+                or self.output_collection is not None
+                or self.derivation is not None
+                or self.effect_receipt is not None
+            ):
+                raise ValueError("failed target status cannot publish a result")
             if self.inapplicable is not None:
                 raise ValueError("failed target status cannot be inapplicable")
         elif self.state == "inapplicable":
             if self.inapplicable is None:
                 raise ValueError("inapplicable target status requires an outcome")
-            if self.outputs or self.output_collection is not None or self.derivation is not None:
-                raise ValueError("inapplicable target status cannot publish outputs")
+            if (
+                self.outputs
+                or self.output_collection is not None
+                or self.derivation is not None
+                or self.effect_receipt is not None
+            ):
+                raise ValueError("inapplicable target status cannot publish a result")
             if self.failure is not None:
                 raise ValueError("inapplicable target status cannot include failure details")
         elif self.state == "canceled":
-            if self.outputs or self.output_collection is not None or self.derivation is not None:
-                raise ValueError("canceled target status cannot publish outputs")
+            if (
+                self.outputs
+                or self.output_collection is not None
+                or self.derivation is not None
+                or self.effect_receipt is not None
+            ):
+                raise ValueError("canceled target status cannot publish a result")
         elif (
             self.outputs
             or self.output_collection is not None
             or self.execution_evidence is not None
             or self.derivation is not None
+            or self.effect_receipt is not None
         ):
             raise ValueError("nonterminal target status cannot publish terminal evidence")
         if self.state != "inapplicable" and self.inapplicable is not None:
@@ -550,7 +696,11 @@ def validate_preflight_response_against_request(
     request: TargetPreflightRequest,
 ) -> None:
     support = response.target.support_for(request.operation_id)
-    if support.operation_contract_sha256 != request.operation_contract_sha256:
+    if (
+        response.target.protocol != request.protocol
+        or response.plan.protocol != request.protocol
+        or support.operation_contract_sha256 != request.operation_contract_sha256
+    ):
         raise ValueError("target advertised a different operation contract")
     plan = response.plan
     if (
@@ -571,20 +721,20 @@ def validate_preflight_response_against_request(
 
 
 def validate_declaration_against_operation(
-    declaration: TransformDeclaration,
+    declaration: TargetDeclaration,
     operation: OperationContract,
 ) -> None:
     if (
         declaration.operation_id != operation.id
         or declaration.operation_contract_sha256 != operation.contract_sha256
     ):
-        raise ValueError("transform declaration does not bind the operation contract")
+        raise ValueError("target declaration does not bind the operation contract")
     counts: dict[str, int] = {}
     for artifact in declaration.inputs:
         counts[artifact.role] = counts.get(artifact.role, 0) + 1
     expected_roles = {item.role for item in operation.inputs}
     if set(counts) - expected_roles:
-        raise ValueError("transform declaration includes an unsupported input role")
+        raise ValueError("target declaration includes an unsupported input role")
     for contract in operation.inputs:
         count = counts.get(contract.role, 0)
         if count < contract.minimum or (contract.maximum is not None and count > contract.maximum):
@@ -599,11 +749,43 @@ def validate_status_against_request(
     declaration = request.declaration
     if (
         status.job_id != declaration.job_id
+        or status.protocol != declaration.plan.protocol
         or status.request_sha256 != request.request_sha256
         or status.plan_sha256 != declaration.plan.plan_sha256
     ):
         raise ValueError("target status does not bind the accepted request")
+    expected_kind = (
+        "collection"
+        if declaration.plan.protocol == TRANSFORM_TARGET_PROTOCOL
+        else "external-effect"
+    )
+    if operation.result_kind != expected_kind:
+        raise ValueError("target plan protocol differs from the operation result kind")
     if status.state != "succeeded":
+        return
+    evidence = status.execution_evidence
+    if evidence is None or (
+        evidence.target_contract_sha256 != declaration.plan.target_contract_sha256
+        or evidence.operation_contract_sha256 != operation.contract_sha256
+        or evidence.plan_sha256 != declaration.plan.plan_sha256
+    ):
+        raise ValueError("target execution evidence differs from the accepted plan")
+    if operation.result_kind == "external-effect":
+        receipt = status.effect_receipt
+        if receipt is None or (
+            receipt.job_id != declaration.job_id
+            or receipt.request_sha256 != request.request_sha256
+            or receipt.target_contract_sha256 != declaration.plan.target_contract_sha256
+            or receipt.operation_contract_sha256 != operation.contract_sha256
+            or receipt.plan_sha256 != declaration.plan.plan_sha256
+            or receipt.execution_sha256 != evidence.execution_sha256
+        ):
+            raise ValueError("external-effect receipt differs from the accepted execution")
+        if operation.effect_receipt_schema is None:
+            raise ValueError("effect operation omitted its receipt schema")
+        from jsonschema import Draft202012Validator
+
+        Draft202012Validator(operation.effect_receipt_schema.document).validate(receipt.result)
         return
     input_by_id = {item.id: item for item in declaration.plan.inputs}
     counts: dict[str, int] = {}
@@ -622,13 +804,6 @@ def validate_status_against_request(
         count = counts.get(contract.role, 0)
         if count < contract.minimum or (contract.maximum is not None and count > contract.maximum):
             raise ValueError(f"output role cardinality is invalid: {contract.role}")
-    evidence = status.execution_evidence
-    if evidence is None or (
-        evidence.target_contract_sha256 != declaration.plan.target_contract_sha256
-        or evidence.operation_contract_sha256 != operation.contract_sha256
-        or evidence.plan_sha256 != declaration.plan.plan_sha256
-    ):
-        raise ValueError("target execution evidence differs from the accepted plan")
     derivation = (
         CollectionDerivation.from_mapping(status.derivation)
         if status.derivation is not None
@@ -686,7 +861,8 @@ def validate_status_against_request(
             disposition.input_path,
         )
         planned = planned_by_identity[identity]
-        if disposition.status not in input_contracts[planned.role].allowed_dispositions:
+        allowed_dispositions = input_contracts[planned.role].allowed_dispositions
+        if allowed_dispositions is None or disposition.status not in allowed_dispositions:
             raise ValueError(
                 "target disposition is not permitted for input role: "
                 f"{planned.role}: {disposition.status}"
@@ -700,6 +876,12 @@ def validate_status_against_request(
 __all__ = [
     "ARTIFACT_ID_PATTERN",
     "AcceptedTargetJob",
+    "EFFECT_RECEIPT_FORMAT",
+    "EFFECT_TARGET_PROTOCOL",
+    "EffectPlan",
+    "EffectPlanPayload",
+    "ExternalEffectReceipt",
+    "ExternalEffectReceiptPayload",
     "InputArtifact",
     "InputDisposition",
     "InputArtifactContract",
@@ -711,7 +893,7 @@ __all__ = [
     "SHA256_PATTERN",
     "SemanticId",
     "Sha256",
-    "TARGET_PROTOCOL",
+    "TRANSFORM_TARGET_PROTOCOL",
     "TargetCancelRequest",
     "TargetContract",
     "TargetContractPayload",
@@ -723,12 +905,15 @@ __all__ = [
     "TargetJobState",
     "TargetJobStatus",
     "TargetOperationSupport",
+    "TargetPlan",
     "TargetPreflightRequest",
     "TargetPreflightResponse",
     "TargetProgress",
     "TargetProtocolModel",
+    "TargetProtocol",
+    "TargetResultKind",
     "TargetRuntimeAuthority",
-    "TransformDeclaration",
+    "TargetDeclaration",
     "TransformPlan",
     "TransformPlanPayload",
     "WorkspaceAssurance",

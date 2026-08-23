@@ -25,7 +25,7 @@ class TargetProtocolError(RuntimeError):
         self.status_code = status_code
 
 
-class TransformTargetClient:
+class TargetClient:
     def __init__(
         self,
         base_url: str,
@@ -36,7 +36,7 @@ class TransformTargetClient:
     ) -> None:
         self.base_url = safe_http_base_url(
             base_url,
-            setting="transform target base URL",
+            setting="target base URL",
             allow_insecure_http=allow_insecure_http,
         )
         self.timeout = timeout
@@ -99,4 +99,4 @@ class TransformTargetClient:
             raise TargetProtocolError("target returned an invalid protocol response") from exc
 
 
-__all__ = ["TargetProtocolError", "TransformTargetClient"]
+__all__ = ["TargetClient", "TargetProtocolError"]

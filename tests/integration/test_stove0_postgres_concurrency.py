@@ -48,6 +48,11 @@ from stove0_protocol import (
     resolve_join_plan,
 )
 from stove0_target_support import (
+    EFFECT_TARGET_PROTOCOL,
+    EffectPlan,
+    EffectPlanPayload,
+    ExternalEffectReceipt,
+    ExternalEffectReceiptPayload,
     InputArtifact,
     InputArtifactContract,
     OperationContract,
@@ -137,7 +142,12 @@ def _target_contracts() -> tuple[OperationContract, TargetContract, TransformPla
                     "additionalProperties": False,
                 },
             ),
-            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
             outputs=(
                 OutputArtifactContract(
                     role="fixture.output/v1",
@@ -326,6 +336,178 @@ def _active_target_work(
             execution_sha256=derivation.execution_sha256,
         ),
         derivation=derivation.as_dict(),
+    )
+    return record, operation, canceling, succeeded
+
+
+def _active_effect_work(
+    service: Stove0WorkService,
+) -> tuple[WorkRecord, OperationContract, TargetJobStatus, TargetJobStatus]:
+    work = _work()
+    operation = OperationContract.seal(
+        OperationContractPayload(
+            id="fixture.external-index/v1",
+            result_kind="external-effect",
+            intent_schema=JsonSchemaDocument.from_schema(
+                "fixture.external-index-intent/v1",
+                {"type": "object", "additionalProperties": False},
+            ),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=None,
+                ),
+            ),
+            effect_receipt_schema=JsonSchemaDocument.from_schema(
+                "fixture.external-index-receipt/v1",
+                {
+                    "type": "object",
+                    "required": ["row_sha256"],
+                    "properties": {"row_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+                    "additionalProperties": False,
+                },
+            ),
+        )
+    )
+    target = TargetContract.seal(
+        TargetContractPayload(
+            protocol=EFFECT_TARGET_PROTOCOL,
+            implementation_id="fixture.external-index-target/v1",
+            implementation_version="1.0.0",
+            source_revision="fixture",
+            image_digest="9" * 64,
+            operations=(
+                TargetOperationSupport(
+                    operation_id=operation.id,
+                    operation_contract_sha256=operation.contract_sha256,
+                    result_kind="external-effect",
+                    options_schema=JsonSchemaDocument.from_schema(
+                        "fixture.external-index-target-options/v1",
+                        {"type": "object", "additionalProperties": False},
+                    ),
+                ),
+            ),
+        )
+    )
+    plan = EffectPlan.seal(
+        EffectPlanPayload(
+            target_implementation_id=target.implementation_id,
+            target_contract_sha256=target.contract_sha256,
+            operation_id=operation.id,
+            operation_contract_sha256=operation.contract_sha256,
+            inputs=(
+                InputArtifact(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=work.inputs[0],
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256="d" * 64,
+                ),
+            ),
+            intent={},
+            target_options={},
+        )
+    )
+    record = service.create_or_resume(work)
+    record = service.bind_claim(
+        work.work_id,
+        claim_id=work.work_id,
+        fence=1,
+        expected_revision=record.revision,
+    )
+    record = service.begin_planning(work.work_id, expected_revision=record.revision)
+    workflow = WorkflowPlan.seal(
+        WorkflowPlanPayload(
+            work=work,
+            result_kind="external-effect",
+            operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
+            target_registration_id="fixture-effect-target",
+            target_contract_sha256=target.contract_sha256,
+            retirement_policy="retain",
+        )
+    )
+    record = service.seal_workflow_plan(
+        work.work_id,
+        workflow,
+        expected_revision=record.revision,
+    )
+    record = service.seal_target_plan(
+        work.work_id,
+        target=target,
+        plan=plan,
+        expected_revision=record.revision,
+    )
+    assert record.controller_evidence is not None
+    request = TargetJobRequest.seal(
+        TargetJobDeclaration(
+            job_id=record.controller_evidence.execution_envelope.execution_envelope_sha256,
+            claim_id=work.work_id,
+            fence=1,
+            controller_evidence=record.controller_evidence,
+            plan=plan,
+            workspace_assurance="ephemeral",
+        ),
+        TargetRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="fixture-secret",
+        ),
+    )
+    record = service.bind_target_request(
+        work.work_id,
+        request,
+        expected_revision=record.revision,
+    )
+    record = service.record_target_status(
+        work.work_id,
+        TargetJobStatus(
+            protocol=EFFECT_TARGET_PROTOCOL,
+            job_id=request.declaration.job_id,
+            state="running",
+            attempt=1,
+            request_sha256=request.request_sha256,
+            plan_sha256=plan.plan_sha256,
+            progress=TargetProgress(phase="committing", completed=0),
+        ),
+        operation=operation,
+        expected_revision=record.revision,
+    )
+    canceling = TargetJobStatus(
+        protocol=EFFECT_TARGET_PROTOCOL,
+        job_id=request.declaration.job_id,
+        state="canceling",
+        attempt=1,
+        request_sha256=request.request_sha256,
+        plan_sha256=plan.plan_sha256,
+        progress=TargetProgress(phase="canceling", completed=0),
+    )
+    execution = TargetExecutionEvidence(
+        target_contract_sha256=target.contract_sha256,
+        operation_contract_sha256=operation.contract_sha256,
+        plan_sha256=plan.plan_sha256,
+        execution_sha256="8" * 64,
+    )
+    receipt = ExternalEffectReceipt.seal(
+        ExternalEffectReceiptPayload(
+            job_id=request.declaration.job_id,
+            request_sha256=request.request_sha256,
+            target_contract_sha256=target.contract_sha256,
+            operation_contract_sha256=operation.contract_sha256,
+            plan_sha256=plan.plan_sha256,
+            execution_sha256=execution.execution_sha256,
+            result={"row_sha256": "7" * 64},
+        )
+    )
+    succeeded = TargetJobStatus(
+        protocol=EFFECT_TARGET_PROTOCOL,
+        job_id=request.declaration.job_id,
+        state="succeeded",
+        attempt=1,
+        request_sha256=request.request_sha256,
+        plan_sha256=plan.plan_sha256,
+        progress=TargetProgress(phase="done", completed=1, total=1, unit="effect"),
+        execution_evidence=execution,
+        effect_receipt=receipt,
     )
     return record, operation, canceling, succeeded
 
@@ -627,6 +809,57 @@ def test_postgres_cancel_completion_race_converges_to_immutable_published_succes
             operation=operation,
             expected_revision=current.revision,
         )
+
+
+def test_postgres_effect_completion_is_one_fenced_immutable_receipt(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    record, operation, canceling, succeeded = _active_effect_work(Stove0WorkService(first))
+    barrier = threading.Barrier(2)
+    winners: list[WorkRecord] = []
+    stale: list[ConcurrentWorkUpdate] = []
+
+    def settle(store: SqlAlchemyStateStore, status: TargetJobStatus) -> None:
+        try:
+            barrier.wait(timeout=5)
+            winners.append(
+                Stove0WorkService(store).record_target_status(
+                    record.work_id,
+                    status,
+                    operation=operation,
+                    expected_revision=record.revision,
+                )
+            )
+        except ConcurrentWorkUpdate as exc:
+            stale.append(exc)
+
+    threads = [
+        threading.Thread(target=settle, args=(first, canceling)),
+        threading.Thread(target=settle, args=(second, succeeded)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert len(winners) == 1
+    assert len(stale) == 1
+    current = first.load(record.work_id)
+    assert current is not None
+    if current.target_status == canceling:
+        current = Stove0WorkService(second).record_target_status(
+            record.work_id,
+            succeeded,
+            operation=operation,
+            expected_revision=current.revision,
+        )
+    assert current.phase == "settled"
+    assert current.output is None
+    assert current.target_status == succeeded
+    assert current.target_status.effect_receipt == succeeded.effect_receipt
+    assert second.load(record.work_id) == current
 
 
 def test_postgres_event_cursor_compare_and_swap_prevents_replayed_cursor_regression(

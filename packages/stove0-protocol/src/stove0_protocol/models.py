@@ -59,6 +59,7 @@ RegistrationId = Annotated[str, StringConstraints(pattern=REGISTRATION_ID_PATTER
 ObservationState = Literal["observed", "inapplicable", "failed", "canceled"]
 RetirementPolicy = Literal["retain", "retire-after-verified-output"]
 RetrievalPolicy = Literal["available-only", "allow"]
+OperationResultKind = Literal["collection", "external-effect"]
 
 
 def _without_digest(model: BaseModel, field: str) -> dict[str, Any]:
@@ -535,11 +536,12 @@ class WorkflowPlanPayload(Stove0ProtocolModel):
     work: WorkIdentity
     observations: tuple[ObservationEvidence, ...] = ()
     operation: OperationRef
+    result_kind: OperationResultKind = "collection"
     target_registration_id: RegistrationId
     target_contract_sha256: Sha256
     requested_target_options: dict[str, JsonValue] = Field(default_factory=dict)
     input_retrieval_policy: RetrievalPolicy = "available-only"
-    output_tags: tuple[str, ...] = Field(min_length=1)
+    output_tags: tuple[str, ...] = ()
     retirement_policy: RetirementPolicy = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
     output_policy: dict[str, JsonValue] = Field(default_factory=dict)
@@ -564,6 +566,12 @@ class WorkflowPlanPayload(Stove0ProtocolModel):
 
     @model_validator(mode="after")
     def protect_evaluation_sources(self) -> Self:
+        if self.result_kind == "collection" and not self.output_tags:
+            raise ValueError("collection-producing workflow requires output tags")
+        if self.result_kind == "external-effect" and self.output_tags:
+            raise ValueError("external-effect workflow cannot declare output tags")
+        if self.result_kind == "external-effect" and self.retirement_policy != "retain":
+            raise ValueError("external-effect workflow must retain source collections")
         if self.retirement_policy == "retain" and self.retirement_grace_seconds:
             raise ValueError("retained workflow plans cannot declare a retirement grace period")
         if self.work.evaluation is not None and self.retirement_policy != "retain":
@@ -591,11 +599,12 @@ class WorkflowPlanIntent(Stove0ProtocolModel):
     """Work-independent fields that deterministically materialize a workflow plan."""
 
     operation: OperationRef
+    result_kind: OperationResultKind = "collection"
     target_registration_id: RegistrationId
     target_contract_sha256: Sha256
     requested_target_options: dict[str, JsonValue] = Field(default_factory=dict)
     input_retrieval_policy: RetrievalPolicy = "available-only"
-    output_tags: tuple[str, ...] = Field(min_length=1)
+    output_tags: tuple[str, ...] = ()
     retirement_policy: RetirementPolicy = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
     output_policy: dict[str, JsonValue] = Field(default_factory=dict)
@@ -610,6 +619,12 @@ class WorkflowPlanIntent(Stove0ProtocolModel):
 
     @model_validator(mode="after")
     def validate_retirement(self) -> Self:
+        if self.result_kind == "collection" and not self.output_tags:
+            raise ValueError("collection-producing workflow intent requires output tags")
+        if self.result_kind == "external-effect" and self.output_tags:
+            raise ValueError("external-effect workflow intent cannot declare output tags")
+        if self.result_kind == "external-effect" and self.retirement_policy != "retain":
+            raise ValueError("external-effect workflow intent must retain source collections")
         if self.retirement_policy == "retain" and self.retirement_grace_seconds:
             raise ValueError("retained workflow intent cannot declare a retirement grace period")
         return self
@@ -618,6 +633,7 @@ class WorkflowPlanIntent(Stove0ProtocolModel):
     def from_plan(cls, plan: WorkflowPlan) -> WorkflowPlanIntent:
         return cls(
             operation=plan.operation,
+            result_kind=plan.result_kind,
             target_registration_id=plan.target_registration_id,
             target_contract_sha256=plan.target_contract_sha256,
             requested_target_options=plan.requested_target_options,
@@ -639,6 +655,7 @@ class WorkflowPlanIntent(Stove0ProtocolModel):
                 work=work,
                 observations=observations,
                 operation=self.operation,
+                result_kind=self.result_kind,
                 target_registration_id=self.target_registration_id,
                 target_contract_sha256=self.target_contract_sha256,
                 requested_target_options=self.requested_target_options,
@@ -894,6 +911,7 @@ __all__ = [
     "ObservationResult",
     "ObservationResultPayload",
     "ObservationState",
+    "OperationResultKind",
     "ObserverContract",
     "ObserverContractPayload",
     "ObserverContractSupport",

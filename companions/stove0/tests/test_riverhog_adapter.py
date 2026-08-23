@@ -40,6 +40,8 @@ from stove0_protocol import (
     evaluate_branch_set,
 )
 from stove0_target_support import (
+    EffectPlan,
+    EffectPlanPayload,
     InputArtifact,
     OutputArtifact,
     OutputCollectionRef,
@@ -119,6 +121,57 @@ def _authorities(
     return work, workflow, target_plan, evidence
 
 
+def _effect_authorities() -> tuple[WorkIdentity, WorkflowPlan, EffectPlan, ControllerEvidence]:
+    work, _workflow, _target_plan, _evidence = _authorities()
+    workflow = WorkflowPlan.seal(
+        WorkflowPlanPayload(
+            work=work,
+            result_kind="external-effect",
+            operation=OperationRef(id="fixture.effect/v1", sha256=_sha("4")),
+            target_registration_id="fixture-effect-target",
+            target_contract_sha256=_sha("5"),
+            retirement_policy="retain",
+        )
+    )
+    target_plan = EffectPlan.seal(
+        EffectPlanPayload(
+            target_implementation_id="fixture.effect-target/v1",
+            target_contract_sha256=_sha("5"),
+            operation_id="fixture.effect/v1",
+            operation_contract_sha256=_sha("4"),
+            inputs=(
+                InputArtifact(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=work.inputs[0],
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256=_sha("e"),
+                ),
+            ),
+            intent={},
+        )
+    )
+    binding = TargetPlanBinding(
+        protocol=target_plan.protocol,
+        target_implementation_id=target_plan.target_implementation_id,
+        target_contract_sha256=target_plan.target_contract_sha256,
+        operation_contract_sha256=target_plan.operation_contract_sha256,
+        plan=target_plan.binding_document(),
+        plan_sha256=target_plan.plan_sha256,
+    )
+    envelope = ExecutionEnvelope.seal(
+        ExecutionEnvelopePayload(
+            claim_id="claim-1",
+            fence=1,
+            workflow_plan=workflow,
+            target_plan=binding,
+        )
+    )
+    evidence = ControllerEvidence.seal(ControllerEvidencePayload(execution_envelope=envelope))
+    return work, workflow, target_plan, evidence
+
+
 class FixtureApi:
     base_url = "https://riverhog.invalid"
     allow_insecure_http = False
@@ -166,6 +219,8 @@ class FixtureApi:
         principal = (
             f"transform:{self.execution_id}"
             if "write-output" in actions
+            else f"claim:{claim_id}"
+            if str(kwargs["audience"]).startswith("stove0.target/")
             else f"observe:{claim_id}:{kwargs['fence']}"
         )
         return {
@@ -353,6 +408,32 @@ def test_riverhog_adapter_uses_scoped_capabilities_and_verifies_settlement() -> 
     output = client.verify_and_settle(record)
     assert output == record.output
     assert any(name == "settle" for name, _payload in api.calls)
+
+
+def test_effect_target_uses_only_generic_read_custody_and_releases_without_settlement() -> None:
+    work, workflow, target_plan, evidence = _effect_authorities()
+    api = FixtureApi()
+    client = Stove0RiverhogClient(api, workspace_assurance="ephemeral")
+    claim = client.acquire_claim(work)
+
+    client.seal_execution(claim, evidence, workflow, target_plan)
+    authority = client.target_authority(claim, evidence, target_plan)
+    assert authority.runtime.capability_token.startswith("secret-")
+    record = WorkRecord(
+        work=work,
+        phase="settled",
+        claim=claim,
+        workflow_plan=workflow,
+        target_plan=target_plan,
+        controller_evidence=evidence,
+    )
+    client.release_claim(record)
+
+    capability = next(payload for name, payload in api.calls if name == "capability")
+    assert capability["actions"] == ("read-inputs",)
+    assert capability["audience"] == "stove0.target/fixture-effect-target"
+    assert not any(name in {"seal", "settle"} for name, _payload in api.calls)
+    assert api.calls[-1][0] == "release"
 
 
 def test_riverhog_adapter_closes_only_the_exact_generic_outcome_set() -> None:

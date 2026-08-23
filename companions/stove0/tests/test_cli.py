@@ -28,7 +28,19 @@ class FakeClient:
                 "pages": 1,
                 "per_page": 1,
                 "total": 1,
-                "work": [{"work_id": "work-1", "phase": "complete", "revision": 3}],
+                "work": [
+                    {
+                        "work_id": "work-1",
+                        "phase": "complete",
+                        "revision": 3,
+                        "workflow_plan": {"result_kind": "external-effect"},
+                        "target_status": {
+                            "protocol": "stove0-effect-target/v1",
+                            "state": "succeeded",
+                            "effect_receipt": {"receipt_sha256": "a" * 64},
+                        },
+                    }
+                ],
             }
         if name == "list_evaluations":
             return lambda **_kwargs: {
@@ -133,3 +145,20 @@ def test_stove0_cli_operation_inventory_matches_the_public_surface(tmp_path: Pat
         "scheduler_status",
         "run_scheduler",
     }
+
+
+def test_work_list_rich_and_json_preserve_effect_result_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(stove0_cli, "Stove0ApiClient", FakeClient)
+    runner = CliRunner()
+    human = runner.invoke(stove0_cli.app, ["work", "list"])
+    assert human.exit_code == 0
+    assert "external-eff" in human.stdout
+    assert "succeeded" in human.stdout
+    assert "a" * 12 in human.stdout
+
+    machine = runner.invoke(stove0_cli.app, ["--json", "work", "list"])
+    assert machine.exit_code == 0
+    row = json.loads(machine.stdout)["work"][0]
+    assert row["target_status"]["effect_receipt"]["receipt_sha256"] == "a" * 64

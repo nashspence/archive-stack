@@ -25,7 +25,7 @@ _CANCEL_PATH = re.compile(r"^/v1/jobs/([0-9a-f]{64})/cancel$")
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
-class TransformTargetService(Protocol):
+class TargetService(Protocol):
     """Server-side target lifecycle required by the v1 HTTP binding."""
 
     def contract(self) -> TargetContract: ...
@@ -67,7 +67,7 @@ class TargetHttpBinding:
 
     def __init__(
         self,
-        target: TransformTargetService,
+        target: TargetService,
         *,
         maximum_request_bytes: int = _DEFAULT_MAX_REQUEST_BYTES,
     ) -> None:
@@ -115,7 +115,7 @@ class TargetHttpBinding:
         except (ValidationError, ValueError) as exc:
             return _error(400, "invalid_target_request", str(exc))
         except Exception:
-            return _error(500, "target_failed", "transform target execution failed")
+            return _error(500, "target_failed", "target execution failed")
 
     def _parse(self, body: bytes, model: type[ModelT]) -> ModelT:
         if len(body) > self.maximum_request_bytes:
@@ -153,5 +153,5 @@ __all__ = [
     "TargetHttpBinding",
     "TargetHttpResponse",
     "TargetServiceError",
-    "TransformTargetService",
+    "TargetService",
 ]

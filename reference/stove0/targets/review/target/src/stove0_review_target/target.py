@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import os
+import subprocess
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from jsonschema import Draft202012Validator
+from pydantic import JsonValue
 from riverhog_api_client import ProducerFile
 from riverhog_protocol import ArtifactDisposition, canonical_json_bytes, canonical_json_sha256
 from riverhog_transform_sdk import TransformWorkspace
@@ -18,6 +21,7 @@ from stove0_protocol import JsonSchemaDocument
 from stove0_review_contracts import (
     REVIEW_INDEX_ROLE,
     REVIEW_MATERIALIZE_OPERATION,
+    REVIEW_RCLONE_DELIVER_OPERATION,
     ReviewSamplePlan,
 )
 from stove0_review_sampler_client import ReviewSamplerClient
@@ -35,6 +39,7 @@ from stove0_target_support import (
     PersistentTargetService,
     TargetContract,
     TargetContractPayload,
+    TargetEffectCommitUncertain,
     TargetExecutionCanceled,
     TargetExecutionFailure,
     TargetExecutionInapplicable,
@@ -45,27 +50,44 @@ from stove0_target_support import (
     TargetOperationSupport,
     TargetPreflightRequest,
     TargetPreflightResponse,
+    TargetProtocol,
 )
 
-OPTIONS = JsonSchemaDocument.from_schema(
+_SAMPLER_OPTION_PROPERTIES: dict[str, JsonValue] = {
+    "sampler_registration_id": {
+        "type": "string",
+        "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,118}[a-z0-9])?$",
+    },
+    "sampler_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+    "maximum_output_bytes": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1024**4,
+    },
+    "sampler_descriptor_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sampler_image_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+}
+
+COLLECTION_OPTIONS = JsonSchemaDocument.from_schema(
     "stove0.review-target-options/v1",
     {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "required": ["sampler_registration_id"],
+        "properties": _SAMPLER_OPTION_PROPERTIES,
+        "additionalProperties": False,
+    },
+)
+
+EFFECT_OPTIONS = JsonSchemaDocument.from_schema(
+    "stove0.review-rclone-target-options/v1",
+    {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "required": ["sampler_registration_id", "destination_identity"],
         "properties": {
-            "sampler_registration_id": {
-                "type": "string",
-                "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,118}[a-z0-9])?$",
-            },
-            "sampler_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
-            "maximum_output_bytes": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 1024**4,
-            },
-            "sampler_descriptor_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "sampler_image_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            **_SAMPLER_OPTION_PROPERTIES,
+            "destination_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         },
         "additionalProperties": False,
     },
@@ -95,6 +117,75 @@ class SamplerRegistration:
         return descriptor
 
 
+@dataclass(frozen=True, slots=True)
+class RcloneReviewDestination:
+    """Deployment-owned rclone destination for one fixed effect target."""
+
+    identity: str
+    remote: str
+    config_path: Path | None = None
+    executable: str = "rclone"
+    timeout_seconds: int = 86400
+
+    def __post_init__(self) -> None:
+        if len(self.identity) != 64 or any(
+            value not in "0123456789abcdef" for value in self.identity
+        ):
+            raise ValueError("review destination identity must be a lowercase SHA-256")
+        if not self.remote or self.remote != self.remote.strip():
+            raise ValueError("review rclone destination must be nonempty and canonical")
+        if not self.executable or self.executable != self.executable.strip():
+            raise ValueError("review rclone executable must be nonempty and canonical")
+        if self.config_path is not None and not self.config_path.is_absolute():
+            raise ValueError("review rclone config path must be absolute")
+        if self.timeout_seconds < 1:
+            raise ValueError("review rclone timeout must be positive")
+
+    def commit(
+        self,
+        *,
+        delivery_id: str,
+        output_root: Path,
+        artifacts: Sequence[OutputArtifact],
+        manifest_path: Path,
+    ) -> dict[str, JsonValue]:
+        """Commit exact review objects, then publish their manifest marker last."""
+
+        destination = f"{self.remote.rstrip('/')}/{delivery_id}"
+        common = [self.executable]
+        if self.config_path is not None:
+            common.extend(("--config", str(self.config_path)))
+        try:
+            subprocess.run(
+                [*common, "copy", str(output_root), f"{destination}/objects"],
+                check=True,
+                capture_output=True,
+                timeout=self.timeout_seconds,
+            )
+            subprocess.run(
+                [*common, "copyto", str(manifest_path), f"{destination}/manifest.json"],
+                check=True,
+                capture_output=True,
+                timeout=self.timeout_seconds,
+            )
+        except FileNotFoundError:
+            raise
+        except Exception as exc:
+            raise TargetEffectCommitUncertain(
+                "review delivery may have committed; inspect the configured destination"
+            ) from exc
+        manifest_bytes, manifest_sha256 = _identity(manifest_path)
+        del manifest_bytes
+        return {
+            "format": "stove0-review-rclone-receipt/v1",
+            "destination_identity": self.identity,
+            "delivery_id": delivery_id,
+            "artifact_manifest_sha256": manifest_sha256,
+            "artifact_count": len(artifacts),
+            "total_bytes": sum(item.bytes for item in artifacts),
+        }
+
+
 class ReviewTargetService(PersistentTargetService):
     def __init__(
         self,
@@ -104,6 +195,8 @@ class ReviewTargetService(PersistentTargetService):
         samplers: tuple[SamplerRegistration, ...],
         source_revision: str = "unknown",
         image_digest: str,
+        mode: Literal["collection", "rclone-effect"] = "collection",
+        destination: RcloneReviewDestination | None = None,
         terminal_state_retention_seconds: int = DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     ) -> None:
         if not samplers or [item.id for item in samplers] != sorted(item.id for item in samplers):
@@ -115,24 +208,44 @@ class ReviewTargetService(PersistentTargetService):
         os.chmod(self.workspace_root, 0o700)
         self.samplers = {item.id: item for item in samplers}
         self.image_digest = image_digest
+        self.mode = mode
+        self.destination = destination
+        if (mode == "rclone-effect") != (destination is not None):
+            raise ValueError("rclone-effect review mode requires exactly one destination")
+        operation = (
+            REVIEW_RCLONE_DELIVER_OPERATION
+            if mode == "rclone-effect"
+            else REVIEW_MATERIALIZE_OPERATION
+        )
+        protocol: TargetProtocol = (
+            "stove0-effect-target/v1" if mode == "rclone-effect" else "stove0-transform-target/v1"
+        )
         contract = TargetContract.seal(
             TargetContractPayload(
-                implementation_id="stove0.review-target/v1",
+                protocol=protocol,
+                implementation_id=(
+                    "stove0.review-rclone-effect-target/v1"
+                    if mode == "rclone-effect"
+                    else "stove0.review-collection-target/v1"
+                ),
                 implementation_version=_version(),
                 source_revision=source_revision,
                 image_digest=image_digest,
                 operations=(
                     TargetOperationSupport(
-                        operation_id=REVIEW_MATERIALIZE_OPERATION.id,
-                        operation_contract_sha256=REVIEW_MATERIALIZE_OPERATION.contract_sha256,
-                        options_schema=OPTIONS,
+                        operation_id=operation.id,
+                        operation_contract_sha256=operation.contract_sha256,
+                        result_kind=operation.result_kind,
+                        options_schema=(
+                            EFFECT_OPTIONS if mode == "rclone-effect" else COLLECTION_OPTIONS
+                        ),
                     ),
                 ),
             )
         )
         super().__init__(
             contract=contract,
-            operations={REVIEW_MATERIALIZE_OPERATION.id: REVIEW_MATERIALIZE_OPERATION},
+            operations={operation.id: operation},
             state_root=state_root,
             execute=self._execute,
             terminal_state_retention_seconds=terminal_state_retention_seconds,
@@ -149,6 +262,8 @@ class ReviewTargetService(PersistentTargetService):
             "sampler_descriptor_sha256": descriptor.descriptor_sha256,
             "sampler_image_digest": descriptor.image_digest,
         }
+        if self.destination is not None:
+            expected["destination_identity"] = self.destination.identity
         for key, value in expected.items():
             supplied = request.target_options.get(key)
             if supplied is not None and supplied != value:
@@ -187,6 +302,10 @@ class ReviewTargetService(PersistentTargetService):
         if not isinstance(portable_intent, dict) or not isinstance(variant_id, str):
             raise ValueError("review variant intent is invalid")
         options = request.declaration.plan.target_options
+        if self.destination is not None and (
+            options.get("destination_identity") != self.destination.identity
+        ):
+            raise RuntimeError("sealed review plan differs from the configured destination")
         sampler_id = str(options["sampler_registration_id"])
         try:
             registration = self.samplers[sampler_id]
@@ -348,6 +467,36 @@ class ReviewTargetService(PersistentTargetService):
                     sampler_result.result_sha256,
                     declared,
                 )
+                if self.destination is not None:
+                    manifest_path = workspace.resolve("control/delivery-manifest.json")
+                    manifest_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    manifest_path.write_bytes(
+                        canonical_json_bytes(
+                            {
+                                "format": "stove0-review-delivery-manifest/v1",
+                                "delivery_id": request.declaration.job_id,
+                                "artifacts": [item.model_dump(mode="json") for item in declared],
+                            }
+                        )
+                    )
+                    result = self.destination.commit(
+                        delivery_id=request.declaration.job_id,
+                        output_root=workspace.resolve("output"),
+                        artifacts=declared,
+                        manifest_path=manifest_path,
+                    )
+                    return execution.effect_success(
+                        result,
+                        operation=REVIEW_RCLONE_DELIVER_OPERATION,
+                        execution_sha256=execution_sha256,
+                        attempt=attempt,
+                        runtime_evidence={
+                            "image_digest": self.image_digest,
+                            "sampler_descriptor_sha256": descriptor.descriptor_sha256,
+                            "sampler_image_digest": descriptor.image_digest,
+                            "sampler_result_sha256": sampler_result.result_sha256,
+                        },
+                    )
                 return execution.publish_success(
                     producers,
                     artifacts=declared,
@@ -363,7 +512,7 @@ class ReviewTargetService(PersistentTargetService):
                     },
                 )
             finally:
-                if not execution.published:
+                if not execution.completed:
                     workspace.release()
 
     @staticmethod
@@ -466,4 +615,10 @@ def _verify_output_set(workspace: TransformWorkspace, expected: set[str]) -> Non
         raise RuntimeError("sampler workspace contains an undeclared output")
 
 
-__all__ = ["OPTIONS", "ReviewTargetService", "SamplerRegistration"]
+__all__ = [
+    "COLLECTION_OPTIONS",
+    "EFFECT_OPTIONS",
+    "RcloneReviewDestination",
+    "ReviewTargetService",
+    "SamplerRegistration",
+]

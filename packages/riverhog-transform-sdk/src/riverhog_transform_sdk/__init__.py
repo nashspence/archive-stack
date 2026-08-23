@@ -10,8 +10,12 @@ from riverhog_transform_sdk.reader import (
     ClaimedRetrieval,
     Heartbeat,
 )
-from riverhog_transform_sdk.registry import TransformRuntimeRegistry
-from riverhog_transform_sdk.runtime import CancellationCheck, CollectionTransformRuntime
+from riverhog_transform_sdk.registry import ClaimedCollectionRuntimeRegistry
+from riverhog_transform_sdk.runtime import (
+    CancellationCheck,
+    ClaimedCollectionRuntime,
+    CollectionTransformRuntime,
+)
 from riverhog_transform_sdk.workspace import TransformWorkspace, WorkspaceAssurance
 from riverhog_transform_sdk.writer import DerivedCollectionWriter
 
@@ -22,12 +26,13 @@ __all__ = [
     "ClaimedCollectionApi",
     "ClaimedCollectionReader",
     "ClaimedRetrieval",
+    "ClaimedCollectionRuntime",
+    "ClaimedCollectionRuntimeRegistry",
     "CollectionTransformRuntime",
     "DerivedCollectionReceipt",
     "DerivedCollectionSpec",
     "DerivedCollectionWriter",
     "Heartbeat",
-    "TransformRuntimeRegistry",
     "TransformWorkspace",
     "WorkspaceAssurance",
 ]

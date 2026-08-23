@@ -1,6 +1,7 @@
 format: stove0-recipes/v1
 operations:
 - id: stove0.media.audio-archive/v1
+  result_kind: collection
   intent_schema:
     id: stove0.media.audio-archive-intent/v1
     sha256: 7f49832949e43b0f22ca57b9cd334178dd1f688bcd3bc0ca61b0eb00087ca068
@@ -138,8 +139,9 @@ operations:
     derived_from_roles:
     - stove0.media.xmp-source/v1
   source_retirement_permitted: false
-  contract_sha256: eec14604874b9177d683de10c6c2a8e2cd83f0e809b59dcbd33a3d35fc663c01
+  contract_sha256: 7f778baa583e426e985ea4806bd447cf8b029bcb6b78e528a039a59426a8e0e1
 - id: stove0.media.av1-opus-archive/v1
+  result_kind: collection
   intent_schema:
     id: stove0.media.av1-opus-archive-intent/v1
     sha256: 0c50c1d7bbef98370fd940fc9d5b8a8930e18dec0080c263540368a5ecb807a3
@@ -299,8 +301,9 @@ operations:
     - stove0.media.source/v1
     - stove0.media.xmp-source/v1
   source_retirement_permitted: true
-  contract_sha256: c5e1a97048d1a830792affa29f781543447039c16abc6ffb110119219584d3fd
+  contract_sha256: a455d6a2525da3a3355758b9307fa31c2fdda664d515f1635b6bdf9dc9c3ec31
 - id: stove0.review.materialize/v1
+  result_kind: collection
   intent_schema:
     id: stove0.review.materialize-intent/v1
     sha256: f38621476c23845144af1222566aafa8031d6487e082860c66f7b559be17aeed
@@ -389,7 +392,114 @@ operations:
     derived_from_roles:
     - stove0.review.source/v1
   source_retirement_permitted: false
-  contract_sha256: 1ac1e34e47f1f54571af1ce05200b8efad367d9e0ddc5d0c4d114802c5358bd7
+  contract_sha256: bebe78213213ede359338aa1b4eadde2c66646a53250e443d395cddb8cdd991c
+- id: stove0.review.rclone-deliver/v1
+  result_kind: external-effect
+  intent_schema:
+    id: stove0.review.materialize-intent/v1
+    sha256: f38621476c23845144af1222566aafa8031d6487e082860c66f7b559be17aeed
+    document:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      type: object
+      required:
+      - sample_plan
+      - variant
+      properties:
+        sample_plan:
+          type: object
+          required:
+          - format
+          - selection_method
+          - samples_per_artifact
+          - window_duration_ms
+          - windows
+          - sample_plan_sha256
+          properties:
+            format:
+              const: stove0-review-sample-plan/v1
+            selection_method:
+              const: evenly-spaced/v1
+            samples_per_artifact:
+              type: integer
+              minimum: 1
+            window_duration_ms:
+              type: integer
+              minimum: 1
+            windows:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                required:
+                - artifact_id
+                - start_ms
+                - duration_ms
+                properties:
+                  artifact_id:
+                    type: string
+                    minLength: 1
+                  start_ms:
+                    type: integer
+                    minimum: 0
+                  duration_ms:
+                    type: integer
+                    minimum: 1
+                additionalProperties: false
+            sample_plan_sha256:
+              type: string
+              pattern: ^[0-9a-f]{64}$
+          additionalProperties: false
+        variant:
+          type: object
+          required:
+          - id
+          - portable_intent
+          properties:
+            id:
+              type: string
+              pattern: ^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$
+            portable_intent:
+              type: object
+          additionalProperties: false
+      additionalProperties: false
+  inputs:
+  - role: stove0.review.source/v1
+    minimum: 1
+  outputs: []
+  effect_receipt_schema:
+    id: stove0.review.rclone-receipt/v1
+    sha256: 10be16474ab1686e6717f47977d5660d0b9d9f6cc860bff68e8c9c1228b23c48
+    document:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      type: object
+      required:
+      - format
+      - destination_identity
+      - delivery_id
+      - artifact_manifest_sha256
+      - artifact_count
+      - total_bytes
+      properties:
+        format:
+          const: stove0-review-rclone-receipt/v1
+        destination_identity:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        delivery_id:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        artifact_manifest_sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        artifact_count:
+          type: integer
+          minimum: 1
+        total_bytes:
+          type: integer
+          minimum: 0
+      additionalProperties: false
+  source_retirement_permitted: false
+  contract_sha256: 24308b8f81d21030bf84d1fa418dcab51b91e5bc51ea909801890205c5891042
 recipes:
 - id: stove0.audio-archive/v1
   revision: 1
@@ -431,6 +541,47 @@ recipes:
     input_retrieval_policy: allow
     output_tags:
     - archive-audio
+- id: stove0.review-effect/v1
+  revision: 1
+  input_tags:
+  - stove0-review-effect
+  event_input_closure: single-finalized-collection
+  allow_derived_inputs: false
+  source_retirement_policy: retain
+  observers:
+  - registration_id: ffprobe-sampling
+    contract_id: stove0.review.media-sampling/v1
+    artifact_rules:
+    - glob: '*'
+      role: stove0.review.source/v1
+    retrieval_policy: available-only
+  routes:
+  - id: review-effect
+    operation_id: stove0.review.rclone-deliver/v1
+    target_registration_id: review-effect
+    artifact_rules:
+    - glob: '*'
+      role: stove0.review.source/v1
+    target_options:
+      sampler_registration_id: opus
+    projections:
+    - source: work-effective-intent
+      source_pointer: /review_sample_plan
+      destination: intent
+      destination_pointer: /sample_plan
+    - source: work-evaluation
+      source_pointer: /variant_id
+      destination: intent
+      destination_pointer: /variant/id
+    - source: work-evaluation
+      source_pointer: /parameters/review_variant/portable_intent
+      destination: intent
+      destination_pointer: /variant/portable_intent
+    - source: work-evaluation
+      source_pointer: /parameters/review_variant/target_options
+      destination: target-options
+      destination_pointer: ''
+    input_retrieval_policy: available-only
 - id: stove0.review/v1
   revision: 1
   input_tags:

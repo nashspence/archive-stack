@@ -18,12 +18,13 @@ x-stove0-environment: &stove0-environment
   RIVERHOG_BASE_URL: ${STOVE0_RIVERHOG_BASE_URL:-http://app:8000}
   RIVERHOG_ALLOW_INSECURE_HTTP: "true"
   STOVE0_OBSERVERS_JSON: '{"exiftool":{"base_url":"http://exiftool-observer:8080","token_env":"STOVE0_EXIFTOOL_OBSERVER_TOKEN","allow_insecure_http":true},"ffprobe-sampling":{"base_url":"http://ffprobe-sampling-observer:8080","token_env":"STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN","allow_insecure_http":true}}'
-  STOVE0_TARGETS_JSON: '{"nvenc-av1-opus":{"base_url":"http://nvenc-av1-opus-target:8080","token_env":"STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN","allow_insecure_http":true},"opus":{"base_url":"http://opus-target:8080","token_env":"STOVE0_OPUS_TARGET_TOKEN","allow_insecure_http":true},"review":{"base_url":"http://review-target:8080","token_env":"STOVE0_REVIEW_TARGET_TOKEN","allow_insecure_http":true}}'
+  STOVE0_TARGETS_JSON: '{"nvenc-av1-opus":{"base_url":"http://nvenc-av1-opus-target:8080","token_env":"STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN","allow_insecure_http":true},"opus":{"base_url":"http://opus-target:8080","token_env":"STOVE0_OPUS_TARGET_TOKEN","allow_insecure_http":true},"review":{"base_url":"http://review-target:8080","token_env":"STOVE0_REVIEW_TARGET_TOKEN","allow_insecure_http":true},"review-effect":{"base_url":"http://review-effect-target:8080","token_env":"STOVE0_REVIEW_EFFECT_TARGET_TOKEN","allow_insecure_http":true}}'
   STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE: /run/secrets/stove0_ffprobe_sampling_observer_token
   STOVE0_EXIFTOOL_OBSERVER_TOKEN_FILE: /run/secrets/stove0_exiftool_observer_token
   STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE: /run/secrets/stove0_nvenc_av1_opus_target_token
   STOVE0_OPUS_TARGET_TOKEN_FILE: /run/secrets/stove0_opus_target_token
   STOVE0_REVIEW_TARGET_TOKEN_FILE: /run/secrets/stove0_review_target_token
+  STOVE0_REVIEW_EFFECT_TARGET_TOKEN_FILE: /run/secrets/stove0_review_effect_target_token
 
 x-hardening: &hardening
   restart: unless-stopped
@@ -71,6 +72,7 @@ services:
       - stove0_nvenc_av1_opus_target_token
       - stove0_opus_target_token
       - stove0_review_target_token
+      - stove0_review_effect_target_token
       - stove0_api_token
       - stove0_api_riverhog_token
     ports:
@@ -105,6 +107,7 @@ services:
       - stove0_nvenc_av1_opus_target_token
       - stove0_opus_target_token
       - stove0_review_target_token
+      - stove0_review_effect_target_token
       - stove0_controller_riverhog_token
 
   worker:
@@ -123,6 +126,7 @@ services:
       - stove0_nvenc_av1_opus_target_token
       - stove0_opus_target_token
       - stove0_review_target_token
+      - stove0_review_effect_target_token
       - stove0_worker_riverhog_token
 
   ffprobe-sampling-observer:
@@ -229,7 +233,7 @@ services:
   review-target:
     <<: *hardening
     image: stove0-review-target:dev
-    build:
+    build: &review-build
       context: ../..
       dockerfile: reference/stove0/targets/review/Dockerfile
       args:
@@ -238,6 +242,7 @@ services:
     environment:
       TZ: ${TZ:-UTC}
       STOVE0_REVIEW_TARGET_TOKEN_FILE: /run/secrets/stove0_review_target_token
+      STOVE0_REVIEW_TARGET_MODE: collection
       STOVE0_REVIEW_TARGET_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
       STOVE0_REVIEW_TARGET_IMAGE_DIGEST: ${STOVE0_REVIEW_IMAGE_DIGEST:?STOVE0_REVIEW_IMAGE_DIGEST is required}
       STOVE0_REVIEW_TARGET_STATE_ROOT: /var/lib/stove0-review-target
@@ -254,6 +259,38 @@ services:
     volumes:
       - stove0-review-target-state:/var/lib/stove0-review-target
       - stove0-review-workspace:/run/stove0-review-target
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+    healthcheck: *ffmpeg-health
+
+  review-effect-target:
+    <<: *hardening
+    image: stove0-review-target:dev
+    build: *review-build
+    command: ["stove0-review-target", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_REVIEW_TARGET_TOKEN_FILE: /run/secrets/stove0_review_effect_target_token
+      STOVE0_REVIEW_TARGET_MODE: rclone-effect
+      STOVE0_REVIEW_TARGET_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_REVIEW_TARGET_IMAGE_DIGEST: ${STOVE0_REVIEW_IMAGE_DIGEST:?STOVE0_REVIEW_IMAGE_DIGEST is required}
+      STOVE0_REVIEW_TARGET_STATE_ROOT: /var/lib/stove0-review-effect-target
+      STOVE0_REVIEW_TARGET_WORKSPACE: /run/stove0-review-target
+      STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS: ${STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:-2592000}
+      STOVE0_REVIEW_TARGET_DESTINATION_IDENTITY: ${STOVE0_REVIEW_EFFECT_DESTINATION_IDENTITY:-bdb097e00217151eda04cc51bff5262f21aea08af4da16df5467d727570875a1}
+      STOVE0_REVIEW_TARGET_RCLONE_REMOTE: /var/lib/stove0-review-delivery
+      STOVE0_REVIEW_TARGET_SAMPLERS_JSON: '{"samplers":[{"id":"opus","base_url":"http://opus-review-sampler:8080","token_file":"/run/secrets/stove0_opus_review_sampler_token","allow_insecure_http":true,"descriptor_sha256":"${STOVE0_OPUS_REVIEW_SAMPLER_DESCRIPTOR_SHA256:?STOVE0_OPUS_REVIEW_SAMPLER_DESCRIPTOR_SHA256 is required}","image_digest":"${STOVE0_OPUS_IMAGE_DIGEST:?STOVE0_OPUS_IMAGE_DIGEST is required}"}]}'
+    depends_on:
+      opus-review-sampler:
+        condition: service_healthy
+    secrets:
+      - stove0_review_effect_target_token
+      - stove0_opus_review_sampler_token
+    networks: ["stove0-internal", "riverhog-control", "review-sampler"]
+    volumes:
+      - stove0-review-effect-target-state:/var/lib/stove0-review-effect-target
+      - stove0-review-workspace:/run/stove0-review-target
+      - stove0-review-effect-delivery:/var/lib/stove0-review-delivery
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
     healthcheck: *ffmpeg-health
@@ -311,6 +348,8 @@ volumes:
   stove0-nvenc-av1-opus-target-state:
   stove0-opus-target-state:
   stove0-review-target-state:
+  stove0-review-effect-target-state:
+  stove0-review-effect-delivery:
   stove0-review-workspace:
     driver: local
     driver_opts:
@@ -343,6 +382,8 @@ secrets:
     file: ${STOVE0_OPUS_REVIEW_SAMPLER_TOKEN_FILE:?STOVE0_OPUS_REVIEW_SAMPLER_TOKEN_FILE is required}
   stove0_review_target_token:
     file: ${STOVE0_REVIEW_TARGET_TOKEN_FILE:?STOVE0_REVIEW_TARGET_TOKEN_FILE is required}
+  stove0_review_effect_target_token:
+    file: ${STOVE0_REVIEW_EFFECT_TARGET_TOKEN_FILE:?STOVE0_REVIEW_EFFECT_TARGET_TOKEN_FILE is required}
 
 networks:
   stove0-internal:

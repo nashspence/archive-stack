@@ -17,7 +17,12 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
-from riverhog_transform_sdk import DerivedCollectionReceipt, TransformRuntimeRegistry
+from riverhog_transform_sdk import (
+    ClaimedCollectionRuntime,
+    ClaimedCollectionRuntimeRegistry,
+    CollectionTransformRuntime,
+    DerivedCollectionReceipt,
+)
 from stove0_protocol import (
     CollectionRootRef,
     ControllerEvidence,
@@ -33,10 +38,13 @@ from stove0_protocol import (
     WorkIdentity,
     WorkPayload,
 )
-from stove0_target_client import TransformTargetClient
+from stove0_target_client import TargetClient
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
+    EFFECT_TARGET_PROTOCOL,
     TARGET_TERMINAL_STATE_RETENTION_ENV,
+    EffectPlan,
+    EffectPlanPayload,
     InputArtifact,
     InputArtifactContract,
     OperationContract,
@@ -48,6 +56,7 @@ from stove0_target_support import (
     TargetCancelRequest,
     TargetContract,
     TargetContractPayload,
+    TargetEffectCommitUncertain,
     TargetExecutionCanceled,
     TargetExecutionEvidence,
     TargetExecutionFailure,
@@ -121,7 +130,12 @@ def _operation() -> OperationContract:
                     "additionalProperties": False,
                 },
             ),
-            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
             outputs=(
                 OutputArtifactContract(
                     role="fixture.output/v1",
@@ -254,6 +268,126 @@ def _request() -> tuple[OperationContract, TargetContract, TargetJobRequest]:
     return operation, target, request
 
 
+def _effect_request() -> tuple[OperationContract, TargetContract, TargetJobRequest]:
+    operation = OperationContract.seal(
+        OperationContractPayload(
+            id="fixture.record-index/v1",
+            result_kind="external-effect",
+            intent_schema=JsonSchemaDocument.from_schema(
+                "fixture.record-index-intent/v1",
+                {"type": "object", "additionalProperties": False},
+            ),
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=None,
+                ),
+            ),
+            effect_receipt_schema=JsonSchemaDocument.from_schema(
+                "fixture.record-index-receipt/v1",
+                {
+                    "type": "object",
+                    "required": ["format", "row_sha256"],
+                    "properties": {
+                        "format": {"const": "fixture-index-receipt/v1"},
+                        "row_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    },
+                    "additionalProperties": False,
+                },
+            ),
+        )
+    )
+    target = TargetContract.seal(
+        TargetContractPayload(
+            protocol=EFFECT_TARGET_PROTOCOL,
+            implementation_id="fixture.index-target/v1",
+            implementation_version="1.0.0",
+            source_revision="fixture",
+            image_digest=_sha("8"),
+            operations=(
+                TargetOperationSupport(
+                    operation_id=operation.id,
+                    operation_contract_sha256=operation.contract_sha256,
+                    result_kind="external-effect",
+                    options_schema=JsonSchemaDocument.from_schema(
+                        "fixture.index-target-options/v1",
+                        {"type": "object", "additionalProperties": False},
+                    ),
+                ),
+            ),
+        )
+    )
+    plan = EffectPlan.seal(
+        EffectPlanPayload(
+            target_implementation_id=target.implementation_id,
+            target_contract_sha256=target.contract_sha256,
+            operation_id=operation.id,
+            operation_contract_sha256=operation.contract_sha256,
+            inputs=(_input(),),
+            intent={},
+            target_options={},
+        )
+    )
+    work = _work()
+    workflow = WorkflowPlan.seal(
+        WorkflowPlanPayload(
+            work=work,
+            result_kind="external-effect",
+            operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
+            target_registration_id="fixture-index-target",
+            target_contract_sha256=target.contract_sha256,
+            retirement_policy="retain",
+        )
+    )
+    binding = TargetPlanBinding(
+        protocol=target.protocol,
+        target_implementation_id=target.implementation_id,
+        target_contract_sha256=target.contract_sha256,
+        operation_contract_sha256=operation.contract_sha256,
+        plan=plan.binding_document(),
+        plan_sha256=plan.plan_sha256,
+    )
+    envelope = ExecutionEnvelope.seal(
+        ExecutionEnvelopePayload(
+            claim_id=work.work_id,
+            fence=2,
+            workflow_plan=workflow,
+            target_plan=binding,
+        )
+    )
+    evidence = ControllerEvidence.seal(ControllerEvidencePayload(execution_envelope=envelope))
+    request = TargetJobRequest.seal(
+        TargetJobDeclaration(
+            job_id=envelope.execution_envelope_sha256,
+            claim_id=work.work_id,
+            fence=2,
+            controller_evidence=evidence,
+            plan=plan,
+            workspace_assurance="ephemeral",
+        ),
+        TargetRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="effect-secret",
+        ),
+    )
+    return operation, target, request
+
+
+def _effect_success_status(
+    operation: OperationContract,
+    request: TargetJobRequest,
+    *,
+    attempt: int = 1,
+) -> TargetJobStatus:
+    return TargetExecutionRuntime(request, object()).effect_success(  # type: ignore[arg-type]
+        {"format": "fixture-index-receipt/v1", "row_sha256": _sha("7")},
+        operation=operation,
+        execution_sha256=_sha("6"),
+        attempt=attempt,
+        runtime_evidence={"implementation": "fixture"},
+    )
+
+
 def test_preflight_job_identity_excludes_refreshable_capability_secret() -> None:
     operation, target, request = _request()
     second = TargetJobRequest.seal(
@@ -347,12 +481,79 @@ def test_success_status_is_operation_checked_and_failure_cannot_publish() -> Non
     status = _success_status(operation, request)
     validate_status_against_request(status, request, operation)
 
-    with pytest.raises(ValidationError, match="failed target status cannot publish outputs"):
+    with pytest.raises(ValidationError, match="failed target status cannot publish a result"):
         TargetJobStatus(
             **status.model_dump(mode="python", exclude={"state", "failure"}),
             state="failed",
             failure={"code": "fixture.failure/v1", "message": "failed", "retryable": False},
         )
+
+
+def test_effect_success_is_canonical_bound_and_collection_free() -> None:
+    operation, target, request = _effect_request()
+    first = _effect_success_status(operation, request)
+    second = _effect_success_status(operation, request)
+
+    validate_status_against_request(first, request, operation)
+    assert first == second
+    assert first.protocol == EFFECT_TARGET_PROTOCOL
+    assert first.outputs == ()
+    assert first.output_collection is None
+    assert first.derivation is None
+    assert first.effect_receipt is not None
+    assert first.effect_receipt.receipt_sha256 == second.effect_receipt.receipt_sha256  # type: ignore[union-attr]
+    assert first.effect_receipt.target_contract_sha256 == target.contract_sha256
+
+    with pytest.raises(ValidationError, match="requires only execution evidence"):
+        TargetJobStatus.model_validate(
+            {
+                **first.model_dump(mode="json"),
+                "outputs": [
+                    {
+                        "id": "forbidden",
+                        "role": "fixture.output/v1",
+                        "path": "forbidden.bin",
+                        "bytes": 0,
+                        "sha256": _sha("0"),
+                        "derived_from": ["source"],
+                    }
+                ],
+            }
+        )
+
+
+def test_effect_execution_uses_only_generic_claimed_collection_read_custody() -> None:
+    _operation_contract, _target_contract, request = _effect_request()
+    execution = TargetExecutionRuntime.from_request(request)
+    try:
+        assert isinstance(execution.runtime, ClaimedCollectionRuntime)
+        assert not isinstance(execution.runtime, CollectionTransformRuntime)
+        assert not hasattr(execution.runtime, "spec")
+        assert not hasattr(execution.runtime, "writer")
+        with pytest.raises(RuntimeError, match="cannot publish"):
+            execution.publish(
+                {},
+                artifacts=(),
+                execution_sha256=_sha("6"),
+                dispositions=(),
+            )
+    finally:
+        execution.runtime.close()
+
+
+def test_effect_receipt_is_operation_schema_checked() -> None:
+    operation, _target, request = _effect_request()
+    status = _effect_success_status(operation, request)
+    assert status.effect_receipt is not None
+    changed = status.model_copy(
+        update={
+            "effect_receipt": status.effect_receipt.model_copy(
+                update={"result": {"format": "fixture-index-receipt/v1"}}
+            )
+        }
+    )
+    with pytest.raises(Exception, match="row_sha256"):
+        validate_status_against_request(changed, request, operation)
 
 
 def test_target_runtime_builds_complete_success_status(
@@ -364,7 +565,7 @@ def test_target_runtime_builds_complete_success_status(
     derivation = CollectionDerivation.from_mapping(expected.derivation)
     output_collection = expected.output_collection
     assert output_collection is not None
-    session = TargetExecutionSession(request, 1, TransformRuntimeRegistry())
+    session = TargetExecutionSession(request, 1, ClaimedCollectionRuntimeRegistry())
     runtime = TargetExecutionRuntime(
         request,
         object(),  # type: ignore[arg-type]
@@ -392,7 +593,7 @@ def test_target_runtime_builds_complete_success_status(
         runtime_evidence={"tool": "fixture"},
     )
     assert result == expected
-    assert session.published_status == expected
+    assert session.completed_status == expected
 
 
 class FixtureTargetClient:
@@ -433,8 +634,8 @@ def test_conformance_report_proves_preflight_and_idempotent_submission() -> None
 
 def test_target_client_rejects_remote_plain_http_by_default() -> None:
     with pytest.raises(ValueError, match="must use HTTPS"):
-        TransformTargetClient("http://target.example")
-    assert TransformTargetClient("http://localhost:8000").base_url.startswith("http://")
+        TargetClient("http://target.example")
+    assert TargetClient("http://localhost:8000").base_url.startswith("http://")
 
 
 def test_operation_contract_rejects_unpermitted_input_disposition() -> None:
@@ -831,7 +1032,7 @@ def test_restart_before_publication_preserves_semantic_execution_identity(
         session: TargetExecutionSession,
     ) -> TargetJobStatus:
         restarted = first_attempt.model_copy(update={"attempt": attempt})
-        session.record_published(restarted)
+        session.record_completed(restarted)
         return restarted
 
     service = PersistentTargetService(
@@ -873,7 +1074,7 @@ def test_persisted_publication_survives_lost_response_and_process_restart(
         _cancellation: threading.Event,
         session: TargetExecutionSession,
     ) -> TargetJobStatus:
-        session.record_published(success)
+        session.record_completed(success)
         finished.set()
         return success
 
@@ -924,6 +1125,109 @@ def test_persisted_publication_survives_lost_response_and_process_restart(
     assert b"replacement-secret" not in persisted
 
 
+def test_persisted_effect_receipt_replays_without_repeating_external_effect(
+    tmp_path: Path,
+) -> None:
+    operation, target, request = _effect_request()
+    state_root = tmp_path / "effect-state"
+    committed = threading.Event()
+    calls = 0
+
+    def execute(
+        _request: TargetJobRequest,
+        attempt: int,
+        _cancellation: threading.Event,
+        session: TargetExecutionSession,
+    ) -> TargetJobStatus:
+        nonlocal calls
+        calls += 1
+        status = _effect_success_status(operation, request, attempt=attempt)
+        session.record_completed(status)
+        committed.set()
+        return status
+
+    first = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=execute,
+    )
+    first.put_job(request)
+    assert committed.wait(timeout=5)
+    deadline = time.monotonic() + 5
+    while first.get_job(request.declaration.job_id).state != "succeeded":
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    expected = first.get_job(request.declaration.job_id)
+    first.close()
+    expired = time.time() - 100
+    for path in state_root.iterdir():
+        os.utime(path, (expired, expired))
+
+    def repeat_forbidden(*_args: object) -> TargetJobStatus:
+        raise AssertionError("a persisted external effect must not execute again")
+
+    restarted = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=repeat_forbidden,  # type: ignore[arg-type]
+        terminal_state_retention_seconds=1,
+    )
+    try:
+        assert len(tuple(state_root.iterdir())) == 2
+        assert restarted.put_job(request) == expected
+    finally:
+        restarted.close()
+    assert calls == 1
+
+
+def test_uncertain_effect_commit_stays_interrupted_and_never_auto_repeats(
+    tmp_path: Path,
+) -> None:
+    operation, target, request = _effect_request()
+    attempted = threading.Event()
+    calls = 0
+
+    def uncertain(
+        _request: TargetJobRequest,
+        _attempt: int,
+        _cancellation: threading.Event,
+        _session: TargetExecutionSession,
+    ) -> TargetJobStatus:
+        nonlocal calls
+        calls += 1
+        attempted.set()
+        raise TargetEffectCommitUncertain("fixture external commit is uncertain")
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=tmp_path / "uncertain-effect-state",
+        execute=uncertain,
+    )
+    try:
+        service.put_job(request)
+        assert attempted.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while service.get_job(request.declaration.job_id).state != "interrupted":
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        interrupted = service.get_job(request.declaration.job_id)
+        assert interrupted.progress.phase == "external-commit-uncertain"
+        assert service.put_job(request) == interrupted
+        assert (
+            service.cancel_job(
+                request.declaration.job_id,
+                TargetCancelRequest(reason="operator inspected uncertainty"),
+            )
+            == interrupted
+        )
+        assert calls == 1
+    finally:
+        service.close()
+
+
 def test_terminal_target_jobs_release_process_local_bookkeeping(tmp_path: Path) -> None:
     operation, target, request = _request()
     finished = threading.Event()
@@ -969,7 +1273,7 @@ def test_published_success_wins_late_cancel_and_cleanup_failure(tmp_path: Path) 
         _cancellation: threading.Event,
         session: TargetExecutionSession,
     ) -> TargetJobStatus:
-        session.record_published(success)
+        session.record_completed(success)
         published.set()
         assert release.wait(timeout=5)
         raise RuntimeError("post-publication cleanup failed")

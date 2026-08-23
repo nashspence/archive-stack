@@ -1,4 +1,4 @@
-"""Machine-readable transform-target wire schemas for non-Python implementations."""
+"""Machine-readable target wire schemas for non-Python implementations."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel
 from stove0_target_protocol import (
-    TARGET_PROTOCOL,
+    EFFECT_TARGET_PROTOCOL,
+    TRANSFORM_TARGET_PROTOCOL,
     OperationContract,
     TargetCancelRequest,
     TargetContract,
@@ -39,7 +40,7 @@ def target_schema_bundle() -> dict[str, Any]:
 
     payload: dict[str, Any] = {
         "format": TARGET_SCHEMA_BUNDLE_FORMAT,
-        "protocol": TARGET_PROTOCOL,
+        "protocols": [TRANSFORM_TARGET_PROTOCOL, EFFECT_TARGET_PROTOCOL],
         "compatibility": {
             "unknown_fields": "reject",
             "unknown_protocol_revision": "reject",

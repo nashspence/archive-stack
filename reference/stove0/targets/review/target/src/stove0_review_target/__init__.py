@@ -1,3 +1,7 @@
-from stove0_review_target.target import ReviewTargetService, SamplerRegistration
+from stove0_review_target.target import (
+    RcloneReviewDestination,
+    ReviewTargetService,
+    SamplerRegistration,
+)
 
-__all__ = ["ReviewTargetService", "SamplerRegistration"]
+__all__ = ["RcloneReviewDestination", "ReviewTargetService", "SamplerRegistration"]
