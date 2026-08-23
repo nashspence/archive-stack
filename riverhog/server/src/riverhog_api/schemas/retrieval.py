@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import Field
+from riverhog_protocol import RETRIEVAL_FILE_BATCH_MAX
 
 from riverhog_api.schemas.common import RiverhogModel
 
@@ -13,7 +14,7 @@ class RetrievalFileIn(RiverhogModel):
 
 
 class RetrievalPlanRequest(RiverhogModel):
-    files: list[RetrievalFileIn] = Field(min_length=1, max_length=10_000)
+    files: list[RetrievalFileIn] = Field(min_length=1, max_length=RETRIEVAL_FILE_BATCH_MAX)
     lease_seconds: int | None = Field(default=None, ge=1)
     restore_policy: Literal["allow", "never"] = "allow"
 

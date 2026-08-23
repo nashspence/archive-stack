@@ -88,6 +88,28 @@ class Targets:
         return self._contract
 
 
+def test_recipe_projection_count_is_defined_by_the_recipe() -> None:
+    projections = tuple(
+        OperationProjection(
+            source="work-effective-intent",
+            source_pointer=f"/source-{index:03}",
+            destination="intent",
+            destination_pointer=f"/destination-{index:03}",
+        )
+        for index in range(65)
+    )
+
+    route = RecipeRoute(
+        id="large-explicit-projection",
+        operation_id="fixture.operation/v1",
+        target_registration_id="fixture-target",
+        projections=projections,
+        output_tags=("fixture-output",),
+    )
+
+    assert route.projections == projections
+
+
 def test_review_recipe_projects_semantic_intent_and_options_before_preflight() -> None:
     target = TargetContract.seal(
         TargetContractPayload(

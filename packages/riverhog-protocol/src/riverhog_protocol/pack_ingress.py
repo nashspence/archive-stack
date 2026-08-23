@@ -83,7 +83,7 @@ def pack_upload_plan_sha256(
         raise ValueError("pack volume id is invalid")
     if plaintext_bytes <= 0:
         raise ValueError("pack upload plaintext bytes must be positive")
-    if not units or len(units) > 10_000:
+    if not units:
         raise ValueError("pack upload plan unit count is invalid")
     normalized_rows: list[dict[str, object]] = []
     for index, current in enumerate(units):

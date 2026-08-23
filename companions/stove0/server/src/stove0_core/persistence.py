@@ -9,12 +9,14 @@ from typing import Literal, cast
 
 from lifecycle_events import CloudEvent, EventPage, cloud_event
 from sqlalchemy import (
+    Index,
     Integer,
     String,
     Table,
     Text,
     asc,
     create_engine,
+    delete,
     desc,
     func,
     inspect,
@@ -27,6 +29,7 @@ from sqlalchemy.engine import Connection, CursorResult, Engine
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.sql import Select
 from state_schema import StateSchema
 from stove0_protocol import ArtifactSelection, BranchSetDecision, JoinPlan
 from time_formats import utc_timestamp_now
@@ -55,6 +58,7 @@ class _Base(DeclarativeBase):
 
 class _WorkRow(_Base):
     __tablename__ = "stove0_work_records"
+    __table_args__ = (Index("ix_stove0_work_records_phase_work_id", "phase", "work_id"),)
 
     work_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -93,6 +97,7 @@ class _EventRow(_Base):
     __tablename__ = "stove0_lifecycle_events"
 
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     event_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
@@ -527,6 +532,209 @@ class SqlAlchemyStateStore:
             filters={"phase": phase, "query": query},
         )
 
+    def scan_work(
+        self,
+        *,
+        phases: Sequence[str],
+        after_work_id: str,
+        limit: int,
+    ) -> tuple[list[WorkRecord], str]:
+        """Return one bounded keyset page containing only runnable work."""
+
+        if not phases or limit < 1 or limit > 100:
+            raise ValueError("stove0 work scan is invalid")
+        canonical_phases = tuple(sorted(set(phases)))
+
+        def statement(*, after: str) -> Select[tuple[_WorkRow]]:
+            query = (
+                select(_WorkRow)
+                .where(_WorkRow.phase.in_(canonical_phases))
+                .order_by(_WorkRow.work_id)
+                .limit(limit)
+            )
+            return query if not after else query.where(_WorkRow.work_id > after)
+
+        with self.sessions() as session:
+            rows = list(session.scalars(statement(after=after_work_id)))
+            if not rows and after_work_id:
+                rows = list(session.scalars(statement(after="")))
+        records = [WorkRecord.model_validate_json(row.document_json) for row in rows]
+        return records, (records[-1].work_id if records else "")
+
+    def prune_operational_state(self, *, cutoff: str) -> dict[str, int]:
+        """Atomically prune only complete, expired control-state components."""
+
+        terminal_work = frozenset({"complete", "inapplicable", "failed", "canceled"})
+        terminal_evaluations = frozenset({"complete", "failed", "canceled"})
+        with self.sessions() as session, session.begin():
+            work_rows = list(
+                session.scalars(select(_WorkRow).order_by(_WorkRow.work_id).with_for_update())
+            )
+            work_records = {
+                row.work_id: WorkRecord.model_validate_json(row.document_json) for row in work_rows
+            }
+            row_by_work = {row.work_id: row for row in work_rows}
+            neighbors: dict[str, set[str]] = {work_id: set() for work_id in work_records}
+            blocked: set[str] = set()
+
+            def connect(left: str, right: str) -> None:
+                if left not in neighbors or right not in neighbors:
+                    if left in neighbors:
+                        blocked.add(left)
+                    if right in neighbors:
+                        blocked.add(right)
+                    return
+                neighbors[left].add(right)
+                neighbors[right].add(left)
+
+            evaluation_members: dict[str, set[str]] = {}
+            for work_id, record in work_records.items():
+                binding = record.work.fork_join
+                if binding is not None:
+                    connect(work_id, binding.parent_work_id)
+                if record.branch_set_plan is not None:
+                    for branch in record.branch_set_plan.branches:
+                        connect(work_id, branch.workflow_plan.work.work_id)
+                if record.join_plan is not None:
+                    connect(work_id, record.join_plan.work.work_id)
+                if record.work.evaluation is not None:
+                    evaluation_members.setdefault(record.work.evaluation.evaluation_id, set()).add(
+                        work_id
+                    )
+
+            evaluation_rows = list(
+                session.scalars(
+                    select(_EvaluationRow).order_by(_EvaluationRow.evaluation_id).with_for_update()
+                )
+            )
+            evaluations = {
+                row.evaluation_id: EvaluationRecord.model_validate_json(row.document_json)
+                for row in evaluation_rows
+            }
+            evaluation_row_by_id = {row.evaluation_id: row for row in evaluation_rows}
+            blocked_evaluations: set[str] = set()
+            for evaluation_id, evaluation in evaluations.items():
+                declared = {child.work_id for child in evaluation.children}
+                evaluation_members.setdefault(evaluation_id, set()).update(declared)
+                missing = declared - set(work_records)
+                if missing:
+                    blocked_evaluations.add(evaluation_id)
+                    blocked.update(declared & set(work_records))
+            for evaluation_id, members in evaluation_members.items():
+                present = sorted(members & set(work_records))
+                if evaluation_id not in evaluations:
+                    blocked.update(present)
+                for member in present[1:]:
+                    connect(present[0], member)
+
+            removed_work: set[str] = set()
+            removed_evaluations: set[str] = set()
+            pending = set(work_records)
+            while pending:
+                start = min(pending)
+                component: set[str] = set()
+                frontier = [start]
+                while frontier:
+                    current = frontier.pop()
+                    if current in component:
+                        continue
+                    component.add(current)
+                    frontier.extend(neighbors[current] - component)
+                pending -= component
+                evaluation_ids = {
+                    record.work.evaluation.evaluation_id
+                    for work_id in component
+                    if (record := work_records[work_id]).work.evaluation is not None
+                }
+                if component & blocked or evaluation_ids & blocked_evaluations:
+                    continue
+                if any(
+                    row_by_work[work_id].phase not in terminal_work
+                    or row_by_work[work_id].updated_at > cutoff
+                    for work_id in component
+                ):
+                    continue
+                if any(
+                    evaluation_id not in evaluations
+                    or evaluation_row_by_id[evaluation_id].phase not in terminal_evaluations
+                    or evaluation_row_by_id[evaluation_id].updated_at > cutoff
+                    for evaluation_id in evaluation_ids
+                ):
+                    continue
+                removed_work.update(component)
+                removed_evaluations.update(evaluation_ids)
+
+            work_bytes = sum(
+                len(row_by_work[work_id].document_json.encode("utf-8")) for work_id in removed_work
+            )
+            evaluation_bytes = sum(
+                len(evaluation_row_by_id[evaluation_id].document_json.encode("utf-8"))
+                for evaluation_id in removed_evaluations
+            )
+            if removed_work:
+                session.execute(delete(_WorkRow).where(_WorkRow.work_id.in_(removed_work)))
+            if removed_evaluations:
+                session.execute(
+                    delete(_EvaluationRow).where(
+                        _EvaluationRow.evaluation_id.in_(removed_evaluations)
+                    )
+                )
+
+            remaining = [
+                record for work_id, record in work_records.items() if work_id not in removed_work
+            ]
+            referenced_selections = _selection_references(remaining)
+            selection_rows = list(
+                session.scalars(
+                    select(_ArtifactSelectionRow)
+                    .order_by(_ArtifactSelectionRow.selection_sha256)
+                    .with_for_update()
+                )
+            )
+            removed_selection_ids = {
+                row.selection_sha256
+                for row in selection_rows
+                if row.selection_sha256 not in referenced_selections
+            }
+            selection_bytes = sum(
+                len(row.document_json.encode("utf-8"))
+                for row in selection_rows
+                if row.selection_sha256 in removed_selection_ids
+            )
+            if removed_selection_ids:
+                session.execute(
+                    delete(_ArtifactSelectionRow).where(
+                        _ArtifactSelectionRow.selection_sha256.in_(removed_selection_ids)
+                    )
+                )
+
+            event_rows = list(
+                session.scalars(
+                    select(_EventRow)
+                    .where(_EventRow.created_at <= cutoff)
+                    .order_by(_EventRow.sequence)
+                    .with_for_update()
+                )
+            )
+            event_bytes = sum(len(row.event_json.encode("utf-8")) for row in event_rows)
+            if event_rows:
+                session.execute(
+                    delete(_EventRow).where(
+                        _EventRow.sequence.in_(row.sequence for row in event_rows)
+                    )
+                )
+
+        return {
+            "work": len(removed_work),
+            "work_bytes": work_bytes,
+            "evaluations": len(removed_evaluations),
+            "evaluation_bytes": evaluation_bytes,
+            "selections": len(removed_selection_ids),
+            "selection_bytes": selection_bytes,
+            "events": len(event_rows),
+            "event_bytes": event_bytes,
+        }
+
     def load_evaluation(self, evaluation_id: str) -> EvaluationRecord | None:
         with self.sessions() as session:
             row = session.get(_EvaluationRow, evaluation_id)
@@ -875,7 +1083,33 @@ def _emit(
         subject=subject,
         data=data,
     )
-    session.add(_EventRow(event_json=event.model_dump_json(exclude_none=True)))
+    session.add(
+        _EventRow(
+            created_at=event.time,
+            event_json=event.model_dump_json(exclude_none=True),
+        )
+    )
+
+
+def _selection_references(records: Sequence[WorkRecord]) -> set[str]:
+    references: set[str] = set()
+    for record in records:
+        binding = record.work.fork_join
+        if binding is not None:
+            if binding.kind == "branch":
+                references.add(binding.artifact_selection_sha256)
+            else:
+                references.update(item.artifact_selection_sha256 for item in binding.members)
+        if record.branch_set_plan is not None:
+            references.update(
+                branch.artifact_selection.selection_sha256
+                for branch in record.branch_set_plan.branches
+            )
+        if record.join_plan is not None:
+            references.update(
+                member.artifact_selection.selection_sha256 for member in record.join_plan.inputs
+            )
+    return references
 
 
 def _encode(payload: object) -> str:

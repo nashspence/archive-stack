@@ -642,7 +642,10 @@ def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "compose-smoke",
-        extra_env={"FAKE_DOCKER_HAVE_IMAGES": "1"},
+        extra_env={
+            "FAKE_DOCKER_HAVE_IMAGES": "1",
+            "STOVE0_SMOKE_TRANSFER_METRICS": "0",
+        },
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -656,6 +659,29 @@ def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
     assert " restart app" in docker_log
     assert " exec -T --env RIVERHOG_SMOKE_TOKEN=" in docker_log
     assert " app python -c " in docker_log
+    assert " down --volumes --remove-orphans" in docker_log
+
+
+def test_stove0_scale_qualification_reuses_the_final_image_lifecycle(
+    tmp_path: Path,
+) -> None:
+    completed, docker_log_path, uv_log_path = _run_make(
+        tmp_path,
+        "stove0-scale-qualification",
+        "STOVE0_SCALE_FILES=7",
+        "STOVE0_SCALE_AUDIO_FRAMES=4000",
+        extra_env={
+            "FAKE_DOCKER_HAVE_IMAGES": "1",
+            "STOVE0_SMOKE_TRANSFER_METRICS": "0",
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert _read_log_lines(uv_log_path) == []
+    docker_log = "\n".join(_read_log_lines(docker_log_path))
+    assert "--env STOVE0_SMOKE_FILE_COUNT=7" in docker_log
+    assert "--env STOVE0_SMOKE_AUDIO_FRAMES=4000" in docker_log
+    assert " up --detach --build --wait state api controller worker" in docker_log
     assert " down --volumes --remove-orphans" in docker_log
 
 
@@ -910,6 +936,7 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make build-stove0-review-target" in completed.stdout
     assert "make build-mango-fish" in completed.stdout
     assert "make mango-fish-smoke" in completed.stdout
+    assert "make stove0-scale-qualification" in completed.stdout
     assert "make build-test" in completed.stdout
     assert "make dist-smoke" in completed.stdout
     assert "make fix" in completed.stdout

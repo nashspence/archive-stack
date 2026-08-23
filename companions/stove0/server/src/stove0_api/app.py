@@ -168,6 +168,7 @@ class Stove0Composition:
                 planner=planner,
                 coordinator=coordinator,
                 state=state,
+                operational_state_retention_seconds=(config.operational_state_retention_seconds),
             ),
         )
 

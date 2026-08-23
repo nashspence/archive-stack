@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
@@ -34,6 +35,8 @@ from stove0_protocol import (
 )
 from stove0_target_client import TransformTargetClient
 from stove0_target_support import (
+    DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
+    TARGET_TERMINAL_STATE_RETENTION_ENV,
     InputArtifact,
     InputArtifactContract,
     OperationContract,
@@ -66,6 +69,7 @@ from stove0_target_support import (
     canonical_json_sha256,
     conformance_report,
     target_schema_bundle,
+    terminal_state_retention_seconds,
     validate_preflight_response_against_request,
     validate_status_against_request,
 )
@@ -567,6 +571,74 @@ def _write_model(path: Path, value: Any) -> None:
     )
 
 
+def test_terminal_state_retention_configuration_is_connected_and_fail_closed() -> None:
+    assert terminal_state_retention_seconds({}) == DEFAULT_TERMINAL_STATE_RETENTION_SECONDS
+    assert terminal_state_retention_seconds({TARGET_TERMINAL_STATE_RETENTION_ENV: "3600"}) == 3600
+    with pytest.raises(ValueError, match="must be an integer"):
+        terminal_state_retention_seconds({TARGET_TERMINAL_STATE_RETENTION_ENV: "one-day"})
+    with pytest.raises(ValueError, match="must be positive"):
+        terminal_state_retention_seconds({TARGET_TERMINAL_STATE_RETENTION_ENV: "0"})
+
+
+def test_persistent_target_prunes_only_expired_terminal_request_pairs(
+    tmp_path: Path,
+) -> None:
+    operation, target, request = _request()
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    expired_status = _success_status(operation, request)
+    _write_model(
+        state_root / f"{request.declaration.job_id}.accepted.json",
+        request.accepted(),
+    )
+    expired_path = state_root / f"{request.declaration.job_id}.status.json"
+    _write_model(expired_path, expired_status)
+
+    interrupted = TargetJobStatus(
+        job_id=_sha("b"),
+        state="interrupted",
+        attempt=1,
+        request_sha256=_sha("c"),
+        plan_sha256=_sha("d"),
+        progress=TargetProgress(phase="interrupted", completed=0),
+    )
+    interrupted_path = state_root / f"{interrupted.job_id}.status.json"
+    _write_model(interrupted_path, interrupted)
+    fresh = TargetJobStatus(
+        job_id=_sha("e"),
+        state="canceled",
+        attempt=1,
+        request_sha256=_sha("f"),
+        plan_sha256=_sha("0"),
+        progress=TargetProgress(phase="canceled", completed=0),
+    )
+    fresh_path = state_root / f"{fresh.job_id}.status.json"
+    _write_model(fresh_path, fresh)
+
+    observed_now = time.time()
+    expired_mtime = observed_now - 101
+    for path in (expired_path, interrupted_path):
+        path.touch()
+        path.chmod(0o600)
+        os.utime(path, (expired_mtime, expired_mtime))
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=lambda *_args: expired_status,
+        terminal_state_retention_seconds=100,
+    )
+    try:
+        assert service.prune_terminal_state(now=observed_now) == {"jobs": 0, "bytes": 0}
+        assert sorted(path.name for path in state_root.iterdir()) == [
+            f"{interrupted.job_id}.status.json",
+            f"{fresh.job_id}.status.json",
+        ]
+    finally:
+        service.close()
+
+
 def test_persistent_target_resumes_exact_declaration_without_storing_authority(
     tmp_path: Path,
 ) -> None:
@@ -850,6 +922,39 @@ def test_persisted_publication_survives_lost_response_and_process_restart(
     persisted = b"\n".join(path.read_bytes() for path in state_root.iterdir())
     assert b"first-secret" not in persisted
     assert b"replacement-secret" not in persisted
+
+
+def test_terminal_target_jobs_release_process_local_bookkeeping(tmp_path: Path) -> None:
+    operation, target, request = _request()
+    finished = threading.Event()
+
+    def execute(
+        _request: TargetJobRequest,
+        _attempt: int,
+        _cancellation: threading.Event,
+        _session: TargetExecutionSession,
+    ) -> TargetJobStatus:
+        finished.set()
+        raise TargetExecutionInapplicable("fixture-content", "fixture input")
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=tmp_path / "state",
+        execute=execute,
+    )
+    try:
+        service.put_job(request)
+        assert finished.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while service._futures:  # noqa: SLF001 - white-box bounded-state proof
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert service._cancel == {}  # noqa: SLF001 - white-box bounded-state proof
+        assert service._operator_canceled == set()  # noqa: SLF001
+        assert service._shutdown_interrupted == set()  # noqa: SLF001
+    finally:
+        service.close()
 
 
 def test_published_success_wins_late_cancel_and_cleanup_failure(tmp_path: Path) -> None:

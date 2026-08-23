@@ -62,6 +62,7 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
         ("riverhog_protocol.paths", "normalize_collection_id"),
         ("riverhog_protocol.paths", "normalize_relpath"),
         ("riverhog_protocol.paths", "normalize_tag"),
+        ("riverhog_protocol.transport", "RETRIEVAL_FILE_BATCH_MAX"),
         ("riverhog_cli.output", "format_local_collection"),
         ("riverhog_cli.output", "format_local_collections"),
         ("riverhog_cli.local_state", "state_schema"),

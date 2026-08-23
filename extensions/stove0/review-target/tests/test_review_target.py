@@ -20,7 +20,7 @@ from stove0_review_sampler_protocol import (
 from stove0_review_target import ReviewTargetService, SamplerRegistration
 from stove0_review_target import app as review_app
 from stove0_review_target import target as review_target
-from stove0_review_target.app import create_app
+from stove0_review_target.app import ReviewTargetConfig, SamplerConfig, create_app
 from stove0_target_support import (
     InputArtifact,
     OutputArtifact,
@@ -310,6 +310,22 @@ def test_review_process_environment_is_connected(
         "samplers": registrations,
         "source_revision": "fixture-revision",
         "image_digest": _sha("9"),
+        "terminal_state_retention_seconds": 2_592_000,
         "host": "127.0.0.8",
         "port": 8188,
     }
+
+
+def test_review_target_registration_count_is_defined_by_deployment(tmp_path: Path) -> None:
+    samplers = tuple(
+        SamplerConfig(
+            id=f"sampler-{index:03}",
+            base_url=f"https://sampler-{index:03}.invalid",
+            token_file=tmp_path / f"sampler-{index:03}.token",
+            descriptor_sha256=_sha("1"),
+            image_digest=_sha("2"),
+        )
+        for index in range(33)
+    )
+
+    assert ReviewTargetConfig(samplers=samplers).samplers == samplers

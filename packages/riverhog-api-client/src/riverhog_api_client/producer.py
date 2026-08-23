@@ -30,6 +30,7 @@ from riverhog_api_client.uploads import (
 ReadProgress = Callable[[str, int, int], None]
 RangeReader = Callable[[int, int], bytes]
 _STREAM_VERIFY_BLOCK_BYTES = 8 * 1024 * 1024
+COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES = 16
 ProvenanceStatus = Literal["captured", "omitted"]
 
 
@@ -367,7 +368,11 @@ class CollectionProducer:
                 content=content,
                 sha256=hashlib.sha256(content).hexdigest(),
             )
-        self.api.register_collection_upload_session_files(collection_id, registration)
+        for start in range(0, len(registration), COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES):
+            self.api.register_collection_upload_session_files(
+                collection_id,
+                registration[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES],
+            )
 
         def content_for_unit(unit: Mapping[str, object]) -> bytes:
             rows = unit.get("sources")

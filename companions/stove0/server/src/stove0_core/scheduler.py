@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Literal, cast
 
 from riverhog_api_client import ApiClient
 from riverhog_protocol.collection_workflows import CollectionDerivation
 from riverhog_protocol.errors import NotFound
 from stove0_protocol import CollectionRootRef, RecipeRef
+from time_formats import format_utc_timestamp, utc_now
 
 from stove0_core.coordinator import Stove0Coordinator
 from stove0_core.persistence import SqlAlchemyStateStore
 from stove0_core.recipes import RecipeCatalog, RecipePlanner
-from stove0_core.work_state import ConcurrentWorkUpdate, WorkRecord
+from stove0_core.work_state import ConcurrentWorkUpdate
 
 _COLLECTION_WAKE_TYPES = frozenset(
     {
@@ -22,6 +26,7 @@ _COLLECTION_WAKE_TYPES = frozenset(
     }
 )
 _TERMINAL_PHASES = frozenset({"complete", "inapplicable", "failed", "canceled"})
+_PRUNE_INTERVAL_SECONDS = 60 * 60
 SchedulerRole = Literal["controller", "worker", "combined"]
 _CONTROLLER_PHASES = frozenset(
     {
@@ -57,12 +62,18 @@ class Stove0Scheduler:
         planner: RecipePlanner,
         coordinator: Stove0Coordinator,
         state: SqlAlchemyStateStore,
+        operational_state_retention_seconds: int = 30 * 24 * 60 * 60,
     ) -> None:
+        if operational_state_retention_seconds < 1:
+            raise ValueError("stove0 operational-state retention must be positive")
         self.riverhog = riverhog
         self.catalog = catalog
         self.planner = planner
         self.coordinator = coordinator
         self.state = state
+        self.operational_state_retention_seconds = operational_state_retention_seconds
+        self._prune_lock = threading.Lock()
+        self._next_prune = 0.0
 
     def ingest_events(self, *, limit: int = 100) -> dict[str, object]:
         saved = self.state.load_cursor("riverhog-lifecycle/v1")
@@ -139,26 +150,12 @@ class Stove0Scheduler:
         phases = _phases_for_role(role)
         stream = f"stove0-work-scan/{role}/v1"
         saved = self.state.load_cursor(stream)
-        raw_cursor, revision = saved if saved is not None else ("1", None)
-        try:
-            requested_page = max(1, int(raw_cursor))
-        except ValueError:
-            requested_page = 1
-        page = self.state.list_work(
-            page=requested_page,
-            per_page=limit,
-            all_items=False,
-            sort="work_id",
-            order="asc",
+        cursor, revision = saved if saved is not None else ("", None)
+        records, next_cursor = self.state.scan_work(
+            phases=tuple(sorted(phases)),
+            after_work_id=cursor,
+            limit=limit,
         )
-        raw_records = page.get("work")
-        if not isinstance(raw_records, list):
-            raise RuntimeError("stove0 work store returned an invalid page")
-        records = [WorkRecord.model_validate(item) for item in raw_records]
-        pages = page.get("pages")
-        if not isinstance(pages, int) or pages < 0:
-            raise RuntimeError("stove0 work store returned invalid pagination")
-        next_page = requested_page + 1 if requested_page < pages else 1
         progressed: list[str] = []
         failures: list[dict[str, str]] = []
         for record in records:
@@ -194,13 +191,13 @@ class Stove0Scheduler:
         self._advance_cursor(
             stream,
             expected_revision=revision,
-            cursor=str(next_page),
+            cursor=next_cursor,
             require_exact=False,
         )
         return {
             "role": role,
-            "page": requested_page,
-            "next_page": next_page,
+            "cursor": cursor,
+            "next_cursor": next_cursor,
             "progressed": progressed,
             "failures": failures,
         }
@@ -212,13 +209,26 @@ class Stove0Scheduler:
         event_limit: int = 100,
         work_limit: int = 25,
     ) -> dict[str, object]:
+        pruning = self._prune_operational_state() if role in {"controller", "combined"} else None
         events = (
             self.ingest_events(limit=event_limit)
             if role in {"controller", "combined"}
             else {"events": 0, "next_cursor": None, "has_more": False, "work_ids": []}
         )
         work = self.advance(role=role, limit=work_limit)
-        return {"events": events, "work": work}
+        return {"pruning": pruning, "events": events, "work": work}
+
+    def _prune_operational_state(self) -> dict[str, int] | None:
+        observed = time.monotonic()
+        with self._prune_lock:
+            if observed < self._next_prune:
+                return None
+            cutoff = format_utc_timestamp(
+                utc_now() - timedelta(seconds=self.operational_state_retention_seconds)
+            )
+            result = self.state.prune_operational_state(cutoff=cutoff)
+            self._next_prune = observed + _PRUNE_INTERVAL_SECONDS
+            return result
 
     def _derivation(self, collection_id: int) -> CollectionDerivation | None:
         try:

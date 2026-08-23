@@ -241,6 +241,7 @@ def test_claimed_reader_fails_closed_when_root_changed() -> None:
 class UploadApi:
     def __init__(self) -> None:
         self.registered: list[dict[str, Any]] = []
+        self.registration_batches: list[list[dict[str, Any]]] = []
         self.uploaded = b""
         self.completion_content_etag = ""
         self.committed = False
@@ -269,7 +270,15 @@ class UploadApi:
         _collection_id: int,
         files: Sequence[Mapping[str, Any]],
     ) -> dict[str, Any]:
-        self.registered = [dict(item) for item in files]
+        batch = [dict(item) for item in files]
+        self.registration_batches.append(batch)
+        existing = {str(item["path"]): item for item in self.registered}
+        for item in batch:
+            prior = existing.get(str(item["path"]))
+            if prior is not None:
+                assert prior == item
+                continue
+            self.registered.append(item)
         return {"state": "uploading"}
 
     def list_collection_upload_session_volumes(self, _collection_id: int) -> dict[str, Any]:
@@ -495,6 +504,37 @@ def test_producer_stream_has_no_shared_filesystem_and_is_snapshot_verified(
         for index, item in enumerate(api.registered)
     }
     assert uploaded_by_path["video/output.mkv"] == content
+
+
+def test_producer_batches_large_exact_manifests_without_limiting_collection_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", "1")
+    api = UploadApi()
+    streams = tuple(
+        ProducerStream(
+            path=f"audio/item-{index:04}.wav",
+            bytes=1,
+            sha256=hashlib.sha256(bytes([index % 251])).hexdigest(),
+            read_range=lambda offset, size, value=bytes([index % 251]): value[
+                offset : offset + size
+            ],
+        )
+        for index in range(128)
+    )
+
+    receipt = CollectionProducer(
+        api,  # type: ignore[arg-type]
+        producer_app="stove0-worker",
+        adapter_id="test-transform/v1",
+        adapter_version="1",
+        ingest_source="transform:test",
+        tags=("archive/audio",),
+    ).publish_inputs(streams, source_event_id="event-many")
+
+    assert receipt.collection_id == 7
+    assert [len(batch) for batch in api.registration_batches] == [16] * 8 + [1]
+    assert len(api.registered) == 129
 
 
 def test_producer_builds_provenance_after_exact_stream_verification(

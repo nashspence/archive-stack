@@ -25,11 +25,11 @@ class SourceConfig(ConfigModel):
     id: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,118}[a-z0-9])?$")
     root: Path
     ingest_source: str = Field(min_length=1, max_length=512)
-    tags: tuple[str, ...] = Field(min_length=1, max_length=128)
+    tags: tuple[str, ...] = Field(min_length=1)
     archive_store: str | None = Field(default=None, min_length=1, max_length=160)
     close_mode: CloseMode = "stable"
     stable_seconds: int = Field(default=30, ge=1, le=7 * 24 * 60 * 60)
-    max_files: int = Field(default=1000, ge=1, le=100_000)
+    max_files: int = Field(default=1000, ge=1)
     max_bytes: int = Field(default=100 * 1024**3, ge=1)
     provenance: ProvenanceMode = "capture"
     provenance_omission_reason: str | None = Field(default=None, max_length=1000)

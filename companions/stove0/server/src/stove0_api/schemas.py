@@ -13,7 +13,7 @@ class Stove0ApiModel(BaseModel):
 class WorkflowPreviewIn(Stove0ApiModel):
     recipe_id: str = Field(min_length=1, max_length=160)
     recipe_revision: int | None = Field(default=None, ge=1)
-    collection_ids: tuple[int, ...] = Field(min_length=1, max_length=1000)
+    collection_ids: tuple[int, ...] = Field(min_length=1)
     effective_intent: dict[str, JsonValue] = Field(default_factory=dict)
 
     @field_validator("collection_ids")

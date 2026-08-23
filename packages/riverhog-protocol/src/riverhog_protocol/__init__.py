@@ -41,6 +41,10 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_bytes,
     canonical_json_sha256,
 )
+from riverhog_protocol.transport import (
+    COLLECTION_UPLOAD_FILE_BATCH_MAX,
+    RETRIEVAL_FILE_BATCH_MAX,
+)
 
 __all__ += [
     "ArtifactDisposition",
@@ -56,4 +60,6 @@ __all__ += [
     "TransformIntent",
     "canonical_json_bytes",
     "canonical_json_sha256",
+    "COLLECTION_UPLOAD_FILE_BATCH_MAX",
+    "RETRIEVAL_FILE_BATCH_MAX",
 ]

@@ -21,6 +21,7 @@ from riverhog_api_client.downloads import (
 from riverhog_cli_support.output import emit, format_list_ids
 from riverhog_protocol.errors import InvalidState, NotFound
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
+from riverhog_protocol.transport import RETRIEVAL_FILE_BATCH_MAX
 from state_schema import StateSchemaError
 from time_formats import parse_utc_timestamp
 
@@ -44,7 +45,6 @@ LOCAL_LIST_SORT_FIELDS = {
 }
 PROJECTION_NAME_BYTES_MAX = 240
 LOCAL_AUDIT_SAMPLE_LIMIT = 100
-RETRIEVAL_FILE_BATCH_MAX = 10_000
 RETRIEVAL_RENEW_INTERVAL_MAX_SECONDS = 60 * 60
 
 

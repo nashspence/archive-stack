@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -24,11 +25,21 @@ class SamplerHttpResponse:
 
 
 class SamplerHttpBinding:
-    def __init__(self, sampler: ReviewSampler, *, maximum_request_bytes: int = 4 * 1024**2) -> None:
+    def __init__(
+        self,
+        sampler: ReviewSampler,
+        *,
+        maximum_request_bytes: int = 4 * 1024**2,
+        maximum_concurrency: int = 1,
+    ) -> None:
         if maximum_request_bytes < 1:
             raise ValueError("sampler request limit must be positive")
+        if isinstance(maximum_concurrency, bool) or maximum_concurrency < 1:
+            raise ValueError("sampler execution concurrency must be positive")
         self.sampler = sampler
         self.maximum_request_bytes = maximum_request_bytes
+        self.maximum_concurrency = maximum_concurrency
+        self._execution_slots = threading.BoundedSemaphore(maximum_concurrency)
 
     def handle(self, method: str, path: str, body: bytes = b"") -> SamplerHttpResponse:
         method = method.upper()
@@ -43,7 +54,8 @@ class SamplerHttpBinding:
                 request = SamplerRequest.model_validate_json(body)
                 if request.sampler_descriptor_sha256 != self.sampler.descriptor().descriptor_sha256:
                     return _error(409, "sampler_changed", "sampler descriptor changed")
-                return _model(self.sampler.sample(request))
+                with self._execution_slots:
+                    return _model(self.sampler.sample(request))
             if path in {"/v1/sampler", "/v1/sample"}:
                 return _error(405, "method_not_allowed", "sampler endpoint method is not allowed")
             return _error(404, "not_found", "sampler endpoint not found")

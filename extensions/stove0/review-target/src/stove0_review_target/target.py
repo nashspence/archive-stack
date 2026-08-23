@@ -30,6 +30,7 @@ from stove0_review_sampler_protocol import (
     SamplerWindow,
 )
 from stove0_target_support import (
+    DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     OutputArtifact,
     PersistentTargetService,
     TargetContract,
@@ -103,6 +104,7 @@ class ReviewTargetService(PersistentTargetService):
         samplers: tuple[SamplerRegistration, ...],
         source_revision: str = "unknown",
         image_digest: str,
+        terminal_state_retention_seconds: int = DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     ) -> None:
         if not samplers or [item.id for item in samplers] != sorted(item.id for item in samplers):
             raise ValueError("review sampler registrations must be nonempty and ordered")
@@ -133,6 +135,7 @@ class ReviewTargetService(PersistentTargetService):
             operations={REVIEW_MATERIALIZE_OPERATION.id: REVIEW_MATERIALIZE_OPERATION},
             state_root=state_root,
             execute=self._execute,
+            terminal_state_retention_seconds=terminal_state_retention_seconds,
         )
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:

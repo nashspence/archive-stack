@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from riverhog_ftp_adapter.config import load_config
+from riverhog_ftp_adapter.config import SourceConfig, load_config
 
 REPO_ROOT = Path(__file__).parents[3]
 
@@ -54,6 +54,20 @@ def test_adapter_secrets_accept_exactly_one_direct_or_file_source(
     monkeypatch.setenv("RIVERHOG_TOKEN", "direct")
     with pytest.raises(ValueError, match="mutually exclusive"):
         load_config(config_path)
+
+
+def test_source_grouping_policy_has_no_hidden_collection_or_tag_ceiling(tmp_path: Path) -> None:
+    tags = tuple(f"fixture-tag-{index:03}" for index in range(129))
+    source = SourceConfig(
+        id="large-source",
+        root=tmp_path,
+        ingest_source="ftp:large-fixture",
+        tags=tags,
+        max_files=100_001,
+    )
+
+    assert source.tags == tags
+    assert source.max_files == 100_001
 
 
 def test_reference_compose_is_ftp_only_bounded_and_unprivileged() -> None:

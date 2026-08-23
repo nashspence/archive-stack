@@ -39,6 +39,10 @@ from stove0_target_protocol import (
 )
 from stove0_target_protocol.jcs import canonical_json_bytes, canonical_json_sha256
 
+from stove0_target_support.configuration import (
+    TARGET_TERMINAL_STATE_RETENTION_ENV,
+    terminal_state_retention_seconds,
+)
 from stove0_target_support.conformance import TargetClient, conformance_report
 from stove0_target_support.execution import TargetExecutionSession
 from stove0_target_support.http_binding import (
@@ -48,6 +52,7 @@ from stove0_target_support.http_binding import (
     TransformTargetService,
 )
 from stove0_target_support.persistent import (
+    DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     JobExecutor,
     PersistentTargetService,
     TargetExecutionCanceled,
@@ -63,9 +68,11 @@ from stove0_target_support.schemas import (
 __all__ = [
     "AcceptedTargetJob",
     "ARTIFACT_ID_PATTERN",
+    "DEFAULT_TERMINAL_STATE_RETENTION_SECONDS",
     "SHA256_PATTERN",
     "TARGET_PROTOCOL",
     "TARGET_SCHEMA_BUNDLE_FORMAT",
+    "TARGET_TERMINAL_STATE_RETENTION_ENV",
     "InputArtifact",
     "InputDisposition",
     "InputArtifactContract",
@@ -112,6 +119,7 @@ __all__ = [
     "canonical_json_sha256",
     "conformance_report",
     "target_schema_bundle",
+    "terminal_state_retention_seconds",
     "validate_declaration_against_operation",
     "validate_preflight_response_against_request",
     "validate_status_against_request",
