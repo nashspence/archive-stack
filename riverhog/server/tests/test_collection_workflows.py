@@ -342,6 +342,20 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
             derivation=changed_derivation,
             principal=_principal(),
         )
+    with factory() as session, session.begin():
+        stored = session.get(CollectionProcessingClaimRecord, claim_id)
+        assert stored is not None
+        stored.retirement_grace_seconds = 10 * 365 * 24 * 60 * 60
+    waiting = service.begin_retirement(
+        claim_id,
+        fence=1,
+        principal=_principal(),
+    )
+    assert waiting["state"] == "settled"
+    with factory() as session, session.begin():
+        stored = session.get(CollectionProcessingClaimRecord, claim_id)
+        assert stored is not None
+        stored.retirement_grace_seconds = 0
     retiring = service.begin_retirement(
         claim_id,
         fence=1,

@@ -3,9 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
+import pytest
 from riverhog_api_client import ApiClient
 from riverhog_protocol.collection_workflows import canonical_json_sha256
-from stove0_core import ObserverPort, RecipeCatalog, RecipeDefinition, RecipePlanner, TargetPort
+from stove0_core import (
+    ObserverPort,
+    RecipeCatalog,
+    RecipeDefinition,
+    RecipePlanner,
+    TargetPort,
+    WorkInapplicable,
+)
 from stove0_core.recipes import (
     ArtifactRule,
     OperationProjection,
@@ -386,3 +394,154 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
     assert len(request.inputs) == 2
     assert len({item.id for item in request.inputs}) == 2
     assert {item.collection.collection_id for item in request.inputs} == {21, 22}
+
+
+def _retirement_operation() -> OperationContract:
+    return OperationContract.seal(
+        OperationContractPayload(
+            id="fixture.retirement-copy/v1",
+            intent_schema=JsonSchemaDocument.from_schema(
+                "fixture.retirement-copy-options/v1",
+                {"type": "object", "additionalProperties": False},
+            ),
+            inputs=(InputArtifactContract(role="fixture.source/v1"),),
+            outputs=(
+                OutputArtifactContract(
+                    role="fixture.output/v1",
+                    derived_from_roles=("fixture.source/v1",),
+                ),
+            ),
+            source_retirement_permitted=True,
+        )
+    )
+
+
+class MultiArtifactCatalogApi(CatalogApi):
+    def search(self, **_kwargs: object) -> dict[str, object]:
+        return {
+            "files": [
+                {"path": "camera/source.mp4", "bytes": 100, "sha256": _sha("3")},
+                {"path": "camera/source.json", "bytes": 20, "sha256": _sha("4")},
+            ]
+        }
+
+
+def _retirement_planner(recipe: RecipeDefinition) -> RecipePlanner:
+    operation = _retirement_operation()
+    target = TargetContract.seal(
+        TargetContractPayload(
+            implementation_id="fixture.retirement-target/v1",
+            implementation_version="1.0.0",
+            source_revision="fixture",
+            image_digest=_sha("9"),
+            operations=(
+                TargetOperationSupport(
+                    operation_id=operation.id,
+                    operation_contract_sha256=operation.contract_sha256,
+                    options_schema=JsonSchemaDocument.from_schema(
+                        "fixture.retirement-target-options/v1",
+                        {"type": "object", "additionalProperties": False},
+                    ),
+                ),
+            ),
+        )
+    )
+    return RecipePlanner(
+        catalog=RecipeCatalog(operations=(operation,), recipes=(recipe,)),
+        riverhog=cast(ApiClient, MultiArtifactCatalogApi()),
+        observers=cast(ObserverPort, object()),
+        targets=cast(TargetPort, Targets(target)),
+    )
+
+
+def test_retirement_plan_accepts_overlapping_selections_covering_complete_inventory() -> None:
+    recipe = RecipeDefinition(
+        id="fixture.retirement/v1",
+        revision=1,
+        input_tags=("fixture",),
+        source_retirement_policy="retire-after-verified-output",
+        routes=(
+            RecipeRoute(
+                id="all",
+                operation_id="fixture.retirement-copy/v1",
+                target_registration_id="review-ffmpeg",
+                artifact_rules=(ArtifactRule(role="fixture.source/v1"),),
+                output_tags=("all",),
+            ),
+            RecipeRoute(
+                id="video",
+                operation_id="fixture.retirement-copy/v1",
+                target_registration_id="review-ffmpeg",
+                artifact_rules=(ArtifactRule(glob="*.mp4", role="fixture.source/v1"),),
+                output_tags=("video",),
+            ),
+        ),
+    )
+    planner = _retirement_planner(recipe)
+    root = CollectionRootRef(
+        collection_id=11,
+        manifest_sha256=_sha("1"),
+        content_etag=_sha("2"),
+    )
+
+    decision = planner.workflow_plan(planner.create_work(recipe.id, (root,)), ())
+
+    assert isinstance(decision, BranchSetDecision)
+    assert decision.plan.retirement_policy == "retire-after-verified-output"
+    selections = {
+        branch.branch_id: decision.selection_documents[branch.artifact_selection.selection_sha256]
+        for branch in decision.plan.branches
+    }
+    assert len(selections["all"].artifacts) == 2
+    assert selections["video"].artifacts[0] in selections["all"].artifacts
+
+
+def test_retirement_plan_rejects_incomplete_inventory_before_target_preflight() -> None:
+    recipe = RecipeDefinition(
+        id="fixture.retirement/v1",
+        revision=1,
+        input_tags=("fixture",),
+        source_retirement_policy="retire-after-verified-output",
+        routes=(
+            RecipeRoute(
+                id="video-only",
+                operation_id="fixture.retirement-copy/v1",
+                target_registration_id="review-ffmpeg",
+                artifact_rules=(ArtifactRule(glob="*.mp4", role="fixture.source/v1"),),
+                output_tags=("video",),
+            ),
+        ),
+    )
+    planner = _retirement_planner(recipe)
+    root = CollectionRootRef(
+        collection_id=11,
+        manifest_sha256=_sha("1"),
+        content_etag=_sha("2"),
+    )
+
+    decision = planner.workflow_plan(planner.create_work(recipe.id, (root,)), ())
+
+    assert isinstance(decision, WorkInapplicable)
+    assert decision.code == "unsafe-retirement-coverage"
+    assert "camera/source.json" in decision.message
+
+
+def test_catalog_rejects_retirement_recipe_using_audio_only_operation() -> None:
+    recipe = RecipeDefinition(
+        id="fixture.unsafe-audio-retirement/v1",
+        revision=1,
+        input_tags=("fixture",),
+        source_retirement_policy="retire-after-verified-output",
+        routes=(
+            RecipeRoute(
+                id="audio",
+                operation_id=AUDIO_ARCHIVE_OPERATION.id,
+                target_registration_id="opus",
+                artifact_rules=(ArtifactRule(role="stove0.media.source/v1"),),
+                output_tags=("audio",),
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="do not authorize retirement: audio"):
+        RecipeCatalog(operations=(AUDIO_ARCHIVE_OPERATION,), recipes=(recipe,))

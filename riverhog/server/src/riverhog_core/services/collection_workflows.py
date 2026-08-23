@@ -812,9 +812,7 @@ class SqlAlchemyCollectionWorkflowService:
                 seconds=claim.retirement_grace_seconds
             )
             if utc_now() < eligible_at:
-                raise Conflict(
-                    "collection processing claim retirement grace period has not elapsed"
-                )
+                return _claim_payload(session, claim)
             claim.state = "retiring"
             claim.updated_at = utc_timestamp_now()
             return _claim_payload(session, claim)

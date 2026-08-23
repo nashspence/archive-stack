@@ -63,7 +63,7 @@ AUDIO_ARCHIVE_OPERATION = OperationContract.seal(
                 derived_from_roles=(SOURCE_ROLE,),
             ),
         ),
-        source_retirement_permitted=True,
+        source_retirement_permitted=False,
     )
 )
 

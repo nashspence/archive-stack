@@ -129,6 +129,8 @@ class FixtureApi:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.fence = 1
         self.claim_state = "active"
+        self.retirement_state = "retiring"
+        self.deletion_blockers: list[str] = []
         self.expire_renewal = False
         self.deleted: set[int] = set()
         self.processing_outcomes: list[dict[str, object]] = []
@@ -241,13 +243,17 @@ class FixtureApi:
 
     def begin_processing_claim_retirement(self, claim_id: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("retirement", {"claim_id": claim_id, **kwargs}))
-        return {"id": claim_id, "fence": kwargs["fence"], "state": "retiring"}
+        return {"id": claim_id, "fence": kwargs["fence"], "state": self.retirement_state}
 
     def plan_collection_deletion(self, collection_id: int, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("deletion-plan", {"collection_id": collection_id, **kwargs}))
         if collection_id in self.deleted:
             raise NotFound("collection is already absent")
-        return {"status": "ready", "blockers": [], "challenge": "delete-me"}
+        return {
+            "status": "blocked" if self.deletion_blockers else "ready",
+            "blockers": self.deletion_blockers,
+            "challenge": None if self.deletion_blockers else "delete-me",
+        }
 
     def delete_collection(self, collection_id: int, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("delete", {"collection_id": collection_id, **kwargs}))
@@ -486,14 +492,30 @@ def test_riverhog_adapter_retirement_is_fenced_and_challenge_bound() -> None:
     client = Stove0RiverhogClient(api)
     record = _verifying_record(work, workflow, evidence).model_copy(update={"phase": "settled"})
 
-    client.begin_retirement(record)
-    client.retire_input(record, 1)
-    client.retire_input(record, 1)
+    assert client.begin_retirement(record) is True
+    assert client.retire_input(record, 1) is True
+    assert client.retire_input(record, 1) is True
     client.release_claim(record)
 
     delete_call = next(payload for name, payload in api.calls if name == "delete")
     assert delete_call["retirement_claim_id"] == "claim-1"
     assert delete_call["challenge"] == "delete-me"
+
+
+def test_riverhog_adapter_reports_grace_and_deletion_blockers_as_waiting() -> None:
+    work, workflow, _target_plan, evidence = _authorities("retire-after-verified-output")
+    api = FixtureApi()
+    client = Stove0RiverhogClient(api)
+    record = _verifying_record(work, workflow, evidence).model_copy(update={"phase": "settled"})
+
+    api.retirement_state = "settled"
+    assert client.begin_retirement(record) is False
+
+    api.retirement_state = "retiring"
+    api.deletion_blockers = ["active retrieval"]
+    assert client.begin_retirement(record) is True
+    assert client.retire_input(record, 1) is False
+    assert not any(name == "delete" for name, _payload in api.calls)
 
 
 def test_riverhog_adapter_abandons_the_exact_claim_generation() -> None:
