@@ -18,7 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from http_api_contracts import error_payload
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from stove0_review_sampler_client import ReviewSamplerClient
-from stove0_target_support import TargetHttpBinding
+from stove0_target_support import TargetHttpBinding, terminal_state_retention_seconds
 
 from stove0_review_target.target import ReviewTargetService, SamplerRegistration
 
@@ -190,6 +190,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         samplers=_sampler_registrations(),
         source_revision=os.getenv("STOVE0_REVIEW_TARGET_SOURCE_REVISION", "unknown"),
         image_digest=_image_digest(),
+        terminal_state_retention_seconds=terminal_state_retention_seconds(),
     )
     token = _secret()
     with contextlib.suppress(KeyError):

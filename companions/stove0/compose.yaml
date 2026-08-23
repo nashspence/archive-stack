@@ -14,6 +14,7 @@ x-stove0-environment: &stove0-environment
   STOVE0_CLAIM_LEASE_SECONDS: ${STOVE0_CLAIM_LEASE_SECONDS:-1800}
   STOVE0_CAPABILITY_TTL_SECONDS: ${STOVE0_CAPABILITY_TTL_SECONDS:-900}
   STOVE0_SCHEDULER_INTERVAL_SECONDS: ${STOVE0_SCHEDULER_INTERVAL_SECONDS:-5}
+  STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS: ${STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS:-2592000}
   RIVERHOG_BASE_URL: ${STOVE0_RIVERHOG_BASE_URL:-http://app:8000}
   RIVERHOG_ALLOW_INSECURE_HTTP: "true"
   STOVE0_OBSERVERS_JSON: '{"ffprobe-sampling":{"base_url":"http://ffprobe-sampling-observer:8080","token_env":"STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN","allow_insecure_http":true}}'
@@ -170,6 +171,7 @@ services:
       STOVE0_OPUS_TARGET_IMAGE_DIGEST: ${STOVE0_OPUS_IMAGE_DIGEST:?STOVE0_OPUS_IMAGE_DIGEST is required}
       STOVE0_OPUS_TARGET_STATE_ROOT: /var/lib/stove0-opus-target
       STOVE0_OPUS_TARGET_WORKSPACE: /run/stove0-opus-target
+      STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS: ${STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:-2592000}
     secrets: ["stove0_opus_target_token"]
     networks: ["stove0-internal", "riverhog-control"]
     volumes:
@@ -214,6 +216,7 @@ services:
       STOVE0_REVIEW_TARGET_IMAGE_DIGEST: ${STOVE0_REVIEW_IMAGE_DIGEST:?STOVE0_REVIEW_IMAGE_DIGEST is required}
       STOVE0_REVIEW_TARGET_STATE_ROOT: /var/lib/stove0-review-target
       STOVE0_REVIEW_TARGET_WORKSPACE: /run/stove0-review-target
+      STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS: ${STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:-2592000}
       STOVE0_REVIEW_TARGET_SAMPLERS_JSON: '{"samplers":[{"id":"opus","base_url":"http://opus-review-sampler:8080","token_file":"/run/secrets/stove0_opus_review_sampler_token","allow_insecure_http":true,"descriptor_sha256":"${STOVE0_OPUS_REVIEW_SAMPLER_DESCRIPTOR_SHA256:?STOVE0_OPUS_REVIEW_SAMPLER_DESCRIPTOR_SHA256 is required}","image_digest":"${STOVE0_OPUS_IMAGE_DIGEST:?STOVE0_OPUS_IMAGE_DIGEST is required}"}]}'
     depends_on:
       opus-review-sampler:
@@ -247,6 +250,7 @@ services:
       STOVE0_NVENC_AV1_OPUS_TARGET_IMAGE_DIGEST: ${STOVE0_NVENC_AV1_OPUS_IMAGE_DIGEST:?STOVE0_NVENC_AV1_OPUS_IMAGE_DIGEST is required}
       STOVE0_NVENC_AV1_OPUS_TARGET_STATE_ROOT: /var/lib/stove0-nvenc-av1-opus-target
       STOVE0_NVENC_AV1_OPUS_TARGET_WORKSPACE: /run/stove0-nvenc-av1-opus-target
+      STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS: ${STOVE0_TARGET_TERMINAL_STATE_RETENTION_SECONDS:-2592000}
     secrets: ["stove0_nvenc_av1_opus_target_token"]
     networks: ["stove0-internal", "riverhog-control"]
     volumes:

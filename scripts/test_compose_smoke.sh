@@ -6,12 +6,26 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_compose_env.sh"
 setup_test_compose_project
 configure_compose_tty
 export COMPOSE_PROFILES=development
+export SOURCE_REVISION="${SOURCE_REVISION:-$(git -C "${ROOT_DIR}" rev-parse HEAD)}"
 export RIVERHOG_API_PORT="${RIVERHOG_API_PORT:-0}"
 export RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL="${RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL:-http://retrieval-cache-adapter:8080}"
 export RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE="${RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE:-/run/secrets/riverhog-storage-adapter.token}"
 export RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP="${RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP:-true}"
 
 smoke_root="$(mktemp -d "${TMPDIR:-/tmp}/riverhog-compose-smoke.XXXXXX")"
+smoke_file_count="${STOVE0_SMOKE_FILE_COUNT:-16}"
+smoke_audio_frames="${STOVE0_SMOKE_AUDIO_FRAMES:-2000}"
+if ! [[ "${smoke_file_count}" =~ ^[0-9]+$ ]] ||
+  (( smoke_file_count < 1 || smoke_file_count > 1000 )); then
+  printf '%s\n' 'STOVE0_SMOKE_FILE_COUNT must be between 1 and 1000.' >&2
+  exit 2
+fi
+if ! [[ "${smoke_audio_frames}" =~ ^[0-9]+$ ]] ||
+  (( smoke_audio_frames < 1 || smoke_audio_frames > 10000000 )); then
+  printf '%s\n' 'STOVE0_SMOKE_AUDIO_FRAMES must be between 1 and 10000000.' >&2
+  exit 2
+fi
+smoke_max_bytes=$((smoke_file_count * (smoke_audio_frames * 2 + 4096)))
 stove0_project="${COMPOSE_PROJECT_NAME}-stove0"
 adapter_project="${COMPOSE_PROJECT_NAME}-ftp-adapter"
 stove0_compose_file="${ROOT_DIR}/companions/stove0/compose.yaml"
@@ -149,8 +163,8 @@ printf '%s\n' '{' \
   '      "tags": ["stove0-audio-archive"],' \
   '      "close_mode": "explicit-flush",' \
   '      "stable_seconds": 1,' \
-  '      "max_files": 8,' \
-  '      "max_bytes": 1048576,' \
+  "      \"max_files\": ${smoke_file_count}," \
+  "      \"max_bytes\": ${smoke_max_bytes}," \
   '      "provenance": "omit",' \
   '      "provenance_omission_reason": "The FTP producer cannot observe the source host filesystem."' \
   '    }' \
@@ -162,7 +176,9 @@ export RIVERHOG_CONTROL_NETWORK="${COMPOSE_PROJECT_NAME}_default"
 export STOVE0_SECRET_FILE_GID="$(id -g)"
 export STOVE0_API_PORT=0
 export STOVE0_SCHEDULER_INTERVAL_SECONDS=0.25
-export STOVE0_WORKSPACE_TMPFS_SIZE=256m
+export STOVE0_OBSERVER_TMPFS_SIZE=256m
+export STOVE0_TARGET_TMPFS_SIZE=256m
+export STOVE0_REVIEW_TMPFS_SIZE=256m
 export STOVE0_DATABASE_URL_FILE="${secret_root}/stove0-database-url"
 export STOVE0_API_TOKEN_FILE="${secret_root}/stove0-api-token"
 export STOVE0_API_RIVERHOG_TOKEN_FILE="${secret_root}/stove0-api-riverhog-token"
@@ -206,32 +222,37 @@ adapter_compose up --detach --build --wait intake-init ftp-adapter ftp-daemon
 
 adapter_run_code="from ftplib import FTP, all_errors
 from io import BytesIO
+import os
 from pathlib import Path
 import time
 import wave
 from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
-source = Path('/intake/ftp/smoke.wav')
 payload = BytesIO()
 with wave.open(payload, 'wb') as audio:
     audio.setnchannels(1)
     audio.setsampwidth(2)
     audio.setframerate(8000)
-    audio.writeframes(b'\\x00\\x00' * 2000)
+    audio.writeframes(b'\\x00\\x00' * int(os.environ['STOVE0_SMOKE_AUDIO_FRAMES']))
 expected = payload.getvalue()
+sources = [
+    Path(f'/intake/ftp/smoke-{index:04}.wav')
+    for index in range(int(os.environ['STOVE0_SMOKE_FILE_COUNT']))
+]
 deadline = time.monotonic() + 30
 last_error = None
 while time.monotonic() < deadline:
     try:
         with FTP('ftp-daemon', timeout=10) as ftp:
             ftp.login('ftp-intake', 'riverhog-ftp-adapter-compose-smoke-password')
-            ftp.storbinary('STOR smoke.wav', BytesIO(expected))
+            for source in sources:
+                ftp.storbinary('STOR ' + source.name, BytesIO(expected))
         break
     except all_errors as error:
         last_error = error
         time.sleep(0.25)
 else:
     raise RuntimeError('FTP listener did not become ready') from last_error
-assert source.read_bytes() == expected
+assert all(source.read_bytes() == expected for source in sources)
 with RiverhogFtpAdapterClient(
     base_url='http://127.0.0.1:8080',
     token='riverhog-ftp-adapter-compose-smoke-token',
@@ -243,9 +264,13 @@ with RiverhogFtpAdapterClient(
     assert result['failed'] == [], result
     status = client.get_ftp_adapter_status()
     assert status['sources'][0]['claims'] == 0, status
-assert not source.exists()
+assert all(not source.exists() for source in sources)
 assert list(Path('/intake/ftp/.riverhog-ftp-adapter/receipts').glob('*.json'))"
-adapter_compose exec -T ftp-adapter python -c "${adapter_run_code}"
+scale_started_ns="$(date +%s%N)"
+adapter_compose exec -T \
+  --env "STOVE0_SMOKE_FILE_COUNT=${smoke_file_count}" \
+  --env "STOVE0_SMOKE_AUDIO_FRAMES=${smoke_audio_frames}" \
+  ftp-adapter python -c "${adapter_run_code}"
 
 cache_code="from riverhog_api_client import ApiClient
 with ApiClient() as client:
@@ -290,17 +315,124 @@ else:
     diagnostic = json.load(urllib.request.urlopen(request, timeout=30))
     raise TimeoutError(json.dumps({'work': last, 'scheduler': diagnostic}, sort_keys=True))"
 stove0_compose exec -T api python -c "${wait_code}"
+scale_elapsed_ns=$(( $(date +%s%N) - scale_started_ns ))
 
-lineage_code="from riverhog_api_client import ApiClient
+lineage_code="import json, os
+from riverhog_api_client import ApiClient
 with ApiClient() as client:
     inputs = client.list_collections(tag='stove0-audio-archive', all_items=True)['collections']
     outputs = client.list_collections(tag='archive-audio', all_items=True)['collections']
     assert len(inputs) == 1 and len(outputs) == 1, (inputs, outputs)
+    input_files = [
+        row for row in client.search(collection=inputs[0]['id'], all_items=True)['files']
+        if not row['path'].startswith('riverhog/')
+    ]
+    output_files = [
+        row for row in client.search(collection=outputs[0]['id'], all_items=True)['files']
+        if not row['path'].startswith('riverhog/')
+    ]
+    assert len(input_files) == int(os.environ['STOVE0_SMOKE_FILE_COUNT'])
+    assert len(output_files) == len(input_files)
+    elapsed_seconds = int(os.environ['STOVE0_SMOKE_ELAPSED_NS']) / 1_000_000_000
+    input_bytes = sum(row['bytes'] for row in input_files)
     derivation = client.get_collection_derivation(outputs[0]['id'])
     assert derivation['derivation']['format'] == 'riverhog-collection-derivation/v1'
-    assert [row['collection_id'] for row in derivation['derivation']['inputs']] == [inputs[0]['id']]"
+    assert [row['collection_id'] for row in derivation['derivation']['inputs']] == [inputs[0]['id']]
+    print(json.dumps({
+        'format': 'stove0-final-image-scale/v1',
+        'elapsed_seconds': elapsed_seconds,
+        'input_bytes': input_bytes,
+        'input_files': len(input_files),
+        'items_per_second': len(input_files) / elapsed_seconds,
+        'measurement': 'ftp-ingress-through-opus-derived-publication',
+        'mib_per_second': input_bytes / 1048576 / elapsed_seconds,
+        'output_bytes': sum(row['bytes'] for row in output_files),
+        'output_files': len(output_files),
+    }, sort_keys=True))"
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
+  --env "STOVE0_SMOKE_FILE_COUNT=${smoke_file_count}" \
+  --env "STOVE0_SMOKE_ELAPSED_NS=${scale_elapsed_ns}" \
   --entrypoint python test -c "${lineage_code}"
+
+state_metrics_code="import json
+from collections import Counter
+from sqlalchemy import text
+from stove0_core import SqlAlchemyStateStore, database_url_from_environment
+store = SqlAlchemyStateStore(database_url_from_environment(), initialize=False)
+page = store.list_work(all_items=True, sort='work_id', order='asc')
+rows = page['work']
+assert rows and all(row['phase'] == 'complete' for row in rows), rows
+table_names = (
+    'stove0_artifact_selections',
+    'stove0_evaluation_records',
+    'stove0_event_cursors',
+    'stove0_lifecycle_events',
+    'stove0_work_records',
+)
+with store.engine.connect() as connection:
+    table_rows = {
+        name: int(connection.scalar(text(f'SELECT count(*) FROM {name}')) or 0)
+        for name in table_names
+    }
+    table_bytes = {
+        name: int(
+            connection.scalar(
+                text('SELECT pg_total_relation_size(to_regclass(:table_name))'),
+                {'table_name': name},
+            )
+            or 0
+        )
+        for name in table_names
+    }
+print(json.dumps({
+    'format': 'stove0-operational-scale/v1',
+    'database_bytes': sum(table_bytes.values()),
+    'document_bytes': sum(len(json.dumps(row, separators=(',', ':'), sort_keys=True).encode()) for row in rows),
+    'phase_counts': dict(sorted(Counter(row['phase'] for row in rows).items())),
+    'table_bytes': table_bytes,
+    'table_rows': table_rows,
+    'work_records': len(rows),
+}, sort_keys=True))
+store.engine.dispose()"
+stove0_compose exec -T api python -c "${state_metrics_code}"
+
+target_metrics_code="import json, os
+from pathlib import Path
+state = Path('/var/lib/stove0-opus-target')
+workspace = Path('/run/stove0-opus-target')
+peak_path = Path('/sys/fs/cgroup/memory.peak')
+peak = peak_path.read_text().strip() if peak_path.is_file() else None
+cpu_path = Path('/sys/fs/cgroup/cpu.stat')
+cpu = dict(line.split() for line in cpu_path.read_text().splitlines()) if cpu_path.is_file() else {}
+filesystem = os.statvfs(workspace)
+workspace_bytes = sum(path.stat().st_size for path in workspace.rglob('*') if path.is_file())
+assert workspace_bytes == 0
+print(json.dumps({
+    'format': 'stove0-target-scale/v1',
+    'accepted_records': len(tuple(state.glob('*.accepted.json'))),
+    'cpu_usage_seconds': int(cpu['usage_usec']) / 1_000_000 if 'usage_usec' in cpu else None,
+    'memory_peak_bytes': int(peak) if peak and peak.isdecimal() else None,
+    'source_revision': os.environ['STOVE0_OPUS_TARGET_SOURCE_REVISION'],
+    'status_records': len(tuple(state.glob('*.status.json'))),
+    'workspace_capacity_bytes': filesystem.f_blocks * filesystem.f_frsize,
+    'workspace_current_bytes': workspace_bytes,
+}, sort_keys=True))"
+stove0_compose exec -T opus-target python -c "${target_metrics_code}"
+
+if [[ "${STOVE0_SMOKE_TRANSFER_METRICS:-1}" == "1" ]]; then
+  compose logs --no-color app > "${smoke_root}/riverhog-transfer.log"
+  PYTHONPATH="${ROOT_DIR}" python3 -c "from dataclasses import asdict
+import json
+from pathlib import Path
+import sys
+from scripts.transfer_profile import SCENARIO_OPERATIONS, summarize_transfer_log
+summary = summarize_transfer_log(
+    Path(sys.argv[1]).read_text(encoding='utf-8'),
+    expected_operations=SCENARIO_OPERATIONS['stove0-derived-publication'],
+)
+print(json.dumps({'format': 'stove0-transfer-phases/v1', **asdict(summary)}, sort_keys=True))" \
+    "${smoke_root}/riverhog-transfer.log"
+fi
 
 stove0_compose restart api controller worker ffprobe-sampling-observer opus-target
 stove0_compose up --detach --wait api controller worker ffprobe-sampling-observer opus-target

@@ -18,7 +18,11 @@ import uvicorn
 from fastapi import FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from http_api_contracts import error_payload
-from stove0_target_support import TargetHttpBinding, TargetHttpResponse
+from stove0_target_support import (
+    TargetHttpBinding,
+    TargetHttpResponse,
+    terminal_state_retention_seconds,
+)
 
 from stove0_nvenc_av1_opus_target.target import NvencAv1OpusTargetService
 
@@ -141,6 +145,7 @@ def target_main(argv: Sequence[str] | None = None) -> int:
         ffmpeg=os.getenv("STOVE0_FFMPEG_BIN", "ffmpeg"),
         source_revision=os.getenv(f"{prefix}_SOURCE_REVISION", "unknown"),
         image_digest=_image_digest(prefix),
+        terminal_state_retention_seconds=terminal_state_retention_seconds(),
     )
     token = _secret(prefix)
     with contextlib.suppress(KeyError):

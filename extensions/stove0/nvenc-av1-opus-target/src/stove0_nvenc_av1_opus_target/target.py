@@ -18,6 +18,7 @@ from stove0_media_archive_contracts import (
 )
 from stove0_protocol import JsonSchemaDocument
 from stove0_target_support import (
+    DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     OutputArtifact,
     PersistentTargetService,
     TargetContract,
@@ -69,6 +70,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
         ffmpeg: str = "ffmpeg",
         source_revision: str = "unknown",
         image_digest: str,
+        terminal_state_retention_seconds: int = DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         self.workspace_root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -96,6 +98,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
             operations={AV1_OPUS_ARCHIVE_OPERATION.id: AV1_OPUS_ARCHIVE_OPERATION},
             state_root=state_root,
             execute=self._execute,
+            terminal_state_retention_seconds=terminal_state_retention_seconds,
         )
 
     def _execute(

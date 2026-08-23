@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
@@ -151,6 +153,41 @@ def test_binding_client_and_conformance_share_the_exact_two_endpoint_contract() 
             "response": "SamplerResult",
         },
     }
+
+
+def test_sampler_binding_serializes_workspace_execution_by_default() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    active_peak = 0
+
+    class BlockingSampler(FixtureSampler):
+        def sample(self, request: SamplerRequest) -> SamplerResult:
+            nonlocal active, active_peak
+            with lock:
+                active += 1
+                active_peak = max(active_peak, active)
+                entered.set()
+            assert release.wait(timeout=5)
+            try:
+                return super().sample(request)
+            finally:
+                with lock:
+                    active -= 1
+
+    sampler = BlockingSampler()
+    request = _request(sampler.descriptor())
+    binding = SamplerHttpBinding(sampler)
+    body = request.model_dump_json(exclude_none=True).encode()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(binding.handle, "POST", "/v1/sample", body)
+        assert entered.wait(timeout=5)
+        second = pool.submit(binding.handle, "POST", "/v1/sample", body)
+        release.set()
+        assert [first.result(timeout=5).status, second.result(timeout=5).status] == [200, 200]
+
+    assert active_peak == 1
 
 
 def test_workspace_verifies_immutable_inputs_and_confines_assigned_outputs(

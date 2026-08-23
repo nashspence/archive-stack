@@ -87,7 +87,7 @@ def stores() -> Iterator[tuple[SqlAlchemyStateStore, SqlAlchemyStateStore]]:
         .render_as_string(hide_password=False)
     )
     assert stove0_state_schema(scoped_url).upgrade().condition == "current"
-    assert stove0_state_schema(scoped_url).validate().current_revision == "v1_0002"
+    assert stove0_state_schema(scoped_url).validate().current_revision == "v1_0003"
     first_engine = create_engine(
         scoped_url,
         pool_pre_ping=True,
@@ -733,3 +733,45 @@ def test_postgres_concurrent_scheduler_ticks_admit_once_and_preserve_terminal_tr
         message="Cannot proceed",
         retryable=False,
     )
+
+
+def test_postgres_concurrent_operational_pruning_converges_exactly_once(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    terminal = first.create(WorkRecord(work=_work(), phase="canceled"))
+    old = "2000-01-01T00:00:00.000000Z"
+    cutoff = "2001-01-01T00:00:00.000000Z"
+    with first.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE stove0_work_records SET updated_at = :old"),
+            {"old": old},
+        )
+        connection.execute(
+            text("UPDATE stove0_lifecycle_events SET created_at = :old"),
+            {"old": old},
+        )
+
+    barrier = threading.Barrier(2)
+    results: list[dict[str, int]] = []
+    failures: list[BaseException] = []
+
+    def prune(store: SqlAlchemyStateStore) -> None:
+        try:
+            barrier.wait(timeout=5)
+            results.append(store.prune_operational_state(cutoff=cutoff))
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=prune, args=(store,)) for store in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert failures == []
+    assert len(results) == 2
+    assert sum(result["work"] for result in results) == 1
+    assert sum(result["events"] for result in results) >= 1
+    assert second.load(terminal.work_id) is None

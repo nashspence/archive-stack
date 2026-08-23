@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ValidationError
@@ -38,11 +39,16 @@ class ObserverHttpBinding:
         observer: ContentObserver,
         *,
         maximum_request_bytes: int = _DEFAULT_MAX_REQUEST_BYTES,
+        maximum_concurrency: int = 1,
     ) -> None:
         if maximum_request_bytes < 1:
             raise ValueError("observer HTTP request limit must be positive")
+        if isinstance(maximum_concurrency, bool) or maximum_concurrency < 1:
+            raise ValueError("observer execution concurrency must be positive")
         self.observer = observer
         self.maximum_request_bytes = maximum_request_bytes
+        self.maximum_concurrency = maximum_concurrency
+        self._execution_slots = threading.BoundedSemaphore(maximum_concurrency)
 
     def handle(self, method: str, path: str, body: bytes = b"") -> ObserverHttpResponse:
         normalized_method = method.upper()
@@ -57,8 +63,9 @@ class ObserverHttpBinding:
                 invocation = ObservationInvocation.model_validate_json(body)
                 descriptor = self.observer.descriptor()
                 _validate_descriptor(invocation, descriptor)
-                with ObservationRuntime.from_invocation(invocation) as runtime:
-                    result = self.observer.observe(invocation.request, runtime)
+                with self._execution_slots:
+                    with ObservationRuntime.from_invocation(invocation) as runtime:
+                        result = self.observer.observe(invocation.request, runtime)
                 validate_observation_result(result, invocation.request, descriptor)
             except (ValidationError, ValueError) as exc:
                 return _error(400, "invalid_observation_request", str(exc))

@@ -24,7 +24,7 @@ def _identity(index: int) -> WorkIdentity:
             inputs=(
                 CollectionRootRef(
                     collection_id=index,
-                    manifest_sha256=str(index) * 64,
+                    manifest_sha256=f"{index:064x}",
                     content_etag="b" * 64,
                 ),
             ),
@@ -36,22 +36,23 @@ class _State:
     def __init__(self, records: tuple[WorkRecord, ...]) -> None:
         self.records = tuple(sorted(records, key=lambda item: item.work_id))
         self.cursors: dict[str, tuple[str, int]] = {}
-        self.list_calls: list[dict[str, object]] = []
+        self.scan_calls: list[dict[str, object]] = []
+        self.prune_calls: list[str] = []
 
-    def list_work(self, **kwargs: object) -> dict[str, object]:
-        self.list_calls.append(kwargs)
-        page = int(cast(int, kwargs["page"]))
-        per_page = int(cast(int, kwargs["per_page"]))
-        start = (page - 1) * per_page
-        selected = self.records[start : start + per_page]
-        total = len(self.records)
-        return {
-            "page": page,
-            "per_page": per_page,
-            "total": total,
-            "pages": (total + per_page - 1) // per_page,
-            "work": [item.model_dump(mode="json", exclude_none=True) for item in selected],
-        }
+    def scan_work(self, **kwargs: object) -> tuple[list[WorkRecord], str]:
+        self.scan_calls.append(kwargs)
+        phases = cast(tuple[str, ...], kwargs["phases"])
+        after = cast(str, kwargs["after_work_id"])
+        limit = cast(int, kwargs["limit"])
+        eligible = [item for item in self.records if item.phase in phases and item.work_id > after]
+        if not eligible and after:
+            eligible = [item for item in self.records if item.phase in phases]
+        selected = eligible[:limit]
+        return selected, (selected[-1].work_id if selected else "")
+
+    def prune_operational_state(self, *, cutoff: str) -> dict[str, int]:
+        self.prune_calls.append(cutoff)
+        return {"work": 0, "events": 0}
 
     def load_cursor(self, stream: str) -> tuple[str, int] | None:
         return self.cursors.get(stream)
@@ -145,10 +146,12 @@ def test_worker_tick_never_consumes_the_controller_event_cursor() -> None:
         "has_more": False,
         "work_ids": [],
     }
+    assert result["pruning"] is None
+    assert cast(_State, scheduler.state).prune_calls == []
     assert coordinator.steps == [worker_record.work_id]
 
 
-def test_scheduler_uses_bounded_pages_and_rotates_past_a_permanent_noop() -> None:
+def test_scheduler_uses_bounded_keyset_scans_and_rotates_past_a_permanent_noop() -> None:
     records = tuple(WorkRecord(work=_identity(index)) for index in range(1, 4))
     ordered = tuple(sorted(records, key=lambda item: item.work_id))
     state = _State(records)
@@ -166,12 +169,14 @@ def test_scheduler_uses_bounded_pages_and_rotates_past_a_permanent_noop() -> Non
 
     assert first["progressed"] == []
     assert second["progressed"] == [ordered[1].work_id]
-    assert [call["per_page"] for call in state.list_calls] == [1, 1]
-    assert all(call["all_items"] is False for call in state.list_calls)
-    assert state.cursors["stove0-work-scan/controller/v1"][0] == "3"
+    assert [call["limit"] for call in state.scan_calls] == [1, 1]
+    assert all(
+        call["phases"] == tuple(sorted(_phases_for_role("controller"))) for call in state.scan_calls
+    )
+    assert state.cursors["stove0-work-scan/controller/v1"][0] == ordered[1].work_id
 
 
-def test_scheduler_visits_more_than_one_page_without_unbounded_listing() -> None:
+def test_scheduler_visits_the_runnable_keyset_without_scanning_terminal_history() -> None:
     records = tuple(WorkRecord(work=_identity(index)) for index in range(1, 6))
     state = _State(records)
     coordinator = _Coordinator(records)
@@ -185,11 +190,29 @@ def test_scheduler_visits_more_than_one_page_without_unbounded_listing() -> None
 
     results = [scheduler.advance(role="controller", limit=2) for _ in range(3)]
 
-    assert [result["page"] for result in results] == [1, 2, 3]
     assert {item for result in results for item in result["progressed"]} == {
         record.work_id for record in records
     }
     assert all(len(result["progressed"]) <= 2 for result in results)
+
+
+def test_scheduler_reaches_runnable_work_with_large_terminal_history_in_one_scan() -> None:
+    terminal = tuple(WorkRecord(work=_identity(index), phase="canceled") for index in range(1, 251))
+    runnable = WorkRecord(work=_identity(251))
+    state = _State((*terminal, runnable))
+    coordinator = _Coordinator((runnable,))
+    scheduler = Stove0Scheduler(
+        riverhog=cast(object, None),  # type: ignore[arg-type]
+        catalog=cast(object, None),  # type: ignore[arg-type]
+        planner=cast(object, None),  # type: ignore[arg-type]
+        coordinator=coordinator,  # type: ignore[arg-type]
+        state=state,  # type: ignore[arg-type]
+    )
+
+    result = scheduler.advance(role="controller", limit=1)
+
+    assert result["progressed"] == [runnable.work_id]
+    assert state.scan_calls[0]["limit"] == 1
 
 
 class _LifecycleRiverhog:
@@ -205,6 +228,28 @@ class _LifecycleRiverhog:
     def get_collection(self, collection_id: int) -> dict[str, object]:
         self.collection_reads.append(collection_id)
         raise NotFound("collection is absent")
+
+
+def test_controller_prunes_expired_operational_state_on_a_bounded_interval() -> None:
+    state = _State(())
+    scheduler = Stove0Scheduler(
+        riverhog=_LifecycleRiverhog(
+            EventPage(events=[], next_cursor="0", has_more=False)
+        ),  # type: ignore[arg-type]
+        catalog=cast(object, None),  # type: ignore[arg-type]
+        planner=cast(object, None),  # type: ignore[arg-type]
+        coordinator=_Coordinator(()),  # type: ignore[arg-type]
+        state=state,  # type: ignore[arg-type]
+        operational_state_retention_seconds=86400,
+    )
+
+    first = scheduler.run_once(role="controller")
+    second = scheduler.run_once(role="controller")
+
+    assert first["pruning"] == {"work": 0, "events": 0}
+    assert second["pruning"] is None
+    assert len(state.prune_calls) == 1
+    assert state.prune_calls[0].endswith("Z")
 
 
 def test_lifecycle_cursor_advances_past_deleted_malformed_and_unrelated_events() -> None:

@@ -36,7 +36,7 @@ def test_state_cli_needs_only_database_authority(
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "condition": "current",
-        "current_revision": "v1_0002",
-        "head_revision": "v1_0002",
+        "current_revision": "v1_0003",
+        "head_revision": "v1_0003",
         "name": "stove0 control",
     }

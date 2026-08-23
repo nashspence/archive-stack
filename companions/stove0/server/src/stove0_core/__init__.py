@@ -31,6 +31,7 @@ from stove0_core.recipes import (
 )
 from stove0_core.riverhog import RiverhogApi, Stove0RiverhogClient
 from stove0_core.runtime_config import (
+    DEFAULT_OPERATIONAL_STATE_RETENTION_SECONDS,
     EndpointRegistration,
     Stove0RuntimeConfig,
     database_url_from_environment,
@@ -59,6 +60,7 @@ __all__ = [
     "ConcurrentEvaluationUpdate",
     "ConcurrentWorkUpdate",
     "CoordinationProjection",
+    "DEFAULT_OPERATIONAL_STATE_RETENTION_SECONDS",
     "ParentOutcomeBinding",
     "EvaluationChild",
     "EvaluationChildState",

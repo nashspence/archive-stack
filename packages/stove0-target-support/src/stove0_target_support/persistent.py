@@ -7,6 +7,7 @@ import os
 import secrets
 import subprocess
 import threading
+import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -38,6 +39,7 @@ from stove0_target_support.jcs import canonical_json_bytes
 
 _ACTIVE_STATES: Final = frozenset({"queued", "running", "canceling"})
 _TERMINAL_STATES: Final = frozenset({"inapplicable", "succeeded", "failed", "canceled"})
+DEFAULT_TERMINAL_STATE_RETENTION_SECONDS: Final = 30 * 24 * 60 * 60
 
 JobExecutor = Callable[
     [TargetJobRequest, int, threading.Event, TargetExecutionSession],
@@ -85,6 +87,7 @@ class PersistentTargetService:
         state_root: Path,
         execute: JobExecutor,
         maximum_workers: int = 1,
+        terminal_state_retention_seconds: int = DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     ) -> None:
         self._contract = contract
         self._operations = dict(operations)
@@ -93,6 +96,12 @@ class PersistentTargetService:
         os.chmod(self.state_root, 0o700)
         if self.state_root.is_symlink():
             raise ValueError("target state root must not be a symlink")
+        if (
+            isinstance(terminal_state_retention_seconds, bool)
+            or terminal_state_retention_seconds < 1
+        ):
+            raise ValueError("target terminal-state retention must be positive")
+        self.terminal_state_retention_seconds = terminal_state_retention_seconds
         self._execute = execute
         self._pool = ThreadPoolExecutor(
             max_workers=maximum_workers,
@@ -108,6 +117,7 @@ class PersistentTargetService:
         self._runtime_token_fingerprints: dict[str, bytes] = {}
         self._sessions: dict[str, TargetExecutionSession] = {}
         self._recover_interrupted()
+        self.prune_terminal_state()
 
     def contract(self) -> TargetContract:
         return self._contract
@@ -229,6 +239,51 @@ class PersistentTargetService:
                 self._cancel.setdefault(job_id, threading.Event()).set()
         self._pool.shutdown(wait=True, cancel_futures=False)
 
+    def prune_terminal_state(self, *, now: float | None = None) -> dict[str, int]:
+        """Remove expired terminal request/status pairs while preserving retryable work."""
+
+        cutoff = (time.time() if now is None else now) - self.terminal_state_retention_seconds
+        removed_jobs = 0
+        removed_bytes = 0
+        with self._lock:
+            for status_path in sorted(self.state_root.glob("*.status.json")):
+                if status_path.is_symlink():
+                    raise ValueError("target state paths must not be symlinks")
+                job_id = status_path.name.removesuffix(".status.json")
+                future = self._futures.get(job_id)
+                if future is not None and not future.done():
+                    continue
+                try:
+                    stat = status_path.stat()
+                except FileNotFoundError:
+                    continue
+                if stat.st_mtime > cutoff:
+                    continue
+                status = TargetJobStatus.model_validate_json(
+                    status_path.read_text(encoding="utf-8")
+                )
+                if status.state not in _TERMINAL_STATES:
+                    continue
+                accepted_path = self._accepted_path(job_id)
+                removed_bytes += stat.st_size
+                if accepted_path.exists():
+                    if accepted_path.is_symlink():
+                        raise ValueError("target state paths must not be symlinks")
+                    removed_bytes += accepted_path.stat().st_size
+                status_path.unlink(missing_ok=True)
+                accepted_path.unlink(missing_ok=True)
+                removed_jobs += 1
+            if removed_jobs:
+                directory = os.open(
+                    self.state_root,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                )
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+        return {"jobs": removed_jobs, "bytes": removed_bytes}
+
     def _operation(self, operation_id: str) -> OperationContract:
         try:
             return self._operations[operation_id]
@@ -254,13 +309,32 @@ class PersistentTargetService:
             self._runtime_registry,
         )
         self._sessions[job_id] = session
-        self._futures[job_id] = self._pool.submit(
+        future = self._pool.submit(
             self._run,
             request,
             attempt,
             cancellation,
             session,
         )
+        self._futures[job_id] = future
+
+        def forget(completed: Future[TargetJobStatus]) -> None:
+            self._forget_future(job_id, completed)
+
+        future.add_done_callback(forget)
+
+    def _forget_future(
+        self,
+        job_id: str,
+        completed: Future[TargetJobStatus],
+    ) -> None:
+        with self._lock:
+            if self._futures.get(job_id) is completed:
+                self._futures.pop(job_id, None)
+            self._cancel.pop(job_id, None)
+            self._operator_canceled.discard(job_id)
+            self._shutdown_interrupted.discard(job_id)
+        self.prune_terminal_state()
 
     def _run(
         self,
@@ -386,6 +460,8 @@ class PersistentTargetService:
                 if current.state == "canceling" and status.state in {"queued", "running"}:
                     return current
             self._write_model(self._status_path(status.job_id), status)
+            if status.state in _TERMINAL_STATES:
+                self.prune_terminal_state()
             return status
 
     def _write_model(self, path: Path, model: Any) -> None:
@@ -468,6 +544,7 @@ def _failure_status(
 
 
 __all__ = [
+    "DEFAULT_TERMINAL_STATE_RETENTION_SECONDS",
     "JobExecutor",
     "PersistentTargetService",
     "TargetExecutionCanceled",

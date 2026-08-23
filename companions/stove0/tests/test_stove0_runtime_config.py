@@ -38,6 +38,7 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
             "STOVE0_CLAIM_LEASE_SECONDS": "240",
             "STOVE0_CAPABILITY_TTL_SECONDS": "120",
             "STOVE0_SCHEDULER_INTERVAL_SECONDS": "0.5",
+            "STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS": "86400",
             "STOVE0_OBSERVERS_JSON": (
                 '{"probe":{"base_url":"http://probe:8080","allow_insecure_http":true}}'
             ),
@@ -61,6 +62,7 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
     assert config.claim_lease_seconds == 240
     assert config.capability_ttl_seconds == 120
     assert config.scheduler_interval_seconds == 0.5
+    assert config.operational_state_retention_seconds == 86400
 
 
 def test_runtime_secrets_accept_exactly_one_direct_or_file_source(tmp_path: Path) -> None:

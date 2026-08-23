@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+DEFAULT_OPERATIONAL_STATE_RETENTION_SECONDS = 30 * 24 * 60 * 60
+
 
 @dataclass(frozen=True, slots=True)
 class EndpointRegistration:
@@ -32,6 +34,7 @@ class Stove0RuntimeConfig:
     claim_lease_seconds: int
     capability_ttl_seconds: int
     scheduler_interval_seconds: float
+    operational_state_retention_seconds: int
 
     @classmethod
     def from_environment(
@@ -89,6 +92,12 @@ class Stove0RuntimeConfig:
                 "STOVE0_SCHEDULER_INTERVAL_SECONDS",
                 5.0,
                 minimum=0.1,
+            ),
+            operational_state_retention_seconds=_integer(
+                values,
+                "STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS",
+                DEFAULT_OPERATIONAL_STATE_RETENTION_SECONDS,
+                minimum=1,
             ),
         )
 
@@ -205,4 +214,8 @@ def _registrations(
     return registrations
 
 
-__all__ = ["EndpointRegistration", "Stove0RuntimeConfig"]
+__all__ = [
+    "DEFAULT_OPERATIONAL_STATE_RETENTION_SECONDS",
+    "EndpointRegistration",
+    "Stove0RuntimeConfig",
+]

@@ -97,6 +97,7 @@ def create_stove0_contract_app() -> FastAPI:
                 claim_lease_seconds=1800,
                 capability_ttl_seconds=900,
                 scheduler_interval_seconds=5,
+                operational_state_retention_seconds=2592000,
             ),
             riverhog_api=cast(ApiClient, _RiverhogContractApi()),
             state=state,

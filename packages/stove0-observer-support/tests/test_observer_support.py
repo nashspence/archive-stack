@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -392,6 +394,57 @@ def test_framework_neutral_observer_http_binding() -> None:
     result = ObservationResult.model_validate_json(result_response.body)
     assert result.facts == {"bytes": len(api.data)}
     assert binding.handle("DELETE", "/v1/observer").status == 405
+
+
+def test_observer_binding_serializes_workspace_execution_by_default() -> None:
+    api = RetrievalApi()
+    contract = _contract()
+    descriptor = _descriptor(contract)
+    request = _request(contract, descriptor, api)
+    invocation = ObservationInvocation(
+        request=request,
+        claim_id="claim-1",
+        fence=3,
+        runtime=ObserverRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="secret-capability",
+            workspace_assurance="ephemeral",
+        ),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    active_peak = 0
+
+    class BlockingObserver(BindingObserver):
+        def observe(
+            self,
+            observed_request: ObservationRequest,
+            runtime: ObservationRuntime,
+        ) -> ObservationResult:
+            nonlocal active, active_peak
+            with lock:
+                active += 1
+                active_peak = max(active_peak, active)
+                entered.set()
+            assert release.wait(timeout=5)
+            try:
+                return super().observe(observed_request, runtime)
+            finally:
+                with lock:
+                    active -= 1
+
+    binding = ObserverHttpBinding(BlockingObserver(descriptor))
+    body = invocation.model_dump_json(exclude_none=True).encode()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(binding.handle, "POST", "/v1/observe", body)
+        assert entered.wait(timeout=5)
+        second = pool.submit(binding.handle, "POST", "/v1/observe", body)
+        release.set()
+        assert [first.result(timeout=5).status, second.result(timeout=5).status] == [200, 200]
+
+    assert active_peak == 1
 
 
 def test_observer_schema_bundle_is_deterministic_and_self_validating() -> None:

@@ -10,6 +10,7 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
+from sqlalchemy import text
 from stove0_core import (
     ClaimBinding,
     ConcurrentWorkUpdate,
@@ -756,6 +757,115 @@ def test_unified_state_store_is_restart_safe_and_compare_and_swap(tmp_path: Path
             expected_revision=created.revision,
             replacement=claimed,
         )
+
+
+def test_sql_runnable_scan_ignores_terminal_history_and_uses_a_keyset(
+    tmp_path: Path,
+) -> None:
+    from stove0_core import SqlAlchemyStateStore
+
+    store = SqlAlchemyStateStore(f"sqlite+pysqlite:///{tmp_path / 'scan.sqlite3'}")
+    for index in range(250):
+        identity = WorkIdentity.seal(
+            WorkPayload(
+                recipe=RecipeRef(id="fixture.recipe/v1", revision=1, sha256=_sha("3")),
+                inputs=(
+                    CollectionRootRef(
+                        collection_id=index + 1,
+                        manifest_sha256=f"{index + 1:064x}",
+                        content_etag=_sha("2"),
+                    ),
+                ),
+            )
+        )
+        store.create(WorkRecord(work=identity, phase="canceled"))
+    runnable = store.create(WorkRecord(work=_work()))
+
+    records, cursor = store.scan_work(
+        phases=("eligible",),
+        after_work_id="",
+        limit=1,
+    )
+
+    assert records == [runnable]
+    assert cursor == runnable.work_id
+
+
+def test_sql_operational_retention_prunes_only_complete_expired_components(
+    tmp_path: Path,
+) -> None:
+    from stove0_core import SqlAlchemyStateStore
+
+    store = SqlAlchemyStateStore(f"sqlite+pysqlite:///{tmp_path / 'retention.sqlite3'}")
+    service = Stove0WorkService(store)
+    work = _work()
+    parent = service.create_or_resume(work)
+    parent = service.bind_claim(
+        parent.work_id,
+        claim_id=parent.work_id,
+        fence=1,
+        expected_revision=parent.revision,
+    )
+    parent = service.begin_planning(parent.work_id, expected_revision=parent.revision)
+    decision = _branch_decision(work)
+    parent = service.admit_branch_set(
+        parent.work_id,
+        decision,
+        expected_revision=parent.revision,
+    )
+    child_id = decision.plan.branches[0].workflow_plan.work.work_id
+    child = store.load(child_id)
+    assert child is not None
+    child = WorkRecord.model_validate(
+        child.model_copy(update={"phase": "canceled", "revision": 2}).model_dump(mode="python")
+    )
+    store.compare_and_swap(
+        child_id,
+        expected_revision=1,
+        replacement=child,
+    )
+    parent = WorkRecord.model_validate(
+        parent.model_copy(update={"phase": "complete", "revision": parent.revision + 1}).model_dump(
+            mode="python"
+        )
+    )
+    store.compare_and_swap(
+        parent.work_id,
+        expected_revision=parent.revision - 1,
+        replacement=parent,
+    )
+    old = "2000-01-01T00:00:00.000000Z"
+    cutoff = "2001-01-01T00:00:00.000000Z"
+    with store.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE stove0_work_records SET updated_at = :old WHERE work_id = :work_id"),
+            {"old": old, "work_id": parent.work_id},
+        )
+
+    retained = store.prune_operational_state(cutoff=cutoff)
+    assert retained["work"] == 0
+    assert store.load(parent.work_id) == parent
+    assert store.load(child_id) == child
+    selection = decision.selections[0]
+    assert store.load_selection(selection.selection_sha256) == selection
+
+    with store.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE stove0_work_records SET updated_at = :old WHERE work_id = :work_id"),
+            {"old": old, "work_id": child_id},
+        )
+        connection.execute(
+            text("UPDATE stove0_lifecycle_events SET created_at = :old"),
+            {"old": old},
+        )
+
+    pruned = store.prune_operational_state(cutoff=cutoff)
+    assert pruned["work"] == 2
+    assert pruned["work_bytes"] > 0
+    assert pruned["selections"] == 1
+    assert pruned["events"] > 0
+    assert store.list_work(all_items=True)["total"] == 0
+    assert store.load_selection(selection.selection_sha256) is None
 
 
 def test_sql_branch_set_admission_is_restart_safe_and_exposes_exact_children(
