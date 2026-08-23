@@ -63,6 +63,7 @@ LISTENER_DIAGNOSTIC_LIMIT = 512
 LISTENER_STATUS_DB_TIMEOUT_SECONDS = 0.25
 LISTENER_ACTION_TERMINATE_SECONDS = 2.0
 LISTENER_ACTION_KILL_SECONDS = 2.0
+LISTENER_HEARTBEAT_LOCK_SECONDS = 2.0
 LISTENER_OPERATIONS = ("install", "status", "start", "stop", "restart", "uninstall")
 
 
@@ -269,6 +270,7 @@ def _secure_listener_state(paths: ListenerPaths) -> None:
             paths.config_file,
             paths.database_file,
             paths.heartbeat_file,
+            _heartbeat_lock_path(paths.heartbeat_file),
             paths.lock_file,
             paths.log_file,
             *paths.state_dir.glob(f"{paths.database_file.name}-*"),
@@ -607,12 +609,14 @@ class ListenerStore:
         }
 
 
-class ListenerLock:
-    def __init__(self, path: Path) -> None:
+class _FileLock:
+    def __init__(self, path: Path, *, timeout_seconds: float, diagnostic: str) -> None:
         self.path = path
+        self.timeout_seconds = timeout_seconds
+        self.diagnostic = diagnostic
         self._stream: Any = None
 
-    def __enter__(self) -> ListenerLock:
+    def __enter__(self) -> _FileLock:
         ensure_private_directory(self.path.parent)
         ensure_private_file(self.path)
         flags = os.O_RDWR | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
@@ -622,21 +626,26 @@ class ListenerLock:
         self._stream.seek(0)
         self._stream.write(b"0")
         self._stream.flush()
-        try:
-            if os.name == "nt":
-                import msvcrt
+        deadline = time.monotonic() + self.timeout_seconds
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
 
-                self._stream.seek(0)
-                windows_locking = cast(Any, msvcrt)
-                windows_locking.locking(self._stream.fileno(), windows_locking.LK_NBLCK, 1)
-            else:
-                import fcntl
+                    self._stream.seek(0)
+                    windows_locking = cast(Any, msvcrt)
+                    windows_locking.locking(self._stream.fileno(), windows_locking.LK_NBLCK, 1)
+                else:
+                    import fcntl
 
-                fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            self._stream.close()
-            self._stream = None
-            raise ListenerError("another Gogurt listener already owns this state") from exc
+                    fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    self._stream.close()
+                    self._stream = None
+                    raise ListenerError(self.diagnostic) from exc
+                time.sleep(0.01)
         return self
 
     def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
@@ -654,6 +663,30 @@ class ListenerLock:
             fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)
         self._stream.close()
         self._stream = None
+
+
+class ListenerLock(_FileLock):
+    def __init__(self, path: Path) -> None:
+        super().__init__(
+            path,
+            timeout_seconds=0,
+            diagnostic="another Gogurt listener already owns this state",
+        )
+
+
+def _heartbeat_lock_path(heartbeat_file: Path) -> Path:
+    return heartbeat_file.with_name("heartbeat.lock")
+
+
+class _HeartbeatLock(_FileLock):
+    """Serialize official heartbeat readers with atomic publication."""
+
+    def __init__(self, heartbeat_file: Path) -> None:
+        super().__init__(
+            _heartbeat_lock_path(heartbeat_file),
+            timeout_seconds=LISTENER_HEARTBEAT_LOCK_SECONDS,
+            diagnostic="Gogurt heartbeat publication did not settle",
+        )
 
 
 class ListenerRuntime:
@@ -799,11 +832,12 @@ class ListenerRuntime:
             },
             "mount_attention": mount_attention,
         }
-        atomic_write(
-            self.paths.heartbeat_file,
-            (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-            mode=PRIVATE_FILE_MODE,
-        )
+        with _HeartbeatLock(self.paths.heartbeat_file):
+            atomic_write(
+                self.paths.heartbeat_file,
+                (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+                mode=PRIVATE_FILE_MODE,
+            )
 
     def _worker(self) -> None:
         while not self.stop_event.is_set():
@@ -1036,7 +1070,8 @@ def _read_heartbeat_result(path: Path) -> tuple[dict[str, object] | None, str | 
     if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
         return None, "listener heartbeat: path is not a regular file"
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        with _HeartbeatLock(path):
+            value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeError) as exc:
         return None, _safe_diagnostic("listener heartbeat", exc)
     if not isinstance(value, dict):
