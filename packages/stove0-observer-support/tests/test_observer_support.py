@@ -161,7 +161,6 @@ def _contract() -> ObserverContract:
                     "additionalProperties": False,
                 },
             ),
-            maximum_subjects=2,
             maximum_result_bytes=4096,
         )
     )
@@ -338,6 +337,57 @@ def test_result_builder_binds_schema_identity_and_size_limits() -> None:
     assert inapplicable.state == "inapplicable"
     assert inapplicable.inapplicable is not None
     assert inapplicable.inapplicable.code == "unsupported-input"
+
+
+def test_subject_batch_preference_is_not_a_request_limit() -> None:
+    api = RetrievalApi()
+    contract = _contract()
+    descriptor = ObserverDescriptor.seal(
+        ObserverDescriptorPayload(
+            implementation_id="fixture.bytes-observer/v1",
+            implementation_version="1.0.0",
+            source_revision="fixture",
+            image_digest=_sha("9"),
+            contracts=(
+                ObserverContractSupport.from_contract(
+                    contract,
+                    preferred_subject_batch_size=2,
+                ),
+            ),
+        )
+    )
+    root = CollectionRootRef(
+        collection_id=1,
+        manifest_sha256=_sha("1"),
+        content_etag=_sha("2"),
+    )
+    subjects = tuple(
+        ArtifactSubject(
+            id=f"source-{index}",
+            role="fixture.source/v1",
+            collection=root,
+            path=f"camera/input-{index}.mov",
+            bytes=len(api.data),
+            sha256=api.sha256,
+        )
+        for index in range(3)
+    )
+    request = ObservationRequest.seal(
+        ObservationRequestPayload(
+            work_id=_sha("a"),
+            observer_registration_id="fixture-observer",
+            observer_descriptor_sha256=descriptor.descriptor_sha256,
+            observer_contract_id=contract.id,
+            observer_contract_sha256=contract.contract_sha256,
+            subjects=subjects,
+            maximum_result_bytes=4096,
+        )
+    )
+
+    result = ObservationResultBuilder(descriptor, request).observed({"bytes": len(api.data)})
+
+    assert len(result.subjects) == 3
+    assert descriptor.contracts[0].preferred_subject_batch_size == 2
 
 
 def test_observer_client_rejects_remote_plain_http_by_default() -> None:

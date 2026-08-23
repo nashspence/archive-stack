@@ -27,6 +27,8 @@ from stove0_media_archive_contracts import (
     AUDIO_ARCHIVE_OPERATION,
     AV1_OPUS_ARCHIVE_OPERATION,
     MEDIA_METADATA_OBSERVER_CONTRACT,
+    SOURCE_ROLE,
+    XMP_SOURCE_ROLE,
     MediaArtifactFacts,
     MediaFactEvidence,
     MediaMetadataFact,
@@ -109,7 +111,10 @@ class MediaObservers:
                 source_revision="fixture",
                 image_digest=_sha("9"),
                 contracts=(
-                    ObserverContractSupport.from_contract(MEDIA_METADATA_OBSERVER_CONTRACT),
+                    ObserverContractSupport.from_contract(
+                        MEDIA_METADATA_OBSERVER_CONTRACT,
+                        preferred_subject_batch_size=100,
+                    ),
                 ),
             )
         )
@@ -182,7 +187,7 @@ def test_recipe_projection_count_is_defined_by_the_recipe() -> None:
     assert route.projections == projections
 
 
-def test_observer_capacity_batches_unbounded_collection_work_without_omission() -> None:
+def test_observer_preference_batches_unbounded_collection_work_without_omission() -> None:
     recipe = RecipeDefinition(
         id="fixture.large-observation/v1",
         revision=1,
@@ -253,7 +258,7 @@ def test_observer_capacity_batches_unbounded_collection_work_without_omission() 
 
     requests = planner.observation_requests(work)
 
-    assert sorted(len(request.subjects) for request in requests) == [1, 64, 64, 64, 64]
+    assert sorted(len(request.subjects) for request in requests) == [57, 100, 100]
     subjects = [subject for request in requests for subject in request.subjects]
     assert len(subjects) == 257
     assert len({subject.id for subject in subjects}) == 257
@@ -297,6 +302,14 @@ class AssociatedMediaCatalogApi(CatalogApi):
 
 
 def test_media_observation_evidence_binds_exact_primary_sidecar_selection() -> None:
+    media_rules = (
+        ArtifactRule(
+            glob="camera/*.xmp",
+            role=XMP_SOURCE_ROLE,
+            media_type="application/rdf+xml",
+        ),
+        ArtifactRule(glob="camera/*.mov", role=SOURCE_ROLE, media_type="video/quicktime"),
+    )
     recipe = RecipeDefinition(
         id="fixture.observed-media/v1",
         revision=1,
@@ -305,7 +318,7 @@ def test_media_observation_evidence_binds_exact_primary_sidecar_selection() -> N
             ObserverUse(
                 registration_id="exiftool",
                 contract_id=MEDIA_METADATA_OBSERVER_CONTRACT.id,
-                artifact_rules=(ArtifactRule(glob="camera/clip.*", role="stove0.media.source/v1"),),
+                artifact_rules=media_rules,
             ),
         ),
         routes=(
@@ -313,7 +326,7 @@ def test_media_observation_evidence_binds_exact_primary_sidecar_selection() -> N
                 id="archive",
                 operation_id=AUDIO_ARCHIVE_OPERATION.id,
                 target_registration_id="opus",
-                artifact_rules=(ArtifactRule(glob="camera/clip.*", role="stove0.media.source/v1"),),
+                artifact_rules=media_rules,
                 output_tags=("archive",),
             ),
         ),
@@ -369,11 +382,20 @@ def test_media_observation_evidence_binds_exact_primary_sidecar_selection() -> N
         "camera/clip.mov",
         "camera/clip.xmp",
     }
+    assert {artifact.path: artifact.role for artifact in selection.artifacts} == {
+        "camera/clip.mov": SOURCE_ROLE,
+        "camera/clip.xmp": XMP_SOURCE_ROLE,
+    }
     assert decision.plan.retirement_policy == "retain"
     assert decision.plan.evidence_sha256s == (result.result_sha256,)
     assert all(
         branch.workflow_plan.observations == (evidence,) for branch in decision.plan.branches
     )
+    preflight = planner.target_preflight_request(
+        decision.plan.branches[0].workflow_plan,
+        decision.selection_documents,
+    )
+    assert preflight.observations == (evidence,)
     changed_facts = observed_facts.model_copy(
         update={
             "artifacts": (

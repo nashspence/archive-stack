@@ -25,6 +25,7 @@ from stove0_protocol import (
     CollectionRootRef,
     ControllerEvidence,
     JsonSchemaDocument,
+    ObservationEvidence,
 )
 from stove0_protocol.jcs import canonical_json_sha256
 
@@ -262,12 +263,32 @@ class TransformDeclaration(TargetProtocolModel):
 
 class TargetPreflightRequest(TransformDeclaration):
     protocol: Literal["stove0-transform-target/v1"] = TARGET_PROTOCOL
+    observations: tuple[ObservationEvidence, ...] = ()
+
+    @field_validator("observations")
+    @classmethod
+    def canonical_observations(
+        cls,
+        value: tuple[ObservationEvidence, ...],
+    ) -> tuple[ObservationEvidence, ...]:
+        ids = [item.request.request_id for item in value]
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
+            raise ValueError("target preflight observations must be unique and ordered")
+        return value
 
 
 class TransformPlanPayload(TransformDeclaration):
     protocol: Literal["stove0-transform-target/v1"] = TARGET_PROTOCOL
     target_implementation_id: SemanticId
     target_contract_sha256: Sha256
+    observation_result_sha256s: tuple[Sha256, ...] = ()
+
+    @field_validator("observation_result_sha256s")
+    @classmethod
+    def canonical_observation_results(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != tuple(sorted(value)) or len(value) != len(set(value)):
+            raise ValueError("target plan observation results must be unique and ordered")
+        return value
 
 
 class TransformPlan(TransformPlanPayload):
@@ -336,6 +357,8 @@ class TargetJobDeclaration(TargetProtocolModel):
         if (
             self.plan.target_contract_sha256 != workflow.target_contract_sha256
             or self.plan.operation_contract_sha256 != workflow.operation.sha256
+            or self.plan.observation_result_sha256s
+            != tuple(sorted(item.result.result_sha256 for item in workflow.observations))
         ):
             raise ValueError("target job plan differs from the stove0 workflow plan")
         work_roots = {
@@ -537,6 +560,8 @@ def validate_preflight_response_against_request(
         or plan.operation_contract_sha256 != request.operation_contract_sha256
         or plan.inputs != request.inputs
         or plan.intent != request.intent
+        or plan.observation_result_sha256s
+        != tuple(sorted(item.result.result_sha256 for item in request.observations))
         or any(
             key not in plan.target_options or plan.target_options[key] != value
             for key, value in request.target_options.items()

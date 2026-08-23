@@ -100,15 +100,11 @@ MEDIA_METADATA_FACTS_SCHEMA = JsonSchemaDocument.from_schema(
     MediaMetadataFacts.model_json_schema(),
 )
 
-# This is a per-request transport batch, not a collection or workflow limit.
-# Stove0 partitions larger exact subject sets into as many sealed requests as
-# necessary and binds every result into the routing decision.
 MEDIA_METADATA_OBSERVER_CONTRACT = ObserverContract.seal(
     ObserverContractPayload(
         id=MEDIA_METADATA_OBSERVATION_ID,
         options_schema=MEDIA_METADATA_OPTIONS_SCHEMA,
         facts_schema=MEDIA_METADATA_FACTS_SCHEMA,
-        maximum_subjects=64,
         maximum_result_bytes=1024 * 1024,
     )
 )

@@ -27,11 +27,28 @@ from stove0_media_archive_contracts.observation import (
     MediaMetadataFact,
     MediaMetadataFacts,
 )
-
-SOURCE_ROLE: Final = "stove0.media.source/v1"
-AUDIO_ARCHIVE_ROLE: Final = "stove0.media.audio-archive/v1"
-AV1_OPUS_ARCHIVE_ROLE: Final = "stove0.media.av1-opus-archive/v1"
-SOURCE_ARTIFACT_ROLE: Final = "stove0.media.source-artifact/v1"
+from stove0_media_archive_contracts.projection import (
+    MEDIA_PROJECTION_FORMAT,
+    MediaArchiveProjection,
+    MediaArchiveProjectionPayload,
+    MediaFieldPreference,
+    MediaGps,
+    MediaProjectedValue,
+    MediaProjectionItem,
+    MediaProjectionPolicy,
+    RetainedXmpSidecar,
+    ffmpeg_container_metadata_args,
+    render_projection_xmp,
+    resolve_media_archive_projection,
+)
+from stove0_media_archive_contracts.roles import (
+    AUDIO_ARCHIVE_ROLE,
+    AV1_OPUS_ARCHIVE_ROLE,
+    METADATA_XMP_ROLE,
+    SOURCE_ARTIFACT_ROLE,
+    SOURCE_ROLE,
+    XMP_SOURCE_ROLE,
+)
 
 AUDIO_ARCHIVE_OPERATION_ID: Final = "stove0.media.audio-archive/v1"
 AV1_OPUS_ARCHIVE_OPERATION_ID: Final = "stove0.media.av1-opus-archive/v1"
@@ -45,6 +62,7 @@ class AudioArchiveIntent(IntentModel):
     codec: Literal["opus"] = "opus"
     container: Literal["opus"] = "opus"
     bitrate_kbps: int = Field(default=128, ge=16, le=512)
+    metadata_projection: MediaProjectionPolicy = Field(default_factory=MediaProjectionPolicy)
 
 
 class Av1OpusArchiveIntent(IntentModel):
@@ -54,6 +72,7 @@ class Av1OpusArchiveIntent(IntentModel):
     max_height: int | None = Field(default=None, ge=144, le=8640)
     audio_bitrate_kbps: int = Field(default=128, ge=16, le=512)
     salvage: Literal["off", "safe-remux"] = "safe-remux"
+    metadata_projection: MediaProjectionPolicy = Field(default_factory=MediaProjectionPolicy)
 
 
 def _schema(identifier: str, model: type[IntentModel]) -> JsonSchemaDocument:
@@ -70,12 +89,27 @@ AUDIO_ARCHIVE_OPERATION = OperationContract.seal(
                 minimum=1,
                 allowed_dispositions=("transformed",),
             ),
+            InputArtifactContract(
+                role=XMP_SOURCE_ROLE,
+                minimum=0,
+                allowed_dispositions=("transformed",),
+            ),
         ),
         outputs=(
             OutputArtifactContract(
                 role=AUDIO_ARCHIVE_ROLE,
                 minimum=1,
-                derived_from_roles=(SOURCE_ROLE,),
+                derived_from_roles=(SOURCE_ROLE, XMP_SOURCE_ROLE),
+            ),
+            OutputArtifactContract(
+                role=METADATA_XMP_ROLE,
+                minimum=1,
+                derived_from_roles=(SOURCE_ROLE, XMP_SOURCE_ROLE),
+            ),
+            OutputArtifactContract(
+                role=SOURCE_ARTIFACT_ROLE,
+                minimum=0,
+                derived_from_roles=(XMP_SOURCE_ROLE,),
             ),
         ),
         source_retirement_permitted=False,
@@ -92,17 +126,27 @@ AV1_OPUS_ARCHIVE_OPERATION = OperationContract.seal(
                 minimum=1,
                 allowed_dispositions=("transformed",),
             ),
+            InputArtifactContract(
+                role=XMP_SOURCE_ROLE,
+                minimum=0,
+                allowed_dispositions=("transformed",),
+            ),
         ),
         outputs=(
             OutputArtifactContract(
                 role=AV1_OPUS_ARCHIVE_ROLE,
                 minimum=1,
-                derived_from_roles=(SOURCE_ROLE,),
+                derived_from_roles=(SOURCE_ROLE, XMP_SOURCE_ROLE),
+            ),
+            OutputArtifactContract(
+                role=METADATA_XMP_ROLE,
+                minimum=1,
+                derived_from_roles=(SOURCE_ROLE, XMP_SOURCE_ROLE),
             ),
             OutputArtifactContract(
                 role=SOURCE_ARTIFACT_ROLE,
                 minimum=1,
-                derived_from_roles=(SOURCE_ROLE,),
+                derived_from_roles=(SOURCE_ROLE, XMP_SOURCE_ROLE),
             ),
         ),
         source_retirement_permitted=True,
@@ -132,18 +176,32 @@ __all__ = [
     "MEDIA_METADATA_OBSERVER_CONTRACT",
     "MEDIA_METADATA_OPTIONS_SCHEMA",
     "MEDIA_METADATA_OPTIONS_SCHEMA_ID",
+    "MEDIA_PROJECTION_FORMAT",
+    "METADATA_XMP_ROLE",
+    "MediaArchiveProjection",
+    "MediaArchiveProjectionPayload",
     "MediaArtifactFacts",
     "MediaArtifactState",
+    "MediaFieldPreference",
     "MediaFactEvidence",
     "MediaFactName",
+    "MediaGps",
     "MediaMetadataFact",
     "MediaMetadataFacts",
+    "MediaProjectedValue",
+    "MediaProjectionItem",
+    "MediaProjectionPolicy",
     "OPERATIONS",
+    "RetainedXmpSidecar",
     "SOURCE_ARTIFACT_ROLE",
     "SOURCE_ROLE",
+    "XMP_SOURCE_ROLE",
     "AV1_OPUS_ARCHIVE_OPERATION",
     "AV1_OPUS_ARCHIVE_OPERATION_ID",
     "AV1_OPUS_ARCHIVE_ROLE",
     "Av1OpusArchiveIntent",
+    "ffmpeg_container_metadata_args",
     "operation_contract",
+    "render_projection_xmp",
+    "resolve_media_archive_projection",
 ]

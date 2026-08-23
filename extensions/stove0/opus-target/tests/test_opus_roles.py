@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from riverhog_protocol import canonical_json_sha256
-from stove0_media_archive_contracts import AUDIO_ARCHIVE_OPERATION
+from stove0_media_archive_contracts import (
+    AUDIO_ARCHIVE_OPERATION,
+    METADATA_XMP_ROLE,
+    SOURCE_ARTIFACT_ROLE,
+    MediaArchiveProjection,
+)
 from stove0_opus_review_sampler import OpusReviewSampler
 from stove0_opus_review_sampler.app import create_app as create_sampler_app
 from stove0_opus_target import OpusTargetService
@@ -20,7 +25,13 @@ from stove0_review_sampler_protocol import (
     SamplerWindow,
 )
 from stove0_review_sampler_support import SamplerHttpBinding
-from stove0_target_support import OutputArtifact, TargetHttpBinding
+from stove0_target_support import (
+    OutputArtifact,
+    TargetHttpBinding,
+    validate_preflight_response_against_request,
+)
+
+from tests.fixtures.stove0_media import media_preflight_request
 
 
 def _sha(character: str) -> str:
@@ -103,6 +114,65 @@ def test_opus_target_uses_configured_ffmpeg(monkeypatch: Any) -> None:
 
     assert opus_app.target_main([]) == 0
     assert configured["ffmpeg"] == "fixture-ffmpeg"
+
+
+def test_opus_preflight_fixes_exact_unbounded_metadata_projection(tmp_path: Path) -> None:
+    target = OpusTargetService(
+        state_root=tmp_path / "state",
+        workspace_root=tmp_path / "workspace",
+        source_revision="fixture",
+        image_digest=_sha("9"),
+    )
+    intent = {
+        "codec": "opus",
+        "container": "opus",
+        "bitrate_kbps": 128,
+        "metadata_projection": {
+            "device_make": "Example Camera Corp",
+            "device_model": "Example Camera One",
+            "gps": {"latitude": 45.5, "longitude": -122.6},
+            "creators": ["Alex Example", "River Example"],
+            "tags": ["archive/example"],
+            "field_preferences": [
+                {
+                    "name": "capture-time",
+                    "fields": ["XMP-xmp:CreateDate", "EXIF:DateTimeOriginal"],
+                }
+            ],
+        },
+    }
+    request = media_preflight_request(AUDIO_ARCHIVE_OPERATION, intent)
+
+    response = target.preflight(request)
+    validate_preflight_response_against_request(response, request)
+    projection = MediaArchiveProjection.model_validate(
+        response.plan.target_options["media_projection"]
+    )
+
+    assert response.plan.observation_result_sha256s == (
+        request.observations[0].result.result_sha256,
+    )
+    assert projection.items[0].archive_path == "audio/primary.opus"
+    assert projection.items[0].xmp_path == "audio/primary.opus.xmp"
+    assert projection.items[0].derived_from == ("primary", "sidecar")
+    assert projection.retained_xmp_sidecars[0].output_path == ("source-artifacts/sidecar.xmp")
+    assert {output.role for output in AUDIO_ARCHIVE_OPERATION.outputs} == {
+        "stove0.media.audio-archive/v1",
+        METADATA_XMP_ROLE,
+        SOURCE_ARTIFACT_ROLE,
+    }
+    assert next(
+        item for item in AUDIO_ARCHIVE_OPERATION.inputs if item.role == "stove0.media.xmp-source/v1"
+    ).allowed_dispositions == ("transformed",)
+    changed = target.preflight(
+        media_preflight_request(
+            AUDIO_ARCHIVE_OPERATION,
+            intent,
+            sidecar_capture_time="2025:02:03 04:05:07-0800",
+        )
+    )
+    assert changed.plan.plan_sha256 != response.plan.plan_sha256
+    target.close()
 
 
 def test_opus_execution_identity_is_the_canonical_semantic_result() -> None:

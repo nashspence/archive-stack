@@ -32,8 +32,6 @@ class ObservationResultBuilder:
         support = descriptor.support_for(request.observer_contract_id)
         if support.contract_sha256 != request.observer_contract_sha256:
             raise ValueError("observer contract differs from the sealed request")
-        if len(request.subjects) > support.maximum_subjects:
-            raise ValueError("observation request exceeds the observer subject limit")
         if request.maximum_result_bytes > support.maximum_result_bytes:
             raise ValueError("observation request exceeds the observer result limit")
         Draft202012Validator(support.options_schema.document).validate(request.options)

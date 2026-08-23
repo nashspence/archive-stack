@@ -276,10 +276,11 @@ class RecipePlanner:
             subjects = _subjects(inventory, use.artifact_rules)
             if not subjects:
                 continue
-            for offset in range(0, len(subjects), support.maximum_subjects):
-                # An observer's subject maximum is a request/implementation
-                # capacity, never a total collection or workflow ceiling.
-                batch = subjects[offset : offset + support.maximum_subjects]
+            batch_size = support.preferred_subject_batch_size
+            for offset in range(0, len(subjects), batch_size):
+                # Batching is an implementation preference for operational
+                # efficiency, never a request, collection, or workflow limit.
+                batch = subjects[offset : offset + batch_size]
                 requests.append(
                     ObservationRequest.seal(
                         ObservationRequestPayload(
@@ -507,6 +508,7 @@ class RecipePlanner:
             inputs=artifacts,
             intent=plan.work.effective_intent,
             target_options=plan.requested_target_options,
+            observations=plan.observations,
         )
 
     def _project_operation(

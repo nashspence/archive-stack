@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
+import shutil
 import threading
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
@@ -13,8 +14,14 @@ from riverhog_protocol import ArtifactDisposition, canonical_json_sha256
 from stove0_media_archive_contracts import (
     AV1_OPUS_ARCHIVE_OPERATION,
     AV1_OPUS_ARCHIVE_ROLE,
+    METADATA_XMP_ROLE,
     SOURCE_ARTIFACT_ROLE,
     Av1OpusArchiveIntent,
+    MediaArchiveProjection,
+    MediaProjectionItem,
+    ffmpeg_container_metadata_args,
+    render_projection_xmp,
+    resolve_media_archive_projection,
 )
 from stove0_protocol import JsonSchemaDocument
 from stove0_target_support import (
@@ -30,6 +37,8 @@ from stove0_target_support import (
     TargetJobRequest,
     TargetJobStatus,
     TargetOperationSupport,
+    TargetPreflightRequest,
+    TargetPreflightResponse,
 )
 
 from stove0_nvenc_av1_opus_target.common import (
@@ -40,6 +49,7 @@ from stove0_nvenc_av1_opus_target.common import (
 )
 from stove0_nvenc_av1_opus_target.media_source_artifacts import build_strict_source_artifacts
 
+_PROJECTION_SCHEMA = MediaArchiveProjection.model_json_schema()
 OPTIONS = JsonSchemaDocument.from_schema(
     "stove0.nvenc-av1-opus-target-options/v1",
     {
@@ -48,7 +58,11 @@ OPTIONS = JsonSchemaDocument.from_schema(
         "properties": {
             "ffmpeg_timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
             "preset": {"enum": ["p1", "p2", "p3", "p4", "p5", "p6", "p7"]},
+            "media_projection": {
+                key: value for key, value in _PROJECTION_SCHEMA.items() if key != "$defs"
+            },
         },
+        "$defs": _PROJECTION_SCHEMA.get("$defs", {}),
         "additionalProperties": False,
     },
 )
@@ -101,6 +115,28 @@ class NvencAv1OpusTargetService(PersistentTargetService):
             terminal_state_retention_seconds=terminal_state_retention_seconds,
         )
 
+    def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
+        intent = Av1OpusArchiveIntent.model_validate(request.intent)
+        projection = resolve_media_archive_projection(
+            inputs=request.inputs,
+            observations=request.observations,
+            policy=intent.metadata_projection,
+            archive_directory="video",
+            archive_suffix=".mkv",
+        )
+        supplied = request.target_options.get("media_projection")
+        if supplied is not None and MediaArchiveProjection.model_validate(supplied) != projection:
+            raise ValueError("configured media projection differs from exact observation evidence")
+        effective = request.model_copy(
+            update={
+                "target_options": {
+                    **request.target_options,
+                    "media_projection": projection.model_dump(mode="json"),
+                }
+            }
+        )
+        return super().preflight(effective)
+
     def _execute(
         self,
         request: TargetJobRequest,
@@ -114,6 +150,11 @@ class NvencAv1OpusTargetService(PersistentTargetService):
         if isinstance(timeout, bool) or not isinstance(timeout, int):
             raise ValueError("ffmpeg_timeout_seconds must be an integer")
         preset = str(options.get("preset", "p7"))
+        projection = MediaArchiveProjection.model_validate(options["media_projection"])
+        try:
+            projection.validate_plan_evidence(request.declaration.plan.observation_result_sha256s)
+        except ValueError as error:
+            raise RuntimeError("media projection differs from the target plan evidence") from error
 
         def check() -> None:
             if cancellation.is_set():
@@ -130,6 +171,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                 resolved = execution.inputs()
                 outputs: list[OutputArtifact] = []
                 sources: dict[str, ProducerFile] = {}
+                materialized: dict[str, Path] = {}
                 with execution.prepare_inputs(
                     tuple(item for item, _claimed in resolved)
                 ) as retrieval:
@@ -139,10 +181,14 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                         source = workspace.resolve(f"input/{artifact.id}{suffix}")
                         source.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                         retrieval.download(claimed, source)
-                        relative = f"video/{artifact.id}.mkv"
+                        materialized[artifact.id] = source
+                    for item in projection.items:
+                        check()
+                        source = materialized[item.input_artifact_id]
+                        relative = item.archive_path
                         destination = workspace.resolve(f"output/{relative}")
                         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                        command = self._command(source, destination, intent, preset)
+                        command = self._command(source, destination, intent, preset, item)
                         effective = command
                         try:
                             run_ffmpeg(
@@ -156,7 +202,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                                 raise TargetExecutionInapplicable(
                                     "nvenc-av1-opus-inapplicable", str(first)
                                 ) from first
-                            remuxed = workspace.resolve(f"salvage/{artifact.id}.mkv")
+                            remuxed = workspace.resolve(f"salvage/{item.input_artifact_id}.mkv")
                             remuxed.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                             try:
                                 run_ffmpeg(
@@ -179,7 +225,13 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                                     timeout_seconds=timeout,
                                     canceled=cancellation.is_set,
                                 )
-                                effective = self._command(remuxed, destination, intent, preset)
+                                effective = self._command(
+                                    remuxed,
+                                    destination,
+                                    intent,
+                                    preset,
+                                    item,
+                                )
                                 run_ffmpeg(
                                     effective,
                                     log_root=workspace.root,
@@ -192,15 +244,30 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                                 ) from exc
                         video = self._output(
                             destination,
-                            artifact_id=f"video-{artifact.id}",
+                            artifact_id=_output_id("video", item.derived_from),
                             role=AV1_OPUS_ARCHIVE_ROLE,
                             path=relative,
                             media_type="video/x-matroska",
-                            derived_from=(artifact.id,),
+                            derived_from=item.derived_from,
                         )
                         outputs.append(video)
                         sources[video.id] = ProducerFile(destination, relative)
-                        bundle_relative = f"source-artifacts/{artifact.id}.tar.zst"
+                        xmp = workspace.resolve(f"output/{item.xmp_path}")
+                        xmp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        xmp.write_bytes(
+                            render_projection_xmp(item, tags=intent.metadata_projection.tags)
+                        )
+                        xmp_output = self._output(
+                            xmp,
+                            artifact_id=_output_id("metadata-xmp", item.derived_from),
+                            role=METADATA_XMP_ROLE,
+                            path=item.xmp_path,
+                            media_type="application/rdf+xml",
+                            derived_from=item.derived_from,
+                        )
+                        outputs.append(xmp_output)
+                        sources[xmp_output.id] = ProducerFile(xmp, item.xmp_path)
+                        bundle_relative = f"source-artifacts/{item.input_artifact_id}.tar.zst"
                         bundle = workspace.resolve(f"output/{bundle_relative}")
                         build_strict_source_artifacts(
                             source=source,
@@ -214,14 +281,38 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                         )
                         source_artifact = self._output(
                             bundle,
-                            artifact_id=f"source-artifacts-{artifact.id}",
+                            artifact_id=_output_id(
+                                "source-artifacts",
+                                (item.input_artifact_id,),
+                            ),
                             role=SOURCE_ARTIFACT_ROLE,
                             path=bundle_relative,
                             media_type="application/zstd",
-                            derived_from=(artifact.id,),
+                            derived_from=(item.input_artifact_id,),
                         )
                         outputs.append(source_artifact)
                         sources[source_artifact.id] = ProducerFile(bundle, bundle_relative)
+                    for retained in projection.retained_xmp_sidecars:
+                        source = materialized[retained.input_artifact_id]
+                        destination = workspace.resolve(f"output/{retained.output_path}")
+                        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        shutil.copyfile(source, destination)
+                        retained_output = self._output(
+                            destination,
+                            artifact_id=_output_id(
+                                "source-xmp",
+                                (retained.input_artifact_id,),
+                            ),
+                            role=SOURCE_ARTIFACT_ROLE,
+                            path=retained.output_path,
+                            media_type="application/rdf+xml",
+                            derived_from=(retained.input_artifact_id,),
+                        )
+                        outputs.append(retained_output)
+                        sources[retained_output.id] = ProducerFile(
+                            destination,
+                            retained.output_path,
+                        )
                 declared = tuple(sorted(outputs, key=lambda item: item.id))
                 dispositions = tuple(
                     ArtifactDisposition(
@@ -262,6 +353,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
         destination: Path,
         intent: Av1OpusArchiveIntent,
         preset: str,
+        projection: MediaProjectionItem,
     ) -> list[str]:
         filters = (
             [] if intent.max_height is None else ["-vf", f"scale=-2:min(ih\\,{intent.max_height})"]
@@ -284,6 +376,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
             "libopus",
             "-b:a",
             f"{intent.audio_bitrate_kbps}k",
+            *ffmpeg_container_metadata_args(projection),
             str(destination),
         ]
 
@@ -323,6 +416,12 @@ def _execution_sha256(
             "image_digest": image_digest,
             "outputs": [item.model_dump(mode="json") for item in outputs],
         }
+    )
+
+
+def _output_id(kind: str, derived_from: Sequence[str]) -> str:
+    return (
+        f"{kind}-{canonical_json_sha256({'kind': kind, 'derived_from': sorted(derived_from)})[:32]}"
     )
 
 

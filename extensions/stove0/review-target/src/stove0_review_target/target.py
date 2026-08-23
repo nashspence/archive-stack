@@ -335,7 +335,7 @@ class ReviewTargetService(PersistentTargetService):
                         input_collection_id=artifact.collection.collection_id,
                         input_manifest_sha256=artifact.collection.manifest_sha256,
                         input_path=artifact.path,
-                        status="preserved",
+                        status="transformed",
                         outputs=tuple(
                             output.path for output in declared if artifact.id in output.derived_from
                         ),

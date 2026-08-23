@@ -341,7 +341,7 @@ class FixturePlanning:
 
     def target_preflight_request(
         self,
-        _plan: WorkflowPlan,
+        plan: WorkflowPlan,
         selections: dict[str, ArtifactSelection],
     ) -> TargetPreflightRequest:
         selection = next(iter(selections.values()))
@@ -354,6 +354,7 @@ class FixturePlanning:
             ),
             intent={"suffix": ".copy"},
             target_options={},
+            observations=plan.observations,
         )
 
     def operation_contract(self, operation: OperationRef) -> OperationContract:
@@ -560,6 +561,9 @@ class FixtureTarget:
                 inputs=request.inputs,
                 intent=request.intent,
                 target_options=request.target_options,
+                observation_result_sha256s=tuple(
+                    sorted(item.result.result_sha256 for item in request.observations)
+                ),
             )
         )
         return TargetPreflightResponse(target=self.target, plan=plan)
