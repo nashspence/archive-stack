@@ -6,8 +6,9 @@ from collections.abc import Mapping
 from typing import Literal, cast
 
 from riverhog_api_client import ApiClient
+from riverhog_protocol.collection_workflows import CollectionDerivation
 from riverhog_protocol.errors import NotFound
-from stove0_protocol import CollectionRootRef
+from stove0_protocol import CollectionRootRef, RecipeRef
 
 from stove0_core.coordinator import Stove0Coordinator
 from stove0_core.persistence import SqlAlchemyStateStore
@@ -110,11 +111,18 @@ class Stove0Scheduler:
             content_etag=str(current.get("content_etag") or ""),
         )
         tags = tuple(str(item) for item in current.get("tags", []))
-        derived = self._is_derived(collection_id)
+        derivation = self._derivation(collection_id)
         created: list[str] = []
         for recipe in self.catalog.matching(tags):
-            if derived and not recipe.allow_derived_inputs:
-                continue
+            if derivation is not None:
+                if not recipe.allow_derived_inputs:
+                    continue
+                if self._recipe_in_ancestry(
+                    collection_id,
+                    recipe.ref,
+                    initial=derivation,
+                ):
+                    continue
             identity = self.planner.create_work(recipe.id, (root,), revision=recipe.revision)
             record = self.coordinator.create_or_resume(identity)
             created.append(record.work_id)
@@ -212,12 +220,48 @@ class Stove0Scheduler:
         work = self.advance(role=role, limit=work_limit)
         return {"events": events, "work": work}
 
-    def _is_derived(self, collection_id: int) -> bool:
+    def _derivation(self, collection_id: int) -> CollectionDerivation | None:
         try:
-            self.riverhog.get_collection_derivation(collection_id)
+            payload = self.riverhog.get_collection_derivation(collection_id)
         except NotFound:
-            return False
-        return True
+            return None
+        derivation = payload.get("derivation")
+        if not isinstance(derivation, Mapping):
+            raise RuntimeError("Riverhog returned invalid collection derivation evidence")
+        try:
+            return CollectionDerivation.from_mapping(derivation)
+        except ValueError as exc:
+            raise RuntimeError("Riverhog returned invalid collection derivation evidence") from exc
+
+    def _recipe_in_ancestry(
+        self,
+        collection_id: int,
+        recipe: RecipeRef,
+        *,
+        initial: CollectionDerivation,
+    ) -> bool:
+        pending = [collection_id]
+        visited: set[int] = set()
+        cached: dict[int, CollectionDerivation | None] = {collection_id: initial}
+        expected = recipe.to_identity()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            derivation = cached.get(current)
+            if current not in cached:
+                derivation = self._derivation(current)
+                cached[current] = derivation
+            if derivation is None:
+                continue
+            if derivation.recipe == expected:
+                return True
+            for item in derivation.inputs:
+                input_id = item.collection_id
+                if input_id not in visited:
+                    pending.append(input_id)
+        return False
 
     def _advance_cursor(
         self,

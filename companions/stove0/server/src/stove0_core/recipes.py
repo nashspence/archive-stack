@@ -170,13 +170,34 @@ class RecipeCatalog(RecipeModel):
     recipes: tuple[RecipeDefinition, ...]
 
     @model_validator(mode="after")
-    def unique_recipes(self) -> Self:
+    def valid_catalog(self) -> Self:
         operation_ids = [operation.id for operation in self.operations]
         if operation_ids != sorted(operation_ids) or len(operation_ids) != len(set(operation_ids)):
             raise ValueError("operation contracts must be unique and ordered by ID")
         identities = [(recipe.id, recipe.revision) for recipe in self.recipes]
         if identities != sorted(identities) or len(identities) != len(set(identities)):
             raise ValueError("recipes must be unique and ordered by ID and revision")
+        operations = {operation.id: operation for operation in self.operations}
+        for recipe in self.recipes:
+            referenced = [route.operation_id for route in recipe.routes]
+            if recipe.join is not None:
+                referenced.append(recipe.join.operation_id)
+            unknown = sorted(set(referenced) - set(operations))
+            if unknown:
+                raise ValueError(
+                    f"recipe {recipe.id} references unknown operation(s): " + ", ".join(unknown)
+                )
+            if recipe.source_retirement_policy == "retire-after-verified-output":
+                unsafe = sorted(
+                    route.id
+                    for route in recipe.routes
+                    if not operations[route.operation_id].source_retirement_permitted
+                )
+                if unsafe:
+                    raise ValueError(
+                        f"recipe {recipe.id} retires its source but branch operation(s) do not "
+                        "authorize retirement: " + ", ".join(unsafe)
+                    )
         return self
 
     def operation(self, operation_id: str) -> OperationContract:
@@ -309,6 +330,27 @@ class RecipePlanner:
                         "immutable observations: " + ", ".join(missing)
                     ),
                 )
+
+        if recipe.source_retirement_policy == "retire-after-verified-output":
+            uncovered = _uncovered_inventory(inventory, selected)
+            if uncovered:
+                return WorkInapplicable(
+                    code="unsafe-retirement-coverage",
+                    message=(
+                        "Source retirement requires the selected branch artifacts to cover "
+                        "the complete immutable input inventory: " + ", ".join(uncovered[:10])
+                    ),
+                )
+            for route, selection in selected:
+                problem = _operation_input_problem(
+                    self.catalog.operation(route.operation_id),
+                    selection,
+                )
+                if problem is not None:
+                    return WorkInapplicable(
+                        code="unsafe-retirement-operation-inputs",
+                        message=f"Unsafe retirement inputs for branch {route.id}: {problem}",
+                    )
 
         decision_sha256 = canonical_json_sha256(
             {
@@ -606,6 +648,53 @@ def _subjects(
             )
         )
     return tuple(sorted(subjects, key=lambda subject: subject.id))
+
+
+def _uncovered_inventory(
+    inventory: Sequence[Mapping[str, object]],
+    selected: Sequence[tuple[RecipeRoute, ArtifactSelection]],
+) -> list[str]:
+    covered = {
+        (
+            artifact.collection.collection_id,
+            artifact.collection.manifest_sha256,
+            artifact.path,
+            artifact.bytes,
+            artifact.sha256,
+        )
+        for _route, selection in selected
+        for artifact in selection.artifacts
+    }
+    return sorted(
+        str(raw["path"])
+        for raw in inventory
+        if (
+            cast(CollectionRootRef, raw["collection"]).collection_id,
+            cast(CollectionRootRef, raw["collection"]).manifest_sha256,
+            str(raw["path"]),
+            raw["bytes"],
+            str(raw["sha256"]),
+        )
+        not in covered
+    )
+
+
+def _operation_input_problem(
+    operation: OperationContract,
+    selection: ArtifactSelection,
+) -> str | None:
+    counts: dict[str, int] = {}
+    for artifact in selection.artifacts:
+        counts[artifact.role] = counts.get(artifact.role, 0) + 1
+    contracts = {item.role: item for item in operation.inputs}
+    unsupported = sorted(set(counts) - set(contracts))
+    if unsupported:
+        return "unsupported role(s): " + ", ".join(unsupported)
+    for role, contract in contracts.items():
+        count = counts.get(role, 0)
+        if count < contract.minimum or (contract.maximum is not None and count > contract.maximum):
+            return f"input role cardinality is invalid: {role}"
+    return None
 
 
 def _target_inputs(

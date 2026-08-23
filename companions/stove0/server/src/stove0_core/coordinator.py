@@ -116,9 +116,9 @@ class RiverhogControlPort(Protocol):
 
     def abandon_claim(self, record: WorkRecord) -> None: ...
 
-    def begin_retirement(self, record: WorkRecord) -> None: ...
+    def begin_retirement(self, record: WorkRecord) -> bool: ...
 
-    def retire_input(self, record: WorkRecord, collection_id: int) -> None: ...
+    def retire_input(self, record: WorkRecord, collection_id: int) -> bool: ...
 
     def release_claim(self, record: WorkRecord) -> None: ...
 
@@ -641,7 +641,8 @@ class Stove0Coordinator:
             operation = self.planning.operation_contract(record.workflow_plan.operation)
             if not operation.source_retirement_permitted:
                 raise RuntimeError("operation contract does not authorize source retirement")
-        self.riverhog.begin_retirement(record)
+        if not self.riverhog.begin_retirement(record):
+            return record
         return self.work.begin_retirement(
             record.work_id,
             tuple(item.collection_id for item in record.work.inputs),
@@ -652,7 +653,8 @@ class Stove0Coordinator:
         if not record.retirement_remaining:
             raise RuntimeError("retirement phase has no remaining collection")
         collection_id = record.retirement_remaining[0]
-        self.riverhog.retire_input(record, collection_id)
+        if not self.riverhog.retire_input(record, collection_id):
+            return record
         if len(record.retirement_remaining) == 1:
             self.riverhog.release_claim(record)
         return self.work.record_retired(

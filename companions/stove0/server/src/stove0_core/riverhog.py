@@ -457,14 +457,20 @@ class Stove0RiverhogClient:
         if payload.get("state") != "abandoned" or _claim_binding(payload) != claim:
             raise RuntimeError("Riverhog did not abandon the expected preview claim")
 
-    def begin_retirement(self, record: WorkRecord) -> None:
+    def begin_retirement(self, record: WorkRecord) -> bool:
         claim = _record_claim(record)
         payload = self.api.begin_processing_claim_retirement(
             claim.claim_id,
             fence=claim.fence,
         )
-        if payload.get("state") != "retiring" or _claim_binding(payload) != claim:
+        if _claim_binding(payload) != claim:
+            raise RuntimeError("Riverhog returned another retirement claim")
+        state = payload.get("state")
+        if state == "settled":
+            return False
+        if state != "retiring":
             raise RuntimeError("Riverhog did not enter the expected retirement claim")
+        return True
 
     def abandon_claim(self, record: WorkRecord) -> None:
         claim = _record_claim(record)
@@ -476,7 +482,7 @@ class Stove0RiverhogClient:
         if payload.get("state") != "abandoned" or _claim_binding(payload) != claim:
             raise RuntimeError("Riverhog did not abandon the expected processing claim")
 
-    def retire_input(self, record: WorkRecord, collection_id: int) -> None:
+    def retire_input(self, record: WorkRecord, collection_id: int) -> bool:
         claim = _record_claim(record)
         if int(collection_id) not in {item.collection_id for item in record.work.inputs}:
             raise ValueError("retirement collection is outside the stove0 work")
@@ -489,11 +495,11 @@ class Stove0RiverhogClient:
             # A prior attempt may have deleted the exact immutable input before
             # stove0 durably recorded the phase transition. Absence is the
             # idempotent success condition; Riverhog still gates final release.
-            return
+            return True
         blockers = plan.get("blockers")
         challenge = plan.get("challenge")
         if blockers:
-            raise RuntimeError(f"Riverhog retirement is blocked: {blockers}")
+            return False
         if plan.get("status") != "ready" or not isinstance(challenge, str) or not challenge:
             raise RuntimeError("Riverhog did not return a ready retirement deletion plan")
         result = self.api.delete_collection(
@@ -511,6 +517,7 @@ class Stove0RiverhogClient:
         )
         if result.get("status") not in {"deleted", "already_absent"}:
             raise RuntimeError("Riverhog did not confirm input retirement")
+        return True
 
     def release_claim(self, record: WorkRecord) -> None:
         claim = _record_claim(record)

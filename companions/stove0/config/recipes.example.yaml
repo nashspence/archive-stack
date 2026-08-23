@@ -35,8 +35,8 @@ operations:
     minimum: 1
     derived_from_roles:
     - stove0.media.source/v1
-  source_retirement_permitted: true
-  contract_sha256: 88fb13c3915c3d96e843d916d5dc2ea7d202ccf9c84e86b9b8d9307619c1cb5d
+  source_retirement_permitted: false
+  contract_sha256: 458b788648245b9c4981091621321addc02694fda5afcb8a281584c9c99474c5
 - id: stove0.media.av1-opus-archive/v1
   intent_schema:
     id: stove0.media.av1-opus-archive-intent/v1

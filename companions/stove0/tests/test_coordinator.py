@@ -16,6 +16,7 @@ from stove0_core import (
     TargetInvocationAuthority,
     WorkFailure,
     WorkInapplicable,
+    WorkRecord,
 )
 from stove0_protocol import (
     ArtifactSelection,
@@ -48,6 +49,7 @@ from stove0_protocol import (
     TargetPlanBinding,
     WorkflowPlan,
     WorkflowPlanIntent,
+    WorkflowPlanPayload,
     WorkflowPreview,
     WorkflowPreviewPayload,
     WorkflowPreviewRequest,
@@ -102,7 +104,7 @@ def _work() -> WorkIdentity:
     )
 
 
-def _operation() -> OperationContract:
+def _operation(*, source_retirement_permitted: bool = False) -> OperationContract:
     return OperationContract.seal(
         OperationContractPayload(
             id="fixture.copy/v1",
@@ -122,6 +124,7 @@ def _operation() -> OperationContract:
                     derived_from_roles=("fixture.source/v1",),
                 ),
             ),
+            source_retirement_permitted=source_retirement_permitted,
         )
     )
 
@@ -891,6 +894,19 @@ class FixtureRiverhog:
         self.released = True
 
 
+class RetirementWaitingRiverhog(FixtureRiverhog):
+    def __init__(self) -> None:
+        super().__init__()
+        self.begin_ready = False
+        self.deletion_ready = False
+
+    def begin_retirement(self, _record: object) -> bool:
+        return self.begin_ready
+
+    def retire_input(self, _record: object, _collection_id: int) -> bool:
+        return self.deletion_ready
+
+
 def _workflow_preview(
     planning: FixturePlanning,
     target: FixtureTarget,
@@ -1116,6 +1132,56 @@ def test_coordination_settles_parent_only_after_successful_children_complete() -
 
     assert completed.phase == "complete"
     assert riverhog.coordination_settled is True
+
+
+def test_retirement_grace_and_deletion_blockers_leave_work_stably_waiting() -> None:
+    operation = _operation(source_retirement_permitted=True)
+    target = _target(operation)
+    work = _work()
+    workflow = WorkflowPlan.seal(
+        WorkflowPlanPayload(
+            work=work,
+            operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
+            target_registration_id="fixture-target",
+            target_contract_sha256=target.contract_sha256,
+            output_tags=("fixture-output",),
+            retirement_policy="retire-after-verified-output",
+        )
+    )
+    store = InMemoryWorkStore()
+    store.create(
+        WorkRecord(
+            work=work,
+            phase="settled",
+            revision=7,
+            claim=ClaimBinding(claim_id="claim-1", fence=1),
+            workflow_plan=workflow,
+        )
+    )
+    riverhog = RetirementWaitingRiverhog()
+    coordinator = Stove0Coordinator(
+        Stove0WorkService(store),
+        riverhog=riverhog,
+        planning=FixturePlanning(operation, target, None),
+        observers=FixtureObservers(None),
+        targets=FixtureTarget(operation, target),
+    )
+
+    grace_waiting = coordinator.step(work.work_id)
+    assert grace_waiting.phase == "settled"
+    assert grace_waiting.revision == 7
+
+    riverhog.begin_ready = True
+    retirement = coordinator.step(work.work_id)
+    assert retirement.phase == "retirement_pending"
+    blocked = coordinator.step(work.work_id)
+    assert blocked.phase == "retirement_pending"
+    assert blocked.revision == retirement.revision
+
+    riverhog.deletion_ready = True
+    complete = coordinator.step(work.work_id)
+    assert complete.phase == "complete"
+    assert riverhog.released is True
 
 
 def test_failed_branch_waits_for_independent_sibling_then_retries_same_graph() -> None:
