@@ -1343,15 +1343,24 @@ def install_listener(
     native_status = native_adapter.status(resolved_paths)
     previous: ListenerConfig | None = None
     previous_content: bytes | None = None
+    requested_content = config.content()
     if native_status.installed:
         if not resolved_paths.config_file.is_file():
             raise ListenerError("installed Gogurt listener config is absent")
         previous = ListenerConfig.read(resolved_paths.config_file)
         previous_content = resolved_paths.config_file.read_bytes()
+        if (
+            previous_content == requested_content
+            and native_status.enabled
+            and native_status.running
+        ):
+            current = listener_status(paths=resolved_paths, adapter=native_adapter)
+            if current.get("health") == "healthy":
+                return current
     previous_pid = _heartbeat_pid(resolved_paths)
     staged_config = stage_bytes(
         resolved_paths.config_file,
-        config.content(),
+        requested_content,
         mode=PRIVATE_FILE_MODE,
     )
     try:
