@@ -68,14 +68,29 @@ def ensure_private_file(path: Path) -> None:
 
 
 def ensure_private_files(paths: Iterable[Path]) -> None:
+    """Normalize files which still exist without ever recreating transient paths."""
+
     for path in paths:
-        if path.exists() or path.is_symlink():
-            try:
-                ensure_private_file(path)
-            except FileNotFoundError:
-                # SQLite may remove a transient WAL sidecar between directory
-                # enumeration and validation. There is no file left to secure.
-                continue
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise OSError(f"Gogurt listener state path is not a regular file: {path}")
+        if os.name == "nt":
+            continue
+        flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags)
+        except FileNotFoundError:
+            # SQLite may remove a transient WAL sidecar between directory
+            # enumeration and validation. It must never be recreated here.
+            continue
+        try:
+            os.fchmod(descriptor, PRIVATE_FILE_MODE)
+        finally:
+            os.close(descriptor)
 
 
 def stage_bytes(destination: Path, content: bytes, *, mode: int) -> Path:

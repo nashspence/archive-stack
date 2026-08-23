@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import plistlib
+import stat
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
@@ -61,19 +63,21 @@ def test_vanished_sqlite_sidecar_does_not_abort_remaining_validation(
     remaining = tmp_path / "listener.sqlite3-wal"
     vanished.touch()
     remaining.touch()
-    observed: list[Path] = []
+    vanished.chmod(0o644)
+    remaining.chmod(0o644)
+    real_open = os.open
 
-    def validate(path: Path) -> None:
-        observed.append(path)
-        if path == vanished:
+    def remove_before_open(path: Path, flags: int, mode: int = 0o777) -> int:
+        if Path(path) == vanished and vanished.exists():
             vanished.unlink()
-            raise FileNotFoundError(vanished)
+        return real_open(path, flags, mode)
 
-    monkeypatch.setattr(filesystem_module, "ensure_private_file", validate)
+    monkeypatch.setattr(filesystem_module.os, "open", remove_before_open)
 
     filesystem_module.ensure_private_files([vanished, remaining])
 
-    assert observed == [vanished, remaining]
+    assert not vanished.exists()
+    assert stat.S_IMODE(remaining.stat().st_mode) == 0o600
 
 
 def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> None:
