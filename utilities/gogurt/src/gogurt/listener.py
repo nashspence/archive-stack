@@ -275,7 +275,6 @@ def _secure_listener_state(paths: ListenerPaths) -> None:
             _heartbeat_lock_path(paths.heartbeat_file),
             paths.lock_file,
             paths.log_file,
-            *paths.state_dir.glob(f"{paths.database_file.name}-*"),
             *paths.state_dir.glob(f"{paths.log_file.name}.*"),
             *paths.state_dir.glob("listener.fatal.log*"),
         )
@@ -313,7 +312,6 @@ class ListenerStore:
         connection = sqlite3.connect(self.path, timeout=timeout_seconds)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        ensure_private_files(self.path.parent.glob(f"{self.path.name}-*"))
         return connection
 
     def create(self) -> None:

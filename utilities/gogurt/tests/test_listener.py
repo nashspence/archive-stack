@@ -583,6 +583,31 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
     assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in private_files)
 
 
+def test_listener_state_security_leaves_sqlite_sidecars_under_sqlite_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _config, paths, _mount, _counter = _fixture(tmp_path)
+    paths.state_dir.mkdir()
+    wal = paths.state_dir / "listener.sqlite3-wal"
+    shm = paths.state_dir / "listener.sqlite3-shm"
+    wal.touch()
+    shm.touch()
+    secured: list[Path] = []
+
+    monkeypatch.setattr(
+        listener_module,
+        "ensure_private_files",
+        lambda paths: secured.extend(paths),
+    )
+
+    listener_module._secure_listener_state(paths)
+
+    assert paths.database_file in secured
+    assert wal not in secured
+    assert shm not in secured
+
+
 def test_listener_store_negotiates_wal_only_during_initialization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -603,6 +628,20 @@ def test_listener_store_negotiates_wal_only_during_initialization(
     monkeypatch.setattr(sqlite3, "connect", traced_connect)
     assert store.summary() == {"counts": {}, "attention": []}
     assert not any("journal_mode" in statement.casefold() for statement in statements)
+
+
+def test_listener_store_does_not_normalize_sqlite_owned_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse_sidecar_normalization(_paths: object) -> None:
+        raise AssertionError("active SQLite sidecars must remain under SQLite ownership")
+
+    monkeypatch.setattr(listener_module, "ensure_private_files", refuse_sidecar_normalization)
+
+    store = ListenerStore(tmp_path / "listener.sqlite3")
+    store.create()
+    assert store.summary() == {"counts": {}, "attention": []}
 
 
 class FakeAdapter:
