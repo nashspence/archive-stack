@@ -191,7 +191,11 @@ def render_windows_task_xml(command: Sequence[str], *, user_sid: str) -> bytes:
     child(execute, "Command", command[0])
     if len(command) > 1:
         child(execute, "Arguments", subprocess.list2cmdline(list(command[1:])))
-    return cast(bytes, ET.tostring(task, encoding="utf-8", xml_declaration=True))
+    # Task Scheduler's XML-file import consumes the task schema as UTF-16.
+    # Emit the matching BOM and declaration together; declaring UTF-8 here can
+    # make schtasks reject an otherwise valid task as "unable to switch the
+    # encoding".
+    return cast(bytes, ET.tostring(task, encoding="utf-16", xml_declaration=True))
 
 
 class ListenerAdapter(Protocol):
@@ -291,8 +295,14 @@ class SystemdUserAdapter(_CommandAdapter):
 
     def unregister(self, paths: ListenerPaths) -> None:
         registration = self._require_registration(paths)
+        # A loaded unit remains manager authority even when its definition file
+        # has vanished. Stop it explicitly before disabling it: combining
+        # disable with --now can fail to issue the stop when systemd can no
+        # longer resolve the on-disk unit, leaving Restart=on-failure free to
+        # relaunch a cooperatively settling listener.
+        self.stop(paths)
         self._run(
-            ["systemctl", "--user", "disable", "--now", registration.name],
+            ["systemctl", "--user", "disable", registration.name],
             allowed=frozenset({0, 1, 5}),
         )
         registration.unlink(missing_ok=True)

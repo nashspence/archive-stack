@@ -150,7 +150,9 @@ def test_native_registrations_bind_only_the_absolute_installed_command() -> None
     assert plist["StandardErrorPath"] == "/dev/null"
 
     user_sid = "S-1-5-21-101-202-303-1001"
-    task = ET.fromstring(render_windows_task_xml(command, user_sid=user_sid))
+    rendered_task = render_windows_task_xml(command, user_sid=user_sid)
+    assert rendered_task.decode("utf-16").startswith("<?xml version='1.0' encoding='utf-16'?>")
+    task = ET.fromstring(rendered_task)
     ns = {"task": WINDOWS_TASK_XML_NAMESPACE}
     assert task.findtext("task:Triggers/task:LogonTrigger/task:UserId", namespaces=ns) == user_sid
     assert task.findtext("task:Principals/task:Principal/task:UserId", namespaces=ns) == user_sid
@@ -223,7 +225,11 @@ def test_systemd_registration_enables_login_resume_and_cleans_up(tmp_path: Path)
 
     adapter.unregister(paths)
     assert not registration.exists()
-    assert ["systemctl", "--user", "disable", "--now", registration.name] in adapter.commands
+    stop = ["systemctl", "--user", "stop", registration.name]
+    disable = ["systemctl", "--user", "disable", registration.name]
+    assert stop in adapter.commands
+    assert disable in adapter.commands
+    assert adapter.commands.index(stop) < adapter.commands.index(disable)
 
 
 def test_systemd_loaded_registration_remains_manageable_without_its_file(tmp_path: Path) -> None:
@@ -236,8 +242,13 @@ def test_systemd_loaded_registration_remains_manageable_without_its_file(tmp_pat
     assert adapter.status(paths).installed is True
     adapter.stop(paths)
     assert ["systemctl", "--user", "stop", registration.name] in adapter.commands
+    adapter.commands.clear()
     adapter.unregister(paths)
-    assert ["systemctl", "--user", "disable", "--now", registration.name] in adapter.commands
+    stop = ["systemctl", "--user", "stop", registration.name]
+    disable = ["systemctl", "--user", "disable", registration.name]
+    assert stop in adapter.commands
+    assert disable in adapter.commands
+    assert adapter.commands.index(stop) < adapter.commands.index(disable)
 
 
 class RecordingLaunchdAdapter(LaunchdUserAdapter):
