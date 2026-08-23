@@ -256,9 +256,13 @@ def test_windows_native_snapshot_retains_only_numeric_task_state(
             0,
             json.dumps(
                 {
-                    "state": 4,
-                    "last_result": -1,
-                    "instance_pids": [43, 41, 43],
+                    "returncode": 0,
+                    "fields": {
+                        "state": 4,
+                        "last_result": -1,
+                        "instance_pids": [43, 41, 43],
+                        "private": "not retained",
+                    },
                     "private": "not retained",
                 }
             ),
@@ -272,3 +276,63 @@ def test_windows_native_snapshot_retains_only_numeric_task_state(
         "returncode": 0,
         "fields": {"state": 4, "last_result": -1, "instance_pids": [41, 43]},
     }
+
+
+def test_windows_trace_uses_one_persistent_native_monitor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    created: list[list[str]] = []
+
+    class Process:
+        stdout = iter(
+            [
+                json.dumps({"returncode": 3, "fields": {}}) + "\n",
+                json.dumps(
+                    {
+                        "returncode": 0,
+                        "fields": {"state": 4, "last_result": 0, "instance_pids": [71]},
+                    }
+                )
+                + "\n",
+            ]
+        )
+
+        def poll(self) -> int:
+            return 0
+
+        def terminate(self) -> None:
+            raise AssertionError("completed monitor must not be terminated")
+
+        def wait(self, *, timeout: int) -> int:
+            raise AssertionError(f"completed monitor must not be waited for: {timeout}")
+
+        def kill(self) -> None:
+            raise AssertionError("completed monitor must not be killed")
+
+    def popen(command: list[str], **_kwargs: object) -> Process:
+        created.append(command)
+        return Process()
+
+    monkeypatch.setattr(module.subprocess, "Popen", popen)
+    trace = module._WindowsNativeLifecycleTrace(
+        scratch=tmp_path,
+        environment={},
+        clock=lambda: 2.0,
+    )
+
+    trace.start()
+    trace.thread.join(timeout=1)
+    events = trace.stop()
+
+    assert len(created) == 1
+    assert created[0][:3] == ["powershell.exe", "-NoProfile", "-NonInteractive"]
+    assert events == (
+        {"elapsed_milliseconds": 0, "returncode": 3, "fields": {}},
+        {
+            "elapsed_milliseconds": 0,
+            "returncode": 0,
+            "fields": {"state": 4, "last_result": 0, "instance_pids": [71]},
+        },
+    )

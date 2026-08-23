@@ -590,8 +590,9 @@ def _native_listener_snapshot(
             "$service.Connect();"
             "$task=$service.GetFolder('\\').GetTask('Riverhog.Gogurt');"
             "$pids=@($task.GetInstances(0)|ForEach-Object {[int]$_.EnginePID}|Sort-Object -Unique);"
-            "$result=[ordered]@{state=[int]$task.State;"
+            "$fields=[ordered]@{state=[int]$task.State;"
             "last_result=[int]$task.LastTaskResult;instance_pids=$pids};"
+            "$result=[ordered]@{returncode=0;fields=$fields};"
             "[Console]::Out.Write(($result|ConvertTo-Json -Compress));exit 0"
             "} catch { exit 3 }"
         )
@@ -610,27 +611,34 @@ def _native_listener_snapshot(
             text=True,
             timeout=5,
         )
-        windows_fields: dict[str, str | int | list[int]] = {}
         if native.returncode == 0:
-            value = json.loads(native.stdout)
-            if not isinstance(value, dict):
-                raise ValueError("Task Scheduler state is not an object")
-            for key in ("state", "last_result"):
-                item = value.get(key)
-                if isinstance(item, int) and not isinstance(item, bool):
-                    windows_fields[key] = item
-            pids = value.get("instance_pids")
-            if (
-                isinstance(pids, list)
-                and len(pids) <= 32
-                and all(
-                    isinstance(item, int) and not isinstance(item, bool) and item > 0
-                    for item in pids
-                )
-            ):
-                windows_fields["instance_pids"] = sorted(set(pids))
-        return {"returncode": native.returncode, "fields": windows_fields}
+            return _parse_windows_native_snapshot(json.loads(native.stdout))
+        return {"returncode": native.returncode, "fields": {}}
     return None
+
+
+def _parse_windows_native_snapshot(value: object) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError("Task Scheduler state is not an object")
+    returncode = value.get("returncode")
+    if not isinstance(returncode, int) or isinstance(returncode, bool):
+        raise ValueError("Task Scheduler state lacks a numeric return code")
+    fields_value = value.get("fields")
+    if not isinstance(fields_value, dict):
+        raise ValueError("Task Scheduler fields are not an object")
+    fields: dict[str, int | list[int]] = {}
+    for key in ("state", "last_result"):
+        item = fields_value.get(key)
+        if isinstance(item, int) and not isinstance(item, bool):
+            fields[key] = item
+    pids = fields_value.get("instance_pids")
+    if (
+        isinstance(pids, list)
+        and len(pids) <= 32
+        and all(isinstance(item, int) and not isinstance(item, bool) and item > 0 for item in pids)
+    ):
+        fields["instance_pids"] = sorted(set(pids))
+    return {"returncode": returncode, "fields": fields}
 
 
 class _NativeLifecycleTrace:
@@ -666,6 +674,9 @@ class _NativeLifecycleTrace:
             snapshot = self.probe()
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             snapshot = {"probe_error": type(exc).__name__}
+        self._record(snapshot)
+
+    def _record(self, snapshot: dict[str, object] | None) -> None:
         if snapshot is None or snapshot == self.previous:
             return
         self.previous = snapshot
@@ -692,6 +703,106 @@ class _NativeLifecycleTrace:
             self._capture()
         with self.lock:
             return tuple(dict(item) for item in self.events)
+
+
+class _WindowsNativeLifecycleTrace(_NativeLifecycleTrace):
+    """Stream Task Scheduler transitions from one persistent PowerShell process."""
+
+    def __init__(
+        self,
+        *,
+        scratch: Path,
+        environment: dict[str, str],
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        super().__init__(
+            scratch=scratch,
+            environment=environment,
+            probe=lambda: None,
+            clock=clock,
+        )
+        self.process: subprocess.Popen[str] | None = None
+
+    def _run(self) -> None:
+        script = (
+            "$ErrorActionPreference='Stop';$previous='';$service=$null;"
+            "while ($true) {"
+            "$returncode=0;$fields=[ordered]@{};"
+            "try {"
+            "if ($null -eq $service) {"
+            "$service=New-Object -ComObject 'Schedule.Service';$service.Connect()};"
+            "$task=$service.GetFolder('\\').GetTask('Riverhog.Gogurt');"
+            "$pids=@($task.GetInstances(0)|ForEach-Object {[int]$_.EnginePID}|Sort-Object -Unique);"
+            "$fields=[ordered]@{state=[int]$task.State;"
+            "last_result=[int]$task.LastTaskResult;instance_pids=$pids};"
+            "} catch {$returncode=3;$service=$null}"
+            "$result=[ordered]@{returncode=$returncode;fields=$fields};"
+            "$json=$result|ConvertTo-Json -Compress -Depth 3;"
+            "if ($json -ne $previous) {"
+            "[Console]::Out.WriteLine($json);[Console]::Out.Flush();$previous=$json};"
+            f"Start-Sleep -Milliseconds {int(NATIVE_TRACE_INTERVAL_SECONDS * 1000)}"
+            "}"
+        )
+        try:
+            process = subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    script,
+                ],
+                cwd=self.scratch,
+                env=self.environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except OSError as exc:
+            self._record({"probe_error": type(exc).__name__})
+            return
+        with self.lock:
+            self.process = process
+        if self.stop_event.is_set():
+            process.terminate()
+        if process.stdout is None:
+            self._record({"probe_error": "MissingMonitorOutput"})
+            return
+        for line in process.stdout:
+            try:
+                self._record(_parse_windows_native_snapshot(json.loads(line)))
+            except (json.JSONDecodeError, ValueError) as exc:
+                self._record({"probe_error": type(exc).__name__})
+
+    def stop(self) -> tuple[dict[str, object], ...]:
+        self.stop_event.set()
+        with self.lock:
+            process = self.process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError) as exc:
+                self._record({"probe_error": type(exc).__name__})
+                if process.poll() is None:
+                    try:
+                        process.kill()
+                        process.wait(timeout=5)
+                    except (OSError, subprocess.SubprocessError) as kill_exc:
+                        self._record({"probe_error": type(kill_exc).__name__})
+        self.thread.join(timeout=1)
+        with self.lock:
+            return tuple(dict(item) for item in self.events)
+
+
+def _native_lifecycle_trace(
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+) -> _NativeLifecycleTrace:
+    if sys.platform == "win32":
+        return _WindowsNativeLifecycleTrace(scratch=scratch, environment=environment)
+    return _NativeLifecycleTrace(scratch=scratch, environment=environment)
 
 
 def _retain_gogurt_failure_evidence(
@@ -787,7 +898,7 @@ def _run_gogurt_listener_lifecycle(
     if initial.get("installed") is not False:
         raise QualificationError("listener qualification would replace an existing installation")
     state_dir = Path(str(initial["state_dir"]))
-    native_trace = _NativeLifecycleTrace(scratch=scratch, environment=environment)
+    native_trace = _native_lifecycle_trace(scratch=scratch, environment=environment)
     native_trace.start()
 
     action = scratch / "gogurt-listener-action.py"
