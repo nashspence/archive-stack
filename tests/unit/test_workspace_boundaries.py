@@ -31,6 +31,10 @@ IMPLEMENTATION_OWNERS = {
         {"stove0_api", "stove0_core"},
     ),
     "stove0-client": (REPO / "companions/stove0/client/src", {"stove0_cli"}),
+    "stove0-exiftool-observer": (
+        REPO / "extensions/stove0/exiftool-observer/src",
+        {"stove0_exiftool_observer"},
+    ),
     "stove0-ffprobe-sampling-observer": (
         REPO / "extensions/stove0/ffprobe-sampling-observer/src",
         {"stove0_ffprobe_sampling_observer"},
@@ -380,6 +384,9 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
             "riverhog/storage-adapter-backblaze"
         ),
         REPO / "companions/stove0/server/Dockerfile": "companions/stove0/server",
+        REPO / "extensions/stove0/exiftool-observer/Dockerfile": (
+            "extensions/stove0/exiftool-observer"
+        ),
         REPO / "extensions/stove0/ffprobe-sampling-observer/Dockerfile": (
             "extensions/stove0/ffprobe-sampling-observer"
         ),
@@ -483,6 +490,7 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
             "riverhog-storage-adapter-backblaze"
         ),
         REPO / "companions/stove0/server/Dockerfile": "stove0-server",
+        REPO / "extensions/stove0/exiftool-observer/Dockerfile": ("stove0-exiftool-observer"),
         REPO / "extensions/stove0/ffprobe-sampling-observer/Dockerfile": (
             "stove0-ffprobe-sampling-observer"
         ),

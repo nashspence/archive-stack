@@ -26,6 +26,7 @@ from stove0_protocol import (
     ObservationEvidence,
     ObservationRequest,
     ObservationRequestPayload,
+    ObservationResult,
     OperationRef,
     RecipeRef,
     WorkflowPlan,
@@ -41,6 +42,8 @@ from stove0_target_protocol import (
 
 from stove0_core.coordinator import ObserverPort, TargetPort
 from stove0_core.work_state import WorkInapplicable
+
+_JSON_POINTER_PATTERN = r"^(?:|/(?:[^~/]|~[01])*(?:/(?:[^~/]|~[01])*)*)$"
 
 
 class RecipeModel(BaseModel):
@@ -65,18 +68,18 @@ class ObserverUse(RecipeModel):
 
 class FactPredicate(RecipeModel):
     observation_contract_id: str
-    pointer: str = Field(pattern=r"^(?:|/(?:[^~/]|~[01])*)$")
+    pointer: str = Field(pattern=_JSON_POINTER_PATTERN)
     operator: Literal["equals", "not-equals", "contains", "exists"] = "equals"
     value: JsonValue = None
 
 
 class OperationProjection(RecipeModel):
-    """One bounded JSON-pointer copy into an operation request."""
+    """One declarative JSON-pointer copy into an operation request."""
 
     source: Literal["work-effective-intent", "work-evaluation"]
-    source_pointer: str = Field(pattern=r"^(?:|/(?:[^~/]|~[01])*(?:/(?:[^~/]|~[01])*)*)$")
+    source_pointer: str = Field(pattern=_JSON_POINTER_PATTERN)
     destination: Literal["intent", "target-options"]
-    destination_pointer: str = Field(pattern=r"^(?:|/(?:[^~/]|~[01])*(?:/(?:[^~/]|~[01])*)*)$")
+    destination_pointer: str = Field(pattern=_JSON_POINTER_PATTERN)
 
 
 class RecipeRoute(RecipeModel):
@@ -273,22 +276,26 @@ class RecipePlanner:
             subjects = _subjects(inventory, use.artifact_rules)
             if not subjects:
                 continue
-            requests.append(
-                ObservationRequest.seal(
-                    ObservationRequestPayload(
-                        work_id=work.work_id,
-                        observer_registration_id=use.registration_id,
-                        observer_descriptor_sha256=descriptor.descriptor_sha256,
-                        observer_contract_id=support.contract_id,
-                        observer_contract_sha256=support.contract_sha256,
-                        subjects=subjects,
-                        options=use.options,
-                        timeout_seconds=use.timeout_seconds,
-                        maximum_result_bytes=use.maximum_result_bytes,
-                        retrieval_policy=use.retrieval_policy,
+            for offset in range(0, len(subjects), support.maximum_subjects):
+                # An observer's subject maximum is a request/implementation
+                # capacity, never a total collection or workflow ceiling.
+                batch = subjects[offset : offset + support.maximum_subjects]
+                requests.append(
+                    ObservationRequest.seal(
+                        ObservationRequestPayload(
+                            work_id=work.work_id,
+                            observer_registration_id=use.registration_id,
+                            observer_descriptor_sha256=descriptor.descriptor_sha256,
+                            observer_contract_id=support.contract_id,
+                            observer_contract_sha256=support.contract_sha256,
+                            subjects=batch,
+                            options=use.options,
+                            timeout_seconds=use.timeout_seconds,
+                            maximum_result_bytes=use.maximum_result_bytes,
+                            retrieval_policy=use.retrieval_policy,
+                        )
                     )
                 )
-            )
         return tuple(sorted(requests, key=lambda request: request.request_id))
 
     def workflow_plan(
@@ -779,9 +786,17 @@ def _predicate_matches(
         for evidence in observations
         if evidence.request.observer_contract_id == predicate.observation_contract_id
     ]
-    if len(matches) != 1 or matches[0].state != "observed" or matches[0].facts is None:
+    if not matches or any(result.state != "observed" or result.facts is None for result in matches):
         return False
-    present, value = _json_pointer(matches[0].facts, predicate.pointer)
+    if predicate.operator == "exists" and predicate.value is False:
+        return all(not _json_pointer(result.facts, predicate.pointer)[0] for result in matches)
+    return any(_result_matches_predicate(predicate, result) for result in matches)
+
+
+def _result_matches_predicate(predicate: FactPredicate, result: ObservationResult) -> bool:
+    if result.state != "observed" or result.facts is None:
+        return False
+    present, value = _json_pointer(result.facts, predicate.pointer)
     if predicate.operator == "exists":
         return present is bool(predicate.value)
     if not present:

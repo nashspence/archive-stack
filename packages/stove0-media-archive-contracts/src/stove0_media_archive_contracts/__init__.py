@@ -1,4 +1,4 @@
-"""Maintained, target-independent media operation contracts."""
+"""Maintained media observation and target-independent operation contracts."""
 
 from __future__ import annotations
 
@@ -11,6 +11,21 @@ from stove0_target_protocol import (
     OperationContract,
     OperationContractPayload,
     OutputArtifactContract,
+)
+
+from stove0_media_archive_contracts.observation import (
+    MEDIA_METADATA_FACTS_SCHEMA,
+    MEDIA_METADATA_FACTS_SCHEMA_ID,
+    MEDIA_METADATA_OBSERVATION_ID,
+    MEDIA_METADATA_OBSERVER_CONTRACT,
+    MEDIA_METADATA_OPTIONS_SCHEMA,
+    MEDIA_METADATA_OPTIONS_SCHEMA_ID,
+    MediaArtifactFacts,
+    MediaArtifactState,
+    MediaFactEvidence,
+    MediaFactName,
+    MediaMetadataFact,
+    MediaMetadataFacts,
 )
 
 SOURCE_ROLE: Final = "stove0.media.source/v1"
@@ -111,6 +126,18 @@ __all__ = [
     "AUDIO_ARCHIVE_OPERATION_ID",
     "AUDIO_ARCHIVE_ROLE",
     "AudioArchiveIntent",
+    "MEDIA_METADATA_FACTS_SCHEMA",
+    "MEDIA_METADATA_FACTS_SCHEMA_ID",
+    "MEDIA_METADATA_OBSERVATION_ID",
+    "MEDIA_METADATA_OBSERVER_CONTRACT",
+    "MEDIA_METADATA_OPTIONS_SCHEMA",
+    "MEDIA_METADATA_OPTIONS_SCHEMA_ID",
+    "MediaArtifactFacts",
+    "MediaArtifactState",
+    "MediaFactEvidence",
+    "MediaFactName",
+    "MediaMetadataFact",
+    "MediaMetadataFacts",
     "OPERATIONS",
     "SOURCE_ARTIFACT_ROLE",
     "SOURCE_ROLE",

@@ -48,6 +48,7 @@ updates:
   - package-ecosystem: docker
     directories:
       - /companions/stove0/server
+      - /extensions/stove0/exiftool-observer
       - /extensions/stove0/ffprobe-sampling-observer
       - /extensions/stove0/nvenc-av1-opus-target
       - /extensions/stove0/opus-target

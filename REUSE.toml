@@ -12,6 +12,7 @@ path = [
   "riverhog/storage-adapter-aws/**",
   "riverhog/storage-adapter-backblaze/**",
   "companions/stove0/server/**",
+  "extensions/stove0/exiftool-observer/**",
   "extensions/stove0/ffprobe-sampling-observer/**",
   "extensions/stove0/nvenc-av1-opus-review-sampler/**",
   "extensions/stove0/nvenc-av1-opus-target/**",

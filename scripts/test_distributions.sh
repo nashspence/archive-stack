@@ -171,6 +171,11 @@ smoke_workspace_distribution \
   'import importlib.metadata as m; import stove0_ffprobe_sampling_observer.app; m.version("stove0-ffprobe-sampling-observer")' \
   stove0-ffprobe-sampling-observer
 smoke_workspace_distribution \
+  stove0-exiftool-observer \
+  'stove0_exiftool_observer-*.whl' \
+  'import importlib.metadata as m; import stove0_exiftool_observer.app; m.version("stove0-exiftool-observer")' \
+  stove0-exiftool-observer
+smoke_workspace_distribution \
   stove0-nvenc-av1-opus-target \
   'stove0_nvenc_av1_opus_target-*.whl' \
   'import importlib.metadata as m; import stove0_nvenc_av1_opus_target.app; m.version("stove0-nvenc-av1-opus-target")' \

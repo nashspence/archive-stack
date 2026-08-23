@@ -132,6 +132,7 @@ jobs:
           - riverhog-storage-adapter-aws
           - riverhog-storage-adapter-backblaze
           - stove0
+          - stove0-exiftool-observer
           - stove0-ffprobe-sampling-observer
           - stove0-nvenc-av1-opus-target
           - stove0-opus-target

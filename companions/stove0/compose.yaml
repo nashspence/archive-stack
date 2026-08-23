@@ -17,9 +17,10 @@ x-stove0-environment: &stove0-environment
   STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS: ${STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS:-2592000}
   RIVERHOG_BASE_URL: ${STOVE0_RIVERHOG_BASE_URL:-http://app:8000}
   RIVERHOG_ALLOW_INSECURE_HTTP: "true"
-  STOVE0_OBSERVERS_JSON: '{"ffprobe-sampling":{"base_url":"http://ffprobe-sampling-observer:8080","token_env":"STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN","allow_insecure_http":true}}'
+  STOVE0_OBSERVERS_JSON: '{"exiftool":{"base_url":"http://exiftool-observer:8080","token_env":"STOVE0_EXIFTOOL_OBSERVER_TOKEN","allow_insecure_http":true},"ffprobe-sampling":{"base_url":"http://ffprobe-sampling-observer:8080","token_env":"STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN","allow_insecure_http":true}}'
   STOVE0_TARGETS_JSON: '{"nvenc-av1-opus":{"base_url":"http://nvenc-av1-opus-target:8080","token_env":"STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN","allow_insecure_http":true},"opus":{"base_url":"http://opus-target:8080","token_env":"STOVE0_OPUS_TARGET_TOKEN","allow_insecure_http":true},"review":{"base_url":"http://review-target:8080","token_env":"STOVE0_REVIEW_TARGET_TOKEN","allow_insecure_http":true}}'
   STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE: /run/secrets/stove0_ffprobe_sampling_observer_token
+  STOVE0_EXIFTOOL_OBSERVER_TOKEN_FILE: /run/secrets/stove0_exiftool_observer_token
   STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE: /run/secrets/stove0_nvenc_av1_opus_target_token
   STOVE0_OPUS_TARGET_TOKEN_FILE: /run/secrets/stove0_opus_target_token
   STOVE0_REVIEW_TARGET_TOKEN_FILE: /run/secrets/stove0_review_target_token
@@ -66,6 +67,7 @@ services:
     secrets:
       - stove0_database_url
       - stove0_ffprobe_sampling_observer_token
+      - stove0_exiftool_observer_token
       - stove0_nvenc_av1_opus_target_token
       - stove0_opus_target_token
       - stove0_review_target_token
@@ -99,6 +101,7 @@ services:
     secrets:
       - stove0_database_url
       - stove0_ffprobe_sampling_observer_token
+      - stove0_exiftool_observer_token
       - stove0_nvenc_av1_opus_target_token
       - stove0_opus_target_token
       - stove0_review_target_token
@@ -116,6 +119,7 @@ services:
     secrets:
       - stove0_database_url
       - stove0_ffprobe_sampling_observer_token
+      - stove0_exiftool_observer_token
       - stove0_nvenc_av1_opus_target_token
       - stove0_opus_target_token
       - stove0_review_target_token
@@ -154,6 +158,28 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+
+  exiftool-observer:
+    <<: *hardening
+    image: stove0-exiftool-observer:dev
+    build:
+      context: ../..
+      dockerfile: extensions/stove0/exiftool-observer/Dockerfile
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+    command: ["stove0-exiftool-observer", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      TZ: ${TZ:-UTC}
+      STOVE0_EXIFTOOL_OBSERVER_TOKEN_FILE: /run/secrets/stove0_exiftool_observer_token
+      STOVE0_EXIFTOOL_OBSERVER_SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+      STOVE0_EXIFTOOL_OBSERVER_IMAGE_DIGEST: ${STOVE0_EXIFTOOL_IMAGE_DIGEST:?STOVE0_EXIFTOOL_IMAGE_DIGEST is required}
+      STOVE0_EXIFTOOL_OBSERVER_WORKSPACE: /run/stove0-exiftool-observer
+    secrets: ["stove0_exiftool_observer_token"]
+    networks: ["stove0-internal", "riverhog-control"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532
+      - /run/stove0-exiftool-observer:rw,noexec,nosuid,nodev,mode=700,uid=65532,gid=65532,size=${STOVE0_OBSERVER_TMPFS_SIZE:-8g}
+    healthcheck: *ffmpeg-health
 
   opus-target:
     <<: *hardening
@@ -305,6 +331,8 @@ secrets:
     file: ${STOVE0_WORKER_RIVERHOG_TOKEN_FILE:?STOVE0_WORKER_RIVERHOG_TOKEN_FILE is required}
   stove0_ffprobe_sampling_observer_token:
     file: ${STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE:?STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE is required}
+  stove0_exiftool_observer_token:
+    file: ${STOVE0_EXIFTOOL_OBSERVER_TOKEN_FILE:?STOVE0_EXIFTOOL_OBSERVER_TOKEN_FILE is required}
   stove0_nvenc_av1_opus_target_token:
     file: ${STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE:?STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE is required}
   stove0_nvenc_av1_opus_review_sampler_token:

@@ -5,6 +5,7 @@ group "default" {
     "riverhog-storage-adapter-aws",
     "riverhog-storage-adapter-backblaze",
     "stove0",
+    "stove0-exiftool-observer",
     "stove0-ffprobe-sampling-observer",
     "stove0-nvenc-av1-opus-target",
     "stove0-opus-target",
@@ -62,6 +63,14 @@ target "stove0" {
   context    = "."
   dockerfile = "companions/stove0/server/Dockerfile"
   tags       = ["stove0:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "stove0-exiftool-observer" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "extensions/stove0/exiftool-observer/Dockerfile"
+  tags       = ["stove0-exiftool-observer:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 

@@ -474,6 +474,7 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert len(uv_log_lines) == 1
     assert "python -m mypy companions/stove0/client/src" in uv_log_lines[0]
     for source in (
+        "extensions/stove0/exiftool-observer/src",
         "extensions/stove0/ffprobe-sampling-observer/src",
         "extensions/stove0/nvenc-av1-opus-review-sampler/src",
         "extensions/stove0/nvenc-av1-opus-target/src",
@@ -556,6 +557,7 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
         "riverhog-storage-adapter-aws",
         "riverhog-storage-adapter-backblaze",
         "stove0",
+        "stove0-exiftool-observer",
         "stove0-ffprobe-sampling-observer",
         "stove0-nvenc-av1-opus-target",
         "stove0-opus-target",
@@ -820,6 +822,7 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
         REPO_ROOT / "riverhog/server/Dockerfile",
         REPO_ROOT / "riverhog/ftp-adapter/Dockerfile",
         REPO_ROOT / "companions/stove0/server/Dockerfile",
+        REPO_ROOT / "extensions/stove0/exiftool-observer/Dockerfile",
         REPO_ROOT / "extensions/stove0/ffprobe-sampling-observer/Dockerfile",
         REPO_ROOT / "extensions/stove0/nvenc-av1-opus-target/Dockerfile",
         REPO_ROOT / "extensions/stove0/opus-target/Dockerfile",
@@ -930,6 +933,7 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make build-riverhog" in completed.stdout
     assert "make build-riverhog-ftp-adapter" in completed.stdout
     assert "make build-stove0" in completed.stdout
+    assert "make build-stove0-exiftool-observer" in completed.stdout
     assert "make build-stove0-ffprobe-sampling-observer" in completed.stdout
     assert "make build-stove0-nvenc-av1-opus-target" in completed.stdout
     assert "make build-stove0-opus-target" in completed.stdout

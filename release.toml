@@ -22,6 +22,7 @@ required_checks = [
   "build riverhog-storage-adapter-aws",
   "build riverhog-storage-adapter-backblaze",
   "build stove0",
+  "build stove0-exiftool-observer",
   "build stove0-ffprobe-sampling-observer",
   "build stove0-nvenc-av1-opus-target",
   "build stove0-opus-target",
@@ -134,6 +135,7 @@ end_user_artifact = [
   "utilities/gogurt",
 ]
 deployed_implementation = [
+  "extensions/stove0/exiftool-observer",
   "extensions/stove0/ffprobe-sampling-observer",
   "extensions/stove0/nvenc-av1-opus-review-sampler",
   "extensions/stove0/nvenc-av1-opus-target",
@@ -198,6 +200,7 @@ riverhog-ftp-adapter = { distribution = "riverhog-ftp-adapter", repository = "gh
 riverhog-storage-adapter-aws = { distribution = "riverhog-storage-adapter-aws", repository = "ghcr.io/nashspence/riverhog-storage-adapter-aws" }
 riverhog-storage-adapter-backblaze = { distribution = "riverhog-storage-adapter-backblaze", repository = "ghcr.io/nashspence/riverhog-storage-adapter-backblaze" }
 stove0 = { distribution = "stove0-server", repository = "ghcr.io/nashspence/riverhog-stove0" }
+stove0-exiftool-observer = { distribution = "stove0-exiftool-observer", repository = "ghcr.io/nashspence/riverhog-stove0-exiftool-observer" }
 stove0-ffprobe-sampling-observer = { distribution = "stove0-ffprobe-sampling-observer", repository = "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer" }
 stove0-nvenc-av1-opus-target = { distribution = "stove0-nvenc-av1-opus-target", repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target" }
 stove0-opus-target = { distribution = "stove0-opus-target", repository = "ghcr.io/nashspence/riverhog-stove0-opus-target" }

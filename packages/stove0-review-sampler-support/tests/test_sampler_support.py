@@ -111,6 +111,54 @@ def _result(descriptor: SamplerDescriptor, request: SamplerRequest) -> SamplerRe
     )
 
 
+def test_sampler_protocol_does_not_reject_large_declared_review_work() -> None:
+    descriptor = _descriptor()
+    inputs = tuple(
+        SamplerInput(
+            id=f"source-{index:03d}",
+            path=f"input/source-{index:03d}.wav",
+            bytes=1,
+            sha256=_sha("a"),
+            media_type="audio/wav",
+        )
+        for index in range(257)
+    )
+    request = SamplerRequest.seal(
+        SamplerRequestPayload(
+            sampler_descriptor_sha256=descriptor.descriptor_sha256,
+            workspace_id=_sha("7"),
+            inputs=inputs,
+            windows=tuple(
+                SamplerWindow(
+                    id=f"sample-{index:03d}",
+                    input_id=item.id,
+                    start_ms=0,
+                    duration_ms=2 * 60 * 60 * 1000 if index == 256 else 100,
+                    output_path=f"output/review/sample-{index:03d}.opus",
+                )
+                for index, item in enumerate(inputs)
+            ),
+            portable_intent={"bitrate": 96},
+            maximum_output_bytes=1024**3,
+            timeout_seconds=30,
+            cancellation_path="control/cancel",
+        )
+    )
+    output = SamplerOutput(
+        id="sample-combined",
+        path="output/review/combined.opus",
+        bytes=1,
+        sha256=_sha("b"),
+        media_type="audio/ogg",
+        derived_from=tuple(item.id for item in inputs),
+    )
+
+    assert len(request.inputs) == 257
+    assert len(request.windows) == 257
+    assert request.windows[-1].duration_ms == 7_200_000
+    assert len(output.derived_from) == 257
+
+
 class FixtureSampler:
     def __init__(self) -> None:
         self.value = _descriptor()

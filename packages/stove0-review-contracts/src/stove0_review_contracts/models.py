@@ -29,7 +29,7 @@ class SampleableRange(ReviewModel):
 class MediaSamplingArtifactFacts(ReviewModel):
     artifact_id: str = Field(min_length=1, max_length=160)
     duration_ms: int = Field(ge=1)
-    sampleable_ranges: tuple[SampleableRange, ...] = Field(min_length=1, max_length=4096)
+    sampleable_ranges: tuple[SampleableRange, ...] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_ranges(self) -> Self:
@@ -47,7 +47,7 @@ class MediaSamplingArtifactFacts(ReviewModel):
 
 
 class MediaSamplingFacts(ReviewModel):
-    artifacts: tuple[MediaSamplingArtifactFacts, ...] = Field(min_length=1, max_length=128)
+    artifacts: tuple[MediaSamplingArtifactFacts, ...] = Field(min_length=1)
 
     @field_validator("artifacts")
     @classmethod
@@ -69,9 +69,9 @@ class ReviewSampleWindow(ReviewModel):
 class ReviewSamplePlanPayload(ReviewModel):
     format: Literal["stove0-review-sample-plan/v1"] = "stove0-review-sample-plan/v1"
     selection_method: Literal["evenly-spaced/v1"] = "evenly-spaced/v1"
-    samples_per_artifact: int = Field(ge=1, le=64)
-    window_duration_ms: int = Field(ge=1, le=60 * 60 * 1000)
-    windows: tuple[ReviewSampleWindow, ...] = Field(min_length=1, max_length=8192)
+    samples_per_artifact: int = Field(ge=1)
+    window_duration_ms: int = Field(ge=1)
+    windows: tuple[ReviewSampleWindow, ...] = Field(min_length=1)
 
     @field_validator("windows")
     @classmethod
@@ -117,8 +117,8 @@ def evenly_spaced_sample_plan(
     samples_per_artifact: int,
     window_duration_ms: int,
 ) -> ReviewSamplePlan:
-    if samples_per_artifact < 1 or samples_per_artifact > 64:
-        raise ValueError("samples_per_artifact must be between 1 and 64")
+    if samples_per_artifact < 1:
+        raise ValueError("samples_per_artifact must be positive")
     if window_duration_ms < 1:
         raise ValueError("window_duration_ms must be positive")
     windows: list[ReviewSampleWindow] = []

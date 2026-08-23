@@ -81,6 +81,10 @@ RUNTIME_IMAGE_TARGETS = {
         "distribution": "stove0-server",
         "repository": "ghcr.io/nashspence/riverhog-stove0",
     },
+    "stove0-exiftool-observer": {
+        "distribution": "stove0-exiftool-observer",
+        "repository": "ghcr.io/nashspence/riverhog-stove0-exiftool-observer",
+    },
     "stove0-ffprobe-sampling-observer": {
         "distribution": "stove0-ffprobe-sampling-observer",
         "repository": "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer",

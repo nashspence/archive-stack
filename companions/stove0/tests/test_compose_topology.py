@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -15,6 +16,7 @@ def test_reference_topology_uses_one_postgres_authority_and_distinct_roles() -> 
     assert set(services) == {
         "api",
         "controller",
+        "exiftool-observer",
         "ffprobe-sampling-observer",
         "nvenc-av1-opus-review-sampler",
         "nvenc-av1-opus-target",
@@ -53,6 +55,7 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
         "controller",
         "worker",
         "state",
+        "exiftool-observer",
         "ffprobe-sampling-observer",
         "nvenc-av1-opus-review-sampler",
         "nvenc-av1-opus-target",
@@ -65,6 +68,7 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
         assert services[name]["group_add"] == ["${STOVE0_SECRET_FILE_GID:-65532}"]
         assert services[name]["cap_drop"] == ["ALL"]
     for name in (
+        "exiftool-observer",
         "ffprobe-sampling-observer",
         "nvenc-av1-opus-review-sampler",
         "nvenc-av1-opus-target",
@@ -78,6 +82,7 @@ def test_reference_topology_keeps_payload_scratch_ephemeral_and_roles_private() 
     assert services["ffprobe-sampling-observer"]["command"][0] == (
         "stove0-ffprobe-sampling-observer"
     )
+    assert services["exiftool-observer"]["command"][0] == "stove0-exiftool-observer"
     assert services["opus-target"]["command"][0] == "stove0-opus-target"
     assert services["opus-review-sampler"]["command"][0] == "stove0-opus-review-sampler"
     assert services["review-target"]["command"][0] == "stove0-review-target"
@@ -157,6 +162,35 @@ def test_reference_topology_uses_secret_files_and_explicit_lan_http_opt_in() -> 
     text = COMPOSE.read_text(encoding="utf-8")
     assert "STOVE0_API_TOKEN=" not in text
     assert "RIVERHOG_TOKEN=" not in text
+
+
+def test_reference_observer_registrations_connect_exact_one_role_services() -> None:
+    payload = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    services = payload["services"]
+    expected = {
+        "exiftool": (
+            "http://exiftool-observer:8080",
+            "STOVE0_EXIFTOOL_OBSERVER_TOKEN",
+            "stove0_exiftool_observer_token",
+        ),
+        "ffprobe-sampling": (
+            "http://ffprobe-sampling-observer:8080",
+            "STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN",
+            "stove0_ffprobe_sampling_observer_token",
+        ),
+    }
+    for role in ("api", "controller", "worker"):
+        service = services[role]
+        registrations = json.loads(service["environment"]["STOVE0_OBSERVERS_JSON"])
+        assert set(registrations) == set(expected)
+        for registration, (base_url, token_env, secret) in expected.items():
+            assert registrations[registration] == {
+                "base_url": base_url,
+                "token_env": token_env,
+                "allow_insecure_http": True,
+            }
+            assert service["environment"][f"{token_env}_FILE"] == f"/run/secrets/{secret}"
+            assert secret in service["secrets"]
 
 
 def test_reference_topology_connects_bounded_operational_state_retention() -> None:

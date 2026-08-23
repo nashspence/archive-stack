@@ -59,7 +59,7 @@ def test_review_contract_pack_is_content_specific_but_core_independent() -> None
     subprocess.run(command, check=True)
 
 
-def test_evenly_spaced_sample_plan_is_deterministic_and_bounded() -> None:
+def test_evenly_spaced_sample_plan_is_deterministic_within_sampleable_domains() -> None:
     first = evenly_spaced_sample_plan(
         _facts(),
         samples_per_artifact=4,
@@ -82,6 +82,51 @@ def test_evenly_spaced_sample_plan_is_deterministic_and_bounded() -> None:
             samples_per_artifact=64,
             window_duration_ms=119_999,
         )
+
+
+def test_review_work_cardinality_has_no_protocol_ceiling() -> None:
+    source = REVIEW_MATERIALIZE_OPERATION.inputs[0]
+    sampled_outputs = tuple(
+        output
+        for output in REVIEW_MATERIALIZE_OPERATION.outputs
+        if output.role != "stove0.review.index/v1"
+    )
+    facts_schema = MEDIA_SAMPLING_OBSERVER_CONTRACT.facts_schema.document
+    plan = evenly_spaced_sample_plan(
+        MediaSamplingFacts(
+            artifacts=tuple(
+                MediaSamplingArtifactFacts(
+                    artifact_id=f"camera-{index:03d}",
+                    duration_ms=1_000,
+                    sampleable_ranges=(SampleableRange(start_ms=0, duration_ms=1_000),),
+                )
+                for index in range(257)
+            )
+        ),
+        samples_per_artifact=1,
+        window_duration_ms=100,
+    )
+    long_window_plan = evenly_spaced_sample_plan(
+        MediaSamplingFacts(
+            artifacts=(
+                MediaSamplingArtifactFacts(
+                    artifact_id="camera-long",
+                    duration_ms=3 * 60 * 60 * 1000,
+                    sampleable_ranges=(
+                        SampleableRange(start_ms=0, duration_ms=3 * 60 * 60 * 1000),
+                    ),
+                ),
+            )
+        ),
+        samples_per_artifact=1,
+        window_duration_ms=2 * 60 * 60 * 1000,
+    )
+
+    assert source.maximum is None
+    assert all(output.maximum is None for output in sampled_outputs)
+    assert facts_schema["properties"]["artifacts"].get("maxItems") is None
+    assert len(plan.windows) == 257
+    assert long_window_plan.windows[0].duration_ms == 7_200_000
 
 
 def test_review_evaluation_expands_one_normal_work_per_variant() -> None:
