@@ -55,6 +55,7 @@ def test_windows_existing_private_file_is_validated_without_reopening(
     filesystem_module.ensure_private_file(sidecar)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX sidecar mode normalization")
 def test_vanished_sqlite_sidecar_does_not_abort_remaining_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
