@@ -187,7 +187,7 @@ class SqlAlchemyCollectionWorkflowService:
                     collection_id=root.collection_id,
                     collection_order=index,
                     manifest_sha256=root.manifest_sha256,
-                    content_etag=root.content_etag,
+                    content_identity=root.content_identity,
                 )
                 for index, root in enumerate(normalized_inputs)
             )
@@ -591,7 +591,7 @@ class SqlAlchemyCollectionWorkflowService:
                 CollectionRootIdentity(
                     collection_id=item.collection_id,
                     manifest_sha256=item.manifest_sha256,
-                    content_etag=item.content_etag,
+                    content_identity=item.content_identity,
                 )
                 for item in _claim_inputs(session, claim.id)
             )
@@ -984,7 +984,7 @@ def _require_same_claim(
         CollectionRootIdentity(
             collection_id=item.collection_id,
             manifest_sha256=item.manifest_sha256,
-            content_etag=item.content_etag,
+            content_identity=item.content_identity,
         )
         for item in _claim_inputs(session, claim.id)
     )
@@ -1238,7 +1238,7 @@ def _attach_processing_outcome(
             source_claim_id=identity.source_claim_id,
             collection_id=root.collection_id,
             manifest_sha256=root.manifest_sha256,
-            content_etag=root.content_etag,
+            content_identity=root.content_identity,
             derivation_sha256=identity.derivation_sha256,
             created_at=utc_timestamp_now(),
         )
@@ -1290,7 +1290,7 @@ def _outcome_identity(
         output_collection=CollectionRootIdentity(
             collection_id=record.collection_id,
             manifest_sha256=record.manifest_sha256,
-            content_etag=record.content_etag,
+            content_identity=record.content_identity,
         ),
         derivation_sha256=record.derivation_sha256,
     )
@@ -1362,7 +1362,7 @@ def _require_outcome_retirement_coverage(
         item.collection_id: CollectionRootIdentity(
             collection_id=item.collection_id,
             manifest_sha256=item.manifest_sha256,
-            content_etag=item.content_etag,
+            content_identity=item.content_identity,
         )
         for item in _claim_inputs(session, claim.id)
     }
@@ -1432,7 +1432,7 @@ def _validate_claim_artifacts(
         item.collection_id: CollectionRootIdentity(
             collection_id=item.collection_id,
             manifest_sha256=item.manifest_sha256,
-            content_etag=item.content_etag,
+            content_identity=item.content_identity,
         )
         for item in _claim_inputs(session, claim.id)
     }
@@ -1472,7 +1472,7 @@ def _claim_artifact_identities(
         item.collection_id: CollectionRootIdentity(
             collection_id=item.collection_id,
             manifest_sha256=item.manifest_sha256,
-            content_etag=item.content_etag,
+            content_identity=item.content_identity,
         )
         for item in _claim_inputs(session, claim_id)
     }
@@ -1546,7 +1546,7 @@ def _collection_root(
     return CollectionRootIdentity(
         collection_id=collection.id,
         manifest_sha256=str(next(iter(roots))),
-        content_etag=collection.content_etag,
+        content_identity=collection.content_identity,
     )
 
 
@@ -1657,7 +1657,7 @@ def _claim_payload(
             CollectionRootIdentity(
                 collection_id=item.collection_id,
                 manifest_sha256=item.manifest_sha256,
-                content_etag=item.content_etag,
+                content_identity=item.content_identity,
             ).as_dict()
             for item in _claim_inputs(session, claim.id)
         ],

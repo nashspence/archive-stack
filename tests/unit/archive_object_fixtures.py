@@ -23,7 +23,7 @@ from riverhog_core.catalog_models import (
     TagRecord,
 )
 from riverhog_core.collection_metadata import (
-    collection_content_etag,
+    collection_content_identity,
     collection_record_manifest,
 )
 from riverhog_core.domain.archive import (
@@ -435,14 +435,16 @@ def seed_archive_copy(
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
         file_rows = [(file.path, file.bytes, file.sha256) for file in current.files]
-        content_etag = collection_content_etag(file_rows)
+        content_identity = collection_content_identity(file_rows)
         provenance_mode = _provenance_mode(current.provenance)
-        provenance_etag = current.provenance.identity if current.provenance is not None else None
+        provenance_identity = (
+            current.provenance.identity if current.provenance is not None else None
+        )
         _manifest, record_etag = collection_record_manifest(
             collection_id=current.collection_id,
-            content_etag=content_etag,
+            content_identity=content_identity,
             provenance_mode=provenance_mode,
-            provenance_etag=provenance_etag,
+            provenance_identity=provenance_identity,
             metadata_revision=1,
             tags=("docs",),
             files=file_rows,
@@ -457,9 +459,9 @@ def seed_archive_copy(
         collection = CollectionRecord(
             id=current.collection_id,
             creation_idempotency_key="fixture-docs",
-            content_etag=content_etag,
+            content_identity=content_identity,
             provenance_mode=provenance_mode,
-            provenance_etag=provenance_etag,
+            provenance_identity=provenance_identity,
             record_etag=record_etag,
             metadata_revision=1,
             metadata_updated_at=UPLOADED_AT,

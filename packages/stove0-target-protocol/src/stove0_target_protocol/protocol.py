@@ -362,14 +362,14 @@ class TargetJobDeclaration(TargetProtocolModel):
         ):
             raise ValueError("target job plan differs from the stove0 workflow plan")
         work_roots = {
-            (item.collection_id, item.manifest_sha256, item.content_etag)
+            (item.collection_id, item.manifest_sha256, item.content_identity)
             for item in workflow.work.inputs
         }
         if any(
             (
                 item.collection.collection_id,
                 item.collection.manifest_sha256,
-                item.collection.content_etag,
+                item.collection.content_identity,
             )
             not in work_roots
             for item in self.plan.inputs
@@ -461,7 +461,7 @@ class TargetExecutionEvidence(TargetProtocolModel):
 class OutputCollectionRef(TargetProtocolModel):
     collection_id: int = Field(ge=1)
     manifest_sha256: Sha256
-    content_etag: Sha256
+    content_identity: Sha256
     derivation_sha256: Sha256
 
 

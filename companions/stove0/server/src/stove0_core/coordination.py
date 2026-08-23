@@ -226,7 +226,7 @@ def _collection_root(output: OutputCollectionRef) -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=output.collection_id,
         manifest_sha256=output.manifest_sha256,
-        content_etag=output.content_etag,
+        content_identity=output.content_identity,
     )
 
 

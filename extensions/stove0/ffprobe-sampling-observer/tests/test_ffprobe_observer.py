@@ -88,7 +88,7 @@ def test_ffprobe_observer_reports_contract_facts_and_exact_image(
                     collection=CollectionRootRef(
                         collection_id=1,
                         manifest_sha256=_sha("2"),
-                        content_etag=_sha("3"),
+                        content_identity=_sha("3"),
                     ),
                     path="camera/source.mp4",
                     bytes=15,

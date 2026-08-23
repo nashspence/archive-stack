@@ -143,7 +143,7 @@ class SqlAlchemyArchiveMaintenanceService:
                 )
                 manifest = collection_metadata_manifest(
                     collection_id=collection_id,
-                    content_etag=collection.content_etag,
+                    content_identity=collection.content_identity,
                     record_etag=collection.record_etag,
                     metadata_revision=collection.metadata_revision,
                     tags=tags,

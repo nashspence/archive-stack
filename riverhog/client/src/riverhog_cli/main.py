@@ -39,7 +39,7 @@ from riverhog_cli_support.output import (
     format_list_ids,
 )
 from riverhog_protocol.errors import Conflict, RiverhogError, ServiceUnavailable
-from riverhog_protocol.manifest import collection_content_etag
+from riverhog_protocol.manifest import collection_content_identity
 from riverhog_protocol.paths import (
     PathNormalizationError,
     normalize_collection_id,
@@ -1003,10 +1003,10 @@ def _complete_collection_upload_session(
         lambda: api.complete_collection_upload_session(
             collection_id,
             files_total=len(manifest),
-            content_etag=collection_content_etag(
+            content_identity=collection_content_identity(
                 (item["path"], item["bytes"], item["sha256"]) for item in manifest
             ),
-            provenance_etag=_provenance_etag(manifest),
+            provenance_identity=_provenance_identity(manifest),
         ),
     )
 
@@ -1180,7 +1180,7 @@ def _manifest_identity(manifest: list[CollectionManifestEntry]) -> list[tuple[ob
     ]
 
 
-def _provenance_etag(manifest: list[CollectionManifestEntry]) -> str | None:
+def _provenance_identity(manifest: list[CollectionManifestEntry]) -> str | None:
     bindings: list[FileProvenanceBinding] = []
     journals: dict[str, bytes] = {}
     for item in manifest:

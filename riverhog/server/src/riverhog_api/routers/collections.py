@@ -230,8 +230,8 @@ def complete_collection_upload_session(
     payload = container.collection_uploads.complete(
         collection_id,
         files_total=request.files_total,
-        content_etag=request.content_etag,
-        provenance_etag=request.provenance_etag,
+        content_identity=request.content_identity,
+        provenance_identity=request.provenance_identity,
     )
     return CollectionUploadSessionOut.model_validate(payload)
 

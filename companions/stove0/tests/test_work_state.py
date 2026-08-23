@@ -81,7 +81,7 @@ def _root() -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=1,
         manifest_sha256=_sha("1"),
-        content_etag=_sha("2"),
+        content_identity=_sha("2"),
     )
 
 
@@ -420,7 +420,7 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
     output_collection = OutputCollectionRef(
         collection_id=7,
         manifest_sha256=_sha("6"),
-        content_etag=_sha("7"),
+        content_identity=_sha("7"),
         derivation_sha256=derivation.sha256,
     )
     succeeded = TargetJobStatus(
@@ -627,7 +627,7 @@ def test_stale_revision_and_invalid_success_order_fail_closed() -> None:
             OutputCollectionRef(
                 collection_id=7,
                 manifest_sha256=_sha("6"),
-                content_etag=_sha("7"),
+                content_identity=_sha("7"),
                 derivation_sha256=_sha("8"),
             ),
             expected_revision=claimed.revision,
@@ -780,7 +780,7 @@ def test_sql_runnable_scan_ignores_terminal_history_and_uses_a_keyset(
                     CollectionRootRef(
                         collection_id=index + 1,
                         manifest_sha256=f"{index + 1:064x}",
-                        content_etag=_sha("2"),
+                        content_identity=_sha("2"),
                     ),
                 ),
             )

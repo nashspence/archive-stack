@@ -6,11 +6,20 @@ from fastapi import APIRouter, Query, Response
 
 from riverhog_api.auth import ProvenanceExporter, ProvenanceReader
 from riverhog_api.deps import ContainerDep
+from riverhog_api.schemas.provenance import (
+    CollectionFileProvenanceDetailOut,
+    CollectionFileProvenanceTraceOut,
+    CollectionProvenanceVerificationOut,
+    ListCollectionFileProvenanceResponse,
+)
 
 router = APIRouter(tags=["provenance"])
 
 
-@router.get("/collections/{collection_id}/provenance/files")
+@router.get(
+    "/collections/{collection_id}/provenance/files",
+    response_model=ListCollectionFileProvenanceResponse,
+)
 def list_collection_provenance(
     collection_id: int,
     principal: ProvenanceReader,
@@ -36,7 +45,11 @@ def list_collection_provenance(
     )
 
 
-@router.get("/collections/{collection_id}/provenance/files/{path:path}")
+@router.get(
+    "/collections/{collection_id}/provenance/files/{path:path}",
+    response_model=CollectionFileProvenanceDetailOut,
+    response_model_exclude_unset=True,
+)
 def get_collection_file_provenance(
     collection_id: int,
     path: str,
@@ -46,7 +59,11 @@ def get_collection_file_provenance(
     return container.provenance.show_file(collection_id, path, principal=principal)
 
 
-@router.get("/collections/{collection_id}/provenance/trace/{path:path}")
+@router.get(
+    "/collections/{collection_id}/provenance/trace/{path:path}",
+    response_model=CollectionFileProvenanceTraceOut,
+    response_model_exclude_unset=True,
+)
 def trace_collection_file_provenance(
     collection_id: int,
     path: str,
@@ -79,7 +96,10 @@ def export_collection_provenance_journal(
     )
 
 
-@router.post("/collections/{collection_id}/provenance/verify")
+@router.post(
+    "/collections/{collection_id}/provenance/verify",
+    response_model=CollectionProvenanceVerificationOut,
+)
 def verify_collection_provenance(
     collection_id: int,
     principal: ProvenanceReader,

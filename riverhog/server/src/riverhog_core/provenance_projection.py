@@ -8,7 +8,7 @@ from riverhog_provenance import JournalSummary, validate_journal
 
 from riverhog_core.catalog_models import (
     CollectionProvenanceEntityRecord,
-    CollectionProvenanceLineageEdgeRecord,
+    CollectionProvenanceExternalStateReferenceRecord,
 )
 
 
@@ -16,7 +16,7 @@ from riverhog_core.catalog_models import (
 class ProvenanceJournalProjection:
     summary: JournalSummary
     entities: tuple[CollectionProvenanceEntityRecord, ...]
-    lineage_edges: tuple[CollectionProvenanceLineageEdgeRecord, ...]
+    external_state_references: tuple[CollectionProvenanceExternalStateReferenceRecord, ...]
     entity_counts_json: str
 
 
@@ -93,8 +93,8 @@ def provenance_journal_projection(
         )
         for (entity_type, entity_id), (entry_id, document) in sorted(entities.items())
     )
-    lineage_edges = tuple(
-        CollectionProvenanceLineageEdgeRecord(
+    external_state_references = tuple(
+        CollectionProvenanceExternalStateReferenceRecord(
             collection_id=collection_id,
             from_journal_id=journal_id,
             to_journal_id=reference.journal_id,
@@ -115,6 +115,6 @@ def provenance_journal_projection(
     return ProvenanceJournalProjection(
         summary=summary,
         entities=entity_records,
-        lineage_edges=lineage_edges,
+        external_state_references=external_state_references,
         entity_counts_json=json.dumps(dict(sorted(counts.items())), separators=(",", ":")),
     )

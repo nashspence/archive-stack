@@ -5,7 +5,7 @@ import io
 import json
 import re
 import tarfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -16,6 +16,7 @@ from .journal import (
     validate_journal_set,
     verify_payload_binding,
 )
+from .schema import validate_provenance_index_document, validate_provenance_set_document
 
 PROVENANCE_INDEX_SCHEMA = "riverhog-provenance-index/v1"
 PROVENANCE_SET_SCHEMA = "riverhog-provenance-set/v1"
@@ -105,6 +106,7 @@ def build_provenance_archive(
             for journal_id in sorted(journals)
         ],
     }
+    _validate_schema(payload, validate_provenance_index_document)
     index_bytes = canonical_json_bytes(payload)
     return ProvenanceArchive(
         index_bytes=index_bytes,
@@ -119,6 +121,7 @@ def validate_provenance_archive(
     bundles: Mapping[str, bytes],
 ) -> ValidatedProvenanceIndex:
     payload = _strict_json_object(index_content, label="provenance index")
+    _validate_schema(payload, validate_provenance_index_document)
     expected = {"schema", "bundle_format", "files", "bundles", "journals"}
     if (
         set(payload) != expected
@@ -221,6 +224,7 @@ def build_portable_provenance_set(
             for journal_id in sorted(journals)
         ],
     }
+    _validate_schema(payload, validate_provenance_set_document)
     return canonical_json_bytes(payload)
 
 
@@ -229,6 +233,7 @@ def validate_portable_provenance_set(
     journals: Mapping[str, bytes],
 ) -> ValidatedProvenanceIndex:
     payload = _strict_json_object(index_content, label="portable provenance index")
+    _validate_schema(payload, validate_provenance_set_document)
     if (
         set(payload) != {"schema", "files", "journals"}
         or payload.get("schema") != PROVENANCE_SET_SCHEMA
@@ -463,6 +468,16 @@ def _object_list(value: object, label: str) -> list[dict[str, Any]]:
     if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
         raise ProvenanceValidationError(f"{label} must be an object list")
     return cast(list[dict[str, Any]], value)
+
+
+def _validate_schema(
+    document: Mapping[str, Any],
+    validate: Callable[[Mapping[str, Any]], None],
+) -> None:
+    try:
+        validate(document)
+    except ValueError as exc:
+        raise ProvenanceValidationError(str(exc)) from exc
 
 
 def _bundle_id(sequence: int) -> str:

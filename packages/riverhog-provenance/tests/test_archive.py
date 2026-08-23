@@ -1,19 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 from riverhog_provenance import (
     FileProvenanceBinding,
     ProvenanceValidationError,
     build_portable_provenance_set,
     build_provenance_archive,
     create_observation_journal,
+    load_provenance_index_schema,
+    load_provenance_set_schema,
     prepare_file_provenance,
     validate_journal,
     validate_portable_provenance_set,
     validate_provenance_archive,
 )
+
+
+def _all_json_nodes(value: object) -> Iterator[object]:
+    yield value
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _all_json_nodes(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _all_json_nodes(child)
 
 
 def _journal(tmp_path: Path, urn_factory) -> tuple[Path, bytes]:
@@ -85,6 +99,17 @@ def test_portable_recovery_set_round_trip(tmp_path: Path, urn_factory) -> None:
 
     assert validated.bindings == (binding,)
     assert validated.journals[summary.journal_id].current_state_id == summary.current_state_id
+
+
+def test_published_archive_index_schemas_are_valid_and_collection_unbounded() -> None:
+    schemas = (load_provenance_index_schema(), load_provenance_set_schema())
+
+    for schema in schemas:
+        Draft202012Validator.check_schema(schema)
+        assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        assert all(
+            "maxItems" not in node for node in _all_json_nodes(schema) if isinstance(node, dict)
+        )
 
 
 def test_archive_rejects_a_payload_binding_mismatch(tmp_path: Path, urn_factory) -> None:

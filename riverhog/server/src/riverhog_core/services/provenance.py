@@ -29,8 +29,8 @@ from riverhog_core.catalog_models import (
     CollectionFileProvenanceRecord,
     CollectionFileRecord,
     CollectionProvenanceEntityRecord,
+    CollectionProvenanceExternalStateReferenceRecord,
     CollectionProvenanceJournalRecord,
-    CollectionProvenanceLineageEdgeRecord,
     CollectionRecord,
 )
 from riverhog_core.provenance_projection import (
@@ -125,7 +125,7 @@ class SqlAlchemyProvenanceService:
                 "status": status,
                 "collection_id": collection_id,
                 "provenance_mode": collection.provenance_mode,
-                "provenance_etag": collection.provenance_etag,
+                "provenance_identity": collection.provenance_identity,
                 "files": [_file_payload(file, binding, collection) for file, binding in rows],
             }
 
@@ -172,9 +172,12 @@ class SqlAlchemyProvenanceService:
                     raise InvalidState("captured provenance journal is missing")
                 ancestors = tuple(
                     session.scalars(
-                        select(CollectionProvenanceLineageEdgeRecord.to_journal_id).where(
-                            CollectionProvenanceLineageEdgeRecord.collection_id == collection_id,
-                            CollectionProvenanceLineageEdgeRecord.from_journal_id
+                        select(
+                            CollectionProvenanceExternalStateReferenceRecord.to_journal_id
+                        ).where(
+                            CollectionProvenanceExternalStateReferenceRecord.collection_id
+                            == collection_id,
+                            CollectionProvenanceExternalStateReferenceRecord.from_journal_id
                             == row[1].journal_id,
                         )
                     )
@@ -195,19 +198,22 @@ class SqlAlchemyProvenanceService:
         shown = self.show_file(collection_id, path, principal=principal)
         binding = shown["provenance"]
         if binding["status"] == "omitted":
-            return {**shown, "journals": [], "lineage_edges": []}
+            return {**shown, "journals": [], "external_state_references": []}
         journal_id = str(binding["journal_id"])
         with session_scope(self._session_factory) as session:
             _authorized_collection(session, collection_id, principal)
             reachable = {journal_id}
             pending = {journal_id}
-            edge_records: list[CollectionProvenanceLineageEdgeRecord] = []
+            edge_records: list[CollectionProvenanceExternalStateReferenceRecord] = []
             while pending:
                 current_edges = list(
                     session.scalars(
-                        select(CollectionProvenanceLineageEdgeRecord).where(
-                            CollectionProvenanceLineageEdgeRecord.collection_id == collection_id,
-                            CollectionProvenanceLineageEdgeRecord.from_journal_id.in_(pending),
+                        select(CollectionProvenanceExternalStateReferenceRecord).where(
+                            CollectionProvenanceExternalStateReferenceRecord.collection_id
+                            == collection_id,
+                            CollectionProvenanceExternalStateReferenceRecord.from_journal_id.in_(
+                                pending
+                            ),
                         )
                     )
                 )
@@ -240,8 +246,8 @@ class SqlAlchemyProvenanceService:
                     )
                     for item in sorted(reachable)
                 ],
-                "lineage_edges": sorted(
-                    (_lineage_edge_payload(item) for item in edge_records),
+                "external_state_references": sorted(
+                    (_external_state_reference_payload(item) for item in edge_records),
                     key=lambda item: (
                         item["from_journal_id"],
                         item["to_journal_id"],
@@ -317,10 +323,11 @@ class SqlAlchemyProvenanceService:
                     )
                 )
             )
-            lineage_edges = list(
+            external_state_references = list(
                 session.scalars(
-                    select(CollectionProvenanceLineageEdgeRecord).where(
-                        CollectionProvenanceLineageEdgeRecord.collection_id == collection_id
+                    select(CollectionProvenanceExternalStateReferenceRecord).where(
+                        CollectionProvenanceExternalStateReferenceRecord.collection_id
+                        == collection_id
                     )
                 )
             )
@@ -328,7 +335,7 @@ class SqlAlchemyProvenanceService:
                 if (
                     journals
                     or entities
-                    or lineage_edges
+                    or external_state_references
                     or any(item.status != "omitted" for item in bindings)
                 ):
                     raise InvalidState("collection-wide provenance omission is inconsistent")
@@ -336,7 +343,7 @@ class SqlAlchemyProvenanceService:
                     "collection_id": collection_id,
                     "valid": True,
                     "provenance_mode": "omitted",
-                    "provenance_etag": None,
+                    "provenance_identity": None,
                     "files": len(files),
                     "journals": 0,
                     "entities": 0,
@@ -359,7 +366,7 @@ class SqlAlchemyProvenanceService:
                 ],
                 journals={item.journal_id: item.journal_bytes for item in journals},
             )
-            if archive.identity != collection.provenance_etag:
+            if archive.identity != collection.provenance_identity:
                 raise InvalidState("catalog provenance identity does not match exact bytes")
             projections = {
                 item.journal_id: provenance_journal_projection(
@@ -395,7 +402,7 @@ class SqlAlchemyProvenanceService:
                     record.entry_json_sha256,
                 )
                 for projection in projections.values()
-                for record in projection.lineage_edges
+                for record in projection.external_state_references
             }
             actual_edges = {
                 (
@@ -405,7 +412,7 @@ class SqlAlchemyProvenanceService:
                     record.state_id,
                     record.entry_json_sha256,
                 )
-                for record in lineage_edges
+                for record in external_state_references
             }
             if actual_edges != expected_edges:
                 raise InvalidState("catalog provenance lineage differs from exact journals")
@@ -424,7 +431,7 @@ class SqlAlchemyProvenanceService:
                 "collection_id": collection_id,
                 "valid": True,
                 "provenance_mode": collection.provenance_mode,
-                "provenance_etag": archive.identity,
+                "provenance_identity": archive.identity,
                 "files": len(files),
                 "journals": len(journals),
                 "entities": len(entities),
@@ -452,7 +459,7 @@ class SqlAlchemyProvenanceService:
             )
             if (
                 collection.provenance_mode != mode
-                or collection.provenance_etag != validated.identity
+                or collection.provenance_identity != validated.identity
             ):
                 raise InvalidState("immutable provenance identity differs from the collection")
             files = {
@@ -473,8 +480,8 @@ class SqlAlchemyProvenanceService:
                     )
 
             session.execute(
-                delete(CollectionProvenanceLineageEdgeRecord).where(
-                    CollectionProvenanceLineageEdgeRecord.collection_id == collection_id
+                delete(CollectionProvenanceExternalStateReferenceRecord).where(
+                    CollectionProvenanceExternalStateReferenceRecord.collection_id == collection_id
                 )
             )
             session.execute(
@@ -533,7 +540,7 @@ class SqlAlchemyProvenanceService:
             )
             for journal_id in sorted(validated.journal_bytes):
                 session.add_all(projections[journal_id].entities)
-                session.add_all(projections[journal_id].lineage_edges)
+                session.add_all(projections[journal_id].external_state_references)
             session.flush()
             entities = int(
                 session.scalar(
@@ -546,7 +553,7 @@ class SqlAlchemyProvenanceService:
             return {
                 "collection_id": collection_id,
                 "provenance_mode": mode,
-                "provenance_etag": validated.identity,
+                "provenance_identity": validated.identity,
                 "files": len(validated.bindings),
                 "journals": len(journal_records),
                 "entities": entities,
@@ -601,9 +608,12 @@ def _journal_is_in_artifact_scope(
         discovered = (
             set(
                 session.scalars(
-                    select(CollectionProvenanceLineageEdgeRecord.to_journal_id).where(
-                        CollectionProvenanceLineageEdgeRecord.collection_id == collection_id,
-                        CollectionProvenanceLineageEdgeRecord.from_journal_id.in_(pending),
+                    select(CollectionProvenanceExternalStateReferenceRecord.to_journal_id).where(
+                        CollectionProvenanceExternalStateReferenceRecord.collection_id
+                        == collection_id,
+                        CollectionProvenanceExternalStateReferenceRecord.from_journal_id.in_(
+                            pending
+                        ),
                     )
                 )
             )
@@ -666,8 +676,8 @@ def _journal_payload(
     }
 
 
-def _lineage_edge_payload(
-    record: CollectionProvenanceLineageEdgeRecord,
+def _external_state_reference_payload(
+    record: CollectionProvenanceExternalStateReferenceRecord,
 ) -> dict[str, str]:
     return {
         "from_journal_id": record.from_journal_id,

@@ -89,6 +89,36 @@ def test_retrieval_plan_and_job_schemas_bind_exact_versions() -> None:
     )
 
 
+def test_provenance_reads_publish_typed_captured_or_omitted_contracts() -> None:
+    openapi = create_app().openapi()
+    schemas = openapi["components"]["schemas"]
+    paths = openapi["paths"]
+
+    assert set(schemas["CapturedFileProvenanceBinding"]["required"]) == {
+        "status",
+        "journal_id",
+        "current_state_id",
+    }
+    assert set(schemas["OmittedFileProvenanceBinding"]["required"]) == {
+        "status",
+        "omission_reason",
+    }
+    assert "external_state_references" in schemas["CollectionFileProvenanceTraceOut"]["required"]
+    assert "provenance_identity" in schemas["CollectionProvenanceVerificationOut"]["properties"]
+    assert (
+        paths["/v1/collections/{collection_id}/provenance/files"]["get"]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/ListCollectionFileProvenanceResponse"
+    )
+    assert (
+        paths["/v1/collections/{collection_id}/provenance/trace/{path}"]["get"]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/CollectionFileProvenanceTraceOut"
+    )
+
+
 def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> None:
     schemas = create_app().openapi()["components"]["schemas"]
 
@@ -105,7 +135,7 @@ def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> Non
         CollectionRootIdentityIn(
             collection_id=index,
             manifest_sha256="1" * 64,
-            content_etag="2" * 64,
+            content_identity="2" * 64,
         )
         for index in range(1, 1002)
     ]
@@ -198,7 +228,7 @@ def test_collection_contracts_expose_the_stable_creation_timestamp() -> None:
             id=CollectionId(42),
             created_at="2026-07-26T20:00:00.000000Z",
             tags=("family",),
-            content_etag="1" * 64,
+            content_identity="1" * 64,
             manifest_sha256="2" * 64,
             files=1,
             bytes=10,

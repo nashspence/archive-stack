@@ -44,7 +44,7 @@ def _seed(path: Path) -> None:
             CollectionRecord(
                 id=1,
                 creation_idempotency_key="fixture-1",
-                content_etag="0" * 64,
+                content_identity="0" * 64,
                 record_etag="1" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",

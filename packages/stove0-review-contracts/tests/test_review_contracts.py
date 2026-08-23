@@ -141,7 +141,7 @@ def test_review_evaluation_expands_one_normal_work_per_variant() -> None:
             CollectionRootRef(
                 collection_id=1,
                 manifest_sha256=_sha("b"),
-                content_etag=_sha("c"),
+                content_identity=_sha("c"),
             ),
         ),
         sample_plan=sample_plan,
@@ -182,7 +182,7 @@ def test_materialized_trial_requires_exactly_one_variant() -> None:
                 CollectionRootRef(
                     collection_id=1,
                     manifest_sha256=_sha("b"),
-                    content_etag=_sha("c"),
+                    content_identity=_sha("c"),
                 ),
             ),
             sample_plan=sample_plan,

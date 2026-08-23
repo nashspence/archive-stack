@@ -204,7 +204,7 @@ def _collection_summary(
         id=CollectionId(collection.id),
         created_at=collection.created_at,
         tags=tuple(sorted(current.tag_id for current in collection.tags)),
-        content_etag=collection.content_etag,
+        content_identity=collection.content_identity,
         manifest_sha256=_manifest_identity(copies),
         files=int(row.files),
         bytes=int(row.bytes),

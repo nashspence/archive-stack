@@ -70,7 +70,7 @@ def test_postgres_catalog_schema_is_current_and_stays_operator_controlled(
 
     after = {index["name"] for index in inspect(engine).get_indexes("retrieval_jobs")}
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0005"
+    assert upgraded.current_revision == validated.current_revision == "v1_0006"
     assert after == before
     engine.dispose()
 
@@ -84,6 +84,22 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
         for statement in fixture_sql.split(";\n"):
             if statement.strip():
                 connection.exec_driver_sql(statement)
+        connection.execute(
+            text(
+                "INSERT INTO collection_metadata_publications ("
+                "collection_id, store, desired_revision, published_revision, state, "
+                "attempt_count, next_attempt_at, last_attempt_at, failure, object_path, "
+                "version_id, stored_bytes, stored_sha256, published_at"
+                ") VALUES ("
+                "1, 'fixture-archive', 1, 1, 'published', 1, "
+                "'2026-01-02T00:00:00.000000Z', '2026-01-01T00:00:00.000000Z', "
+                "'stale failure', 'archives/fixture-archive-id/collection.json', "
+                "'fixture-metadata-version', 128, :stored_sha256, "
+                "'2026-01-01T00:00:00.000000Z'"
+                ")"
+            ),
+            {"stored_sha256": "d" * 64},
+        )
 
     status = catalog_state_schema(isolated_database_url).upgrade()
     principal = SqlAlchemyAppKeyService(
@@ -106,7 +122,7 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
             text("SELECT event_id, owner_app, subject FROM lifecycle_events WHERE sequence = 1")
         ).one()
         existing_provenance = connection.execute(
-            text("SELECT provenance_mode, provenance_etag FROM collections WHERE id = 1")
+            text("SELECT provenance_mode, provenance_identity FROM collections WHERE id = 1")
         ).one()
         provenance_projection_counts = connection.execute(
             text(
@@ -120,6 +136,15 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
             text(
                 "SELECT plan_etag, constraints_json FROM retrieval_jobs "
                 "WHERE id = 'fixture-retrieval'"
+            )
+        ).one()
+        metadata_publication = connection.execute(
+            text(
+                "SELECT desired_revision, published_revision, state, attempt_count, "
+                "next_attempt_at, last_attempt_at, failure, object_path, version_id, "
+                "stored_bytes, stored_sha256, published_at "
+                "FROM collection_metadata_publications "
+                "WHERE collection_id = 1 AND store = 'fixture-archive'"
             )
         ).one()
 
@@ -154,12 +179,26 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
     assert migrated_plan["restore_policy"] == "allow"
     assert migrated_plan["requires_restore"] is True
     assert migrated_retrieval.plan_etag == migrated_plan["etag"]
+    assert tuple(metadata_publication) == (
+        1,
+        None,
+        "pending",
+        0,
+        "2026-01-01T00:00:00.000000Z",
+        "2026-01-01T00:00:00.000000Z",
+        None,
+        "archives/fixture-archive-id/collection.json",
+        "fixture-metadata-version",
+        128,
+        "d" * 64,
+        "2026-01-01T00:00:00.000000Z",
+    )
     assert manifest == {
         "format": "riverhog-collection/v1",
         "collection": 1,
-        "content_etag": "a" * 64,
+        "content_identity": "a" * 64,
         "provenance_mode": "omitted",
-        "provenance_etag": None,
+        "provenance_identity": None,
         "metadata_revision": 1,
         "tags": [],
         "files": [

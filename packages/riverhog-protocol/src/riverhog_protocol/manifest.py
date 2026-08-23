@@ -5,11 +5,11 @@ import json
 from collections.abc import Iterable
 
 
-def collection_content_etag(files: Iterable[tuple[str, int, str]]) -> str:
-    return collection_content_etag_ordered(sorted(files))
+def collection_content_identity(files: Iterable[tuple[str, int, str]]) -> str:
+    return collection_content_identity_ordered(sorted(files))
 
 
-def collection_content_etag_ordered(files: Iterable[tuple[str, int, str]]) -> str:
+def collection_content_identity_ordered(files: Iterable[tuple[str, int, str]]) -> str:
     digest = hashlib.sha256()
     digest.update(b'{"files":[')
     separator = b""
@@ -27,4 +27,4 @@ def collection_content_etag_ordered(files: Iterable[tuple[str, int, str]]) -> st
     return digest.hexdigest()
 
 
-__all__ = ["collection_content_etag", "collection_content_etag_ordered"]
+__all__ = ["collection_content_identity", "collection_content_identity_ordered"]

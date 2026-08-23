@@ -34,9 +34,9 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                 CollectionRecord(
                     id=collection_id,
                     creation_idempotency_key=f"fixture-{collection_id}",
-                    content_etag=f"{collection_id:064x}",
+                    content_identity=f"{collection_id:064x}",
                     provenance_mode="omitted",
-                    provenance_etag=None,
+                    provenance_identity=None,
                     record_etag=f"{collection_id:064x}",
                     metadata_revision=1,
                     metadata_updated_at=NOW,

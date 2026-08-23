@@ -607,11 +607,19 @@ def format_file_provenance(payload: Mapping[str, object]) -> str:
 def format_provenance_trace(payload: Mapping[str, object]) -> str:
     lines = [format_file_provenance(payload)]
     journals = _items(payload, "journals")
-    lines.append(f"lineage journals: {len(journals)}")
+    lines.append(f"reachable journals: {len(journals)}")
     for journal in journals:
         lines.append(
             f"- {journal.get('journal_id', 'unknown')}  entries={journal.get('entries', 0)}  "
             f"current={journal.get('current_state_id', 'unknown')}"
+        )
+    references = _items(payload, "external_state_references")
+    lines.append(f"external state references: {len(references)}")
+    for reference in references:
+        lines.append(
+            f"- {reference.get('from_journal_id', 'unknown')} -> "
+            f"{reference.get('to_journal_id', 'unknown')}  "
+            f"state={reference.get('state_id', 'unknown')}"
         )
     return "\n".join(lines)
 
@@ -622,7 +630,7 @@ def format_provenance_verification(payload: Mapping[str, object]) -> str:
             f"collection provenance {payload.get('collection_id', 'unknown')}: "
             f"{'valid' if payload.get('valid') else 'invalid'}",
             f"mode: {payload.get('provenance_mode', 'unknown')}",
-            f"identity: {payload.get('provenance_etag') or 'omitted'}",
+            f"identity: {payload.get('provenance_identity') or 'omitted'}",
             f"files: {payload.get('files', 0)}",
             f"journals: {payload.get('journals', 0)}",
             f"projected entities: {payload.get('entities', 0)}",

@@ -626,7 +626,7 @@ def _work_identity(
             CollectionRootRef(
                 collection_id=collection_id,
                 manifest_sha256=str(current.get("manifest_sha256") or ""),
-                content_etag=str(current.get("content_etag") or ""),
+                content_identity=str(current.get("content_identity") or ""),
             )
         )
     planner = cast(RecipePlanner, composition.coordinator.planning)

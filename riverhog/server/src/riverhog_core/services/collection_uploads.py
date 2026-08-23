@@ -14,7 +14,7 @@ from typing import Any, TypedDict
 
 from riverhog_age import encrypt_age_scrypt
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
-from riverhog_protocol.manifest import collection_content_etag_ordered
+from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.paths import (
     PathNormalizationError,
     normalize_collection_id,
@@ -506,18 +506,18 @@ class SqlAlchemyCollectionUploadService:
         collection_id: int,
         *,
         files_total: int,
-        content_etag: str,
-        provenance_etag: str | None = None,
+        content_identity: str,
+        provenance_identity: str | None = None,
     ) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
-        if files_total < 1 or _SHA256_RE.fullmatch(content_etag) is None:
+        if files_total < 1 or _SHA256_RE.fullmatch(content_identity) is None:
             raise BadRequest("collection upload completion identity is invalid")
         with session_scope(self._session_factory) as session:
             collection = session.get(CollectionRecord, normalized_id)
             if collection is not None:
                 if (
-                    collection.content_etag != content_etag
-                    or collection.provenance_etag != provenance_etag
+                    collection.content_identity != content_identity
+                    or collection.provenance_identity != provenance_identity
                 ):
                     raise Conflict("collection upload completion identity changed")
                 return _finalized_payload(
@@ -543,14 +543,14 @@ class SqlAlchemyCollectionUploadService:
                     .order_by(CollectionUploadFileRecord.file_order)
                 )
             )
-            actual_etag = collection_content_etag_ordered(
+            actual_etag = collection_content_identity_ordered(
                 (row.path, row.bytes, row.sha256) for row in rows
             )
-            if len(rows) != files_total or actual_etag != content_etag:
+            if len(rows) != files_total or actual_etag != content_identity:
                 raise Conflict("collection upload registered manifest differs from completion")
             provenance = _upload_provenance_archive(upload)
-            actual_provenance_etag = provenance.identity if provenance is not None else None
-            if provenance_etag != actual_provenance_etag:
+            actual_provenance_identity = provenance.identity if provenance is not None else None
+            if provenance_identity != actual_provenance_identity:
                 raise Conflict("collection upload provenance identity differs from completion")
             checkpoint = _planner_checkpoint(upload)
             if not checkpoint.closed:
@@ -580,7 +580,7 @@ class SqlAlchemyCollectionUploadService:
                     "collection upload volume plans differ from registered files"
                 ) from exc
             upload.state = "uploading"
-            upload.provenance_etag = actual_provenance_etag
+            upload.provenance_identity = actual_provenance_identity
             upload.closed_at = utc_timestamp_now()
             upload.last_activity_at = upload.closed_at
             upload.archive_phase = "uploading"
@@ -1414,14 +1414,14 @@ class SqlAlchemyCollectionUploadService:
                 return
             rows = sorted(upload.files, key=lambda item: item.file_order)
             file_entries = [(row.path, row.bytes, row.sha256) for row in rows]
-            content_etag = collection_content_etag_ordered(file_entries)
+            content_identity = collection_content_identity_ordered(file_entries)
             tags = _upload_tags(upload)
             now = utc_timestamp_now()
             _, record_etag = collection_record_manifest(
                 collection_id=collection_id,
-                content_etag=content_etag,
+                content_identity=content_identity,
                 provenance_mode=_final_provenance_mode(upload),
-                provenance_etag=upload.provenance_etag,
+                provenance_identity=upload.provenance_identity,
                 metadata_revision=1,
                 tags=tags,
                 files=file_entries,
@@ -1429,9 +1429,9 @@ class SqlAlchemyCollectionUploadService:
             collection = CollectionRecord(
                 id=collection_id,
                 creation_idempotency_key=upload.idempotency_key,
-                content_etag=content_etag,
+                content_identity=content_identity,
                 provenance_mode=_final_provenance_mode(upload),
-                provenance_etag=upload.provenance_etag,
+                provenance_identity=upload.provenance_identity,
                 record_etag=record_etag,
                 metadata_revision=1,
                 metadata_updated_at=now,
@@ -1492,7 +1492,7 @@ class SqlAlchemyCollectionUploadService:
             for journal in upload.provenance_journals:
                 journal_projection = journal_projections[journal.journal_id]
                 session.add_all(journal_projection.entities)
-                session.add_all(journal_projection.lineage_edges)
+                session.add_all(journal_projection.external_state_references)
             collection.tags.extend(
                 CollectionTagRecord(
                     collection_id=collection_id,
@@ -2302,7 +2302,7 @@ def _upload_payload(
         "tags": list(_upload_tags(upload)),
         "ingest_source": upload.ingest_source,
         "provenance_mode": upload.provenance_mode,
-        "provenance_etag": upload.provenance_etag,
+        "provenance_identity": upload.provenance_identity,
         "archive_store": upload.archive_store,
         "state": state or upload.state,
         "layout": _layout_payload(_planner_checkpoint(upload).policy),
@@ -2353,7 +2353,7 @@ def _finalized_payload(
         "id": collection.id,
         "created_at": collection.created_at,
         "tags": tags,
-        "content_etag": collection.content_etag,
+        "content_identity": collection.content_identity,
         "manifest_sha256": manifest.sha256,
         "files": len(collection.files),
         "bytes": sum(current.bytes for current in collection.files),
@@ -2366,8 +2366,8 @@ def _finalized_payload(
         "tags": tags,
         "ingest_source": collection.ingest_source,
         "provenance_mode": collection.provenance_mode,
-        "provenance_etag": collection.provenance_etag,
-        "content_etag": collection.content_etag,
+        "provenance_identity": collection.provenance_identity,
+        "content_identity": collection.content_identity,
         "manifest_sha256": manifest.sha256,
         "archive_store": copy.store if copy else store_name,
         "state": "finalized",

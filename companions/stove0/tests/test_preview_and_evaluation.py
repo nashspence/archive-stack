@@ -75,7 +75,7 @@ def _root() -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=1,
         manifest_sha256=_sha("1"),
-        content_etag=_sha("2"),
+        content_identity=_sha("2"),
     )
 
 
@@ -432,7 +432,7 @@ class FinishingController:
             output = OutputCollectionRef(
                 collection_id=100 + len(variant.variant_id),
                 manifest_sha256=_sha("a"),
-                content_etag=_sha("b"),
+                content_identity=_sha("b"),
                 derivation_sha256=_sha("c"),
             )
             replacement = WorkRecord.model_validate(

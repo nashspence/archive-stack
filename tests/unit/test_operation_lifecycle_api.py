@@ -47,7 +47,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_sha256,
 )
 from riverhog_protocol.errors import Forbidden
-from riverhog_protocol.manifest import collection_content_etag
+from riverhog_protocol.manifest import collection_content_identity
 from riverhog_provenance import (
     FileProvenanceBinding,
     build_provenance_archive,
@@ -347,8 +347,10 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     operator.complete_collection_upload_session(
         collection_id,
         files_total=1,
-        content_etag=collection_content_etag([(binding.path, binding.bytes, binding.sha256)]),
-        provenance_etag=provenance.identity,
+        content_identity=collection_content_identity(
+            [(binding.path, binding.bytes, binding.sha256)]
+        ),
+        provenance_identity=provenance.identity,
     )
     volume_page = operator.list_collection_upload_session_volumes(collection_id)
     for volume in volume_page["volumes"]:
@@ -498,7 +500,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     source_identity = CollectionRootIdentity(
         collection_id=collection_id,
         manifest_sha256=str(source_collection["manifest_sha256"]),
-        content_etag=str(source_collection["content_etag"]),
+        content_identity=str(source_collection["content_identity"]),
     )
     source_artifact = {
         "collection": source_identity.as_dict(),
@@ -810,8 +812,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     target.complete_collection_upload_session(
         output_collection_id,
         files_total=len(output_entries),
-        content_etag=collection_content_etag(output_entries),
-        provenance_etag=output_provenance.identity,
+        content_identity=collection_content_identity(output_entries),
+        provenance_identity=output_provenance.identity,
     )
     for volume in target.list_collection_upload_session_volumes(output_collection_id)["volumes"]:
         shown = target.get_collection_upload_session_volume(

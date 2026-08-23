@@ -42,7 +42,7 @@ def root(number: int, label: str | None = None) -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=number,
         manifest_sha256=digest(f"manifest:{suffix}"),
-        content_etag=digest(f"content:{suffix}"),
+        content_identity=digest(f"content:{suffix}"),
     )
 
 
