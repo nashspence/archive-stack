@@ -32,6 +32,8 @@ import release_installation as installation
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "riverhog-installation-qualification/v1"
 EVENT_SUBJECT = "qualification-sentinel"
+NATIVE_TRACE_INTERVAL_SECONDS = 0.2
+NATIVE_TRACE_EVENT_LIMIT = 128
 EVENT_PAGE = {
     "events": [
         {
@@ -512,6 +514,186 @@ def _wait_for_listener(
     return status
 
 
+def _native_listener_snapshot(
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+) -> dict[str, object] | None:
+    getuid = getattr(os, "getuid", None)
+    if sys.platform == "darwin" and getuid is not None:
+        native = subprocess.run(
+            [
+                "launchctl",
+                "print",
+                f"gui/{getuid()}/io.github.nashspence.gogurt",
+            ],
+            cwd=scratch,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        fields: dict[str, str | int | list[int]] = {}
+        for key, value in re.findall(
+            r"(?m)^\s*(state|pid|runs|last exit code|last terminating signal)\s*=\s*([^\n]+)$",
+            native.stdout,
+        ):
+            normalized = value.strip()
+            if key == "state":
+                if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", normalized):
+                    fields[key] = normalized
+            elif re.fullmatch(r"-?[0-9]{1,20}", normalized):
+                fields[key] = int(normalized)
+        return {"returncode": native.returncode, "fields": fields}
+    if sys.platform.startswith("linux"):
+        native = subprocess.run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                "gogurt-listener.service",
+                "--property="
+                "ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts,MainPID",
+            ],
+            cwd=scratch,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        linux_fields: dict[str, str | int | list[int]] = {}
+        for line in native.stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if separator != "=" or key not in {
+                "ActiveState",
+                "SubState",
+                "Result",
+                "ExecMainCode",
+                "ExecMainStatus",
+                "NRestarts",
+                "MainPID",
+            }:
+                continue
+            normalized = value.strip()
+            if re.fullmatch(r"-?[0-9]{1,20}", normalized):
+                linux_fields[key] = int(normalized)
+            elif re.fullmatch(r"[A-Za-z0-9_-]{1,64}", normalized):
+                linux_fields[key] = normalized
+        return {"returncode": native.returncode, "fields": linux_fields}
+    if sys.platform == "win32":
+        script = (
+            "$ErrorActionPreference='Stop';"
+            "try {"
+            "$service=New-Object -ComObject 'Schedule.Service';"
+            "$service.Connect();"
+            "$task=$service.GetFolder('\\').GetTask('Riverhog.Gogurt');"
+            "$pids=@($task.GetInstances(0)|ForEach-Object {[int]$_.EnginePID}|Sort-Object -Unique);"
+            "$result=[ordered]@{state=[int]$task.State;"
+            "last_result=[int]$task.LastTaskResult;instance_pids=$pids};"
+            "[Console]::Out.Write(($result|ConvertTo-Json -Compress));exit 0"
+            "} catch { exit 3 }"
+        )
+        native = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ],
+            cwd=scratch,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        windows_fields: dict[str, str | int | list[int]] = {}
+        if native.returncode == 0:
+            value = json.loads(native.stdout)
+            if not isinstance(value, dict):
+                raise ValueError("Task Scheduler state is not an object")
+            for key in ("state", "last_result"):
+                item = value.get(key)
+                if isinstance(item, int) and not isinstance(item, bool):
+                    windows_fields[key] = item
+            pids = value.get("instance_pids")
+            if (
+                isinstance(pids, list)
+                and len(pids) <= 32
+                and all(
+                    isinstance(item, int) and not isinstance(item, bool) and item > 0
+                    for item in pids
+                )
+            ):
+                windows_fields["instance_pids"] = sorted(set(pids))
+        return {"returncode": native.returncode, "fields": windows_fields}
+    return None
+
+
+class _NativeLifecycleTrace:
+    """Retain bounded native state transitions before a supervisor overwrites them."""
+
+    def __init__(
+        self,
+        *,
+        scratch: Path,
+        environment: dict[str, str],
+        probe: Callable[[], dict[str, object] | None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.scratch = scratch
+        self.environment = environment
+        self.probe = probe or (
+            lambda: _native_listener_snapshot(scratch=scratch, environment=environment)
+        )
+        self.clock = clock
+        self.started_at = clock()
+        self.stop_event = threading.Event()
+        self.lock = threading.Lock()
+        self.events: list[dict[str, object]] = []
+        self.previous: dict[str, object] | None = None
+        self.thread = threading.Thread(
+            target=self._run,
+            name="gogurt-native-lifecycle-trace",
+            daemon=True,
+        )
+
+    def _capture(self) -> None:
+        try:
+            snapshot = self.probe()
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            snapshot = {"probe_error": type(exc).__name__}
+        if snapshot is None or snapshot == self.previous:
+            return
+        self.previous = snapshot
+        event = {
+            "elapsed_milliseconds": max(0, int((self.clock() - self.started_at) * 1000)),
+            **snapshot,
+        }
+        with self.lock:
+            if len(self.events) < NATIVE_TRACE_EVENT_LIMIT:
+                self.events.append(event)
+
+    def _run(self) -> None:
+        self._capture()
+        while not self.stop_event.wait(NATIVE_TRACE_INTERVAL_SECONDS):
+            self._capture()
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> tuple[dict[str, object], ...]:
+        self.stop_event.set()
+        self.thread.join(timeout=6)
+        if not self.thread.is_alive():
+            self._capture()
+        with self.lock:
+            return tuple(dict(item) for item in self.events)
+
+
 def _retain_gogurt_failure_evidence(
     executable: Path,
     *,
@@ -521,6 +703,7 @@ def _retain_gogurt_failure_evidence(
     evidence_dir: Path | None,
     failure: BaseException,
     phase: str,
+    native_transitions: tuple[dict[str, object], ...] = (),
 ) -> None:
     if evidence_dir is None:
         return
@@ -549,77 +732,19 @@ def _retain_gogurt_failure_evidence(
             json.dumps(status_payload, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        getuid = getattr(os, "getuid", None)
-        if sys.platform == "darwin" and getuid is not None:
-            native = subprocess.run(
-                [
-                    "launchctl",
-                    "print",
-                    f"gui/{getuid()}/io.github.nashspence.gogurt",
-                ],
-                cwd=scratch,
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            fields: dict[str, str | int] = {}
-            for key, value in re.findall(
-                r"(?m)^\s*(state|pid|runs|last exit code|last terminating signal)\s*=\s*([^\n]+)$",
-                native.stdout,
-            ):
-                normalized = value.strip()
-                if key == "state":
-                    if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", normalized):
-                        fields[key] = normalized
-                elif re.fullmatch(r"-?[0-9]{1,20}", normalized):
-                    fields[key] = int(normalized)
+        native = _native_listener_snapshot(scratch=scratch, environment=environment)
+        if native is not None:
             (evidence_dir / f"{phase}-native.json").write_text(
-                json.dumps(
-                    {"returncode": native.returncode, "fields": fields},
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
+                json.dumps(native, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-        elif sys.platform.startswith("linux"):
-            native = subprocess.run(
-                [
-                    "systemctl",
-                    "--user",
-                    "show",
-                    "gogurt-listener.service",
-                    "--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts",
-                ],
-                cwd=scratch,
-                env=environment,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            fields: dict[str, str | int] = {}
-            for line in native.stdout.splitlines():
-                key, separator, value = line.partition("=")
-                if separator != "=" or key not in {
-                    "ActiveState",
-                    "SubState",
-                    "Result",
-                    "ExecMainCode",
-                    "ExecMainStatus",
-                    "NRestarts",
-                }:
-                    continue
-                normalized = value.strip()
-                if re.fullmatch(r"-?[0-9]{1,20}", normalized):
-                    fields[key] = int(normalized)
-                elif re.fullmatch(r"[A-Za-z0-9_-]{1,64}", normalized):
-                    fields[key] = normalized
-            (evidence_dir / f"{phase}-native.json").write_text(
+        if native_transitions:
+            (evidence_dir / f"{phase}-native-transitions.json").write_text(
                 json.dumps(
-                    {"returncode": native.returncode, "fields": fields},
+                    {
+                        "schema": "gogurt-native-lifecycle-trace/v1",
+                        "events": native_transitions,
+                    },
                     indent=2,
                     sort_keys=True,
                 )
@@ -662,6 +787,8 @@ def _run_gogurt_listener_lifecycle(
     if initial.get("installed") is not False:
         raise QualificationError("listener qualification would replace an existing installation")
     state_dir = Path(str(initial["state_dir"]))
+    native_trace = _NativeLifecycleTrace(scratch=scratch, environment=environment)
+    native_trace.start()
 
     action = scratch / "gogurt-listener-action.py"
     action.write_text(
@@ -881,6 +1008,7 @@ def _run_gogurt_listener_lifecycle(
                 environment=environment,
             )
     except BaseException as exc:
+        native_transitions = native_trace.stop()
         _retain_gogurt_failure_evidence(
             executable,
             state_dir=state_dir,
@@ -889,6 +1017,7 @@ def _run_gogurt_listener_lifecycle(
             evidence_dir=evidence_dir,
             failure=exc,
             phase="lifecycle",
+            native_transitions=native_transitions,
         )
         raise
     finally:
@@ -911,12 +1040,16 @@ def _run_gogurt_listener_lifecycle(
                     evidence_dir=evidence_dir,
                     failure=exc,
                     phase="uninstall",
+                    native_transitions=native_trace.stop(),
                 )
                 raise
+            native_trace.stop()
             if removed.get("installed") is not False or removed.get("health") != "absent":
                 raise QualificationError("Gogurt listener uninstall left native registration")
             if Path(str(removed["state_dir"])).exists():
                 raise QualificationError("Gogurt listener uninstall left durable state")
+        else:
+            native_trace.stop()
 
 
 def _write_ots_fixture(path: Path) -> Path:
