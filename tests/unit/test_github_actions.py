@@ -16,6 +16,22 @@ PROVIDER_QUALIFICATION_COMPOSE = REPO_ROOT / "tests/harness/provider-qualificati
 MISE_LOCK = REPO_ROOT / "mise.lock"
 
 
+def test_every_buildx_setup_uses_the_pinned_docker_engine() -> None:
+    for path in (CI_WORKFLOW, QUALIFICATION_WORKFLOW, PROVIDER_QUALIFICATION_WORKFLOW):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        buildx_steps = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", ())
+            if str(step.get("uses", "")).startswith("docker/setup-buildx-action@")
+        ]
+
+        assert buildx_steps
+        assert all(
+            step["with"] == {"version": "v0.36.0", "driver": "docker"} for step in buildx_steps
+        )
+
+
 def test_provider_qualification_runs_isolated_storage_adapter_images() -> None:
     compose = yaml.safe_load(PROVIDER_QUALIFICATION_COMPOSE.read_text(encoding="utf-8"))
     services = compose["services"]
