@@ -100,14 +100,14 @@ class JsonSchemaDocument(Stove0ProtocolModel):
 class CollectionRootRef(Stove0ProtocolModel):
     collection_id: int = Field(ge=1)
     manifest_sha256: Sha256
-    content_etag: Sha256
+    content_identity: Sha256
 
     @classmethod
     def from_identity(cls, value: CollectionRootIdentity) -> CollectionRootRef:
         return cls(
             collection_id=value.collection_id,
             manifest_sha256=value.manifest_sha256,
-            content_etag=value.content_etag,
+            content_identity=value.content_identity,
         )
 
     def to_identity(self) -> CollectionRootIdentity:

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/provenance/set.schema.json",
+  "title": "Riverhog provenance v1 portable set index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "files", "journals"],
+  "properties": {
+    "schema": {"const": "riverhog-provenance-set/v1"},
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/fileBinding"}
+    },
+    "journals": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/journal"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "journalId": {
+      "type": "string",
+      "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "capturedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "status", "journal_id", "current_state_id"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "status": {"const": "captured"},
+        "journal_id": {"$ref": "#/$defs/journalId"},
+        "current_state_id": {"$ref": "#/$defs/journalId"}
+      }
+    },
+    "omittedFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "status", "omission_reason"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "status": {"const": "omitted"},
+        "omission_reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "fileBinding": {
+      "oneOf": [
+        {"$ref": "#/$defs/capturedFile"},
+        {"$ref": "#/$defs/omittedFile"}
+      ]
+    },
+    "journal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["journal_id", "path", "bytes", "sha256"],
+      "properties": {
+        "journal_id": {"$ref": "#/$defs/journalId"},
+        "path": {
+          "type": "string",
+          "pattern": "^journals/urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.json-seq$"
+        },
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

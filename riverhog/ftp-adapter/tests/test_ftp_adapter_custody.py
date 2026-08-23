@@ -60,7 +60,7 @@ class _Producer:
         return ProducedCollection(
             collection_id=41,
             manifest_sha256="a" * 64,
-            content_etag="b" * 64,
+            content_identity="b" * 64,
             receipt={"state": "finalized"},
         )
 

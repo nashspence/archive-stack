@@ -71,7 +71,7 @@ def _request(observer: ExiftoolObserver) -> ObservationRequest:
     root = CollectionRootRef(
         collection_id=1,
         manifest_sha256=_sha("2"),
-        content_etag=_sha("3"),
+        content_identity=_sha("3"),
     )
     return ObservationRequest.seal(
         ObservationRequestPayload(

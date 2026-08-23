@@ -25,6 +25,19 @@ def load_journal_entry_schema() -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(schema_resource.read_text(encoding="utf-8")))
 
 
+def _load_schema(name: str) -> dict[str, Any]:
+    schema_resource = _schema_directory().joinpath(name)
+    return cast(dict[str, Any], json.loads(schema_resource.read_text(encoding="utf-8")))
+
+
+def load_provenance_index_schema() -> dict[str, Any]:
+    return _load_schema("riverhog-provenance-v1-index.schema.json")
+
+
+def load_provenance_set_schema() -> dict[str, Any]:
+    return _load_schema("riverhog-provenance-v1-set.schema.json")
+
+
 def load_observer_schemas() -> dict[str, dict[str, Any]]:
     schemas: dict[str, dict[str, Any]] = {}
     for resource in _schema_directory().iterdir():
@@ -58,6 +71,22 @@ def _graph_fragment_validator() -> Draft202012Validator:
 
 
 @cache
+def _provenance_index_validator() -> Draft202012Validator:
+    return Draft202012Validator(
+        load_provenance_index_schema(),
+        format_checker=FormatChecker(),
+    )
+
+
+@cache
+def _provenance_set_validator() -> Draft202012Validator:
+    return Draft202012Validator(
+        load_provenance_set_schema(),
+        format_checker=FormatChecker(),
+    )
+
+
+@cache
 def _observer_validators() -> dict[str, Draft202012Validator]:
     return {
         schema_id: Draft202012Validator(schema, format_checker=FormatChecker())
@@ -78,6 +107,38 @@ def _json_nodes(value: Any, path: tuple[Any, ...] = ()) -> Iterable[tuple[tuple[
 def _format_path(path: Iterable[Any]) -> str:
     parts = [str(part) for part in path]
     return "/" + "/".join(parts) if parts else "<root>"
+
+
+def _validate_document(
+    document: Mapping[str, Any],
+    *,
+    validator: Draft202012Validator,
+    label: str,
+) -> None:
+    errors = sorted(validator.iter_errors(dict(document)), key=lambda error: list(error.path))
+    if errors:
+        findings = [f"{_format_path(error.absolute_path)}: {error.message}" for error in errors]
+        raise ValueError(f"{label} is invalid:\n" + "\n".join(findings))
+
+
+def validate_provenance_index_document(document: Mapping[str, Any]) -> None:
+    """Validate a Riverhog provenance collection-index document structurally."""
+
+    _validate_document(
+        document,
+        validator=_provenance_index_validator(),
+        label="Riverhog provenance index",
+    )
+
+
+def validate_provenance_set_document(document: Mapping[str, Any]) -> None:
+    """Validate a Riverhog portable provenance-set index structurally."""
+
+    _validate_document(
+        document,
+        validator=_provenance_set_validator(),
+        label="Riverhog provenance set",
+    )
 
 
 def validate_embedded_typed_values(fragment: Mapping[str, Any]) -> None:

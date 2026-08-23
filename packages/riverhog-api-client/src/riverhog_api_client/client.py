@@ -760,16 +760,16 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         collection_id: int,
         *,
         files_total: int,
-        content_etag: str,
-        provenance_etag: str | None,
+        content_identity: str,
+        provenance_identity: str | None,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/v1/collection-upload-sessions/{str(collection_id)}/complete",
             json={
                 "files_total": files_total,
-                "content_etag": content_etag,
-                "provenance_etag": provenance_etag,
+                "content_identity": content_identity,
+                "provenance_identity": provenance_identity,
             },
         )
 

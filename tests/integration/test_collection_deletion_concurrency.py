@@ -227,7 +227,7 @@ def _seed(database_url: str) -> None:
             CollectionRecord(
                 id=COLLECTION_ID,
                 creation_idempotency_key="fixture-docs",
-                content_etag="0" * 64,
+                content_identity="0" * 64,
                 record_etag="0" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
@@ -301,7 +301,7 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
             CollectionRecord(
                 id=SECOND_COLLECTION_ID,
                 creation_idempotency_key="fixture-second",
-                content_etag="1" * 64,
+                content_identity="1" * 64,
                 record_etag="1" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
@@ -503,7 +503,7 @@ def _seed_derived_output(
             CollectionRecord(
                 id=output_collection_id,
                 creation_idempotency_key=execution_id,
-                content_etag=("4" if output_collection_id == 2 else "5") * 64,
+                content_identity=("4" if output_collection_id == 2 else "5") * 64,
                 record_etag=("3" if output_collection_id == 2 else "4") * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
@@ -610,7 +610,7 @@ def _seed_multi_input_derived_output(
             CollectionRecord(
                 id=2,
                 creation_idempotency_key=EXECUTION_ID,
-                content_etag="4" * 64,
+                content_identity="4" * 64,
                 record_etag="3" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
@@ -1175,7 +1175,7 @@ def test_postgres_last_outcome_attachment_and_claim_closure_converge(
                 output_collection=CollectionRootIdentity(
                     collection_id=output_id,
                     manifest_sha256="1" * 64,
-                    content_etag=("4" if output_id == 2 else "5") * 64,
+                    content_identity=("4" if output_id == 2 else "5") * 64,
                 ),
                 derivation_sha256=derivation.sha256,
             )

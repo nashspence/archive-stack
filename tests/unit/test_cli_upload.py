@@ -248,13 +248,13 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             collection_id: int,
             *,
             files_total: int,
-            content_etag: str,
-            provenance_etag: str | None,
+            content_identity: str,
+            provenance_identity: str | None,
         ) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
             assert files_total == 2
-            assert len(content_etag) == 64
-            assert provenance_etag is not None and len(provenance_etag) == 64
+            assert len(content_identity) == 64
+            assert provenance_identity is not None and len(provenance_identity) == 64
             return {"collection_id": collection_id, "state": "uploading"}
 
         def put_collection_upload_session_provenance_journal(

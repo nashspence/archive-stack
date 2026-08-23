@@ -236,7 +236,7 @@ class ClaimedCollectionReader:
         actual = CollectionRootIdentity(
             collection_id=_positive_int(payload.get("id"), "collection id"),
             manifest_sha256=str(payload.get("manifest_sha256") or ""),
-            content_etag=str(payload.get("content_etag") or ""),
+            content_identity=str(payload.get("content_identity") or ""),
         )
         if actual != expected:
             raise RuntimeError(f"claimed collection root changed: {expected.collection_id}")

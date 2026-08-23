@@ -65,7 +65,7 @@ def _authorities(
                 CollectionRootRef(
                     collection_id=1,
                     manifest_sha256=_sha("2"),
-                    content_etag=_sha("3"),
+                    content_identity=_sha("3"),
                 ),
             ),
         )
@@ -229,7 +229,7 @@ class FixtureApi:
         return {
             "id": collection_id,
             "manifest_sha256": _sha("7"),
-            "content_etag": _sha("8"),
+            "content_identity": _sha("8"),
             "tags": list(self.derivation.output_tags),
         }
 
@@ -305,7 +305,7 @@ def _verifying_record(
     output_ref = OutputCollectionRef(
         collection_id=7,
         manifest_sha256=_sha("7"),
-        content_etag=_sha("8"),
+        content_identity=_sha("8"),
         derivation_sha256=derivation.sha256,
     )
     status = TargetJobStatus(
@@ -387,7 +387,7 @@ def test_riverhog_adapter_closes_only_the_exact_generic_outcome_set() -> None:
     output_root = CollectionRootRef(
         collection_id=7,
         manifest_sha256=_sha("7"),
-        content_etag=_sha("8"),
+        content_identity=_sha("8"),
     )
     output_selection = ArtifactSelection.seal(
         (
@@ -422,7 +422,7 @@ def test_riverhog_adapter_closes_only_the_exact_generic_outcome_set() -> None:
         output_collection=CollectionRootIdentity(
             collection_id=7,
             manifest_sha256=_sha("7"),
-            content_etag=_sha("8"),
+            content_identity=_sha("8"),
         ),
         derivation_sha256=_sha("d"),
     )

@@ -86,7 +86,7 @@ class RetrievalApi:
         return {
             "id": collection_id,
             "manifest_sha256": "3" * 64 if self.changed_root else "1" * 64,
-            "content_etag": "2" * 64,
+            "content_identity": "2" * 64,
         }
 
     def search(self, _query: str | None = None, **_kwargs: Any) -> dict[str, Any]:
@@ -243,7 +243,7 @@ class UploadApi:
         self.registered: list[dict[str, Any]] = []
         self.registration_batches: list[list[dict[str, Any]]] = []
         self.uploaded = b""
-        self.completion_content_etag = ""
+        self.completion_content_identity = ""
         self.committed = False
         self.discovery_closed = False
         self.volume_list_calls = 0
@@ -331,25 +331,25 @@ class UploadApi:
         self,
         _collection_id: int,
         *,
-        content_etag: str,
+        content_identity: str,
         **_kwargs: Any,
     ) -> dict[str, Any]:
-        self.completion_content_etag = content_etag
+        self.completion_content_identity = content_identity
         self.discovery_closed = True
         return {
             "state": "uploading",
-            "content_etag": content_etag,
+            "content_identity": content_identity,
         }
 
     def get_collection_upload_session(self, _collection_id: int) -> dict[str, Any]:
         assert self.committed
         return {
             "state": "finalized",
-            "content_etag": self.completion_content_etag,
+            "content_identity": self.completion_content_identity,
             "collection": {
                 "id": 7,
                 "manifest_sha256": "7" * 64,
-                "content_etag": self.completion_content_etag,
+                "content_identity": self.completion_content_identity,
             },
         }
 
@@ -381,7 +381,7 @@ class ProvenanceTransformApi(UploadApi):
         return {
             "id": 1,
             "manifest_sha256": "1" * 64,
-            "content_etag": "2" * 64,
+            "content_identity": "2" * 64,
         }
 
     def search(self, _query: str | None = None, **_kwargs: Any) -> dict[str, Any]:
@@ -494,7 +494,7 @@ def test_producer_stream_has_no_shared_filesystem_and_is_snapshot_verified(
 
     assert receipt.collection_id == 7
     assert api.volume_list_calls == 2
-    assert api.completion_content_etag == receipt.content_etag
+    assert api.completion_content_identity == receipt.content_identity
     uploaded_by_path = {
         str(item["path"]): api.uploaded[
             sum(int(previous["bytes"]) for previous in api.registered[:index]) : sum(

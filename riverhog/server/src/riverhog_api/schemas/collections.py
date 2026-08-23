@@ -1,29 +1,13 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 
 from pydantic import Field
 from riverhog_protocol import COLLECTION_UPLOAD_FILE_BATCH_MAX
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
-
-
-class CollectionUploadCapturedFileProvenanceIn(RiverhogModel):
-    status: Literal["captured"]
-    journal_id: str
-    current_state_id: str
-
-
-class CollectionUploadOmittedFileProvenanceIn(RiverhogModel):
-    status: Literal["omitted"]
-    omission_reason: str
-
-
-CollectionUploadFileProvenanceIn = Annotated[
-    CollectionUploadCapturedFileProvenanceIn | CollectionUploadOmittedFileProvenanceIn,
-    Field(discriminator="status"),
-]
+from riverhog_api.schemas.provenance import FileProvenanceBinding
 
 
 class CollectionUploadFileIn(RiverhogModel):
@@ -31,7 +15,7 @@ class CollectionUploadFileIn(RiverhogModel):
     bytes: int
     sha256: str
     raw_parts: CollectionUploadRawPartsIn | None = None
-    provenance: CollectionUploadFileProvenanceIn
+    provenance: FileProvenanceBinding
 
 
 class CollectionUploadRawPartsIn(RiverhogModel):
@@ -58,15 +42,15 @@ class RegisterCollectionUploadSessionFilesRequest(RiverhogModel):
 
 class CompleteCollectionUploadSessionRequest(RiverhogModel):
     files_total: int = Field(ge=1)
-    content_etag: str = Field(pattern=r"^[0-9a-f]{64}$")
-    provenance_etag: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provenance_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class CollectionSummaryOut(RiverhogModel):
     id: int
     created_at: str
     tags: list[str]
-    content_etag: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     files: int
     bytes: int
@@ -132,7 +116,7 @@ class CollectionUploadFileOut(RiverhogModel):
     upload_state: str
     uploaded_bytes: int
     upload_state_expires_at: str | None
-    provenance: CollectionUploadFileProvenanceIn
+    provenance: FileProvenanceBinding
 
 
 class CollectionUploadProvenanceJournalOut(RiverhogModel):
@@ -212,8 +196,8 @@ class CollectionUploadSessionOut(RiverhogModel):
     tags: list[str]
     ingest_source: str | None
     provenance_mode: Literal["captured", "mixed", "omitted"]
-    provenance_etag: str | None
-    content_etag: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    provenance_identity: str | None
+    content_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     archive_store: str
     state: Literal["open", "uploading", "finalizing", "finalized", "failed", "canceled"]

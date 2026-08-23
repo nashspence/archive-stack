@@ -88,7 +88,7 @@ def seed_tag(
                 CollectionRecord(
                     id=collection_id,
                     creation_idempotency_key=f"fixture-{collection_id}",
-                    content_etag="0" * 64,
+                    content_identity="0" * 64,
                     record_etag="1" * 64,
                     metadata_revision=1,
                     metadata_updated_at="2026-07-24T00:00:00.000000Z",

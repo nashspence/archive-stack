@@ -117,7 +117,7 @@ def _work() -> WorkIdentity:
                 CollectionRootRef(
                     collection_id=1,
                     manifest_sha256="b" * 64,
-                    content_etag="c" * 64,
+                    content_identity="c" * 64,
                 ),
             ),
         )
@@ -307,7 +307,7 @@ def _active_target_work(
     output_collection = OutputCollectionRef(
         collection_id=7,
         manifest_sha256="6" * 64,
-        content_etag="7" * 64,
+        content_identity="7" * 64,
         derivation_sha256=derivation.sha256,
     )
     succeeded = TargetJobStatus(
@@ -403,7 +403,7 @@ def _resolved_join(
         root = CollectionRootRef(
             collection_id=offset,
             manifest_sha256=f"{offset % 16:x}" * 64,
-            content_etag=f"{(offset + 2) % 16:x}" * 64,
+            content_identity=f"{(offset + 2) % 16:x}" * 64,
         )
         output = ArtifactSelection.seal(
             (

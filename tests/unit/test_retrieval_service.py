@@ -25,7 +25,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol.errors import Conflict, NotFound
-from riverhog_protocol.manifest import collection_content_etag
+from riverhog_protocol.manifest import collection_content_identity
 from riverhog_protocol.raw_ingress import hash_raw_source
 
 from tests.fixtures.crypto import FixtureProofStamper
@@ -275,7 +275,7 @@ def _seed_collection(
     uploads.complete(
         collection_id,
         files_total=len(manifest),
-        content_etag=collection_content_etag(
+        content_identity=collection_content_identity(
             (str(item["path"]), int(item["bytes"]), str(item["sha256"])) for item in manifest
         ),
     )

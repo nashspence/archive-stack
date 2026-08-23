@@ -54,7 +54,7 @@ def create_or_resume_processing_claim(
                 CollectionRootIdentity(
                     collection_id=item.collection_id,
                     manifest_sha256=item.manifest_sha256,
-                    content_etag=item.content_etag,
+                    content_identity=item.content_identity,
                 )
                 for item in request.inputs
             ),

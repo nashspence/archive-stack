@@ -215,7 +215,7 @@ def test_api_client_parses_resourcesync_discovery_capabilities_and_resources() -
     ]
 
 
-def test_portable_manifest_response_has_a_content_etag() -> None:
+def test_portable_manifest_response_has_a_content_identity() -> None:
     response = get_portable_collection_manifest(
         COLLECTION_ID,
         "app",

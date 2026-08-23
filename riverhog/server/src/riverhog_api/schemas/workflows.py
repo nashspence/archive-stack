@@ -14,7 +14,7 @@ def _default_capability_actions() -> list[Literal["read-inputs", "write-output"]
 class CollectionRootIdentityIn(RiverhogModel):
     collection_id: int = Field(ge=1)
     manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    content_etag: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class CollectionArtifactIdentityIn(RiverhogModel):

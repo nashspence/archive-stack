@@ -554,7 +554,7 @@ class RecipePlanner:
             current = self.riverhog.get_collection(root.collection_id)
             if (
                 str(current.get("manifest_sha256") or "") != root.manifest_sha256
-                or str(current.get("content_etag") or "") != root.content_etag
+                or str(current.get("content_identity") or "") != root.content_identity
             ):
                 raise RuntimeError(f"collection root changed: {root.collection_id}")
             page = self.riverhog.search(

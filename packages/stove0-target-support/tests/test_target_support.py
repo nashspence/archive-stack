@@ -161,7 +161,7 @@ def _input() -> InputArtifact:
         collection=CollectionRootRef(
             collection_id=1,
             manifest_sha256=_sha("1"),
-            content_etag=_sha("2"),
+            content_identity=_sha("2"),
         ),
         path="source/input.bin",
         bytes=12,
@@ -328,7 +328,7 @@ def _success_status(
         output_collection=OutputCollectionRef(
             collection_id=7,
             manifest_sha256=_sha("6"),
-            content_etag=_sha("7"),
+            content_identity=_sha("7"),
             derivation_sha256=derivation.sha256,
         ),
         execution_evidence=TargetExecutionEvidence(
@@ -376,7 +376,7 @@ def test_target_runtime_builds_complete_success_status(
             DerivedCollectionReceipt(
                 collection_id=output_collection.collection_id,
                 manifest_sha256=output_collection.manifest_sha256,
-                content_etag=output_collection.content_etag,
+                content_identity=output_collection.content_identity,
                 derivation=derivation,
             ),
             output_collection,

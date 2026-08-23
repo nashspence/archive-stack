@@ -98,9 +98,9 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
             CollectionRecord(
                 id=1,
                 creation_idempotency_key="fixture",
-                content_etag="a" * 64,
+                content_identity="a" * 64,
                 provenance_mode="captured",
-                provenance_etag="b" * 64,
+                provenance_identity="b" * 64,
                 record_etag="c" * 64,
                 metadata_revision=1,
                 metadata_updated_at=NOW,
@@ -134,7 +134,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
             )
         session.flush()
         for projection in projections.values():
-            session.add_all(projection.lineage_edges)
+            session.add_all(projection.external_state_references)
         file_bindings = (
             (derivative_path.name, derivative_path.read_bytes(), validate_journal(derivative)),
             ("unrelated.bin", b"unrelated", validate_journal(unrelated)),
@@ -171,7 +171,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
         derivative_summary.journal_id,
         *source_ids,
     }
-    assert {item["to_journal_id"] for item in traced["lineage_edges"]} == source_ids
+    assert {item["to_journal_id"] for item in traced["external_state_references"]} == source_ids
     assert validate_journal(unrelated).journal_id not in {
         item["journal_id"] for item in traced["journals"]
     }

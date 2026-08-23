@@ -124,7 +124,7 @@ class CollectionRootIdentity:
 
     collection_id: int
     manifest_sha256: str
-    content_etag: str
+    content_identity: str
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "collection_id", int(normalize_collection_id(self.collection_id)))
@@ -133,23 +133,27 @@ class CollectionRootIdentity:
             "manifest_sha256",
             _sha256(self.manifest_sha256, "collection manifest identity"),
         )
-        object.__setattr__(self, "content_etag", _sha256(self.content_etag, "content etag"))
+        object.__setattr__(
+            self,
+            "content_identity",
+            _sha256(self.content_identity, "collection content identity"),
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
             "collection_id": self.collection_id,
             "manifest_sha256": self.manifest_sha256,
-            "content_etag": self.content_etag,
+            "content_identity": self.content_identity,
         }
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> CollectionRootIdentity:
-        if set(value) != {"collection_id", "manifest_sha256", "content_etag"}:
+        if set(value) != {"collection_id", "manifest_sha256", "content_identity"}:
             raise ValueError("collection root identity fields are invalid")
         return cls(
             collection_id=_positive_uint(value.get("collection_id"), "collection id"),
             manifest_sha256=str(value.get("manifest_sha256") or ""),
-            content_etag=str(value.get("content_etag") or ""),
+            content_identity=str(value.get("content_identity") or ""),
         )
 
 

@@ -39,9 +39,9 @@ class CollectionRecord(Base):
 
     id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     creation_idempotency_key: Mapped[str] = mapped_column(String)
-    content_etag: Mapped[str] = mapped_column(String(64))
+    content_identity: Mapped[str] = mapped_column(String(64))
     provenance_mode: Mapped[str] = mapped_column(String, default="omitted")
-    provenance_etag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provenance_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     record_etag: Mapped[str] = mapped_column(String(64))
     metadata_revision: Mapped[int] = mapped_column(BigInteger, default=1)
     metadata_updated_at: Mapped[str] = mapped_column(String)
@@ -168,8 +168,8 @@ class CollectionProvenanceJournalRecord(Base):
     collection: Mapped[CollectionRecord] = relationship(back_populates="provenance_journals")
 
 
-class CollectionProvenanceLineageEdgeRecord(Base):
-    __tablename__ = "collection_provenance_lineage_edges"
+class CollectionProvenanceExternalStateReferenceRecord(Base):
+    __tablename__ = "collection_provenance_external_state_references"
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     from_journal_id: Mapped[str] = mapped_column(String, primary_key=True)
@@ -196,7 +196,7 @@ class CollectionProvenanceLineageEdgeRecord(Base):
             ondelete="CASCADE",
         ),
         Index(
-            "ix_collection_provenance_lineage_edges_target",
+            "ix_collection_provenance_external_state_references_target",
             "collection_id",
             "to_journal_id",
         ),
@@ -826,7 +826,7 @@ class CollectionUploadRecord(Base):
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance_mode: Mapped[str] = mapped_column(String)
     provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    provenance_etag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provenance_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     initiated_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     event_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)

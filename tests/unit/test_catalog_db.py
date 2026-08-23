@@ -28,7 +28,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
 
     inspector = inspect(create_catalog_engine(database_url))
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0005"
+    assert upgraded.current_revision == validated.current_revision == "v1_0006"
     assert set(inspector.get_table_names()) == {*Base.metadata.tables, STATE_VERSION_TABLE}
     assert {column["name"] for column in inspector.get_columns("archive_download_usage")} == {
         "store",
@@ -131,7 +131,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "file_order",
     }
     collection_columns = {column["name"]: column for column in inspector.get_columns("collections")}
-    assert collection_columns["content_etag"]["nullable"] is False
+    assert collection_columns["content_identity"]["nullable"] is False
     assert collection_columns["record_etag"]["nullable"] is False
     assert collection_columns["metadata_revision"]["nullable"] is False
     assert collection_columns["metadata_updated_at"]["nullable"] is False

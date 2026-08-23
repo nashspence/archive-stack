@@ -38,7 +38,7 @@ def media_preflight_request(
     root = CollectionRootRef(
         collection_id=11,
         manifest_sha256=sha("1"),
-        content_etag=sha("2"),
+        content_identity=sha("2"),
     )
     inputs = (
         InputArtifact(

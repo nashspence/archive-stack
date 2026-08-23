@@ -19,7 +19,7 @@ SECOND_CONTENT = b"another locally materialized file\n"
 MANIFEST = {
     "format": "riverhog-collection/v1",
     "collection": COLLECTION_ID,
-    "content_etag": "a" * 64,
+    "content_identity": "a" * 64,
     "metadata_revision": 1,
     "tags": ["docs"],
     "files": [

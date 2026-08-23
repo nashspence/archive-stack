@@ -57,7 +57,7 @@ def _root(collection_id: int = 1) -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=collection_id,
         manifest_sha256=_sha(str(collection_id)),
-        content_etag=_sha(chr(ord("a") + collection_id)),
+        content_identity=_sha(chr(ord("a") + collection_id)),
     )
 
 

@@ -71,7 +71,7 @@ class CollectionSummary:
     id: CollectionId
     created_at: str
     tags: tuple[str, ...]
-    content_etag: str
+    content_identity: str
     manifest_sha256: str
     files: int
     bytes: int

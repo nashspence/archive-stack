@@ -52,7 +52,7 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
 
         def trace_collection_file_provenance(self, collection_id: int, path: str) -> dict[str, Any]:
             calls.append(("trace", (collection_id, path)))
-            return {**shown, "journals": [shown["journal"]], "lineage_edges": []}
+            return {**shown, "journals": [shown["journal"]], "external_state_references": []}
 
         def export_collection_provenance_journal(
             self, collection_id: int, journal_id: str
@@ -66,7 +66,7 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
                 "collection_id": collection_id,
                 "valid": True,
                 "provenance_mode": "captured",
-                "provenance_etag": "b" * 64,
+                "provenance_identity": "b" * 64,
                 "files": 1,
                 "journals": 1,
                 "entities": 4,
@@ -178,6 +178,7 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     assert shown_human.exit_code == traced_human.exit_code == verified_human.exit_code == 0
     assert "media/movie.mov" in shown_human.stdout
     assert "media/movie.mov" in traced_human.stdout
+    assert "external state references: 0" in traced_human.stdout
     assert "valid" in verified_human.stdout
 
 

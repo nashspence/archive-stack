@@ -15,7 +15,7 @@ from riverhog_protocol.collection_workflows import (
     JsonValue,
     ProducerEvidence,
 )
-from riverhog_protocol.manifest import collection_content_etag_ordered
+from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.paths import normalize_relpath
 from riverhog_protocol.raw_ingress import hash_raw_source
 from riverhog_provenance import FileProvenanceBinding, build_provenance_archive
@@ -114,7 +114,7 @@ ProvenanceBuilder = Callable[
 class ProducedCollection:
     collection_id: int
     manifest_sha256: str
-    content_etag: str
+    content_identity: str
     receipt: dict[str, Any]
 
 
@@ -403,15 +403,17 @@ class CollectionProducer:
             client_factory=self.api.spawn,
         )
         ordered = _ordered_sources(sources)
-        content_etag = collection_content_etag_ordered(
+        content_identity = collection_content_identity_ordered(
             (source.path, source.bytes, source.sha256) for source in ordered
         )
-        provenance_etag = _provenance_etag(ordered, normalized_journals) if captured else None
+        provenance_identity = (
+            _provenance_identity(ordered, normalized_journals) if captured else None
+        )
         receipt = self.api.complete_collection_upload_session(
             collection_id,
             files_total=len(sources),
-            content_etag=content_etag,
-            provenance_etag=provenance_etag,
+            content_identity=content_identity,
+            provenance_identity=provenance_identity,
         )
         if str(receipt.get("state") or "") != "finalized":
             # Closing discovery seals the bounded final pack. Upload any units
@@ -636,7 +638,7 @@ def _provenance(
     raise ValueError("producer file provenance binding is invalid")
 
 
-def _provenance_etag(
+def _provenance_identity(
     sources: Sequence[_Source],
     journals: Mapping[str, bytes],
 ) -> str:
@@ -666,16 +668,18 @@ def _finalized_receipt(payload: Mapping[str, Any]) -> ProducedCollection:
     if not isinstance(collection, Mapping):
         raise RuntimeError("finalized Riverhog upload has no collection receipt")
     collection_id = int(collection["id"])
-    content_etag = str(payload.get("content_etag") or collection.get("content_etag") or "")
+    content_identity = str(
+        payload.get("content_identity") or collection.get("content_identity") or ""
+    )
     manifest_sha256 = str(collection.get("manifest_sha256") or payload.get("manifest_sha256") or "")
     if len(manifest_sha256) != 64:
         raise RuntimeError("finalized Riverhog receipt has no immutable manifest identity")
-    if len(content_etag) != 64:
+    if len(content_identity) != 64:
         raise RuntimeError("finalized Riverhog receipt has no content identity")
     return ProducedCollection(
         collection_id=collection_id,
         manifest_sha256=manifest_sha256,
-        content_etag=content_etag,
+        content_identity=content_identity,
         receipt=dict(payload),
     )
 

@@ -4,15 +4,15 @@ import hashlib
 import json
 from collections.abc import Iterable, Sequence
 
-from riverhog_protocol.manifest import collection_content_etag
+from riverhog_protocol.manifest import collection_content_identity
 
 
 def collection_record_manifest(
     *,
     collection_id: int,
-    content_etag: str,
+    content_identity: str,
     provenance_mode: str,
-    provenance_etag: str | None,
+    provenance_identity: str | None,
     metadata_revision: int,
     tags: Sequence[str],
     files: Iterable[tuple[str, int, str]],
@@ -20,9 +20,9 @@ def collection_record_manifest(
     payload: dict[str, object] = {
         "format": "riverhog-collection/v1",
         "collection": collection_id,
-        "content_etag": content_etag,
+        "content_identity": content_identity,
         "provenance_mode": provenance_mode,
-        "provenance_etag": provenance_etag,
+        "provenance_identity": provenance_identity,
         "metadata_revision": metadata_revision,
         "tags": sorted(tags),
         "files": [
@@ -36,7 +36,7 @@ def collection_record_manifest(
 def collection_metadata_manifest(
     *,
     collection_id: int,
-    content_etag: str,
+    content_identity: str,
     record_etag: str,
     metadata_revision: int,
     tags: Sequence[str],
@@ -46,7 +46,7 @@ def collection_metadata_manifest(
         {
             "format": "riverhog-collection-metadata/v1",
             "collection": collection_id,
-            "content_etag": content_etag,
+            "content_identity": content_identity,
             "record_etag": record_etag,
             "metadata_revision": metadata_revision,
             "tags": sorted(tags),
@@ -60,7 +60,7 @@ def _canonical_json(payload: object) -> bytes:
 
 
 __all__ = [
-    "collection_content_etag",
+    "collection_content_identity",
     "collection_record_manifest",
     "collection_metadata_manifest",
 ]

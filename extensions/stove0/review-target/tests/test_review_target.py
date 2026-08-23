@@ -103,7 +103,7 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
                     collection=CollectionRootRef(
                         collection_id=1,
                         manifest_sha256=_sha("1"),
-                        content_etag=_sha("2"),
+                        content_identity=_sha("2"),
                     ),
                     path="camera/source.wav",
                     bytes=12,

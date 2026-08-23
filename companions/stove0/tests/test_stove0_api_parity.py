@@ -59,7 +59,7 @@ class _LifecycleCatalogApi(CatalogApi):
         return {
             "id": collection_id,
             "manifest_sha256": "1" * 64,
-            "content_etag": "2" * 64,
+            "content_identity": "2" * 64,
         }
 
 
@@ -239,7 +239,7 @@ def _evaluation_definition() -> EvaluationDefinition:
                 CollectionRootRef(
                     collection_id=1,
                     manifest_sha256="1" * 64,
-                    content_etag="2" * 64,
+                    content_identity="2" * 64,
                 ),
             ),
             matrix=matrix,

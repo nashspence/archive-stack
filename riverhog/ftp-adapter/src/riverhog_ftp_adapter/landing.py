@@ -422,7 +422,7 @@ class FtpAdapter:
             "source_event_id": str(manifest["source_event_id"]),
             "collection_id": receipt.collection_id,
             "manifest_sha256": receipt.manifest_sha256,
-            "content_etag": receipt.content_etag,
+            "content_identity": receipt.content_identity,
             "riverhog_receipt": receipt.receipt,
         }
         _write_json(claim_root / _RECEIPT, receipt_payload)
@@ -455,7 +455,7 @@ class FtpAdapter:
         return ProducedCollection(
             collection_id=int(payload["collection_id"]),
             manifest_sha256=str(payload["manifest_sha256"]),
-            content_etag=str(payload["content_etag"]),
+            content_identity=str(payload["content_identity"]),
             receipt=raw_receipt,
         )
 

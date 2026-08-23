@@ -125,8 +125,8 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
     client.complete_collection_upload_session(
         1,
         files_total=1,
-        content_etag="b" * 64,
-        provenance_etag=None,
+        content_identity="b" * 64,
+        provenance_identity=None,
     )
 
     assert client.calls[0][2]["json"] == {
@@ -140,8 +140,8 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
     }
     assert client.calls[2][2]["json"] == {
         "files_total": 1,
-        "content_etag": "b" * 64,
-        "provenance_etag": None,
+        "content_identity": "b" * 64,
+        "provenance_identity": None,
     }
 
 

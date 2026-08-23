@@ -105,7 +105,7 @@ class CollectionProcessingClaimInputRecord(Base):
     )
     collection_order: Mapped[int] = mapped_column(Integer, nullable=False)
     manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    content_etag: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_identity: Mapped[str] = mapped_column(String(64), nullable=False)
 
     __table_args__ = (
         UniqueConstraint(
@@ -220,7 +220,7 @@ class CollectionProcessingOutcomeRecord(Base):
     )
     collection_id: Mapped[int] = mapped_column(_COLLECTION_ID_TYPE, nullable=False)
     manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    content_etag: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_identity: Mapped[str] = mapped_column(String(64), nullable=False)
     derivation_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False)
 

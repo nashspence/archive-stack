@@ -23,8 +23,8 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectUploadRecord,
     CollectionFileProvenanceRecord,
     CollectionProvenanceEntityRecord,
+    CollectionProvenanceExternalStateReferenceRecord,
     CollectionProvenanceJournalRecord,
-    CollectionProvenanceLineageEdgeRecord,
     CollectionUploadRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
@@ -44,7 +44,7 @@ from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUpload
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.throughput import ArchiveThroughputTuning, log_transfer_timing
 from riverhog_protocol.errors import Conflict, NotFound
-from riverhog_protocol.manifest import collection_content_etag
+from riverhog_protocol.manifest import collection_content_identity
 from riverhog_provenance import (
     FileProvenanceBinding,
     build_provenance_archive,
@@ -248,7 +248,7 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
     service.complete(
         collection_id,
         files_total=1,
-        content_etag=collection_content_etag((("document.txt", len(content), sha256),)),
+        content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
     )
     volume = service.list_volumes(collection_id)["volumes"][0]
     unit = volume["units"][0]
@@ -406,10 +406,10 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     service.complete(
         collection_id,
         files_total=len(bindings),
-        content_etag=collection_content_etag(
+        content_identity=collection_content_identity(
             (binding.path, binding.bytes, binding.sha256) for binding in bindings
         ),
-        provenance_etag=provenance.identity,
+        provenance_identity=provenance.identity,
     )
     for volume in service.list_volumes(collection_id)["volumes"]:
         for unit in volume["units"]:
@@ -445,8 +445,8 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
                 journal_id=summary.journal_id,
             )
         )
-        lineage_edges = list(
-            session.query(CollectionProvenanceLineageEdgeRecord).filter_by(
+        external_state_references = list(
+            session.query(CollectionProvenanceExternalStateReferenceRecord).filter_by(
                 collection_id=collection_id,
                 from_journal_id=summary.journal_id,
             )
@@ -466,7 +466,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     assert exact.agent_ids_json
     assert exact.entity_counts_json
     assert projected
-    assert lineage_edges == []
+    assert external_state_references == []
 
     stored_by_suffix = {path.rsplit("/", 1)[-1]: stored for path, stored in root.objects.items()}
     index_stored = stored_by_suffix["index.json.age"]
@@ -574,7 +574,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     assert rebuilt == {
         "collection_id": collection_id,
         "provenance_mode": "mixed",
-        "provenance_etag": provenance.identity,
+        "provenance_identity": provenance.identity,
         "files": 2,
         "journals": 1,
         "entities": len(projected),
@@ -614,7 +614,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     closed = service.complete(
         collection_id,
         files_total=1,
-        content_etag=collection_content_etag((("document.txt", len(content), sha256),)),
+        content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
     )
     assert closed["state"] == "uploading"
     volume = service.list_volumes(collection_id)["volumes"][0]
@@ -729,7 +729,7 @@ def test_completion_requires_volume_plans_to_match_registered_file_identities(
         service.complete(
             collection_id,
             files_total=1,
-            content_etag=collection_content_etag((("document.txt", len(content), sha256),)),
+            content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
         )
 
 
@@ -774,7 +774,7 @@ def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) 
     service.complete(
         collection_id,
         files_total=1,
-        content_etag=collection_content_etag((("media.bin", len(content), sha256),)),
+        content_identity=collection_content_identity((("media.bin", len(content), sha256),)),
     )
 
     volume = service.list_volumes(collection_id)["volumes"][0]
@@ -813,7 +813,7 @@ def test_startup_reconciles_interrupted_finalization_from_its_durable_checkpoint
     service.complete(
         collection_id,
         files_total=1,
-        content_etag=collection_content_etag((("document.txt", len(content), sha256),)),
+        content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
     )
     volume = service.list_volumes(collection_id)["volumes"][0]
     service.upload_unit(
@@ -870,7 +870,7 @@ def test_due_finalization_retries_a_temporary_publication_failure(tmp_path: Path
     service.complete(
         collection_id,
         files_total=1,
-        content_etag=collection_content_etag((("document.txt", len(content), sha256),)),
+        content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
     )
     volume = service.list_volumes(collection_id)["volumes"][0]
     service.upload_unit(

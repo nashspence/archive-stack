@@ -90,7 +90,7 @@ def _root() -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=1,
         manifest_sha256=_sha("1"),
-        content_etag=_sha("2"),
+        content_identity=_sha("2"),
     )
 
 
@@ -663,7 +663,7 @@ class FixtureTarget:
             output_collection=OutputCollectionRef(
                 collection_id=7,
                 manifest_sha256=_sha("6"),
-                content_etag=_sha("7"),
+                content_identity=_sha("7"),
                 derivation_sha256=derivation.sha256,
             ),
             execution_evidence=TargetExecutionEvidence(
@@ -772,7 +772,7 @@ class ForkJoinTarget(FixtureTarget):
             output_collection=OutputCollectionRef(
                 collection_id=100 + int(workflow.work.work_id[:12], 16) % 1_000_000_000,
                 manifest_sha256=workflow.work.work_id,
-                content_etag=workflow.workflow_plan_sha256,
+                content_identity=workflow.workflow_plan_sha256,
                 derivation_sha256=derivation.sha256,
             ),
             execution_evidence=TargetExecutionEvidence(

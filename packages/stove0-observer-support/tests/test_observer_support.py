@@ -54,7 +54,7 @@ class RetrievalApi:
         return {
             "id": collection_id,
             "manifest_sha256": _sha("1"),
-            "content_etag": _sha("2"),
+            "content_identity": _sha("2"),
         }
 
     def search(self, _query: str | None = None, **_kwargs: Any) -> dict[str, Any]:
@@ -197,7 +197,7 @@ def _request(
                     collection=CollectionRootRef(
                         collection_id=1,
                         manifest_sha256=_sha("1"),
-                        content_etag=_sha("2"),
+                        content_identity=_sha("2"),
                     ),
                     path="camera/input.mov",
                     bytes=len(api.data),
@@ -359,7 +359,7 @@ def test_subject_batch_preference_is_not_a_request_limit() -> None:
     root = CollectionRootRef(
         collection_id=1,
         manifest_sha256=_sha("1"),
-        content_etag=_sha("2"),
+        content_identity=_sha("2"),
     )
     subjects = tuple(
         ArtifactSubject(

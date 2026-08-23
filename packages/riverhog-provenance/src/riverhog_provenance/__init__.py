@@ -54,7 +54,12 @@ from .model import (
     ObservationResult,
     PayloadBindingRequest,
 )
-from .schema import validate_entry_document, validate_graph_fragment
+from .schema import (
+    load_provenance_index_schema,
+    load_provenance_set_schema,
+    validate_entry_document,
+    validate_graph_fragment,
+)
 from .sidecars import (
     SIDECAR_SUFFIX,
     PreparedFileProvenance,
@@ -108,6 +113,8 @@ __all__ = [
     "current_state_reference",
     "get_observer",
     "load_or_create_installation_id",
+    "load_provenance_index_schema",
+    "load_provenance_set_schema",
     "parse_journal",
     "prepare_file_provenance",
     "provenance_journal_filename",
