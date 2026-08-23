@@ -12,12 +12,16 @@ from stove0_protocol import (
     BranchOutcomeState,
     BranchPlan,
     BranchSetEvaluation,
+    BranchSetPlan,
     BranchSettlement,
     CollectionRootRef,
+    CoordinationBranchPlan,
+    CoordinationSettlement,
     JoinOutcome,
     JoinOutcomeState,
     JoinPlan,
     JoinSettlement,
+    branch_work,
     evaluate_branch_set,
     resolve_join_plan,
 )
@@ -46,20 +50,61 @@ def project_coordination(parent: WorkRecord, store: WorkStore) -> CoordinationPr
     selections = _declared_selections(parent, store)
     settlements: list[BranchSettlement] = []
     effect_settlements: list[BranchEffectSettlement] = []
+    coordination_settlements: list[CoordinationSettlement] = []
     outcomes: list[BranchOutcome] = []
+    branch_sets = _branch_set_documents(parent, store)
     for branch in plan.branches:
-        child = _load_declared_work(store, branch.workflow_plan.work.work_id)
+        child = _load_declared_work(store, branch_work(branch).work_id)
+        if isinstance(branch, CoordinationBranchPlan):
+            expected_plan = branch_sets[branch.branch_set_sha256]
+            if child.branch_set_plan != expected_plan:
+                raise RuntimeError(
+                    "durable coordination child differs from its sealed branch-set plan"
+                )
+            settlement = child.coordination_settlement
+            if settlement is not None and child.phase == "complete":
+                if settlement.collection_result is not None:
+                    producer = _load_declared_work(
+                        store,
+                        settlement.collection_result.producer_work_id,
+                    )
+                    producer_plan = child.join_plan
+                    if producer_plan is None or producer_plan.work.work_id != producer.work_id:
+                        raise RuntimeError("coordination result producer is not exact join work")
+                    producer_settlement = _join_settlement(
+                        producer_plan,
+                        producer,
+                        selections,
+                    )
+                    result = settlement.collection_result
+                    if (
+                        producer_settlement is None
+                        or producer_settlement.settlement_sha256 != result.join_settlement_sha256
+                        or producer_settlement.derivation_sha256 != result.derivation_sha256
+                        or producer_settlement.output_collection != result.output_collection
+                        or producer_settlement.output_selection != result.output_selection
+                    ):
+                        raise RuntimeError("coordination result differs from its producer output")
+                coordination_settlements.append(settlement)
+                continue
+            if child.phase == "complete":
+                raise RuntimeError("completed coordination child has no exact settlement")
+            outcome = _coordination_outcome(branch, child)
+            if outcome is not None:
+                outcomes.append(outcome)
+            continue
+        assert isinstance(branch, BranchPlan)
         if child.workflow_plan != branch.workflow_plan:
             raise RuntimeError("durable branch child differs from its sealed workflow plan")
-        settlement = _branch_settlement(child)
-        if settlement is not None:
+        branch_settlement = _branch_settlement(child)
+        if branch_settlement is not None:
             output_selection = _output_selection(child)
             _retain_selection(selections, output_selection)
             settlements.append(
                 BranchSettlement.seal(
                     branch=branch,
-                    derivation_sha256=settlement.derivation_sha256,
-                    output_collection=_collection_root(settlement),
+                    derivation_sha256=branch_settlement.derivation_sha256,
+                    output_collection=_collection_root(branch_settlement),
                     output_selection=output_selection,
                 )
             )
@@ -72,7 +117,14 @@ def project_coordination(parent: WorkRecord, store: WorkStore) -> CoordinationPr
         if outcome is not None:
             outcomes.append(outcome)
 
-    resolution = resolve_join_plan(plan, selections, settlements, effect_settlements)
+    resolution = resolve_join_plan(
+        plan,
+        selections,
+        settlements,
+        effect_settlements,
+        coordination_settlements,
+        branch_sets,
+    )
     pending_join: JoinPlan | None = None
     pending_join_selections: tuple[ArtifactSelection, ...] = ()
     join_settlement: JoinSettlement | None = None
@@ -99,7 +151,9 @@ def project_coordination(parent: WorkRecord, store: WorkStore) -> CoordinationPr
         selections,
         branch_settlements=settlements,
         branch_effect_settlements=effect_settlements,
+        branch_coordination_settlements=coordination_settlements,
         branch_outcomes=outcomes,
+        branch_sets=branch_sets,
         join_settlement=join_settlement,
         join_outcome=join_outcome,
     )
@@ -123,6 +177,32 @@ def _declared_selections(
         if selection is None:
             raise RuntimeError(f"durable branch selection is unavailable: {digest}")
         _retain_selection(documents, selection)
+    return documents
+
+
+def _branch_set_documents(
+    parent: WorkRecord,
+    store: WorkStore,
+) -> dict[str, BranchSetPlan]:
+    if parent.branch_set_plan is None:
+        raise RuntimeError("coordination has no branch-set plan")
+    documents: dict[str, BranchSetPlan] = {
+        parent.branch_set_plan.branch_set_sha256: parent.branch_set_plan
+    }
+    pending = [parent.branch_set_plan]
+    while pending:
+        current = pending.pop()
+        for branch in current.branches:
+            if not isinstance(branch, CoordinationBranchPlan):
+                continue
+            child = _load_declared_work(store, branch.work.work_id)
+            child_plan = child.branch_set_plan
+            if child_plan is None or child_plan.branch_set_sha256 != branch.branch_set_sha256:
+                raise RuntimeError("durable coordination child plan is unavailable")
+            existing = documents.setdefault(child_plan.branch_set_sha256, child_plan)
+            if existing != child_plan:
+                raise RuntimeError("branch-set identity was reused")
+            pending.append(child_plan)
     return documents
 
 
@@ -178,6 +258,27 @@ def _branch_outcome(branch: BranchPlan, record: WorkRecord) -> BranchOutcome | N
         branch_id=branch.branch_id,
         work_id=branch.workflow_plan.work.work_id,
         workflow_plan_sha256=branch.workflow_plan.workflow_plan_sha256,
+        state=state,
+    )
+
+
+def _coordination_outcome(
+    branch: CoordinationBranchPlan,
+    record: WorkRecord,
+) -> BranchOutcome | None:
+    state: BranchOutcomeState | None = None
+    if record.phase == "failed":
+        state = "failed"
+    elif record.phase == "inapplicable":
+        state = "inapplicable"
+    elif record.phase == "canceled":
+        state = "canceled"
+    if state is None:
+        return None
+    return BranchOutcome(
+        branch_id=branch.branch_id,
+        work_id=branch.work.work_id,
+        branch_set_sha256=branch.branch_set_sha256,
         state=state,
     )
 

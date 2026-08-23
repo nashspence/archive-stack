@@ -14,13 +14,17 @@ from typing import Any, Literal, Protocol, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from stove0_protocol import (
     ArtifactSelection,
+    BranchPlan,
     BranchSetDecision,
     BranchSetPlan,
+    BranchWorkBinding,
     ControllerEvidence,
     ControllerEvidencePayload,
+    CoordinationSettlement,
     ExecutionEnvelope,
     ExecutionEnvelopePayload,
     JoinPlan,
+    JoinWorkBinding,
     ObservationRequest,
     ObservationResult,
     ObserverDescriptor,
@@ -97,6 +101,7 @@ class PreviewTargetExpectation(Stove0StateModel):
     """Compact target-plan identity approved by one workflow preview."""
 
     branch_id: str = Field(min_length=1, max_length=160)
+    work_id: Sha256
     plan_sha256: Sha256
 
 
@@ -109,8 +114,8 @@ class PreviewAcceptance(Stove0StateModel):
 
     @model_validator(mode="after")
     def canonical_targets(self) -> Self:
-        branch_ids = [item.branch_id for item in self.target_plans]
-        if branch_ids != sorted(branch_ids) or len(branch_ids) != len(set(branch_ids)):
+        work_ids = [item.work_id for item in self.target_plans]
+        if work_ids != sorted(work_ids) or len(work_ids) != len(set(work_ids)):
             raise ValueError("preview target expectations must be unique and ordered")
         return self
 
@@ -124,9 +129,10 @@ class PreviewAcceptance(Stove0StateModel):
             target_plans=tuple(
                 PreviewTargetExpectation(
                     branch_id=item.branch_id,
+                    work_id=item.work_id,
                     plan_sha256=item.target_plan.plan_sha256,
                 )
-                for item in preview.target_plans
+                for item in sorted(preview.target_plans, key=lambda value: value.work_id)
             ),
         )
 
@@ -142,6 +148,7 @@ class WorkRecord(Stove0StateModel):
     observation_requests: tuple[ObservationRequest, ...] = ()
     observation_results: tuple[ObservationResult, ...] = ()
     branch_set_plan: BranchSetPlan | None = None
+    coordination_settlement: CoordinationSettlement | None = None
     join_plan: JoinPlan | None = None
     coordination_cancel_requested: bool = False
     workflow_plan: WorkflowPlan | None = None
@@ -204,9 +211,11 @@ class WorkRecord(Stove0StateModel):
         if self.branch_set_plan is not None:
             if self.branch_set_plan.parent_work != self.work:
                 raise ValueError("branch-set plan differs from its parent work record")
-            if self.workflow_plan is not None or self.work.fork_join is not None:
+            if self.workflow_plan is not None or isinstance(self.work.fork_join, JoinWorkBinding):
                 raise ValueError("coordination parents cannot also be target work")
             if self.phase not in {
+                "eligible",
+                "claimed",
                 "coordinating",
                 "retirement_pending",
                 "complete",
@@ -215,7 +224,16 @@ class WorkRecord(Stove0StateModel):
                 "failed",
                 "inapplicable",
             }:
-                raise ValueError("branch-set plans appear only after atomic admission")
+                raise ValueError("branch-set plan appears in an invalid coordination phase")
+        if self.coordination_settlement is not None:
+            if (
+                self.branch_set_plan is None
+                or self.coordination_settlement.work != self.work
+                or self.coordination_settlement.branch_set_sha256
+                != self.branch_set_plan.branch_set_sha256
+                or self.phase not in {"claimed", "coordinating", "retirement_pending", "complete"}
+            ):
+                raise ValueError("coordination settlement differs from its durable coordinator")
         if self.preview_acceptance is not None:
             if self.work.fork_join is not None:
                 raise ValueError("only parent work may retain a preview acceptance")
@@ -234,7 +252,8 @@ class WorkRecord(Stove0StateModel):
             raise ValueError("coordinating work requires an immutable branch-set plan")
         if self.coordination_cancel_requested and (
             self.branch_set_plan is None
-            or self.phase not in {"coordinating", "abandon_pending", "canceled"}
+            or self.phase
+            not in {"eligible", "claimed", "coordinating", "abandon_pending", "canceled"}
         ):
             raise ValueError("coordination cancellation belongs only to a branch-set parent")
         if self.workflow_plan is not None and self.workflow_plan.work != self.work:
@@ -288,11 +307,40 @@ def _preview_target_expectations(
         return {}
     if decision.plan.branch_set_sha256 != acceptance.branch_set_sha256:
         raise Stove0StateError("planned branch set differs from the accepted workflow preview")
-    expected = {item.branch_id: item.plan_sha256 for item in acceptance.target_plans}
-    actual = {item.branch_id for item in decision.plan.branches}
+    expected = {item.work_id: item.plan_sha256 for item in acceptance.target_plans}
+    actual = {item.workflow_plan.work.work_id for item in decision.leaf_branches()}
     if set(expected) != actual:
         raise Stove0StateError("planned branches differ from the accepted workflow preview")
     return expected
+
+
+def _admitted_child_records(
+    decision: BranchSetDecision,
+    expectations: dict[str, Sha256],
+) -> tuple[WorkRecord, ...]:
+    records: list[WorkRecord] = []
+    plans = decision.branch_set_documents
+    for plan in plans.values():
+        for branch in plan.branches:
+            if isinstance(branch, BranchPlan):
+                records.append(
+                    WorkRecord(
+                        work=branch.workflow_plan.work,
+                        workflow_plan=branch.workflow_plan,
+                        expected_target_plan_sha256=expectations.get(
+                            branch.workflow_plan.work.work_id
+                        ),
+                    )
+                )
+                continue
+            child_plan = plans[branch.branch_set_sha256]
+            records.append(
+                WorkRecord(
+                    work=branch.work,
+                    branch_set_plan=child_plan,
+                )
+            )
+    return tuple(sorted(records, key=lambda item: item.work_id))
 
 
 class InMemoryWorkStore:
@@ -370,26 +418,21 @@ class InMemoryWorkStore:
             if current.phase != "planning" or decision.plan.parent_work != current.work:
                 raise Stove0StateError("work cannot admit this branch set")
             expectations = _preview_target_expectations(current, decision)
-            child_records = tuple(
-                WorkRecord(
-                    work=branch.workflow_plan.work,
-                    workflow_plan=branch.workflow_plan,
-                    expected_target_plan_sha256=expectations.get(branch.branch_id),
-                )
-                for branch in decision.plan.branches
-            )
+            child_records = _admitted_child_records(decision, expectations)
             for selection in decision.selections:
                 existing_selection = self._selections.get(selection.selection_sha256)
                 if existing_selection is not None and existing_selection != selection:
                     raise ConcurrentWorkUpdate("artifact selection identity was reused")
-            existing_plan = self._branch_sets.get(decision.plan.branch_set_sha256)
-            if existing_plan is not None and existing_plan != decision.plan:
-                raise ConcurrentWorkUpdate("branch-set identity was reused")
+            for digest, plan in decision.branch_set_documents.items():
+                existing_plan = self._branch_sets.get(digest)
+                if existing_plan is not None and existing_plan != plan:
+                    raise ConcurrentWorkUpdate("branch-set identity was reused")
             for child in child_records:
                 existing_child = self._records.get(child.work_id)
                 if existing_child is not None and (
                     existing_child.work != child.work
                     or existing_child.workflow_plan != child.workflow_plan
+                    or existing_child.branch_set_plan != child.branch_set_plan
                     or existing_child.expected_target_plan_sha256
                     != child.expected_target_plan_sha256
                 ):
@@ -404,7 +447,7 @@ class InMemoryWorkStore:
                 ).model_dump(mode="python")
             )
             self._selections.update(decision.selection_documents)
-            self._branch_sets[decision.plan.branch_set_sha256] = decision.plan
+            self._branch_sets.update(decision.branch_set_documents)
             for child in child_records:
                 self._records.setdefault(child.work_id, child)
             self._records[work_id] = replacement
@@ -531,6 +574,45 @@ class Stove0WorkService:
         if record.work.fork_join is None:
             raise Stove0StateError("only branch or join work may be preplanned")
         return self._replace(record, phase="target_preflight")
+
+    def activate_preplanned_coordination(
+        self,
+        work_id: str,
+        *,
+        expected_revision: int,
+    ) -> WorkRecord:
+        record = self._load(work_id, expected_revision)
+        if (
+            record.phase != "claimed"
+            or record.claim is None
+            or record.branch_set_plan is None
+            or not isinstance(record.work.fork_join, BranchWorkBinding)
+        ):
+            raise Stove0StateError(f"work cannot activate sealed coordination from {record.phase}")
+        return self._replace(record, phase="coordinating")
+
+    def record_coordination_settlement(
+        self,
+        work_id: str,
+        settlement: CoordinationSettlement,
+        *,
+        expected_revision: int,
+    ) -> WorkRecord:
+        record = self._load(work_id, expected_revision)
+        if record.phase != "coordinating" or record.branch_set_plan is None:
+            raise Stove0StateError(
+                f"work cannot record coordination settlement from {record.phase}"
+            )
+        if (
+            settlement.work != record.work
+            or settlement.branch_set_sha256 != record.branch_set_plan.branch_set_sha256
+        ):
+            raise ValueError("coordination settlement differs from the admitted plan")
+        if record.coordination_settlement is not None:
+            if record.coordination_settlement != settlement:
+                raise Stove0StateError("coordination settlement identity changed")
+            return record
+        return self._replace(record, coordination_settlement=settlement)
 
     def bind_claim(
         self,
@@ -939,7 +1021,9 @@ class Stove0WorkService:
         expected_revision: int,
     ) -> WorkRecord:
         record = self._load(work_id, expected_revision)
-        if record.phase != "coordinating" or record.branch_set_plan is None:
+        if record.phase not in {"eligible", "claimed", "coordinating"} or (
+            record.branch_set_plan is None
+        ):
             raise Stove0StateError("only coordinating branch-set work accepts parent cancellation")
         if record.coordination_cancel_requested:
             return record
@@ -1087,6 +1171,8 @@ class Stove0WorkService:
         record = self._load(work_id, expected_revision)
         if record.phase == "abandon_pending":
             return record
+        if record.phase == "eligible" and record.claim is None:
+            return self._replace(record, phase="canceled")
         if record.phase == "failed":
             if record.failure is None or not record.failure.retryable:
                 raise Stove0StateError("terminal failed work cannot be canceled")

@@ -28,6 +28,7 @@ from stove0_protocol import (
     BranchSetDecision,
     BranchSetPlan,
     CollectionRootRef,
+    CoordinationBranchPlan,
     JsonSchemaDocument,
     ObservationEvidence,
     ObservationFailure,
@@ -289,6 +290,70 @@ def _branch_decision(work: WorkIdentity) -> BranchSetDecision:
             selections={selection.selection_sha256: selection},
         ),
         selections=(selection,),
+    )
+
+
+def _nested_branch_decision(work: WorkIdentity) -> BranchSetDecision:
+    operation = _operation()
+    target = _target(operation)
+    selection = ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="source",
+                role="fixture.source/v1",
+                collection=_root(),
+                path="source/input.bin",
+                bytes=12,
+                sha256=_sha("4"),
+            ),
+        )
+    )
+    child_work = CoordinationBranchPlan.build_work(
+        parent_work=work,
+        branch_id="nested",
+        decision_sha256=_sha("d"),
+        selection=selection,
+        recipe=RecipeRef(id="fixture.child/v1", revision=1, sha256=_sha("5")),
+        effective_intent={"scope": "child"},
+    )
+    leaf = BranchPlan.build(
+        parent_work=child_work,
+        branch_id="leaf",
+        decision_sha256=_sha("e"),
+        selection=selection,
+        recipe=child_work.recipe,
+        effective_intent=child_work.effective_intent,
+        workflow_intent=WorkflowPlanIntent(
+            operation=OperationRef(id=operation.id, sha256=operation.contract_sha256),
+            target_registration_id="fixture-target",
+            target_contract_sha256=target.contract_sha256,
+            output_tags=("fixture-output",),
+            retirement_policy="retain",
+        ),
+    )
+    child_plan = BranchSetPlan.seal(
+        parent_work=child_work,
+        decision_sha256=_sha("e"),
+        branches=(leaf,),
+        selections={selection.selection_sha256: selection},
+    )
+    nested = CoordinationBranchPlan(
+        branch_id="nested",
+        artifact_selection=selection.ref(),
+        work=child_work,
+        branch_set_sha256=child_plan.branch_set_sha256,
+    )
+    root_plan = BranchSetPlan.seal(
+        parent_work=work,
+        decision_sha256=_sha("d"),
+        branches=(nested,),
+        selections={selection.selection_sha256: selection},
+        branch_sets={child_plan.branch_set_sha256: child_plan},
+    )
+    return BranchSetDecision(
+        plan=root_plan,
+        selections=(selection,),
+        branch_sets=(child_plan,),
     )
 
 
@@ -920,6 +985,65 @@ def test_sql_branch_set_admission_is_restart_safe_and_exposes_exact_children(
     assert restarted.load(work.work_id) == admitted
     assert restarted.load(child.work_id) == child
     assert restarted.load_selection(selection.selection_sha256) == selection
+
+
+def test_sql_nested_admission_atomically_normalizes_coordinator_and_leaf_records(
+    tmp_path: Path,
+) -> None:
+    from stove0_core import SqlAlchemyStateStore
+
+    path = tmp_path / "private" / "stove0.sqlite3"
+    store = SqlAlchemyStateStore(f"sqlite+pysqlite:///{path}")
+    service = Stove0WorkService(store)
+    work = _work()
+    record = service.create_or_resume(work)
+    record = service.bind_claim(
+        record.work_id,
+        claim_id=record.work_id,
+        fence=1,
+        expected_revision=record.revision,
+    )
+    record = service.begin_planning(record.work_id, expected_revision=record.revision)
+    decision = _nested_branch_decision(work)
+
+    admitted = service.admit_branch_set(
+        record.work_id,
+        decision,
+        expected_revision=record.revision,
+    )
+
+    nested = decision.plan.branches[0]
+    assert isinstance(nested, CoordinationBranchPlan)
+    child_plan = decision.branch_set_documents[nested.branch_set_sha256]
+    coordinator = store.load(nested.work.work_id)
+    assert coordinator == WorkRecord(work=nested.work, branch_set_plan=child_plan)
+    leaf = child_plan.branches[0]
+    assert isinstance(leaf, BranchPlan)
+    leaf_record = store.load(leaf.workflow_plan.work.work_id)
+    assert leaf_record == WorkRecord(
+        work=leaf.workflow_plan.work,
+        workflow_plan=leaf.workflow_plan,
+    )
+    coordinator = service.bind_claim(
+        coordinator.work_id,
+        claim_id=coordinator.work_id,
+        fence=1,
+        expected_revision=coordinator.revision,
+    )
+    coordinator = service.activate_preplanned_coordination(
+        coordinator.work_id,
+        expected_revision=coordinator.revision,
+    )
+    assert coordinator.phase == "coordinating"
+
+    restarted = SqlAlchemyStateStore(f"sqlite+pysqlite:///{path}")
+    assert restarted.load(work.work_id) == admitted
+    assert restarted.load(coordinator.work_id) == coordinator
+    assert restarted.load(leaf_record.work_id) == leaf_record
+    assert (
+        restarted.load_selection(decision.selections[0].selection_sha256)
+        == (decision.selections[0])
+    )
 
 
 def test_sql_branch_set_admission_rolls_back_every_document_on_child_conflict(

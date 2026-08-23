@@ -199,3 +199,15 @@ def test_work_list_rich_and_json_preserve_effect_result_identity(
     assert machine.exit_code == 0
     row = json.loads(machine.stdout)["work"][0]
     assert row["target_status"]["effect_receipt"]["receipt_sha256"] == "a" * 64
+
+
+def test_work_list_rich_projection_identifies_coordination_settlement() -> None:
+    row = {
+        "work_id": "nested-work",
+        "phase": "complete",
+        "branch_set_plan": {"branch_set_sha256": "b" * 64},
+        "coordination_settlement": {"settlement_sha256": "c" * 64},
+    }
+
+    assert stove0_cli._table_value(row, "result_kind") == "coordination"
+    assert stove0_cli._table_value(row, "result_identity") == "c" * 64

@@ -34,6 +34,7 @@ from stove0_protocol import (
     BranchSetPlan,
     BranchSettlement,
     CollectionRootRef,
+    CoordinationBranchPlan,
     JoinDeclaration,
     JoinMemberDeclaration,
     JoinPlan,
@@ -613,6 +614,55 @@ def _resolved_join(
     return resolved
 
 
+def _nested_branch_decision() -> BranchSetDecision:
+    base = _branch_decision()
+    parent = base.plan.parent_work
+    selection = base.selections[0]
+    template = base.plan.branches[0]
+    child_work = CoordinationBranchPlan.build_work(
+        parent_work=parent,
+        branch_id="nested",
+        decision_sha256="d" * 64,
+        selection=selection,
+        recipe=RecipeRef(id="fixture.child/v1", revision=1, sha256="5" * 64),
+        effective_intent={"nested": True},
+    )
+    leaf = BranchPlan.build(
+        parent_work=child_work,
+        branch_id="leaf",
+        decision_sha256="e" * 64,
+        selection=selection,
+        recipe=child_work.recipe,
+        effective_intent=child_work.effective_intent,
+        workflow_intent=WorkflowPlanIntent.from_plan(template.workflow_plan),
+    )
+    child_plan = BranchSetPlan.seal(
+        parent_work=child_work,
+        decision_sha256="e" * 64,
+        branches=(leaf,),
+        selections={selection.selection_sha256: selection},
+    )
+    root_plan = BranchSetPlan.seal(
+        parent_work=parent,
+        decision_sha256="d" * 64,
+        branches=(
+            CoordinationBranchPlan(
+                branch_id="nested",
+                artifact_selection=selection.ref(),
+                work=child_work,
+                branch_set_sha256=child_plan.branch_set_sha256,
+            ),
+        ),
+        selections={selection.selection_sha256: selection},
+        branch_sets={child_plan.branch_set_sha256: child_plan},
+    )
+    return BranchSetDecision(
+        plan=root_plan,
+        selections=(selection,),
+        branch_sets=(child_plan,),
+    )
+
+
 def test_postgres_concurrent_create_converges_and_controller_worker_cas_is_fenced(
     stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
 ) -> None:
@@ -753,6 +803,79 @@ def test_postgres_concurrent_branch_set_and_join_admission_converge_exactly_once
     assert parent is not None and parent.join_plan == join_plan
     child = second.load(join_plan.work.work_id)
     assert child is not None and child.workflow_plan == join_plan.workflow_plan
+
+
+def test_postgres_concurrent_nested_tree_admission_is_atomic_and_normalized(
+    stores: tuple[SqlAlchemyStateStore, SqlAlchemyStateStore],
+) -> None:
+    first, second = stores
+    decision = _nested_branch_decision()
+    service = Stove0WorkService(first)
+    created = service.create_or_resume(decision.plan.parent_work)
+    claimed = service.bind_claim(
+        created.work_id,
+        claim_id="parent-claim",
+        fence=1,
+        expected_revision=created.revision,
+    )
+    planning = service.begin_planning(
+        claimed.work_id,
+        expected_revision=claimed.revision,
+    )
+    barrier = threading.Barrier(2)
+    admitted: list[WorkRecord] = []
+    failures: list[BaseException] = []
+
+    def admit(store: SqlAlchemyStateStore) -> None:
+        try:
+            barrier.wait(timeout=5)
+            admitted.append(
+                Stove0WorkService(store).admit_branch_set(
+                    planning.work_id,
+                    decision,
+                    expected_revision=planning.revision,
+                )
+            )
+        except BaseException as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=admit, args=(store,)) for store in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not failures
+    assert len(admitted) == 2 and admitted[0] == admitted[1]
+    nested = decision.plan.branches[0]
+    assert isinstance(nested, CoordinationBranchPlan)
+    child_plan = decision.branch_set_documents[nested.branch_set_sha256]
+    coordinator = second.load(nested.work.work_id)
+    assert coordinator is not None and coordinator.branch_set_plan == child_plan
+    leaf = child_plan.branches[0]
+    assert isinstance(leaf, BranchPlan)
+    leaf_record = second.load(leaf.workflow_plan.work.work_id)
+    assert leaf_record is not None and leaf_record.workflow_plan == leaf.workflow_plan
+    events = second.list_events(limit=100).events
+    admission = next(
+        item for item in events if item.type == "io.riverhog.stove0.branch-set.admitted"
+    )
+    assert admission.data["branch_count"] == 1
+    assert admission.data["admitted_work_count"] == 2
+    created_events = {
+        str(item.data["work_id"]): item
+        for item in events
+        if item.type == "io.riverhog.stove0.work.created" and "parent_work_id" in item.data
+    }
+    assert nested.work.work_id in created_events
+    assert (
+        created_events[nested.work.work_id].data["parent_work_id"]
+        == decision.plan.parent_work.work_id
+    )
+    assert (
+        created_events[leaf.workflow_plan.work.work_id].data["parent_work_id"]
+        == nested.work.work_id
+    )
 
 
 def test_postgres_cancel_completion_race_converges_to_immutable_published_success(
