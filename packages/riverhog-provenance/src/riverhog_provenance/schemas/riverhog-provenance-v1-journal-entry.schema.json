@@ -3662,6 +3662,9 @@
         "established_by_capture_id": {
           "$ref": "#/$defs/urnUuid"
         },
+        "established_by_activity_id": {
+          "$ref": "#/$defs/urnUuid"
+        },
         "basis": {
           "type": "string",
           "enum": [
@@ -3723,8 +3726,19 @@
             "required": [
               "state",
               "relative_payload_locator",
-              "established_by_capture_id",
               "basis"
+            ],
+            "oneOf": [
+              {
+                "required": [
+                  "established_by_capture_id"
+                ]
+              },
+              {
+                "required": [
+                  "established_by_activity_id"
+                ]
+              }
             ]
           }
         },
@@ -3758,6 +3772,11 @@
                 {
                   "required": [
                     "established_by_capture_id"
+                  ]
+                },
+                {
+                  "required": [
+                    "established_by_activity_id"
                   ]
                 },
                 {

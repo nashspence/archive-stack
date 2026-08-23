@@ -42,17 +42,23 @@ __all__ = [
 from riverhog_api_client.producer import (
     CollectionProducer,
     ProducedCollection,
+    ProducerArtifactIdentity,
     ProducerFile,
     ProducerInput,
+    ProducerProvenance,
     ProducerStream,
+    ProvenanceBuilder,
     RangeReader,
 )
 
 __all__ += [
     "CollectionProducer",
     "ProducedCollection",
+    "ProducerArtifactIdentity",
     "ProducerFile",
     "ProducerInput",
+    "ProducerProvenance",
     "ProducerStream",
+    "ProvenanceBuilder",
     "RangeReader",
 ]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Response
 from http_api_contracts import operation_interface
 from riverhog_core.app_permissions import COLLECTIONS_DELETE
 from starlette.concurrency import run_in_threadpool
@@ -20,6 +20,7 @@ from riverhog_api.schemas.collections import (
     CollectionUploadUnitOut,
     CollectionUploadVolumeOut,
     CompleteCollectionUploadSessionRequest,
+    CreateOrResumeCollectionUploadSessionOut,
     CreateOrResumeCollectionUploadSessionRequest,
     DeleteCollectionRequest,
     ListCollectionsResponse,
@@ -90,14 +91,14 @@ def list_collection_upload_sessions(
 
 @router.post(
     "/collection-upload-sessions",
-    response_model=CollectionUploadSessionOut,
+    response_model=CreateOrResumeCollectionUploadSessionOut,
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def create_or_resume_collection_upload_session(
     request: CreateOrResumeCollectionUploadSessionRequest,
     container: ContainerDep,
     principal: CollectionCreator,
-) -> CollectionUploadSessionOut:
+) -> CreateOrResumeCollectionUploadSessionOut:
     payload = container.collection_uploads.create_or_resume(
         idempotency_key=request.idempotency_key,
         tags=request.tags,
@@ -108,7 +109,7 @@ def create_or_resume_collection_upload_session(
         provenance_mode=request.provenance_mode,
         provenance_omission_reason=request.provenance_omission_reason,
     )
-    return CollectionUploadSessionOut.model_validate(payload)
+    return CreateOrResumeCollectionUploadSessionOut.model_validate(payload)
 
 
 @router.post(
@@ -164,6 +165,31 @@ async def put_collection_upload_session_provenance_journal(
         sha256=provenance_sha256,
     )
     return CollectionUploadProvenanceJournalOut.model_validate(payload)
+
+
+@router.get(
+    "/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def export_collection_upload_session_provenance_journal(
+    collection_id: int,
+    journal_id: str,
+    container: ContainerDep,
+    principal: CollectionCreator,
+) -> Response:
+    container.collection_uploads.require_access(collection_id, principal)
+    content, sha256 = container.collection_uploads.export_provenance_journal(
+        collection_id,
+        journal_id,
+    )
+    return Response(
+        content=content,
+        media_type="application/json-seq",
+        headers={
+            "Content-Length": str(len(content)),
+            "ETag": f'"{sha256}"',
+        },
+    )
 
 
 @router.get(

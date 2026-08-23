@@ -375,6 +375,12 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         content=journal,
         sha256=summary.journal_sha256,
     )
+    staged_content, staged_sha256 = service.export_provenance_journal(
+        collection_id,
+        summary.journal_id,
+    )
+    assert staged_content == journal
+    assert staged_sha256 == summary.journal_sha256
     service.register_files(
         collection_id,
         tuple(

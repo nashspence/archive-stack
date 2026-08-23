@@ -4,6 +4,7 @@ import hashlib
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -22,10 +23,9 @@ from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_vo
 from riverhog_core.raw_verification import raw_file_volume_set_sha256
 from riverhog_provenance import (
     FileProvenanceBinding,
-    append_observation,
-    append_replacement_transformation,
     build_portable_provenance_set,
     build_provenance_archive,
+    create_derivative_journal_from_identity,
     create_observation_journal,
     prepare_file_provenance,
     validate_journal,
@@ -94,6 +94,7 @@ def _write_archive(
     *,
     with_provenance: bool = False,
     provenance_journal: bytes | None = None,
+    provenance_journals: Mapping[str, bytes] | None = None,
 ) -> tuple[dict[str, bytes], bytes | None]:
     expected = {
         "notes/alpha.txt": b"alpha\n",
@@ -199,9 +200,12 @@ def _write_archive(
             )
             for current in files
         )
+        journal_set = dict(provenance_journals or {summary.journal_id: exact_journal})
+        if journal_set.get(summary.journal_id) != exact_journal:
+            raise ValueError("recovery fixture current journal is missing from its exact set")
         provenance = build_provenance_archive(
             bindings=bindings,
-            journals={summary.journal_id: exact_journal},
+            journals=journal_set,
         )
         sealed: list[SealedProvenanceObject] = []
         for object_id, kind, relative_path, plaintext in (
@@ -390,7 +394,7 @@ def test_ciphertext_corruption_fails_without_publishing_partial_output(
     assert not output.exists()
 
 
-def test_client_stove0_target_riverhog_recovery_preserves_one_exact_main_lineage(
+def test_client_transform_riverhog_recovery_restores_exact_derivative_history(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "source-alpha.txt"
@@ -402,41 +406,38 @@ def test_client_stove0_target_riverhog_recovery_preserves_one_exact_main_lineage
         agent_name="riverhog-client",
         agent_version="1.0.0",
     )
-    staged = tmp_path / "staged-alpha.txt"
-    staged.write_bytes(source.read_bytes())
-    stove0_journal = append_observation(
-        client_journal,
-        staged,
-        relative_path="staging/alpha.txt",
-        host_id="urn:uuid:00000000-0000-4000-8000-000000000002",
-        agent_name="stove0-server",
-        agent_version="1.0.0",
-    )
-    transformed = tmp_path / "transformed-alpha.txt"
-    transformed.write_bytes(b"alpha\n")
-    target_journal = append_replacement_transformation(
-        stove0_journal,
-        transformed,
+    transformed = b"alpha\n"
+    target_journal = create_derivative_journal_from_identity(
         relative_path="notes/alpha.txt",
-        host_id="urn:uuid:00000000-0000-4000-8000-000000000003",
+        byte_count=len(transformed),
+        sha256=hashlib.sha256(transformed).hexdigest(),
+        source_journals=(client_journal,),
         agent_name="target-server",
         agent_version="1.0.0",
         event_label="Target canonical archive transformation",
         started_at="2026-08-10T01:00:00Z",
         ended_at="2026-08-10T01:01:00Z",
     )
-    assert stove0_journal.startswith(client_journal)
-    assert target_journal.startswith(stove0_journal)
+    client_summary = validate_journal(client_journal)
+    target_summary = validate_journal(target_journal)
+    journals = {
+        client_summary.journal_id: client_journal,
+        target_summary.journal_id: target_journal,
+    }
 
     archive = tmp_path / "archive"
     expected, exact_journal = _write_archive(
         archive,
         with_provenance=True,
         provenance_journal=target_journal,
+        provenance_journals=journals,
     )
     assert exact_journal is not None
     exact_summary = validate_journal(exact_journal)
-    assert exact_summary.primary_lineage_id == validate_journal(client_journal).primary_lineage_id
+    assert exact_summary.primary_lineage_id != client_summary.primary_lineage_id
+    assert {item.journal_id for item in exact_summary.external_states} == {
+        client_summary.journal_id
+    }
     output = tmp_path / "recovered"
     ots = _write_ots_command(tmp_path / "ots-fixture")
 
@@ -449,18 +450,17 @@ def test_client_stove0_target_riverhog_recovery_preserves_one_exact_main_lineage
 
     provenance_root = output / ".riverhog" / "provenance"
     index = (provenance_root / "index.json").read_bytes()
-    journals = {
-        exact_summary.journal_id: (
-            provenance_root / "journals" / f"{exact_summary.journal_id}.json-seq"
-        ).read_bytes()
+    restored_journals = {
+        journal_id: (provenance_root / "journals" / f"{journal_id}.json-seq").read_bytes()
+        for journal_id in journals
     }
-    validated = validate_portable_provenance_set(index, journals)
+    validated = validate_portable_provenance_set(index, restored_journals)
     assert summary.provenance_mode == "mixed"
-    assert summary.provenance_journals == 1
-    assert journals == {exact_summary.journal_id: exact_journal}
+    assert summary.provenance_journals == 2
+    assert restored_journals == journals
     assert index == build_portable_provenance_set(
         bindings=validated.bindings,
-        journals=journals,
+        journals=restored_journals,
     )
     prepared = prepare_file_provenance(
         output / "notes" / "alpha.txt",
@@ -470,5 +470,5 @@ def test_client_stove0_target_riverhog_recovery_preserves_one_exact_main_lineage
         agent_version="1.0.0",
         provenance=provenance_root,
     )
-    assert prepared.journals == {exact_summary.journal_id: exact_journal}
+    assert prepared.journals == journals
     assert {path: (output / path).read_bytes() for path in expected} == expected

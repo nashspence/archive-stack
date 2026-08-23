@@ -233,6 +233,10 @@ class CollectionUploadSessionOut(RiverhogModel):
     collection: CollectionSummaryOut | None
 
 
+class CreateOrResumeCollectionUploadSessionOut(CollectionUploadSessionOut):
+    resumed: bool
+
+
 class CollectionUploadUnitSourceOut(RiverhogModel):
     path: str
     offset: int

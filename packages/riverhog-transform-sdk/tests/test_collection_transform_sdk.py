@@ -13,7 +13,9 @@ from riverhog_api_client import ApiClient
 from riverhog_api_client.producer import (
     CollectionProducer,
     ProducedCollection,
+    ProducerArtifactIdentity,
     ProducerFile,
+    ProducerProvenance,
     ProducerStream,
 )
 from riverhog_protocol.collection_workflows import (
@@ -25,7 +27,13 @@ from riverhog_protocol.collection_workflows import (
     OperationIdentity,
     RecipeIdentity,
 )
-from riverhog_protocol.errors import InvalidState
+from riverhog_protocol.errors import InvalidState, NotFound
+from riverhog_provenance import (
+    create_derivative_journal_from_identity,
+    create_observation_journal,
+    validate_journal,
+    validate_journal_set,
+)
 from riverhog_transform_sdk import (
     ClaimedCollectionReader,
     CollectionTransformRuntime,
@@ -96,6 +104,27 @@ class RetrievalApi:
                     "bytes": len(self.data),
                     "sha256": self.sha256,
                 },
+            ]
+        }
+
+    def list_collection_provenance(
+        self,
+        collection_id: int,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        assert collection_id == 1
+        return {
+            "files": [
+                {
+                    "collection_id": 1,
+                    "path": "camera/input.mov",
+                    "bytes": len(self.data),
+                    "sha256": self.sha256,
+                    "provenance": {
+                        "status": "omitted",
+                        "omission_reason": "fixture omitted provenance explicitly",
+                    },
+                }
             ]
         }
 
@@ -217,14 +246,17 @@ class UploadApi:
         self.committed = False
         self.discovery_closed = False
         self.volume_list_calls = 0
+        self.session_calls = 0
 
     def create_or_resume_collection_upload_session(
         self,
         *_args: Any,
         **_kwargs: Any,
     ) -> dict[str, Any]:
+        self.session_calls += 1
         return {
             "collection_id": 7,
+            "resumed": self.session_calls > 1,
             "state": "open",
             "layout": {
                 "pack_member_bytes": 1024,
@@ -323,6 +355,112 @@ class UploadApi:
         return self
 
 
+class ProvenanceTransformApi(UploadApi):
+    def __init__(self, source_journals: Mapping[str, bytes]) -> None:
+        super().__init__()
+        self.source_contents = {
+            "camera/a.mov": b"source a",
+            "camera/b.mov": b"source b",
+        }
+        self.source_journals = dict(source_journals)
+        self.staged_journals: dict[str, bytes] = {}
+        self.staged_export_calls = 0
+        self.fail_registration_once = True
+
+    def get_collection(self, collection_id: int) -> dict[str, Any]:
+        assert collection_id == 1
+        return {
+            "id": 1,
+            "manifest_sha256": "1" * 64,
+            "content_etag": "2" * 64,
+        }
+
+    def search(self, _query: str | None = None, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "files": [
+                {
+                    "collection_id": 1,
+                    "path": path,
+                    "bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+                for path, content in self.source_contents.items()
+            ]
+        }
+
+    def list_collection_provenance(
+        self,
+        collection_id: int,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        assert collection_id == 1
+        summaries = {
+            validate_journal(content).current_path: validate_journal(content)
+            for content in self.source_journals.values()
+        }
+        return {
+            "files": [
+                {
+                    "collection_id": 1,
+                    "path": path,
+                    "bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "provenance": {
+                        "status": "captured",
+                        "journal_id": summaries[path].journal_id,
+                        "current_state_id": summaries[path].current_state_id,
+                    },
+                }
+                for path, content in self.source_contents.items()
+            ]
+        }
+
+    def export_collection_provenance_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+    ) -> bytes:
+        assert collection_id == 1
+        return self.source_journals[journal_id]
+
+    def export_collection_upload_session_provenance_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+    ) -> bytes:
+        assert collection_id == 7
+        self.staged_export_calls += 1
+        try:
+            return self.staged_journals[journal_id]
+        except KeyError as exc:
+            raise NotFound("staged provenance journal not found") from exc
+
+    def put_collection_upload_session_provenance_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        content: bytes,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        assert collection_id == 7
+        existing = self.staged_journals.get(journal_id)
+        if existing is not None and existing != content:
+            raise AssertionError("retry changed staged provenance bytes")
+        self.staged_journals[journal_id] = content
+        return {"journal_id": journal_id}
+
+    def register_collection_upload_session_files(
+        self,
+        collection_id: int,
+        files: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        if self.fail_registration_once:
+            self.fail_registration_once = False
+            raise RuntimeError("simulated lost producer progress after journal staging")
+        return super().register_collection_upload_session_files(collection_id, files)
+
+
 def test_producer_stream_has_no_shared_filesystem_and_is_snapshot_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -357,6 +495,232 @@ def test_producer_stream_has_no_shared_filesystem_and_is_snapshot_verified(
         for index, item in enumerate(api.registered)
     }
     assert uploaded_by_path["video/output.mkv"] == content
+
+
+def test_producer_builds_provenance_after_exact_stream_verification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", "1")
+    content = b"generated output"
+    observed = tmp_path / "output.mkv"
+    observed.write_bytes(content)
+    journal = create_observation_journal(
+        observed,
+        relative_path="video/output.mkv",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000567",
+        agent_name="fixture-target",
+        agent_version="1.0.0",
+    )
+    summary = validate_journal(journal)
+
+    class ProvenanceUploadApi(UploadApi):
+        def __init__(self) -> None:
+            super().__init__()
+            self.journals: dict[str, bytes] = {}
+
+        def put_collection_upload_session_provenance_journal(
+            self,
+            _collection_id: int,
+            journal_id: str,
+            *,
+            content: bytes,
+            **_kwargs: Any,
+        ) -> dict[str, Any]:
+            self.journals[journal_id] = content
+            return {"journal_id": journal_id}
+
+    api = ProvenanceUploadApi()
+    calls = 0
+
+    def read_range(offset: int, size: int) -> bytes:
+        nonlocal calls
+        calls += 1
+        return content[offset : offset + size]
+
+    def build(
+        collection_id: int,
+        resumed: bool,
+        artifacts: tuple[ProducerArtifactIdentity, ...],
+    ) -> ProducerProvenance:
+        assert collection_id == 7
+        assert resumed is False
+        assert artifacts == (
+            ProducerArtifactIdentity(
+                path="video/output.mkv",
+                bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            ),
+        )
+        return ProducerProvenance(
+            bindings={
+                "video/output.mkv": {
+                    "status": "captured",
+                    "journal_id": summary.journal_id,
+                    "current_state_id": summary.current_state_id,
+                }
+            },
+            journals={summary.journal_id: journal},
+        )
+
+    CollectionProducer(
+        api,  # type: ignore[arg-type]
+        producer_app="fixture-transform",
+        adapter_id="test-transform/v1",
+        adapter_version="1",
+        ingest_source="transform:test",
+        tags=("archive/camera",),
+    ).publish_inputs(
+        (
+            ProducerStream(
+                path="video/output.mkv",
+                bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+                read_range=read_range,
+            ),
+        ),
+        source_event_id="event-1",
+        provenance_builder=build,
+    )
+
+    registered = {item["path"]: item for item in api.registered}
+    assert registered["video/output.mkv"]["provenance"] == {
+        "status": "captured",
+        "journal_id": summary.journal_id,
+        "current_state_id": summary.current_state_id,
+    }
+    assert api.journals == {summary.journal_id: journal}
+    assert calls == 2
+
+
+def test_transform_provenance_fans_out_fans_in_and_recovers_staged_journals(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", "1")
+    source_journals: dict[str, bytes] = {}
+    for relative, content in (("camera/b.mov", b"source b"),):
+        source = tmp_path / relative.replace("/", "-")
+        source.write_bytes(content)
+        journal = create_observation_journal(
+            source,
+            relative_path=relative,
+            host_id="urn:uuid:00000000-0000-4000-8000-000000000567",
+            agent_name="riverhog-client",
+            agent_version="1.0.0",
+        )
+        source_journals[validate_journal(journal).journal_id] = journal
+    original_a = tmp_path / "original-a.mov"
+    original_a.write_bytes(b"original a")
+    original_a_journal = create_observation_journal(
+        original_a,
+        relative_path="original/a.mov",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000567",
+        agent_name="riverhog-client",
+        agent_version="1.0.0",
+    )
+    continued_a_journal = create_derivative_journal_from_identity(
+        relative_path="camera/a.mov",
+        byte_count=len(b"source a"),
+        sha256=hashlib.sha256(b"source a").hexdigest(),
+        source_journals=(original_a_journal,),
+        agent_name="fixture-target",
+        agent_version="1.0.0",
+        event_label="fixture.prior-transform/v1",
+        started_at="2026-08-09T01:00:00Z",
+        ended_at="2026-08-09T01:01:00Z",
+    )
+    source_journals.update(
+        {
+            validate_journal(original_a_journal).journal_id: original_a_journal,
+            validate_journal(continued_a_journal).journal_id: continued_a_journal,
+        }
+    )
+    api = ProvenanceTransformApi(source_journals)
+    spec = _spec()
+    output_contents = {
+        "derived/a-one.bin": b"a derivative one",
+        "derived/a-two.bin": b"a derivative two",
+        "derived/joined.bin": b"a and b joined",
+    }
+    outputs = tuple(
+        ProducerStream(
+            path=path,
+            bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            read_range=lambda offset, size, value=content: value[offset : offset + size],
+        )
+        for path, content in output_contents.items()
+    )
+    dispositions = (
+        ArtifactDisposition(
+            input_collection_id=1,
+            input_manifest_sha256=spec.inputs[0].manifest_sha256,
+            input_path="camera/a.mov",
+            status="transformed",
+            outputs=(
+                "derived/a-one.bin",
+                "derived/a-two.bin",
+                "derived/joined.bin",
+            ),
+        ),
+        ArtifactDisposition(
+            input_collection_id=1,
+            input_manifest_sha256=spec.inputs[0].manifest_sha256,
+            input_path="camera/b.mov",
+            status="transformed",
+            outputs=("derived/joined.bin",),
+        ),
+    )
+
+    def runtime() -> CollectionTransformRuntime:
+        return CollectionTransformRuntime(
+            api,  # type: ignore[arg-type]
+            spec=spec,
+            claim_id="claim-1",
+            fence=1,
+            work_id=WORK_ID,
+            execution_id=EXECUTION_ID,
+            controller_evidence=CONTROLLER_EVIDENCE,
+            producer_app="fixture-transform",
+            producer_version="1.0.0",
+        )
+
+    with pytest.raises(RuntimeError, match="simulated lost producer progress"):
+        runtime().publish(
+            outputs,
+            execution_envelope_sha256="c" * 64,
+            execution_sha256="d" * 64,
+            dispositions=dispositions,
+            poll_seconds=0.01,
+        )
+    first_staged = dict(api.staged_journals)
+    assert api.staged_export_calls == 0
+
+    receipt = runtime().publish(
+        outputs,
+        execution_envelope_sha256="c" * 64,
+        execution_sha256="d" * 64,
+        dispositions=dispositions,
+        poll_seconds=0.01,
+    )
+
+    assert receipt.collection_id == 7
+    assert api.staged_export_calls == len(output_contents)
+    assert api.staged_journals == first_staged
+    summaries = validate_journal_set(api.staged_journals)
+    assert len(summaries) == 6
+    outputs_by_path = {
+        summary.current_path: summary
+        for summary in summaries.values()
+        if summary.current_path in output_contents
+    }
+    assert set(outputs_by_path) == set(output_contents)
+    assert len(outputs_by_path["derived/a-one.bin"].external_states) == 1
+    assert len(outputs_by_path["derived/a-two.bin"].external_states) == 1
+    assert len(outputs_by_path["derived/joined.bin"].external_states) == 2
+    registered = {item["path"]: item for item in api.registered}
+    assert all(registered[path]["provenance"]["status"] == "captured" for path in output_contents)
 
 
 def test_producer_stream_rejects_mutation_between_hash_and_upload(
@@ -571,7 +935,7 @@ def test_finalized_receipt_is_not_revoked_by_a_late_cancellation(
     def cancellation_check() -> None:
         nonlocal checks
         checks += 1
-        if checks > 2:
+        if checks > 3:
             raise RuntimeError("canceled after publication")
 
     runtime = CollectionTransformRuntime(
@@ -618,7 +982,7 @@ def test_finalized_receipt_is_not_revoked_by_a_late_cancellation(
         )
         == expected
     )
-    assert checks == 2
+    assert checks == 3
 
 
 def test_workspace_requires_explicit_protected_storage(tmp_path: Path) -> None:

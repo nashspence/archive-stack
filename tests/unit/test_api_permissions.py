@@ -76,6 +76,10 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
         ): COLLECTIONS_CREATE,
         (
             "GET",
+            "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
+        ): COLLECTIONS_CREATE,
+        (
+            "GET",
             "/v1/collections/{collection_id}/provenance/files",
         ): PROVENANCE_READ,
         (

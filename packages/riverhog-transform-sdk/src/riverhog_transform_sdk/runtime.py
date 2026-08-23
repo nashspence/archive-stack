@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Self
 
@@ -16,6 +17,7 @@ from riverhog_transform_sdk.models import (
     DerivedCollectionReceipt,
     DerivedCollectionSpec,
 )
+from riverhog_transform_sdk.provenance import prepare_transform_provenance
 from riverhog_transform_sdk.reader import ClaimedCollectionReader, ClaimedRetrieval
 from riverhog_transform_sdk.workspace import TransformWorkspace, WorkspaceAssurance
 from riverhog_transform_sdk.writer import DerivedCollectionWriter
@@ -50,6 +52,11 @@ class CollectionTransformRuntime:
         self.spec = spec
         self.work_id = work_id
         self.execution_id = execution_id
+        self.producer_app = producer_app
+        self.producer_version = producer_version
+        self.started_at = (
+            datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        )
         self.controller_evidence = dict(controller_evidence)
         if not self.controller_evidence:
             raise ValueError("collection transform runtime requires controller evidence")
@@ -195,7 +202,6 @@ class CollectionTransformRuntime:
         execution_envelope_sha256: str,
         execution_sha256: str,
         dispositions: Sequence[ArtifactDisposition],
-        provenance_journals: Mapping[str, bytes] | None = None,
         source_context: Mapping[str, object] | None = None,
         **kwargs: Any,
     ) -> DerivedCollectionReceipt:
@@ -218,12 +224,23 @@ class CollectionTransformRuntime:
             raise ValueError(
                 "artifact dispositions must account for every claimed input exactly once"
             )
+        provenance_builder = prepare_transform_provenance(
+            self.api,
+            inventory=inventory,
+            dispositions=normalized_dispositions,
+            execution_id=self.execution_id,
+            operation_id=self.spec.operation.id,
+            producer_app=self.producer_app,
+            producer_version=self.producer_version,
+            started_at=self.started_at,
+            heartbeat=self.heartbeat,
+        )
         receipt = self.writer.publish(
             outputs,
             execution_envelope_sha256=execution_envelope_sha256,
             execution_sha256=execution_sha256,
             dispositions=normalized_dispositions,
-            provenance_journals=provenance_journals,
+            provenance_builder=provenance_builder,
             source_context=source_context,
             **kwargs,
         )
