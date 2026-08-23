@@ -9,6 +9,8 @@ from lifecycle_events import EventPage
 from stove0_cli import main as stove0_cli
 from typer.testing import CliRunner
 
+CONFORMANCE_CATALOG = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+
 
 class FakeClient:
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
@@ -21,7 +23,10 @@ class FakeClient:
         if name == "list_events":
             return lambda **_kwargs: EventPage(events=[], next_cursor="0", has_more=False)
         if name == "list_recipes":
-            return lambda **_kwargs: {"recipes": [{"id": "fixture/v1", "revision": 1}]}
+            return lambda **_kwargs: {
+                "catalog_sha256": "b" * 64,
+                "recipes": [{"id": "fixture/v1", "revision": 1, "sha256": "c" * 64}],
+            }
         if name == "list_work":
             return lambda **_kwargs: {
                 "page": 1,
@@ -63,6 +68,7 @@ def _commands(definition: Path) -> dict[str, list[str]]:
         "list_events": ["event", "list"],
         "list_recipes": ["recipe", "list"],
         "get_recipe": ["recipe", "show", "fixture/v1"],
+        "validate_recipe_catalog": ["recipe", "validate", str(CONFORMANCE_CATALOG)],
         "list_work": ["work", "list"],
         "create_work": [
             "work",
@@ -126,6 +132,7 @@ def test_stove0_cli_operation_inventory_matches_the_public_surface(tmp_path: Pat
         "list_events",
         "list_recipes",
         "get_recipe",
+        "validate_recipe_catalog",
         "list_work",
         "create_work",
         "get_work",
@@ -144,6 +151,36 @@ def test_stove0_cli_operation_inventory_matches_the_public_surface(tmp_path: Pat
         "review_evaluation_variant",
         "scheduler_status",
         "run_scheduler",
+    }
+
+
+def test_recipe_validation_reports_only_exact_catalog_identities() -> None:
+    runner = CliRunner()
+
+    human = runner.invoke(
+        stove0_cli.app,
+        ["recipe", "validate", str(CONFORMANCE_CATALOG)],
+    )
+    result = runner.invoke(
+        stove0_cli.app,
+        ["--json", "recipe", "validate", str(CONFORMANCE_CATALOG)],
+    )
+
+    assert human.exit_code == 0, (human.output, human.exception)
+    assert "Catalog:" in human.stdout
+    assert "stove0.conformance" in human.stdout
+    assert result.exit_code == 0, (result.output, result.exception)
+    payload = json.loads(result.stdout)
+    assert payload["format"] == "stove0-recipe-catalog-validation/v1"
+    assert len(payload["catalog_sha256"]) == 64
+    assert payload["recipe_count"] == len(payload["recipes"])
+    assert "stove0.conformance-media/v1" in {item["id"] for item in payload["recipes"]}
+    assert set(payload) == {
+        "catalog_sha256",
+        "format",
+        "operation_count",
+        "recipe_count",
+        "recipes",
     }
 
 

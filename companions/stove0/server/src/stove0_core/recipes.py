@@ -5,11 +5,10 @@ from __future__ import annotations
 import fnmatch
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from pathlib import Path
-from typing import Literal, Self, cast
+from pathlib import PurePosixPath
+from typing import cast
 
-import yaml
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import JsonValue
 from riverhog_api_client import ApiClient
 from riverhog_protocol.collection_workflows import canonical_json_sha256
 from stove0_protocol import (
@@ -28,11 +27,23 @@ from stove0_protocol import (
     ObservationRequestPayload,
     ObservationResult,
     OperationRef,
-    RecipeRef,
     WorkflowPlan,
     WorkflowPlanIntent,
     WorkIdentity,
     WorkPayload,
+)
+from stove0_recipe_config import (
+    ArtifactAssociation,
+    ArtifactFactBinding,
+    ArtifactRule,
+    FactPredicate,
+    ObserverUse,
+    OperationProjection,
+    RecipeCatalog,
+    RecipeDefinition,
+    RecipeJoin,
+    RecipeJoinMember,
+    RecipeRoute,
 )
 from stove0_target_protocol import (
     InputArtifact,
@@ -42,220 +53,6 @@ from stove0_target_protocol import (
 
 from stove0_core.coordinator import ObserverPort, TargetPort
 from stove0_core.work_state import WorkInapplicable
-
-_JSON_POINTER_PATTERN = r"^(?:|/(?:[^~/]|~[01])*(?:/(?:[^~/]|~[01])*)*)$"
-
-
-class RecipeModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class ArtifactRule(RecipeModel):
-    glob: str = "*"
-    role: str = "stove0.source/v1"
-    media_type: str | None = None
-
-
-class ObserverUse(RecipeModel):
-    registration_id: str
-    contract_id: str
-    artifact_rules: tuple[ArtifactRule, ...] = (ArtifactRule(),)
-    options: dict[str, JsonValue] = Field(default_factory=dict)
-    timeout_seconds: int = Field(default=300, ge=1, le=86400)
-    maximum_result_bytes: int = Field(default=1024 * 1024, ge=1, le=64 * 1024 * 1024)
-    retrieval_policy: Literal["available-only", "allow"] = "available-only"
-
-
-class FactPredicate(RecipeModel):
-    observation_contract_id: str
-    pointer: str = Field(pattern=_JSON_POINTER_PATTERN)
-    operator: Literal["equals", "not-equals", "contains", "exists"] = "equals"
-    value: JsonValue = None
-
-
-class OperationProjection(RecipeModel):
-    """One declarative JSON-pointer copy into an operation request."""
-
-    source: Literal["work-effective-intent", "work-evaluation"]
-    source_pointer: str = Field(pattern=_JSON_POINTER_PATTERN)
-    destination: Literal["intent", "target-options"]
-    destination_pointer: str = Field(pattern=_JSON_POINTER_PATTERN)
-
-
-class RecipeRoute(RecipeModel):
-    id: str
-    when: tuple[FactPredicate, ...] = ()
-    operation_id: str
-    target_registration_id: str
-    artifact_rules: tuple[ArtifactRule, ...] = (ArtifactRule(),)
-    intent: dict[str, JsonValue] = Field(default_factory=dict)
-    target_options: dict[str, JsonValue] = Field(default_factory=dict)
-    projections: tuple[OperationProjection, ...] = ()
-    input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
-    output_tags: tuple[str, ...] = ()
-
-    @model_validator(mode="after")
-    def canonical_projections(self) -> Self:
-        _validate_projections(self.projections)
-        return self
-
-
-class RecipeJoinMember(RecipeModel):
-    branch_id: str
-    output_roles: tuple[str, ...] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def canonical_roles(self) -> Self:
-        if self.output_roles != tuple(sorted(set(self.output_roles))):
-            raise ValueError("join output roles must be unique and canonical")
-        return self
-
-
-class RecipeJoin(RecipeModel):
-    id: str
-    members: tuple[RecipeJoinMember, ...] = Field(min_length=2)
-    operation_id: str
-    target_registration_id: str
-    intent: dict[str, JsonValue] = Field(default_factory=dict)
-    target_options: dict[str, JsonValue] = Field(default_factory=dict)
-    projections: tuple[OperationProjection, ...] = ()
-    input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
-    output_tags: tuple[str, ...] = Field(min_length=1)
-
-    @model_validator(mode="after")
-    def canonical_projections(self) -> Self:
-        _validate_projections(self.projections)
-        return self
-
-
-class RecipeDefinition(RecipeModel):
-    id: str
-    revision: int = Field(ge=1)
-    input_tags: tuple[str, ...] = Field(min_length=1)
-    event_input_closure: Literal["single-finalized-collection"] = "single-finalized-collection"
-    observers: tuple[ObserverUse, ...] = ()
-    routes: tuple[RecipeRoute, ...] = Field(min_length=1)
-    allow_derived_inputs: bool = False
-    source_retirement_policy: Literal["retain", "retire-after-verified-output"] = "retain"
-    retirement_grace_seconds: int = Field(default=0, ge=0)
-    join: RecipeJoin | None = None
-
-    @model_validator(mode="after")
-    def canonical_members(self) -> Self:
-        if self.input_tags != tuple(sorted(set(self.input_tags))):
-            raise ValueError("recipe input tags must be unique and canonical")
-        route_ids = [route.id for route in self.routes]
-        if len(route_ids) != len(set(route_ids)):
-            raise ValueError("recipe route IDs must be unique")
-        if self.join is not None:
-            member_ids = [member.branch_id for member in self.join.members]
-            if member_ids != sorted(member_ids) or len(member_ids) != len(set(member_ids)):
-                raise ValueError("join members must be unique and ordered by branch ID")
-            unknown = sorted(set(member_ids) - set(route_ids))
-            if unknown:
-                raise ValueError("join members reference unknown route IDs: " + ", ".join(unknown))
-        if self.source_retirement_policy == "retain" and self.retirement_grace_seconds:
-            raise ValueError("retain recipes cannot declare a retirement grace period")
-        return self
-
-    @property
-    def sha256(self) -> str:
-        return canonical_json_sha256(self.model_dump(mode="json", by_alias=True, exclude_none=True))
-
-    @property
-    def ref(self) -> RecipeRef:
-        return RecipeRef(id=self.id, revision=self.revision, sha256=self.sha256)
-
-
-class RecipeCatalog(RecipeModel):
-    format: Literal["stove0-recipes/v1"] = "stove0-recipes/v1"
-    operations: tuple[OperationContract, ...]
-    recipes: tuple[RecipeDefinition, ...]
-
-    @model_validator(mode="after")
-    def valid_catalog(self) -> Self:
-        operation_ids = [operation.id for operation in self.operations]
-        if operation_ids != sorted(operation_ids) or len(operation_ids) != len(set(operation_ids)):
-            raise ValueError("operation contracts must be unique and ordered by ID")
-        identities = [(recipe.id, recipe.revision) for recipe in self.recipes]
-        if identities != sorted(identities) or len(identities) != len(set(identities)):
-            raise ValueError("recipes must be unique and ordered by ID and revision")
-        operations = {operation.id: operation for operation in self.operations}
-        for recipe in self.recipes:
-            referenced = [route.operation_id for route in recipe.routes]
-            if recipe.join is not None:
-                referenced.append(recipe.join.operation_id)
-            unknown = sorted(set(referenced) - set(operations))
-            if unknown:
-                raise ValueError(
-                    f"recipe {recipe.id} references unknown operation(s): " + ", ".join(unknown)
-                )
-            for route in recipe.routes:
-                operation = operations[route.operation_id]
-                if operation.result_kind == "collection" and not route.output_tags:
-                    raise ValueError(
-                        f"recipe {recipe.id} collection branch {route.id} requires output tags"
-                    )
-                if operation.result_kind == "external-effect" and route.output_tags:
-                    raise ValueError(
-                        f"recipe {recipe.id} effect branch {route.id} cannot declare output tags"
-                    )
-            if recipe.join is not None:
-                join_operation = operations[recipe.join.operation_id]
-                if join_operation.result_kind != "collection":
-                    raise ValueError(f"recipe {recipe.id} join must produce a collection")
-                route_operations = {
-                    route.id: operations[route.operation_id] for route in recipe.routes
-                }
-                effect_members = [
-                    member.branch_id
-                    for member in recipe.join.members
-                    if route_operations[member.branch_id].result_kind == "external-effect"
-                ]
-                if effect_members:
-                    raise ValueError(
-                        f"recipe {recipe.id} join cannot consume effect branch(es): "
-                        + ", ".join(effect_members)
-                    )
-            if recipe.source_retirement_policy == "retire-after-verified-output":
-                unsafe = sorted(
-                    route.id
-                    for route in recipe.routes
-                    if not operations[route.operation_id].source_retirement_permitted
-                )
-                if unsafe:
-                    raise ValueError(
-                        f"recipe {recipe.id} retires its source but branch operation(s) do not "
-                        "authorize retirement: " + ", ".join(unsafe)
-                    )
-        return self
-
-    def operation(self, operation_id: str) -> OperationContract:
-        for operation in self.operations:
-            if operation.id == operation_id:
-                return operation
-        raise KeyError(operation_id)
-
-    @classmethod
-    def load(cls, path: Path) -> RecipeCatalog:
-        value = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-        return cls.model_validate(value)
-
-    def recipe(self, recipe_id: str, revision: int | None = None) -> RecipeDefinition:
-        matches = [
-            recipe
-            for recipe in self.recipes
-            if recipe.id == recipe_id and (revision is None or recipe.revision == revision)
-        ]
-        if not matches:
-            raise KeyError(recipe_id)
-        return max(matches, key=lambda recipe: recipe.revision)
-
-    def matching(self, tags: Sequence[str]) -> tuple[RecipeDefinition, ...]:
-        available = set(tags)
-        return tuple(
-            recipe for recipe in self.recipes if set(recipe.input_tags).issubset(available)
-        )
 
 
 class RecipePlanner:
@@ -300,6 +97,8 @@ class RecipePlanner:
         for use in recipe.observers:
             descriptor = self.observers.descriptor(use.registration_id)
             support = descriptor.support_for(use.contract_id)
+            if support.contract_sha256 != use.contract_sha256:
+                raise RuntimeError("observer supports another revision of the recipe contract")
             subjects = _subjects(inventory, use.artifact_rules)
             if not subjects:
                 continue
@@ -335,11 +134,15 @@ class RecipePlanner:
             raise RuntimeError("branch and join workflow plans are sealed by their parent plan")
         recipe = self._recipe(work)
         inventory = self._inventory(work)
+        evidence = tuple(sorted(observations, key=lambda item: item.request.request_id))
         selected: list[tuple[RecipeRoute, ArtifactSelection]] = []
         for route in recipe.routes:
-            if not all(_predicate_matches(predicate, observations) for predicate in route.when):
-                continue
-            artifacts = _subjects(inventory, route.artifact_rules)
+            artifacts = _route_artifacts(
+                _subjects(inventory, route.artifact_rules),
+                route=route,
+                associations=recipe.artifact_associations,
+                observations=evidence,
+            )
             if not artifacts:
                 continue
             selected.append((route, ArtifactSelection.seal(artifacts)))
@@ -366,8 +169,17 @@ class RecipePlanner:
                     ),
                 )
 
+        uncovered = _uncovered_inventory(inventory, selected)
+        if uncovered and recipe.unmatched_artifact_disposition == "reject-work":
+            return WorkInapplicable(
+                code="unmatched-artifacts",
+                message=(
+                    "The recipe explicitly rejects work with unmatched immutable artifacts: "
+                    + ", ".join(uncovered[:10])
+                ),
+            )
+
         if recipe.source_retirement_policy == "retire-after-verified-output":
-            uncovered = _uncovered_inventory(inventory, selected)
             if uncovered:
                 return WorkInapplicable(
                     code="unsafe-retirement-coverage",
@@ -392,9 +204,7 @@ class RecipePlanner:
                 "format": "stove0-routing-decision/v1",
                 "parent_work_id": work.work_id,
                 "recipe": recipe.ref.model_dump(mode="json"),
-                "evidence_sha256s": sorted(
-                    evidence.result.result_sha256 for evidence in observations
-                ),
+                "evidence_sha256s": sorted(item.result.result_sha256 for item in evidence),
                 "branches": [
                     {
                         "branch_id": route.id,
@@ -412,7 +222,7 @@ class RecipePlanner:
         branches = tuple(
             self._branch_plan(
                 parent=work,
-                observations=observations,
+                observations=evidence,
                 route=route,
                 selection=selection,
                 decision_sha256=decision_sha256,
@@ -427,9 +237,7 @@ class RecipePlanner:
             plan=BranchSetPlan.seal(
                 parent_work=work,
                 decision_sha256=decision_sha256,
-                evidence_sha256s=tuple(
-                    sorted(evidence.result.result_sha256 for evidence in observations)
-                ),
+                evidence_sha256s=tuple(sorted(item.result.result_sha256 for item in evidence)),
                 branches=branches,
                 join=join,
                 retirement_policy=recipe.source_retirement_policy,
@@ -691,6 +499,53 @@ def _subjects(
     return tuple(sorted(subjects, key=lambda subject: subject.id))
 
 
+def _route_artifacts(
+    subjects: tuple[ArtifactSubject, ...],
+    *,
+    route: RecipeRoute,
+    associations: tuple[ArtifactAssociation, ...],
+    observations: tuple[ObservationEvidence, ...],
+) -> tuple[ArtifactSubject, ...]:
+    if route.primary_role is None:
+        if all(
+            _predicate_matches(predicate, observations, candidate=()) for predicate in route.when
+        ):
+            return subjects
+        return ()
+
+    association = next(
+        (item for item in associations if item.primary_role == route.primary_role),
+        None,
+    )
+    if route.associated_roles and association is None:
+        raise RuntimeError("validated recipe route is missing its artifact association")
+    primaries = [subject for subject in subjects if subject.role == route.primary_role]
+    associated = [subject for subject in subjects if subject.role in set(route.associated_roles)]
+    selected: dict[str, ArtifactSubject] = {}
+    for primary in primaries:
+        candidate = [primary]
+        if route.associated_roles:
+            identity = _path_association_identity(primary.path)
+            candidate.extend(
+                subject
+                for subject in associated
+                if _path_association_identity(subject.path) == identity
+            )
+        exact_candidate = tuple(sorted(candidate, key=lambda subject: subject.id))
+        if not all(
+            _predicate_matches(predicate, observations, candidate=exact_candidate)
+            for predicate in route.when
+        ):
+            continue
+        selected.update((subject.id, subject) for subject in exact_candidate)
+    return tuple(selected[artifact_id] for artifact_id in sorted(selected))
+
+
+def _path_association_identity(path: str) -> tuple[str, str]:
+    value = PurePosixPath(path)
+    return value.parent.as_posix(), value.stem
+
+
 def _uncovered_inventory(
     inventory: Sequence[Mapping[str, object]],
     selected: Sequence[tuple[RecipeRoute, ArtifactSelection]],
@@ -816,6 +671,8 @@ def _artifact_rule(path: str, rules: Sequence[ArtifactRule]) -> ArtifactRule | N
 def _predicate_matches(
     predicate: FactPredicate,
     observations: Sequence[ObservationEvidence],
+    *,
+    candidate: Sequence[ArtifactSubject],
 ) -> bool:
     matches = [
         evidence.result
@@ -824,15 +681,54 @@ def _predicate_matches(
     ]
     if not matches or any(result.state != "observed" or result.facts is None for result in matches):
         return False
+    if predicate.artifact_roles:
+        relevant = {
+            artifact.id for artifact in candidate if artifact.role in set(predicate.artifact_roles)
+        }
+        if not relevant:
+            return predicate.operator == "exists" and predicate.value is False
+        assert predicate.artifact_facts is not None
+        records = _artifact_fact_records(matches, predicate.artifact_facts, relevant)
+        if set(records) != relevant:
+            return False
+        values = [record for artifact_id in sorted(records) for record in records[artifact_id]]
+        if predicate.operator == "exists" and predicate.value is False:
+            return all(not _json_pointer(record, predicate.pointer)[0] for record in values)
+        return any(_document_matches_predicate(predicate, record) for record in values)
     if predicate.operator == "exists" and predicate.value is False:
         return all(not _json_pointer(result.facts, predicate.pointer)[0] for result in matches)
-    return any(_result_matches_predicate(predicate, result) for result in matches)
+    return any(
+        result.facts is not None and _document_matches_predicate(predicate, result.facts)
+        for result in matches
+    )
 
 
-def _result_matches_predicate(predicate: FactPredicate, result: ObservationResult) -> bool:
-    if result.state != "observed" or result.facts is None:
-        return False
-    present, value = _json_pointer(result.facts, predicate.pointer)
+def _artifact_fact_records(
+    results: Sequence[ObservationResult],
+    binding: ArtifactFactBinding,
+    artifact_ids: set[str],
+) -> dict[str, list[dict[str, JsonValue]]]:
+    records: dict[str, list[dict[str, JsonValue]]] = {}
+    for result in results:
+        assert result.facts is not None
+        present, raw_records = _json_pointer(result.facts, binding.records_pointer)
+        if not present or not isinstance(raw_records, list):
+            continue
+        for raw_record in raw_records:
+            if not isinstance(raw_record, dict):
+                continue
+            has_id, artifact_id = _json_pointer(raw_record, binding.artifact_id_pointer)
+            if not has_id or not isinstance(artifact_id, str) or artifact_id not in artifact_ids:
+                continue
+            records.setdefault(artifact_id, []).append(raw_record)
+    return records
+
+
+def _document_matches_predicate(
+    predicate: FactPredicate,
+    document: dict[str, JsonValue],
+) -> bool:
+    present, value = _json_pointer(document, predicate.pointer)
     if predicate.operator == "exists":
         return present is bool(predicate.value)
     if not present:
@@ -862,6 +758,8 @@ def _json_pointer(document: JsonValue, pointer: str) -> tuple[bool, JsonValue]:
 
 
 __all__ = [
+    "ArtifactAssociation",
+    "ArtifactFactBinding",
     "ArtifactRule",
     "BranchSetDecision",
     "FactPredicate",

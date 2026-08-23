@@ -508,9 +508,11 @@ recipes:
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
   source_retirement_policy: retain
+  unmatched_artifact_disposition: retain-in-source
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
+    contract_sha256: 527ff1ef0a62e8705d29dca2d35574659d983b67e5fb5a353992ee81745f5c1c
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1
@@ -541,6 +543,170 @@ recipes:
     input_retrieval_policy: allow
     output_tags:
     - archive-audio
+- id: stove0.conformance-media/v1
+  revision: 1
+  input_tags:
+  - stove0-conformance-media
+  event_input_closure: single-finalized-collection
+  artifact_associations:
+  - primary_role: stove0.media.source/v1
+    associated_roles:
+    - stove0.media.xmp-source/v1
+    path_identity: same-parent-stem
+  allow_derived_inputs: false
+  source_retirement_policy: retain
+  unmatched_artifact_disposition: retain-in-source
+  observers:
+  - registration_id: exiftool
+    contract_id: stove0.media.metadata/v1
+    contract_sha256: 527ff1ef0a62e8705d29dca2d35574659d983b67e5fb5a353992ee81745f5c1c
+    artifact_rules:
+    - glob: '*.XMP'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    - glob: '*.mov'
+      role: stove0.media.source/v1
+      media_type: video/quicktime
+    - glob: '*.wav'
+      role: stove0.media.source/v1
+      media_type: audio/wav
+    - glob: '*.xmp'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    retrieval_policy: available-only
+  routes:
+  - id: archive-audio
+    when:
+    - observation_contract_id: stove0.media.metadata/v1
+      artifact_roles:
+      - stove0.media.source/v1
+      artifact_facts:
+        records_pointer: /artifacts
+        artifact_id_pointer: /artifact_id
+      pointer: /state
+      operator: equals
+      value: observed
+    operation_id: stove0.media.audio-archive/v1
+    target_registration_id: opus
+    artifact_rules:
+    - glob: '*.XMP'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    - glob: '*.wav'
+      role: stove0.media.source/v1
+      media_type: audio/wav
+    - glob: '*.xmp'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    primary_role: stove0.media.source/v1
+    associated_roles:
+    - stove0.media.xmp-source/v1
+    intent:
+      bitrate_kbps: 128
+      codec: opus
+      container: opus
+      metadata_projection:
+        format: stove0-media-projection-policy/v1
+        device_make: Example Maker
+        device_model: Model One
+        gps:
+          latitude: 45.0
+          longitude: -122.0
+        creators:
+        - Example Operator
+        tags:
+        - conformance
+        field_preferences:
+        - name: capture-time
+          fields:
+          - XMP-xmp:CreateDate
+    input_retrieval_policy: available-only
+    output_tags:
+    - conformance-audio
+  - id: archive-audio-overlap
+    when:
+    - observation_contract_id: stove0.media.metadata/v1
+      artifact_roles:
+      - stove0.media.source/v1
+      artifact_facts:
+        records_pointer: /artifacts
+        artifact_id_pointer: /artifact_id
+      pointer: /state
+      operator: equals
+      value: observed
+    operation_id: stove0.media.audio-archive/v1
+    target_registration_id: opus
+    artifact_rules:
+    - glob: '*.XMP'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    - glob: '*.wav'
+      role: stove0.media.source/v1
+      media_type: audio/wav
+    - glob: '*.xmp'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    primary_role: stove0.media.source/v1
+    associated_roles:
+    - stove0.media.xmp-source/v1
+    intent:
+      bitrate_kbps: 96
+      codec: opus
+      container: opus
+      metadata_projection:
+        format: stove0-media-projection-policy/v1
+        creators:
+        - Example Operator
+        tags:
+        - conformance-overlap
+    input_retrieval_policy: available-only
+    output_tags:
+    - conformance-audio-overlap
+  - id: archive-video
+    when:
+    - observation_contract_id: stove0.media.metadata/v1
+      artifact_roles:
+      - stove0.media.source/v1
+      artifact_facts:
+        records_pointer: /artifacts
+        artifact_id_pointer: /artifact_id
+      pointer: /state
+      operator: equals
+      value: observed
+    operation_id: stove0.media.av1-opus-archive/v1
+    target_registration_id: nvenc-av1-opus
+    artifact_rules:
+    - glob: '*.XMP'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    - glob: '*.mov'
+      role: stove0.media.source/v1
+      media_type: video/quicktime
+    - glob: '*.xmp'
+      role: stove0.media.xmp-source/v1
+      media_type: application/rdf+xml
+    primary_role: stove0.media.source/v1
+    associated_roles:
+    - stove0.media.xmp-source/v1
+    intent:
+      audio_bitrate_kbps: 128
+      codec: av1
+      container: mkv
+      quality: 23
+      salvage: safe-remux
+      metadata_projection:
+        format: stove0-media-projection-policy/v1
+        device_make: Example Maker
+        device_model: Model Two
+        creators:
+        - Example Operator
+        tags:
+        - conformance
+    target_options:
+      preset: p4
+    input_retrieval_policy: available-only
+    output_tags:
+    - conformance-video
 - id: stove0.review-effect/v1
   revision: 1
   input_tags:
@@ -548,9 +714,11 @@ recipes:
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
   source_retirement_policy: retain
+  unmatched_artifact_disposition: retain-in-source
   observers:
   - registration_id: ffprobe-sampling
     contract_id: stove0.review.media-sampling/v1
+    contract_sha256: 3323eb5382837ea4e10e12f18979cfe34f34a6ab3e57c04d7b1fa3db5bb00f98
     artifact_rules:
     - glob: '*'
       role: stove0.review.source/v1
@@ -589,9 +757,11 @@ recipes:
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
   source_retirement_policy: retain
+  unmatched_artifact_disposition: retain-in-source
   observers:
   - registration_id: ffprobe-sampling
     contract_id: stove0.review.media-sampling/v1
+    contract_sha256: 3323eb5382837ea4e10e12f18979cfe34f34a6ab3e57c04d7b1fa3db5bb00f98
     artifact_rules:
     - glob: '*'
       role: stove0.review.source/v1
@@ -632,10 +802,12 @@ recipes:
   event_input_closure: single-finalized-collection
   allow_derived_inputs: false
   source_retirement_policy: retire-after-verified-output
+  unmatched_artifact_disposition: retain-in-source
   retirement_grace_seconds: 86400
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
+    contract_sha256: 527ff1ef0a62e8705d29dca2d35574659d983b67e5fb5a353992ee81745f5c1c
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1

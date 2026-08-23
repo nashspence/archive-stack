@@ -22,6 +22,7 @@ COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
 COPY companions/stove0/server companions/stove0/server
+COPY packages/config-validation packages/config-validation
 COPY packages/file-download packages/file-download
 COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events
@@ -31,6 +32,7 @@ COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/stove0-observer-client packages/stove0-observer-client
 COPY packages/stove0-observer-protocol packages/stove0-observer-protocol
 COPY packages/stove0-protocol packages/stove0-protocol
+COPY packages/stove0-recipe-config packages/stove0-recipe-config
 COPY packages/stove0-target-client packages/stove0-target-client
 COPY packages/stove0-target-protocol packages/stove0-target-protocol
 COPY packages/state-schema packages/state-schema

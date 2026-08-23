@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.pretty import Pretty
 from rich.table import Table
 from stove0_api_client import Stove0ApiClient, Stove0ApiError
+from stove0_recipe_config import RecipeCatalog
 
 app = typer.Typer(help="Operate stove0 collection workflows.")
 work_app = typer.Typer(help="Transformation work.")
@@ -84,7 +85,7 @@ def health(context: typer.Context, ready: bool = typer.Option(False, "--ready"))
 @recipe_app.command("list")
 def list_recipes(context: typer.Context) -> None:
     state = _context(context)
-    _call(state, state.client.list_recipes, table=("recipes", ("id", "revision")))
+    _call(state, state.client.list_recipes, table=("recipes", ("id", "revision", "sha256")))
 
 
 @recipe_app.command("show")
@@ -95,6 +96,21 @@ def show_recipe(
 ) -> None:
     state = _context(context)
     _call(state, lambda: state.client.get_recipe(recipe_id, revision=revision))
+
+
+@recipe_app.command("validate")
+def validate_recipe_catalog(
+    context: typer.Context,
+    path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+) -> None:
+    """Validate a deployment-owned catalog without contacting Stove0."""
+
+    state = _context(context)
+    _call(
+        state,
+        lambda: RecipeCatalog.load(path).validation_document(),
+        table=("recipes", ("id", "revision", "sha256")),
+    )
 
 
 @work_app.command("list")
@@ -385,6 +401,8 @@ def _render(
         typer.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
         return
     if table is not None and isinstance(payload.get(table[0]), list):
+        if table[0] == "recipes" and payload.get("catalog_sha256") is not None:
+            console.print(f"Catalog: {payload['catalog_sha256']}")
         rendered = Table(show_header=True)
         for column in table[1]:
             rendered.add_column(column.replace("_", " ").title())

@@ -310,6 +310,7 @@ def _recipe(label: str, *, allow_derived_inputs: bool = True) -> RecipeDefinitio
         id=f"fixture.{label}/v1",
         revision=1,
         input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
         allow_derived_inputs=allow_derived_inputs,
         routes=(
             RecipeRoute(

@@ -47,6 +47,7 @@ members = [
     "stove0-opus-review-sampler",
     "stove0-opus-target",
     "stove0-protocol",
+    "stove0-recipe-config",
     "stove0-review-contracts",
     "stove0-review-sampler-client",
     "stove0-review-sampler-protocol",
@@ -2099,6 +2100,7 @@ source = { editable = "companions/stove0/client" }
 dependencies = [
     { name = "rich" },
     { name = "stove0-api-client" },
+    { name = "stove0-recipe-config" },
     { name = "typer" },
 ]
 
@@ -2106,6 +2108,7 @@ dependencies = [
 requires-dist = [
     { name = "rich", specifier = ">=15.0,<16.0" },
     { name = "stove0-api-client", editable = "packages/stove0-api-client" },
+    { name = "stove0-recipe-config", editable = "packages/stove0-recipe-config" },
     { name = "typer", specifier = ">=0.12,<1.0" },
 ]
 
@@ -2355,6 +2358,25 @@ requires-dist = [
 ]
 
 [[package]]
+name = "stove0-recipe-config"
+version = "0.1.0"
+source = { editable = "packages/stove0-recipe-config" }
+dependencies = [
+    { name = "config-validation" },
+    { name = "pydantic" },
+    { name = "stove0-protocol" },
+    { name = "stove0-target-protocol" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "config-validation", editable = "packages/config-validation" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "stove0-protocol", editable = "packages/stove0-protocol" },
+    { name = "stove0-target-protocol", editable = "packages/stove0-target-protocol" },
+]
+
+[[package]]
 name = "stove0-review-contracts"
 version = "0.1.0"
 source = { editable = "packages/stove0-review-contracts" }
@@ -2474,7 +2496,6 @@ dependencies = [
     { name = "lifecycle-events" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
-    { name = "pyyaml" },
     { name = "riverhog-api-client" },
     { name = "riverhog-protocol" },
     { name = "sqlalchemy" },
@@ -2482,6 +2503,7 @@ dependencies = [
     { name = "state-schema" },
     { name = "stove0-observer-client" },
     { name = "stove0-protocol" },
+    { name = "stove0-recipe-config" },
     { name = "stove0-target-client" },
     { name = "stove0-target-protocol" },
     { name = "time-formats" },
@@ -2496,7 +2518,6 @@ requires-dist = [
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3,<4.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
-    { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
@@ -2504,6 +2525,7 @@ requires-dist = [
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "stove0-observer-client", editable = "packages/stove0-observer-client" },
     { name = "stove0-protocol", editable = "packages/stove0-protocol" },
+    { name = "stove0-recipe-config", editable = "packages/stove0-recipe-config" },
     { name = "stove0-target-client", editable = "packages/stove0-target-client" },
     { name = "stove0-target-protocol", editable = "packages/stove0-target-protocol" },
     { name = "time-formats", editable = "packages/time-formats" },

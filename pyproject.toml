@@ -23,6 +23,7 @@ stove0-api-client = { workspace = true }
 stove0-media-archive-contracts = { workspace = true }
 stove0-observer-client = { workspace = true }
 stove0-protocol = { workspace = true }
+stove0-recipe-config = { workspace = true }
 stove0-observer-protocol = { workspace = true }
 stove0-observer-support = { workspace = true }
 stove0-review-contracts = { workspace = true }

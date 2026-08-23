@@ -25,7 +25,6 @@ dependencies = [
   "lifecycle-events>=0.1,<0.2",
   "psycopg[binary]>=3.3,<4.0",
   "pydantic>=2.7,<3.0",
-  "pyyaml>=6.0,<7.0",
   "riverhog-api-client>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
   "sqlalchemy>=2.0,<3.0",
@@ -33,6 +32,7 @@ dependencies = [
   "state-schema>=0.1,<0.2",
   "stove0-observer-client>=0.1,<0.2",
   "stove0-protocol>=0.1,<0.2",
+  "stove0-recipe-config>=0.1,<0.2",
   "stove0-target-client>=0.1,<0.2",
   "stove0-target-protocol>=0.1,<0.2",
   "time-formats>=0.1,<0.2",
@@ -49,6 +49,7 @@ riverhog-api-client = { workspace = true }
 riverhog-protocol = { workspace = true }
 stove0-observer-client = { workspace = true }
 stove0-protocol = { workspace = true }
+stove0-recipe-config = { workspace = true }
 stove0-target-client = { workspace = true }
 stove0-target-protocol = { workspace = true }
 state-schema = { workspace = true }

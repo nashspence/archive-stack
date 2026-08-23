@@ -288,10 +288,14 @@ def create_app(
     )
     def list_recipes() -> dict[str, object]:
         return {
+            "catalog_sha256": composition.recipes.sha256,
             "recipes": [
-                recipe.model_dump(mode="json", exclude_none=True)
+                {
+                    **recipe.model_dump(mode="json", exclude_none=True),
+                    "sha256": recipe.sha256,
+                }
                 for recipe in composition.recipes.recipes
-            ]
+            ],
         }
 
     @app.get(
@@ -301,9 +305,11 @@ def create_app(
         tags=["recipes"],
     )
     def get_recipe(recipe_id: str, revision: int | None = None) -> dict[str, Any]:
-        return composition.recipes.recipe(recipe_id, revision).model_dump(
-            mode="json", exclude_none=True
-        )
+        recipe = composition.recipes.recipe(recipe_id, revision)
+        return {
+            **recipe.model_dump(mode="json", exclude_none=True),
+            "sha256": recipe.sha256,
+        }
 
     @app.get(
         "/v1/work",
