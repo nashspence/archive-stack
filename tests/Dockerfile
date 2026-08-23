@@ -66,7 +66,7 @@ WORKDIR /workspace
 
 COPY pyproject.toml uv.lock ./
 COPY companions companions
-COPY extensions extensions
+COPY reference reference
 COPY packages packages
 COPY riverhog riverhog
 COPY utilities utilities

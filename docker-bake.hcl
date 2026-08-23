@@ -37,7 +37,7 @@ target "riverhog" {
 target "riverhog-ftp-adapter" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "riverhog/ftp-adapter/Dockerfile"
+  dockerfile = "reference/riverhog/ingress/ftp/Dockerfile"
   tags       = ["riverhog-ftp-adapter:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -45,7 +45,7 @@ target "riverhog-ftp-adapter" {
 target "riverhog-storage-adapter-aws" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "riverhog/storage-adapter-aws/Dockerfile"
+  dockerfile = "reference/riverhog/storage/aws/Dockerfile"
   tags       = ["riverhog-storage-adapter-aws:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -53,7 +53,7 @@ target "riverhog-storage-adapter-aws" {
 target "riverhog-storage-adapter-backblaze" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "riverhog/storage-adapter-backblaze/Dockerfile"
+  dockerfile = "reference/riverhog/storage/backblaze/Dockerfile"
   tags       = ["riverhog-storage-adapter-backblaze:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -69,7 +69,7 @@ target "stove0" {
 target "stove0-exiftool-observer" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "extensions/stove0/exiftool-observer/Dockerfile"
+  dockerfile = "reference/stove0/observers/exiftool/Dockerfile"
   tags       = ["stove0-exiftool-observer:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -77,7 +77,7 @@ target "stove0-exiftool-observer" {
 target "stove0-ffprobe-sampling-observer" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "extensions/stove0/ffprobe-sampling-observer/Dockerfile"
+  dockerfile = "reference/stove0/observers/ffprobe-sampling/Dockerfile"
   tags       = ["stove0-ffprobe-sampling-observer:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -85,7 +85,7 @@ target "stove0-ffprobe-sampling-observer" {
 target "stove0-nvenc-av1-opus-target" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "extensions/stove0/nvenc-av1-opus-target/Dockerfile"
+  dockerfile = "reference/stove0/targets/nvenc-av1-opus/Dockerfile"
   tags       = ["stove0-nvenc-av1-opus-target:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -93,7 +93,7 @@ target "stove0-nvenc-av1-opus-target" {
 target "stove0-opus-target" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "extensions/stove0/opus-target/Dockerfile"
+  dockerfile = "reference/stove0/targets/opus/Dockerfile"
   tags       = ["stove0-opus-target:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
@@ -101,7 +101,7 @@ target "stove0-opus-target" {
 target "stove0-review-target" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "extensions/stove0/review-target/Dockerfile"
+  dockerfile = "reference/stove0/targets/review/Dockerfile"
   tags       = ["stove0-review-target:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }

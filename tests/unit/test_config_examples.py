@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_FILES = {
     REPO_ROOT / "utilities/mango-fish/config/mango-fish.yaml",
     REPO_ROOT / "companions/stove0/config/recipes.example.yaml",
-    REPO_ROOT / "riverhog/ftp-adapter/config/ftp-adapter.example.json",
+    REPO_ROOT / "reference/riverhog/ingress/ftp/config/ftp-adapter.example.json",
     REPO_ROOT / "utilities/gogurt/config/examples/gogurt-routes.yaml",
     REPO_ROOT / "utilities/gogurt/config/examples/scripts/fake_archive_device.py",
     REPO_ROOT / "config/provider-qualification.example.toml",
@@ -29,7 +29,7 @@ def test_every_checked_example_runs_through_its_real_consumer(
         for root in (
             REPO_ROOT / "utilities/mango-fish/config",
             REPO_ROOT / "companions/stove0/config",
-            REPO_ROOT / "riverhog/ftp-adapter/config",
+            REPO_ROOT / "reference/riverhog/ingress/ftp/config",
             REPO_ROOT / "utilities/gogurt/config/examples",
             REPO_ROOT / "config",
         )
@@ -69,7 +69,7 @@ def test_every_checked_example_runs_through_its_real_consumer(
     monkeypatch.setenv("RIVERHOG_TOKEN", "fake-riverhog-token")
     monkeypatch.setenv("RIVERHOG_FTP_ADAPTER_API_TOKEN", "fake-adapter-token")
     adapters = load_adapter_config(
-        REPO_ROOT / "riverhog/ftp-adapter/config/ftp-adapter.example.json"
+        REPO_ROOT / "reference/riverhog/ingress/ftp/config/ftp-adapter.example.json"
     )
     assert [source.id for source in adapters.sources] == ["ftp-intake"]
 

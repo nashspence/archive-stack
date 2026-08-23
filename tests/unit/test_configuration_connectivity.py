@@ -15,11 +15,12 @@ from stove0_core import EndpointRegistration, Stove0RuntimeConfig
 
 REPO_ROOT = Path(__file__).parents[2]
 STOVE0_SOURCE = REPO_ROOT / "companions" / "stove0" / "server" / "src"
-ADAPTER_SOURCE = REPO_ROOT / "riverhog" / "ftp-adapter" / "src"
+ADAPTER_SOURCE = REPO_ROOT / "reference" / "riverhog" / "ingress" / "ftp" / "src"
 PRODUCTION_ROOTS = (
     REPO_ROOT / "packages",
     REPO_ROOT / "riverhog",
     REPO_ROOT / "companions",
+    REPO_ROOT / "reference",
     REPO_ROOT / "utilities",
     REPO_ROOT / "scripts",
 )

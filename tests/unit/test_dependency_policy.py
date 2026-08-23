@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -9,6 +10,21 @@ import yaml
 from tests.workspace import workspace_pyprojects
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _make_words(name: str) -> list[str]:
+    lines = (REPO_ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+    start = next(
+        index
+        for index, line in enumerate(lines)
+        if re.match(rf"^{re.escape(name)}\s*(?:\?|:) ?=", line)
+        or re.match(rf"^{re.escape(name)}\s*=", line)
+    )
+    value = lines[start].split("=", maxsplit=1)[1].strip()
+    while value.endswith("\\"):
+        value = value[:-1].rstrip() + " " + lines[start + 1].strip()
+        start += 1
+    return shlex.split(value)
 
 
 def test_ignore_files_are_concise_and_cover_local_state() -> None:
@@ -55,8 +71,11 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     assert pyproject["tool"]["uv"]["workspace"]["members"] == [
         "companions/*/client",
         "companions/*/server",
-        "extensions/stove0/*",
         "packages/*",
+        "reference/riverhog/*/*",
+        "reference/stove0/observers/*",
+        "reference/stove0/targets/*/target",
+        "reference/stove0/targets/*/review-sampler",
         "riverhog/*",
         "utilities/*",
     ]
@@ -70,6 +89,28 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
     for member in members:
         project = tomllib.loads(member.read_text(encoding="utf-8"))["project"]
         assert project["requires-python"] == ">=3.12"
+
+
+def test_every_workspace_component_enters_the_default_python_gates() -> None:
+    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    mypy_sources = set(_make_words("MYPY_SOURCES"))
+    unit_roots = tuple(REPO_ROOT / path for path in _make_words("TESTS"))
+    compile_roots = tuple(REPO_ROOT / path for path in _make_words("PYTHON_PATHS"))
+    pytest_roots = tuple(
+        REPO_ROOT / path for path in config["tool"]["pytest"]["ini_options"]["testpaths"]
+    )
+
+    for pyproject in workspace_pyprojects(REPO_ROOT):
+        component = pyproject.parent
+        source = component / "src"
+        if source.is_dir():
+            assert source.relative_to(REPO_ROOT).as_posix() in mypy_sources
+            assert any(source.is_relative_to(root) for root in compile_roots)
+
+        tests = component / "tests"
+        if tests.is_dir() and any(tests.rglob("test_*.py")):
+            assert any(tests.is_relative_to(root) for root in unit_roots)
+            assert any(tests.is_relative_to(root) for root in pytest_roots)
 
 
 def test_native_test_tools_are_pinned_to_reproducible_sources() -> None:

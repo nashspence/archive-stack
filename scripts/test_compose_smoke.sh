@@ -30,7 +30,7 @@ smoke_max_bytes=$((smoke_file_count * (smoke_audio_frames * 2 + 4096) + 16384))
 stove0_project="${COMPOSE_PROJECT_NAME}-stove0"
 adapter_project="${COMPOSE_PROJECT_NAME}-ftp-adapter"
 stove0_compose_file="${ROOT_DIR}/companions/stove0/compose.yaml"
-adapter_compose_file="${ROOT_DIR}/riverhog/ftp-adapter/compose.yaml"
+adapter_compose_file="${ROOT_DIR}/reference/riverhog/ingress/ftp/compose.yaml"
 
 stove0_compose() {
   docker compose --project-name "${stove0_project}" --file "${stove0_compose_file}" "$@"

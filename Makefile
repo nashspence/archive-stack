@@ -3,10 +3,10 @@ SHELL := bash
 
 MISE_BIN ?= mise
 FILES ?= .
-TESTS ?= companions packages riverhog tests/unit utilities
+TESTS ?= companions packages reference riverhog tests/unit utilities
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
 POSTGRES_TESTS ?= tests/integration/test_catalog_schema_postgres.py tests/integration/test_collection_deletion_concurrency.py tests/integration/test_download_allowance_concurrency.py tests/integration/test_stove0_postgres_concurrency.py
-PYTHON_PATHS ?= companions packages riverhog scripts tests utilities
+PYTHON_PATHS ?= companions packages reference riverhog scripts tests utilities
 RELEASE_VERSION ?= 1.0.0
 RELEASE_OUTPUT ?=
 RELEASE_SUMMARY ?=
@@ -17,13 +17,13 @@ BAKE_FILE = docker-bake.hcl
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 MYPY_SOURCES = \
 	companions/stove0/client/src \
-	extensions/stove0/exiftool-observer/src \
-	extensions/stove0/ffprobe-sampling-observer/src \
-	extensions/stove0/nvenc-av1-opus-review-sampler/src \
-	extensions/stove0/nvenc-av1-opus-target/src \
-	extensions/stove0/opus-review-sampler/src \
-	extensions/stove0/opus-target/src \
-	extensions/stove0/review-target/src \
+	reference/stove0/observers/exiftool/src \
+	reference/stove0/observers/ffprobe-sampling/src \
+	reference/stove0/targets/nvenc-av1-opus/review-sampler/src \
+	reference/stove0/targets/nvenc-av1-opus/target/src \
+	reference/stove0/targets/opus/review-sampler/src \
+	reference/stove0/targets/opus/target/src \
+	reference/stove0/targets/review/target/src \
 	companions/stove0/server/src \
 	packages/application-access/src \
 	packages/config-validation/src \
@@ -57,11 +57,11 @@ MYPY_SOURCES = \
 	packages/state-schema/src \
 	packages/time-formats/src \
 	riverhog/client/src \
-	riverhog/ftp-adapter/src \
+	reference/riverhog/ingress/ftp/src \
 	riverhog/recovery/src \
 	riverhog/server/src \
-	riverhog/storage-adapter-aws/src \
-	riverhog/storage-adapter-backblaze/src \
+	reference/riverhog/storage/aws/src \
+	reference/riverhog/storage/backblaze/src \
 	scripts/operation_qualification.py \
 	scripts/provider_qualification.py \
 	scripts/release.py \

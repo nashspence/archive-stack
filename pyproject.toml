@@ -2,8 +2,11 @@
 members = [
   "companions/*/client",
   "companions/*/server",
-  "extensions/stove0/*",
   "packages/*",
+  "reference/riverhog/*/*",
+  "reference/stove0/observers/*",
+  "reference/stove0/targets/*/target",
+  "reference/stove0/targets/*/review-sampler",
   "riverhog/*",
   "utilities/*",
 ]
@@ -56,7 +59,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
 filterwarnings = ["error"]
-testpaths = ["companions", "packages", "riverhog", "tests", "utilities"]
+testpaths = ["companions", "packages", "reference", "riverhog", "tests", "utilities"]
 markers = [
   "integration: non-contract regression coverage",
 ]

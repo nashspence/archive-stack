@@ -21,7 +21,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
 COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
-COPY riverhog/storage-adapter-aws riverhog/storage-adapter-aws
+COPY reference/riverhog/storage/aws reference/riverhog/storage/aws
 COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/riverhog-storage-adapter-asgi-support packages/riverhog-storage-adapter-asgi-support
 COPY packages/riverhog-storage-adapter-protocol packages/riverhog-storage-adapter-protocol

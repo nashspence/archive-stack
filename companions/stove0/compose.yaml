@@ -130,7 +130,7 @@ services:
     image: stove0-ffprobe-sampling-observer:dev
     build:
       context: ../..
-      dockerfile: extensions/stove0/ffprobe-sampling-observer/Dockerfile
+      dockerfile: reference/stove0/observers/ffprobe-sampling/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     command: ["stove0-ffprobe-sampling-observer", "--host", "0.0.0.0", "--port", "8080"]
@@ -164,7 +164,7 @@ services:
     image: stove0-exiftool-observer:dev
     build:
       context: ../..
-      dockerfile: extensions/stove0/exiftool-observer/Dockerfile
+      dockerfile: reference/stove0/observers/exiftool/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     command: ["stove0-exiftool-observer", "--host", "0.0.0.0", "--port", "8080"]
@@ -186,7 +186,7 @@ services:
     image: stove0-opus-target:dev
     build: &opus-build
       context: ../..
-      dockerfile: extensions/stove0/opus-target/Dockerfile
+      dockerfile: reference/stove0/targets/opus/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     command: ["stove0-opus-target", "--host", "0.0.0.0", "--port", "8080"]
@@ -231,7 +231,7 @@ services:
     image: stove0-review-target:dev
     build:
       context: ../..
-      dockerfile: extensions/stove0/review-target/Dockerfile
+      dockerfile: reference/stove0/targets/review/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     command: ["stove0-review-target", "--host", "0.0.0.0", "--port", "8080"]
@@ -263,7 +263,7 @@ services:
     image: stove0-nvenc-av1-opus-target:dev
     build: &nvenc-build
       context: ../..
-      dockerfile: extensions/stove0/nvenc-av1-opus-target/Dockerfile
+      dockerfile: reference/stove0/targets/nvenc-av1-opus/Dockerfile
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
     profiles: ["nvenc"]

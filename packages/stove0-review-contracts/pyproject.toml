@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "stove0-review-contracts"
 version = "0.1.0"
-description = "Maintained review observation and transform contracts for external stove0 extensions."
+description = "Review observation and target contracts for independently implemented stove0 components."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

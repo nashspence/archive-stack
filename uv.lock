@@ -1596,7 +1596,7 @@ requires-dist = [
 [[package]]
 name = "riverhog-ftp-adapter"
 version = "0.1.0"
-source = { editable = "riverhog/ftp-adapter" }
+source = { editable = "reference/riverhog/ingress/ftp" }
 dependencies = [
     { name = "fastapi" },
     { name = "http-api-contracts" },
@@ -1725,7 +1725,7 @@ requires-dist = [
 [[package]]
 name = "riverhog-storage-adapter-aws"
 version = "0.1.0"
-source = { editable = "riverhog/storage-adapter-aws" }
+source = { editable = "reference/riverhog/storage/aws" }
 dependencies = [
     { name = "botocore" },
     { name = "cryptography" },
@@ -1752,7 +1752,7 @@ requires-dist = [
 [[package]]
 name = "riverhog-storage-adapter-backblaze"
 version = "0.1.0"
-source = { editable = "riverhog/storage-adapter-backblaze" }
+source = { editable = "reference/riverhog/storage/backblaze" }
 dependencies = [
     { name = "riverhog-storage-adapter-asgi-support" },
     { name = "riverhog-storage-adapter-s3-support" },
@@ -2112,7 +2112,7 @@ requires-dist = [
 [[package]]
 name = "stove0-exiftool-observer"
 version = "0.1.0"
-source = { editable = "extensions/stove0/exiftool-observer" }
+source = { editable = "reference/stove0/observers/exiftool" }
 dependencies = [
     { name = "fastapi" },
     { name = "http-api-contracts" },
@@ -2137,7 +2137,7 @@ requires-dist = [
 [[package]]
 name = "stove0-ffprobe-sampling-observer"
 version = "0.1.0"
-source = { editable = "extensions/stove0/ffprobe-sampling-observer" }
+source = { editable = "reference/stove0/observers/ffprobe-sampling" }
 dependencies = [
     { name = "fastapi" },
     { name = "http-api-contracts" },
@@ -2181,7 +2181,7 @@ requires-dist = [
 [[package]]
 name = "stove0-nvenc-av1-opus-review-sampler"
 version = "0.1.0"
-source = { editable = "extensions/stove0/nvenc-av1-opus-review-sampler" }
+source = { editable = "reference/stove0/targets/nvenc-av1-opus/review-sampler" }
 dependencies = [
     { name = "fastapi" },
     { name = "http-api-contracts" },
@@ -2206,7 +2206,7 @@ requires-dist = [
 [[package]]
 name = "stove0-nvenc-av1-opus-target"
 version = "0.1.0"
-source = { editable = "extensions/stove0/nvenc-av1-opus-target" }
+source = { editable = "reference/stove0/targets/nvenc-av1-opus/target" }
 dependencies = [
     { name = "fastapi" },
     { name = "http-api-contracts" },
@@ -2288,7 +2288,7 @@ requires-dist = [
 [[package]]
 name = "stove0-opus-review-sampler"
 version = "0.1.0"
-source = { editable = "extensions/stove0/opus-review-sampler" }
+source = { editable = "reference/stove0/targets/opus/review-sampler" }
 dependencies = [
     { name = "fastapi" },
     { name = "http-api-contracts" },
@@ -2313,7 +2313,7 @@ requires-dist = [
 [[package]]
 name = "stove0-opus-target"
 version = "0.1.0"
-source = { editable = "extensions/stove0/opus-target" }
+source = { editable = "reference/stove0/targets/opus/target" }
 dependencies = [
     { name = "fastapi" },
     { name = "http-api-contracts" },
@@ -2429,7 +2429,7 @@ requires-dist = [
 [[package]]
 name = "stove0-review-target"
 version = "0.1.0"
-source = { editable = "extensions/stove0/review-target" }
+source = { editable = "reference/stove0/targets/review/target" }
 dependencies = [
     { name = "fastapi" },
     { name = "http-api-contracts" },

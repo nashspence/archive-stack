@@ -7,7 +7,7 @@ import pytest
 import yaml
 from riverhog_ftp_adapter.config import SourceConfig, load_config
 
-REPO_ROOT = Path(__file__).parents[3]
+REPO_ROOT = Path(__file__).parents[5]
 
 
 def _write_config(path: Path, root: Path, *, host_id: str) -> None:
@@ -71,7 +71,7 @@ def test_source_grouping_policy_has_no_hidden_collection_or_tag_ceiling(tmp_path
 
 
 def test_reference_compose_is_ftp_only_bounded_and_unprivileged() -> None:
-    path = REPO_ROOT / "riverhog/ftp-adapter/compose.yaml"
+    path = REPO_ROOT / "reference/riverhog/ingress/ftp/compose.yaml"
     compose = yaml.safe_load(path.read_text(encoding="utf-8"))
     services = compose["services"]
 
@@ -111,7 +111,9 @@ def test_reference_configuration_is_current_and_secret_injected(
     monkeypatch.setenv("RIVERHOG_TOKEN_FILE", str(riverhog_token))
     monkeypatch.setenv("RIVERHOG_FTP_ADAPTER_API_TOKEN_FILE", str(adapter_token))
 
-    config = load_config(REPO_ROOT / "riverhog/ftp-adapter/config/ftp-adapter.example.json")
+    config = load_config(
+        REPO_ROOT / "reference/riverhog/ingress/ftp/config/ftp-adapter.example.json"
+    )
 
     assert config.host_id == "urn:uuid:00000000-0000-4000-8000-000000000001"
     assert config.riverhog_base_url == "http://app:8000"

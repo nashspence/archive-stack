@@ -21,14 +21,16 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
 COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
-COPY riverhog/storage-adapter-backblaze riverhog/storage-adapter-backblaze
+COPY reference/riverhog/ingress/ftp reference/riverhog/ingress/ftp
+COPY packages/file-download packages/file-download
 COPY packages/http-api-contracts packages/http-api-contracts
-COPY packages/riverhog-storage-adapter-asgi-support packages/riverhog-storage-adapter-asgi-support
-COPY packages/riverhog-storage-adapter-protocol packages/riverhog-storage-adapter-protocol
-COPY packages/riverhog-storage-adapter-s3-support packages/riverhog-storage-adapter-s3-support
-COPY packages/riverhog-storage-adapter-support packages/riverhog-storage-adapter-support
+COPY packages/lifecycle-events packages/lifecycle-events
+COPY packages/riverhog-ftp-adapter-api-client packages/riverhog-ftp-adapter-api-client
+COPY packages/riverhog-api-client packages/riverhog-api-client
+COPY packages/riverhog-protocol packages/riverhog-protocol
+COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/time-formats packages/time-formats
-RUN uv sync --frozen --package riverhog-storage-adapter-backblaze --no-dev --no-editable
+RUN uv sync --frozen --package riverhog-ftp-adapter --no-dev --no-editable
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 
@@ -40,8 +42,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG BUILD_CREATED=1970-01-01T00:00:00Z
 ARG RELEASE_VERSION=development
 ARG SOURCE_REVISION=unknown
-LABEL org.opencontainers.image.title="Riverhog Backblaze storage adapter" \
-      org.opencontainers.image.licenses="CAL-1.0" \
+LABEL org.opencontainers.image.title="Riverhog FTP adapter" \
+      org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/nashspence/riverhog" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.version="${RELEASE_VERSION}" \
@@ -49,12 +51,12 @@ LABEL org.opencontainers.image.title="Riverhog Backblaze storage adapter" \
       org.opencontainers.image.documentation="https://nashspence.github.io/riverhog/v1/"
 
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
-COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
 COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tini \
     && rm -rf /var/lib/apt/lists/* \
+    && install -d -o 65532 -g 65532 -m 0770 /intake /intake/ftp \
     && ! command -v mise
 
 COPY --from=build /opt/venv /opt/venv
@@ -62,4 +64,4 @@ COPY --from=build /opt/venv /opt/venv
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["riverhog-storage-adapter-backblaze", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["riverhog-ftp-adapter", "serve", "--host", "0.0.0.0", "--port", "8080"]
