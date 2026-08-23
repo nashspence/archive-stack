@@ -306,6 +306,18 @@ def test_listener_process_logs_an_unhandled_runtime_failure(
         raise ListenerError("qualification fatal fixture")
 
     monkeypatch.setattr(ListenerRuntime, "run", fail_runtime)
+    enabled: list[tuple[int, bool]] = []
+    disabled: list[bool] = []
+    monkeypatch.setattr(
+        listener_module.faulthandler,
+        "enable",
+        lambda *, file, all_threads: enabled.append((os.fstat(file.fileno()).st_ino, all_threads)),
+    )
+    monkeypatch.setattr(
+        listener_module.faulthandler,
+        "disable",
+        lambda: disabled.append(True),
+    )
 
     with pytest.raises(ListenerError, match="qualification fatal fixture"):
         listener_module.run_listener(paths.config_file)
@@ -317,6 +329,11 @@ def test_listener_process_logs_an_unhandled_runtime_failure(
     log = paths.log_file.read_text(encoding="utf-8")
     assert "listener failed pid=" in log
     assert "runtime: ListenerError: qualification fatal fixture" in log
+    assert len(enabled) == 1
+    assert enabled[0][1] is True
+    assert enabled[0][0] == (paths.state_dir / "listener.fatal.log").stat().st_ino
+    assert disabled == [True]
+    assert (paths.state_dir / "listener.fatal.log").is_file()
 
 
 def test_interrupted_dispatch_becomes_observable_uncertain_state(tmp_path: Path) -> None:
@@ -450,7 +467,10 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
         "from pathlib import Path\n"
         "import os,signal,sys,time\n"
         "signal.signal(signal.SIGTERM, lambda *_args: None)\n"
-        "Path(sys.argv[2]).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "path=Path(sys.argv[2])\n"
+        "staged=path.with_name(path.name + '.tmp')\n"
+        "staged.write_text(str(os.getpid()), encoding='utf-8')\n"
+        "os.replace(staged, path)\n"
         "while True:\n"
         "    time.sleep(1)\n",
         encoding="utf-8",
@@ -468,12 +488,13 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
 
     thread = threading.Thread(target=run)
     thread.start()
-    deadline = time.monotonic() + 5
-    while not pid_file.is_file() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert pid_file.is_file()
-    action_pid = int(pid_file.read_text(encoding="utf-8"))
+    action_pid: int | None = None
     try:
+        deadline = time.monotonic() + 5
+        while not pid_file.is_file() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pid_file.is_file()
+        action_pid = int(pid_file.read_text(encoding="utf-8"))
         runtime.request_stop()
         thread.join(timeout=5)
         assert not thread.is_alive()
@@ -481,7 +502,9 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
         assert listener_module._process_is_running(action_pid) is False
         assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
     finally:
-        if listener_module._process_is_running(action_pid):
+        runtime.request_stop()
+        thread.join(timeout=5)
+        if action_pid is not None and listener_module._process_is_running(action_pid):
             os.kill(action_pid, signal.SIGKILL)
 
 
@@ -511,6 +534,8 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
         paths.lock_file,
         paths.log_file,
         paths.state_dir / "listener.log.1",
+        paths.state_dir / "listener.fatal.log",
+        paths.state_dir / "listener.fatal.log.1",
     ):
         path.touch()
         path.chmod(0o644)
@@ -550,6 +575,8 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
         paths.lock_file,
         paths.log_file,
         paths.state_dir / "listener.log.1",
+        paths.state_dir / "listener.fatal.log",
+        paths.state_dir / "listener.fatal.log.1",
     ]
     private_files.extend(paths.state_dir.glob("listener.sqlite3-*"))
     assert private_files
