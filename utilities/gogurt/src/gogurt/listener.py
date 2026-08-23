@@ -5,6 +5,7 @@ import importlib.metadata
 import json
 import logging
 import logging.handlers
+import math
 import os
 import queue
 import shutil
@@ -43,6 +44,8 @@ from gogurt.filesystem import (
     stage_bytes,
 )
 from gogurt.listener_platform import (
+    WINDOWS_TASK_RESTART_COUNT,
+    WINDOWS_TASK_RESTART_INTERVAL,
     ListenerAdapter,
     ListenerPaths,
     default_listener_paths,
@@ -66,6 +69,10 @@ LISTENER_STATUS_DB_TIMEOUT_SECONDS = 0.25
 LISTENER_ACTION_TERMINATE_SECONDS = 2.0
 LISTENER_ACTION_KILL_SECONDS = 2.0
 LISTENER_HEARTBEAT_LOCK_SECONDS = 2.0
+LISTENER_CONTROL_POLL_SECONDS = 0.2
+LISTENER_HEARTBEAT_FUTURE_SECONDS = 10.0
+LISTENER_MAX_JSON_INTEGER = (1 << 63) - 1
+LISTENER_MAX_PID = (1 << 32) - 1
 LISTENER_OPERATIONS = ("install", "status", "start", "stop", "restart", "uninstall")
 
 
@@ -91,6 +98,18 @@ def listener_release_contract() -> dict[str, object]:
             "mount_attention": "isolated-bounded-nonfatal-diagnostics",
         },
         "replacement": "validated-staged-transaction-with-healthy-rollback",
+        "native_registration": {
+            "identity": "current-user",
+            "manager_state": "authoritative-independent-of-definition-file",
+            "windows_task_identity": "current-user-sid-sha256",
+            "windows_execution_limit": "indefinite",
+            "windows_battery_operation": "allowed",
+            "windows_restart_on_failure": {
+                "count": WINDOWS_TASK_RESTART_COUNT,
+                "interval": WINDOWS_TASK_RESTART_INTERVAL,
+            },
+        },
+        "shutdown": "cooperative-bounded-action-custody-settlement",
         "state": {
             "posix": "private-directory-and-files",
             "windows": "current-user-native-acl",
@@ -115,7 +134,7 @@ class ListenerError(RuntimeError):
 def _listener_interval(value: object) -> float:
     try:
         return validate_gogurt_interval(value)
-    except ValueError as exc:
+    except (OverflowError, ValueError) as exc:
         raise ListenerError(str(exc)) from exc
 
 
@@ -123,13 +142,20 @@ def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     payload: dict[str, object] = {}
     for key, value in pairs:
         if key in payload:
-            raise ListenerError(f"Gogurt listener config contains duplicate field: {key}")
+            raise ListenerError(f"Gogurt persisted JSON contains duplicate field: {key}")
         payload[key] = value
     return payload
 
 
 def _reject_json_constant(value: str) -> object:
-    raise ListenerError(f"Gogurt listener config contains nonfinite number: {value}")
+    raise ListenerError(f"Gogurt persisted JSON contains nonfinite number: {value}")
+
+
+def _strict_json_integer(value: str) -> int:
+    parsed = int(value)
+    if abs(parsed) > LISTENER_MAX_JSON_INTEGER:
+        raise ListenerError("Gogurt persisted JSON integer is outside the supported range")
+    return parsed
 
 
 def _now_text(now: float | None = None) -> str:
@@ -182,6 +208,7 @@ class ListenerConfig:
                 path.read_text(encoding="utf-8"),
                 object_pairs_hook=_strict_json_object,
                 parse_constant=_reject_json_constant,
+                parse_int=_strict_json_integer,
             )
         except ListenerError:
             raise
@@ -275,6 +302,7 @@ def _secure_listener_state(paths: ListenerPaths) -> None:
             _heartbeat_lock_path(paths.heartbeat_file),
             paths.lock_file,
             paths.log_file,
+            paths.stop_file,
             *paths.state_dir.glob(f"{paths.log_file.name}.*"),
             *paths.state_dir.glob("listener.fatal.log*"),
         )
@@ -840,6 +868,27 @@ class ListenerRuntime:
                 mode=PRIVATE_FILE_MODE,
             )
 
+    def _stop_requested(self) -> bool:
+        try:
+            info = self.paths.stop_file.lstat()
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            raise ListenerError("Gogurt listener stop request is not a regular file")
+        return True
+
+    def _wait_for_next_poll(self) -> None:
+        deadline = time.monotonic() + self.config.interval_seconds
+        while not self.stop_event.is_set():
+            if self._stop_requested():
+                self.logger.info("listener cooperative stop requested")
+                self.request_stop()
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self.stop_event.wait(min(LISTENER_CONTROL_POLL_SECONDS, remaining))
+
     def _worker(self) -> None:
         while not self.stop_event.is_set():
             try:
@@ -972,7 +1021,7 @@ class ListenerRuntime:
         try:
             while not self.stop_event.is_set():
                 self.run_once()
-                self.stop_event.wait(self.config.interval_seconds)
+                self._wait_for_next_poll()
         finally:
             self.request_stop()
             self._settle_worker(worker)
@@ -1045,6 +1094,7 @@ def run_listener(config_file: Path) -> None:
         heartbeat_file=state_dir / "heartbeat.json",
         lock_file=state_dir / "listener.lock",
         log_file=state_dir / "listener.log",
+        stop_file=state_dir / "stop.request",
         registration_file=None,
     )
     _secure_listener_state(bootstrap_paths)
@@ -1056,6 +1106,7 @@ def run_listener(config_file: Path) -> None:
         heartbeat_file=config.state_dir / "heartbeat.json",
         lock_file=config.state_dir / "listener.lock",
         log_file=config.state_dir / "listener.log",
+        stop_file=config.state_dir / "stop.request",
         registration_file=None,
     )
     _require_matching_state(config, paths)
@@ -1082,6 +1133,79 @@ def run_listener(config_file: Path) -> None:
             runtime.logger.info("listener stopped pid=%s", os.getpid())
 
 
+def _heartbeat_timestamp(value: object, *, field: str) -> float:
+    if not isinstance(value, str) or not value:
+        raise ListenerError(f"Gogurt listener heartbeat {field} is invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("timezone is absent")
+        timestamp = parsed.timestamp()
+    except (OSError, OverflowError, ValueError) as exc:
+        raise ListenerError(f"Gogurt listener heartbeat {field} is invalid") from exc
+    if not math.isfinite(timestamp):
+        raise ListenerError(f"Gogurt listener heartbeat {field} is invalid")
+    return timestamp
+
+
+def _validate_heartbeat(value: object) -> dict[str, object]:
+    expected = {
+        "schema",
+        "version",
+        "pid",
+        "started_at",
+        "heartbeat_at",
+        "queue_depth",
+        "active_dispatch",
+        "dispatches",
+        "configuration",
+        "runtime",
+        "mount_attention",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ListenerError("Gogurt listener heartbeat fields are invalid")
+    if value["schema"] != LISTENER_HEARTBEAT_SCHEMA:
+        raise ListenerError("Gogurt listener heartbeat schema is invalid")
+    if value["version"] != _package_version():
+        raise ListenerError("Gogurt listener heartbeat version differs from the executable")
+    pid = value["pid"]
+    if isinstance(pid, bool) or not isinstance(pid, int) or not 0 < pid <= LISTENER_MAX_PID:
+        raise ListenerError("Gogurt listener heartbeat PID is invalid")
+    started_at = _heartbeat_timestamp(value["started_at"], field="start time")
+    heartbeat_at = _heartbeat_timestamp(value["heartbeat_at"], field="time")
+    if heartbeat_at + LISTENER_HEARTBEAT_FUTURE_SECONDS < started_at:
+        raise ListenerError("Gogurt listener heartbeat precedes its start time")
+    queue_depth = value["queue_depth"]
+    if isinstance(queue_depth, bool) or not isinstance(queue_depth, int) or queue_depth < 0:
+        raise ListenerError("Gogurt listener heartbeat queue depth is invalid")
+    active_dispatch = value["active_dispatch"]
+    if active_dispatch is not None and not isinstance(active_dispatch, str):
+        raise ListenerError("Gogurt listener heartbeat active dispatch is invalid")
+    if not isinstance(value["dispatches"], dict):
+        raise ListenerError("Gogurt listener heartbeat dispatch summary is invalid")
+    for field in ("configuration", "runtime"):
+        section = value[field]
+        if not isinstance(section, dict) or set(section) != {"status", "diagnostic"}:
+            raise ListenerError(f"Gogurt listener heartbeat {field} is invalid")
+        allowed = {"valid", "failed"} if field == "configuration" else {"running", "failed"}
+        if section["status"] not in allowed:
+            raise ListenerError(f"Gogurt listener heartbeat {field} status is invalid")
+        diagnostic = section["diagnostic"]
+        if diagnostic is not None and not isinstance(diagnostic, str):
+            raise ListenerError(f"Gogurt listener heartbeat {field} diagnostic is invalid")
+    attention = value["mount_attention"]
+    if not isinstance(attention, list) or len(attention) > LISTENER_MOUNT_ATTENTION_LIMIT:
+        raise ListenerError("Gogurt listener heartbeat mount attention is invalid")
+    if any(
+        not isinstance(item, dict)
+        or set(item) != {"mount_point", "diagnostic"}
+        or not all(isinstance(item[key], str) for key in ("mount_point", "diagnostic"))
+        for item in attention
+    ):
+        raise ListenerError("Gogurt listener heartbeat mount attention is invalid")
+    return value
+
+
 def _read_heartbeat_result(path: Path) -> tuple[dict[str, object] | None, str | None]:
     try:
         info = path.lstat()
@@ -1093,31 +1217,15 @@ def _read_heartbeat_result(path: Path) -> tuple[dict[str, object] | None, str | 
         return None, "listener heartbeat: path is not a regular file"
     try:
         with _HeartbeatLock(path):
-            value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+            value = json.loads(
+                path.read_text(encoding="utf-8"),
+                object_pairs_hook=_strict_json_object,
+                parse_constant=_reject_json_constant,
+                parse_int=_strict_json_integer,
+            )
+        return _validate_heartbeat(value), None
+    except (ListenerError, OSError, json.JSONDecodeError, UnicodeError) as exc:
         return None, _safe_diagnostic("listener heartbeat", exc)
-    if not isinstance(value, dict):
-        return None, "listener heartbeat: payload is not an object"
-    if value.get("schema") != LISTENER_HEARTBEAT_SCHEMA:
-        return None, "listener heartbeat: schema is invalid"
-    if value.get("version") != _package_version():
-        return None, "listener heartbeat: version differs from the installed listener"
-    configuration = value.get("configuration")
-    if not isinstance(configuration, dict) or configuration.get("status") not in {
-        "valid",
-        "failed",
-    }:
-        return None, "listener heartbeat: configuration status is invalid"
-    runtime = value.get("runtime")
-    if not isinstance(runtime, dict) or runtime.get("status") not in {
-        "running",
-        "failed",
-    }:
-        return None, "listener heartbeat: runtime status is invalid"
-    mount_attention = value.get("mount_attention")
-    if not isinstance(mount_attention, list):
-        return None, "listener heartbeat: mount attention is invalid"
-    return value, None
 
 
 def _read_heartbeat(path: Path) -> dict[str, object] | None:
@@ -1151,11 +1259,12 @@ def listener_status(
     heartbeat_age: float | None = None
     if heartbeat is not None:
         try:
-            heartbeat_time = datetime.fromisoformat(
-                str(heartbeat["heartbeat_at"]).replace("Z", "+00:00")
-            ).timestamp()
-            heartbeat_age = max(0.0, current - heartbeat_time)
-        except (KeyError, TypeError, ValueError) as exc:
+            heartbeat_time = _heartbeat_timestamp(heartbeat["heartbeat_at"], field="time")
+            raw_age = current - heartbeat_time
+            if raw_age < -LISTENER_HEARTBEAT_FUTURE_SECONDS:
+                raise ListenerError("Gogurt listener heartbeat time is in the future")
+            heartbeat_age = max(0.0, raw_age)
+        except (KeyError, ListenerError, OSError, OverflowError, TypeError, ValueError) as exc:
             heartbeat = None
             heartbeat_file_diagnostic = _safe_diagnostic("listener heartbeat time", exc)
     heartbeat_diagnostic: str | None = None
@@ -1184,6 +1293,7 @@ def listener_status(
         heartbeat_pid = heartbeat.get("pid")
         heartbeat_process_live = (
             isinstance(heartbeat_pid, int)
+            and not isinstance(heartbeat_pid, bool)
             and heartbeat_pid > 0
             and _process_is_running(heartbeat_pid)
         )
@@ -1257,10 +1367,14 @@ def _wait_for_health(
                     pass
             except ListenerError:
                 runtime_released = False
+        dispatches = status.get("dispatches")
+        counts = dispatches.get("counts") if isinstance(dispatches, dict) else None
+        custody_released = not isinstance(counts, dict) or counts.get("running", 0) == 0
         if (
             status["health"] in expected
             and (previous_pid is None or current_pid != previous_pid)
             and runtime_released
+            and custody_released
             and (terminated_pid is None or not _process_is_running(terminated_pid))
         ):
             return status
@@ -1306,7 +1420,35 @@ def _heartbeat_pid(paths: ListenerPaths) -> int | None:
     if heartbeat is None:
         return None
     value = heartbeat.get("pid")
-    return int(value) if isinstance(value, int) else None
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and 0 < value <= LISTENER_MAX_PID
+        else None
+    )
+
+
+def _clear_stop_request(paths: ListenerPaths) -> None:
+    try:
+        info = paths.stop_file.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise ListenerError("Gogurt listener stop request is not a regular file")
+    paths.stop_file.unlink()
+
+
+def _remove_state_root(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    is_junction = bool(getattr(path, "is_junction", lambda: False)())
+    if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode) and not is_junction:
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    if path.exists() or path.is_symlink():
+        raise OSError(f"Gogurt listener state remains after cleanup: {path}")
 
 
 def _process_is_running(pid: int) -> bool:
@@ -1323,7 +1465,7 @@ def _process_is_running(pid: int) -> bool:
             kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (OverflowError, ProcessLookupError, ValueError):
         return False
     except PermissionError:
         return True
@@ -1403,6 +1545,7 @@ def install_listener(
             # Establish schema and WAL before the native process and status
             # probes can open concurrent database connections.
             ListenerStore(resolved_paths.database_file).create()
+            _clear_stop_request(resolved_paths)
             native_adapter.register(
                 resolved_paths,
                 _service_command(config, resolved_paths.config_file),
@@ -1445,6 +1588,7 @@ def install_listener(
                         previous_content,
                         mode=PRIVATE_FILE_MODE,
                     )
+                    _clear_stop_request(resolved_paths)
                     native_adapter.register(
                         resolved_paths,
                         _service_command(previous, resolved_paths.config_file),
@@ -1479,6 +1623,7 @@ def start_listener(
     config = ListenerConfig.read(resolved_paths.config_file)
     _validate_global_configuration(config, resolved_paths)
     previous_pid = _heartbeat_pid(resolved_paths)
+    _clear_stop_request(resolved_paths)
     native_adapter.start(resolved_paths)
     return _wait_for_health(
         frozenset({"healthy"}),
@@ -1519,6 +1664,7 @@ def restart_listener(
         adapter=native_adapter,
         terminated_pid=previous_pid,
     )
+    _clear_stop_request(resolved_paths)
     native_adapter.start(resolved_paths)
     return _wait_for_health(
         frozenset({"healthy"}),
@@ -1549,9 +1695,9 @@ def uninstall_listener(
         settled = True
     except Exception as exc:
         cleanup_errors.append(_safe_diagnostic("settle native listener", exc))
-    if settled and resolved_paths.state_dir.is_dir():
+    if settled:
         try:
-            shutil.rmtree(resolved_paths.state_dir)
+            _remove_state_root(resolved_paths.state_dir)
         except Exception as exc:
             cleanup_errors.append(_safe_diagnostic("remove listener state", exc))
     if cleanup_errors:

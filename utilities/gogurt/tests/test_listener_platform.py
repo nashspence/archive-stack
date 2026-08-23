@@ -4,6 +4,7 @@ import os
 import plistlib
 import stat
 import subprocess
+import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from gogurt.listener_platform import (
     LISTENER_LABEL,
     WINDOWS_TASK_NOT_FOUND_EXIT,
     WINDOWS_TASK_NOT_FOUND_HRESULT,
+    WINDOWS_TASK_RESTART_COUNT,
+    WINDOWS_TASK_RESTART_INTERVAL,
+    WINDOWS_TASK_XML_NAMESPACE,
     LaunchdUserAdapter,
     ListenerPaths,
     ListenerPlatformError,
@@ -22,7 +26,9 @@ from gogurt.listener_platform import (
     default_listener_paths,
     render_launchd_plist,
     render_systemd_unit,
+    render_windows_task_xml,
     resolve_listener_executable,
+    windows_task_name,
 )
 
 
@@ -35,6 +41,7 @@ def _paths(tmp_path: Path, registration: Path | None) -> ListenerPaths:
         heartbeat_file=state / "heartbeat.json",
         lock_file=state / "listener.lock",
         log_file=state / "listener.log",
+        stop_file=state / "stop.request",
         registration_file=registration,
     )
 
@@ -142,6 +149,47 @@ def test_native_registrations_bind_only_the_absolute_installed_command() -> None
     assert plist["StandardOutPath"] == "/dev/null"
     assert plist["StandardErrorPath"] == "/dev/null"
 
+    user_sid = "S-1-5-21-101-202-303-1001"
+    task = ET.fromstring(render_windows_task_xml(command, user_sid=user_sid))
+    ns = {"task": WINDOWS_TASK_XML_NAMESPACE}
+    assert task.findtext("task:Triggers/task:LogonTrigger/task:UserId", namespaces=ns) == user_sid
+    assert task.findtext("task:Principals/task:Principal/task:UserId", namespaces=ns) == user_sid
+    assert (
+        task.findtext("task:Principals/task:Principal/task:LogonType", namespaces=ns)
+        == "InteractiveToken"
+    )
+    assert (
+        task.findtext("task:Principals/task:Principal/task:RunLevel", namespaces=ns)
+        == "LeastPrivilege"
+    )
+    settings = task.find("task:Settings", ns)
+    assert settings is not None
+    expected_settings = {
+        "AllowStartOnDemand": "true",
+        "MultipleInstancesPolicy": "IgnoreNew",
+        "DisallowStartIfOnBatteries": "false",
+        "StopIfGoingOnBatteries": "false",
+        "AllowHardTerminate": "false",
+        "StartWhenAvailable": "true",
+        "RunOnlyIfNetworkAvailable": "false",
+        "WakeToRun": "false",
+        "Enabled": "true",
+        "Hidden": "false",
+        "ExecutionTimeLimit": "PT0S",
+        "Priority": "7",
+        "RunOnlyIfIdle": "false",
+    }
+    assert {
+        item.tag.rsplit("}", 1)[-1]: item.text
+        for item in settings
+        if item.tag.rsplit("}", 1)[-1] != "RestartOnFailure"
+    } == expected_settings
+    restart = settings.find("task:RestartOnFailure", ns)
+    assert restart is not None
+    assert restart.findtext("task:Interval", namespaces=ns) == WINDOWS_TASK_RESTART_INTERVAL
+    assert restart.findtext("task:Count", namespaces=ns) == str(WINDOWS_TASK_RESTART_COUNT)
+    assert task.findtext("task:Actions/task:Exec/task:Command", namespaces=ns) == command[0]
+
 
 class RecordingSystemdAdapter(SystemdUserAdapter):
     def __init__(self) -> None:
@@ -175,6 +223,20 @@ def test_systemd_registration_enables_login_resume_and_cleans_up(tmp_path: Path)
 
     adapter.unregister(paths)
     assert not registration.exists()
+    assert ["systemctl", "--user", "disable", "--now", registration.name] in adapter.commands
+
+
+def test_systemd_loaded_registration_remains_manageable_without_its_file(tmp_path: Path) -> None:
+    registration = tmp_path / "config" / "gogurt-listener.service"
+    paths = _paths(tmp_path, registration)
+    adapter = RecordingSystemdAdapter()
+    adapter.register(paths, (str(tmp_path / "gogurt"), "listener", "_run"))
+    registration.unlink()
+
+    assert adapter.status(paths).installed is True
+    adapter.stop(paths)
+    assert ["systemctl", "--user", "stop", registration.name] in adapter.commands
+    adapter.unregister(paths)
     assert ["systemctl", "--user", "disable", "--now", registration.name] in adapter.commands
 
 
@@ -293,12 +355,28 @@ def test_launchd_stop_waits_until_the_native_job_is_unloaded(
         next(observations)
 
 
+def test_launchd_loaded_registration_remains_manageable_without_its_file(tmp_path: Path) -> None:
+    registration = tmp_path / "Library" / "LaunchAgents" / f"{LISTENER_LABEL}.plist"
+    paths = _paths(tmp_path, registration)
+    adapter = RecordingLaunchdAdapter()
+    adapter.register(paths, (str(tmp_path / "gogurt"), "listener", "_run"))
+    registration.unlink()
+
+    assert adapter.status(paths).installed is True
+    adapter.unregister(paths)
+    assert adapter.loaded is False
+
+
 class RecordingTaskAdapter(TaskSchedulerUserAdapter):
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
         self.task_state = "4"
         self.task_exists = True
         self.query_failure = False
+        self.task_xml: bytes | None = None
+
+    def _current_user_sid(self) -> str:
+        return "S-1-5-21-101-202-303-1001"
 
     def _run(
         self,
@@ -307,6 +385,15 @@ class RecordingTaskAdapter(TaskSchedulerUserAdapter):
         allowed: frozenset[int] = frozenset({0}),
     ) -> subprocess.CompletedProcess[str]:
         self.commands.append(list(command))
+        if "/Create" in command:
+            definition = Path(command[command.index("/XML") + 1])
+            self.task_xml = definition.read_bytes()
+        if "/Run" in command:
+            self.task_exists = True
+            self.task_state = "4"
+        if "/Delete" in command:
+            self.task_exists = False
+            self.task_state = "0"
         if "-Command" in command:
             return_code = (
                 1 if self.query_failure else 0 if self.task_exists else WINDOWS_TASK_NOT_FOUND_EXIT
@@ -331,11 +418,14 @@ def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path:
     adapter.register(paths, command)
     assert [item[1] for item in adapter.commands] == ["/Create", "/Run"]
     create = adapter.commands[0]
-    assert create[:4] == ["schtasks.exe", "/Create", "/TN", "Riverhog.Gogurt"]
-    assert create[create.index("/SC") + 1] == "ONLOGON"
-    assert create[create.index("/RL") + 1] == "LIMITED"
-    assert "/IT" in create
+    task_name = windows_task_name(adapter._current_user_sid())
+    assert create[:4] == ["schtasks.exe", "/Create", "/TN", task_name]
+    assert "/XML" in create
     assert "/RU" not in create
+    assert adapter.task_xml == render_windows_task_xml(
+        command,
+        user_sid=adapter._current_user_sid(),
+    )
     running = adapter.status(paths)
     assert running == NativeListenerStatus(installed=True, enabled=True, running=True)
     state_command = adapter.commands[-1]
@@ -364,5 +454,61 @@ def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path:
         adapter.status(paths)
 
     adapter.query_failure = False
+    adapter.task_state = "3"
     adapter.unregister(paths)
     assert any("/Delete" in item for item in adapter.commands)
+    assert all("/End" not in item for item in adapter.commands)
+
+
+def test_windows_task_names_are_distinct_per_current_user() -> None:
+    first = windows_task_name("S-1-5-21-101-202-303-1001")
+    second = windows_task_name("S-1-5-21-101-202-303-1002")
+
+    assert first.startswith("Riverhog.Gogurt.")
+    assert second.startswith("Riverhog.Gogurt.")
+    assert first != second
+
+
+def test_windows_stop_waits_for_cooperative_listener_settlement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, None)
+    adapter = RecordingTaskAdapter()
+    observed = 0
+    original_query = adapter._query_state
+
+    def settle_after_request(task_name: str) -> NativeListenerStatus:
+        nonlocal observed
+        state = original_query(task_name)
+        if paths.stop_file.is_file():
+            observed += 1
+            if observed == 2:
+                adapter.task_state = "3"
+                state = original_query(task_name)
+        return state
+
+    monkeypatch.setattr(adapter, "_query_state", settle_after_request)
+    monkeypatch.setattr("gogurt.listener_platform.time.sleep", lambda _seconds: None)
+
+    adapter.stop(paths)
+
+    assert paths.stop_file.read_bytes() == b"stop\n"
+    assert all("/End" not in command for command in adapter.commands)
+
+
+def test_windows_stop_fails_closed_without_hard_termination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path, None)
+    adapter = RecordingTaskAdapter()
+    times = iter((0.0, 0.0, 21.0))
+    monkeypatch.setattr("gogurt.listener_platform.time.monotonic", lambda: next(times))
+    monkeypatch.setattr("gogurt.listener_platform.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(ListenerPlatformError, match="did not settle"):
+        adapter.stop(paths)
+
+    assert adapter.task_exists is True
+    assert all("/End" not in command for command in adapter.commands)

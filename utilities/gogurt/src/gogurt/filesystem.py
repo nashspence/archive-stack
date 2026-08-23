@@ -96,7 +96,10 @@ def ensure_private_files(paths: Iterable[Path]) -> None:
 def stage_bytes(destination: Path, content: bytes, *, mode: int) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, raw_temporary = tempfile.mkstemp(
-        prefix=f".{destination.name}.",
+        # The destination may itself use the portable 255-byte component
+        # ceiling. Keep staging names implementation-owned and bounded rather
+        # than extending the destination name beyond that ceiling.
+        prefix=".gogurt-",
         suffix=".tmp",
         dir=destination.parent,
     )

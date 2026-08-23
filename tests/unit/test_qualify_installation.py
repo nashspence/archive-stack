@@ -275,6 +275,11 @@ def test_windows_native_snapshot_retains_only_numeric_task_state(
 
     monkeypatch.setattr(module.subprocess, "run", status)
     monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        module,
+        "_windows_task_name",
+        lambda **_kwargs: "Riverhog.Gogurt.0123456789abcdef",
+    )
 
     assert module._native_listener_snapshot(scratch=tmp_path, environment={}) == {
         "returncode": 0,

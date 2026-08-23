@@ -43,6 +43,7 @@ def _paths(tmp_path: Path) -> ListenerPaths:
         heartbeat_file=state / "heartbeat.json",
         lock_file=state / "listener.lock",
         log_file=state / "listener.log",
+        stop_file=state / "stop.request",
         registration_file=tmp_path / "registration",
     )
 
@@ -275,6 +276,36 @@ def test_discovery_failure_preserves_mount_generation_without_replay(
     assert not runtime.dispatch_queue.empty()
 
 
+def test_per_mount_access_failure_preserves_generation_and_completed_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, mount, _counter = _fixture(tmp_path)
+    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    runtime.store.create()
+    [dispatch_id] = runtime.store.observe([mount], runtime._planner, now=1)
+    assert runtime.store.start_dispatch(dispatch_id, now=2) is not None
+    assert runtime.store.finish_dispatch(dispatch_id, return_code=0, error=None, now=3) == (
+        "completed"
+    )
+
+    def inaccessible(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise OSError("mounted media is temporarily inaccessible")
+
+    monkeypatch.setattr(listener_module, "plan_gogurt_action", inaccessible)
+    runtime.run_once()
+    monkeypatch.setattr(listener_module, "plan_gogurt_action", core_plan_gogurt_action)
+    runtime.run_once()
+
+    with closing(sqlite3.connect(paths.database_file)) as connection:
+        assert connection.execute("SELECT present, generation FROM observed_mounts").fetchone() == (
+            1,
+            1,
+        )
+        assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (1,)
+    assert runtime.dispatch_queue.empty()
+
+
 def test_unexpected_worker_failure_terminates_with_failed_runtime_health(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -499,6 +530,54 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
         thread.join(timeout=5)
         assert not thread.is_alive()
         assert failures == []
+        assert listener_module._process_is_running(action_pid) is False
+        assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
+    finally:
+        runtime.request_stop()
+        thread.join(timeout=5)
+        if action_pid is not None and listener_module._process_is_running(action_pid):
+            os.kill(action_pid, signal.SIGKILL)
+
+
+def test_cooperative_stop_request_settles_active_custody_independently_of_poll_interval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, mount, pid_file = _fixture(tmp_path)
+    config = ListenerConfig(
+        executable=config.executable,
+        routes_file=config.routes_file,
+        actions_dir=config.actions_dir,
+        marker_name=config.marker_name,
+        interval_seconds=3600,
+        state_dir=config.state_dir,
+    )
+    action = Path(load_gogurt_actions(config.routes_file)[0].command[1])
+    action.write_text(
+        "from pathlib import Path\n"
+        "import os,signal,sys,time\n"
+        "signal.signal(signal.SIGTERM, lambda *_args: None)\n"
+        "Path(sys.argv[2]).write_text(str(os.getpid()), encoding='utf-8')\n"
+        "while True:\n"
+        "    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(listener_module, "LISTENER_ACTION_TERMINATE_SECONDS", 0.1)
+    monkeypatch.setattr(listener_module, "LISTENER_ACTION_KILL_SECONDS", 0.5)
+    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    thread = threading.Thread(target=runtime.run)
+    thread.start()
+    action_pid: int | None = None
+    try:
+        deadline = time.monotonic() + 5
+        while not pid_file.is_file() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pid_file.is_file()
+        action_pid = int(pid_file.read_text(encoding="utf-8"))
+        paths.stop_file.write_text("stop\n", encoding="utf-8")
+        thread.join(timeout=5)
+
+        assert not thread.is_alive()
         assert listener_module._process_is_running(action_pid) is False
         assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
     finally:
@@ -1483,6 +1562,106 @@ def test_listener_status_reports_health_and_dispatch_attention(tmp_path: Path) -
     assert status["running"] is True
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "diagnostic"),
+    [
+        ("pid", True, "PID is invalid"),
+        ("pid", 1 << 40, "PID is invalid"),
+        ("queue_depth", 1 << 80, "integer is outside"),
+        ("started_at", "999999-01-01T00:00:00Z", "start time is invalid"),
+        ("heartbeat_at", "not-a-time", "time is invalid"),
+    ],
+)
+def test_listener_status_bounds_malformed_heartbeat_representations(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    diagnostic: str,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    config.write(paths.config_file)
+    heartbeat: dict[str, object] = {
+        "schema": "gogurt-listener-heartbeat/v1",
+        "version": importlib.metadata.version("gogurt"),
+        "pid": os.getpid(),
+        "started_at": "2026-08-14T00:00:00Z",
+        "heartbeat_at": "2026-08-14T00:00:10Z",
+        "queue_depth": 0,
+        "active_dispatch": None,
+        "dispatches": {"counts": {}, "attention": []},
+        "configuration": {"status": "valid", "diagnostic": None},
+        "runtime": {"status": "running", "diagnostic": None},
+        "mount_attention": [],
+    }
+    heartbeat[field] = value
+    paths.heartbeat_file.write_text(json.dumps(heartbeat), encoding="utf-8")
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+
+    status = listener_status(
+        paths=paths,
+        adapter=adapter,
+        now=datetime_timestamp("2026-08-14T00:00:11Z"),
+    )
+
+    assert status["health"] == "failed"
+    assert diagnostic in str(status["diagnostic"])
+
+
+def test_listener_status_rejects_a_future_heartbeat_as_false_liveness(tmp_path: Path) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    config.write(paths.config_file)
+    heartbeat = {
+        "schema": "gogurt-listener-heartbeat/v1",
+        "version": importlib.metadata.version("gogurt"),
+        "pid": os.getpid(),
+        "started_at": "2026-08-14T00:00:00Z",
+        "heartbeat_at": "2026-08-14T01:00:00Z",
+        "queue_depth": 0,
+        "active_dispatch": None,
+        "dispatches": {"counts": {}, "attention": []},
+        "configuration": {"status": "valid", "diagnostic": None},
+        "runtime": {"status": "running", "diagnostic": None},
+        "mount_attention": [],
+    }
+    paths.heartbeat_file.write_text(json.dumps(heartbeat), encoding="utf-8")
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+
+    status = listener_status(
+        paths=paths,
+        adapter=adapter,
+        now=datetime_timestamp("2026-08-14T00:00:11Z"),
+    )
+
+    assert status["health"] == "failed"
+    assert "time is in the future" in str(status["diagnostic"])
+
+
+def test_listener_status_bounds_an_overflowing_config_integer(tmp_path: Path) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    content = (
+        config.content()
+        .decode("utf-8")
+        .replace(
+            '"interval_seconds": 0.1',
+            f'"interval_seconds": {1 << 80}',
+        )
+    )
+    paths.config_file.parent.mkdir(parents=True)
+    paths.config_file.write_text(content, encoding="utf-8")
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+
+    status = listener_status(paths=paths, adapter=adapter)
+
+    assert status["health"] == "failed"
+    assert "integer is outside" in str(status["diagnostic"])
+
+
 def test_listener_status_reports_corrupt_state_without_crashing(tmp_path: Path) -> None:
     config, paths, _mount, _counter = _fixture(tmp_path)
     paths.state_dir.mkdir(parents=True)
@@ -1632,6 +1811,30 @@ def test_uninstall_removes_corrupt_state_without_reading_it(tmp_path: Path) -> N
     assert not paths.state_dir.exists()
 
 
+@pytest.mark.parametrize("root_kind", ["file", "symlink"])
+def test_uninstall_removes_non_directory_state_root_without_following_it(
+    tmp_path: Path,
+    root_kind: str,
+) -> None:
+    _config, paths, _mount, _counter = _fixture(tmp_path)
+    preserved = tmp_path / "preserved"
+    preserved.mkdir()
+    (preserved / "content").write_text("keep", encoding="utf-8")
+    if root_kind == "file":
+        paths.state_dir.write_text("damaged", encoding="utf-8")
+    else:
+        paths.state_dir.symlink_to(preserved, target_is_directory=True)
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+
+    status = uninstall_listener(paths=paths, adapter=adapter)
+
+    assert status["health"] == "absent"
+    assert not paths.state_dir.exists()
+    assert (preserved / "content").read_text(encoding="utf-8") == "keep"
+
+
 def test_listener_status_tolerates_native_startup_before_schema_commit(tmp_path: Path) -> None:
     config, paths, _mount, _counter = _fixture(tmp_path)
     paths.state_dir.mkdir(parents=True)
@@ -1668,6 +1871,36 @@ def test_listener_stop_reports_settled_native_state(tmp_path: Path) -> None:
     assert not thread.is_alive()
     assert result[0]["health"] == "stopped"
     assert result[0]["running"] is False
+
+
+def test_listener_stop_waits_for_durable_action_custody_settlement(tmp_path: Path) -> None:
+    config, paths, mount, _counter = _fixture(tmp_path)
+    store = ListenerStore(paths.database_file)
+    store.create()
+    [dispatch_id] = store.observe(
+        [mount],
+        lambda point: core_plan_gogurt_action(config.routes_file, point),
+        now=1,
+    )
+    assert store.start_dispatch(dispatch_id, now=2) is not None
+    adapter = FakeAdapter()
+    adapter.installed = True
+    adapter.running = True
+    result: list[dict[str, object]] = []
+    thread = threading.Thread(
+        target=lambda: result.append(stop_listener(paths=paths, adapter=adapter))
+    )
+
+    thread.start()
+    time.sleep(0.1)
+    assert thread.is_alive()
+    store.mark_running_uncertain(dispatch_id, error="settled by listener", now=3)
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    dispatches = result[0]["dispatches"]
+    assert isinstance(dispatches, dict)
+    assert dispatches["counts"] == {"uncertain": 1}
 
 
 def datetime_timestamp(value: str) -> float:

@@ -7,20 +7,27 @@ import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path, PureWindowsPath
-from typing import Protocol
+from typing import Protocol, cast
 
-from gogurt.filesystem import PRIVATE_FILE_MODE, atomic_write
+from gogurt.filesystem import PRIVATE_FILE_MODE, atomic_write, stage_bytes
 
 LISTENER_LABEL = "io.github.nashspence.gogurt"
 LAUNCHD_SETTLE_SECONDS = 20.0
-WINDOWS_TASK_NAME = "Riverhog.Gogurt"
+WINDOWS_TASK_NAME_PREFIX = "Riverhog.Gogurt"
 WINDOWS_TASK_STATE_DISABLED = 1
 WINDOWS_TASK_STATE_RUNNING = 4
 WINDOWS_TASK_NOT_FOUND_EXIT = 3
 WINDOWS_TASK_NOT_FOUND_HRESULT = -2147024894
+WINDOWS_TASK_RESTART_COUNT = 3
+WINDOWS_TASK_RESTART_INTERVAL = "PT1M"
+WINDOWS_STOP_SETTLE_SECONDS = 20.0
+WINDOWS_TASK_XML_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+_WINDOWS_SID_RE = re.compile(r"S-[0-9]+(?:-[0-9]+)+")
 
 
 class ListenerPlatformError(RuntimeError):
@@ -35,6 +42,7 @@ class ListenerPaths:
     heartbeat_file: Path
     lock_file: Path
     log_file: Path
+    stop_file: Path
     registration_file: Path | None
 
 
@@ -79,6 +87,7 @@ def default_listener_paths(
         heartbeat_file=state_dir / "heartbeat.json",
         lock_file=state_dir / "listener.lock",
         log_file=state_dir / "listener.log",
+        stop_file=state_dir / "stop.request",
         registration_file=registration,
     )
 
@@ -123,6 +132,66 @@ def render_launchd_plist(command: Sequence[str]) -> bytes:
         fmt=plistlib.FMT_XML,
         sort_keys=False,
     )
+
+
+def windows_task_name(user_sid: str) -> str:
+    """Return the stable machine-unique task name for one Windows user."""
+
+    if _WINDOWS_SID_RE.fullmatch(user_sid) is None:
+        raise ListenerPlatformError("Windows returned an invalid current-user SID")
+    identity = sha256(user_sid.encode("ascii")).hexdigest()
+    return f"{WINDOWS_TASK_NAME_PREFIX}.{identity}"
+
+
+def render_windows_task_xml(command: Sequence[str], *, user_sid: str) -> bytes:
+    """Render the complete current-user Task Scheduler contract."""
+
+    if not command:
+        raise ListenerPlatformError("Gogurt listener command is empty")
+    windows_task_name(user_sid)
+    namespace = WINDOWS_TASK_XML_NAMESPACE
+    ET.register_namespace("", namespace)
+
+    def child(parent: ET.Element, name: str, text: str | None = None) -> ET.Element:
+        value = ET.SubElement(parent, f"{{{namespace}}}{name}")
+        value.text = text
+        return value
+
+    task = ET.Element(f"{{{namespace}}}Task", {"version": "1.4"})
+    registration = child(task, "RegistrationInfo")
+    child(registration, "Description", "Gogurt mounted-volume listener")
+    triggers = child(task, "Triggers")
+    logon = child(triggers, "LogonTrigger")
+    child(logon, "Enabled", "true")
+    child(logon, "UserId", user_sid)
+    principals = child(task, "Principals")
+    principal = ET.SubElement(principals, f"{{{namespace}}}Principal", {"id": "CurrentUser"})
+    child(principal, "UserId", user_sid)
+    child(principal, "LogonType", "InteractiveToken")
+    child(principal, "RunLevel", "LeastPrivilege")
+    settings = child(task, "Settings")
+    child(settings, "AllowStartOnDemand", "true")
+    restart = child(settings, "RestartOnFailure")
+    child(restart, "Interval", WINDOWS_TASK_RESTART_INTERVAL)
+    child(restart, "Count", str(WINDOWS_TASK_RESTART_COUNT))
+    child(settings, "MultipleInstancesPolicy", "IgnoreNew")
+    child(settings, "DisallowStartIfOnBatteries", "false")
+    child(settings, "StopIfGoingOnBatteries", "false")
+    child(settings, "AllowHardTerminate", "false")
+    child(settings, "StartWhenAvailable", "true")
+    child(settings, "RunOnlyIfNetworkAvailable", "false")
+    child(settings, "WakeToRun", "false")
+    child(settings, "Enabled", "true")
+    child(settings, "Hidden", "false")
+    child(settings, "ExecutionTimeLimit", "PT0S")
+    child(settings, "Priority", "7")
+    child(settings, "RunOnlyIfIdle", "false")
+    actions = ET.SubElement(task, f"{{{namespace}}}Actions", {"Context": "CurrentUser"})
+    execute = child(actions, "Exec")
+    child(execute, "Command", command[0])
+    if len(command) > 1:
+        child(execute, "Arguments", subprocess.list2cmdline(list(command[1:])))
+    return cast(bytes, ET.tostring(task, encoding="utf-8", xml_declaration=True))
 
 
 class ListenerAdapter(Protocol):
@@ -171,9 +240,21 @@ class SystemdUserAdapter(_CommandAdapter):
 
     def status(self, paths: ListenerPaths) -> NativeListenerStatus:
         registration = self._require_registration(paths)
-        installed = registration.is_file()
-        if not installed:
-            return NativeListenerStatus(installed=False, enabled=False, running=False)
+        loaded = self._run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                registration.name,
+                "--property=LoadState",
+                "--value",
+            ],
+            allowed=frozenset({0, 1, 3, 4}),
+        )
+        manager_loaded = loaded.returncode == 0 and loaded.stdout.strip() not in {
+            "",
+            "not-found",
+        }
         enabled = (
             self._run(
                 ["systemctl", "--user", "is-enabled", registration.name],
@@ -188,17 +269,21 @@ class SystemdUserAdapter(_CommandAdapter):
             ).returncode
             == 0
         )
-        return NativeListenerStatus(installed=True, enabled=enabled, running=running)
+        return NativeListenerStatus(
+            installed=registration.is_file() or manager_loaded or enabled or running,
+            enabled=enabled,
+            running=running,
+        )
 
     def start(self, paths: ListenerPaths) -> None:
         registration = self._require_registration(paths)
-        if not registration.is_file():
+        if not self.status(paths).installed:
             raise ListenerPlatformError("Gogurt listener is not installed")
         self._run(["systemctl", "--user", "start", registration.name])
 
     def stop(self, paths: ListenerPaths) -> None:
         registration = self._require_registration(paths)
-        if registration.is_file():
+        if self.status(paths).installed:
             self._run(
                 ["systemctl", "--user", "stop", registration.name],
                 allowed=frozenset({0, 5}),
@@ -270,25 +355,28 @@ class LaunchdUserAdapter(_CommandAdapter):
 
     def status(self, paths: ListenerPaths) -> NativeListenerStatus:
         registration = self._require_registration(paths)
-        installed = registration.is_file()
-        if not installed:
-            return NativeListenerStatus(installed=False, enabled=False, running=False)
-        running = self._is_running(self._print())
-        return NativeListenerStatus(installed=True, enabled=True, running=running)
+        state = self._print()
+        loaded = state.returncode == 0
+        installed = registration.is_file() or loaded
+        return NativeListenerStatus(
+            installed=installed,
+            enabled=installed,
+            running=self._is_running(state),
+        )
 
     def start(self, paths: ListenerPaths) -> None:
         registration = self._require_registration(paths)
-        if not registration.is_file():
-            raise ListenerPlatformError("Gogurt listener is not installed")
         state = self._print()
         if state.returncode != 0:
+            if not registration.is_file():
+                raise ListenerPlatformError("Gogurt listener is not installed")
             self._run(["launchctl", "bootstrap", self._domain(), str(registration)])
         elif not self._is_running(state):
             self._run(["launchctl", "kickstart", self._target()])
 
     def stop(self, paths: ListenerPaths) -> None:
-        registration = self._require_registration(paths)
-        if registration.is_file():
+        self._require_registration(paths)
+        if self._print().returncode == 0:
             self._run(
                 ["launchctl", "bootout", self._target()],
                 allowed=frozenset({0, 3, 113}),
@@ -303,11 +391,26 @@ class LaunchdUserAdapter(_CommandAdapter):
 
 class TaskSchedulerUserAdapter(_CommandAdapter):
     @staticmethod
-    def _task_command(command: Sequence[str]) -> str:
-        return subprocess.list2cmdline(list(command))
+    def _identity_command() -> list[str]:
+        system_root = PureWindowsPath(os.environ.get("SystemRoot", r"C:\Windows"))
+        powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        return [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::Out.Write([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)",
+        ]
+
+    def _current_user_sid(self) -> str:
+        completed = self._run(self._identity_command())
+        user_sid = completed.stdout.strip()
+        windows_task_name(user_sid)
+        return user_sid
 
     @staticmethod
-    def _state_command() -> list[str]:
+    def _state_command(task_name: str) -> list[str]:
         system_root = PureWindowsPath(os.environ.get("SystemRoot", r"C:\Windows"))
         powershell = system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
         script = (
@@ -315,7 +418,7 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
             "try { "
             "$service = New-Object -ComObject 'Schedule.Service'; "
             "$service.Connect(); "
-            f"$task = $service.GetFolder('\\').GetTask('{WINDOWS_TASK_NAME}'); "
+            f"$task = $service.GetFolder('\\').GetTask('{task_name}'); "
             "[Console]::Out.Write([int]$task.State); "
             "exit 0 "
             "} catch { "
@@ -333,32 +436,12 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
             script,
         ]
 
-    def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
-        # The listener replacement transaction quiesces and proves the prior
-        # process absent before registration. Keep registration construction-
-        # only: an additional asynchronous /End can terminate the new /Run.
-        self._run(
-            [
-                "schtasks.exe",
-                "/Create",
-                "/TN",
-                WINDOWS_TASK_NAME,
-                "/SC",
-                "ONLOGON",
-                "/TR",
-                self._task_command(command),
-                "/RL",
-                "LIMITED",
-                "/IT",
-                "/F",
-            ]
-        )
-        self._run(["schtasks.exe", "/Run", "/TN", WINDOWS_TASK_NAME])
+    def _task_name(self) -> str:
+        return windows_task_name(self._current_user_sid())
 
-    def status(self, paths: ListenerPaths) -> NativeListenerStatus:
-        del paths
+    def _query_state(self, task_name: str) -> NativeListenerStatus:
         completed = self._run(
-            self._state_command(),
+            self._state_command(task_name),
             allowed=frozenset({0, WINDOWS_TASK_NOT_FOUND_EXIT}),
         )
         installed = completed.returncode == 0
@@ -372,29 +455,76 @@ class TaskSchedulerUserAdapter(_CommandAdapter):
             raise ListenerPlatformError(
                 f"Task Scheduler returned an unknown numeric state: {state}"
             )
-        enabled = state != WINDOWS_TASK_STATE_DISABLED
-        running = state == WINDOWS_TASK_STATE_RUNNING
-        return NativeListenerStatus(installed=True, enabled=enabled, running=running)
+        return NativeListenerStatus(
+            installed=True,
+            enabled=state != WINDOWS_TASK_STATE_DISABLED,
+            running=state == WINDOWS_TASK_STATE_RUNNING,
+        )
+
+    @staticmethod
+    def _clear_stop_request(paths: ListenerPaths) -> None:
+        paths.stop_file.unlink(missing_ok=True)
+
+    def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
+        # The listener replacement transaction quiesces and proves the prior
+        # process absent before registration. Keep registration construction-
+        # only: an additional asynchronous /End can terminate the new /Run.
+        user_sid = self._current_user_sid()
+        task_name = windows_task_name(user_sid)
+        self._clear_stop_request(paths)
+        temporary = stage_bytes(
+            paths.state_dir / "listener-task.xml",
+            render_windows_task_xml(command, user_sid=user_sid),
+            mode=PRIVATE_FILE_MODE,
+        )
+        try:
+            self._run(
+                [
+                    "schtasks.exe",
+                    "/Create",
+                    "/TN",
+                    task_name,
+                    "/XML",
+                    str(temporary),
+                    "/F",
+                ]
+            )
+        finally:
+            temporary.unlink(missing_ok=True)
+        self._run(["schtasks.exe", "/Run", "/TN", task_name])
+
+    def status(self, paths: ListenerPaths) -> NativeListenerStatus:
+        del paths
+        return self._query_state(self._task_name())
 
     def start(self, paths: ListenerPaths) -> None:
-        del paths
-        self._run(["schtasks.exe", "/Run", "/TN", WINDOWS_TASK_NAME])
+        task_name = self._task_name()
+        if not self._query_state(task_name).installed:
+            raise ListenerPlatformError("Gogurt listener is not installed")
+        self._clear_stop_request(paths)
+        self._run(["schtasks.exe", "/Run", "/TN", task_name])
 
     def stop(self, paths: ListenerPaths) -> None:
-        del paths
-        self._run(
-            ["schtasks.exe", "/End", "/TN", WINDOWS_TASK_NAME],
-            allowed=frozenset({0, 1}),
+        task_name = self._task_name()
+        state = self._query_state(task_name)
+        if not state.installed or not state.running:
+            return
+        atomic_write(paths.stop_file, b"stop\n", mode=PRIVATE_FILE_MODE)
+        deadline = time.monotonic() + WINDOWS_STOP_SETTLE_SECONDS
+        while time.monotonic() < deadline:
+            if not self._query_state(task_name).running:
+                return
+            time.sleep(0.1)
+        raise ListenerPlatformError(
+            "Gogurt listener did not settle its action custody before the Windows stop deadline"
         )
 
     def unregister(self, paths: ListenerPaths) -> None:
-        del paths
+        task_name = self._task_name()
+        if self._query_state(task_name).running:
+            self.stop(paths)
         self._run(
-            ["schtasks.exe", "/End", "/TN", WINDOWS_TASK_NAME],
-            allowed=frozenset({0, 1}),
-        )
-        self._run(
-            ["schtasks.exe", "/Delete", "/TN", WINDOWS_TASK_NAME, "/F"],
+            ["schtasks.exe", "/Delete", "/TN", task_name, "/F"],
             allowed=frozenset({0, 1}),
         )
 

@@ -284,6 +284,22 @@ def test_write_gogurt_marker_uses_exclusive_temporary_creation(tmp_path: Path) -
     assert former_temporary.is_symlink()
 
 
+def test_write_gogurt_marker_accepts_the_exact_portable_component_limit(
+    tmp_path: Path,
+) -> None:
+    marker_name = "m" * 255
+
+    marker = write_gogurt_marker(
+        EXAMPLE_CONFIG,
+        "example-camera-card",
+        tmp_path,
+        marker_name=marker_name,
+    )
+
+    assert marker.name == marker_name
+    assert marker.read_bytes() == b"example-camera-card\n"
+
+
 def test_plan_gogurt_marker_does_not_write(tmp_path: Path) -> None:
     plan = plan_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
 
