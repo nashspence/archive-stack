@@ -68,10 +68,10 @@ def test_vanished_sqlite_sidecar_does_not_abort_remaining_validation(
     remaining.chmod(0o644)
     real_open = os.open
 
-    def remove_before_open(path: Path, flags: int, mode: int = 0o777) -> int:
+    def remove_before_open(path: Path, flags: int) -> int:
         if Path(path) == vanished and vanished.exists():
             vanished.unlink()
-        return real_open(path, flags, mode)
+        return real_open(path, flags)
 
     monkeypatch.setattr(filesystem_module.os, "open", remove_before_open)
 
