@@ -169,10 +169,10 @@ def test_linux_gogurt_failure_evidence_retains_only_bounded_native_state(
                 command,
                 0,
                 "ActiveState=active\n"
-                "SubState=running\n"
-                "Result=success\n"
-                "ExecMainCode=1\n"
-                "ExecMainStatus=0\n"
+                "SubState=auto-restart\n"
+                "Result=core-dump\n"
+                "ExecMainCode=3\n"
+                "ExecMainStatus=7\n"
                 "NRestarts=2\n"
                 "Environment=private-value\n",
                 "private native diagnostic",
@@ -194,11 +194,13 @@ def test_linux_gogurt_failure_evidence_retains_only_bounded_native_state(
     assert json.loads((evidence / "lifecycle-native.json").read_text(encoding="utf-8")) == {
         "fields": {
             "ActiveState": "active",
-            "ExecMainCode": 1,
-            "ExecMainStatus": 0,
+            "ExecMainCode": 3,
+            "ExecMainStatus": 7,
             "NRestarts": 2,
-            "Result": "success",
-            "SubState": "running",
+            "Result": "core-dump",
+            "SubState": "auto-restart",
+            "TerminationKind": "core-dump",
+            "TerminationSignal": "SIGBUS",
         },
         "returncode": 0,
     }
@@ -278,62 +280,20 @@ def test_windows_native_snapshot_retains_only_numeric_task_state(
     }
 
 
-def test_windows_trace_uses_one_persistent_native_monitor(
+def test_windows_trace_defers_to_durable_failure_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = load_script()
-    created: list[list[str]] = []
-
-    class Process:
-        stdout = iter(
-            [
-                json.dumps({"returncode": 3, "fields": {}}) + "\n",
-                json.dumps(
-                    {
-                        "returncode": 0,
-                        "fields": {"state": 4, "last_result": 0, "instance_pids": [71]},
-                    }
-                )
-                + "\n",
-            ]
-        )
-
-        def poll(self) -> int:
-            return 0
-
-        def terminate(self) -> None:
-            raise AssertionError("completed monitor must not be terminated")
-
-        def wait(self, *, timeout: int) -> int:
-            raise AssertionError(f"completed monitor must not be waited for: {timeout}")
-
-        def kill(self) -> None:
-            raise AssertionError("completed monitor must not be killed")
-
-    def popen(command: list[str], **_kwargs: object) -> Process:
-        created.append(command)
-        return Process()
-
-    monkeypatch.setattr(module.subprocess, "Popen", popen)
-    trace = module._WindowsNativeLifecycleTrace(
-        scratch=tmp_path,
-        environment={},
-        clock=lambda: 2.0,
+    monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("Windows lifecycle tracing started a process"),
     )
+    trace = module._native_lifecycle_trace(scratch=tmp_path, environment={})
 
     trace.start()
-    trace.thread.join(timeout=1)
     events = trace.stop()
 
-    assert len(created) == 1
-    assert created[0][:3] == ["powershell.exe", "-NoProfile", "-NonInteractive"]
-    assert "Start-Sleep -Milliseconds 1000" in created[0][-1]
-    assert events == (
-        {"elapsed_milliseconds": 0, "returncode": 3, "fields": {}},
-        {
-            "elapsed_milliseconds": 0,
-            "returncode": 0,
-            "fields": {"state": 4, "last_result": 0, "instance_pids": [71]},
-        },
-    )
+    assert events == ()

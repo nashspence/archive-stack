@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import string
 import subprocess
@@ -32,9 +33,9 @@ import release_installation as installation
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "riverhog-installation-qualification/v1"
 EVENT_SUBJECT = "qualification-sentinel"
-NATIVE_TRACE_INTERVAL_SECONDS = 0.2
-WINDOWS_NATIVE_TRACE_INTERVAL_SECONDS = 1.0
+NATIVE_TRACE_INTERVAL_SECONDS = 1.0
 NATIVE_TRACE_EVENT_LIMIT = 128
+GOGURT_QUALIFICATION_ACTION_FAILURE_EXIT = 73
 EVENT_PAGE = {
     "events": [
         {
@@ -582,6 +583,14 @@ def _native_listener_snapshot(
                 linux_fields[key] = int(normalized)
             elif re.fullmatch(r"[A-Za-z0-9_-]{1,64}", normalized):
                 linux_fields[key] = normalized
+        main_code = linux_fields.get("ExecMainCode")
+        main_status = linux_fields.get("ExecMainStatus")
+        if main_code in {2, 3} and isinstance(main_status, int):
+            linux_fields["TerminationKind"] = "core-dump" if main_code == 3 else "signal"
+            try:
+                linux_fields["TerminationSignal"] = signal.Signals(main_status).name
+            except ValueError:
+                pass
         return {"returncode": native.returncode, "fields": linux_fields}
     if sys.platform == "win32":
         script = (
@@ -706,104 +715,23 @@ class _NativeLifecycleTrace:
             return tuple(dict(item) for item in self.events)
 
 
-class _WindowsNativeLifecycleTrace(_NativeLifecycleTrace):
-    """Stream Task Scheduler transitions from one persistent PowerShell process."""
+class _FailureSnapshotOnlyNativeLifecycleTrace:
+    """Avoid perturbing Task Scheduler; its terminal result remains queryable on failure."""
 
-    def __init__(
-        self,
-        *,
-        scratch: Path,
-        environment: dict[str, str],
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        super().__init__(
-            scratch=scratch,
-            environment=environment,
-            probe=lambda: None,
-            clock=clock,
-        )
-        self.process: subprocess.Popen[str] | None = None
-
-    def _run(self) -> None:
-        script = (
-            "$ErrorActionPreference='Stop';$previous='';$service=$null;"
-            "while ($true) {"
-            "$returncode=0;$fields=[ordered]@{};"
-            "try {"
-            "if ($null -eq $service) {"
-            "$service=New-Object -ComObject 'Schedule.Service';$service.Connect()};"
-            "$task=$service.GetFolder('\\').GetTask('Riverhog.Gogurt');"
-            "$pids=@($task.GetInstances(0)|ForEach-Object {[int]$_.EnginePID}|Sort-Object -Unique);"
-            "$fields=[ordered]@{state=[int]$task.State;"
-            "last_result=[int]$task.LastTaskResult;instance_pids=$pids};"
-            "} catch {$returncode=3;$service=$null}"
-            "$result=[ordered]@{returncode=$returncode;fields=$fields};"
-            "$json=$result|ConvertTo-Json -Compress -Depth 3;"
-            "if ($json -ne $previous) {"
-            "[Console]::Out.WriteLine($json);[Console]::Out.Flush();$previous=$json};"
-            "Start-Sleep -Milliseconds "
-            f"{int(WINDOWS_NATIVE_TRACE_INTERVAL_SECONDS * 1000)}"
-            "}"
-        )
-        try:
-            process = subprocess.Popen(
-                [
-                    "powershell.exe",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    script,
-                ],
-                cwd=self.scratch,
-                env=self.environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-            )
-        except OSError as exc:
-            self._record({"probe_error": type(exc).__name__})
-            return
-        with self.lock:
-            self.process = process
-        if self.stop_event.is_set():
-            process.terminate()
-        if process.stdout is None:
-            self._record({"probe_error": "MissingMonitorOutput"})
-            return
-        for line in process.stdout:
-            try:
-                self._record(_parse_windows_native_snapshot(json.loads(line)))
-            except (json.JSONDecodeError, ValueError) as exc:
-                self._record({"probe_error": type(exc).__name__})
+    def start(self) -> None:
+        return
 
     def stop(self) -> tuple[dict[str, object], ...]:
-        self.stop_event.set()
-        with self.lock:
-            process = self.process
-        if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-                process.wait(timeout=5)
-            except (OSError, subprocess.SubprocessError) as exc:
-                self._record({"probe_error": type(exc).__name__})
-                if process.poll() is None:
-                    try:
-                        process.kill()
-                        process.wait(timeout=5)
-                    except (OSError, subprocess.SubprocessError) as kill_exc:
-                        self._record({"probe_error": type(kill_exc).__name__})
-        self.thread.join(timeout=1)
-        with self.lock:
-            return tuple(dict(item) for item in self.events)
+        return ()
 
 
 def _native_lifecycle_trace(
     *,
     scratch: Path,
     environment: dict[str, str],
-) -> _NativeLifecycleTrace:
+) -> _NativeLifecycleTrace | _FailureSnapshotOnlyNativeLifecycleTrace:
     if sys.platform == "win32":
-        return _WindowsNativeLifecycleTrace(scratch=scratch, environment=environment)
+        return _FailureSnapshotOnlyNativeLifecycleTrace()
     return _NativeLifecycleTrace(scratch=scratch, environment=environment)
 
 
@@ -914,7 +842,10 @@ def _run_gogurt_listener_lifecycle(
         encoding="utf-8",
     )
     failure = scratch / "gogurt-listener-failure.py"
-    failure.write_text("raise SystemExit(7)\n", encoding="utf-8")
+    failure.write_text(
+        f"raise SystemExit({GOGURT_QUALIFICATION_ACTION_FAILURE_EXIT})\n",
+        encoding="utf-8",
+    )
     sentinel = scratch / "gogurt-listener-sentinel.txt"
     routes = scratch / "gogurt-listener-routes.yaml"
     routes.write_text(
@@ -1110,7 +1041,7 @@ def _run_gogurt_listener_lifecycle(
                 return isinstance(attention, list) and any(
                     isinstance(item, dict)
                     and item.get("state") == "retry"
-                    and item.get("exit_code") == 7
+                    and item.get("exit_code") == GOGURT_QUALIFICATION_ACTION_FAILURE_EXIT
                     for item in attention
                 )
 
