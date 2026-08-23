@@ -298,10 +298,9 @@ def test_windows_task_definition_verifies_normalized_current_user_semantics(
 <Task xmlns="{module.WINDOWS_TASK_XML_NAMESPACE}">
   <Triggers><LogonTrigger><UserId>runner\\person</UserId></LogonTrigger></Triggers>
   <Principals><Principal>
-    <UserId>person</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>
+    <UserId>person</UserId><LogonType>InteractiveToken</LogonType>
   </Principal></Principals>
   <Settings>
-    <AllowStartOnDemand>1</AllowStartOnDemand>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
     <DisallowStartIfOnBatteries>0</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>

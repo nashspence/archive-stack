@@ -594,14 +594,12 @@ def _verify_windows_task_definition(
     )
     expected = {
         "task:Principals/task:Principal/task:LogonType": "InteractiveToken",
-        "task:Principals/task:Principal/task:RunLevel": "LeastPrivilege",
         "task:Settings/task:MultipleInstancesPolicy": "IgnoreNew",
         "task:Settings/task:ExecutionTimeLimit": "PT0S",
         "task:Settings/task:RestartOnFailure/task:Interval": "PT1M",
         "task:Settings/task:RestartOnFailure/task:Count": "3",
     }
     expected_booleans = {
-        "task:Settings/task:AllowStartOnDemand": True,
         "task:Settings/task:DisallowStartIfOnBatteries": False,
         "task:Settings/task:StopIfGoingOnBatteries": False,
         "task:Settings/task:AllowHardTerminate": False,
@@ -626,6 +624,14 @@ def _verify_windows_task_definition(
         for path, value in expected_booleans.items()
         if (task.findtext(path, namespaces=ns) or "").casefold() not in boolean_values[value]
     )
+    run_level_path = "task:Principals/task:Principal/task:RunLevel"
+    run_level = task.findtext(run_level_path, namespaces=ns)
+    if run_level not in {None, "LeastPrivilege"}:
+        mismatches.append(run_level_path)
+    allow_start_path = "task:Settings/task:AllowStartOnDemand"
+    allow_start = task.findtext(allow_start_path, namespaces=ns)
+    if allow_start is not None and allow_start.casefold() not in boolean_values[True]:
+        mismatches.append(allow_start_path)
     command_path = "task:Actions/task:Exec/task:Command"
     observed_command = task.findtext(command_path, namespaces=ns)
     try:
