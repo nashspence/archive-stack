@@ -657,8 +657,20 @@ def _scheduler_loop(
 
 
 def _log_scheduler_failures(role: SchedulerRole, result: dict[str, object]) -> None:
-    """Make isolated per-work advancement failures operator-visible."""
+    """Make isolated event and work advancement failures operator-visible."""
 
+    events = result.get("events")
+    event_failures = events.get("failures") if isinstance(events, dict) else None
+    if isinstance(event_failures, list):
+        for failure in event_failures:
+            if not isinstance(failure, dict):
+                continue
+            LOGGER.error(
+                "stove0 %s scheduler could not reconcile lifecycle event %s: %s",
+                role,
+                failure.get("event_id", "unknown"),
+                failure.get("error", "unknown error"),
+            )
     work = result.get("work")
     failures = work.get("failures") if isinstance(work, dict) else None
     if not isinstance(failures, list):

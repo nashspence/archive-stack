@@ -386,7 +386,7 @@ class Stove0Coordinator:
                     return record
                 self.riverhog.settle_outcomes(record, projection.evaluation)
                 return self._begin_or_complete_retirement(record)
-            return record
+            return self._converge_coordination_outcome(record, projection.evaluation)
         if phase == "target_preflight":
             return self._preflight(record)
         if phase == "queued":
@@ -419,6 +419,8 @@ class Stove0Coordinator:
             raise RuntimeError("only failed stove0 work can be retried")
         if not record.failure.retryable or record.claim is None:
             raise RuntimeError("stove0 work failure is terminal")
+        if record.branch_set_plan is not None:
+            return self._retry_coordination(record)
         restarted = self.riverhog.restart_claim(record.work, record.claim)
         return self.work.retry_failed(
             work_id,
@@ -695,7 +697,12 @@ class Stove0Coordinator:
         else:
             return None
         parent = self.work.store.load(parent_work_id)
-        if parent is None or parent.claim is None or parent.branch_set_plan is None:
+        if (
+            parent is None
+            or parent.phase != "coordinating"
+            or parent.claim is None
+            or parent.branch_set_plan is None
+        ):
             raise RuntimeError("coordination parent claim is unavailable")
         return ParentOutcomeBinding(
             claim=parent.claim,
@@ -705,13 +712,8 @@ class Stove0Coordinator:
     def _advance_coordination_cancel(self, record: WorkRecord) -> WorkRecord:
         if record.branch_set_plan is None:
             raise RuntimeError("coordination cancellation has no branch-set plan")
-        child_ids = [
-            branch.workflow_plan.work.work_id for branch in record.branch_set_plan.branches
-        ]
-        if record.join_plan is not None:
-            child_ids.append(record.join_plan.work.work_id)
         terminal = {"complete", "inapplicable", "failed", "canceled"}
-        for child_id in child_ids:
+        for child_id in self._coordination_child_ids(record):
             child = self.work.store.load(child_id)
             if child is None:
                 raise RuntimeError("coordination cancellation child is unavailable")
@@ -723,18 +725,93 @@ class Stove0Coordinator:
     def _successful_children_complete(self, record: WorkRecord) -> bool:
         if record.branch_set_plan is None:
             raise RuntimeError("successful coordination has no branch-set plan")
-        child_ids = [
-            branch.workflow_plan.work.work_id for branch in record.branch_set_plan.branches
-        ]
-        if record.join_plan is not None:
-            child_ids.append(record.join_plan.work.work_id)
-        for child_id in child_ids:
+        for child_id in self._coordination_child_ids(record):
             child = self.work.store.load(child_id)
             if child is None:
                 raise RuntimeError("successful coordination child is unavailable")
             if child.phase != "complete":
                 return False
         return True
+
+    def _converge_coordination_outcome(
+        self,
+        record: WorkRecord,
+        evaluation: BranchSetEvaluation,
+    ) -> WorkRecord:
+        children = self._coordination_children(record)
+        terminal = {"complete", "inapplicable", "failed", "canceled"}
+        if any(child.phase not in terminal for child in children):
+            return record
+        failed = tuple(child for child in children if child.phase == "failed")
+        if failed:
+            failures = tuple(child.failure for child in failed)
+            if any(failure is None for failure in failures):
+                raise RuntimeError("failed coordination child has no failure details")
+            retryable = all(failure is not None and failure.retryable for failure in failures)
+            return self.work.fail(
+                record.work_id,
+                WorkFailure(
+                    code="branch-set-failed",
+                    message=(
+                        "Required branch/join work failed: "
+                        + ", ".join(child.work_id for child in failed)
+                    )[:1000],
+                    retryable=retryable,
+                ),
+                expected_revision=record.revision,
+            )
+        if evaluation.inapplicable_branch_ids or evaluation.join_state == "inapplicable":
+            return self.work.mark_inapplicable(
+                record.work_id,
+                WorkInapplicable(
+                    code="branch-set-inapplicable",
+                    message="Required branch/join work is inapplicable.",
+                ),
+                expected_revision=record.revision,
+            )
+        if evaluation.canceled_branch_ids or evaluation.join_state == "canceled":
+            return self.work.cancel(record.work_id, expected_revision=record.revision)
+        return record
+
+    def _retry_coordination(self, record: WorkRecord) -> WorkRecord:
+        assert record.branch_set_plan is not None
+        assert record.claim is not None
+        for child_id in self._coordination_child_ids(record):
+            child = self.work.store.load(child_id)
+            if child is None:
+                raise RuntimeError("coordination retry child is unavailable")
+            if child.phase == "failed":
+                if child.failure is None or not child.failure.retryable:
+                    raise RuntimeError("coordination contains a terminal child failure")
+                self.retry(child_id)
+            elif child.phase in {"inapplicable", "canceled"}:
+                raise RuntimeError("coordination contains a non-retryable child outcome")
+        restarted = self.riverhog.restart_claim(record.work, record.claim)
+        return self.work.retry_coordination(
+            record.work_id,
+            claim_id=restarted.claim_id,
+            fence=restarted.fence,
+            expected_revision=record.revision,
+        )
+
+    def _coordination_child_ids(self, record: WorkRecord) -> tuple[str, ...]:
+        if record.branch_set_plan is None:
+            raise RuntimeError("coordination has no branch-set plan")
+        child_ids = [
+            branch.workflow_plan.work.work_id for branch in record.branch_set_plan.branches
+        ]
+        if record.join_plan is not None:
+            child_ids.append(record.join_plan.work.work_id)
+        return tuple(child_ids)
+
+    def _coordination_children(self, record: WorkRecord) -> tuple[WorkRecord, ...]:
+        children: list[WorkRecord] = []
+        for child_id in self._coordination_child_ids(record):
+            child = self.work.store.load(child_id)
+            if child is None:
+                raise RuntimeError("coordination child is unavailable")
+            children.append(child)
+        return tuple(children)
 
 
 __all__ = [

@@ -29,6 +29,8 @@ from stove0_protocol import (
     CollectionRootRef,
     JsonSchemaDocument,
     ObservationEvidence,
+    ObservationFailure,
+    ObservationInapplicable,
     ObservationRequest,
     ObservationRequestPayload,
     ObservationResult,
@@ -518,6 +520,86 @@ def test_new_claim_fence_resets_unsettled_execution_authorities() -> None:
         rebound.controller_evidence.execution_envelope.execution_envelope_sha256
         != stale_execution_id
     )
+
+
+@pytest.mark.parametrize(
+    ("state", "outcome", "expected_phase", "expected_abandon"),
+    [
+        (
+            "inapplicable",
+            {"inapplicable": ObservationInapplicable(code="unsupported", message="No match")},
+            "abandon_pending",
+            "inapplicable",
+        ),
+        (
+            "failed",
+            {"failure": ObservationFailure(code="temporary", message="Try again", retryable=True)},
+            "failed",
+            None,
+        ),
+        (
+            "failed",
+            {
+                "failure": ObservationFailure(
+                    code="invalid", message="Cannot inspect", retryable=False
+                )
+            },
+            "abandon_pending",
+            "failed",
+        ),
+        ("canceled", {}, "abandon_pending", "canceled"),
+    ],
+)
+def test_terminal_observation_results_converge_without_entering_planning(
+    state: str,
+    outcome: dict[str, object],
+    expected_phase: str,
+    expected_abandon: str | None,
+) -> None:
+    service = Stove0WorkService(InMemoryWorkStore())
+    work = _work()
+    contract, descriptor = _observer()
+    request, observed = _observation(work, contract, descriptor)
+    record = service.create_or_resume(work)
+    record = service.bind_claim(
+        work.work_id,
+        claim_id=work.work_id,
+        fence=1,
+        expected_revision=record.revision,
+    )
+    record = service.begin_observations(
+        work.work_id,
+        (request,),
+        expected_revision=record.revision,
+    )
+    result = ObservationResult.seal(
+        ObservationResultPayload(
+            **observed.model_dump(
+                mode="python",
+                exclude_none=True,
+                exclude={
+                    "result_sha256",
+                    "state",
+                    "facts_schema",
+                    "facts",
+                    "facts_sha256",
+                },
+            ),
+            state=state,  # type: ignore[arg-type]
+            **outcome,
+        )
+    )
+
+    record = service.record_observation(
+        work.work_id,
+        result,
+        descriptor=descriptor,
+        expected_revision=record.revision,
+    )
+
+    assert record.phase == expected_phase
+    assert record.observation_results == (result,)
+    assert record.abandon_outcome == expected_abandon
 
 
 def test_stale_revision_and_invalid_success_order_fail_closed() -> None:

@@ -14,6 +14,7 @@ from stove0_core import (
     Stove0Coordinator,
     Stove0WorkService,
     TargetInvocationAuthority,
+    WorkFailure,
     WorkInapplicable,
 )
 from stove0_protocol import (
@@ -801,9 +802,11 @@ class FixtureRiverhog:
         self.renewals += 1
         return self.renewed_claim or claim
 
-    def restart_claim(self, _work: WorkIdentity, claim: ClaimBinding) -> ClaimBinding:
+    def restart_claim(self, work: WorkIdentity, claim: ClaimBinding) -> ClaimBinding:
         self.restarted = True
-        return ClaimBinding(claim_id=claim.claim_id, fence=claim.fence + 1)
+        replacement = ClaimBinding(claim_id=claim.claim_id, fence=claim.fence + 1)
+        self.claims[work.work_id] = replacement
+        return replacement
 
     def observation_authority(
         self,
@@ -1113,6 +1116,210 @@ def test_coordination_settles_parent_only_after_successful_children_complete() -
 
     assert completed.phase == "complete"
     assert riverhog.coordination_settled is True
+
+
+def test_failed_branch_waits_for_independent_sibling_then_retries_same_graph() -> None:
+    operations = _fork_join_operations()
+    target_contract = _fork_join_target(operations)
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
+    riverhog = FixtureRiverhog()
+    coordinator = Stove0Coordinator(
+        state,
+        riverhog=riverhog,
+        planning=ForkJoinPlanning(*operations, target_contract),
+        observers=FixtureObservers(None),
+        targets=ForkJoinTarget(operations, target_contract),
+    )
+    parent = coordinator.create_or_resume(_work())
+    while parent.phase != "coordinating":
+        parent = coordinator.step(parent.work_id)
+    assert parent.branch_set_plan is not None
+    branch_set = parent.branch_set_plan
+    failed_id, sibling_id = (branch.workflow_plan.work.work_id for branch in branch_set.branches)
+    failed = coordinator.step(failed_id)
+    failed = state.fail(
+        failed_id,
+        WorkFailure(code="temporary", message="Retry this branch", retryable=True),
+        expected_revision=failed.revision,
+    )
+
+    waiting = coordinator.step(parent.work_id)
+    assert waiting.phase == "coordinating"
+    sibling = store.load(sibling_id)
+    assert sibling is not None and sibling.phase == "eligible"
+    for _ in range(12):
+        if sibling.phase == "complete":
+            break
+        sibling = coordinator.step(sibling_id)
+    assert sibling.phase == "complete"
+    assert parent.join_plan is None
+
+    failed_parent = coordinator.step(parent.work_id)
+    assert failed_parent.phase == "failed"
+    assert failed_parent.failure is not None and failed_parent.failure.retryable is True
+    retried_parent = coordinator.retry(parent.work_id)
+    assert retried_parent.phase == "coordinating"
+    assert retried_parent.branch_set_plan == branch_set
+    retried_child = store.load(failed_id)
+    assert retried_child is not None
+    assert retried_child.phase == "claimed"
+    assert retried_child.work_id == failed.work_id
+    assert retried_child.claim is not None and retried_child.claim.fence == 2
+
+    for _ in range(12):
+        if retried_child.phase == "complete":
+            break
+        retried_child = coordinator.step(failed_id)
+    assert retried_child.phase == "complete"
+    parent = coordinator.step(parent.work_id)
+    assert parent.join_plan is not None
+    join_id = parent.join_plan.work.work_id
+    join = store.load(join_id)
+    assert join is not None
+    for _ in range(12):
+        if join.phase == "complete":
+            break
+        join = coordinator.step(join_id)
+    assert join.phase == "complete"
+    completed = coordinator.step(parent.work_id)
+    assert completed.phase == "complete"
+    assert completed.branch_set_plan == branch_set
+
+
+def test_interrupted_branch_remains_explicit_and_resumes_without_parent_failure() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
+    coordinator = Stove0Coordinator(
+        state,
+        riverhog=FixtureRiverhog(),
+        planning=FixturePlanning(operation, target_contract, None),
+        observers=FixtureObservers(None),
+        targets=FixtureTarget(operation, target_contract),
+    )
+    parent, child = _advance_child_to(coordinator, store, "executing")
+    assert child.target_request is not None
+    interrupted = TargetJobStatus(
+        job_id=child.target_request.declaration.job_id,
+        state="interrupted",
+        attempt=1,
+        request_sha256=child.target_request.request_sha256,
+        plan_sha256=child.target_request.declaration.plan.plan_sha256,
+        progress=TargetProgress(phase="interrupted", completed=0, total=1),
+    )
+    child = state.record_target_status(
+        child.work_id,
+        interrupted,
+        operation=operation,
+        expected_revision=child.revision,
+    )
+
+    evaluation = coordinator.inspect_coordination(parent.work_id)
+    assert evaluation.interrupted_branch_ids == ("fixture",)
+    assert coordinator.step(parent.work_id).phase == "coordinating"
+    resumed = coordinator.step(child.work_id)
+    assert resumed.phase == "verifying"
+
+
+def test_inapplicable_branch_converges_parent_and_releases_claims() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
+    riverhog = FixtureRiverhog()
+    coordinator = Stove0Coordinator(
+        state,
+        riverhog=riverhog,
+        planning=FixturePlanning(operation, target_contract, None),
+        observers=FixtureObservers(None),
+        targets=FixtureTarget(operation, target_contract),
+    )
+    parent, child = _advance_child_to(coordinator, store, "claimed")
+    child = state.mark_inapplicable(
+        child.work_id,
+        WorkInapplicable(code="unsupported", message="No applicable transform"),
+        expected_revision=child.revision,
+    )
+    assert coordinator.step(child.work_id).phase == "inapplicable"
+
+    pending = coordinator.step(parent.work_id)
+    assert pending.phase == "abandon_pending"
+    terminal = coordinator.step(parent.work_id)
+    assert terminal.phase == "inapplicable"
+    assert terminal.inapplicable is not None
+    assert terminal.inapplicable.code == "branch-set-inapplicable"
+    assert riverhog.abandoned is True
+
+
+def test_canceled_branch_converges_parent_and_releases_claims() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
+    riverhog = FixtureRiverhog()
+    coordinator = Stove0Coordinator(
+        state,
+        riverhog=riverhog,
+        planning=FixturePlanning(operation, target_contract, None),
+        observers=FixtureObservers(None),
+        targets=FixtureTarget(operation, target_contract),
+    )
+    parent, child = _advance_child_to(coordinator, store, "claimed")
+    child = state.cancel(child.work_id, expected_revision=child.revision)
+    assert coordinator.step(child.work_id).phase == "canceled"
+
+    pending = coordinator.step(parent.work_id)
+    assert pending.phase == "abandon_pending"
+    terminal = coordinator.step(parent.work_id)
+    assert terminal.phase == "canceled"
+    assert riverhog.abandoned is True
+
+
+def test_failed_join_converges_parent_instead_of_renewing_forever() -> None:
+    operations = _fork_join_operations()
+    target_contract = _fork_join_target(operations)
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
+    riverhog = FixtureRiverhog()
+    coordinator = Stove0Coordinator(
+        state,
+        riverhog=riverhog,
+        planning=ForkJoinPlanning(*operations, target_contract),
+        observers=FixtureObservers(None),
+        targets=ForkJoinTarget(operations, target_contract),
+    )
+    parent = coordinator.create_or_resume(_work())
+    while parent.phase != "coordinating":
+        parent = coordinator.step(parent.work_id)
+    assert parent.branch_set_plan is not None
+    for branch in parent.branch_set_plan.branches:
+        child_id = branch.workflow_plan.work.work_id
+        child = store.load(child_id)
+        assert child is not None
+        for _ in range(12):
+            if child.phase == "complete":
+                break
+            child = coordinator.step(child_id)
+        assert child.phase == "complete"
+    parent = coordinator.step(parent.work_id)
+    assert parent.join_plan is not None
+    join = coordinator.step(parent.join_plan.work.work_id)
+    join = state.fail(
+        join.work_id,
+        WorkFailure(code="invalid-join", message="Join cannot complete", retryable=False),
+        expected_revision=join.revision,
+    )
+    assert join.phase == "abandon_pending"
+    assert coordinator.step(join.work_id).phase == "failed"
+
+    pending = coordinator.step(parent.work_id)
+    assert pending.phase == "abandon_pending"
+    terminal = coordinator.step(parent.work_id)
+    assert terminal.phase == "failed"
+    assert terminal.failure is not None and terminal.failure.retryable is False
+    assert riverhog.coordination_settled is False
 
 
 def test_coordinator_records_inapplicable_as_a_distinct_terminal_outcome() -> None:

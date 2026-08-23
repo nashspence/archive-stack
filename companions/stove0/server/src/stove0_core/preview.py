@@ -99,6 +99,48 @@ class WorkflowPreviewService:
                     observation_request,
                     descriptor,
                 )
+                if result.state == "inapplicable":
+                    assert result.inapplicable is not None
+                    return WorkflowPreview.seal(
+                        WorkflowPreviewPayload(
+                            preview_id=request.preview_id,
+                            state="inapplicable",
+                            work=identity,
+                            observations=tuple(observations),
+                            outcome=PreviewOutcome(
+                                code=result.inapplicable.code,
+                                message=result.inapplicable.message,
+                            ),
+                        )
+                    )
+                if result.state == "failed":
+                    assert result.failure is not None
+                    return WorkflowPreview.seal(
+                        WorkflowPreviewPayload(
+                            preview_id=request.preview_id,
+                            state="failed",
+                            work=identity,
+                            observations=tuple(observations),
+                            outcome=PreviewOutcome(
+                                code=result.failure.code,
+                                message=result.failure.message,
+                                retryable=result.failure.retryable,
+                            ),
+                        )
+                    )
+                if result.state == "canceled":
+                    return WorkflowPreview.seal(
+                        WorkflowPreviewPayload(
+                            preview_id=request.preview_id,
+                            state="canceled",
+                            work=identity,
+                            observations=tuple(observations),
+                            outcome=PreviewOutcome(
+                                code="observer-canceled",
+                                message="The content observer canceled the preview request.",
+                            ),
+                        )
+                    )
                 observations.append(ObservationEvidence(request=observation_request, result=result))
 
             evidence = tuple(observations)

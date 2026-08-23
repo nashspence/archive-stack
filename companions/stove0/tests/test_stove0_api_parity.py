@@ -395,6 +395,30 @@ def test_scheduler_work_failures_are_operator_visible(
     ) in caplog.text
 
 
+def test_scheduler_event_failures_are_operator_visible(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _log_scheduler_failures(
+        "controller",
+        {
+            "events": {
+                "failures": [
+                    {
+                        "event_id": "event-1",
+                        "error": "ValueError: invalid collection identity",
+                    }
+                ]
+            },
+            "work": {"failures": []},
+        },
+    )
+
+    assert (
+        "stove0 controller scheduler could not reconcile lifecycle event event-1: "
+        "ValueError: invalid collection identity"
+    ) in caplog.text
+
+
 def test_stove0_openapi_uses_conventional_errors_health_and_paging() -> None:
     schema = create_app(_composition()).openapi()
     assert schema["components"]["schemas"]["HealthResponse"] == {
