@@ -52,16 +52,15 @@ Workspace dependency and import checks enforce the implementation-owner boundari
 - [`riverhog/server`](../riverhog/server/) is the archive service.
 - [`riverhog/client`](../riverhog/client/) is the direct platform CLI. Its `local` commands
   maintain client-owned local materialization.
-- [`riverhog/ftp-adapter`](../riverhog/ftp-adapter/) is the maintained content-opaque FTP
-  collection producer and reference adapter boundary.
-- [`riverhog/storage-adapter-aws`](../riverhog/storage-adapter-aws/) and
-  [`riverhog/storage-adapter-backblaze`](../riverhog/storage-adapter-backblaze/) are isolated
-  maintained implementations of the provider-neutral storage-adapter contract.
+- [`reference/riverhog/ingress`](../reference/riverhog/ingress/) contains maintained
+  content-opaque protocol-ingress implementations; v1 includes the FTP adapter.
+- [`reference/riverhog/storage`](../reference/riverhog/storage/) contains isolated
+  implementations of the provider-neutral storage-adapter contract.
 - [`riverhog/recovery`](../riverhog/recovery/) is a permissively licensed reference;
   archives remain recoverable with standard tools.
 - [`companions`](../companions/) contains content-opaque applications.
-- [`extensions`](../extensions/) contains maintained reference observer, sampler,
-  and target implementations.
+- [`reference/stove0`](../reference/stove0/) contains first-party implementations
+  of independently implementable Stove0 observer, target, and target-internal sampler contracts.
 - [`utilities`](../utilities/) contains portable operator and event tools.
 - [`packages`](../packages/) contains reusable protocol, client,
   configuration, event, transport, and CLI primitives.

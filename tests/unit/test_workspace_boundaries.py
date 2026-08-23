@@ -17,13 +17,13 @@ IMPLEMENTATION_OWNERS = {
     "riverhog-server": (REPO / "riverhog/server/src", {"riverhog_api", "riverhog_core"}),
     "riverhog-client": (REPO / "riverhog/client/src", {"riverhog_cli"}),
     "riverhog-recover": (REPO / "riverhog/recovery/src", {"riverhog_recover"}),
-    "riverhog-ftp-adapter": (REPO / "riverhog/ftp-adapter/src", {"riverhog_ftp_adapter"}),
+    "riverhog-ftp-adapter": (REPO / "reference/riverhog/ingress/ftp/src", {"riverhog_ftp_adapter"}),
     "riverhog-storage-adapter-aws": (
-        REPO / "riverhog/storage-adapter-aws/src",
+        REPO / "reference/riverhog/storage/aws/src",
         {"riverhog_storage_adapter_aws"},
     ),
     "riverhog-storage-adapter-backblaze": (
-        REPO / "riverhog/storage-adapter-backblaze/src",
+        REPO / "reference/riverhog/storage/backblaze/src",
         {"riverhog_storage_adapter_backblaze"},
     ),
     "stove0-server": (
@@ -32,31 +32,31 @@ IMPLEMENTATION_OWNERS = {
     ),
     "stove0-client": (REPO / "companions/stove0/client/src", {"stove0_cli"}),
     "stove0-exiftool-observer": (
-        REPO / "extensions/stove0/exiftool-observer/src",
+        REPO / "reference/stove0/observers/exiftool/src",
         {"stove0_exiftool_observer"},
     ),
     "stove0-ffprobe-sampling-observer": (
-        REPO / "extensions/stove0/ffprobe-sampling-observer/src",
+        REPO / "reference/stove0/observers/ffprobe-sampling/src",
         {"stove0_ffprobe_sampling_observer"},
     ),
     "stove0-nvenc-av1-opus-target": (
-        REPO / "extensions/stove0/nvenc-av1-opus-target/src",
+        REPO / "reference/stove0/targets/nvenc-av1-opus/target/src",
         {"stove0_nvenc_av1_opus_target"},
     ),
     "stove0-nvenc-av1-opus-review-sampler": (
-        REPO / "extensions/stove0/nvenc-av1-opus-review-sampler/src",
+        REPO / "reference/stove0/targets/nvenc-av1-opus/review-sampler/src",
         {"stove0_nvenc_av1_opus_review_sampler"},
     ),
     "stove0-opus-review-sampler": (
-        REPO / "extensions/stove0/opus-review-sampler/src",
+        REPO / "reference/stove0/targets/opus/review-sampler/src",
         {"stove0_opus_review_sampler"},
     ),
     "stove0-opus-target": (
-        REPO / "extensions/stove0/opus-target/src",
+        REPO / "reference/stove0/targets/opus/target/src",
         {"stove0_opus_target"},
     ),
     "stove0-review-target": (
-        REPO / "extensions/stove0/review-target/src",
+        REPO / "reference/stove0/targets/review/target/src",
         {"stove0_review_target"},
     ),
     "mango-fish": (REPO / "utilities/mango-fish/src", {"mango_fish"}),
@@ -296,7 +296,7 @@ def test_riverhog_production_surfaces_are_stove0_agnostic() -> None:
         REPO / "riverhog/server/src",
         REPO / "riverhog/client/src",
         REPO / "riverhog/recovery/src",
-        REPO / "riverhog/ftp-adapter/src",
+        REPO / "reference/riverhog/ingress/ftp/src",
     )
     paths = [path for root in roots for path in root.rglob("*.py")]
     paths.extend(
@@ -379,30 +379,33 @@ def test_core_domain_and_ports_are_dependency_roots() -> None:
 def test_images_copy_only_their_owned_implementation_project() -> None:
     dockerfiles = {
         REPO / "riverhog/server/Dockerfile": "riverhog/server",
-        REPO / "riverhog/ftp-adapter/Dockerfile": "riverhog/ftp-adapter",
-        REPO / "riverhog/storage-adapter-aws/Dockerfile": "riverhog/storage-adapter-aws",
-        REPO / "riverhog/storage-adapter-backblaze/Dockerfile": (
-            "riverhog/storage-adapter-backblaze"
+        REPO / "reference/riverhog/ingress/ftp/Dockerfile": "reference/riverhog/ingress/ftp",
+        REPO / "reference/riverhog/storage/aws/Dockerfile": "reference/riverhog/storage/aws",
+        REPO / "reference/riverhog/storage/backblaze/Dockerfile": (
+            "reference/riverhog/storage/backblaze"
         ),
         REPO / "companions/stove0/server/Dockerfile": "companions/stove0/server",
-        REPO / "extensions/stove0/exiftool-observer/Dockerfile": (
-            "extensions/stove0/exiftool-observer"
+        REPO / "reference/stove0/observers/exiftool/Dockerfile": (
+            "reference/stove0/observers/exiftool"
         ),
-        REPO / "extensions/stove0/ffprobe-sampling-observer/Dockerfile": (
-            "extensions/stove0/ffprobe-sampling-observer"
+        REPO / "reference/stove0/observers/ffprobe-sampling/Dockerfile": (
+            "reference/stove0/observers/ffprobe-sampling"
         ),
-        REPO / "extensions/stove0/nvenc-av1-opus-target/Dockerfile": (
-            "extensions/stove0/nvenc-av1-opus-target",
-            "extensions/stove0/nvenc-av1-opus-review-sampler",
+        REPO / "reference/stove0/targets/nvenc-av1-opus/Dockerfile": (
+            "reference/stove0/targets/nvenc-av1-opus/target",
+            "reference/stove0/targets/nvenc-av1-opus/review-sampler",
+            "reference/stove0/targets/nvenc-av1-opus/verify-ffmpeg",
         ),
-        REPO / "extensions/stove0/opus-target/Dockerfile": (
-            "extensions/stove0/opus-target",
-            "extensions/stove0/opus-review-sampler",
+        REPO / "reference/stove0/targets/opus/Dockerfile": (
+            "reference/stove0/targets/opus/target",
+            "reference/stove0/targets/opus/review-sampler",
         ),
-        REPO / "extensions/stove0/review-target/Dockerfile": ("extensions/stove0/review-target"),
+        REPO / "reference/stove0/targets/review/Dockerfile": (
+            "reference/stove0/targets/review/target"
+        ),
         REPO / "utilities/mango-fish/Dockerfile": "utilities/mango-fish",
     }
-    implementation_prefix = re.compile(r"^(?:companions|extensions|riverhog|utilities)/")
+    implementation_prefix = re.compile(r"^(?:companions|reference|riverhog|utilities)/")
     for dockerfile, expected in dockerfiles.items():
         copied = {
             source
@@ -485,25 +488,25 @@ def test_compose_timezone_defaults_are_configurable_utc() -> None:
 def test_images_copy_their_complete_internal_dependency_closure() -> None:
     images = {
         REPO / "riverhog/server/Dockerfile": "riverhog-server",
-        REPO / "riverhog/ftp-adapter/Dockerfile": "riverhog-ftp-adapter",
-        REPO / "riverhog/storage-adapter-aws/Dockerfile": "riverhog-storage-adapter-aws",
-        REPO / "riverhog/storage-adapter-backblaze/Dockerfile": (
+        REPO / "reference/riverhog/ingress/ftp/Dockerfile": "riverhog-ftp-adapter",
+        REPO / "reference/riverhog/storage/aws/Dockerfile": "riverhog-storage-adapter-aws",
+        REPO / "reference/riverhog/storage/backblaze/Dockerfile": (
             "riverhog-storage-adapter-backblaze"
         ),
         REPO / "companions/stove0/server/Dockerfile": "stove0-server",
-        REPO / "extensions/stove0/exiftool-observer/Dockerfile": ("stove0-exiftool-observer"),
-        REPO / "extensions/stove0/ffprobe-sampling-observer/Dockerfile": (
+        REPO / "reference/stove0/observers/exiftool/Dockerfile": ("stove0-exiftool-observer"),
+        REPO / "reference/stove0/observers/ffprobe-sampling/Dockerfile": (
             "stove0-ffprobe-sampling-observer"
         ),
-        REPO / "extensions/stove0/nvenc-av1-opus-target/Dockerfile": (
+        REPO / "reference/stove0/targets/nvenc-av1-opus/Dockerfile": (
             "stove0-nvenc-av1-opus-target",
             "stove0-nvenc-av1-opus-review-sampler",
         ),
-        REPO / "extensions/stove0/opus-target/Dockerfile": (
+        REPO / "reference/stove0/targets/opus/Dockerfile": (
             "stove0-opus-target",
             "stove0-opus-review-sampler",
         ),
-        REPO / "extensions/stove0/review-target/Dockerfile": "stove0-review-target",
+        REPO / "reference/stove0/targets/review/Dockerfile": "stove0-review-target",
         REPO / "utilities/mango-fish/Dockerfile": "mango-fish",
     }
     projects, graph = workspace_project_graph()

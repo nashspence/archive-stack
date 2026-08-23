@@ -142,10 +142,10 @@ def test_paired_target_and_sampler_roles_bind_the_same_image_digest() -> None:
     )
     assert services["opus-target"]["image"] != services["nvenc-av1-opus-target"]["image"]
     assert services["opus-target"]["build"]["dockerfile"] == (
-        "extensions/stove0/opus-target/Dockerfile"
+        "reference/stove0/targets/opus/Dockerfile"
     )
     assert services["nvenc-av1-opus-target"]["build"]["dockerfile"] == (
-        "extensions/stove0/nvenc-av1-opus-target/Dockerfile"
+        "reference/stove0/targets/nvenc-av1-opus/Dockerfile"
     )
     assert "gpus" not in services["opus-target"]
     assert "profiles" not in services["opus-target"]

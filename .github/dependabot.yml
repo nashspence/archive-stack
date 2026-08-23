@@ -48,15 +48,15 @@ updates:
   - package-ecosystem: docker
     directories:
       - /companions/stove0/server
-      - /extensions/stove0/exiftool-observer
-      - /extensions/stove0/ffprobe-sampling-observer
-      - /extensions/stove0/nvenc-av1-opus-target
-      - /extensions/stove0/opus-target
-      - /extensions/stove0/review-target
-      - /riverhog/ftp-adapter
+      - /reference/stove0/observers/exiftool
+      - /reference/stove0/observers/ffprobe-sampling
+      - /reference/stove0/targets/nvenc-av1-opus
+      - /reference/stove0/targets/opus
+      - /reference/stove0/targets/review
+      - /reference/riverhog/ingress/ftp
       - /riverhog/server
-      - /riverhog/storage-adapter-aws
-      - /riverhog/storage-adapter-backblaze
+      - /reference/riverhog/storage/aws
+      - /reference/riverhog/storage/backblaze
       - /tests
       - /utilities/mango-fish
     schedule:

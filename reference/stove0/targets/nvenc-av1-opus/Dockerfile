@@ -28,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY extensions/stove0/nvenc-av1-opus-target/verify-ffmpeg /build/verify-ffmpeg
+COPY reference/stove0/targets/nvenc-av1-opus/verify-ffmpeg /build/verify-ffmpeg
 RUN git init nv-codec-headers \
  && cd nv-codec-headers \
  && git remote add origin https://code.ffmpeg.org/FFmpeg/nv-codec-headers.git \
@@ -96,8 +96,8 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
 COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
-COPY extensions/stove0/nvenc-av1-opus-target extensions/stove0/nvenc-av1-opus-target
-COPY extensions/stove0/nvenc-av1-opus-review-sampler extensions/stove0/nvenc-av1-opus-review-sampler
+COPY reference/stove0/targets/nvenc-av1-opus/target reference/stove0/targets/nvenc-av1-opus/target
+COPY reference/stove0/targets/nvenc-av1-opus/review-sampler reference/stove0/targets/nvenc-av1-opus/review-sampler
 COPY packages/file-download packages/file-download
 COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events

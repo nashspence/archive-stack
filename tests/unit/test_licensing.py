@@ -10,16 +10,16 @@ from tests.workspace import workspace_pyprojects
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVER_PROJECTS = {
     Path("riverhog/server/pyproject.toml"),
-    Path("riverhog/storage-adapter-aws/pyproject.toml"),
-    Path("riverhog/storage-adapter-backblaze/pyproject.toml"),
+    Path("reference/riverhog/storage/aws/pyproject.toml"),
+    Path("reference/riverhog/storage/backblaze/pyproject.toml"),
     Path("companions/stove0/server/pyproject.toml"),
-    Path("extensions/stove0/ffprobe-sampling-observer/pyproject.toml"),
-    Path("extensions/stove0/exiftool-observer/pyproject.toml"),
-    Path("extensions/stove0/nvenc-av1-opus-review-sampler/pyproject.toml"),
-    Path("extensions/stove0/nvenc-av1-opus-target/pyproject.toml"),
-    Path("extensions/stove0/opus-target/pyproject.toml"),
-    Path("extensions/stove0/opus-review-sampler/pyproject.toml"),
-    Path("extensions/stove0/review-target/pyproject.toml"),
+    Path("reference/stove0/observers/ffprobe-sampling/pyproject.toml"),
+    Path("reference/stove0/observers/exiftool/pyproject.toml"),
+    Path("reference/stove0/targets/nvenc-av1-opus/review-sampler/pyproject.toml"),
+    Path("reference/stove0/targets/nvenc-av1-opus/target/pyproject.toml"),
+    Path("reference/stove0/targets/opus/target/pyproject.toml"),
+    Path("reference/stove0/targets/opus/review-sampler/pyproject.toml"),
+    Path("reference/stove0/targets/review/target/pyproject.toml"),
 }
 
 
@@ -35,16 +35,14 @@ def test_reuse_policy_assigns_an_apache_default_and_narrow_server_overrides() ->
     }
     assert annotations[1]["path"] == [
         "riverhog/server/**",
-        "riverhog/storage-adapter-aws/**",
-        "riverhog/storage-adapter-backblaze/**",
+        "reference/riverhog/storage/aws/**",
+        "reference/riverhog/storage/backblaze/**",
         "companions/stove0/server/**",
-        "extensions/stove0/exiftool-observer/**",
-        "extensions/stove0/ffprobe-sampling-observer/**",
-        "extensions/stove0/nvenc-av1-opus-review-sampler/**",
-        "extensions/stove0/nvenc-av1-opus-target/**",
-        "extensions/stove0/opus-target/**",
-        "extensions/stove0/opus-review-sampler/**",
-        "extensions/stove0/review-target/**",
+        "reference/stove0/observers/exiftool/**",
+        "reference/stove0/observers/ffprobe-sampling/**",
+        "reference/stove0/targets/nvenc-av1-opus/**",
+        "reference/stove0/targets/opus/**",
+        "reference/stove0/targets/review/**",
     ]
     assert annotations[1]["SPDX-License-Identifier"] == "CAL-1.0"
     assert annotations[2]["path"] == [
@@ -98,15 +96,15 @@ def test_reference_recovery_is_independent_and_advertised() -> None:
 def test_published_images_carry_source_and_license_identity() -> None:
     images = {
         "riverhog/server/Dockerfile": "CAL-1.0",
-        "riverhog/ftp-adapter/Dockerfile": "Apache-2.0",
-        "riverhog/storage-adapter-aws/Dockerfile": "CAL-1.0",
-        "riverhog/storage-adapter-backblaze/Dockerfile": "CAL-1.0",
+        "reference/riverhog/ingress/ftp/Dockerfile": "Apache-2.0",
+        "reference/riverhog/storage/aws/Dockerfile": "CAL-1.0",
+        "reference/riverhog/storage/backblaze/Dockerfile": "CAL-1.0",
         "companions/stove0/server/Dockerfile": "CAL-1.0",
-        "extensions/stove0/ffprobe-sampling-observer/Dockerfile": "CAL-1.0",
-        "extensions/stove0/exiftool-observer/Dockerfile": "CAL-1.0",
-        "extensions/stove0/nvenc-av1-opus-target/Dockerfile": "CAL-1.0",
-        "extensions/stove0/opus-target/Dockerfile": "CAL-1.0",
-        "extensions/stove0/review-target/Dockerfile": "CAL-1.0",
+        "reference/stove0/observers/ffprobe-sampling/Dockerfile": "CAL-1.0",
+        "reference/stove0/observers/exiftool/Dockerfile": "CAL-1.0",
+        "reference/stove0/targets/nvenc-av1-opus/Dockerfile": "CAL-1.0",
+        "reference/stove0/targets/opus/Dockerfile": "CAL-1.0",
+        "reference/stove0/targets/review/Dockerfile": "CAL-1.0",
         "utilities/mango-fish/Dockerfile": "Apache-2.0",
     }
     for relative, expected_license in images.items():
@@ -121,7 +119,7 @@ def test_published_images_carry_source_and_license_identity() -> None:
 
 def test_standalone_runtime_tools_preserve_their_exact_attribution_text() -> None:
     riverhog = (REPO_ROOT / "riverhog/server/Dockerfile").read_text(encoding="utf-8")
-    av1 = (REPO_ROOT / "extensions/stove0/nvenc-av1-opus-target/Dockerfile").read_text(
+    av1 = (REPO_ROOT / "reference/stove0/targets/nvenc-av1-opus/Dockerfile").read_text(
         encoding="utf-8"
     )
 

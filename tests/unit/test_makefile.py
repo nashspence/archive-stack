@@ -353,7 +353,8 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         (
             "unit",
             ("args=-k entrypoint",),
-            "python -m pytest -q companions packages riverhog tests/unit utilities -k entrypoint",
+            "python -m pytest -q companions packages reference riverhog tests/unit utilities "
+            "-k entrypoint",
         ),
         (
             "unit",
@@ -474,13 +475,13 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
     assert len(uv_log_lines) == 1
     assert "python -m mypy companions/stove0/client/src" in uv_log_lines[0]
     for source in (
-        "extensions/stove0/exiftool-observer/src",
-        "extensions/stove0/ffprobe-sampling-observer/src",
-        "extensions/stove0/nvenc-av1-opus-review-sampler/src",
-        "extensions/stove0/nvenc-av1-opus-target/src",
-        "extensions/stove0/opus-review-sampler/src",
-        "extensions/stove0/opus-target/src",
-        "extensions/stove0/review-target/src",
+        "reference/stove0/observers/exiftool/src",
+        "reference/stove0/observers/ffprobe-sampling/src",
+        "reference/stove0/targets/nvenc-av1-opus/review-sampler/src",
+        "reference/stove0/targets/nvenc-av1-opus/target/src",
+        "reference/stove0/targets/opus/review-sampler/src",
+        "reference/stove0/targets/opus/target/src",
+        "reference/stove0/targets/review/target/src",
         "companions/stove0/server/src",
         "packages/stove0-observer-client/src",
         "packages/stove0-review-sampler-protocol/src",
@@ -489,7 +490,10 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
         "packages/stove0-target-client/src",
     ):
         assert source in uv_log_lines[0]
-    assert "riverhog/client/src riverhog/ftp-adapter/src riverhog/recovery/src" in uv_log_lines[0]
+    assert (
+        "riverhog/client/src reference/riverhog/ingress/ftp/src riverhog/recovery/src"
+        in uv_log_lines[0]
+    )
     assert "scripts/operation_qualification.py" in uv_log_lines[0]
     assert "scripts/provider_qualification.py" in uv_log_lines[0]
     assert "utilities/gogurt/src utilities/mango-fish/src" in uv_log_lines[0]
@@ -741,7 +745,7 @@ def test_dockerfiles_keep_dependency_layers_independent_of_docs_and_tests() -> N
         "COPY tests tests"
     )
     assert "COPY companions companions" in test_dockerfile
-    assert "COPY extensions extensions" in test_dockerfile
+    assert "COPY reference reference" in test_dockerfile
     assert "COPY packages packages" in test_dockerfile
     assert "COPY riverhog riverhog" in test_dockerfile
     assert "COPY utilities utilities" in test_dockerfile
@@ -753,7 +757,7 @@ def test_dockerfile_copy_sources_are_git_owned() -> None:
     dockerfiles = [
         REPO_ROOT / "tests" / "Dockerfile",
         *sorted((REPO_ROOT / "companions").rglob("Dockerfile")),
-        *sorted((REPO_ROOT / "extensions").rglob("Dockerfile")),
+        *sorted((REPO_ROOT / "reference").rglob("Dockerfile")),
         *sorted((REPO_ROOT / "riverhog").rglob("Dockerfile")),
         *sorted((REPO_ROOT / "utilities").rglob("Dockerfile")),
     ]
@@ -779,7 +783,9 @@ def test_dockerfile_copy_sources_are_git_owned() -> None:
 
 def test_workspace_unit_lane_owns_application_unit_tests() -> None:
     assert (REPO_ROOT / "companions/stove0/tests/test_stove0_api_parity.py").is_file()
-    assert (REPO_ROOT / "riverhog/ftp-adapter/tests/test_ftp_adapter_api_parity.py").is_file()
+    assert (
+        REPO_ROOT / "reference/riverhog/ingress/ftp/tests/test_ftp_adapter_api_parity.py"
+    ).is_file()
     assert (REPO_ROOT / "utilities/mango-fish/tests/test_mango_fish.py").is_file()
     assert (REPO_ROOT / "utilities/gogurt/tests/test_gogurt.py").is_file()
 
@@ -813,20 +819,20 @@ def test_format_check_and_compile_are_non_mutating_repository_targets(tmp_path: 
     assert _read_log_lines(docker_log_path) == []
     assert _read_log_lines(uv_log_path) == [
         "|x -- uv run --locked --all-packages --group dev "
-        "python -m compileall -q companions packages riverhog scripts tests utilities"
+        "python -m compileall -q companions packages reference riverhog scripts tests utilities"
     ]
 
 
 def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() -> None:
     service_dockerfiles = [
         REPO_ROOT / "riverhog/server/Dockerfile",
-        REPO_ROOT / "riverhog/ftp-adapter/Dockerfile",
+        REPO_ROOT / "reference/riverhog/ingress/ftp/Dockerfile",
         REPO_ROOT / "companions/stove0/server/Dockerfile",
-        REPO_ROOT / "extensions/stove0/exiftool-observer/Dockerfile",
-        REPO_ROOT / "extensions/stove0/ffprobe-sampling-observer/Dockerfile",
-        REPO_ROOT / "extensions/stove0/nvenc-av1-opus-target/Dockerfile",
-        REPO_ROOT / "extensions/stove0/opus-target/Dockerfile",
-        REPO_ROOT / "extensions/stove0/review-target/Dockerfile",
+        REPO_ROOT / "reference/stove0/observers/exiftool/Dockerfile",
+        REPO_ROOT / "reference/stove0/observers/ffprobe-sampling/Dockerfile",
+        REPO_ROOT / "reference/stove0/targets/nvenc-av1-opus/Dockerfile",
+        REPO_ROOT / "reference/stove0/targets/opus/Dockerfile",
+        REPO_ROOT / "reference/stove0/targets/review/Dockerfile",
         REPO_ROOT / "utilities/mango-fish/Dockerfile",
     ]
 
@@ -840,7 +846,7 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
 
 
 def test_stove0_nvenc_ffmpeg_retains_cuda_features_without_nonfree_code() -> None:
-    target = REPO_ROOT / "extensions/stove0/nvenc-av1-opus-target"
+    target = REPO_ROOT / "reference/stove0/targets/nvenc-av1-opus"
     dockerfile = (target / "Dockerfile").read_text(encoding="utf-8")
     verification = (target / "verify-ffmpeg").read_text(encoding="utf-8")
 
@@ -860,7 +866,7 @@ def test_stove0_nvenc_ffmpeg_retains_cuda_features_without_nonfree_code() -> Non
 
 
 def test_nvenc_target_includes_source_artifact_runtime_tools() -> None:
-    dockerfile = (REPO_ROOT / "extensions/stove0/nvenc-av1-opus-target/Dockerfile").read_text(
+    dockerfile = (REPO_ROOT / "reference/stove0/targets/nvenc-av1-opus/Dockerfile").read_text(
         encoding="utf-8"
     )
 
@@ -869,7 +875,7 @@ def test_nvenc_target_includes_source_artifact_runtime_tools() -> None:
 
 
 def test_opus_target_is_a_slim_non_cuda_image() -> None:
-    dockerfile = (REPO_ROOT / "extensions/stove0/opus-target/Dockerfile").read_text(
+    dockerfile = (REPO_ROOT / "reference/stove0/targets/opus/Dockerfile").read_text(
         encoding="utf-8"
     )
 
@@ -903,7 +909,8 @@ def test_test_aggregate_runs_lint_then_unit(tmp_path: Path) -> None:
     assert "python -m ruff check ." in uv_log_lines[2]
     assert "python -m mypy companions/stove0/client/src" in uv_log_lines[3]
     assert (
-        "python -m pytest -q companions packages riverhog tests/unit utilities" in uv_log_lines[4]
+        "python -m pytest -q companions packages reference riverhog tests/unit utilities"
+        in uv_log_lines[4]
     )
 
 

@@ -135,18 +135,18 @@ end_user_artifact = [
   "utilities/gogurt",
 ]
 deployed_implementation = [
-  "extensions/stove0/exiftool-observer",
-  "extensions/stove0/ffprobe-sampling-observer",
-  "extensions/stove0/nvenc-av1-opus-review-sampler",
-  "extensions/stove0/nvenc-av1-opus-target",
-  "extensions/stove0/opus-review-sampler",
-  "extensions/stove0/opus-target",
-  "extensions/stove0/review-target",
+  "reference/stove0/observers/exiftool",
+  "reference/stove0/observers/ffprobe-sampling",
+  "reference/stove0/targets/nvenc-av1-opus/review-sampler",
+  "reference/stove0/targets/nvenc-av1-opus/target",
+  "reference/stove0/targets/opus/review-sampler",
+  "reference/stove0/targets/opus/target",
+  "reference/stove0/targets/review/target",
   "companions/stove0/server",
-  "riverhog/ftp-adapter",
+  "reference/riverhog/ingress/ftp",
   "riverhog/server",
-  "riverhog/storage-adapter-aws",
-  "riverhog/storage-adapter-backblaze",
+  "reference/riverhog/storage/aws",
+  "reference/riverhog/storage/backblaze",
   "utilities/mango-fish",
 ]
 reusable_library = [

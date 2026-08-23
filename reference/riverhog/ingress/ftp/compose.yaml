@@ -1,8 +1,8 @@
 x-ftp-adapter-image: &ftp-adapter-image
   image: riverhog-ftp-adapter:dev
   build:
-    context: ../..
-    dockerfile: riverhog/ftp-adapter/Dockerfile
+    context: ../../../..
+    dockerfile: reference/riverhog/ingress/ftp/Dockerfile
     args:
       SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
 

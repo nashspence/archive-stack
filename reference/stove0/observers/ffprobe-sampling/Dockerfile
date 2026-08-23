@@ -21,7 +21,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
 COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
-COPY extensions/stove0/ffprobe-sampling-observer extensions/stove0/ffprobe-sampling-observer
+COPY reference/stove0/observers/ffprobe-sampling reference/stove0/observers/ffprobe-sampling
 COPY packages/file-download packages/file-download
 COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events

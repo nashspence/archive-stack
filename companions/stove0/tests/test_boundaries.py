@@ -21,15 +21,29 @@ CALLER_ROOTS = (
     REPO_ROOT / "packages" / "stove0-target-client" / "src",
     REPO_ROOT / "packages" / "stove0-review-sampler-client" / "src",
 )
-IMPLEMENTATION_ROOT = REPO_ROOT / "extensions" / "stove0"
+IMPLEMENTATION_ROOT = REPO_ROOT / "reference" / "stove0"
 MAINTAINED_TARGETS = (
-    IMPLEMENTATION_ROOT / "opus-target" / "src" / "stove0_opus_target" / "target.py",
     IMPLEMENTATION_ROOT
-    / "nvenc-av1-opus-target"
+    / "targets"
+    / "opus"
+    / "target"
+    / "src"
+    / "stove0_opus_target"
+    / "target.py",
+    IMPLEMENTATION_ROOT
+    / "targets"
+    / "nvenc-av1-opus"
+    / "target"
     / "src"
     / "stove0_nvenc_av1_opus_target"
     / "target.py",
-    IMPLEMENTATION_ROOT / "review-target" / "src" / "stove0_review_target" / "target.py",
+    IMPLEMENTATION_ROOT
+    / "targets"
+    / "review"
+    / "target"
+    / "src"
+    / "stove0_review_target"
+    / "target.py",
 )
 EXTENSION_ROOTS = (
     OBSERVER_PROTOCOL_ROOT,
@@ -110,7 +124,7 @@ def test_semantic_contract_packs_depend_on_protocols_not_runtime_support() -> No
         assert "stove0_target_support" not in imports
 
 
-def test_protocol_package_is_independent_of_extensions_and_stove0_core() -> None:
+def test_protocol_package_is_independent_of_implementations_and_stove0_core() -> None:
     forbidden = {
         "stove0_core",
         "stove0_observer_support",
@@ -134,7 +148,7 @@ def test_stove0_core_does_not_import_maintained_review_semantics() -> None:
     assert "stove0_review_contracts" not in imports
 
 
-def test_stove0_server_consumes_extension_boundaries_only_as_protocols_and_callers() -> None:
+def test_stove0_server_consumes_component_boundaries_only_as_protocols_and_callers() -> None:
     imports = {root for path in STOVE0_SERVER.rglob("*.py") for root in _import_roots(path)}
     assert not imports & {
         "riverhog_transform_sdk",
@@ -170,7 +184,7 @@ def test_caller_packages_do_not_pull_in_author_or_implementation_dependencies() 
     }
 
 
-def test_maintained_extensions_do_not_import_product_internals() -> None:
+def test_maintained_reference_implementations_do_not_import_product_internals() -> None:
     imports = {root for path in IMPLEMENTATION_ROOT.rglob("*.py") for root in _import_roots(path)}
     assert not imports & {"riverhog_api", "riverhog_core", "stove0_api", "stove0_core"}
 

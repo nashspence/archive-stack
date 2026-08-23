@@ -21,8 +21,8 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
 COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
-COPY extensions/stove0/opus-target extensions/stove0/opus-target
-COPY extensions/stove0/opus-review-sampler extensions/stove0/opus-review-sampler
+COPY reference/stove0/targets/opus/target reference/stove0/targets/opus/target
+COPY reference/stove0/targets/opus/review-sampler reference/stove0/targets/opus/review-sampler
 COPY packages/file-download packages/file-download
 COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events
