@@ -108,6 +108,51 @@ def _run(
     return completed
 
 
+def _qualification_mount_operation(
+    operation: str,
+    command: list[str],
+    *,
+    cwd: Path,
+) -> None:
+    completed = subprocess.run(
+        command,
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 0:
+        return
+    stdout = (completed.stdout or "").strip()[-2000:] or "<empty>"
+    stderr = (completed.stderr or "").strip()[-2000:] or "<empty>"
+    raise QualificationError(
+        f"{operation} failed with exit {completed.returncode}; "
+        f"command={command!r}; stdout={stdout!r}; stderr={stderr!r}"
+    )
+
+
+@contextmanager
+def _settled_qualification_mount(
+    backing: Path,
+    cleanup: Callable[[], None],
+) -> Iterator[Path]:
+    try:
+        yield backing
+    except BaseException as body_error:
+        try:
+            cleanup()
+        except BaseException as cleanup_error:
+            body_diagnostic = f"{type(body_error).__name__}: {body_error}"[-2000:]
+            cleanup_diagnostic = f"{type(cleanup_error).__name__}: {cleanup_error}"[-4000:]
+            raise QualificationError(
+                f"qualification failed with {body_diagnostic}; "
+                f"mount cleanup also failed with {cleanup_diagnostic}"
+            ) from body_error
+        raise
+    else:
+        cleanup()
+
+
 def _source_checkout(root: Path, destination: Path, source_sha: str) -> None:
     archive = subprocess.run(
         ["git", "archive", "--format=tar", source_sha],
@@ -380,7 +425,8 @@ def _qualification_mount(scratch: Path) -> Iterator[Path]:
     if sys.platform.startswith("linux"):
         backing = scratch / "gogurt-listener-volume"
         backing.mkdir()
-        _run(
+        _qualification_mount_operation(
+            "Linux tmpfs qualification mount",
             [
                 "sudo",
                 "mount",
@@ -393,25 +439,24 @@ def _qualification_mount(scratch: Path) -> Iterator[Path]:
             ],
             cwd=scratch,
         )
-        try:
-            yield backing
-        finally:
-            subprocess.run(
+        with _settled_qualification_mount(
+            backing,
+            lambda: _qualification_mount_operation(
+                "Linux tmpfs qualification unmount",
                 ["sudo", "umount", str(backing)],
                 cwd=scratch,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            ),
+        ) as mounted:
+            yield mounted
         return
     if sys.platform == "darwin":
         backing = Path("/Volumes") / f"GogurtQualification-{os.getpid()}"
         image = scratch / "gogurt-listener.dmg"
-        _run(
+        _qualification_mount_operation(
+            "macOS qualification disk-image creation",
             [
                 "hdiutil",
                 "create",
-                "-quiet",
                 "-size",
                 "16m",
                 "-fs",
@@ -422,11 +467,11 @@ def _qualification_mount(scratch: Path) -> Iterator[Path]:
             ],
             cwd=scratch,
         )
-        _run(
+        _qualification_mount_operation(
+            "macOS qualification disk-image attachment",
             [
                 "hdiutil",
                 "attach",
-                "-quiet",
                 "-nobrowse",
                 "-mountpoint",
                 str(backing),
@@ -434,16 +479,15 @@ def _qualification_mount(scratch: Path) -> Iterator[Path]:
             ],
             cwd=scratch,
         )
-        try:
-            yield backing
-        finally:
-            subprocess.run(
-                ["hdiutil", "detach", "-quiet", str(backing)],
+        with _settled_qualification_mount(
+            backing,
+            lambda: _qualification_mount_operation(
+                "macOS qualification disk-image detachment",
+                ["hdiutil", "detach", str(backing)],
                 cwd=scratch,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            ),
+        ) as mounted:
+            yield mounted
         return
     if sys.platform == "win32":
         backing = scratch / "gogurt-listener-volume"
@@ -458,17 +502,20 @@ def _qualification_mount(scratch: Path) -> Iterator[Path]:
         )
         if drive is None:
             raise QualificationError("no disposable Windows drive letter is available")
-        _run(["subst.exe", drive, str(backing)], cwd=scratch)
-        try:
-            yield Path(drive + "\\")
-        finally:
-            subprocess.run(
+        _qualification_mount_operation(
+            "Windows qualification drive attachment",
+            ["subst.exe", drive, str(backing)],
+            cwd=scratch,
+        )
+        with _settled_qualification_mount(
+            Path(drive + "\\"),
+            lambda: _qualification_mount_operation(
+                "Windows qualification drive detachment",
                 ["subst.exe", drive, "/D"],
                 cwd=scratch,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            ),
+        ) as mounted:
+            yield mounted
         return
     raise QualificationError(f"no disposable mount strategy for {sys.platform}")
 
@@ -1133,7 +1180,6 @@ def _run_gogurt_listener_lifecycle(
                     "listener.json",
                     "listener.sqlite3",
                     "heartbeat.json",
-                    "heartbeat.lock",
                     "listener.lock",
                     "listener.log",
                     "listener.fatal.log",
