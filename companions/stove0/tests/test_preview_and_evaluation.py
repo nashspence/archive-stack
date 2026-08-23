@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from stove0_protocol import (
     BranchSetDecision,
     BranchSetPlan,
     CollectionRootRef,
+    CoordinationBranchPlan,
     EvaluationDefinition,
     EvaluationDefinitionPayload,
     EvaluationMatrix,
@@ -209,7 +211,10 @@ class PreviewPlanning:
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
+        *,
+        nested_observer: Callable[[WorkIdentity], tuple[ObservationEvidence, ...]] | None = None,
     ) -> BranchSetDecision:
+        assert nested_observer is not None
         selection = ArtifactSelection.seal(observations[0].request.subjects)
         branch = BranchPlan.build(
             parent_work=work,
@@ -261,11 +266,79 @@ class PreviewPlanning:
             ),
             intent={"suffix": ".copy"},
             target_options={},
+            observations=_plan.observations,
         )
 
     def operation_contract(self, operation: OperationRef) -> OperationContract:
         assert operation.sha256 == self.operation.contract_sha256
         return self.operation
+
+
+class NestedPreviewPlanning(PreviewPlanning):
+    def workflow_plan(
+        self,
+        work: WorkIdentity,
+        observations: tuple[ObservationEvidence, ...],
+        *,
+        nested_observer: Callable[[WorkIdentity], tuple[ObservationEvidence, ...]] | None = None,
+    ) -> BranchSetDecision:
+        assert nested_observer is not None
+        selection = ArtifactSelection.seal(observations[0].request.subjects)
+        child_work = CoordinationBranchPlan.build_work(
+            parent_work=work,
+            branch_id="nested",
+            decision_sha256=_sha("d"),
+            selection=selection,
+            recipe=RecipeRef(id="fixture.child/v1", revision=1, sha256=_sha("5")),
+            effective_intent={"suffix": ".copy"},
+        )
+        child_evidence = nested_observer(child_work)
+        leaf = BranchPlan.build(
+            parent_work=child_work,
+            branch_id="leaf",
+            decision_sha256=_sha("e"),
+            selection=selection,
+            recipe=child_work.recipe,
+            effective_intent=child_work.effective_intent,
+            workflow_intent=WorkflowPlanIntent(
+                operation=OperationRef(
+                    id=self.operation.id,
+                    sha256=self.operation.contract_sha256,
+                ),
+                target_registration_id="fixture-target",
+                target_contract_sha256=self.target.contract_sha256,
+                output_tags=("fixture-output",),
+                retirement_policy="retain",
+            ),
+            observations=child_evidence,
+        )
+        child_plan = BranchSetPlan.seal(
+            parent_work=child_work,
+            decision_sha256=_sha("e"),
+            evidence_sha256s=tuple(item.result.result_sha256 for item in child_evidence),
+            branches=(leaf,),
+            selections={selection.selection_sha256: selection},
+        )
+        root_plan = BranchSetPlan.seal(
+            parent_work=work,
+            decision_sha256=_sha("d"),
+            evidence_sha256s=tuple(item.result.result_sha256 for item in observations),
+            branches=(
+                CoordinationBranchPlan(
+                    branch_id="nested",
+                    artifact_selection=selection.ref(),
+                    work=child_work,
+                    branch_set_sha256=child_plan.branch_set_sha256,
+                ),
+            ),
+            selections={selection.selection_sha256: selection},
+            branch_sets={child_plan.branch_set_sha256: child_plan},
+        )
+        return BranchSetDecision(
+            plan=root_plan,
+            selections=(selection,),
+            branch_sets=(child_plan,),
+        )
 
 
 class PreviewRiverhog:
@@ -284,7 +357,7 @@ class PreviewRiverhog:
         claim: ClaimBinding,
         request: ObservationRequest,
     ) -> ObserverRuntimeAuthority:
-        assert request.work_id == _work().work_id
+        assert request.work_id
         self.actions.append("read-inputs")
         return ObserverRuntimeAuthority(
             riverhog_base_url="https://riverhog.invalid",
@@ -362,6 +435,9 @@ class PreviewTarget:
                     inputs=request.inputs,
                     intent=request.intent,
                     target_options=request.target_options,
+                    observation_result_sha256s=tuple(
+                        sorted(item.result.result_sha256 for item in request.observations)
+                    ),
                 )
             ),
         )
@@ -393,7 +469,7 @@ def test_workflow_preview_is_deterministic_across_claim_generations() -> None:
     first = service.preview(_work())
     second = service.preview(_work())
 
-    assert first.state == second.state == "ready"
+    assert first.state == second.state == "ready", first.outcome
     assert first.preview_id == second.preview_id
     assert first.preview_sha256 == second.preview_sha256
     assert first.branch_set_plan == second.branch_set_plan
@@ -403,6 +479,43 @@ def test_workflow_preview_is_deterministic_across_claim_generations() -> None:
     assert [item.fence for item in observer.invocations] == [1, 2]
     assert len(riverhog.abandoned) == 2
     assert "write-output" not in riverhog.actions
+    assert target_port.preflights == 2
+
+
+def test_workflow_preview_recursively_binds_nested_observation_and_leaf_preflight() -> None:
+    operation = _operation()
+    target = _target(operation)
+    observer_value = _observer()
+    riverhog = PreviewRiverhog()
+    observer = PreviewObserver(observer_value)
+    target_port = PreviewTarget(operation, target)
+    service = WorkflowPreviewService(
+        riverhog=riverhog,
+        planning=NestedPreviewPlanning(operation, target, observer_value),
+        observers=observer,
+        targets=target_port,
+    )
+
+    first = service.preview(_work())
+    second = service.preview(_work())
+
+    assert first.state == second.state == "ready"
+    assert first.preview_sha256 == second.preview_sha256
+    assert len(first.observations) == 2
+    assert len(first.branch_sets) == 1
+    assert len(first.target_plans) == 1
+    child_plan = first.branch_sets[0]
+    leaf = child_plan.branches[0]
+    assert isinstance(leaf, BranchPlan)
+    assert first.target_plans[0].work_id == leaf.workflow_plan.work.work_id
+    assert first.target_plans[0].branch_id == "leaf"
+    assert leaf.workflow_plan.observations == tuple(
+        item
+        for item in first.observations
+        if item.request.work_id == child_plan.parent_work.work_id
+    )
+    assert [item.fence for item in observer.invocations] == [1, 1, 2, 2]
+    assert len(riverhog.abandoned) == 2
     assert target_port.preflights == 2
 
 

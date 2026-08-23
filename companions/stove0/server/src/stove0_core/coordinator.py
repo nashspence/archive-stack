@@ -8,6 +8,7 @@ ports across processes while sharing the same durable :class:`WorkRecord`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -29,6 +30,8 @@ from stove0_protocol import (
     WorkflowPlan,
     WorkflowPreview,
     WorkIdentity,
+    branch_work,
+    validate_observation_result,
 )
 from stove0_target_client import TargetClient
 from stove0_target_protocol import (
@@ -135,6 +138,8 @@ class PlanningPort(Protocol):
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
+        *,
+        nested_observer: Callable[[WorkIdentity], tuple[ObservationEvidence, ...]] | None = None,
     ) -> BranchSetDecision | WorkInapplicable: ...
 
     def target_preflight_request(
@@ -179,6 +184,24 @@ class TargetPort(Protocol):
         job_id: str,
         request: TargetCancelRequest,
     ) -> TargetJobStatus: ...
+
+
+class PlanningObservationTerminal(RuntimeError):
+    """Truthful terminal result from an observation required during tree planning."""
+
+    def __init__(
+        self,
+        *,
+        state: Literal["inapplicable", "failed", "canceled"],
+        code: str,
+        message: str,
+        retryable: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.state = state
+        self.code = code
+        self.message = message
+        self.retryable = retryable
 
 
 class HttpObserverPort:
@@ -282,6 +305,12 @@ class Stove0Coordinator:
         if record is None:
             raise KeyError(work_id)
         phase = record.phase
+        if (
+            record.coordination_cancel_requested
+            and record.branch_set_plan is not None
+            and phase in {"eligible", "claimed", "coordinating"}
+        ):
+            return self._advance_coordination_cancel(record)
         if phase == "abandon_pending":
             self.riverhog.abandon_claim(record)
             return self.work.complete_abandon(
@@ -321,6 +350,11 @@ class Stove0Coordinator:
                     work_id,
                     expected_revision=record.revision,
                 )
+            if record.branch_set_plan is not None:
+                return self.work.activate_preplanned_coordination(
+                    work_id,
+                    expected_revision=record.revision,
+                )
             assert record.claim is not None
             requests = self.planning.observation_requests(record.work)
             if requests:
@@ -341,7 +375,31 @@ class Stove0Coordinator:
                     strict=True,
                 )
             )
-            decision = self.planning.workflow_plan(record.work, evidence)
+            try:
+                decision = self.planning.workflow_plan(
+                    record.work,
+                    evidence,
+                    nested_observer=lambda child: self._observe_planning_work(record, child),
+                )
+            except PlanningObservationTerminal as outcome:
+                if outcome.state == "inapplicable":
+                    return self.work.mark_inapplicable(
+                        work_id,
+                        WorkInapplicable(code=outcome.code, message=outcome.message),
+                        expected_revision=record.revision,
+                    )
+                if outcome.state == "failed":
+                    assert outcome.retryable is not None
+                    return self.work.fail(
+                        work_id,
+                        WorkFailure(
+                            code=outcome.code,
+                            message=outcome.message,
+                            retryable=outcome.retryable,
+                        ),
+                        expected_revision=record.revision,
+                    )
+                return self.work.cancel(work_id, expected_revision=record.revision)
             if isinstance(decision, WorkInapplicable):
                 return self.work.mark_inapplicable(
                     work_id,
@@ -382,6 +440,17 @@ class Stove0Coordinator:
                     expected_revision=record.revision,
                 )
             if projection.evaluation.branch_set_succeeded:
+                settlement = projection.evaluation.coordination_settlement
+                if settlement is None:
+                    raise RuntimeError("successful coordination has no exact settlement")
+                if record.coordination_settlement is None:
+                    return self.work.record_coordination_settlement(
+                        work_id,
+                        settlement,
+                        expected_revision=record.revision,
+                    )
+                if record.coordination_settlement != settlement:
+                    raise RuntimeError("durable coordination settlement changed")
                 if not self._successful_children_complete(record):
                     return record
                 if (
@@ -454,7 +523,13 @@ class Stove0Coordinator:
             return self.work.cancel(work_id, expected_revision=record.revision)
         if record.phase in {"settled", "retirement_pending"}:
             raise RuntimeError("settled work cannot be canceled")
-        if record.phase == "coordinating" and record.branch_set_plan is not None:
+        if record.coordination_settlement is not None:
+            raise RuntimeError("successfully settled coordination cannot be canceled")
+        if record.branch_set_plan is not None and record.phase in {
+            "eligible",
+            "claimed",
+            "coordinating",
+        }:
             return self.work.request_coordination_cancel(
                 work_id,
                 expected_revision=record.revision,
@@ -502,6 +577,57 @@ class Stove0Coordinator:
             descriptor=descriptor,
             expected_revision=record.revision,
         )
+
+    def _observe_planning_work(
+        self,
+        parent: WorkRecord,
+        work: WorkIdentity,
+    ) -> tuple[ObservationEvidence, ...]:
+        """Observe an exact nested coordinator under the root's scoped claim."""
+
+        if parent.claim is None:
+            raise RuntimeError("nested planning requires the root coordination claim")
+        evidence: list[ObservationEvidence] = []
+        for request in self.planning.observation_requests(work):
+            if request.work_id != work.work_id:
+                raise RuntimeError("nested observation request differs from its work identity")
+            descriptor = self.observers.descriptor(request.observer_registration_id)
+            if descriptor.descriptor_sha256 != request.observer_descriptor_sha256:
+                raise RuntimeError("configured observer descriptor changed during tree planning")
+            authority = self.riverhog.observation_authority(parent.claim, request)
+            result = self.observers.observe(
+                request.observer_registration_id,
+                ObservationInvocation(
+                    request=request,
+                    claim_id=parent.claim.claim_id,
+                    fence=parent.claim.fence,
+                    runtime=authority,
+                ),
+            )
+            validate_observation_result(result, request, descriptor)
+            if result.state == "inapplicable":
+                assert result.inapplicable is not None
+                raise PlanningObservationTerminal(
+                    state="inapplicable",
+                    code=result.inapplicable.code,
+                    message=result.inapplicable.message,
+                )
+            if result.state == "failed":
+                assert result.failure is not None
+                raise PlanningObservationTerminal(
+                    state="failed",
+                    code=result.failure.code,
+                    message=result.failure.message,
+                    retryable=result.failure.retryable,
+                )
+            if result.state == "canceled":
+                raise PlanningObservationTerminal(
+                    state="canceled",
+                    code="observer-canceled",
+                    message="A required nested content observation was canceled.",
+                )
+            evidence.append(ObservationEvidence(request=request, result=result))
+        return tuple(sorted(evidence, key=lambda item: item.request.request_id))
 
     def _preflight(self, record: WorkRecord) -> WorkRecord:
         plan = record.workflow_plan
@@ -633,8 +759,9 @@ class Stove0Coordinator:
             )
         if record.branch_set_plan is not None:
             operations = tuple(
-                self.planning.operation_contract(branch.workflow_plan.operation)
-                for branch in record.branch_set_plan.branches
+                self.planning.operation_contract(child.workflow_plan.operation)
+                for child in self._coordination_descendant_leaves(record)
+                if child.workflow_plan is not None
             )
             if not all(operation.source_retirement_permitted for operation in operations):
                 raise RuntimeError(
@@ -803,12 +930,28 @@ class Stove0Coordinator:
     def _coordination_child_ids(self, record: WorkRecord) -> tuple[str, ...]:
         if record.branch_set_plan is None:
             raise RuntimeError("coordination has no branch-set plan")
-        child_ids = [
-            branch.workflow_plan.work.work_id for branch in record.branch_set_plan.branches
-        ]
+        child_ids = [branch_work(branch).work_id for branch in record.branch_set_plan.branches]
         if record.join_plan is not None:
             child_ids.append(record.join_plan.work.work_id)
         return tuple(child_ids)
+
+    def _coordination_descendant_leaves(self, record: WorkRecord) -> tuple[WorkRecord, ...]:
+        leaves: list[WorkRecord] = []
+        if record.branch_set_plan is None:
+            raise RuntimeError("coordination has no branch-set plan")
+        pending = [branch_work(branch).work_id for branch in record.branch_set_plan.branches]
+        while pending:
+            child_id = pending.pop()
+            child = self.work.store.load(child_id)
+            if child is None:
+                raise RuntimeError("coordination descendant is unavailable")
+            if child.branch_set_plan is not None:
+                pending.extend(
+                    branch_work(branch).work_id for branch in child.branch_set_plan.branches
+                )
+            elif child.workflow_plan is not None:
+                leaves.append(child)
+        return tuple(sorted(leaves, key=lambda item: item.work_id))
 
     def _coordination_children(self, record: WorkRecord) -> tuple[WorkRecord, ...]:
         children: list[WorkRecord] = []
@@ -825,6 +968,7 @@ __all__ = [
     "HttpTargetPort",
     "ParentOutcomeBinding",
     "ObserverPort",
+    "PlanningObservationTerminal",
     "PlanningPort",
     "RiverhogControlPort",
     "Stove0Coordinator",

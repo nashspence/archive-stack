@@ -420,7 +420,11 @@ def _table_value(item: dict[str, Any], column: str) -> str:
         return str(item[column])
     status = item.get("target_status")
     workflow = item.get("workflow_plan")
+    branch_set = item.get("branch_set_plan")
+    coordination = item.get("coordination_settlement")
     if column == "result_kind":
+        if isinstance(branch_set, dict):
+            return "coordination"
         if isinstance(workflow, dict) and workflow.get("result_kind") is not None:
             return str(workflow["result_kind"])
         if isinstance(status, dict):
@@ -431,13 +435,16 @@ def _table_value(item: dict[str, Any], column: str) -> str:
             )
     if column == "target_state" and isinstance(status, dict):
         return str(status.get("state", ""))
-    if column == "result_identity" and isinstance(status, dict):
-        receipt = status.get("effect_receipt")
-        if isinstance(receipt, dict):
-            return str(receipt.get("receipt_sha256", ""))
-        output = status.get("output_collection")
-        if isinstance(output, dict):
-            return str(output.get("content_identity", ""))
+    if column == "result_identity":
+        if isinstance(coordination, dict):
+            return str(coordination.get("settlement_sha256", ""))
+        if isinstance(status, dict):
+            receipt = status.get("effect_receipt")
+            if isinstance(receipt, dict):
+                return str(receipt.get("receipt_sha256", ""))
+            output = status.get("output_collection")
+            if isinstance(output, dict):
+                return str(output.get("content_identity", ""))
     return ""
 
 

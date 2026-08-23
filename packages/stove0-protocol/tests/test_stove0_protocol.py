@@ -425,6 +425,7 @@ def test_workflow_preview_and_evaluation_contracts_are_deterministic() -> None:
             target_plans=(
                 BranchTargetPreview(
                     branch_id="archive",
+                    work_id=workflow.work.work_id,
                     workflow_plan_sha256=workflow.workflow_plan_sha256,
                     target_plan=target,
                 ),
@@ -441,6 +442,7 @@ def test_workflow_preview_and_evaluation_contracts_are_deterministic() -> None:
             target_plans=(
                 BranchTargetPreview(
                     branch_id="archive",
+                    work_id=workflow.work.work_id,
                     workflow_plan_sha256=workflow.workflow_plan_sha256,
                     target_plan=target,
                 ),

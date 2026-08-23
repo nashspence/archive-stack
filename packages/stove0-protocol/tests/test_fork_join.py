@@ -14,9 +14,11 @@ from stove0_protocol import (
     BranchOutcome,
     BranchOutcomeState,
     BranchPlan,
+    BranchSetDecision,
     BranchSetPlan,
     BranchSettlement,
     CollectionRootRef,
+    CoordinationBranchPlan,
     EvaluationBinding,
     JoinDeclaration,
     JoinMemberDeclaration,
@@ -391,22 +393,258 @@ def test_child_work_inputs_are_exactly_selection_roots() -> None:
         assert "branch_set" not in branch_plan.workflow_plan.work.model_dump_json()
 
 
-def test_branch_set_rejects_nested_parent_work() -> None:
+def test_branch_bound_work_may_be_an_exact_coordination_parent() -> None:
     plan, selections, branches = branch_set_fixture(with_join=False)
-    nested_parent = branches["video"].workflow_plan.work
+    selection = selections[branches["video"].artifact_selection.selection_sha256]
+    nested_parent = CoordinationBranchPlan.build_work(
+        parent_work=plan.parent_work,
+        branch_id="nested-parent",
+        decision_sha256=plan.decision_sha256,
+        selection=selection,
+        recipe=recipe("nested-parent"),
+        effective_intent={"level": "nested"},
+    )
     nested_branch = branch(
         parent=nested_parent,
         branch_id="nested",
         decision=digest("nested-decision"),
-        selection=selections[branches["video"].artifact_selection.selection_sha256],
+        selection=selection,
     )
-    with pytest.raises(ValidationError, match="top-level"):
+    nested = BranchSetPlan.seal(
+        parent_work=nested_parent,
+        decision_sha256=digest("nested-decision"),
+        branches=(nested_branch,),
+        selections=selections,
+    )
+    assert nested.parent_work == nested_parent
+    assert nested.branches == (nested_branch,)
+
+
+def test_branch_bound_coordination_cannot_request_source_retirement() -> None:
+    plan, selections, branches = branch_set_fixture(with_join=False)
+    selection = selections[branches["video"].artifact_selection.selection_sha256]
+    nested_parent = CoordinationBranchPlan.build_work(
+        parent_work=plan.parent_work,
+        branch_id="nested-parent",
+        decision_sha256=plan.decision_sha256,
+        selection=selection,
+        recipe=recipe("nested-parent"),
+        effective_intent={"level": "nested"},
+    )
+    nested_branch = branch(
+        parent=nested_parent,
+        branch_id="nested",
+        decision=digest("nested-decision"),
+        selection=selection,
+    )
+
+    with pytest.raises(ValueError, match="nested coordination must retain"):
         BranchSetPlan.seal(
             parent_work=nested_parent,
             decision_sha256=digest("nested-decision"),
             branches=(nested_branch,),
+            retirement_policy="retire-after-verified-output",
             selections=selections,
         )
+
+
+def test_nested_join_result_is_consumed_through_coordination_and_leaf_settlements() -> None:
+    source = root(1, "nested-source")
+    top = parent_work(source)
+    selection = ArtifactSelection.seal((artifact("source", source, "source.bin"),))
+    child_work = CoordinationBranchPlan.build_work(
+        parent_work=top,
+        branch_id="nested",
+        decision_sha256=digest("top-decision"),
+        selection=selection,
+        recipe=recipe("nested"),
+        effective_intent={"level": "nested"},
+    )
+    child_branches = {
+        branch_id: branch(
+            parent=child_work,
+            branch_id=branch_id,
+            decision=digest("child-decision"),
+            selection=selection,
+        )
+        for branch_id in ("audio", "video")
+    }
+    child_join = JoinDeclaration.seal(
+        members=tuple(
+            JoinMemberDeclaration(
+                branch_id=branch_id,
+                output_roles=(f"archive.{branch_id}/v1",),
+            )
+            for branch_id in ("audio", "video")
+        ),
+        recipe=recipe("child-join"),
+        effective_intent={},
+        workflow_intent=workflow_intent("child-join"),
+    )
+    child_plan = BranchSetPlan.seal(
+        parent_work=child_work,
+        decision_sha256=digest("child-decision"),
+        branches=tuple(child_branches.values()),
+        join=child_join,
+        selections={selection.selection_sha256: selection},
+    )
+    nested = CoordinationBranchPlan(
+        branch_id="nested",
+        artifact_selection=selection.ref(),
+        work=child_work,
+        branch_set_sha256=child_plan.branch_set_sha256,
+    )
+    direct = branch(
+        parent=top,
+        branch_id="direct",
+        decision=digest("top-decision"),
+        selection=selection,
+    )
+    top_join = JoinDeclaration.seal(
+        members=(
+            JoinMemberDeclaration(
+                branch_id="direct",
+                output_roles=("archive.direct/v1",),
+            ),
+            JoinMemberDeclaration(
+                branch_id="nested",
+                output_roles=("archive.combined/v1",),
+            ),
+        ),
+        recipe=recipe("top-join"),
+        effective_intent={},
+        workflow_intent=workflow_intent("top-join"),
+    )
+    top_plan = BranchSetPlan.seal(
+        parent_work=top,
+        decision_sha256=digest("top-decision"),
+        branches=(direct, nested),
+        join=top_join,
+        selections={selection.selection_sha256: selection},
+        branch_sets={child_plan.branch_set_sha256: child_plan},
+    )
+    decision = BranchSetDecision(
+        plan=top_plan,
+        branch_sets=(child_plan,),
+        selections=(selection,),
+    )
+
+    selections = dict(decision.selection_documents)
+    child_settlements: list[BranchSettlement] = []
+    for branch_id, child_branch in child_branches.items():
+        settlement, output = successful_branch(
+            child_branch,
+            f"nested-{branch_id}",
+            f"archive.{branch_id}/v1",
+        )
+        child_settlements.append(settlement)
+        selections[output.selection_sha256] = output
+    child_resolution = resolve_join_plan(child_plan, selections, child_settlements)
+    assert child_resolution is not None
+    child_join_plan, child_join_inputs = child_resolution
+    selections.update((item.selection_sha256, item) for item in child_join_inputs)
+    child_join_root = root(900, "nested-join")
+    child_join_output = ArtifactSelection.seal(
+        (
+            artifact(
+                "nested-join-output",
+                child_join_root,
+                "combined.mkv",
+                role="archive.combined/v1",
+            ),
+        )
+    )
+    selections[child_join_output.selection_sha256] = child_join_output
+    child_join_settlement = JoinSettlement.seal(
+        plan=child_join_plan,
+        derivation_sha256=digest("nested-join-derivation"),
+        output_collection=child_join_root,
+        output_selection=child_join_output,
+    )
+    child_evaluation = evaluate_branch_set(
+        child_plan,
+        selections,
+        branch_settlements=child_settlements,
+        join_settlement=child_join_settlement,
+    )
+    coordination = child_evaluation.coordination_settlement
+    assert coordination is not None
+    assert coordination.collection_result is not None
+    assert coordination.collection_result.producer_work_id == child_join_plan.work.work_id
+
+    direct_settlement, direct_output = successful_branch(
+        direct,
+        "direct",
+        "archive.direct/v1",
+    )
+    selections[direct_output.selection_sha256] = direct_output
+    top_resolution = resolve_join_plan(
+        top_plan,
+        selections,
+        (direct_settlement,),
+        coordination_settlements=(coordination,),
+        branch_sets=decision.branch_set_documents,
+    )
+    assert top_resolution is not None
+    top_join_plan, _ = top_resolution
+    nested_input = next(item for item in top_join_plan.inputs if item.branch_id == "nested")
+    assert nested_input.settlement_sha256 == coordination.settlement_sha256
+    assert nested_input.producer_settlement_sha256 == child_join_settlement.settlement_sha256
+
+
+def test_deep_coordination_tree_is_validated_iteratively_without_a_protocol_ceiling() -> None:
+    source = root(1, "deep-source")
+    selection = ArtifactSelection.seal((artifact("source", source, "source.bin"),))
+    works = [parent_work(source)]
+    decisions = [digest(f"deep-decision:{index}") for index in range(300)]
+    for index in range(299):
+        works.append(
+            CoordinationBranchPlan.build_work(
+                parent_work=works[-1],
+                branch_id="nested",
+                decision_sha256=decisions[index],
+                selection=selection,
+                recipe=recipe(f"depth-{index + 1}"),
+                effective_intent={"depth": index + 1},
+            )
+        )
+    plans: dict[str, BranchSetPlan] = {}
+    child_plan: BranchSetPlan | None = None
+    for index in reversed(range(300)):
+        if child_plan is None:
+            declaration = branch(
+                parent=works[index],
+                branch_id="leaf",
+                decision=decisions[index],
+                selection=selection,
+            )
+        else:
+            declaration = CoordinationBranchPlan(
+                branch_id="nested",
+                artifact_selection=selection.ref(),
+                work=works[index + 1],
+                branch_set_sha256=child_plan.branch_set_sha256,
+            )
+        child_plan = BranchSetPlan.seal(
+            parent_work=works[index],
+            decision_sha256=decisions[index],
+            branches=(declaration,),
+            selections={selection.selection_sha256: selection},
+            branch_sets=plans,
+        )
+        plans[child_plan.branch_set_sha256] = child_plan
+    assert child_plan is not None
+    root_plan = child_plan
+    descendants = tuple(
+        plan for digest_value, plan in plans.items() if digest_value != root_plan.branch_set_sha256
+    )
+    decision = BranchSetDecision(
+        plan=root_plan,
+        selections=(selection,),
+        branch_sets=tuple(sorted(descendants, key=lambda item: item.branch_set_sha256)),
+    )
+    assert len(decision.branch_set_documents) == 300
+    assert len(decision.leaf_branches()) == 1
 
 
 def test_branch_set_identity_and_bytes_ignore_declaration_order() -> None:

@@ -10,6 +10,10 @@ REPO_ROOT = Path(__file__).parents[3]
 STOVE0_CORE = REPO_ROOT / "companions" / "stove0" / "server" / "src" / "stove0_core"
 STOVE0_SERVER = REPO_ROOT / "companions" / "stove0" / "server" / "src"
 PROTOCOL_ROOT = REPO_ROOT / "packages" / "stove0-protocol" / "src"
+RIVERHOG_RUNTIME_ROOTS = (
+    REPO_ROOT / "riverhog" / "server" / "src",
+    REPO_ROOT / "packages" / "riverhog-protocol" / "src",
+)
 OBSERVER_PROTOCOL_ROOT = REPO_ROOT / "packages" / "stove0-observer-protocol" / "src"
 OBSERVER_ROOT = REPO_ROOT / "packages" / "stove0-observer-support" / "src"
 TARGET_PROTOCOL_ROOT = REPO_ROOT / "packages" / "stove0-target-protocol" / "src"
@@ -77,6 +81,15 @@ def _import_roots(path: Path) -> set[str]:
     return roots
 
 
+def _identifiers(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return {
+        node.id if isinstance(node, ast.Name) else node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Name, ast.Attribute))
+    }
+
+
 def test_stove0_core_has_no_content_parser_probe_or_tool_dependency() -> None:
     imports = {root for path in STOVE0_CORE.rglob("*.py") for root in _import_roots(path)}
     assert not (imports & FORBIDDEN_CORE_IMPORTS)
@@ -135,6 +148,15 @@ def test_protocol_package_is_independent_of_implementations_and_stove0_core() ->
     }
     imports = {root for path in PROTOCOL_ROOT.rglob("*.py") for root in _import_roots(path)}
     assert not (imports & forbidden)
+
+
+def test_riverhog_runtime_remains_stove0_and_coordination_ontology_agnostic() -> None:
+    sources = [path for root in RIVERHOG_RUNTIME_ROOTS for path in root.rglob("*.py")]
+    imports = {root for path in sources for root in _import_roots(path)}
+    assert "stove0_protocol" not in imports
+    assert not {
+        path for path in sources if {"BranchSetPlan", "CoordinationSettlement"} & _identifiers(path)
+    }
 
 
 def test_durable_stove0_work_schema_contains_no_bearer_material() -> None:

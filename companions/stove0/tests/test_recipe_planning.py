@@ -19,6 +19,7 @@ from stove0_core.recipes import (
     FactPredicate,
     ObserverUse,
     OperationProjection,
+    RecipeCoordinationRoute,
     RecipeJoin,
     RecipeJoinMember,
     RecipeRoute,
@@ -41,6 +42,7 @@ from stove0_protocol import (
     BranchSetDecision,
     BranchSettlement,
     CollectionRootRef,
+    CoordinationBranchPlan,
     JsonSchemaDocument,
     ObservationEvidence,
     ObserverContractSupport,
@@ -412,6 +414,77 @@ def test_planning_rejects_stale_target_operation_contract_before_preflight() -> 
     )
 
     with pytest.raises(RuntimeError, match="another revision of the recipe operation"):
+        planner.workflow_plan(work, ())
+
+
+def test_planner_seals_exact_nested_subrecipe_tree_without_target_smearing() -> None:
+    child = RecipeDefinition(
+        id="fixture.child/v1",
+        revision=1,
+        input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
+        routes=(
+            RecipeRoute(
+                id="archive",
+                operation_id=AUDIO_ARCHIVE_OPERATION.id,
+                target_registration_id="opus",
+                artifact_rules=(ArtifactRule(role="stove0.media.source/v1"),),
+                output_tags=("archive",),
+            ),
+        ),
+    )
+    parent = RecipeDefinition(
+        id="fixture.parent/v1",
+        revision=1,
+        input_tags=("fixture",),
+        unmatched_artifact_disposition="retain-in-source",
+        routes=(
+            RecipeCoordinationRoute(
+                id="nested",
+                recipe=child.ref,
+                artifact_rules=(ArtifactRule(role="stove0.media.source/v1"),),
+                intent={"scope": "child"},
+            ),
+        ),
+    )
+    planner = RecipePlanner(
+        catalog=RecipeCatalog(
+            operations=(AUDIO_ARCHIVE_OPERATION,),
+            recipes=(child, parent),
+        ),
+        riverhog=cast(ApiClient, CatalogApi()),
+        observers=cast(ObserverPort, object()),
+        targets=cast(TargetPort, ArchiveTargets()),
+    )
+    work = planner.create_work(
+        parent.id,
+        (
+            CollectionRootRef(
+                collection_id=11,
+                manifest_sha256=_sha("1"),
+                content_identity=_sha("2"),
+            ),
+        ),
+    )
+
+    first = planner.workflow_plan(work, (), nested_observer=lambda _child: ())
+    second = planner.workflow_plan(work, (), nested_observer=lambda _child: ())
+
+    assert isinstance(first, BranchSetDecision)
+    assert first == second
+    assert len(first.plan.branches) == 1
+    declaration = first.plan.branches[0]
+    assert isinstance(declaration, CoordinationBranchPlan)
+    assert declaration.work.recipe == child.ref
+    assert declaration.work.effective_intent == {"scope": "child"}
+    child_plan = first.branch_set_documents[declaration.branch_set_sha256]
+    assert child_plan.parent_work == declaration.work
+    assert child_plan.retirement_policy == "retain"
+    assert [item.branch_id for item in child_plan.branches] == ["archive"]
+    assert [item.workflow_plan.work.work_id for item in first.leaf_branches()] == [
+        child_plan.branches[0].workflow_plan.work.work_id
+    ]
+    with pytest.raises(RuntimeError, match="observation authority"):
         planner.workflow_plan(work, ())
 
 

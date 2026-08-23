@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import fnmatch
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import cast
 
@@ -14,11 +15,13 @@ from riverhog_protocol.collection_workflows import canonical_json_sha256
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSubject,
+    BranchDeclaration,
     BranchPlan,
     BranchSetDecision,
     BranchSetPlan,
     BranchWorkBinding,
     CollectionRootRef,
+    CoordinationBranchPlan,
     JoinDeclaration,
     JoinMemberDeclaration,
     JoinWorkBinding,
@@ -39,7 +42,9 @@ from stove0_recipe_config import (
     FactPredicate,
     ObserverUse,
     OperationProjection,
+    RecipeBranch,
     RecipeCatalog,
+    RecipeCoordinationRoute,
     RecipeDefinition,
     RecipeJoin,
     RecipeJoinMember,
@@ -53,6 +58,24 @@ from stove0_target_protocol import (
 
 from stove0_core.coordinator import ObserverPort, TargetPort
 from stove0_core.work_state import WorkInapplicable
+
+NestedObservation = Callable[[WorkIdentity], tuple[ObservationEvidence, ...]]
+
+
+@dataclass(slots=True)
+class _PlanningFrame:
+    work: WorkIdentity
+    recipe: RecipeDefinition
+    evidence: tuple[ObservationEvidence, ...]
+    selected: tuple[tuple[RecipeBranch, ArtifactSelection], ...]
+    decision_sha256: str
+    root: bool
+    next_branch: int = 0
+    branches: list[BranchDeclaration] = field(default_factory=list)
+    selections: dict[str, ArtifactSelection] = field(default_factory=dict)
+    branch_sets: dict[str, BranchSetPlan] = field(default_factory=dict)
+    parent_route: RecipeCoordinationRoute | None = None
+    parent_selection: ArtifactSelection | None = None
 
 
 class RecipePlanner:
@@ -89,7 +112,7 @@ class RecipePlanner:
         )
 
     def observation_requests(self, work: WorkIdentity) -> tuple[ObservationRequest, ...]:
-        if work.fork_join is not None:
+        if isinstance(work.fork_join, JoinWorkBinding):
             return ()
         recipe = self._recipe(work)
         requests: list[ObservationRequest] = []
@@ -129,13 +152,142 @@ class RecipePlanner:
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
+        *,
+        nested_observer: NestedObservation | None = None,
     ) -> BranchSetDecision | WorkInapplicable:
-        if work.fork_join is not None:
-            raise RuntimeError("branch and join workflow plans are sealed by their parent plan")
+        if isinstance(work.fork_join, JoinWorkBinding):
+            raise RuntimeError("join work cannot become a coordination parent")
+        prepared = self._planning_frame(work, observations, root=True)
+        if isinstance(prepared, WorkInapplicable):
+            return prepared
+
+        stack = [prepared]
+        completed: BranchSetDecision | None = None
+        while stack:
+            frame = stack[-1]
+            if frame.next_branch < len(frame.selected):
+                route, selection = frame.selected[frame.next_branch]
+                frame.next_branch += 1
+                if isinstance(route, RecipeRoute):
+                    frame.branches.append(
+                        self._branch_plan(
+                            parent=frame.work,
+                            observations=frame.evidence,
+                            route=route,
+                            selection=selection,
+                            decision_sha256=frame.decision_sha256,
+                            recipe=frame.recipe,
+                        )
+                    )
+                    continue
+                if nested_observer is None:
+                    raise RuntimeError("nested coordination requires an observation authority")
+                compiled_intent, _compiled_options = self._project_operation(
+                    frame.work,
+                    route.projections,
+                )
+                child_work = CoordinationBranchPlan.build_work(
+                    parent_work=frame.work,
+                    branch_id=route.id,
+                    decision_sha256=frame.decision_sha256,
+                    selection=selection,
+                    recipe=route.recipe,
+                    effective_intent={**route.intent, **compiled_intent},
+                )
+                child = self._planning_frame(
+                    child_work,
+                    nested_observer(child_work),
+                    root=False,
+                )
+                if isinstance(child, WorkInapplicable):
+                    return WorkInapplicable(
+                        code=child.code,
+                        message=f"Subrecipe branch {route.id}: {child.message}"[:1000],
+                    )
+                child.parent_route = route
+                child.parent_selection = selection
+                stack.append(child)
+                continue
+
+            join = (
+                self._join_declaration(frame.work, frame.recipe.join)
+                if frame.recipe.join is not None
+                else None
+            )
+            policy = frame.recipe.source_retirement_policy if frame.root else "retain"
+            plan = BranchSetPlan.seal(
+                parent_work=frame.work,
+                decision_sha256=frame.decision_sha256,
+                evidence_sha256s=tuple(
+                    sorted(item.result.result_sha256 for item in frame.evidence)
+                ),
+                branches=frame.branches,
+                join=join,
+                retirement_policy=policy,
+                retirement_grace_seconds=(
+                    frame.recipe.retirement_grace_seconds if frame.root else 0
+                ),
+                selections=frame.selections,
+                branch_sets=frame.branch_sets,
+            )
+            completed = BranchSetDecision(
+                plan=plan,
+                selections=tuple(frame.selections[key] for key in sorted(frame.selections)),
+                branch_sets=tuple(frame.branch_sets[key] for key in sorted(frame.branch_sets)),
+            )
+            stack.pop()
+            if not stack:
+                break
+
+            parent = stack[-1]
+            parent_route = frame.parent_route
+            parent_selection = frame.parent_selection
+            if parent_route is None or parent_selection is None:
+                raise RuntimeError("nested planning frame lost its parent binding")
+            parent.branches.append(
+                CoordinationBranchPlan(
+                    branch_id=parent_route.id,
+                    artifact_selection=parent_selection.ref(),
+                    work=frame.work,
+                    branch_set_sha256=plan.branch_set_sha256,
+                )
+            )
+            for digest, selection_document in completed.selection_documents.items():
+                _retain_exact(parent.selections, digest, selection_document)
+            for digest, child_plan in completed.branch_set_documents.items():
+                _retain_exact(parent.branch_sets, digest, child_plan)
+
+        if completed is None:
+            raise RuntimeError("workflow planning produced no branch-set decision")
+        if completed.plan.retirement_policy == "retire-after-verified-output":
+            for branch in completed.leaf_branches():
+                selection = completed.selection_documents[
+                    branch.artifact_selection.selection_sha256
+                ]
+                problem = _operation_input_problem(
+                    self.catalog.operation(branch.workflow_plan.operation.id),
+                    selection,
+                )
+                if problem is not None:
+                    return WorkInapplicable(
+                        code="unsafe-retirement-operation-inputs",
+                        message=(
+                            f"Unsafe retirement inputs for branch {branch.branch_id}: {problem}"
+                        ),
+                    )
+        return completed
+
+    def _planning_frame(
+        self,
+        work: WorkIdentity,
+        observations: tuple[ObservationEvidence, ...],
+        *,
+        root: bool,
+    ) -> _PlanningFrame | WorkInapplicable:
         recipe = self._recipe(work)
         inventory = self._inventory(work)
         evidence = tuple(sorted(observations, key=lambda item: item.request.request_id))
-        selected: list[tuple[RecipeRoute, ArtifactSelection]] = []
+        selected: list[tuple[RecipeBranch, ArtifactSelection]] = []
         for route in recipe.routes:
             artifacts = _route_artifacts(
                 _subjects(inventory, route.artifact_rules),
@@ -179,7 +331,7 @@ class RecipePlanner:
                 ),
             )
 
-        if recipe.source_retirement_policy == "retire-after-verified-output":
+        if root and recipe.source_retirement_policy == "retire-after-verified-output":
             if uncovered:
                 return WorkInapplicable(
                     code="unsafe-retirement-coverage",
@@ -188,17 +340,6 @@ class RecipePlanner:
                         "the complete immutable input inventory: " + ", ".join(uncovered[:10])
                     ),
                 )
-            for route, selection in selected:
-                problem = _operation_input_problem(
-                    self.catalog.operation(route.operation_id),
-                    selection,
-                )
-                if problem is not None:
-                    return WorkInapplicable(
-                        code="unsafe-retirement-operation-inputs",
-                        message=f"Unsafe retirement inputs for branch {route.id}: {problem}",
-                    )
-
         decision_sha256 = canonical_json_sha256(
             {
                 "format": "stove0-routing-decision/v1",
@@ -208,6 +349,7 @@ class RecipePlanner:
                 "branches": [
                     {
                         "branch_id": route.id,
+                        "kind": route.kind,
                         "artifact_selection_sha256": selection.selection_sha256,
                     }
                     for route, selection in selected
@@ -219,32 +361,15 @@ class RecipePlanner:
                 ),
             }
         )
-        branches = tuple(
-            self._branch_plan(
-                parent=work,
-                observations=evidence,
-                route=route,
-                selection=selection,
-                decision_sha256=decision_sha256,
-                recipe=recipe,
-            )
-            for route, selection in selected
-        )
-        join = self._join_declaration(work, recipe.join) if recipe.join is not None else None
         documents = {selection.selection_sha256: selection for _route, selection in selected}
-        selections = tuple(documents[digest] for digest in sorted(documents))
-        return BranchSetDecision(
-            plan=BranchSetPlan.seal(
-                parent_work=work,
-                decision_sha256=decision_sha256,
-                evidence_sha256s=tuple(sorted(item.result.result_sha256 for item in evidence)),
-                branches=branches,
-                join=join,
-                retirement_policy=recipe.source_retirement_policy,
-                retirement_grace_seconds=recipe.retirement_grace_seconds,
-                selections=documents,
-            ),
-            selections=selections,
+        return _PlanningFrame(
+            work=work,
+            recipe=recipe,
+            evidence=evidence,
+            selected=tuple(selected),
+            decision_sha256=decision_sha256,
+            root=root,
+            selections=documents,
         )
 
     def _branch_plan(
@@ -502,7 +627,7 @@ def _subjects(
 def _route_artifacts(
     subjects: tuple[ArtifactSubject, ...],
     *,
-    route: RecipeRoute,
+    route: RecipeBranch,
     associations: tuple[ArtifactAssociation, ...],
     observations: tuple[ObservationEvidence, ...],
 ) -> tuple[ArtifactSubject, ...]:
@@ -548,7 +673,7 @@ def _path_association_identity(path: str) -> tuple[str, str]:
 
 def _uncovered_inventory(
     inventory: Sequence[Mapping[str, object]],
-    selected: Sequence[tuple[RecipeRoute, ArtifactSelection]],
+    selected: Sequence[tuple[RecipeBranch, ArtifactSelection]],
 ) -> list[str]:
     covered = {
         (
@@ -573,6 +698,12 @@ def _uncovered_inventory(
         )
         not in covered
     )
+
+
+def _retain_exact[T](documents: dict[str, T], digest: str, document: T) -> None:
+    existing = documents.setdefault(digest, document)
+    if existing != document:
+        raise RuntimeError("content-addressed planning identity was reused")
 
 
 def _operation_input_problem(

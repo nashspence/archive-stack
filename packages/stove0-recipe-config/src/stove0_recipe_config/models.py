@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from config_validation import load_yaml_config
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
@@ -88,19 +88,14 @@ class OperationProjection(RecipeModel):
     destination_pointer: str = Field(pattern=_JSON_POINTER_PATTERN)
 
 
-class RecipeRoute(RecipeModel):
+class _RecipeRouteBase(RecipeModel):
     id: SemanticId
     when: tuple[FactPredicate, ...] = ()
-    operation_id: SemanticId
-    target_registration_id: str
     artifact_rules: tuple[ArtifactRule, ...] = (ArtifactRule(),)
     primary_role: SemanticId | None = None
     associated_roles: tuple[SemanticId, ...] = ()
     intent: dict[str, JsonValue] = Field(default_factory=dict)
-    target_options: dict[str, JsonValue] = Field(default_factory=dict)
     projections: tuple[OperationProjection, ...] = ()
-    input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
-    output_tags: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def canonical_members(self) -> Self:
@@ -122,6 +117,36 @@ class RecipeRoute(RecipeModel):
         if scoped_roles and self.primary_role is None:
             raise ValueError("artifact-scoped predicates require a route primary role")
         return self
+
+
+class RecipeRoute(_RecipeRouteBase):
+    """One ordinary target/effect leaf selected by a recipe."""
+
+    kind: Literal["operation"] = "operation"
+    operation_id: SemanticId
+    target_registration_id: str
+    target_options: dict[str, JsonValue] = Field(default_factory=dict)
+    input_retrieval_policy: Literal["available-only", "allow"] = "available-only"
+    output_tags: tuple[str, ...] = ()
+
+
+class RecipeCoordinationRoute(_RecipeRouteBase):
+    """One exact subrecipe selected as a branch-bound coordinator."""
+
+    kind: Literal["coordination"] = "coordination"
+    recipe: RecipeRef
+
+    @model_validator(mode="after")
+    def coordination_projections_target_intent_only(self) -> Self:
+        if any(item.destination == "target-options" for item in self.projections):
+            raise ValueError("coordination routes may project only child effective intent")
+        return self
+
+
+RecipeBranch = Annotated[
+    RecipeRoute | RecipeCoordinationRoute,
+    Field(discriminator="kind"),
+]
 
 
 class RecipeJoinMember(RecipeModel):
@@ -159,7 +184,7 @@ class RecipeDefinition(RecipeModel):
     event_input_closure: Literal["single-finalized-collection"] = "single-finalized-collection"
     artifact_associations: tuple[ArtifactAssociation, ...] = ()
     observers: tuple[ObserverUse, ...] = ()
-    routes: tuple[RecipeRoute, ...] = Field(min_length=1)
+    routes: tuple[RecipeBranch, ...] = Field(min_length=1)
     unmatched_artifact_disposition: Literal["retain-in-source", "reject-work"]
     allow_derived_inputs: bool = False
     source_retirement_policy: Literal["retain", "retire-after-verified-output"] = "retain"
@@ -229,8 +254,22 @@ class RecipeCatalog(RecipeModel):
         if identities != sorted(identities) or len(identities) != len(set(identities)):
             raise ValueError("recipes must be unique and ordered by ID and revision")
         operations = {operation.id: operation for operation in self.operations}
+        recipes = {(recipe.id, recipe.revision): recipe for recipe in self.recipes}
         for recipe in self.recipes:
-            referenced = [route.operation_id for route in recipe.routes]
+            for route in recipe.routes:
+                if not isinstance(route, RecipeCoordinationRoute):
+                    continue
+                child = recipes.get((route.recipe.id, route.recipe.revision))
+                if child is None or child.sha256 != route.recipe.sha256:
+                    raise ValueError(
+                        f"recipe {recipe.id} references unavailable exact subrecipe "
+                        f"{route.recipe.id}@{route.recipe.revision}"
+                    )
+        _validate_recipe_cycles(self.recipes, recipes)
+        for recipe in self.recipes:
+            referenced = [
+                route.operation_id for route in recipe.routes if isinstance(route, RecipeRoute)
+            ]
             if recipe.join is not None:
                 referenced.append(recipe.join.operation_id)
             unknown = sorted(set(referenced) - set(operations))
@@ -239,6 +278,8 @@ class RecipeCatalog(RecipeModel):
                     f"recipe {recipe.id} references unknown operation(s): " + ", ".join(unknown)
                 )
             for route in recipe.routes:
+                if isinstance(route, RecipeCoordinationRoute):
+                    continue
                 operation = operations[route.operation_id]
                 if operation.result_kind == "collection" and not route.output_tags:
                     raise ValueError(
@@ -252,25 +293,39 @@ class RecipeCatalog(RecipeModel):
                 join_operation = operations[recipe.join.operation_id]
                 if join_operation.result_kind != "collection":
                     raise ValueError(f"recipe {recipe.id} join must produce a collection")
-                route_operations = {
-                    route.id: operations[route.operation_id] for route in recipe.routes
-                }
+                route_result_kinds: dict[str, str] = {}
+                for route in recipe.routes:
+                    if isinstance(route, RecipeRoute):
+                        route_result_kinds[route.id] = operations[route.operation_id].result_kind
+                        continue
+                    child = recipes[(route.recipe.id, route.recipe.revision)]
+                    route_result_kinds[route.id] = (
+                        "collection" if child.join is not None else "coordination"
+                    )
                 effect_members = [
                     member.branch_id
                     for member in recipe.join.members
-                    if route_operations[member.branch_id].result_kind == "external-effect"
+                    if route_result_kinds[member.branch_id] != "collection"
                 ]
                 if effect_members:
                     raise ValueError(
-                        f"recipe {recipe.id} join cannot consume effect branch(es): "
+                        f"recipe {recipe.id} join cannot consume non-collection branch(es): "
                         + ", ".join(effect_members)
                     )
             if recipe.source_retirement_policy == "retire-after-verified-output":
-                unsafe = sorted(
-                    route.id
-                    for route in recipe.routes
-                    if not operations[route.operation_id].source_retirement_permitted
-                )
+                unsafe: list[str] = []
+                for route in recipe.routes:
+                    if isinstance(route, RecipeRoute):
+                        if not operations[route.operation_id].source_retirement_permitted:
+                            unsafe.append(route.id)
+                        continue
+                    child = recipes[(route.recipe.id, route.recipe.revision)]
+                    if any(
+                        not operations[operation_id].source_retirement_permitted
+                        for operation_id in _descendant_operation_ids(child, recipes)
+                    ):
+                        unsafe.append(route.id)
+                unsafe.sort()
                 if unsafe:
                     raise ValueError(
                         f"recipe {recipe.id} retires its source but branch operation(s) do not "
@@ -330,6 +385,61 @@ def _validate_projections(projections: tuple[OperationProjection, ...]) -> None:
                 raise ValueError("operation projection destinations must not overlap")
 
 
+def _validate_recipe_cycles(
+    recipes: tuple[RecipeDefinition, ...],
+    by_identity: dict[tuple[str, int], RecipeDefinition],
+) -> None:
+    """Reject exact subrecipe cycles without imposing a depth ceiling."""
+
+    complete: set[tuple[str, int]] = set()
+    for root in ((item.id, item.revision) for item in recipes):
+        if root in complete:
+            continue
+        visiting: set[tuple[str, int]] = set()
+        stack: list[tuple[tuple[str, int], bool]] = [(root, False)]
+        while stack:
+            identity, leaving = stack.pop()
+            if leaving:
+                visiting.remove(identity)
+                complete.add(identity)
+                continue
+            if identity in complete:
+                continue
+            if identity in visiting:
+                raise ValueError("recipe catalog contains a subrecipe cycle")
+            visiting.add(identity)
+            stack.append((identity, True))
+            recipe = by_identity[identity]
+            children = [
+                (route.recipe.id, route.recipe.revision)
+                for route in recipe.routes
+                if isinstance(route, RecipeCoordinationRoute)
+            ]
+            for child in reversed(children):
+                if child in visiting:
+                    raise ValueError("recipe catalog contains a subrecipe cycle")
+                if child not in complete:
+                    stack.append((child, False))
+
+
+def _descendant_operation_ids(
+    recipe: RecipeDefinition,
+    by_identity: dict[tuple[str, int], RecipeDefinition],
+) -> tuple[str, ...]:
+    operations: set[str] = set()
+    stack = [recipe]
+    while stack:
+        current = stack.pop()
+        for route in current.routes:
+            if isinstance(route, RecipeRoute):
+                operations.add(route.operation_id)
+            else:
+                stack.append(by_identity[(route.recipe.id, route.recipe.revision)])
+        if current.join is not None:
+            operations.add(current.join.operation_id)
+    return tuple(sorted(operations))
+
+
 __all__ = [
     "ArtifactAssociation",
     "ArtifactFactBinding",
@@ -337,7 +447,9 @@ __all__ = [
     "FactPredicate",
     "ObserverUse",
     "OperationProjection",
+    "RecipeBranch",
     "RecipeCatalog",
+    "RecipeCoordinationRoute",
     "RecipeDefinition",
     "RecipeJoin",
     "RecipeJoinMember",

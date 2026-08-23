@@ -31,7 +31,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.sql import Select
 from state_schema import StateSchema
-from stove0_protocol import ArtifactSelection, BranchSetDecision, JoinPlan
+from stove0_protocol import ArtifactSelection, BranchSetDecision, JoinPlan, branch_work
 from time_formats import utc_timestamp_now
 
 from stove0_core.evaluation import (
@@ -42,6 +42,7 @@ from stove0_core.work_state import (
     ConcurrentWorkUpdate,
     Stove0StateError,
     WorkRecord,
+    _admitted_child_records,
     _preview_target_expectations,
 )
 
@@ -315,18 +316,16 @@ class SqlAlchemyStateStore:
                 raise Stove0StateError("work cannot admit this branch set")
 
             expectations = _preview_target_expectations(current, decision)
+            owners = {
+                branch_work(branch).work_id: plan
+                for plan in decision.branch_set_documents.values()
+                for branch in plan.branches
+            }
 
             for selection in decision.selections:
                 _insert_or_verify_selection(session, selection)
 
-            children = tuple(
-                WorkRecord(
-                    work=branch.workflow_plan.work,
-                    workflow_plan=branch.workflow_plan,
-                    expected_target_plan_sha256=expectations.get(branch.branch_id),
-                )
-                for branch in decision.plan.branches
-            )
+            children = _admitted_child_records(decision, expectations)
             for child in children:
                 encoded = _encode(child.model_dump(mode="json", by_alias=True, exclude_none=True))
                 if _insert_work_atomically(session, child, encoded=encoded, now=now):
@@ -337,8 +336,8 @@ class SqlAlchemyStateStore:
                         data={
                             "work_id": child.work_id,
                             "phase": child.phase,
-                            "parent_work_id": work_id,
-                            "branch_set_sha256": decision.plan.branch_set_sha256,
+                            "parent_work_id": owners[child.work_id].parent_work.work_id,
+                            "branch_set_sha256": owners[child.work_id].branch_set_sha256,
                         },
                     )
                     continue
@@ -349,6 +348,7 @@ class SqlAlchemyStateStore:
                 if (
                     existing.work != child.work
                     or existing.workflow_plan != child.workflow_plan
+                    or existing.branch_set_plan != child.branch_set_plan
                     or existing.expected_target_plan_sha256 != child.expected_target_plan_sha256
                 ):
                     raise ConcurrentWorkUpdate("branch child identity was reused")
@@ -377,7 +377,8 @@ class SqlAlchemyStateStore:
                     "phase": replacement.phase,
                     "revision": replacement.revision,
                     "branch_set_sha256": decision.plan.branch_set_sha256,
-                    "branch_count": len(children),
+                    "branch_count": len(decision.plan.branches),
+                    "admitted_work_count": len(children),
                 },
             )
             return replacement
@@ -594,7 +595,7 @@ class SqlAlchemyStateStore:
                     connect(work_id, binding.parent_work_id)
                 if record.branch_set_plan is not None:
                     for branch in record.branch_set_plan.branches:
-                        connect(work_id, branch.workflow_plan.work.work_id)
+                        connect(work_id, branch_work(branch).work_id)
                 if record.join_plan is not None:
                     connect(work_id, record.join_plan.work.work_id)
                 if record.work.evaluation is not None:
@@ -1038,12 +1039,22 @@ def _insert_work_atomically(
     }
     dialect = session.get_bind().dialect.name
     if dialect == "postgresql":
-        result = session.execute(postgresql_insert(table).values(**values).on_conflict_do_nothing())
+        statement = (
+            postgresql_insert(table)
+            .values(**values)
+            .on_conflict_do_nothing()
+            .returning(table.c.work_id)
+        )
     elif dialect == "sqlite":
-        result = session.execute(sqlite_insert(table).values(**values).on_conflict_do_nothing())
+        statement = (
+            sqlite_insert(table)
+            .values(**values)
+            .on_conflict_do_nothing()
+            .returning(table.c.work_id)
+        )
     else:
         raise RuntimeError(f"unsupported Stove0 state database dialect: {dialect}")
-    return cast(CursorResult[object], result).rowcount == 1
+    return session.scalar(statement) is not None
 
 
 def _insert_evaluation(

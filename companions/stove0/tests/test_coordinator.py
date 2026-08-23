@@ -28,6 +28,7 @@ from stove0_protocol import (
     BranchTargetPreview,
     BranchWorkBinding,
     CollectionRootRef,
+    CoordinationBranchPlan,
     JoinDeclaration,
     JoinMemberDeclaration,
     JoinWorkBinding,
@@ -309,6 +310,8 @@ class FixturePlanning:
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
+        *,
+        nested_observer: object | None = None,
     ) -> BranchSetDecision:
         subjects = (
             observations[0].request.subjects
@@ -401,6 +404,8 @@ class ForkJoinPlanning:
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
+        *,
+        nested_observer: object | None = None,
     ) -> BranchSetDecision:
         assert not observations
         selection = ArtifactSelection.seal(
@@ -496,11 +501,139 @@ class ForkJoinPlanning:
         return contract
 
 
+class NestedPlanning(FixturePlanning):
+    def workflow_plan(
+        self,
+        work: WorkIdentity,
+        observations: tuple[ObservationEvidence, ...],
+        *,
+        nested_observer: object | None = None,
+    ) -> BranchSetDecision:
+        assert not observations
+        selection = ArtifactSelection.seal(
+            (
+                ArtifactSubject(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=_root(),
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256=_sha("4"),
+                ),
+            )
+        )
+        child_work = CoordinationBranchPlan.build_work(
+            parent_work=work,
+            branch_id="nested",
+            decision_sha256=_sha("d"),
+            selection=selection,
+            recipe=RecipeRef(id="fixture.child/v1", revision=1, sha256=_sha("5")),
+            effective_intent={"suffix": ".copy"},
+        )
+        leaf = BranchPlan.build(
+            parent_work=child_work,
+            branch_id="leaf",
+            decision_sha256=_sha("e"),
+            selection=selection,
+            recipe=child_work.recipe,
+            effective_intent=child_work.effective_intent,
+            workflow_intent=WorkflowPlanIntent(
+                operation=OperationRef(
+                    id=self.operation.id,
+                    sha256=self.operation.contract_sha256,
+                ),
+                target_registration_id="fixture-target",
+                target_contract_sha256=self.target.contract_sha256,
+                output_tags=("fixture-output",),
+                retirement_policy="retain",
+            ),
+        )
+        child_plan = BranchSetPlan.seal(
+            parent_work=child_work,
+            decision_sha256=_sha("e"),
+            branches=(leaf,),
+            selections={selection.selection_sha256: selection},
+        )
+        root_plan = BranchSetPlan.seal(
+            parent_work=work,
+            decision_sha256=_sha("d"),
+            branches=(
+                CoordinationBranchPlan(
+                    branch_id="nested",
+                    artifact_selection=selection.ref(),
+                    work=child_work,
+                    branch_set_sha256=child_plan.branch_set_sha256,
+                ),
+            ),
+            selections={selection.selection_sha256: selection},
+            branch_sets={child_plan.branch_set_sha256: child_plan},
+        )
+        return BranchSetDecision(
+            plan=root_plan,
+            selections=(selection,),
+            branch_sets=(child_plan,),
+        )
+
+
+class NestedJoinPlanning(ForkJoinPlanning):
+    def workflow_plan(
+        self,
+        work: WorkIdentity,
+        observations: tuple[ObservationEvidence, ...],
+        *,
+        nested_observer: object | None = None,
+    ) -> BranchSetDecision:
+        assert not observations
+        selection = ArtifactSelection.seal(
+            (
+                ArtifactSubject(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=_root(),
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256=_sha("4"),
+                ),
+            )
+        )
+        child_work = CoordinationBranchPlan.build_work(
+            parent_work=work,
+            branch_id="nested",
+            decision_sha256=_sha("d"),
+            selection=selection,
+            recipe=RecipeRef(id="fixture.child/v1", revision=1, sha256=_sha("5")),
+            effective_intent={},
+        )
+        child_decision = super().workflow_plan(child_work, ())
+        child_plan = child_decision.plan
+        root_plan = BranchSetPlan.seal(
+            parent_work=work,
+            decision_sha256=_sha("d"),
+            branches=(
+                CoordinationBranchPlan(
+                    branch_id="nested",
+                    artifact_selection=selection.ref(),
+                    work=child_work,
+                    branch_set_sha256=child_plan.branch_set_sha256,
+                ),
+            ),
+            selections={selection.selection_sha256: selection},
+            branch_sets={child_plan.branch_set_sha256: child_plan},
+        )
+        return BranchSetDecision(
+            plan=root_plan,
+            selections=(selection,),
+            branch_sets=(child_plan,),
+        )
+
+
 class InapplicablePlanning(FixturePlanning):
     def workflow_plan(
         self,
         work: WorkIdentity,
         observations: tuple[ObservationEvidence, ...],
+        *,
+        nested_observer: object | None = None,
     ) -> WorkInapplicable:
         assert work.work_id
         assert not observations
@@ -927,6 +1060,42 @@ class RetirementWaitingRiverhog(FixtureRiverhog):
         return self.deletion_ready
 
 
+class NestedFixtureRiverhog(FixtureRiverhog):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scoped_outcomes: dict[str, dict[str, OutputCollectionRef]] = {}
+        self.settled_claims: set[str] = set()
+
+    def verify_and_settle(
+        self,
+        record: object,
+        parent_outcome: ParentOutcomeBinding | None = None,
+    ) -> OutputCollectionRef:
+        record = WorkRecord.model_validate(record)
+        assert record.target_status is not None
+        assert record.target_status.output_collection is not None
+        output = record.target_status.output_collection
+        if parent_outcome is not None:
+            outcomes = self.scoped_outcomes.setdefault(parent_outcome.claim.claim_id, {})
+            existing = outcomes.setdefault(parent_outcome.outcome_id, output)
+            assert existing == output
+        return output
+
+    def settle_outcomes(
+        self,
+        record: object,
+        evaluation: BranchSetEvaluation,
+    ) -> None:
+        record = WorkRecord.model_validate(record)
+        assert record.claim is not None
+        expected = {
+            *(f"branch/{item.branch_id}" for item in evaluation.succeeded_branches),
+            *({"join"} if evaluation.join_settlement is not None else set()),
+        }
+        assert set(self.scoped_outcomes.get(record.claim.claim_id, {})) == expected
+        self.settled_claims.add(record.claim.claim_id)
+
+
 def _workflow_preview(
     planning: FixturePlanning,
     target: FixtureTarget,
@@ -945,6 +1114,7 @@ def _workflow_preview(
         target_plans.append(
             BranchTargetPreview(
                 branch_id=branch.branch_id,
+                work_id=workflow.work.work_id,
                 workflow_plan_sha256=workflow.workflow_plan_sha256,
                 target_plan=TargetPlanBinding(
                     protocol=response.target.protocol,
@@ -1269,8 +1439,166 @@ def test_failed_branch_waits_for_independent_sibling_then_retries_same_graph() -
         join = coordinator.step(join_id)
     assert join.phase == "complete"
     completed = coordinator.step(parent.work_id)
+    assert completed.coordination_settlement is not None
+    completed = coordinator.step(parent.work_id)
     assert completed.phase == "complete"
     assert completed.branch_set_plan == branch_set
+
+
+def test_nested_coordination_executes_as_normalized_work_and_seals_exact_settlements() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
+    riverhog = NestedFixtureRiverhog()
+    coordinator = Stove0Coordinator(
+        state,
+        riverhog=riverhog,
+        planning=NestedPlanning(operation, target_contract, None),
+        observers=FixtureObservers(None),
+        targets=FixtureTarget(operation, target_contract),
+    )
+    root = coordinator.create_or_resume(_work())
+    while root.phase != "coordinating":
+        root = coordinator.step(root.work_id)
+    assert root.branch_set_plan is not None
+    nested = root.branch_set_plan.branches[0]
+    assert isinstance(nested, CoordinationBranchPlan)
+    child = store.load(nested.work.work_id)
+    assert child is not None and child.branch_set_plan is not None
+    child = coordinator.step(child.work_id)
+    child = coordinator.step(child.work_id)
+    assert child.phase == "coordinating"
+    leaf = child.branch_set_plan.branches[0]
+    assert isinstance(leaf, BranchPlan)
+    leaf_record = store.load(leaf.workflow_plan.work.work_id)
+    assert leaf_record is not None
+    for _ in range(12):
+        if leaf_record.phase == "complete":
+            break
+        leaf_record = coordinator.step(leaf_record.work_id)
+    assert leaf_record.phase == "complete"
+
+    child = coordinator.step(child.work_id)
+    assert child.phase == "coordinating"
+    assert child.coordination_settlement is not None
+    assert child.coordination_settlement.collection_result is None
+    assert [item.kind for item in child.coordination_settlement.children] == ["collection"]
+    child = coordinator.step(child.work_id)
+    assert child.phase == "complete"
+
+    root = coordinator.step(root.work_id)
+    assert root.phase == "coordinating"
+    assert root.coordination_settlement is not None
+    assert root.coordination_settlement.collection_result is None
+    assert [item.kind for item in root.coordination_settlement.children] == ["coordination"]
+    root = coordinator.step(root.work_id)
+    assert root.phase == "complete"
+    inspected = coordinator.inspect_coordination(root.work_id)
+    assert inspected.branch_set_succeeded is True
+    assert inspected.succeeded_coordinations == (child.coordination_settlement,)
+
+
+def test_nested_final_join_exposes_actual_join_collection_without_relabeling_producer() -> None:
+    operations = _fork_join_operations()
+    target_contract = _fork_join_target(operations)
+    store = InMemoryWorkStore()
+    state = Stove0WorkService(store)
+    coordinator = Stove0Coordinator(
+        state,
+        riverhog=NestedFixtureRiverhog(),
+        planning=NestedJoinPlanning(*operations, target_contract),
+        observers=FixtureObservers(None),
+        targets=ForkJoinTarget(operations, target_contract),
+    )
+    root = coordinator.create_or_resume(_work())
+    while root.phase != "coordinating":
+        root = coordinator.step(root.work_id)
+    assert root.branch_set_plan is not None
+    nested = root.branch_set_plan.branches[0]
+    assert isinstance(nested, CoordinationBranchPlan)
+    child = store.load(nested.work.work_id)
+    assert child is not None and child.branch_set_plan is not None
+    child = coordinator.step(child.work_id)
+    child = coordinator.step(child.work_id)
+    assert child.phase == "coordinating"
+
+    for declaration in child.branch_set_plan.branches:
+        assert isinstance(declaration, BranchPlan)
+        leaf = store.load(declaration.workflow_plan.work.work_id)
+        assert leaf is not None
+        for _ in range(12):
+            if leaf.phase == "complete":
+                break
+            leaf = coordinator.step(leaf.work_id)
+        assert leaf.phase == "complete"
+    child = coordinator.step(child.work_id)
+    assert child.join_plan is not None
+    join_work_id = child.join_plan.work.work_id
+    join = store.load(join_work_id)
+    assert join is not None
+    for _ in range(12):
+        if join.phase == "complete":
+            break
+        join = coordinator.step(join.work_id)
+    assert join.phase == "complete"
+
+    child = coordinator.step(child.work_id)
+    settlement = child.coordination_settlement
+    assert settlement is not None and settlement.collection_result is not None
+    assert settlement.collection_result.producer_work_id == join_work_id
+    assert settlement.collection_result.output_collection.collection_id == (
+        join.output.collection_id
+    )
+    assert settlement.collection_result.join_settlement_sha256 == (
+        settlement.final_join_settlement_sha256
+    )
+    child = coordinator.step(child.work_id)
+    assert child.phase == "complete"
+
+    root = coordinator.step(root.work_id)
+    assert root.coordination_settlement is not None
+    assert root.coordination_settlement.collection_result is None
+    root = coordinator.step(root.work_id)
+    assert root.phase == "complete"
+
+
+def test_parent_cancellation_propagates_through_unclaimed_nested_subtree() -> None:
+    operation = _operation()
+    target_contract = _target(operation)
+    store = InMemoryWorkStore()
+    coordinator = Stove0Coordinator(
+        Stove0WorkService(store),
+        riverhog=NestedFixtureRiverhog(),
+        planning=NestedPlanning(operation, target_contract, None),
+        observers=FixtureObservers(None),
+        targets=FixtureTarget(operation, target_contract),
+    )
+    root = coordinator.create_or_resume(_work())
+    while root.phase != "coordinating":
+        root = coordinator.step(root.work_id)
+    assert root.branch_set_plan is not None
+    nested = root.branch_set_plan.branches[0]
+    assert isinstance(nested, CoordinationBranchPlan)
+    child = store.load(nested.work.work_id)
+    assert child is not None and child.branch_set_plan is not None
+    leaf = child.branch_set_plan.branches[0]
+    assert isinstance(leaf, BranchPlan)
+
+    root = coordinator.cancel(root.work_id, reason="operator")
+    assert root.coordination_cancel_requested is True
+    coordinator.step(root.work_id)
+    child = store.load(child.work_id)
+    assert child is not None and child.coordination_cancel_requested is True
+    coordinator.step(child.work_id)
+    leaf_record = store.load(leaf.workflow_plan.work.work_id)
+    assert leaf_record is not None and leaf_record.phase == "canceled"
+    child = coordinator.step(child.work_id)
+    assert child.phase == "canceled"
+    root = coordinator.step(root.work_id)
+    assert root.phase == "abandon_pending"
+    root = coordinator.step(root.work_id)
+    assert root.phase == "canceled"
 
 
 def test_interrupted_branch_remains_explicit_and_resumes_without_parent_failure() -> None:

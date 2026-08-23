@@ -173,6 +173,7 @@ class JoinWorkMemberBinding(Stove0ProtocolModel):
 
     branch_id: SemanticId
     settlement_sha256: Sha256
+    producer_settlement_sha256: Sha256 | None = None
     artifact_selection_sha256: Sha256
 
 

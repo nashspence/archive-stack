@@ -525,6 +525,7 @@ recipes:
     retrieval_policy: allow
   routes:
   - id: archive-audio
+    kind: operation
     operation_id: stove0.media.audio-archive/v1
     target_registration_id: opus
     artifact_rules:
@@ -576,6 +577,7 @@ recipes:
     retrieval_policy: available-only
   routes:
   - id: archive-audio
+    kind: operation
     when:
     - observation_contract_id: stove0.media.metadata/v1
       artifact_roles:
@@ -624,6 +626,7 @@ recipes:
     output_tags:
     - conformance-audio
   - id: archive-audio-overlap
+    kind: operation
     when:
     - observation_contract_id: stove0.media.metadata/v1
       artifact_roles:
@@ -663,6 +666,7 @@ recipes:
     output_tags:
     - conformance-audio-overlap
   - id: archive-video
+    kind: operation
     when:
     - observation_contract_id: stove0.media.metadata/v1
       artifact_roles:
@@ -725,6 +729,7 @@ recipes:
     retrieval_policy: available-only
   routes:
   - id: review-effect
+    kind: operation
     operation_id: stove0.review.rclone-deliver/v1
     target_registration_id: review-effect
     artifact_rules:
@@ -768,6 +773,7 @@ recipes:
     retrieval_policy: available-only
   routes:
   - id: review
+    kind: operation
     operation_id: stove0.review.materialize/v1
     target_registration_id: review
     artifact_rules:
@@ -820,6 +826,7 @@ recipes:
     retrieval_policy: allow
   routes:
   - id: archive-video
+    kind: operation
     operation_id: stove0.media.av1-opus-archive/v1
     target_registration_id: nvenc-av1-opus
     artifact_rules:
