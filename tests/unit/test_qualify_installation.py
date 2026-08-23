@@ -83,6 +83,7 @@ def test_gogurt_failure_evidence_is_bounded_to_status_and_listener_logs(
     state.mkdir()
     (state / "listener.log").write_text("safe lifecycle diagnostic\n", encoding="utf-8")
     (state / "listener.log.1").write_text("older diagnostic\n", encoding="utf-8")
+    (state / "listener.fatal.log").write_text("fatal diagnostic\n", encoding="utf-8")
     (state / "listener.sqlite3").write_bytes(b"private state")
     (state / "listener.json").write_text("private config", encoding="utf-8")
     evidence = tmp_path / "evidence"
@@ -127,6 +128,7 @@ def test_gogurt_failure_evidence_is_bounded_to_status_and_listener_logs(
         "lifecycle-status.json",
         "listener.log",
         "listener.log.1",
+        "listener.fatal.log",
     }
     assert "bounded failure" in (evidence / "lifecycle-failure.txt").read_text(encoding="utf-8")
     assert json.loads((evidence / "lifecycle-native.json").read_text(encoding="utf-8")) == {

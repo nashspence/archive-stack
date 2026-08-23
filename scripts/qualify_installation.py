@@ -792,7 +792,11 @@ def _retain_gogurt_failure_evidence(
                 + "\n",
                 encoding="utf-8",
             )
-        for source in sorted(state_dir.glob("listener.log*")):
+        log_sources = {
+            *state_dir.glob("listener.log*"),
+            *state_dir.glob("listener.fatal.log*"),
+        }
+        for source in sorted(log_sources):
             if source.is_symlink():
                 continue
             info = source.stat()
@@ -911,6 +915,7 @@ def _run_gogurt_listener_lifecycle(
                     "heartbeat.lock",
                     "listener.lock",
                     "listener.log",
+                    "listener.fatal.log",
                 )
                 if any(
                     stat.S_IMODE((state_dir / name).stat().st_mode) != 0o600

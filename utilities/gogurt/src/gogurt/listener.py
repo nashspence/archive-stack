@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import faulthandler
 import importlib.metadata
 import json
 import logging
@@ -14,8 +15,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import closing
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -58,6 +59,7 @@ LISTENER_MAX_ATTEMPTS = 3
 LISTENER_RETRY_SECONDS = (5.0, 30.0)
 LISTENER_LOG_BYTES = 1_048_576
 LISTENER_LOG_BACKUPS = 3
+LISTENER_FATAL_LOG_BYTES = 262_144
 LISTENER_MOUNT_ATTENTION_LIMIT = 20
 LISTENER_DIAGNOSTIC_LIMIT = 512
 LISTENER_STATUS_DB_TIMEOUT_SECONDS = 0.25
@@ -275,6 +277,7 @@ def _secure_listener_state(paths: ListenerPaths) -> None:
             paths.log_file,
             *paths.state_dir.glob(f"{paths.database_file.name}-*"),
             *paths.state_dir.glob(f"{paths.log_file.name}.*"),
+            *paths.state_dir.glob("listener.fatal.log*"),
         )
     )
 
@@ -1014,6 +1017,27 @@ def _logger(paths: ListenerPaths) -> logging.Logger:
     return logger
 
 
+@contextmanager
+def _fatal_signal_log(paths: ListenerPaths) -> Iterator[None]:
+    """Retain bounded interpreter fatal-signal evidence outside the rotating log FD."""
+
+    path = paths.state_dir / "listener.fatal.log"
+    backup = paths.state_dir / "listener.fatal.log.1"
+    ensure_private_file(path)
+    if path.stat().st_size >= LISTENER_FATAL_LOG_BYTES:
+        if backup.exists() or backup.is_symlink():
+            ensure_private_file(backup)
+        os.replace(path, backup)
+        ensure_private_file(path)
+    stream = open_private_text_append(path, encoding="utf-8", errors="backslashreplace")
+    try:
+        faulthandler.enable(file=stream, all_threads=True)
+        yield
+    finally:
+        faulthandler.disable()
+        stream.close()
+
+
 def run_listener(config_file: Path) -> None:
     state_dir = config_file.parent
     bootstrap_paths = ListenerPaths(
@@ -1045,7 +1069,7 @@ def run_listener(config_file: Path) -> None:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    with ListenerLock(paths.lock_file):
+    with ListenerLock(paths.lock_file), _fatal_signal_log(paths):
         runtime.logger.info("listener started pid=%s version=%s", os.getpid(), _package_version())
         try:
             runtime.run()
