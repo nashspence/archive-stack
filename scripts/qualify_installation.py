@@ -1069,7 +1069,26 @@ def _run_gogurt_listener_lifecycle(
     active_uninstall_pid: int | None = None
     try:
         with _qualification_mount(scratch) as mount:
-            marker = mount / ".gogurt"
+
+            def write_marker(route: str, *, force: bool = False) -> None:
+                command = [
+                    str(executable),
+                    "write",
+                    route,
+                    str(mount),
+                    "--config",
+                    str(routes),
+                    "--json",
+                ]
+                if force:
+                    command.append("--force")
+                _run(
+                    command,
+                    cwd=scratch,
+                    env=environment,
+                    capture=True,
+                )
+
             installed_payload = json.loads(
                 _run(
                     [
@@ -1155,7 +1174,7 @@ def _run_gogurt_listener_lifecycle(
                 scratch=scratch,
                 environment=environment,
             )
-            marker.write_text("qualification-success\n", encoding="utf-8")
+            write_marker("qualification-success")
 
             def one_completed(status: dict[str, Any]) -> bool:
                 dispatches = status.get("dispatches")
@@ -1240,9 +1259,7 @@ def _run_gogurt_listener_lifecycle(
 
             if exercise_extended_lifecycle:
                 custody_pid.unlink(missing_ok=True)
-                replacement = mount / ".gogurt.custody"
-                replacement.write_text("qualification-custody\n", encoding="utf-8")
-                os.replace(replacement, marker)
+                write_marker("qualification-custody", force=True)
 
                 def custody_active(status: dict[str, Any]) -> bool:
                     heartbeat = status.get("heartbeat")
@@ -1291,9 +1308,7 @@ def _run_gogurt_listener_lifecycle(
                         "Gogurt listener did not restart after cooperative custody settlement"
                     )
 
-            replacement = mount / ".gogurt.replacement"
-            replacement.write_text("qualification-failure\n", encoding="utf-8")
-            os.replace(replacement, marker)
+            write_marker("qualification-failure", force=True)
 
             def failure_visible(status: dict[str, Any]) -> bool:
                 dispatches = status.get("dispatches")
@@ -1313,9 +1328,7 @@ def _run_gogurt_listener_lifecycle(
             )
             if exercise_extended_lifecycle:
                 custody_pid.unlink(missing_ok=True)
-                replacement = mount / ".gogurt.uninstall-custody"
-                replacement.write_text("qualification-custody\n", encoding="utf-8")
-                os.replace(replacement, marker)
+                write_marker("qualification-custody", force=True)
                 _wait_for_listener(
                     executable,
                     custody_active,

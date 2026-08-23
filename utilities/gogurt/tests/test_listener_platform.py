@@ -62,6 +62,46 @@ def test_windows_existing_private_file_is_validated_without_reopening(
     filesystem_module.ensure_private_file(sidecar)
 
 
+def test_windows_atomic_promotion_settles_a_transient_reader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "marker"
+    temporary = tmp_path / "staged"
+    destination.write_text("old\n", encoding="utf-8")
+    temporary.write_text("new\n", encoding="utf-8")
+    real_replace = os.replace
+    attempts = 0
+    delays: list[float] = []
+
+    class WindowsSharingError(PermissionError):
+        winerror = 5
+
+    def replace(source: Path, target: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise WindowsSharingError("destination is being read")
+        real_replace(source, target)
+
+    monkeypatch.setattr("gogurt.filesystem.os.name", "nt")
+    monkeypatch.setattr("gogurt.filesystem.os.replace", replace)
+    monkeypatch.setattr("gogurt.filesystem.time.sleep", delays.append)
+
+    filesystem_module.promote_staged(
+        temporary,
+        destination,
+        mode=filesystem_module.PORTABLE_FILE_MODE,
+    )
+
+    assert attempts == 3
+    assert delays == [
+        filesystem_module.WINDOWS_PROMOTION_RETRY_SECONDS,
+        filesystem_module.WINDOWS_PROMOTION_RETRY_SECONDS,
+    ]
+    assert destination.read_text(encoding="utf-8") == "new\n"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX sidecar mode normalization")
 def test_vanished_sqlite_sidecar_does_not_abort_remaining_validation(
     tmp_path: Path,

@@ -90,58 +90,6 @@ def _marker_identity(info: os.stat_result, content: bytes) -> str:
     return sha256(payload.encode("ascii")).hexdigest()
 
 
-def _open_marker_descriptor(path: Path, flags: int) -> int:
-    if os.name != "nt":
-        return os.open(path, flags)
-
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    ctypes_windows: Any = ctypes
-    msvcrt_windows: Any = msvcrt
-    loader = getattr(ctypes, "WinDLL", None)
-    if loader is None:  # pragma: no cover - defensive on unusual Windows runtimes
-        raise OSError("Windows native file APIs are unavailable")
-    kernel32 = loader("kernel32", use_last_error=True)
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    raw_handle = kernel32.CreateFileW(
-        str(path),
-        0x80000000,  # GENERIC_READ
-        0x00000001 | 0x00000002 | 0x00000004,  # read, write, and delete sharing
-        None,
-        3,  # OPEN_EXISTING
-        0x00200000,  # FILE_FLAG_OPEN_REPARSE_POINT
-        None,
-    )
-    handle = ctypes.cast(raw_handle, ctypes.c_void_p).value
-    invalid_handle = ctypes.c_void_p(-1).value
-    if handle in {None, invalid_handle}:
-        error = int(ctypes_windows.get_last_error())
-        raise OSError(error, f"CreateFileW failed for {path}", str(path))
-    try:
-        return int(
-            msvcrt_windows.open_osfhandle(
-                int(handle),
-                flags | getattr(os, "O_NOINHERIT", 0),
-            )
-        )
-    except BaseException:
-        kernel32.CloseHandle(wintypes.HANDLE(handle))
-        raise
-
-
 def read_gogurt_marker(marker: PathInput) -> GogurtMarker:
     path = Path(marker)
     try:
@@ -157,7 +105,7 @@ def read_gogurt_marker(marker: PathInput) -> GogurtMarker:
     flags |= getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = _open_marker_descriptor(path, flags)
+    descriptor = os.open(path, flags)
     try:
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
