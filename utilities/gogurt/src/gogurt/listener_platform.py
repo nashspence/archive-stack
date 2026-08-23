@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
@@ -14,6 +15,7 @@ from typing import Protocol
 from gogurt.filesystem import PRIVATE_FILE_MODE, atomic_write
 
 LISTENER_LABEL = "io.github.nashspence.gogurt"
+LAUNCHD_SETTLE_SECONDS = 20.0
 WINDOWS_TASK_NAME = "Riverhog.Gogurt"
 WINDOWS_TASK_STATE_DISABLED = 1
 WINDOWS_TASK_STATE_RUNNING = 4
@@ -114,7 +116,6 @@ def render_launchd_plist(command: Sequence[str]) -> bytes:
             "ProgramArguments": list(command),
             "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False},
-            "ProcessType": "Background",
             "ThrottleInterval": 5,
             "StandardOutPath": "/dev/null",
             "StandardErrorPath": "/dev/null",
@@ -239,6 +240,16 @@ class LaunchdUserAdapter(_CommandAdapter):
             allowed=frozenset({0, 3, 113}),
         )
 
+    def _wait_unloaded(self) -> None:
+        deadline = time.monotonic() + LAUNCHD_SETTLE_SECONDS
+        while True:
+            state = self._print()
+            if state.returncode != 0:
+                return
+            if time.monotonic() >= deadline:
+                raise ListenerPlatformError("launchd did not unload the Gogurt listener")
+            time.sleep(0.1)
+
     @staticmethod
     def _is_running(completed: subprocess.CompletedProcess[str]) -> bool:
         if completed.returncode != 0:
@@ -282,6 +293,7 @@ class LaunchdUserAdapter(_CommandAdapter):
                 ["launchctl", "bootout", self._target()],
                 allowed=frozenset({0, 3, 113}),
             )
+            self._wait_unloaded()
 
     def unregister(self, paths: ListenerPaths) -> None:
         registration = self._require_registration(paths)

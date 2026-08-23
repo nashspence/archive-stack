@@ -94,6 +94,12 @@ def _wait_for_runs(counter: Path, expected: int) -> None:
     raise AssertionError(f"Gogurt action did not reach {expected} runs")
 
 
+def _heartbeat_payload(paths: ListenerPaths) -> dict[str, object]:
+    payload = listener_module._read_heartbeat(paths.heartbeat_file)
+    assert payload is not None
+    return payload
+
+
 def _wait_for_health_value(
     paths: ListenerPaths,
     adapter: FakeAdapter,
@@ -284,7 +290,7 @@ def test_unexpected_worker_failure_terminates_with_failed_runtime_health(
     with pytest.raises(ListenerError, match="dispatch worker"):
         runtime.run()
 
-    heartbeat = json.loads(paths.heartbeat_file.read_text(encoding="utf-8"))
+    heartbeat = _heartbeat_payload(paths)
     assert heartbeat["runtime"]["status"] == "failed"
     assert "dispatch worker" in heartbeat["runtime"]["diagnostic"]
 
@@ -398,6 +404,42 @@ def test_process_signal_can_stop_while_heartbeat_samples_action_custody(
     assert runtime.stop_event.is_set()
 
 
+def test_heartbeat_publication_waits_for_an_official_reader(tmp_path: Path) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    runtime = ListenerRuntime(config, paths, discover=lambda: [])
+    runtime.store.create()
+    reader_acquired = threading.Event()
+    release_reader = threading.Event()
+    publication_finished = threading.Event()
+
+    def read_snapshot() -> None:
+        with listener_module._HeartbeatLock(paths.heartbeat_file):
+            reader_acquired.set()
+            assert release_reader.wait(timeout=5)
+
+    def publish() -> None:
+        runtime._heartbeat()
+        publication_finished.set()
+
+    reader = threading.Thread(target=read_snapshot)
+    writer = threading.Thread(target=publish)
+    reader.start()
+    assert reader_acquired.wait(timeout=5)
+    writer.start()
+    assert not publication_finished.wait(timeout=0.1)
+    release_reader.set()
+    reader.join(timeout=5)
+    writer.join(timeout=5)
+
+    assert not reader.is_alive()
+    assert not writer.is_alive()
+    assert publication_finished.is_set()
+    assert _heartbeat_payload(paths)["runtime"] == {
+        "diagnostic": None,
+        "status": "running",
+    }
+
+
 def test_shutdown_force_settles_an_action_that_ignores_termination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -465,6 +507,7 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
     for path in (
         paths.database_file,
         paths.heartbeat_file,
+        paths.state_dir / "heartbeat.lock",
         paths.lock_file,
         paths.log_file,
         paths.state_dir / "listener.log.1",
@@ -503,6 +546,7 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
         paths.config_file,
         paths.database_file,
         paths.heartbeat_file,
+        paths.state_dir / "heartbeat.lock",
         paths.lock_file,
         paths.log_file,
         paths.state_dir / "listener.log.1",
@@ -727,7 +771,7 @@ def test_impossible_mount_executable_is_rejected_before_and_after_registration(
     runtime = ListenerRuntime(persisted, paths, discover=lambda: [])
     runtime.store.create()
     runtime.run_once()
-    heartbeat = json.loads(paths.heartbeat_file.read_text(encoding="utf-8"))
+    heartbeat = _heartbeat_payload(paths)
     assert heartbeat["configuration"]["status"] == "failed"
     assert "cannot use" in heartbeat["configuration"]["diagnostic"]
 
@@ -766,7 +810,7 @@ def test_missing_installed_static_action_reports_failed_health_without_dispatch(
     action.unlink()
     runtime.run_once()
 
-    heartbeat = json.loads(paths.heartbeat_file.read_text(encoding="utf-8"))
+    heartbeat = _heartbeat_payload(paths)
     assert heartbeat["configuration"]["status"] == "failed"
     assert "action executable not found" in heartbeat["configuration"]["diagnostic"]
     assert heartbeat["dispatches"]["counts"] == {}
@@ -1280,7 +1324,7 @@ def test_invalid_and_unavailable_mounts_are_isolated_from_valid_dispatch(
         deadline = time.monotonic() + 5
         attention: list[object] = []
         while time.monotonic() < deadline:
-            heartbeat = json.loads(paths.heartbeat_file.read_text(encoding="utf-8"))
+            heartbeat = _heartbeat_payload(paths)
             attention = heartbeat["mount_attention"]
             if len(attention) == 2:
                 break

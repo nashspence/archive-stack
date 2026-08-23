@@ -133,6 +133,7 @@ def test_native_registrations_bind_only_the_absolute_installed_command() -> None
     assert plist["ProgramArguments"] == list(command)
     assert plist["RunAtLoad"] is True
     assert plist["KeepAlive"] == {"SuccessfulExit": False}
+    assert plist.get("ProcessType", "Standard") == "Standard"
     assert plist["StandardOutPath"] == "/dev/null"
     assert plist["StandardErrorPath"] == "/dev/null"
 
@@ -257,6 +258,34 @@ def test_launchd_registration_bootstraps_and_removes_the_agent(tmp_path: Path) -
 
     adapter.unregister(paths)
     assert not registration.exists()
+    assert adapter.loaded is False
+    assert adapter.commands[-2:] == [
+        ["launchctl", "bootout", f"gui/501/{LISTENER_LABEL}"],
+        ["launchctl", "print", f"gui/501/{LISTENER_LABEL}"],
+    ]
+
+
+def test_launchd_stop_waits_until_the_native_job_is_unloaded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = tmp_path / "Library" / "LaunchAgents" / f"{LISTENER_LABEL}.plist"
+    paths = _paths(tmp_path, registration)
+    adapter = RecordingLaunchdAdapter()
+    adapter.register(paths, (str(tmp_path / "gogurt"), "listener", "_run"))
+    observations = iter(
+        (
+            subprocess.CompletedProcess(["launchctl", "print"], 0, "state = waiting", ""),
+            subprocess.CompletedProcess(["launchctl", "print"], 3, "", "not loaded"),
+        )
+    )
+    monkeypatch.setattr(adapter, "_print", lambda: next(observations))
+    monkeypatch.setattr("gogurt.listener_platform.time.sleep", lambda _seconds: None)
+
+    adapter.stop(paths)
+
+    with pytest.raises(StopIteration):
+        next(observations)
 
 
 class RecordingTaskAdapter(TaskSchedulerUserAdapter):

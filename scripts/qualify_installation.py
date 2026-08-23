@@ -695,6 +695,7 @@ def _run_gogurt_listener_lifecycle(
                     "listener.json",
                     "listener.sqlite3",
                     "heartbeat.json",
+                    "heartbeat.lock",
                     "listener.lock",
                     "listener.log",
                 )
