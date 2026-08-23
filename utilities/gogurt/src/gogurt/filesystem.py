@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 import tempfile
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import TextIO
@@ -10,6 +11,9 @@ from typing import TextIO
 PRIVATE_DIRECTORY_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
 PORTABLE_FILE_MODE = 0o644
+WINDOWS_PROMOTION_SETTLE_SECONDS = 1.0
+WINDOWS_PROMOTION_RETRY_SECONDS = 0.01
+WINDOWS_TRANSIENT_PROMOTION_ERRORS = frozenset({5, 32})
 
 
 def _set_private_directory_mode(path: Path) -> None:
@@ -96,7 +100,10 @@ def ensure_private_files(paths: Iterable[Path]) -> None:
 def stage_bytes(destination: Path, content: bytes, *, mode: int) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor, raw_temporary = tempfile.mkstemp(
-        prefix=f".{destination.name}.",
+        # The destination may itself use the portable 255-byte component
+        # ceiling. Keep staging names implementation-owned and bounded rather
+        # than extending the destination name beyond that ceiling.
+        prefix=".gogurt-",
         suffix=".tmp",
         dir=destination.parent,
     )
@@ -119,7 +126,21 @@ def stage_bytes(destination: Path, content: bytes, *, mode: int) -> Path:
 
 def promote_staged(temporary: Path, destination: Path, *, mode: int) -> None:
     _set_staged_file_mode(temporary, mode)
-    os.replace(temporary, destination)
+    if os.name != "nt":
+        os.replace(temporary, destination)
+        return
+    deadline = time.monotonic() + WINDOWS_PROMOTION_SETTLE_SECONDS
+    while True:
+        try:
+            os.replace(temporary, destination)
+            return
+        except PermissionError as exc:
+            if (
+                getattr(exc, "winerror", None) not in WINDOWS_TRANSIENT_PROMOTION_ERRORS
+                or time.monotonic() >= deadline
+            ):
+                raise
+            time.sleep(WINDOWS_PROMOTION_RETRY_SECONDS)
 
 
 def atomic_write(destination: Path, content: bytes, *, mode: int) -> None:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import os
 import re
 import string
 import sys
@@ -34,38 +33,45 @@ def _decode_mountinfo_path(value: str) -> str:
     return _MOUNTINFO_ESCAPE_RE.sub(lambda match: chr(int(match.group(1), 8)), value)
 
 
-def _is_accessible_directory(path: Path) -> bool:
-    try:
-        return path.is_dir()
-    except OSError:
-        return False
-
-
 def linux_mount_points(mountinfo: str) -> tuple[Path, ...]:
     points = {
         Path(_decode_mountinfo_path(fields[4]))
         for line in mountinfo.splitlines()
         if len(fields := line.split()) >= 5
     }
-    return tuple(
-        sorted(
-            (path for path in points if _is_accessible_directory(path)),
-            key=lambda path: str(path),
-        )
-    )
+    # mountinfo is the presence authority. Readability belongs to the later
+    # per-mount planning result and must not manufacture an unmount/remount.
+    return tuple(sorted(points, key=lambda path: str(path)))
 
 
 def macos_mount_points(volumes_dir: Path = Path("/Volumes")) -> tuple[Path, ...]:
     points = {Path("/")}
     if volumes_dir.is_dir():
-        points.update(path for path in volumes_dir.iterdir() if path.is_dir())
+        # Directory entries are the mount-presence observation. Do not use
+        # path.is_dir(), which conflates a mounted but temporarily unreadable
+        # volume with removal.
+        points.update(volumes_dir.iterdir())
     return tuple(sorted(points, key=lambda path: str(path).casefold()))
 
 
+def _windows_logical_drive_mask() -> int:
+    import ctypes
+
+    mask = int(ctypes.windll.kernel32.GetLogicalDrives())  # type: ignore[attr-defined]
+    if mask == 0:
+        raise OSError("Windows logical-drive enumeration failed")
+    return mask
+
+
 def windows_mount_points(
-    is_dir: Callable[[str], bool] = os.path.isdir,
+    logical_drives: Callable[[], int] = _windows_logical_drive_mask,
 ) -> tuple[Path, ...]:
-    points = [Path(f"{letter}:\\") for letter in string.ascii_uppercase if is_dir(f"{letter}:\\")]
+    mask = logical_drives()
+    points = [
+        Path(f"{letter}:\\")
+        for index, letter in enumerate(string.ascii_uppercase)
+        if mask & (1 << index)
+    ]
     return tuple(points)
 
 

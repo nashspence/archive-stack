@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,6 +37,7 @@ EVENT_SUBJECT = "qualification-sentinel"
 NATIVE_TRACE_INTERVAL_SECONDS = 1.0
 NATIVE_TRACE_EVENT_LIMIT = 128
 GOGURT_QUALIFICATION_ACTION_FAILURE_EXIT = 73
+WINDOWS_TASK_XML_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
 EVENT_PAGE = {
     "events": [
         {
@@ -368,6 +370,7 @@ def _run_gogurt(
             scratch=lifecycle_scratch,
             environment=environment,
             evidence_dir=evidence_dir,
+            exercise_extended_lifecycle=repetition == 1,
         )
     return "native-listener-lifecycle"
 
@@ -488,6 +491,175 @@ def _listener_status(
     return value
 
 
+def _process_is_running(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = cast(Any, ctypes).windll.kernel32
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            return kernel32.GetLastError() == 5
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x00000102
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except (OverflowError, ProcessLookupError, ValueError):
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _windows_current_user_sid(
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+) -> str:
+    completed = _run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Console]::Out.Write([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)",
+        ],
+        cwd=scratch,
+        env=environment,
+        capture=True,
+    )
+    sid = completed.stdout.strip()
+    if re.fullmatch(r"S-[0-9]+(?:-[0-9]+)+", sid) is None:
+        raise QualificationError("Windows returned an invalid current-user SID")
+    return sid
+
+
+def _windows_task_name(
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+) -> str:
+    sid = _windows_current_user_sid(scratch=scratch, environment=environment)
+    return "Riverhog.Gogurt." + hashlib.sha256(sid.encode("ascii")).hexdigest()
+
+
+def _windows_current_user_aliases(
+    sid: str,
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+) -> frozenset[str]:
+    aliases = {sid.casefold()}
+    username = environment.get("USERNAME", "").strip()
+    domain = environment.get("USERDOMAIN", "").strip()
+    if username:
+        aliases.add(username.casefold())
+        if domain:
+            aliases.add(f"{domain}\\{username}".casefold())
+    completed = _run(
+        ["whoami.exe"],
+        cwd=scratch,
+        env=environment,
+        capture=True,
+    )
+    account = completed.stdout.strip()
+    if account:
+        aliases.add(account.casefold())
+        _, separator, unqualified = account.rpartition("\\")
+        if separator and unqualified:
+            aliases.add(unqualified.casefold())
+    return frozenset(aliases)
+
+
+def _verify_windows_task_definition(
+    executable: Path,
+    *,
+    scratch: Path,
+    environment: dict[str, str],
+) -> None:
+    sid = _windows_current_user_sid(scratch=scratch, environment=environment)
+    task_name = "Riverhog.Gogurt." + hashlib.sha256(sid.encode("ascii")).hexdigest()
+    completed = _run(
+        ["schtasks.exe", "/Query", "/TN", task_name, "/XML"],
+        cwd=scratch,
+        env=environment,
+        capture=True,
+    )
+    task = ET.fromstring(completed.stdout)
+    ns = {"task": WINDOWS_TASK_XML_NAMESPACE}
+    identity_paths = (
+        "task:Triggers/task:LogonTrigger/task:UserId",
+        "task:Principals/task:Principal/task:UserId",
+    )
+    expected = {
+        "task:Principals/task:Principal/task:LogonType": "InteractiveToken",
+        "task:Settings/task:MultipleInstancesPolicy": "IgnoreNew",
+        "task:Settings/task:ExecutionTimeLimit": "PT0S",
+        "task:Settings/task:RestartOnFailure/task:Interval": "PT1M",
+        "task:Settings/task:RestartOnFailure/task:Count": "3",
+    }
+    expected_booleans = {
+        "task:Settings/task:DisallowStartIfOnBatteries": False,
+        "task:Settings/task:StopIfGoingOnBatteries": False,
+        "task:Settings/task:AllowHardTerminate": False,
+        "task:Settings/task:StartWhenAvailable": True,
+    }
+    mismatches = [
+        path for path, value in expected.items() if task.findtext(path, namespaces=ns) != value
+    ]
+    aliases = _windows_current_user_aliases(
+        sid,
+        scratch=scratch,
+        environment=environment,
+    )
+    mismatches.extend(
+        path
+        for path in identity_paths
+        if (task.findtext(path, namespaces=ns) or "").casefold() not in aliases
+    )
+    boolean_values = {True: frozenset({"true", "1"}), False: frozenset({"false", "0"})}
+    mismatches.extend(
+        path
+        for path, value in expected_booleans.items()
+        if (task.findtext(path, namespaces=ns) or "").casefold() not in boolean_values[value]
+    )
+    run_level_path = "task:Principals/task:Principal/task:RunLevel"
+    run_level = task.findtext(run_level_path, namespaces=ns)
+    if run_level not in {None, "LeastPrivilege"}:
+        mismatches.append(run_level_path)
+    allow_start_path = "task:Settings/task:AllowStartOnDemand"
+    allow_start = task.findtext(allow_start_path, namespaces=ns)
+    if allow_start is not None and allow_start.casefold() not in boolean_values[True]:
+        mismatches.append(allow_start_path)
+    command_path = "task:Actions/task:Exec/task:Command"
+    observed_command = task.findtext(command_path, namespaces=ns)
+    try:
+        same_executable = observed_command is not None and os.path.samefile(
+            observed_command,
+            executable,
+        )
+    except OSError:
+        same_executable = False
+    if not same_executable:
+        mismatches.append(command_path)
+    if mismatches:
+        fields = ", ".join(sorted(set(mismatches)))
+        raise QualificationError(
+            f"installed Windows listener task settings differ from v1: {fields}"
+        )
+
+
+def _native_registration_file(environment: dict[str, str]) -> Path | None:
+    home = Path(environment.get("HOME", str(Path.home())))
+    if sys.platform.startswith("linux"):
+        config_root = Path(environment.get("XDG_CONFIG_HOME", str(home / ".config")))
+        return config_root / "systemd" / "user" / "gogurt-listener.service"
+    if sys.platform == "darwin":
+        return home / "Library" / "LaunchAgents" / "io.github.nashspence.gogurt.plist"
+    return None
+
+
 def _wait_for_listener(
     executable: Path,
     predicate: Callable[[dict[str, Any]], bool],
@@ -593,12 +765,13 @@ def _native_listener_snapshot(
                 pass
         return {"returncode": native.returncode, "fields": linux_fields}
     if sys.platform == "win32":
+        task_name = _windows_task_name(scratch=scratch, environment=environment)
         script = (
             "$ErrorActionPreference='Stop';"
             "try {"
             "$service=New-Object -ComObject 'Schedule.Service';"
             "$service.Connect();"
-            "$task=$service.GetFolder('\\').GetTask('Riverhog.Gogurt');"
+            f"$task=$service.GetFolder('\\').GetTask('{task_name}');"
             "$pids=@($task.GetInstances(0)|ForEach-Object {[int]$_.EnginePID}|Sort-Object -Unique);"
             "$fields=[ordered]@{state=[int]$task.State;"
             "last_result=[int]$task.LastTaskResult;instance_pids=$pids};"
@@ -823,6 +996,7 @@ def _run_gogurt_listener_lifecycle(
     scratch: Path,
     environment: dict[str, str],
     evidence_dir: Path | None,
+    exercise_extended_lifecycle: bool,
 ) -> None:
     initial = _listener_status(
         executable,
@@ -850,6 +1024,21 @@ def _run_gogurt_listener_lifecycle(
         f"raise SystemExit({GOGURT_QUALIFICATION_ACTION_FAILURE_EXIT})\n",
         encoding="utf-8",
     )
+    custody_pid = scratch / "gogurt-listener-custody.pid"
+    custody = scratch / "gogurt-listener-custody.py"
+    custody.write_text(
+        "import os,signal,sys,time\n"
+        "from pathlib import Path\n"
+        "if hasattr(signal, 'SIGTERM'):\n"
+        "    signal.signal(signal.SIGTERM, lambda *_args: None)\n"
+        "path=Path(sys.argv[2])\n"
+        "staged=path.with_name(path.name + '.tmp')\n"
+        "staged.write_text(str(os.getpid()), encoding='utf-8')\n"
+        "os.replace(staged, path)\n"
+        "while True:\n"
+        "    time.sleep(1)\n",
+        encoding="utf-8",
+    )
     sentinel = scratch / "gogurt-listener-sentinel.txt"
     routes = scratch / "gogurt-listener-routes.yaml"
     routes.write_text(
@@ -866,14 +1055,40 @@ def _run_gogurt_listener_lifecycle(
         "    command:\n"
         '      - "{python}"\n'
         f"      - {json.dumps(str(failure))}\n"
-        '      - "{mount_point}"\n',
+        '      - "{mount_point}"\n'
+        "  qualification-custody:\n"
+        "    command:\n"
+        '      - "{python}"\n'
+        f"      - {json.dumps(str(custody))}\n"
+        '      - "{mount_point}"\n'
+        f"      - {json.dumps(str(custody_pid))}\n",
         encoding="utf-8",
     )
 
     installed = False
+    active_uninstall_pid: int | None = None
     try:
         with _qualification_mount(scratch) as mount:
-            marker = mount / ".gogurt"
+
+            def write_marker(route: str, *, force: bool = False) -> None:
+                command = [
+                    str(executable),
+                    "write",
+                    route,
+                    str(mount),
+                    "--config",
+                    str(routes),
+                    "--json",
+                ]
+                if force:
+                    command.append("--force")
+                _run(
+                    command,
+                    cwd=scratch,
+                    env=environment,
+                    capture=True,
+                )
+
             installed_payload = json.loads(
                 _run(
                     [
@@ -895,6 +1110,12 @@ def _run_gogurt_listener_lifecycle(
             installed = True
             if installed_payload.get("health") != "healthy":
                 raise QualificationError("installed Gogurt listener did not report healthy")
+            if exercise_extended_lifecycle and sys.platform == "win32":
+                _verify_windows_task_definition(
+                    executable,
+                    scratch=scratch,
+                    environment=environment,
+                )
             human = _run(
                 [str(executable), "listener", "status"],
                 cwd=scratch,
@@ -953,7 +1174,7 @@ def _run_gogurt_listener_lifecycle(
                 scratch=scratch,
                 environment=environment,
             )
-            marker.write_text("qualification-success\n", encoding="utf-8")
+            write_marker("qualification-success")
 
             def one_completed(status: dict[str, Any]) -> bool:
                 dispatches = status.get("dispatches")
@@ -1036,9 +1257,58 @@ def _run_gogurt_listener_lifecycle(
             if sentinel.read_text(encoding="utf-8").splitlines() != ["run"]:
                 raise QualificationError("same-version listener reinstall replayed completed work")
 
-            replacement = mount / ".gogurt.replacement"
-            replacement.write_text("qualification-failure\n", encoding="utf-8")
-            os.replace(replacement, marker)
+            if exercise_extended_lifecycle:
+                custody_pid.unlink(missing_ok=True)
+                write_marker("qualification-custody", force=True)
+
+                def custody_active(status: dict[str, Any]) -> bool:
+                    heartbeat = status.get("heartbeat")
+                    return (
+                        custody_pid.is_file()
+                        and isinstance(heartbeat, dict)
+                        and isinstance(heartbeat.get("active_dispatch"), str)
+                    )
+
+                _wait_for_listener(
+                    executable,
+                    custody_active,
+                    scratch=scratch,
+                    environment=environment,
+                )
+                stopped_action_pid = int(custody_pid.read_text(encoding="utf-8"))
+                stopped = json.loads(
+                    _run(
+                        [str(executable), "listener", "stop", "--json"],
+                        cwd=scratch,
+                        env=environment,
+                        capture=True,
+                    ).stdout
+                )
+                counts = stopped.get("dispatches", {}).get("counts", {})
+                if (
+                    stopped.get("health") != "stopped"
+                    or not isinstance(counts, dict)
+                    or counts.get("running", 0) != 0
+                    or counts.get("uncertain", 0) < 1
+                    or _process_is_running(stopped_action_pid)
+                ):
+                    raise QualificationError(
+                        "Gogurt listener stop did not settle active action custody"
+                    )
+                restarted = json.loads(
+                    _run(
+                        [str(executable), "listener", "start", "--json"],
+                        cwd=scratch,
+                        env=environment,
+                        capture=True,
+                    ).stdout
+                )
+                if restarted.get("health") != "healthy":
+                    raise QualificationError(
+                        "Gogurt listener did not restart after cooperative custody settlement"
+                    )
+
+            write_marker("qualification-failure", force=True)
 
             def failure_visible(status: dict[str, Any]) -> bool:
                 dispatches = status.get("dispatches")
@@ -1056,6 +1326,28 @@ def _run_gogurt_listener_lifecycle(
                 scratch=scratch,
                 environment=environment,
             )
+            if exercise_extended_lifecycle:
+                custody_pid.unlink(missing_ok=True)
+                write_marker("qualification-custody", force=True)
+                _wait_for_listener(
+                    executable,
+                    custody_active,
+                    scratch=scratch,
+                    environment=environment,
+                )
+                active_uninstall_pid = int(custody_pid.read_text(encoding="utf-8"))
+                registration = _native_registration_file(environment)
+                if registration is not None:
+                    registration.unlink()
+                    manager_owned = _listener_status(
+                        executable,
+                        scratch=scratch,
+                        environment=environment,
+                    )
+                    if manager_owned.get("installed") is not True:
+                        raise QualificationError(
+                            "native manager registration disappeared with its definition file"
+                        )
     except BaseException as exc:
         native_transitions = native_trace.stop()
         _retain_gogurt_failure_evidence(
@@ -1097,6 +1389,8 @@ def _run_gogurt_listener_lifecycle(
                 raise QualificationError("Gogurt listener uninstall left native registration")
             if Path(str(removed["state_dir"])).exists():
                 raise QualificationError("Gogurt listener uninstall left durable state")
+            if active_uninstall_pid is not None and _process_is_running(active_uninstall_pid):
+                raise QualificationError("Gogurt listener uninstall left its action process alive")
         else:
             native_trace.stop()
 
