@@ -5,9 +5,11 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.security import HTTPBearer
+from http_api_contracts import HealthResponse, operation_openapi
 from riverhog_storage_adapter_protocol import (
     StorageAdapterError,
     StorageAdapterErrorBody,
@@ -15,9 +17,12 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterPort,
 )
 from riverhog_storage_adapter_support.http_binding import (
-    STORAGE_ADAPTER_HTTP_PATHS,
+    STORAGE_ADAPTER_HTTP_OPERATIONS,
     StorageAdapterHttpBinding,
 )
+
+_PUBLIC_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+_bearer = HTTPBearer(auto_error=False)
 
 
 def create_storage_adapter_app(
@@ -37,11 +42,16 @@ def create_storage_adapter_app(
     binding = StorageAdapterHttpBinding(adapter)
     app = FastAPI(title=service, version="1", openapi_url="/v1/openapi.json")
 
-    @app.get("/health/live", tags=["health"])
+    @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     def live() -> dict[str, str]:
         return {"service": service, "status": "ok"}
 
-    @app.get("/health/ready", tags=["health"])
+    @app.get(
+        "/health/ready",
+        response_model=HealthResponse,
+        responses={503: {"model": StorageAdapterError}},
+        tags=["health"],
+    )
     def ready() -> Response:
         try:
             if readiness is not None:
@@ -70,12 +80,23 @@ def create_storage_adapter_app(
             headers=headers,
         )
 
-    for path in sorted(STORAGE_ADAPTER_HTTP_PATHS):
+    methods_by_path: dict[str, set[str]] = {}
+    for operation in STORAGE_ADAPTER_HTTP_OPERATIONS:
+        methods_by_path.setdefault(operation.path, set()).add(operation.method)
+        app.add_api_route(
+            operation.path,
+            dispatch,
+            methods=[operation.method],
+            dependencies=[Depends(_bearer)],
+            tags=["storage-adapter"],
+            **operation_openapi(operation, error_type=StorageAdapterError),
+        )
+    for path, supported in methods_by_path.items():
         app.add_api_route(
             path,
             dispatch,
-            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-            tags=["storage-adapter"],
+            methods=sorted(_PUBLIC_METHODS - supported),
+            include_in_schema=False,
         )
     return app
 

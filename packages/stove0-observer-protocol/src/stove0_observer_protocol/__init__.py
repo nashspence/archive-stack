@@ -1,12 +1,12 @@
 """Dependency-light public contracts for external stove0 content observers.
 
-The authoritative implementations currently live in :mod:`stove0_protocol` so
-workflow plans and observer evidence share exact model classes. This package
-publishes the intentionally narrow observer-author import surface without the
-HTTP client, Riverhog data plane, or stove0 core.
+The authoritative implementations live in :mod:`stove0_protocol.models` so
+workflow plans and observer evidence share exact model classes. This package is
+the sole top-level observer-author import surface and intentionally excludes the
+HTTP client, Riverhog data plane, and stove0 core.
 """
 
-from stove0_protocol import (
+from stove0_protocol.models import (
     ARTIFACT_ID_PATTERN,
     OBSERVATION_REQUEST_FORMAT,
     OBSERVATION_RESULT_FORMAT,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from application_access import ApplicationPermission, ApplicationResource
 from pydantic import Field
 
 from riverhog_api.schemas.common import RiverhogModel
@@ -27,8 +28,8 @@ class AppListOut(RiverhogModel):
 
 
 class AppAccessIn(RiverhogModel):
-    permission: str
-    resource: str = "*"
+    permission: ApplicationPermission
+    resource: ApplicationResource = "*"
 
 
 class AppAccessOut(AppAccessIn):
@@ -45,8 +46,8 @@ class AppAccessListItemOut(AppAccessOut):
 class AppAccessListFiltersOut(RiverhogModel):
     app: str | None
     key_id: str | None
-    permission: str | None
-    resource: str | None
+    permission: ApplicationPermission | None
+    resource: ApplicationResource | None
     active: bool | None
 
 

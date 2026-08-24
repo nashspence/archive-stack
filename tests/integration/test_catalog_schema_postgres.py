@@ -203,7 +203,7 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
         "d" * 64,
         "2026-01-01T00:00:00.000000Z",
     )
-    assert manifest == {
+    assert manifest.to_mapping() == {
         "format": "riverhog-collection/v1",
         "collection": 1,
         "content_identity": "a" * 64,

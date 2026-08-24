@@ -18,6 +18,21 @@ from stove0_core import (
     WorkInapplicable,
     WorkRecord,
 )
+from stove0_observer_protocol import (
+    ObservationEvidence,
+    ObservationInvocation,
+    ObservationRequest,
+    ObservationRequestPayload,
+    ObservationResult,
+    ObservationResultPayload,
+    ObserverContract,
+    ObserverContractPayload,
+    ObserverContractSupport,
+    ObserverDescriptor,
+    ObserverDescriptorPayload,
+    ObserverImplementation,
+    ObserverRuntimeAuthority,
+)
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSubject,
@@ -33,18 +48,6 @@ from stove0_protocol import (
     JoinMemberDeclaration,
     JoinWorkBinding,
     JsonSchemaDocument,
-    ObservationEvidence,
-    ObservationRequest,
-    ObservationRequestPayload,
-    ObservationResult,
-    ObservationResultPayload,
-    ObserverContract,
-    ObserverContractPayload,
-    ObserverContractSupport,
-    ObserverDescriptor,
-    ObserverDescriptorPayload,
-    ObserverImplementation,
-    ObserverRuntimeAuthority,
     OperationRef,
     RecipeRef,
     TargetPlanBinding,
@@ -657,8 +660,6 @@ class FixtureObservers:
         registration_id: str,
         invocation: object,
     ) -> ObservationResult:
-        from stove0_protocol import ObservationInvocation
-
         assert registration_id == "fixture-observer"
         assert self.observer is not None
         invocation = ObservationInvocation.model_validate(invocation)

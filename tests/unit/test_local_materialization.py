@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from riverhog_cli import local as local_materialization
+from riverhog_protocol import PortableCollectionRecord
 from riverhog_protocol.errors import InvalidState
 from typer.testing import CliRunner
 
@@ -20,6 +21,10 @@ MANIFEST = {
     "format": "riverhog-collection/v1",
     "collection": COLLECTION_ID,
     "content_identity": "a" * 64,
+    "encryption_format": "age-v1-scrypt",
+    "passphrase_id": "collection-test-key-v1",
+    "provenance_mode": "omitted",
+    "provenance_identity": None,
     "metadata_revision": 1,
     "tags": ["docs"],
     "files": [
@@ -59,6 +64,7 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
         ("riverhog_api_client.downloads", "download_retrieval_files"),
         ("riverhog_protocol.errors", "InvalidState"),
         ("riverhog_protocol.errors", "NotFound"),
+        ("riverhog_protocol.portable_collection", "PortableCollectionRecord"),
         ("riverhog_protocol.paths", "normalize_collection_id"),
         ("riverhog_protocol.paths", "normalize_relpath"),
         ("riverhog_protocol.paths", "normalize_tag"),
@@ -125,9 +131,9 @@ class FakeApi:
     def spawn(self) -> FakeApi:
         return self
 
-    def get_portable_collection_manifest(self, collection_id: int) -> dict[str, Any]:
+    def get_portable_collection_manifest(self, collection_id: int) -> PortableCollectionRecord:
         assert collection_id == COLLECTION_ID
-        return {**MANIFEST, "tags": list(self.tags)}
+        return PortableCollectionRecord.from_mapping({**MANIFEST, "tags": list(self.tags)})
 
     def get_collection(self, collection_id: int) -> dict[str, Any]:
         assert collection_id == COLLECTION_ID
@@ -648,18 +654,17 @@ def test_local_list_pages_and_sorts_database_aggregates(
         for collection_id, byte_count in ((1, 100), (2, 300), (3, 200)):
             local_materialization._store_manifest(
                 db,
-                {
-                    "format": "riverhog-collection/v1",
-                    "collection": collection_id,
-                    "tags": ["docs"],
-                    "files": [
-                        {
-                            "path": "file.bin",
-                            "bytes": byte_count,
-                            "sha256": "a" * 64,
-                        }
-                    ],
-                },
+                PortableCollectionRecord.create(
+                    collection=collection_id,
+                    content_identity="b" * 64,
+                    encryption_format="age-v1-scrypt",
+                    passphrase_id="collection-test-key-v1",
+                    provenance_mode="omitted",
+                    provenance_identity=None,
+                    metadata_revision=0,
+                    tags=("docs",),
+                    files=(("file.bin", byte_count, "a" * 64),),
+                ),
                 created_at=f"2026-07-19T20:55:0{collection_id}.000000Z",
             )
         db.commit()

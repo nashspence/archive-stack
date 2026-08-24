@@ -555,7 +555,7 @@ def _failure_status(
         message = failure.message
         retryable = failure.retryable
     elif isinstance(failure, RiverhogError):
-        status = failure.status
+        status = failure.observed_status
         if status in {401, 403} or failure.code in {"unauthorized", "forbidden"}:
             code = "target-authorization"
             retryable = True

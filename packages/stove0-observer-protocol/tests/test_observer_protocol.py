@@ -1,12 +1,39 @@
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
+from pathlib import Path
 
+import stove0_protocol
 from stove0_observer_protocol import (
     JsonSchemaDocument,
+    ObservationRequest,
     ObserverContract,
     ObserverContractPayload,
+)
+from stove0_protocol import models as shared_models
+
+_OBSERVER_AUTHOR_SYMBOLS = frozenset(
+    {
+        "ObservationEvidence",
+        "ObservationFailure",
+        "ObservationInapplicable",
+        "ObservationInvocation",
+        "ObservationRequest",
+        "ObservationRequestPayload",
+        "ObservationResult",
+        "ObservationResultPayload",
+        "ObservationState",
+        "ObserverContract",
+        "ObserverContractPayload",
+        "ObserverContractSupport",
+        "ObserverDescriptor",
+        "ObserverDescriptorPayload",
+        "ObserverImplementation",
+        "ObserverRuntimeAuthority",
+        "validate_observation_result",
+    }
 )
 
 
@@ -41,3 +68,31 @@ def test_observer_contract_models_are_importable_without_runtime_support() -> No
         "assert not loaded, sorted(loaded)\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_observer_author_surface_reuses_one_model_implementation() -> None:
+    assert ObservationRequest is shared_models.ObservationRequest
+    assert ObserverContract is shared_models.ObserverContract
+    assert _OBSERVER_AUTHOR_SYMBOLS.isdisjoint(stove0_protocol.__all__)
+
+
+def test_repository_consumers_use_the_observer_author_surface() -> None:
+    root = Path(__file__).resolve().parents[3]
+    violations: list[str] = []
+    for base in ("companions", "packages", "reference", "tests"):
+        for path in root.joinpath(base).rglob("*.py"):
+            implementation_models = (
+                path.name == "models.py" and path.parent.name == "stove0_protocol"
+            )
+            if path == Path(__file__) or implementation_models:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ImportFrom) or node.module != "stove0_protocol":
+                    continue
+                leaked = sorted(
+                    alias.name for alias in node.names if alias.name in _OBSERVER_AUTHOR_SYMBOLS
+                )
+                if leaked:
+                    violations.append(f"{path.relative_to(root)}: {', '.join(leaked)}")
+    assert not violations, violations

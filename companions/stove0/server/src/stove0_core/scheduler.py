@@ -11,6 +11,10 @@ from typing import Literal, cast
 from riverhog_api_client import ApiClient
 from riverhog_protocol.collection_workflows import CollectionDerivation
 from riverhog_protocol.errors import NotFound
+from riverhog_protocol.lifecycle_events import (
+    COLLECTION_WAKE_EVENT_TYPES,
+    collection_id_for_event,
+)
 from stove0_protocol import CollectionRootRef, RecipeRef
 from time_formats import format_utc_timestamp, utc_now
 
@@ -19,12 +23,6 @@ from stove0_core.persistence import SqlAlchemyStateStore
 from stove0_core.recipes import RecipeCatalog, RecipePlanner
 from stove0_core.work_state import ConcurrentWorkUpdate
 
-_COLLECTION_WAKE_TYPES = frozenset(
-    {
-        "io.riverhog.riverhog.collection.finalized",
-        "io.riverhog.riverhog.collection.tags_changed",
-    }
-)
 _TERMINAL_PHASES = frozenset({"complete", "inapplicable", "failed", "canceled"})
 _PRUNE_INTERVAL_SECONDS = 60 * 60
 SchedulerRole = Literal["controller", "worker", "combined"]
@@ -83,10 +81,10 @@ class Stove0Scheduler:
         created: list[str] = []
         failures: list[dict[str, str]] = []
         for event in page.events:
-            if event.type not in _COLLECTION_WAKE_TYPES:
+            if event.type not in COLLECTION_WAKE_EVENT_TYPES:
                 continue
             try:
-                collection_id = _collection_id(event.data, event.subject)
+                collection_id = collection_id_for_event(event)
             except ValueError as exc:
                 failures.append(
                     {
@@ -293,19 +291,6 @@ class Stove0Scheduler:
                 return
             if require_exact:
                 raise
-
-
-def _collection_id(data: Mapping[str, object], subject: str | None) -> int:
-    raw = data.get("collection_id", subject)
-    if isinstance(raw, bool):
-        raise ValueError("Riverhog event collection identity is invalid")
-    try:
-        value = int(str(raw))
-    except ValueError as exc:
-        raise ValueError("Riverhog event collection identity is invalid") from exc
-    if value < 1:
-        raise ValueError("Riverhog event collection identity is invalid")
-    return value
 
 
 def scheduler_role(value: str) -> SchedulerRole:

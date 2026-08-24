@@ -31,6 +31,8 @@ dependencies = [
   "starlette>=0.37,<2.0",
   "state-schema>=0.1,<0.2",
   "stove0-observer-client>=0.1,<0.2",
+  "stove0-observer-protocol>=0.1,<0.2",
+  "stove0-operator-contracts>=0.1,<0.2",
   "stove0-protocol>=0.1,<0.2",
   "stove0-recipe-config>=0.1,<0.2",
   "stove0-target-client>=0.1,<0.2",
@@ -48,6 +50,8 @@ lifecycle-events = { workspace = true }
 riverhog-api-client = { workspace = true }
 riverhog-protocol = { workspace = true }
 stove0-observer-client = { workspace = true }
+stove0-observer-protocol = { workspace = true }
+stove0-operator-contracts = { workspace = true }
 stove0-protocol = { workspace = true }
 stove0-recipe-config = { workspace = true }
 stove0-target-client = { workspace = true }

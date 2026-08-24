@@ -401,6 +401,13 @@ class ListenerStore:
             )
             connection.commit()
 
+    @contextmanager
+    def hold_runtime_open(self) -> Iterator[None]:
+        """Keep SQLite's WAL and shared-memory lifecycle owned by one listener runtime."""
+
+        with closing(self._connect()):
+            yield
+
     def observe(
         self,
         mount_points: Sequence[Path],
@@ -510,9 +517,13 @@ class ListenerStore:
             row = connection.execute(
                 """
                 SELECT plan_json FROM dispatches
-                WHERE dispatch_id = ? AND state IN ('queued', 'retry')
+                WHERE dispatch_id = ?
+                  AND (
+                    state = 'queued'
+                    OR (state = 'retry' AND next_retry_at <= ?)
+                  )
                 """,
-                (dispatch_id,),
+                (dispatch_id, now),
             ).fetchone()
             if row is None:
                 connection.rollback()
@@ -997,28 +1008,33 @@ class ListenerRuntime:
 
     def run(self) -> None:
         self.store.create()
-        worker = threading.Thread(
-            target=self._supervised_worker,
-            name="gogurt-dispatch",
-            daemon=True,
-        )
-        worker.start()
-        try:
-            while not self.stop_event.is_set():
-                self.run_once()
-                self._wait_for_next_poll()
-        finally:
-            self.request_stop()
-            self._settle_worker(worker)
+        # SQLite removes and recreates WAL/SHM state when the last connection
+        # closes. Keep one connection for the complete native-runtime lifetime
+        # so short polling, status, and dispatch transactions cannot churn that
+        # mapped state while the listener owns it.
+        with self.store.hold_runtime_open():
+            worker = threading.Thread(
+                target=self._supervised_worker,
+                name="gogurt-dispatch",
+                daemon=True,
+            )
+            worker.start()
             try:
-                self._heartbeat()
-            except Exception as heartbeat_exc:
-                if self._worker_failure is None:
-                    raise
-                self.logger.error(
-                    "final heartbeat=%s",
-                    _safe_diagnostic("listener final heartbeat", heartbeat_exc),
-                )
+                while not self.stop_event.is_set():
+                    self.run_once()
+                    self._wait_for_next_poll()
+            finally:
+                self.request_stop()
+                self._settle_worker(worker)
+                try:
+                    self._heartbeat()
+                except Exception as heartbeat_exc:
+                    if self._worker_failure is None:
+                        raise
+                    self.logger.error(
+                        "final heartbeat=%s",
+                        _safe_diagnostic("listener final heartbeat", heartbeat_exc),
+                    )
         if self._worker_failure is not None:
             raise ListenerError(str(self._runtime_diagnostic)) from self._worker_failure
 

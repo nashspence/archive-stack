@@ -203,7 +203,11 @@ def event_list_cmd(
 ) -> None:
     """List application-visible lifecycle events."""
 
-    payload = client().list_lifecycle_events(after=after, limit=limit).model_dump(mode="json")
+    payload = (
+        client()
+        .list_lifecycle_events(after=after, limit=limit)
+        .model_dump(mode="json", exclude_none=True)
+    )
     emit(payload if json_mode else format_lifecycle_events(payload), json_mode=json_mode)
 
 

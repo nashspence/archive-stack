@@ -3,10 +3,10 @@ from __future__ import annotations
 from riverhog_core.domain.models import (
     ArchiveCopyStatus,
     ArchiveDownloadAllowance,
+    ArchiveRootPublicationStatus,
     ArchiveStoreListPage,
     ArchiveStoreSummary,
     CollectionListPage,
-    CollectionManifestStatus,
     CollectionSummary,
 )
 
@@ -21,12 +21,12 @@ def map_archive(summary: ArchiveCopyStatus) -> dict[str, object]:
         "last_uploaded_at": summary.last_uploaded_at,
         "last_verified_at": summary.last_verified_at,
         "failure": summary.failure,
-        "collection_manifest": map_collection_manifest(summary.collection_manifest),
+        "archive_root": map_archive_root_publication(summary.archive_root),
     }
 
 
-def map_collection_manifest(
-    summary: CollectionManifestStatus | None,
+def map_archive_root_publication(
+    summary: ArchiveRootPublicationStatus | None,
 ) -> dict[str, object] | None:
     if summary is None:
         return None

@@ -16,11 +16,13 @@ classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Langu
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "fastapi>=0.111,<1.0",
+  "http-api-contracts>=0.1,<0.2",
   "riverhog-storage-adapter-protocol>=0.1,<0.2",
   "riverhog-storage-adapter-support>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
+http-api-contracts = { workspace = true }
 riverhog-storage-adapter-protocol = { workspace = true }
 riverhog-storage-adapter-support = { workspace = true }
 

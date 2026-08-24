@@ -23,15 +23,17 @@ from stove0_media_archive_contracts import (
     render_projection_xmp,
     resolve_media_archive_projection,
 )
-from stove0_protocol import (
-    ArtifactSubject,
-    CollectionRootRef,
+from stove0_observer_protocol import (
     ObservationEvidence,
     ObservationRequest,
     ObservationRequestPayload,
     ObservationResult,
     ObservationResultPayload,
     ObserverImplementation,
+)
+from stove0_protocol import (
+    ArtifactSubject,
+    CollectionRootRef,
     canonical_json_sha256,
 )
 from stove0_target_protocol import InputArtifact

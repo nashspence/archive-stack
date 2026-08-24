@@ -12,20 +12,16 @@ from xml.etree import ElementTree
 import httpx
 from file_download import verified_download
 from http_api_contracts import parse_error_payload, safe_http_base_url
-from lifecycle_events import EventPage
+from riverhog_protocol import PortableCollectionRecord
 from riverhog_protocol.errors import (
     BadRequest,
-    Conflict,
-    DownloadAllowanceExceeded,
-    Forbidden,
     HashMismatch,
-    InvalidPath,
     InvalidState,
-    NotFound,
     RiverhogError,
     ServiceUnavailable,
-    Unauthorized,
+    error_type_for_code,
 )
+from riverhog_protocol.lifecycle_events import RiverhogEventPage
 
 from riverhog_api_client.workflows import CollectionWorkflowMethods
 
@@ -157,19 +153,7 @@ class _HttpApiClient:
             data,
             fallback_message=response.text or f"HTTP {response.status_code}",
         )
-        exc_map: dict[str, type[RiverhogError]] = {
-            "bad_request": BadRequest,
-            "unauthorized": Unauthorized,
-            "forbidden": Forbidden,
-            "invalid_path": InvalidPath,
-            "not_found": NotFound,
-            "conflict": Conflict,
-            "invalid_state": InvalidState,
-            "hash_mismatch": HashMismatch,
-            "service_unavailable": ServiceUnavailable,
-            "download_allowance_exceeded": DownloadAllowanceExceeded,
-        }
-        error_type = exc_map.get(code)
+        error_type = error_type_for_code(code)
         if error_type is None:
             error_type = (
                 ServiceUnavailable
@@ -179,7 +163,7 @@ class _HttpApiClient:
         raise error_type(
             str(message),
             code=str(code),
-            status=response.status_code,
+            observed_status=response.status_code,
             details=details,
         )
 
@@ -285,13 +269,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         *,
         after: str | None = None,
         limit: int = 100,
-    ) -> EventPage:
+    ) -> RiverhogEventPage:
         payload = self._json(
             "GET",
             "/v1/events",
             params={"after": after or "0", "limit": limit},
         )
-        return EventPage.model_validate(payload)
+        return RiverhogEventPage.model_validate(payload)
 
     def resourcesync_discovery(self) -> dict[str, object]:
         response = self._request("GET", "/.well-known/resourcesync")
@@ -396,10 +380,12 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "changes": changes,
         }
 
-    def get_portable_collection_manifest(self, collection_id: int) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/catalog/collections/{str(collection_id)}/manifest",
+    def get_portable_collection_manifest(self, collection_id: int) -> PortableCollectionRecord:
+        return PortableCollectionRecord.from_mapping(
+            self._json(
+                "GET",
+                f"/v1/catalog/collections/{str(collection_id)}/manifest",
+            )
         )
 
     def plan_retrieval(

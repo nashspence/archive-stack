@@ -21,8 +21,8 @@ from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.domain.enums import ArchiveState
 from riverhog_core.domain.models import (
     ArchiveCopyStatus,
+    ArchiveRootPublicationStatus,
     CollectionListPage,
-    CollectionManifestStatus,
     CollectionSummary,
 )
 from riverhog_core.domain.types import CollectionId
@@ -256,11 +256,11 @@ def _archive_copy_status(
         last_uploaded_at=archive.last_uploaded_at,
         last_verified_at=archive.last_verified_at,
         failure=archive.failure,
-        collection_manifest=_manifest_status(archive),
+        archive_root=_archive_root_status(archive),
     )
 
 
-def _manifest_status(archive: CollectionArchiveCopyRecord) -> CollectionManifestStatus:
+def _archive_root_status(archive: CollectionArchiveCopyRecord) -> ArchiveRootPublicationStatus:
     manifest = next(
         (current for current in archive.objects if current.object_id == "manifest"),
         None,
@@ -269,7 +269,7 @@ def _manifest_status(archive: CollectionArchiveCopyRecord) -> CollectionManifest
         (current for current in archive.objects if current.object_id == "proof"),
         None,
     )
-    return CollectionManifestStatus(
+    return ArchiveRootPublicationStatus(
         object_path=manifest.object_path if manifest else None,
         sha256=manifest.sha256 if manifest else None,
         proof_object_path=proof.object_path if proof else None,
@@ -311,9 +311,9 @@ def _like_pattern(value: str) -> str:
 
 def _manifest_identity(copies: tuple[ArchiveCopyStatus, ...]) -> str:
     identities = {
-        current.collection_manifest.sha256
+        current.archive_root.sha256
         for current in copies
-        if current.collection_manifest is not None and current.collection_manifest.sha256
+        if current.archive_root is not None and current.archive_root.sha256
     }
     if len(identities) != 1:
         raise RuntimeError("finalized collection has no unambiguous immutable manifest identity")

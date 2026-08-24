@@ -21,15 +21,7 @@ from stove0_core import (
     WorkInapplicable,
     WorkRecord,
 )
-from stove0_protocol import (
-    ArtifactSelection,
-    ArtifactSubject,
-    BranchPlan,
-    BranchSetDecision,
-    BranchSetPlan,
-    CollectionRootRef,
-    CoordinationBranchPlan,
-    JsonSchemaDocument,
+from stove0_observer_protocol import (
     ObservationEvidence,
     ObservationFailure,
     ObservationInapplicable,
@@ -43,6 +35,16 @@ from stove0_protocol import (
     ObserverDescriptor,
     ObserverDescriptorPayload,
     ObserverImplementation,
+)
+from stove0_protocol import (
+    ArtifactSelection,
+    ArtifactSubject,
+    BranchPlan,
+    BranchSetDecision,
+    BranchSetPlan,
+    CollectionRootRef,
+    CoordinationBranchPlan,
+    JsonSchemaDocument,
     OperationRef,
     RecipeRef,
     WorkflowPlan,

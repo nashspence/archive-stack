@@ -405,6 +405,7 @@ class SqlAlchemyCollectionWorkflowService:
                 )
                 for item in artifacts
             )
+            session.flush()
             # Observation capabilities are no longer required after a plan is sealed.
             # Revocation narrows the active payload readers before target execution.
             _revoke_capabilities(session, claim.id, now=now)

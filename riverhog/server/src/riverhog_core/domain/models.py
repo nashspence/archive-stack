@@ -16,11 +16,11 @@ class ArchiveCopyStatus:
     last_uploaded_at: str | None = None
     last_verified_at: str | None = None
     failure: str | None = None
-    collection_manifest: CollectionManifestStatus | None = None
+    archive_root: ArchiveRootPublicationStatus | None = None
 
 
 @dataclass(frozen=True)
-class CollectionManifestStatus:
+class ArchiveRootPublicationStatus:
     object_path: str | None = None
     sha256: str | None = None
     proof_object_path: str | None = None

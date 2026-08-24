@@ -3,110 +3,63 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from application_access import (
+    ALL_PERMISSIONS,
+    ALL_RESOURCES,
+    APPLICATION_PERMISSIONS,
+    ARCHIVES_MANAGE,
+    ARCHIVES_READ,
+    CATALOG_READ,
+    COLLECTION_PREFIX,
+    COLLECTION_SCOPED_PERMISSIONS,
+    COLLECTION_TAGS_MANAGE,
+    COLLECTION_TRANSFORMS_CONTROL,
+    COLLECTION_TRANSFORMS_EXECUTE,
+    COLLECTIONS_CREATE,
+    COLLECTIONS_DELETE,
+    EVENTS_READ,
+    EVENTS_READ_ALL,
+    KEYS_MANAGE,
+    PROVENANCE_EXPORT,
+    PROVENANCE_READ,
+    QUOTAS_MANAGE,
+    RETRIEVAL_MANAGE,
+    TAG_PREFIX,
+    TAGS_CREATE,
+    TAGS_DELETE,
+    ApplicationAccess,
+    ApplicationAccessError,
+    access_covers,
+    permission_covers,
+    resource_covers,
+)
+from application_access import collection_resource as _collection_resource
+from application_access import normalize_access as _normalize_access
+from application_access import tag_resource as _tag_resource
 from riverhog_protocol.errors import BadRequest
-from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id, normalize_tag
-
-ALL_PERMISSIONS = "*"
-ALL_RESOURCES = "*"
-CATALOG_READ = "catalog:read"
-RETRIEVAL_MANAGE = "retrieval:manage"
-COLLECTIONS_CREATE = "collections:create"
-COLLECTION_TRANSFORMS_CONTROL = "collection-transforms:control"
-COLLECTION_TRANSFORMS_EXECUTE = "collection-transforms:execute"
-COLLECTION_TAGS_MANAGE = "collection-tags:manage"
-TAGS_CREATE = "tags:create"
-TAGS_DELETE = "tags:delete"
-COLLECTIONS_DELETE = "collections:delete"
-ARCHIVES_READ = "archives:read"
-ARCHIVES_MANAGE = "archives:manage"
-KEYS_MANAGE = "keys:manage"
-QUOTAS_MANAGE = "quotas:manage"
-EVENTS_READ = "events:read"
-EVENTS_READ_ALL = "events:read_all"
-PROVENANCE_READ = "provenance:read"
-PROVENANCE_EXPORT = "provenance:export"
-
-COLLECTION_PREFIX = "collection:"
-TAG_PREFIX = "tag:"
-
-APPLICATION_PERMISSIONS = frozenset(
-    {
-        CATALOG_READ,
-        RETRIEVAL_MANAGE,
-        COLLECTIONS_CREATE,
-        COLLECTION_TRANSFORMS_CONTROL,
-        COLLECTION_TRANSFORMS_EXECUTE,
-        COLLECTION_TAGS_MANAGE,
-        TAGS_CREATE,
-        TAGS_DELETE,
-        COLLECTIONS_DELETE,
-        ARCHIVES_READ,
-        ARCHIVES_MANAGE,
-        KEYS_MANAGE,
-        QUOTAS_MANAGE,
-        EVENTS_READ,
-        EVENTS_READ_ALL,
-        PROVENANCE_READ,
-        PROVENANCE_EXPORT,
-    }
-)
-
-COLLECTION_SCOPED_PERMISSIONS = frozenset(
-    {
-        CATALOG_READ,
-        RETRIEVAL_MANAGE,
-        COLLECTION_TAGS_MANAGE,
-        COLLECTIONS_DELETE,
-        ARCHIVES_READ,
-        ARCHIVES_MANAGE,
-        PROVENANCE_READ,
-        PROVENANCE_EXPORT,
-    }
-)
-
-
-@dataclass(frozen=True, order=True, slots=True)
-class ApplicationAccess:
-    permission: str
-    resource: str = ALL_RESOURCES
 
 
 def normalize_access(
     values: Iterable[ApplicationAccess | tuple[str, str]],
 ) -> tuple[ApplicationAccess, ...]:
-    normalized = tuple(sorted({_normalize_access(value) for value in values}))
-    if not normalized:
-        raise BadRequest("at least one application access grant is required")
-    wildcard = ApplicationAccess(ALL_PERMISSIONS, ALL_RESOURCES)
-    if wildcard in normalized and len(normalized) != 1:
-        raise BadRequest("wildcard application access must be used alone")
-    return normalized
-
-
-def access_covers(grantor: ApplicationAccess, requested: ApplicationAccess) -> bool:
-    permission_matches = (
-        grantor.permission == ALL_PERMISSIONS
-        or grantor.permission == requested.permission
-        or (grantor.permission == EVENTS_READ_ALL and requested.permission == EVENTS_READ)
-        or (grantor.permission == PROVENANCE_EXPORT and requested.permission == PROVENANCE_READ)
-    )
-    return permission_matches and resource_covers(grantor.resource, requested.resource)
-
-
-def resource_covers(grantor: str, requested: str) -> bool:
-    return grantor == ALL_RESOURCES or grantor == requested
+    try:
+        return _normalize_access(values)
+    except ApplicationAccessError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 def collection_resource(collection_id: int) -> str:
     try:
-        normalized = normalize_collection_id(collection_id)
-    except PathNormalizationError as exc:
+        return _collection_resource(collection_id)
+    except ApplicationAccessError as exc:
         raise BadRequest(str(exc)) from exc
-    return f"{COLLECTION_PREFIX}{normalized}"
 
 
 def tag_resource(tag: str) -> str:
-    return f"{TAG_PREFIX}{_canonical_tag(tag)}"
+    try:
+        return _tag_resource(tag)
+    except ApplicationAccessError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,12 +73,7 @@ class ApplicationPrincipal:
     def allows(self, permission: str, resource: str | None = None) -> bool:
         requested_resource = resource if resource is not None else ALL_RESOURCES
         return any(
-            (
-                current.permission == ALL_PERMISSIONS
-                or current.permission == permission
-                or (current.permission == EVENTS_READ_ALL and permission == EVENTS_READ)
-                or (current.permission == PROVENANCE_EXPORT and permission == PROVENANCE_READ)
-            )
+            permission_covers(current.permission, permission)
             and (resource is None or resource_covers(current.resource, requested_resource))
             for current in self.access
         )
@@ -150,55 +98,6 @@ class ApplicationPrincipal:
         )
 
 
-def _normalize_access(value: ApplicationAccess | tuple[str, str]) -> ApplicationAccess:
-    if isinstance(value, ApplicationAccess):
-        permission = value.permission
-        resource = value.resource
-    else:
-        permission, resource = value
-    normalized_permission = str(permission).strip().casefold()
-    if normalized_permission not in APPLICATION_PERMISSIONS | {ALL_PERMISSIONS}:
-        raise BadRequest(f"unknown application permission: {normalized_permission}")
-    normalized_resource = _normalize_resource(str(resource))
-    if normalized_permission == ALL_PERMISSIONS and normalized_resource != ALL_RESOURCES:
-        raise BadRequest("wildcard permission requires wildcard resource access")
-    if normalized_permission == COLLECTIONS_CREATE:
-        if normalized_resource.startswith(COLLECTION_PREFIX):
-            raise BadRequest("collections:create must target a tag or all tags")
-    elif (
-        normalized_permission not in COLLECTION_SCOPED_PERMISSIONS
-        and normalized_resource != ALL_RESOURCES
-    ):
-        raise BadRequest(f"{normalized_permission} does not accept a scoped resource")
-    return ApplicationAccess(normalized_permission, normalized_resource)
-
-
-def _normalize_resource(value: str) -> str:
-    candidate = value.strip()
-    folded = candidate.casefold()
-    if folded == ALL_RESOURCES:
-        return ALL_RESOURCES
-    if folded.startswith(TAG_PREFIX):
-        return tag_resource(candidate[len(TAG_PREFIX) :])
-    if folded.startswith(COLLECTION_PREFIX):
-        try:
-            collection_id = normalize_collection_id(candidate[len(COLLECTION_PREFIX) :])
-        except PathNormalizationError as exc:
-            raise BadRequest(str(exc)) from exc
-        return collection_resource(collection_id)
-    raise BadRequest("application resources must be *, tag:<tag>, or collection:<id>")
-
-
-def _canonical_tag(value: str) -> str:
-    try:
-        normalized = normalize_tag(value)
-    except PathNormalizationError as exc:
-        raise BadRequest(str(exc)) from exc
-    if value != normalized:
-        raise BadRequest("application access tag must be canonical")
-    return normalized
-
-
 __all__ = [
     "ALL_PERMISSIONS",
     "ALL_RESOURCES",
@@ -209,18 +108,18 @@ __all__ = [
     "ApplicationPrincipal",
     "CATALOG_READ",
     "COLLECTIONS_CREATE",
-    "COLLECTION_TRANSFORMS_CONTROL",
-    "COLLECTION_TRANSFORMS_EXECUTE",
     "COLLECTIONS_DELETE",
     "COLLECTION_PREFIX",
     "COLLECTION_SCOPED_PERMISSIONS",
     "COLLECTION_TAGS_MANAGE",
+    "COLLECTION_TRANSFORMS_CONTROL",
+    "COLLECTION_TRANSFORMS_EXECUTE",
     "EVENTS_READ",
     "EVENTS_READ_ALL",
     "KEYS_MANAGE",
-    "QUOTAS_MANAGE",
     "PROVENANCE_EXPORT",
     "PROVENANCE_READ",
+    "QUOTAS_MANAGE",
     "RETRIEVAL_MANAGE",
     "TAGS_CREATE",
     "TAGS_DELETE",

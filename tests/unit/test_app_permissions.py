@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import pytest
-from riverhog_core.app_permissions import (
+from application_access import (
     CATALOG_READ,
     COLLECTIONS_CREATE,
     RETRIEVAL_MANAGE,
     TAGS_CREATE,
     ApplicationAccess,
-    ApplicationPrincipal,
+    ApplicationAccessError,
     access_covers,
     normalize_access,
 )
-from riverhog_protocol.errors import BadRequest
+from riverhog_core.app_permissions import ApplicationPrincipal
 
 
 def test_action_and_resource_bindings_are_canonical_and_independent() -> None:
@@ -40,7 +40,7 @@ def test_collection_creation_targets_tags_while_tag_creation_is_separate() -> No
         ApplicationAccess(COLLECTIONS_CREATE, "tag:photos"),
     )
     assert normalize_access((ApplicationAccess(TAGS_CREATE),)) == (ApplicationAccess(TAGS_CREATE),)
-    with pytest.raises(BadRequest, match="must target a tag"):
+    with pytest.raises(ApplicationAccessError, match="must target a tag"):
         normalize_access(
             (
                 ApplicationAccess(
@@ -49,7 +49,7 @@ def test_collection_creation_targets_tags_while_tag_creation_is_separate() -> No
                 ),
             )
         )
-    with pytest.raises(BadRequest, match="does not accept"):
+    with pytest.raises(ApplicationAccessError, match="does not accept"):
         normalize_access((ApplicationAccess(TAGS_CREATE, "tag:photos"),))
 
 

@@ -11,7 +11,12 @@ from riverhog_api.schemas.workflows import (
 )
 from riverhog_core.domain.models import CollectionSummary
 from riverhog_core.domain.types import CollectionId
-from riverhog_protocol import COLLECTION_UPLOAD_FILE_BATCH_MAX, RETRIEVAL_FILE_BATCH_MAX
+from riverhog_protocol import (
+    COLLECTION_UPLOAD_FILE_BATCH_MAX,
+    RETRIEVAL_FILE_BATCH_MAX,
+    canonical_json_sha256,
+)
+from riverhog_protocol.lifecycle_events import RIVERHOG_EVENT_TYPES
 
 
 def test_openapi_describes_archive_catalog_and_retrieval_boundaries() -> None:
@@ -139,17 +144,19 @@ def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> Non
         )
         for index in range(1, 1002)
     ]
+    work_document = {"format": "fixture-work/v1"}
     claim = ProcessingClaimCreateIn(
         work_id="3" * 64,
-        work_document={"format": "fixture-work/v1"},
-        work_document_sha256="4" * 64,
+        work_document=work_document,
+        work_document_sha256=canonical_json_sha256(work_document),
         inputs=roots,
     )
+    controller_evidence = {"format": "fixture-controller-evidence/v1"}
     sealed = ProcessingClaimPlanSealIn(
         fence=1,
         execution_id="5" * 64,
-        controller_evidence={"format": "fixture-controller-evidence/v1"},
-        controller_evidence_sha256="6" * 64,
+        controller_evidence=controller_evidence,
+        controller_evidence_sha256=canonical_json_sha256(controller_evidence),
         operation=OperationIdentityIn(id="fixture.operation/v1", sha256="7" * 64),
         input_artifacts=[
             CollectionArtifactIdentityIn(
@@ -159,11 +166,49 @@ def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> Non
                 sha256="8" * 64,
             )
         ],
-        output_tags=[f"fixture/tag-{index:03}" for index in range(101)],
+        output_tags=[f"fixture-tag-{index:03}" for index in range(101)],
     )
 
     assert len(claim.inputs) == 1001
     assert len(sealed.output_tags) == 101
+
+
+def test_collection_workflow_openapi_uses_exact_riverhog_contract_documents() -> None:
+    schemas = create_app().openapi()["components"]["schemas"]
+
+    create = schemas["ProcessingClaimCreateDocument"]["properties"]
+    settle = schemas["ProcessingClaimSettleDocument"]["properties"]
+    claim = schemas["ProcessingClaimDocument"]["properties"]
+    assert create["inputs"]["items"]["$ref"].endswith("/CollectionRootIdentityDocument")
+    assert create["work_document"] == {
+        "additionalProperties": True,
+        "type": "object",
+        "title": "Work Document",
+    }
+    assert settle["derivation"]["$ref"].endswith("/CollectionDerivationDocument")
+    assert claim["plan"]["anyOf"][0]["$ref"].endswith("/ProcessingClaimPlanDocument")
+    assert claim["outcomes"]["items"]["$ref"].endswith("/ProcessingOutcomeIdentityDocument")
+    assert (
+        "stove0"
+        not in str(
+            {
+                name: schema
+                for name, schema in schemas.items()
+                if name.startswith("ProcessingClaim") or name.startswith("CollectionDerivation")
+            }
+        ).casefold()
+    )
+
+
+def test_lifecycle_event_openapi_exposes_the_complete_discriminated_vocabulary() -> None:
+    schemas = create_app().openapi()["components"]["schemas"]
+    page = schemas["RiverhogEventPage"]
+    event_items = page["properties"]["events"]["items"]
+    event_union = schemas[event_items["$ref"].rsplit("/", 1)[-1]]
+
+    assert event_union["discriminator"]["propertyName"] == "type"
+    assert set(event_union["discriminator"]["mapping"]) == RIVERHOG_EVENT_TYPES
+    assert len(event_union["oneOf"]) == len(RIVERHOG_EVENT_TYPES)
 
 
 def test_retrieval_cache_contract_exposes_indexer_state_and_filters() -> None:
@@ -249,3 +294,20 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
         )
     )
     assert mapped["created_at"] == "2026-07-26T20:00:00.000000Z"
+
+
+def test_application_access_openapi_uses_the_public_permission_and_resource_grammar() -> None:
+    document = create_app().openapi()
+    access = document["components"]["schemas"]["AppAccessIn"]
+    schemas = document["components"]["schemas"]
+    permission = schemas[access["properties"]["permission"]["$ref"].rsplit("/", 1)[-1]]
+    resource = schemas[access["properties"]["resource"]["$ref"].rsplit("/", 1)[-1]]
+
+    assert "catalog:read" in permission["enum"]
+    assert resource["pattern"].startswith("^")
+    for path, path_item in document["paths"].items():
+        if not path.startswith("/v1"):
+            continue
+        for method, operation in path_item.items():
+            if method in {"delete", "get", "patch", "post", "put"}:
+                assert operation["x-riverhog-permission-requirements"]

@@ -5,7 +5,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-ARCHIVE_ENCRYPTION_FORMAT = "age-v1-scrypt"
+from riverhog_archive_contracts.archive_manifest import ARCHIVE_ENCRYPTION_FORMAT
+
 RECOVERY_DESCRIPTOR_SCHEMA = "riverhog-recovery-descriptor/v1"
 RECOVERY_DESCRIPTOR_PATH = "recovery.json"
 

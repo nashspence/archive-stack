@@ -1,10 +1,44 @@
-"""Official client methods for Riverhog collection work primitives."""
+"""Official typed client methods for Riverhog collection work primitives."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
+
+from riverhog_protocol.collection_workflow_transport import (
+    CapabilityAction,
+    ClaimState,
+    CollectionArtifactIdentityDocument,
+    CollectionDerivationDocument,
+    CollectionDerivationResponseDocument,
+    CollectionRootIdentityDocument,
+    OperationIdentityDocument,
+    ProcessingClaimAbandonDocument,
+    ProcessingClaimCreateDocument,
+    ProcessingClaimDocument,
+    ProcessingClaimFenceDocument,
+    ProcessingClaimOutcomesSettleDocument,
+    ProcessingClaimPageDocument,
+    ProcessingClaimPlanSealDocument,
+    ProcessingClaimRenewDocument,
+    ProcessingClaimRestartDocument,
+    ProcessingClaimSettleDocument,
+    ProcessingOutcomeBindingDocument,
+    ProcessingOutcomeIdentityDocument,
+    TransformCapabilityCreateDocument,
+    TransformCapabilityDocument,
+)
+from riverhog_protocol.collection_workflows import RetirementPolicy
+
+RootInput = CollectionRootIdentityDocument | Mapping[str, Any]
+ArtifactInput = CollectionArtifactIdentityDocument | Mapping[str, Any]
+OutcomeInput = ProcessingOutcomeIdentityDocument | Mapping[str, Any]
+DerivationInput = CollectionDerivationDocument | Mapping[str, Any]
+
+
+def _dump(value: object) -> dict[str, Any]:
+    return value.model_dump(mode="json", exclude_none=True)  # type: ignore[attr-defined,no-any-return]
 
 
 class CollectionWorkflowMethods:
@@ -20,27 +54,28 @@ class CollectionWorkflowMethods:
         work_id: str,
         work_document: Mapping[str, Any],
         work_document_sha256: str,
-        inputs: Sequence[Mapping[str, Any]],
+        inputs: Sequence[RootInput],
         lease_seconds: int = 1800,
         purpose: str = "collection-work/v1",
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            "/v1/collection-processing-claims",
-            json={
-                "work_id": work_id,
-                "work_document": dict(work_document),
-                "work_document_sha256": work_document_sha256,
-                "inputs": [dict(item) for item in inputs],
-                "lease_seconds": lease_seconds,
-                "purpose": purpose,
-            },
+    ) -> ProcessingClaimDocument:
+        request = ProcessingClaimCreateDocument(
+            work_id=work_id,
+            work_document=dict(work_document),
+            work_document_sha256=work_document_sha256,
+            inputs=[CollectionRootIdentityDocument.model_validate(item) for item in inputs],
+            lease_seconds=lease_seconds,
+            purpose=purpose,
+        )
+        return ProcessingClaimDocument.model_validate(
+            self._json("POST", "/v1/collection-processing-claims", json=_dump(request))
         )
 
-    def get_processing_claim(self, claim_id: str) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}",
+    def get_processing_claim(self, claim_id: str) -> ProcessingClaimDocument:
+        return ProcessingClaimDocument.model_validate(
+            self._json(
+                "GET",
+                f"/v1/collection-processing-claims/{quote(claim_id, safe='')}",
+            )
         )
 
     def list_processing_claims(
@@ -48,11 +83,11 @@ class CollectionWorkflowMethods:
         *,
         page: int = 1,
         per_page: int = 25,
-        state: str | None = None,
+        state: ClaimState | None = None,
         sort: str = "updated_at",
         order: str = "desc",
         all_items: bool = False,
-    ) -> dict[str, Any]:
+    ) -> ProcessingClaimPageDocument:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
@@ -63,7 +98,9 @@ class CollectionWorkflowMethods:
             params["state"] = state
         if all_items:
             params["all"] = True
-        return self._json("GET", "/v1/collection-processing-claims", params=params)
+        return ProcessingClaimPageDocument.model_validate(
+            self._json("GET", "/v1/collection-processing-claims", params=params)
+        )
 
     def renew_processing_claim(
         self,
@@ -71,12 +108,9 @@ class CollectionWorkflowMethods:
         *,
         fence: int,
         lease_seconds: int = 1800,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/renew",
-            json={"fence": fence, "lease_seconds": lease_seconds},
-        )
+    ) -> ProcessingClaimDocument:
+        request = ProcessingClaimRenewDocument(fence=fence, lease_seconds=lease_seconds)
+        return self._claim_response(claim_id, "renew", request)
 
     def restart_processing_claim(
         self,
@@ -84,12 +118,9 @@ class CollectionWorkflowMethods:
         *,
         fence: int,
         lease_seconds: int = 1800,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/restart",
-            json={"fence": fence, "lease_seconds": lease_seconds},
-        )
+    ) -> ProcessingClaimDocument:
+        request = ProcessingClaimRestartDocument(fence=fence, lease_seconds=lease_seconds)
+        return self._claim_response(claim_id, "restart", request)
 
     def abandon_processing_claim(
         self,
@@ -97,11 +128,11 @@ class CollectionWorkflowMethods:
         *,
         fence: int,
         reason: str,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/abandon",
-            json={"fence": fence, "reason": reason},
+    ) -> ProcessingClaimDocument:
+        return self._claim_response(
+            claim_id,
+            "abandon",
+            ProcessingClaimAbandonDocument(fence=fence, reason=reason),
         )
 
     def seal_processing_claim_plan(
@@ -114,26 +145,25 @@ class CollectionWorkflowMethods:
         controller_evidence_sha256: str,
         operation_id: str,
         operation_sha256: str,
-        input_artifacts: Sequence[Mapping[str, Any]],
+        input_artifacts: Sequence[ArtifactInput],
         output_tags: Sequence[str],
-        retirement_policy: str = "retain",
+        retirement_policy: RetirementPolicy = "retain",
         retirement_grace_seconds: int = 0,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/plan",
-            json={
-                "fence": fence,
-                "execution_id": execution_id,
-                "controller_evidence": dict(controller_evidence),
-                "controller_evidence_sha256": controller_evidence_sha256,
-                "operation": {"id": operation_id, "sha256": operation_sha256},
-                "input_artifacts": [dict(item) for item in input_artifacts],
-                "output_tags": list(output_tags),
-                "retirement_policy": retirement_policy,
-                "retirement_grace_seconds": retirement_grace_seconds,
-            },
+    ) -> ProcessingClaimDocument:
+        request = ProcessingClaimPlanSealDocument(
+            fence=fence,
+            execution_id=execution_id,
+            controller_evidence=dict(controller_evidence),
+            controller_evidence_sha256=controller_evidence_sha256,
+            operation=OperationIdentityDocument(id=operation_id, sha256=operation_sha256),
+            input_artifacts=[
+                CollectionArtifactIdentityDocument.model_validate(item) for item in input_artifacts
+            ],
+            output_tags=list(output_tags),
+            retirement_policy=retirement_policy,
+            retirement_grace_seconds=retirement_grace_seconds,
         )
+        return self._claim_response(claim_id, "plan", request)
 
     def create_transform_capability(
         self,
@@ -141,20 +171,25 @@ class CollectionWorkflowMethods:
         *,
         fence: int,
         audience: str,
-        actions: Sequence[str] = ("read-inputs",),
-        artifacts: Sequence[Mapping[str, Any]],
+        actions: Sequence[CapabilityAction] = ("read-inputs",),
+        artifacts: Sequence[ArtifactInput],
         ttl_seconds: int = 900,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/capabilities",
-            json={
-                "fence": fence,
-                "audience": audience,
-                "actions": list(actions),
-                "artifacts": [dict(item) for item in artifacts],
-                "ttl_seconds": ttl_seconds,
-            },
+    ) -> TransformCapabilityDocument:
+        request = TransformCapabilityCreateDocument(
+            fence=fence,
+            audience=audience,
+            actions=list(actions),
+            artifacts=[
+                CollectionArtifactIdentityDocument.model_validate(item) for item in artifacts
+            ],
+            ttl_seconds=ttl_seconds,
+        )
+        return TransformCapabilityDocument.model_validate(
+            self._json(
+                "POST",
+                f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/capabilities",
+                json=_dump(request),
+            )
         )
 
     def settle_processing_claim(
@@ -163,61 +198,55 @@ class CollectionWorkflowMethods:
         *,
         fence: int,
         output_collection_id: int,
-        derivation: Mapping[str, Any],
+        derivation: DerivationInput,
         outcome_claim_id: str | None = None,
         outcome_fence: int | None = None,
         outcome_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> ProcessingClaimDocument:
         outcome = None
         if any(item is not None for item in (outcome_claim_id, outcome_fence, outcome_id)):
             if outcome_claim_id is None or outcome_fence is None or outcome_id is None:
                 raise ValueError("processing outcome binding is incomplete")
-            outcome = {
-                "claim_id": outcome_claim_id,
-                "fence": outcome_fence,
-                "outcome_id": outcome_id,
-            }
-        return self._json(
-            "POST",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/settle",
-            json={
-                "fence": fence,
-                "output_collection_id": output_collection_id,
-                "derivation": dict(derivation),
-                **({"outcome": outcome} if outcome is not None else {}),
-            },
+            outcome = ProcessingOutcomeBindingDocument(
+                claim_id=outcome_claim_id,
+                fence=outcome_fence,
+                outcome_id=outcome_id,
+            )
+        request = ProcessingClaimSettleDocument(
+            fence=fence,
+            output_collection_id=output_collection_id,
+            derivation=CollectionDerivationDocument.model_validate(derivation),
+            outcome=outcome,
         )
+        return self._claim_response(claim_id, "settle", request)
 
     def settle_processing_claim_outcomes(
         self,
         claim_id: str,
         *,
         fence: int,
-        outcomes: Sequence[Mapping[str, Any]],
-        retirement_policy: str = "retain",
+        outcomes: Sequence[OutcomeInput],
+        retirement_policy: RetirementPolicy = "retain",
         retirement_grace_seconds: int = 0,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/outcomes/settle",
-            json={
-                "fence": fence,
-                "outcomes": [dict(item) for item in outcomes],
-                "retirement_policy": retirement_policy,
-                "retirement_grace_seconds": retirement_grace_seconds,
-            },
+    ) -> ProcessingClaimDocument:
+        request = ProcessingClaimOutcomesSettleDocument(
+            fence=fence,
+            outcomes=[ProcessingOutcomeIdentityDocument.model_validate(item) for item in outcomes],
+            retirement_policy=retirement_policy,
+            retirement_grace_seconds=retirement_grace_seconds,
         )
+        return self._claim_response(claim_id, "outcomes/settle", request)
 
     def begin_processing_claim_retirement(
         self,
         claim_id: str,
         *,
         fence: int,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/retirement",
-            json={"fence": fence},
+    ) -> ProcessingClaimDocument:
+        return self._claim_response(
+            claim_id,
+            "retirement",
+            ProcessingClaimFenceDocument(fence=fence),
         )
 
     def release_processing_claim(
@@ -225,15 +254,34 @@ class CollectionWorkflowMethods:
         claim_id: str,
         *,
         fence: int,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/release",
-            json={"fence": fence},
+    ) -> ProcessingClaimDocument:
+        return self._claim_response(
+            claim_id,
+            "release",
+            ProcessingClaimFenceDocument(fence=fence),
         )
 
-    def get_collection_derivation(self, collection_id: int) -> dict[str, Any]:
-        return self._json("GET", f"/v1/collections/{collection_id}/derivation")
+    def get_collection_derivation(
+        self,
+        collection_id: int,
+    ) -> CollectionDerivationResponseDocument:
+        return CollectionDerivationResponseDocument.model_validate(
+            self._json("GET", f"/v1/collections/{collection_id}/derivation")
+        )
+
+    def _claim_response(
+        self,
+        claim_id: str,
+        suffix: str,
+        request: object,
+    ) -> ProcessingClaimDocument:
+        return ProcessingClaimDocument.model_validate(
+            self._json(
+                "POST",
+                f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/{suffix}",
+                json=_dump(request),
+            )
+        )
 
 
 __all__ = ["CollectionWorkflowMethods"]

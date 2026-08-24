@@ -18,6 +18,16 @@ classifiers = [
   "Typing :: Typed",
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "lifecycle-events>=0.1,<0.2",
+  "pydantic>=2.12,<3.0",
+]
+
+[tool.uv.sources]
+lifecycle-events = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riverhog_protocol"]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"schemas" = "share/riverhog-protocol/schemas"

@@ -13,14 +13,17 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from http_api_contracts import error_payload
-from stove0_observer_support import ObserverHttpBinding
+from fastapi.security import HTTPBearer
+from http_api_contracts import ErrorResponse, HealthResponse, error_payload, operation_openapi
+from stove0_observer_support import OBSERVER_HTTP_OPERATIONS, ObserverHttpBinding
 
 from stove0_exiftool_observer.observer import ExiftoolObserver
 
 SERVICE = "stove0-exiftool-observer"
+_PUBLIC_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+_bearer = HTTPBearer(auto_error=False)
 
 
 def create_app(*, token: str, observer: ExiftoolObserver) -> FastAPI:
@@ -30,11 +33,16 @@ def create_app(*, token: str, observer: ExiftoolObserver) -> FastAPI:
     binding = ObserverHttpBinding(observer)
     app = FastAPI(title="Stove0 ExifTool observer", version="1", openapi_url="/v1/openapi.json")
 
-    @app.get("/health/live", tags=["health"])
+    @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     def live() -> dict[str, str]:
         return {"service": SERVICE, "status": "ok"}
 
-    @app.get("/health/ready", tags=["health"])
+    @app.get(
+        "/health/ready",
+        response_model=HealthResponse,
+        responses={503: {"model": ErrorResponse}},
+        tags=["health"],
+    )
     def ready() -> Response:
         result = subprocess.run(
             [observer.exiftool, "-ver"], check=False, capture_output=True, timeout=15
@@ -57,12 +65,23 @@ def create_app(*, token: str, observer: ExiftoolObserver) -> FastAPI:
             content=result.body, status_code=result.status, headers=dict(result.headers)
         )
 
-    for path in ("/v1/observer", "/v1/observe"):
+    methods_by_path: dict[str, set[str]] = {}
+    for operation in OBSERVER_HTTP_OPERATIONS:
+        methods_by_path.setdefault(operation.path, set()).add(operation.method)
+        app.add_api_route(
+            operation.path,
+            dispatch,
+            methods=[operation.method],
+            dependencies=[Depends(_bearer)],
+            tags=["observer"],
+            **operation_openapi(operation),
+        )
+    for path, supported in methods_by_path.items():
         app.add_api_route(
             path,
             dispatch,
-            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-            tags=["observer"],
+            methods=sorted(_PUBLIC_METHODS - supported),
+            include_in_schema=False,
         )
     return app
 

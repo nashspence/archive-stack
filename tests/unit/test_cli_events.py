@@ -3,28 +3,40 @@ from __future__ import annotations
 import json
 
 import riverhog_cli.main
-from lifecycle_events import EventPage, cloud_event
 from riverhog_cli.main import app
+from riverhog_protocol.lifecycle_events import RiverhogEventPage
 from typer.testing import CliRunner
 
 
 def test_riverhog_event_list_has_human_and_json_output(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    expected = {
+        "events": [
+            {
+                "specversion": "1.0",
+                "id": "event-1",
+                "source": "urn:riverhog:riverhog",
+                "type": "io.riverhog.riverhog.collection.tags_changed",
+                "subject": "41",
+                "time": "2026-08-24T00:00:00Z",
+                "datacontenttype": "application/json",
+                "data": {
+                    "actor": {"app": "riverhog-client"},
+                    "initiator": {"app": "riverhog-client"},
+                    "collection_id": 41,
+                    "collection_created_at": "2026-08-24T00:00:00.000000Z",
+                    "collection_tags": ["camera"],
+                },
+            }
+        ],
+        "next_cursor": "10",
+        "has_more": True,
+    }
+
     class FakeClient:
-        def list_lifecycle_events(self, *, after: str | None, limit: int) -> EventPage:
+        def list_lifecycle_events(self, *, after: str | None, limit: int) -> RiverhogEventPage:
             assert after == "4"
             assert limit == 6
-            return EventPage(
-                events=[
-                    cloud_event(
-                        event_id="event-1",
-                        source="urn:riverhog:riverhog",
-                        type="io.riverhog.riverhog.collection.finalized",
-                        subject="41",
-                    )
-                ],
-                next_cursor="10",
-                has_more=True,
-            )
+            return RiverhogEventPage.model_validate(expected)
 
     monkeypatch.setattr(riverhog_cli.main, "client", lambda: FakeClient())
     runner = CliRunner()
@@ -34,7 +46,7 @@ def test_riverhog_event_list_has_human_and_json_output(monkeypatch) -> None:  # 
     machine = runner.invoke(app, [*args, "--json"])
 
     assert human.exit_code == 0
-    assert "io.riverhog.riverhog.collection.finalized" in human.stdout
+    assert "io.riverhog.riverhog.collection.tags_changed" in human.stdout
     assert "has more: yes" in human.stdout
     assert machine.exit_code == 0
-    assert json.loads(machine.stdout)["next_cursor"] == "10"
+    assert json.loads(machine.stdout) == expected

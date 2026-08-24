@@ -95,6 +95,16 @@ def _wait_for_runs(counter: Path, expected: int) -> None:
     raise AssertionError(f"Gogurt action did not reach {expected} runs")
 
 
+def _wait_for_published_pid(pid_file: Path) -> int:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            return int(pid_file.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.02)
+    raise AssertionError("Gogurt action did not publish its process ID")
+
+
 def _heartbeat_payload(paths: ListenerPaths) -> dict[str, object]:
     payload = listener_module._read_heartbeat(paths.heartbeat_file)
     assert payload is not None
@@ -218,6 +228,22 @@ def test_same_route_marker_write_does_not_create_a_second_dispatch(tmp_path: Pat
     assert core_plan_gogurt_action(config.routes_file, mount)["marker_identity"] == marker_identity
     with closing(sqlite3.connect(paths.database_file)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (1,)
+
+
+def test_retry_cannot_start_before_its_durable_eligibility_time(tmp_path: Path) -> None:
+    config, paths, mount, _counter = _fixture(tmp_path)
+    store = ListenerStore(paths.database_file)
+    store.create()
+    [dispatch_id] = store.observe(
+        [mount],
+        lambda point: core_plan_gogurt_action(config.routes_file, point),
+        now=1,
+    )
+    assert store.start_dispatch(dispatch_id, now=2) is not None
+    assert store.finish_dispatch(dispatch_id, return_code=73, error=None, now=3) == "retry"
+
+    assert store.start_dispatch(dispatch_id, now=7.99) is None
+    assert store.start_dispatch(dispatch_id, now=8) is not None
 
 
 @pytest.mark.parametrize("dispatch_state", ["completed", "running"])
@@ -515,11 +541,7 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
     thread.start()
     action_pid: int | None = None
     try:
-        deadline = time.monotonic() + 5
-        while not pid_file.is_file() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert pid_file.is_file()
-        action_pid = int(pid_file.read_text(encoding="utf-8"))
+        action_pid = _wait_for_published_pid(pid_file)
         runtime.request_stop()
         thread.join(timeout=5)
         assert not thread.is_alive()
@@ -563,11 +585,7 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
     thread.start()
     action_pid: int | None = None
     try:
-        deadline = time.monotonic() + 5
-        while not pid_file.is_file() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert pid_file.is_file()
-        action_pid = int(pid_file.read_text(encoding="utf-8"))
+        action_pid = _wait_for_published_pid(pid_file)
         paths.stop_file.write_text("stop\n", encoding="utf-8")
         thread.join(timeout=5)
 
@@ -713,6 +731,45 @@ def test_listener_store_does_not_normalize_sqlite_owned_sidecars(
     store = ListenerStore(tmp_path / "listener.sqlite3")
     store.create()
     assert store.summary() == {"counts": {}, "attention": []}
+
+
+def test_listener_runtime_keeps_one_database_connection_until_settled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    active_connections = 0
+    observed_during_poll: list[int] = []
+    real_connect = sqlite3.connect
+
+    class TrackedConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            nonlocal active_connections
+            super().__init__(*args, **kwargs)
+            active_connections += 1
+
+        def close(self) -> None:
+            nonlocal active_connections
+            if active_connections > 0:
+                active_connections -= 1
+            super().close()
+
+    def tracked_connect(database: str | Path, timeout: float = 5.0) -> sqlite3.Connection:
+        return real_connect(database, timeout=timeout, factory=TrackedConnection)
+
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+    runtime = ListenerRuntime(config, paths, discover=lambda: [])
+
+    def one_poll() -> None:
+        observed_during_poll.append(active_connections)
+        runtime.request_stop()
+
+    monkeypatch.setattr(runtime, "run_once", one_poll)
+
+    runtime.run()
+
+    assert observed_during_poll == [1]
+    assert active_connections == 0
 
 
 class FakeAdapter:

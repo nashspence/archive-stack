@@ -14,6 +14,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
 from stove0_core import ClaimBinding, Stove0RiverhogClient, WorkRecord
+from stove0_observer_protocol import ObservationRequest, ObservationRequestPayload
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSubject,
@@ -25,8 +26,6 @@ from stove0_protocol import (
     ControllerEvidencePayload,
     ExecutionEnvelope,
     ExecutionEnvelopePayload,
-    ObservationRequest,
-    ObservationRequestPayload,
     OperationRef,
     RecipeRef,
     TargetPlanBinding,

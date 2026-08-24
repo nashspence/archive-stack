@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterable, Sequence
+from typing import Literal, cast
 
 from riverhog_protocol.manifest import collection_content_identity
+from riverhog_protocol.portable_collection import PortableCollectionRecord
 
 
 def collection_record_manifest(
@@ -18,24 +19,22 @@ def collection_record_manifest(
     metadata_revision: int,
     tags: Sequence[str],
     files: Iterable[tuple[str, int, str]],
-) -> tuple[dict[str, object], str]:
-    payload: dict[str, object] = {
-        "format": "riverhog-collection/v1",
-        "collection": collection_id,
-        "content_identity": content_identity,
-        "encryption_format": encryption_format,
-        "passphrase_id": passphrase_id,
-        "provenance_mode": provenance_mode,
-        "provenance_identity": provenance_identity,
-        "metadata_revision": metadata_revision,
-        "tags": sorted(tags),
-        "files": [
-            {"path": path, "bytes": byte_count, "sha256": sha256}
-            for path, byte_count, sha256 in sorted(files)
-        ],
-    }
+) -> tuple[PortableCollectionRecord, str]:
+    if provenance_mode not in {"captured", "mixed", "omitted"}:
+        raise ValueError("collection provenance mode is invalid")
+    record = PortableCollectionRecord.create(
+        collection=collection_id,
+        content_identity=content_identity,
+        encryption_format=encryption_format,
+        passphrase_id=passphrase_id,
+        provenance_mode=cast(Literal["captured", "mixed", "omitted"], provenance_mode),
+        provenance_identity=provenance_identity,
+        metadata_revision=metadata_revision,
+        tags=tags,
+        files=files,
+    )
     # passphrase_id is an opaque public identifier, not passphrase material.
-    return payload, hashlib.sha256(_canonical_json(payload)).hexdigest()
+    return record, record.identity
 
 
 def collection_metadata_manifest(

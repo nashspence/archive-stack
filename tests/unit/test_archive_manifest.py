@@ -4,10 +4,8 @@ import hashlib
 import json
 
 import pytest
-from riverhog_core.archive_manifest import (
-    build_collection_archive_manifest,
-    parse_collection_archive_manifest,
-)
+from riverhog_archive_contracts import CollectionArchiveManifest
+from riverhog_core.archive_manifest import build_collection_archive_manifest
 from riverhog_core.domain.archive import (
     ArchiveFile,
     SealedPackVolume,
@@ -72,7 +70,7 @@ def test_manifest_is_small_immutable_volume_index_not_a_file_listing() -> None:
     assert len(payload["volumes"]) == 1
     assert "files" not in payload or isinstance(payload.get("files"), int)
     assert {"a.txt", "b.txt"}.isdisjoint(payload["volumes"][0])
-    assert parse_collection_archive_manifest(manifest) == payload
+    assert CollectionArchiveManifest.from_json_bytes(manifest).to_mapping() == payload
 
 
 def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() -> None:
@@ -149,7 +147,7 @@ def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() 
             ),
         ),
     )
-    payload = parse_collection_archive_manifest(manifest)
+    payload = CollectionArchiveManifest.from_json_bytes(manifest).to_mapping()
 
     assert [row["kind"] for row in payload["volumes"]] == ["pack", "segment", "segment"]
     assert payload["tree"]["files"] == 2

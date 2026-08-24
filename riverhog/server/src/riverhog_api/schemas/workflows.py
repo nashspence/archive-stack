@@ -1,160 +1,69 @@
-from __future__ import annotations
+"""Riverhog collection-work HTTP models from the public protocol authority."""
 
-from typing import Any, Literal
+from riverhog_protocol.collection_workflow_transport import (
+    CollectionArtifactIdentityDocument as CollectionArtifactIdentityIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    CollectionDerivationResponseDocument as CollectionDerivationOut,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    CollectionRootIdentityDocument as CollectionRootIdentityIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    OperationIdentityDocument as OperationIdentityIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimAbandonDocument as ProcessingClaimAbandonIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimCreateDocument as ProcessingClaimCreateIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimDocument as ProcessingClaimOut,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimFenceDocument as ProcessingClaimFenceIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimOutcomesSettleDocument as ProcessingClaimOutcomesSettleIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimPageDocument as ProcessingClaimPageOut,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimPlanSealDocument as ProcessingClaimPlanSealIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimRenewDocument as ProcessingClaimRenewIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimRestartDocument as ProcessingClaimRestartIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    ProcessingClaimSettleDocument as ProcessingClaimSettleIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    TransformCapabilityCreateDocument as TransformCapabilityCreateIn,
+)
+from riverhog_protocol.collection_workflow_transport import (
+    TransformCapabilityDocument as TransformCapabilityOut,
+)
 
-from pydantic import Field
-
-from riverhog_api.schemas.common import RiverhogModel
-
-
-def _default_capability_actions() -> list[Literal["read-inputs", "write-output"]]:
-    return ["read-inputs"]
-
-
-class CollectionRootIdentityIn(RiverhogModel):
-    collection_id: int = Field(ge=1)
-    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class CollectionArtifactIdentityIn(RiverhogModel):
-    collection: CollectionRootIdentityIn
-    path: str = Field(min_length=1, max_length=4096)
-    bytes: int = Field(ge=0)
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class OperationIdentityIn(RiverhogModel):
-    id: str = Field(min_length=1, max_length=160)
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class ProcessingClaimCreateIn(RiverhogModel):
-    work_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    work_document: dict[str, Any]
-    work_document_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    inputs: list[CollectionRootIdentityIn] = Field(min_length=1)
-    lease_seconds: int = Field(default=1800, ge=30, le=86400)
-    purpose: str = Field(default="collection-work/v1", min_length=1, max_length=160)
-
-
-class ProcessingClaimRenewIn(RiverhogModel):
-    fence: int = Field(ge=1)
-    lease_seconds: int = Field(default=1800, ge=30, le=86400)
-
-
-class ProcessingClaimRestartIn(RiverhogModel):
-    fence: int = Field(ge=1)
-    lease_seconds: int = Field(default=1800, ge=30, le=86400)
-
-
-class ProcessingClaimPlanSealIn(RiverhogModel):
-    fence: int = Field(ge=1)
-    execution_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    controller_evidence: dict[str, Any]
-    controller_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    operation: OperationIdentityIn
-    input_artifacts: list[CollectionArtifactIdentityIn] = Field(min_length=1)
-    output_tags: list[str] = Field(min_length=1)
-    retirement_policy: Literal["retain", "retire-after-verified-output"] = "retain"
-    retirement_grace_seconds: int = Field(default=0, ge=0)
-
-
-class TransformCapabilityCreateIn(RiverhogModel):
-    fence: int = Field(ge=1)
-    audience: str = Field(pattern=r"^[a-z0-9][a-z0-9._:/-]{0,299}$")
-    actions: list[Literal["read-inputs", "write-output"]] = Field(
-        default_factory=_default_capability_actions,
-        min_length=1,
-    )
-    artifacts: list[CollectionArtifactIdentityIn] = Field(min_length=1)
-    ttl_seconds: int = Field(default=900, ge=30, le=86400)
-
-
-class ProcessingOutcomeBindingIn(RiverhogModel):
-    claim_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    fence: int = Field(ge=1)
-    outcome_id: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$")
-
-
-class ProcessingOutcomeIdentityIn(RiverhogModel):
-    outcome_id: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$")
-    source_claim_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    output_collection: CollectionRootIdentityIn
-    derivation_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class ProcessingClaimSettleIn(RiverhogModel):
-    fence: int = Field(ge=1)
-    output_collection_id: int = Field(ge=1)
-    derivation: dict[str, Any]
-    outcome: ProcessingOutcomeBindingIn | None = None
-
-
-class ProcessingClaimOutcomesSettleIn(RiverhogModel):
-    fence: int = Field(ge=1)
-    outcomes: list[ProcessingOutcomeIdentityIn] = Field(min_length=1)
-    retirement_policy: Literal["retain", "retire-after-verified-output"] = "retain"
-    retirement_grace_seconds: int = Field(default=0, ge=0)
-
-
-class ProcessingClaimFenceIn(RiverhogModel):
-    fence: int = Field(ge=1)
-
-
-class ProcessingClaimAbandonIn(ProcessingClaimFenceIn):
-    reason: str = Field(min_length=1, max_length=1000)
-
-
-class ProcessingClaimOut(RiverhogModel):
-    format: Literal["riverhog-processing-claim/v1"]
-    id: str
-    work_id: str
-    consumer: dict[str, Any]
-    purpose: str
-    state: Literal["active", "settled", "retiring", "abandoned", "released"]
-    fence: int
-    expires_at: str
-    created_at: str
-    updated_at: str
-    settled_at: str | None = None
-    abandoned_at: str | None = None
-    abandonment_reason: str | None = None
-    released_at: str | None = None
-    output_collection_id: int | None = None
-    work_document: dict[str, Any]
-    work_document_sha256: str
-    inputs: list[dict[str, Any]]
-    plan: dict[str, Any] | None = None
-    outcomes: list[dict[str, Any]] = Field(default_factory=list)
-    outcome_settlement: dict[str, Any] | None = None
-
-
-class ProcessingClaimPageOut(RiverhogModel):
-    page: int
-    per_page: int
-    total: int
-    pages: int
-    sort: str
-    order: str
-    filters: dict[str, Any]
-    claims: list[ProcessingClaimOut]
-
-
-class TransformCapabilityOut(RiverhogModel):
-    format: Literal["riverhog-transform-capability/v1"]
-    id: str
-    claim_id: str
-    fence: int
-    audience: str
-    actions: list[str]
-    principal_app: str
-    expires_at: str
-    artifacts: list[CollectionArtifactIdentityIn]
-    token: str
-
-
-class CollectionDerivationOut(RiverhogModel):
-    collection_id: int
-    document_sha256: str
-    derivation: dict[str, Any]
+__all__ = [
+    "CollectionDerivationOut",
+    "CollectionArtifactIdentityIn",
+    "CollectionRootIdentityIn",
+    "OperationIdentityIn",
+    "ProcessingClaimAbandonIn",
+    "ProcessingClaimCreateIn",
+    "ProcessingClaimFenceIn",
+    "ProcessingClaimOut",
+    "ProcessingClaimOutcomesSettleIn",
+    "ProcessingClaimPageOut",
+    "ProcessingClaimPlanSealIn",
+    "ProcessingClaimRenewIn",
+    "ProcessingClaimRestartIn",
+    "ProcessingClaimSettleIn",
+    "TransformCapabilityCreateIn",
+    "TransformCapabilityOut",
+]

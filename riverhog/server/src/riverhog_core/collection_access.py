@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from application_access import permission_resources as access_permission_resources
 from riverhog_protocol.errors import BadRequest, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
 from sqlalchemy import exists, false, or_, select, true
@@ -142,12 +143,7 @@ def tag_access_filter(
 
 
 def permission_resources(principal: ApplicationPrincipal, permission: str) -> set[str]:
-    return {
-        current.resource
-        for current in principal.access
-        if current.permission in {"*", permission}
-        or (current.permission == "events:read_all" and permission == "events:read")
-    }
+    return access_permission_resources(principal.access, permission)
 
 
 def collection_ids(resources: Iterable[str]) -> set[int]:

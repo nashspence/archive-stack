@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Annotated
 
+from application_access import ApplicationPermission, ApplicationResource
 from fastapi import APIRouter, Query
 
 from riverhog_api.auth import KeyManager
@@ -90,8 +92,8 @@ def list_app_key_access(
     q: str | None = Query(None),
     app: str | None = Query(None),
     key_id: str | None = Query(None, alias="key"),
-    permission: str | None = Query(None),
-    resource: str | None = Query(None),
+    permission: Annotated[ApplicationPermission | None, Query()] = None,
+    resource: Annotated[ApplicationResource | None, Query()] = None,
     active: bool | None = Query(None),
     all_items: bool = Query(False, alias="all"),
 ) -> AppAccessListOut:

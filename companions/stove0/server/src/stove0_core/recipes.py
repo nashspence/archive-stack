@@ -12,6 +12,12 @@ from typing import cast
 from pydantic import JsonValue
 from riverhog_api_client import ApiClient
 from riverhog_protocol.collection_workflows import canonical_json_sha256
+from stove0_observer_protocol import (
+    ObservationEvidence,
+    ObservationRequest,
+    ObservationRequestPayload,
+    ObservationResult,
+)
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSubject,
@@ -25,10 +31,6 @@ from stove0_protocol import (
     JoinDeclaration,
     JoinMemberDeclaration,
     JoinWorkBinding,
-    ObservationEvidence,
-    ObservationRequest,
-    ObservationRequestPayload,
-    ObservationResult,
     OperationRef,
     WorkflowPlan,
     WorkflowPlanIntent,

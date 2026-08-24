@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_type_hints
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +16,11 @@ from stove0_api.schemas import WorkflowPreviewIn
 from stove0_api_client import Stove0ApiClient
 from stove0_cli import main as stove0_cli
 from stove0_core import (
+    ClaimBinding,
+    EvaluationChild,
+    EvaluationRecord,
     EvaluationService,
+    PreviewAcceptance,
     RecipeCatalog,
     SqlAlchemyStateStore,
     Stove0Coordinator,
@@ -24,15 +28,31 @@ from stove0_core import (
     Stove0Scheduler,
     Stove0WorkService,
     WorkflowPreviewService,
+    WorkRecord,
 )
 from stove0_protocol import (
+    ArtifactSelection,
+    ArtifactSubject,
+    BranchPlan,
+    BranchSetEvaluation,
+    BranchSetPlan,
+    BranchTargetPreview,
     CollectionRootRef,
     EvaluationDefinition,
     EvaluationDefinitionPayload,
     EvaluationMatrix,
     EvaluationMatrixPayload,
     EvaluationVariant,
+    OperationRef,
     RecipeRef,
+    TargetPlanBinding,
+    WorkflowPlanIntent,
+    WorkflowPreview,
+    WorkflowPreviewPayload,
+    WorkflowPreviewRequest,
+    WorkflowPreviewRequestPayload,
+    WorkIdentity,
+    WorkPayload,
 )
 from typer.testing import CliRunner
 
@@ -42,20 +62,6 @@ from tests.operation_observer import OperationObserver, TimeoutNeutralTestClient
 class CatalogApi:
     def close(self) -> None:
         pass
-
-
-class _Document:
-    def __init__(self, **payload: object) -> None:
-        self.payload = payload
-
-    def model_dump(self, **_kwargs: object) -> dict[str, object]:
-        return dict(self.payload)
-
-    def __getattr__(self, name: str) -> object:
-        try:
-            return self.payload[name]
-        except KeyError as exc:
-            raise AttributeError(name) from exc
 
 
 class _LifecycleCatalogApi(CatalogApi):
@@ -75,40 +81,29 @@ class _LifecycleState:
             poolclass=StaticPool,
         )
         self.engine = engine
+        self.work_record: WorkRecord | None = None
+        self.evaluation_record = _evaluation_record(_evaluation_definition())
 
     def list_events(self, **_kwargs: object) -> EventPage:
         return EventPage(events=[], next_cursor="0", has_more=False)
 
     def list_work(self, **_kwargs: object) -> dict[str, object]:
+        records = () if self.work_record is None else (self.work_record,)
         return {
             "page": 1,
             "per_page": 25,
-            "total": 1,
-            "pages": 1,
+            "total": len(records),
+            "pages": 1 if records else 0,
             "sort": "updated_at",
             "order": "desc",
             "filters": {},
-            "work": [self._effect_work()],
+            "work": records,
         }
 
-    def load(self, work_id: str) -> _Document | None:
-        if work_id == "work-1":
-            return _Document(**self._effect_work())
+    def load(self, work_id: str) -> WorkRecord | None:
+        if self.work_record is not None and self.work_record.work_id == work_id:
+            return self.work_record
         return None
-
-    @staticmethod
-    def _effect_work() -> dict[str, object]:
-        return {
-            "work_id": "work-1",
-            "phase": "complete",
-            "revision": 1,
-            "workflow_plan": {"result_kind": "external-effect"},
-            "target_status": {
-                "protocol": "stove0-effect-target/v1",
-                "state": "succeeded",
-                "effect_receipt": {"receipt_sha256": "e" * 64},
-            },
-        }
 
     def list_evaluations(self, **_kwargs: object) -> dict[str, object]:
         return {
@@ -119,106 +114,200 @@ class _LifecycleState:
             "sort": "updated_at",
             "order": "desc",
             "filters": {},
-            "evaluations": [{"evaluation_id": "evaluation-1", "phase": "running", "revision": 1}],
+            "evaluations": [self.evaluation_record],
         }
 
-    def load_evaluation(self, evaluation_id: str) -> _Document:
-        return _Document(evaluation_id=evaluation_id, phase="running", revision=1)
+    def load_evaluation(self, evaluation_id: str) -> EvaluationRecord | None:
+        if self.evaluation_record.evaluation_id == evaluation_id:
+            return self.evaluation_record
+        return None
 
-    def load_selection(self, selection_sha256: str) -> _Document:
-        return _Document(
-            selection_sha256=selection_sha256,
-            total_bytes=12,
-            artifacts=(
-                _Document(
-                    id="source",
-                    role="fixture.source/v1",
-                    path="source/input.bin",
-                    bytes=12,
-                ),
-            ),
-        )
+    def load_selection(self, selection_sha256: str) -> ArtifactSelection | None:
+        selection = _fixture_selection(_fixture_work())
+        return selection if selection.selection_sha256 == selection_sha256 else None
 
     def load_cursor(self, _stream: str) -> None:
         return None
 
 
-class _LifecycleRecipes:
-    sha256 = "c" * 64
-    recipes = (_Document(id="fixture.recipe/v1", revision=1, sha256="d" * 64),)
-
-    def recipe(self, recipe_id: str, revision: int | None) -> _Document:
-        return _Document(id=recipe_id, revision=revision or 1, sha256="d" * 64)
-
-
 class _LifecyclePlanner:
-    def create_work(self, *_args: object, **_kwargs: object) -> object:
-        return _Document(work_id="generated-work")
+    def create_work(
+        self,
+        recipe_id: str,
+        roots: list[CollectionRootRef],
+        *,
+        revision: int | None = None,
+        effective_intent: dict[str, object] | None = None,
+    ) -> WorkIdentity:
+        return WorkIdentity.seal(
+            WorkPayload(
+                recipe=RecipeRef(
+                    id=recipe_id,
+                    revision=revision or 1,
+                    sha256="3" * 64,
+                ),
+                inputs=tuple(roots),
+                effective_intent=effective_intent or {},
+            )
+        )
 
 
 class _LifecycleCoordinator:
     planning = _LifecyclePlanner()
 
-    def create_or_resume(self, _identity: object, **_kwargs: object) -> _Document:
-        return _Document(work_id="work-1", phase="eligible", revision=1)
+    def __init__(self, state: _LifecycleState) -> None:
+        self.state = state
 
-    def step(self, work_id: str) -> _Document:
-        return _Document(work_id=work_id, phase="claimed", revision=2)
-
-    def retry(self, work_id: str) -> _Document:
-        return _Document(work_id=work_id, phase="eligible", revision=3)
-
-    def cancel(self, work_id: str, *, reason: str | None) -> _Document:
-        return _Document(work_id=work_id, phase="canceled", revision=4, reason=reason)
-
-    def inspect_coordination(self, _work_id: str) -> _Document:
-        return _Document(
-            branch_set_sha256="b" * 64,
-            unsettled_branch_ids=(),
-            join_state="succeeded",
-            branch_set_succeeded=True,
+    def create_or_resume(self, identity: WorkIdentity, *, preview: WorkflowPreview) -> WorkRecord:
+        self.state.work_record = WorkRecord(
+            work=identity,
+            preview_acceptance=PreviewAcceptance.from_preview(preview),
         )
+        return self.state.work_record
+
+    def step(self, work_id: str) -> WorkRecord:
+        current = self._load(work_id)
+        self.state.work_record = WorkRecord(
+            work=current.work,
+            phase="claimed",
+            revision=current.revision + 1,
+            claim=ClaimBinding(claim_id="qualification", fence=1),
+            preview_acceptance=current.preview_acceptance,
+        )
+        return self.state.work_record
+
+    def retry(self, work_id: str) -> WorkRecord:
+        current = self._load(work_id)
+        self.state.work_record = WorkRecord(
+            work=current.work,
+            phase="eligible",
+            revision=current.revision + 1,
+            preview_acceptance=current.preview_acceptance,
+        )
+        return self.state.work_record
+
+    def cancel(self, work_id: str, *, reason: str | None) -> WorkRecord:
+        del reason
+        current = self._load(work_id)
+        self.state.work_record = WorkRecord(
+            work=current.work,
+            phase="canceled",
+            revision=current.revision + 1,
+            preview_acceptance=current.preview_acceptance,
+        )
+        return self.state.work_record
+
+    def inspect_coordination(self, work_id: str) -> BranchSetEvaluation:
+        preview = _ready_preview(self._load(work_id).work)
+        assert preview.branch_set_plan is not None
+        return BranchSetEvaluation(
+            branch_set_sha256=preview.branch_set_plan.branch_set_sha256,
+            succeeded_branches=(),
+            succeeded_effects=(),
+            succeeded_coordinations=(),
+            unsettled_branch_ids=("archive",),
+            failed_branch_ids=(),
+            inapplicable_branch_ids=(),
+            interrupted_branch_ids=(),
+            canceled_branch_ids=(),
+            join_ready=False,
+            resolved_join_plan=None,
+            join_state="not-declared",
+            join_settlement=None,
+            unsettled_work_ids=(preview.branch_set_plan.branches[0].workflow_plan.work.work_id,),
+            branch_set_succeeded=False,
+            coordination_settlement=None,
+            retirement_requested=False,
+            coordination_complete_for_retirement=False,
+        )
+
+    def _load(self, work_id: str) -> WorkRecord:
+        record = self.state.load(work_id)
+        if record is None:
+            raise KeyError(work_id)
+        return record
 
 
 class _LifecyclePreview:
-    def preview(self, _identity: object) -> _Document:
-        return _Document(
-            format="stove0-workflow-preview/v1",
-            state="ready",
-            preview_sha256="a" * 64,
-        )
+    def preview(self, identity: object) -> WorkflowPreview:
+        return _ready_preview(WorkIdentity.model_validate(identity))
 
 
 class _LifecycleEvaluations:
-    def _document(self, evaluation_id: str = "evaluation-1") -> _Document:
-        return _Document(evaluation_id=evaluation_id, phase="running", revision=1)
+    def __init__(self, state: _LifecycleState) -> None:
+        self.state = state
 
-    def create_or_resume(self, definition: EvaluationDefinition) -> _Document:
-        return self._document(definition.evaluation_id)
+    def create_or_resume(self, definition: EvaluationDefinition) -> EvaluationRecord:
+        self.state.evaluation_record = _evaluation_record(definition)
+        return self.state.evaluation_record
 
-    def refresh(self, evaluation_id: str) -> _Document:
-        return self._document(evaluation_id)
+    def refresh(self, evaluation_id: str) -> EvaluationRecord:
+        return self._load(evaluation_id)
 
-    def step(self, evaluation_id: str, **_kwargs: object) -> _Document:
-        return self._document(evaluation_id)
+    def step(self, evaluation_id: str, **_kwargs: object) -> EvaluationRecord:
+        return self._load(evaluation_id)
 
-    def cancel(self, evaluation_id: str, **_kwargs: object) -> _Document:
-        return _Document(evaluation_id=evaluation_id, phase="canceled", revision=2)
+    def cancel(self, evaluation_id: str, **_kwargs: object) -> EvaluationRecord:
+        current = self._load(evaluation_id)
+        self.state.evaluation_record = current.model_copy(
+            update={
+                "phase": "canceled",
+                "revision": current.revision + 1,
+                "children": tuple(
+                    child.model_copy(update={"state": "canceled"}) for child in current.children
+                ),
+            }
+        )
+        return self.state.evaluation_record
 
-    def retry_failed(self, evaluation_id: str, _variant_id: str, **_kwargs: object) -> _Document:
-        return self._document(evaluation_id)
+    def retry_failed(
+        self, evaluation_id: str, _variant_id: str, **_kwargs: object
+    ) -> EvaluationRecord:
+        current = self._load(evaluation_id)
+        self.state.evaluation_record = _evaluation_record(
+            current.definition,
+            revision=current.revision + 1,
+        )
+        return self.state.evaluation_record
 
-    def review(self, evaluation_id: str, _review: object) -> _Document:
-        return self._document(evaluation_id)
+    def review(self, evaluation_id: str, review: object) -> EvaluationRecord:
+        current = self._load(evaluation_id)
+        self.state.evaluation_record = current.model_copy(
+            update={"revision": current.revision + 1, "reviews": (review,)}
+        )
+        return self.state.evaluation_record
+
+    def _load(self, evaluation_id: str) -> EvaluationRecord:
+        record = self.state.load_evaluation(evaluation_id)
+        if record is None:
+            raise KeyError(evaluation_id)
+        return record
 
 
 class _LifecycleScheduler:
     def run_once(self, **_kwargs: object) -> dict[str, object]:
-        return {"role": "combined", "events": 0, "work": 0}
+        return {
+            "pruning": None,
+            "events": {
+                "events": 0,
+                "next_cursor": "0",
+                "has_more": False,
+                "work_ids": [],
+                "failures": [],
+            },
+            "work": {
+                "role": "combined",
+                "cursor": "",
+                "next_cursor": "",
+                "progressed": [],
+                "failures": [],
+            },
+        }
 
 
 def _lifecycle_composition() -> Stove0Composition:
     state = _LifecycleState()
+    fixture_path = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
     return Stove0Composition(
         config=Stove0RuntimeConfig(
             database_url="sqlite+pysqlite:///:memory:",
@@ -237,11 +326,11 @@ def _lifecycle_composition() -> Stove0Composition:
         ),
         riverhog_api=cast(ApiClient, _LifecycleCatalogApi()),
         state=cast(SqlAlchemyStateStore, state),
-        recipes=cast(RecipeCatalog, _LifecycleRecipes()),
+        recipes=RecipeCatalog.load(fixture_path),
         work=cast(Stove0WorkService, object()),
-        coordinator=cast(Stove0Coordinator, _LifecycleCoordinator()),
+        coordinator=cast(Stove0Coordinator, _LifecycleCoordinator(state)),
         preview=cast(WorkflowPreviewService, _LifecyclePreview()),
-        evaluations=cast(EvaluationService, _LifecycleEvaluations()),
+        evaluations=cast(EvaluationService, _LifecycleEvaluations(state)),
         scheduler=cast(Stove0Scheduler, _LifecycleScheduler()),
     )
 
@@ -262,6 +351,108 @@ def _evaluation_definition() -> EvaluationDefinition:
                 ),
             ),
             matrix=matrix,
+        )
+    )
+
+
+def _evaluation_record(
+    definition: EvaluationDefinition,
+    *,
+    revision: int = 1,
+) -> EvaluationRecord:
+    return EvaluationRecord(
+        definition=definition,
+        phase="running",
+        revision=revision,
+        children=tuple(
+            EvaluationChild(
+                variant_id=variant.id,
+                work_id=definition.child_work(variant.id).work_id,
+            )
+            for variant in definition.matrix.variants
+        ),
+    )
+
+
+def _fixture_work(recipe_id: str = "stove0.conformance-media/v1") -> WorkIdentity:
+    return WorkIdentity.seal(
+        WorkPayload(
+            recipe=RecipeRef(id=recipe_id, revision=1, sha256="3" * 64),
+            inputs=(
+                CollectionRootRef(
+                    collection_id=1,
+                    manifest_sha256="1" * 64,
+                    content_identity="2" * 64,
+                ),
+            ),
+        )
+    )
+
+
+def _fixture_selection(work: WorkIdentity) -> ArtifactSelection:
+    return ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="source",
+                role="fixture.source/v1",
+                collection=work.inputs[0],
+                path="source/input.bin",
+                bytes=12,
+                sha256="4" * 64,
+                media_type="application/octet-stream",
+            ),
+        )
+    )
+
+
+def _ready_preview(work: WorkIdentity) -> WorkflowPreview:
+    request = WorkflowPreviewRequest.seal(WorkflowPreviewRequestPayload(work=work))
+    selection = _fixture_selection(work)
+    operation = OperationRef(id="fixture.copy/v1", sha256="5" * 64)
+    branch = BranchPlan.build(
+        parent_work=work,
+        branch_id="archive",
+        decision_sha256="6" * 64,
+        selection=selection,
+        recipe=work.recipe,
+        effective_intent=work.effective_intent,
+        workflow_intent=WorkflowPlanIntent(
+            operation=operation,
+            target_registration_id="fixture-target",
+            target_contract_sha256="7" * 64,
+            output_tags=("fixture-output",),
+            retirement_policy="retain",
+        ),
+    )
+    branch_set = BranchSetPlan.seal(
+        parent_work=work,
+        decision_sha256="6" * 64,
+        branches=(branch,),
+        selections={selection.selection_sha256: selection},
+    )
+    workflow = branch.workflow_plan
+    return WorkflowPreview.seal(
+        WorkflowPreviewPayload(
+            preview_id=request.preview_id,
+            state="ready",
+            work=work,
+            branch_set_plan=branch_set,
+            selections=(selection,),
+            target_plans=(
+                BranchTargetPreview(
+                    branch_id=branch.branch_id,
+                    work_id=workflow.work.work_id,
+                    workflow_plan_sha256=workflow.workflow_plan_sha256,
+                    target_plan=TargetPlanBinding(
+                        protocol="stove0-transform-target/v1",
+                        target_implementation_id="fixture.target/v1",
+                        target_contract_sha256=workflow.target_contract_sha256,
+                        operation_contract_sha256=operation.sha256,
+                        plan={"format": "fixture-target-plan/v1"},
+                        plan_sha256="8" * 64,
+                    ),
+                ),
+            ),
         )
     )
 
@@ -329,45 +520,41 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
             TimeoutNeutralTestClient(transport, observer=observer),
         )
 
-        assert client.health_live()["status"] == "ok"
-        assert client.health_ready()["status"] == "ok"
+        assert client.health_live().status == "ok"
+        assert client.health_ready().status == "ok"
         assert client.list_events().next_cursor == "0"
         recipe_page = client.list_recipes()
-        assert recipe_page["catalog_sha256"] == "c" * 64
-        assert recipe_page["recipes"][0]["sha256"] == "d" * 64
-        assert client.get_recipe("fixture.recipe/v1")["sha256"] == "d" * 64
+        assert recipe_page.catalog_sha256
+        assert recipe_page.recipes[0].sha256
+        assert client.get_recipe("stove0.conformance-media/v1").sha256
         listed = client.list_work(all_items=True)
-        assert listed["total"] == 1
-        assert listed["work"][0]["target_status"]["effect_receipt"]["receipt_sha256"] == ("e" * 64)
+        assert listed.total == 0
+        preview = client.preview_workflow("stove0.conformance-media/v1", [1])
+        created = client.create_work(
+            "stove0.conformance-media/v1",
+            [1],
+            preview_sha256=preview.preview_sha256,
+        )
+        assert created.work_id == _fixture_work().work_id
+        fetched = client.get_work(created.work_id)
+        assert fetched.work_id == created.work_id
+        assert client.inspect_work_coordination(created.work_id).branch_set_succeeded is False
+        selection = _fixture_selection(_fixture_work())
+        assert client.get_artifact_selection(selection.selection_sha256).total == 1
+        assert client.step_work(created.work_id).phase == "claimed"
+        assert client.retry_work(created.work_id).phase == "eligible"
+        assert client.cancel_work(created.work_id, reason="qualification").phase == "canceled"
+        assert preview.state == "ready"
+        assert client.list_evaluations(all_items=True).total == 1
         assert (
-            client.create_work(
-                "fixture.recipe/v1",
-                [1],
-                preview_sha256="a" * 64,
-            )["work_id"]
-            == "work-1"
+            client.create_evaluation(definition.model_dump(mode="json")).evaluation_id
+            == evaluation_id
         )
-        fetched = client.get_work("work-1")
-        assert fetched["work_id"] == "work-1"
-        assert fetched["workflow_plan"]["result_kind"] == "external-effect"
-        assert fetched["target_status"]["effect_receipt"]["receipt_sha256"] == "e" * 64
-        assert client.inspect_work_coordination("work-1")["branch_set_succeeded"] is True
-        assert client.get_artifact_selection("c" * 64)["total"] == 1
-        assert client.step_work("work-1")["phase"] == "claimed"
-        assert client.retry_work("work-1")["phase"] == "eligible"
-        assert client.cancel_work("work-1", reason="qualification")["phase"] == "canceled"
-        assert client.preview_workflow("fixture.recipe/v1", [1])["state"] == "ready"
-        assert client.list_evaluations(all_items=True)["total"] == 1
-        assert client.create_evaluation(definition.model_dump(mode="json"))["evaluation_id"] == (
-            evaluation_id
-        )
-        assert client.get_evaluation(evaluation_id)["evaluation_id"] == evaluation_id
-        assert client.step_evaluation(evaluation_id)["evaluation_id"] == evaluation_id
-        assert client.cancel_evaluation(evaluation_id, reason="qualification")["phase"] == (
-            "canceled"
-        )
+        assert client.get_evaluation(evaluation_id).evaluation_id == evaluation_id
+        assert client.step_evaluation(evaluation_id).evaluation_id == evaluation_id
+        assert client.cancel_evaluation(evaluation_id, reason="qualification").phase == "canceled"
         assert (
-            client.retry_evaluation_variant(evaluation_id, "variant-a")["evaluation_id"]
+            client.retry_evaluation_variant(evaluation_id, "variant-a").evaluation_id
             == evaluation_id
         )
         assert (
@@ -375,11 +562,11 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
                 evaluation_id,
                 "variant-a",
                 rating=5,
-            )["evaluation_id"]
+            ).evaluation_id
             == evaluation_id
         )
-        assert client.scheduler_status()["roles"] == ["controller", "worker", "combined"]
-        assert client.run_scheduler(role="combined")["role"] == "combined"
+        assert client.scheduler_status().roles == ("controller", "worker", "combined")
+        assert client.run_scheduler(role="combined").work.role == "combined"
         client._client = None
 
     observer.require(_operations())
@@ -399,6 +586,39 @@ def test_every_stove0_api_operation_has_one_current_official_client_method() -> 
         if not name.startswith("_") and callable(getattr(Stove0ApiClient, name))
     }
     assert public_methods - set(operations) == {"close", "health_live", "health_ready"}
+    assert {
+        operation_id
+        for operation_id in operations
+        if get_type_hints(getattr(Stove0ApiClient, operation_id))["return"] in {Any, dict}
+    } == set()
+
+
+def test_every_stove0_operation_publishes_an_exact_response_schema() -> None:
+    schema = create_app(_composition()).openapi()
+    for path, path_item in schema["paths"].items():
+        if not path.startswith("/v1"):
+            continue
+        for method, operation in path_item.items():
+            if method not in {"delete", "get", "patch", "post", "put"}:
+                continue
+            success = next(
+                response
+                for status, response in operation["responses"].items()
+                if 200 <= int(status) < 300
+            )
+            response_schema = success["content"]["application/json"]["schema"]
+            reference = response_schema.get("$ref")
+            assert isinstance(reference, str), (method, path, response_schema)
+            component = schema["components"]["schemas"][reference.rsplit("/", 1)[-1]]
+            assert component.get("additionalProperties") is False, (method, path, component)
+            request_body = operation.get("requestBody")
+            if request_body is not None:
+                request_schema = request_body["content"]["application/json"]["schema"]
+                assert isinstance(request_schema.get("$ref"), str), (
+                    method,
+                    path,
+                    request_schema,
+                )
 
 
 def test_workflow_request_accepts_the_complete_exact_input_set() -> None:
@@ -491,22 +711,21 @@ def test_stove0_openapi_uses_conventional_errors_health_and_paging() -> None:
     assert selection["responses"]["200"]["content"]["application/json"]["schema"][
         "$ref"
     ].startswith("#/components/schemas/")
+    documented_error_sets: set[frozenset[str]] = set()
     for path, path_item in schema["paths"].items():
         if not path.startswith("/v1"):
             continue
         for method, operation in path_item.items():
             if method not in {"delete", "get", "patch", "post", "put"}:
                 continue
-            assert {status for status in operation["responses"] if int(status) >= 400} == {
-                "400",
-                "401",
-                "403",
-                "404",
-                "409",
-                "500",
-                "503",
-            }
+            errors = frozenset(status for status in operation["responses"] if int(status) >= 400)
+            documented_error_sets.add(errors)
+            assert {"400", "401", "403", "500"} <= errors
+            assert errors <= {"400", "401", "403", "404", "409", "500", "503"}
             assert "422" not in operation["responses"]
+    assert len(documented_error_sets) > 1
+    assert "404" in schema["paths"]["/v1/work/{work_id}"]["get"]["responses"]
+    assert "409" in schema["paths"]["/v1/work"]["post"]["responses"]
 
 
 def test_stove0_runtime_errors_use_the_shared_envelope() -> None:
@@ -591,10 +810,10 @@ def test_installed_conformance_catalog_is_exact_through_api_client_and_cli(
             ["--json", "preview", "stove0.conformance-media/v1", "1"],
         )
 
-    assert page["catalog_sha256"] == catalog.sha256
+    assert page.catalog_sha256 == catalog.sha256
     identity = catalog.recipe("stove0.conformance-media/v1").identity_document()
-    assert recipe["sha256"] == identity["sha256"]
-    assert preview["state"] == "ready"
+    assert recipe.sha256 == identity["sha256"]
+    assert preview.state == "ready"
     assert human.exit_code == 0, (human.output, human.exception)
     assert "ready" in human.stdout
     assert machine.exit_code == 0, (machine.output, machine.exception)

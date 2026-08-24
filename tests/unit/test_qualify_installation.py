@@ -4,10 +4,13 @@ import importlib.util
 import json
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from riverhog_protocol.lifecycle_events import RiverhogEventPage
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts/qualify_installation.py"
@@ -22,6 +25,14 @@ def load_script() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_disposable_event_fixture_is_an_exact_riverhog_lifecycle_page() -> None:
+    module = load_script()
+
+    page = RiverhogEventPage.model_validate(module.EVENT_PAGE)
+
+    assert page.model_dump(mode="json", exclude_none=True) == module.EVENT_PAGE
 
 
 def test_distribution_builds_are_serialized_into_a_clean_output(
@@ -121,11 +132,13 @@ def test_macos_qualification_mount_checks_detachment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = load_script()
+    commands: list[list[str]] = []
 
     def run(
         command: list[str],
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
         if command[1] == "detach":
             return subprocess.CompletedProcess(command, 9, "detach output", "detach error")
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -144,6 +157,12 @@ def test_macos_qualification_mount_checks_detachment(
     diagnostic = str(captured.value)
     assert "stdout='detach output'" in diagnostic
     assert "stderr='detach error'" in diagnostic
+    assert commands[-1] == [
+        "hdiutil",
+        "detach",
+        "-force",
+        "/Volumes/GogurtQualification-123",
+    ]
 
 
 def test_qualification_mount_preserves_body_and_cleanup_failures(tmp_path: Path) -> None:
@@ -160,6 +179,68 @@ def test_qualification_mount_preserves_body_and_cleanup_failures(tmp_path: Path)
         "qualification failed with RuntimeError: lifecycle failed; "
         "mount cleanup also failed with QualificationError: detach failed"
     )
+
+
+def test_listener_is_settled_before_qualification_mount_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    events: list[str] = []
+
+    @contextmanager
+    def mount(_scratch: Path) -> Iterator[Path]:
+        events.append("attach")
+        try:
+            yield tmp_path / "mounted"
+        finally:
+            events.append("detach")
+
+    monkeypatch.setattr(module, "_qualification_mount", mount)
+
+    with module._qualification_listener_mount(
+        tmp_path,
+        observe_failure=lambda _exc: events.append("observe-failure"),
+        settle_listener=lambda: events.append("settle-listener"),
+    ):
+        events.append("lifecycle")
+
+    assert events == ["attach", "lifecycle", "settle-listener", "detach"]
+
+
+def test_listener_failure_is_retained_before_settlement_and_mount_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    events: list[str] = []
+
+    @contextmanager
+    def mount(_scratch: Path) -> Iterator[Path]:
+        events.append("attach")
+        try:
+            yield tmp_path / "mounted"
+        finally:
+            events.append("detach")
+
+    monkeypatch.setattr(module, "_qualification_mount", mount)
+
+    with pytest.raises(RuntimeError, match="lifecycle failed"):
+        with module._qualification_listener_mount(
+            tmp_path,
+            observe_failure=lambda _exc: events.append("observe-failure"),
+            settle_listener=lambda: events.append("settle-listener"),
+        ):
+            events.append("lifecycle")
+            raise RuntimeError("lifecycle failed")
+
+    assert events == [
+        "attach",
+        "lifecycle",
+        "observe-failure",
+        "settle-listener",
+        "detach",
+    ]
 
 
 def test_gogurt_failure_evidence_is_bounded_to_status_and_listener_logs(

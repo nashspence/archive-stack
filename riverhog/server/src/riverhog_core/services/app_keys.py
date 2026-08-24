@@ -389,9 +389,7 @@ class SqlAlchemyAppKeyService:
             raise BadRequest("key_id must not be empty")
         normalized_permission = None
         if permission is not None:
-            normalized_permission = normalize_access((ApplicationAccess(permission, "*"),))[
-                0
-            ].permission
+            normalized_permission = normalize_access(((permission, "*"),))[0].permission
         normalized_resource = None
         if resource is not None:
             normalized_resource = normalize_access((ApplicationAccess(CATALOG_READ, resource),))[
@@ -645,12 +643,14 @@ class SqlAlchemyAppKeyService:
 
 
 def _record_access(session: Session, key_id: str) -> tuple[ApplicationAccess, ...]:
-    return tuple(
-        ApplicationAccess(record.permission, record.resource)
-        for record in session.scalars(
-            select(AppKeyAccessGrantRecord)
-            .where(AppKeyAccessGrantRecord.key_id == key_id)
-            .order_by(AppKeyAccessGrantRecord.permission, AppKeyAccessGrantRecord.resource)
+    return normalize_access(
+        tuple(
+            (record.permission, record.resource)
+            for record in session.scalars(
+                select(AppKeyAccessGrantRecord)
+                .where(AppKeyAccessGrantRecord.key_id == key_id)
+                .order_by(AppKeyAccessGrantRecord.permission, AppKeyAccessGrantRecord.resource)
+            )
         )
     )
 
@@ -677,7 +677,8 @@ def _record_access_for_records(
         )
     ).all()
     for key_id, permission, resource in rows:
-        grouped[str(key_id)].append(ApplicationAccess(str(permission), str(resource)))
+        access = normalize_access(((str(permission), str(resource)),))[0]
+        grouped[str(key_id)].append(access)
     return {key_id: tuple(access) for key_id, access in grouped.items()}
 
 

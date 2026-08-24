@@ -45,6 +45,7 @@ members = [
     "stove0-observer-client",
     "stove0-observer-protocol",
     "stove0-observer-support",
+    "stove0-operator-contracts",
     "stove0-opus-review-sampler",
     "stove0-opus-target",
     "stove0-protocol",
@@ -134,6 +135,16 @@ wheels = [
 name = "application-access"
 version = "0.1.0"
 source = { editable = "packages/application-access" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "riverhog-protocol" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
+]
 
 [[package]]
 name = "ast-serialize"
@@ -1540,7 +1551,6 @@ dependencies = [
     { name = "file-download" },
     { name = "http-api-contracts" },
     { name = "httpx", extra = ["http2"] },
-    { name = "lifecycle-events" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
 ]
@@ -1550,7 +1560,6 @@ requires-dist = [
     { name = "file-download", editable = "packages/file-download" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
-    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
 ]
@@ -1648,6 +1657,16 @@ requires-dist = [
 name = "riverhog-protocol"
 version = "0.1.0"
 source = { editable = "packages/riverhog-protocol" }
+dependencies = [
+    { name = "lifecycle-events" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "pydantic", specifier = ">=2.12,<3.0" },
+]
 
 [[package]]
 name = "riverhog-provenance"
@@ -1726,6 +1745,7 @@ version = "0.1.0"
 source = { editable = "packages/riverhog-storage-adapter-asgi-support" }
 dependencies = [
     { name = "fastapi" },
+    { name = "http-api-contracts" },
     { name = "riverhog-storage-adapter-protocol" },
     { name = "riverhog-storage-adapter-support" },
 ]
@@ -1733,6 +1753,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.111,<1.0" },
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
     { name = "riverhog-storage-adapter-support", editable = "packages/riverhog-storage-adapter-support" },
 ]
@@ -2098,6 +2119,8 @@ dependencies = [
     { name = "http-api-contracts" },
     { name = "httpx" },
     { name = "lifecycle-events" },
+    { name = "stove0-operator-contracts" },
+    { name = "stove0-protocol" },
 ]
 
 [package.metadata]
@@ -2105,6 +2128,8 @@ requires-dist = [
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
+    { name = "stove0-operator-contracts", editable = "packages/stove0-operator-contracts" },
+    { name = "stove0-protocol", editable = "packages/stove0-protocol" },
 ]
 
 [[package]]
@@ -2112,6 +2137,7 @@ name = "stove0-client"
 version = "0.1.0"
 source = { editable = "companions/stove0/client" }
 dependencies = [
+    { name = "pydantic" },
     { name = "rich" },
     { name = "stove0-api-client" },
     { name = "stove0-recipe-config" },
@@ -2120,6 +2146,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "rich", specifier = ">=15.0,<16.0" },
     { name = "stove0-api-client", editable = "packages/stove0-api-client" },
     { name = "stove0-recipe-config", editable = "packages/stove0-recipe-config" },
@@ -2284,6 +2311,7 @@ name = "stove0-observer-support"
 version = "0.1.0"
 source = { editable = "packages/stove0-observer-support" }
 dependencies = [
+    { name = "http-api-contracts" },
     { name = "jsonschema" },
     { name = "pydantic" },
     { name = "riverhog-api-client" },
@@ -2294,12 +2322,34 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "jsonschema", specifier = ">=4.25,<5.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
     { name = "riverhog-transform-sdk", editable = "packages/riverhog-transform-sdk" },
     { name = "stove0-observer-client", editable = "packages/stove0-observer-client" },
     { name = "stove0-observer-protocol", editable = "packages/stove0-observer-protocol" },
+]
+
+[[package]]
+name = "stove0-operator-contracts"
+version = "0.1.0"
+source = { editable = "packages/stove0-operator-contracts" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "stove0-observer-protocol" },
+    { name = "stove0-protocol" },
+    { name = "stove0-recipe-config" },
+    { name = "stove0-target-protocol" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "stove0-observer-protocol", editable = "packages/stove0-observer-protocol" },
+    { name = "stove0-protocol", editable = "packages/stove0-protocol" },
+    { name = "stove0-recipe-config", editable = "packages/stove0-recipe-config" },
+    { name = "stove0-target-protocol", editable = "packages/stove0-target-protocol" },
 ]
 
 [[package]]
@@ -2448,6 +2498,7 @@ name = "stove0-review-sampler-support"
 version = "0.1.0"
 source = { editable = "packages/stove0-review-sampler-support" }
 dependencies = [
+    { name = "http-api-contracts" },
     { name = "jsonschema" },
     { name = "pydantic" },
     { name = "stove0-review-sampler-client" },
@@ -2456,6 +2507,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "jsonschema", specifier = ">=4.25,<5.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "stove0-review-sampler-client", editable = "packages/stove0-review-sampler-client" },
@@ -2516,6 +2568,8 @@ dependencies = [
     { name = "starlette" },
     { name = "state-schema" },
     { name = "stove0-observer-client" },
+    { name = "stove0-observer-protocol" },
+    { name = "stove0-operator-contracts" },
     { name = "stove0-protocol" },
     { name = "stove0-recipe-config" },
     { name = "stove0-target-client" },
@@ -2538,6 +2592,8 @@ requires-dist = [
     { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "stove0-observer-client", editable = "packages/stove0-observer-client" },
+    { name = "stove0-observer-protocol", editable = "packages/stove0-observer-protocol" },
+    { name = "stove0-operator-contracts", editable = "packages/stove0-operator-contracts" },
     { name = "stove0-protocol", editable = "packages/stove0-protocol" },
     { name = "stove0-recipe-config", editable = "packages/stove0-recipe-config" },
     { name = "stove0-target-client", editable = "packages/stove0-target-client" },
@@ -2589,6 +2645,7 @@ name = "stove0-target-support"
 version = "0.1.0"
 source = { editable = "packages/stove0-target-support" }
 dependencies = [
+    { name = "http-api-contracts" },
     { name = "jsonschema" },
     { name = "pydantic" },
     { name = "riverhog-api-client" },
@@ -2600,6 +2657,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "jsonschema", specifier = ">=4.25,<5.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },

@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
+from http_api_contracts import HttpOperationContract
 from pydantic import BaseModel, ValidationError
 from stove0_target_protocol import (
     TargetCancelRequest,
@@ -23,6 +24,35 @@ _JOB_PATH = re.compile(r"^/v1/jobs/([0-9a-f]{64})$")
 _CANCEL_PATH = re.compile(r"^/v1/jobs/([0-9a-f]{64})/cancel$")
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+TARGET_HTTP_OPERATIONS = (
+    HttpOperationContract("GET", "/v1/target", response_type=TargetContract),
+    HttpOperationContract(
+        "POST",
+        "/v1/preflight",
+        TargetPreflightRequest,
+        TargetPreflightResponse,
+        "json",
+        error_statuses=(400, 401, 413, 500),
+    ),
+    HttpOperationContract(
+        "PUT",
+        "/v1/jobs/{job_id}",
+        TargetJobRequest,
+        TargetJobStatus,
+        "json",
+        error_statuses=(400, 401, 409, 413, 500),
+    ),
+    HttpOperationContract("GET", "/v1/jobs/{job_id}", response_type=TargetJobStatus),
+    HttpOperationContract(
+        "POST",
+        "/v1/jobs/{job_id}/cancel",
+        TargetCancelRequest,
+        TargetJobStatus,
+        "json",
+        error_statuses=(400, 401, 413, 500),
+    ),
+)
 
 
 class TargetService(Protocol):
@@ -151,6 +181,7 @@ def _error(status: int, code: str, message: str) -> TargetHttpResponse:
 
 __all__ = [
     "TargetHttpBinding",
+    "TARGET_HTTP_OPERATIONS",
     "TargetHttpResponse",
     "TargetServiceError",
     "TargetService",

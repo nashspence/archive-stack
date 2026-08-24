@@ -3,13 +3,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from riverhog_archive_contracts import CollectionArchiveManifest
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
 
-from riverhog_core.archive_manifest import (
-    build_collection_archive_manifest,
-    parse_collection_archive_manifest,
-)
+from riverhog_core.archive_manifest import build_collection_archive_manifest
 from riverhog_core.archive_root import SealedArchiveRoot
 from riverhog_core.domain.archive import (
     ArchiveFile,
@@ -124,17 +122,14 @@ def build_archive_catalog_projection(
     )
     if expected_manifest != root.manifest_bytes:
         raise ValueError("sealed root does not match the supplied archive volumes")
-    manifest = parse_collection_archive_manifest(root.manifest_bytes)
-    tree = manifest["tree"]
-    if not isinstance(tree, dict):
-        raise RuntimeError("validated archive manifest tree is not a mapping")
+    manifest = CollectionArchiveManifest.from_json_bytes(root.manifest_bytes)
     expected_root_path = f"{prefix}/manifest.json.age"
     if (
         root.object_path != expected_root_path
         or root.relative_path != "manifest.json.age"
-        or root.tree_sha256 != str(tree["sha256"])
-        or root.files != int(tree["files"])
-        or root.bytes != int(tree["bytes"])
+        or root.tree_sha256 != manifest.tree.sha256
+        or root.files != manifest.tree.files
+        or root.bytes != manifest.tree.bytes
     ):
         raise ValueError("sealed root receipt identity is inconsistent")
 
@@ -215,10 +210,7 @@ def build_archive_catalog_projection(
     volumes.sort(key=lambda current: current.sequence)
     if [current.sequence for current in volumes] != list(range(len(volumes))):
         raise ValueError("archive catalog volume sequences are not contiguous")
-    manifest_volumes = manifest["volumes"]
-    if not isinstance(manifest_volumes, list) or [
-        str(current["id"]) for current in manifest_volumes
-    ] != [current.volume_id for current in volumes]:
+    if [current.id for current in manifest.volumes] != [current.volume_id for current in volumes]:
         raise ValueError("archive catalog volumes do not match the immutable root")
 
     root_projection = ArchiveRootProjection(

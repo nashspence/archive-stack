@@ -45,6 +45,7 @@ MYPY_SOURCES = \
 	packages/stove0-observer-client/src \
 	packages/stove0-observer-protocol/src \
 	packages/stove0-observer-support/src \
+	packages/stove0-operator-contracts/src \
 	packages/stove0-media-archive-contracts/src \
 	packages/stove0-protocol/src \
 	packages/stove0-recipe-config/src \

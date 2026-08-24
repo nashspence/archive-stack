@@ -7,8 +7,21 @@ import threading
 from dataclasses import dataclass
 from typing import Protocol
 
+from http_api_contracts import HttpOperationContract
 from pydantic import ValidationError
 from stove0_review_sampler_protocol import SamplerDescriptor, SamplerRequest, SamplerResult
+
+SAMPLER_HTTP_OPERATIONS = (
+    HttpOperationContract("GET", "/v1/sampler", response_type=SamplerDescriptor),
+    HttpOperationContract(
+        "POST",
+        "/v1/sample",
+        SamplerRequest,
+        SamplerResult,
+        "json",
+        error_statuses=(400, 401, 409, 413, 500),
+    ),
+)
 
 
 class ReviewSampler(Protocol):
@@ -85,4 +98,9 @@ def _error(status: int, code: str, message: str) -> SamplerHttpResponse:
     )
 
 
-__all__ = ["ReviewSampler", "SamplerHttpBinding", "SamplerHttpResponse"]
+__all__ = [
+    "SAMPLER_HTTP_OPERATIONS",
+    "ReviewSampler",
+    "SamplerHttpBinding",
+    "SamplerHttpResponse",
+]

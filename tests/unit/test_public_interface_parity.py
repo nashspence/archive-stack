@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 from fastapi import FastAPI
-from http_api_contracts import safe_http_base_url
+from http_api_contracts import ERROR_STATUS_BY_CODE, safe_http_base_url
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client import (
     configured_download_concurrency,
@@ -29,11 +29,11 @@ from scripts.operation_qualification import (
 )
 
 HTTP_METHODS = {"delete", "get", "patch", "post", "put"}
-PUBLIC_ERROR_STATUSES = {"400", "401", "403", "404", "409", "500", "503"}
-OPERATION_ERROR_STATUSES = {
+OPERATION_ERROR_CODES = {
     "riverhog": {
-        "create_retrieval_job": {"429"},
-        "download_retrieval_file": {"429"},
+        "create_retrieval_job": {"download_allowance_exceeded"},
+        "download_retrieval_file": {"download_allowance_exceeded"},
+        "retire_archive_copy": {"service_unavailable"},
     },
 }
 SUPPORTED_CLIENT_HELPERS = {
@@ -173,16 +173,30 @@ def test_public_http_health_and_error_schemas_are_conventional(
     for route, operation in operations.items():
         responses = operation["responses"]
         operation_id = str(operation["operationId"])
-        expected = PUBLIC_ERROR_STATUSES | OPERATION_ERROR_STATUSES.get(application, {}).get(
-            operation_id, set()
+        method, path = route.split(" ", 1)
+        expected_codes = {"bad_request", "unauthorized", "forbidden", "internal_error"}
+        if "{" in path:
+            expected_codes.add("not_found")
+        if method.casefold() in {"delete", "patch", "post", "put"}:
+            expected_codes.add("conflict")
+        expected_codes |= OPERATION_ERROR_CODES.get(application, {}).get(operation_id, set())
+        actual_codes = {
+            code
+            for status, response in responses.items()
+            if status.isdigit() and int(status) >= 400
+            for code in response.get("x-riverhog-error-codes", [])
+        }
+        assert actual_codes == expected_codes, (
+            f"{application} error codes do not match the implementing operation: {route}"
         )
-        actual = {status for status in responses if status.isdigit() and int(status) >= 400}
-        assert actual == expected, (
-            f"{application} error responses do not match the implementing operation: {route}"
-        )
-        for status in expected:
+        for status, response in responses.items():
+            if not status.isdigit() or int(status) < 400:
+                continue
             assert responses[status]["content"]["application/json"]["schema"] == {
                 "$ref": "#/components/schemas/ErrorResponse"
+            }
+            assert {ERROR_STATUS_BY_CODE[code] for code in response["x-riverhog-error-codes"]} == {
+                int(status)
             }
 
 

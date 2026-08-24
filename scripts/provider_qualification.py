@@ -2991,7 +2991,7 @@ def _assert_resourcesync(api: Any, collection_id: int, *, base_url: str) -> None
     if not str(resource.get("location", "")).startswith(public_prefix):
         raise QualificationError("ResourceSync resource published an unusable URL authority")
     portable = api.get_portable_collection_manifest(collection_id)
-    if portable.get("format") != "riverhog-collection/v1":
+    if portable.format != "riverhog-collection/v1":
         raise QualificationError("portable collection manifest format is invalid")
     changes = api.catalog_changes(after=0)
     if not any(

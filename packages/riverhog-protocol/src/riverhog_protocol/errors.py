@@ -11,13 +11,15 @@ class RiverhogError(Exception):
         message: str,
         *,
         code: str | None = None,
-        status: int | None = None,
+        observed_status: int | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code or type(self).code
-        self.status = status
+        if observed_status is not None and not 400 <= observed_status <= 599:
+            raise ValueError("observed HTTP status must be a 4xx or 5xx response")
+        self.observed_status = observed_status
         self.details = dict(details or {})
 
 
@@ -59,3 +61,24 @@ class ServiceUnavailable(RiverhogError):
 
 class DownloadAllowanceExceeded(RiverhogError):
     code = "download_allowance_exceeded"
+
+
+RIVERHOG_ERROR_TYPES_BY_CODE: dict[str, type[RiverhogError]] = {
+    error_type.code: error_type
+    for error_type in (
+        BadRequest,
+        Unauthorized,
+        Forbidden,
+        InvalidPath,
+        NotFound,
+        Conflict,
+        InvalidState,
+        HashMismatch,
+        ServiceUnavailable,
+        DownloadAllowanceExceeded,
+    )
+}
+
+
+def error_type_for_code(code: str) -> type[RiverhogError] | None:
+    return RIVERHOG_ERROR_TYPES_BY_CODE.get(code)

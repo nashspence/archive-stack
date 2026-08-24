@@ -11,6 +11,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_sha256,
 )
 from riverhog_protocol.errors import NotFound
+from riverhog_protocol.lifecycle_events import validate_riverhog_event
 from stove0_core import ClaimBinding, RecipeDefinition, Stove0Scheduler, WorkRecord
 from stove0_core.recipes import RecipeRoute
 from stove0_core.scheduler import _phases_for_role
@@ -250,35 +251,58 @@ def test_controller_prunes_expired_operational_state_on_a_bounded_interval() -> 
     assert state.prune_calls[0].endswith("Z")
 
 
-def test_lifecycle_cursor_advances_past_deleted_malformed_and_unrelated_events() -> None:
+def test_lifecycle_cursor_advances_past_deleted_and_unrelated_events() -> None:
+    def collection_event(event_id: str, event_type: str, collection_id: int):
+        return validate_riverhog_event(
+            cloud_event(
+                event_id=event_id,
+                source="urn:riverhog:riverhog",
+                type=event_type,
+                subject=str(collection_id),
+                data={
+                    "collection_id": collection_id,
+                    "collection_created_at": "2026-08-01T00:00:00.000000Z",
+                    "collection_tags": [],
+                    "actor": {"app": "riverhog"},
+                    "initiator": {"app": "fixture"},
+                    **(
+                        {
+                            "files_total": 1,
+                            "bytes_total": 1,
+                            "archive_store": "fixture",
+                            "archive_storage_prefix": "archives/fixture",
+                            "archive_objects": 1,
+                        }
+                        if event_type.endswith("collection.finalized")
+                        else {}
+                    ),
+                },
+            )
+        )
+
     events = EventPage(
         events=[
-            cloud_event(
-                event_id="deleted",
-                source="urn:riverhog:riverhog",
-                type="io.riverhog.riverhog.collection.finalized",
-                subject="7",
-            ),
-            cloud_event(
-                event_id="malformed",
-                source="urn:riverhog:riverhog",
-                type="io.riverhog.riverhog.collection.tags_changed",
-                subject="not-a-collection",
-            ),
-            cloud_event(
-                event_id="later-valid",
-                source="urn:riverhog:riverhog",
-                type="io.riverhog.riverhog.collection.tags_changed",
-                subject="8",
-            ),
-            cloud_event(
-                event_id="unrelated",
-                source="urn:riverhog:riverhog",
-                type="io.riverhog.riverhog.retrieval.ready",
-                subject="job-1",
+            collection_event("deleted", "io.riverhog.riverhog.collection.finalized", 7),
+            collection_event("later-valid", "io.riverhog.riverhog.collection.tags_changed", 8),
+            validate_riverhog_event(
+                cloud_event(
+                    event_id="unrelated",
+                    source="urn:riverhog:riverhog",
+                    type="io.riverhog.riverhog.retrieval.ready",
+                    subject="job-1",
+                    data={
+                        "retrieval_id": "job-1",
+                        "collection_ids": [7],
+                        "collection_id": 7,
+                        "state": "ready",
+                        "expires_at": "2026-08-01T01:00:00.000000Z",
+                        "actor": {"app": "riverhog"},
+                        "initiator": {"app": "fixture"},
+                    },
+                )
             ),
         ],
-        next_cursor="4",
+        next_cursor="3",
         has_more=False,
     )
     riverhog = _LifecycleRiverhog(events)
@@ -293,16 +317,11 @@ def test_lifecycle_cursor_advances_past_deleted_malformed_and_unrelated_events()
 
     result = scheduler.ingest_events()
 
-    assert result["events"] == 4
+    assert result["events"] == 3
     assert result["work_ids"] == []
-    assert result["failures"] == [
-        {
-            "event_id": "malformed",
-            "error": "ValueError: Riverhog event collection identity is invalid",
-        }
-    ]
+    assert result["failures"] == []
     assert riverhog.collection_reads == [7, 8]
-    assert state.cursors["riverhog-lifecycle/v1"] == ("4", 1)
+    assert state.cursors["riverhog-lifecycle/v1"] == ("3", 1)
 
 
 def _recipe(label: str, *, allow_derived_inputs: bool = True) -> RecipeDefinition:

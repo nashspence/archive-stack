@@ -9,8 +9,20 @@ from typing import Any, Self
 from urllib.parse import quote
 
 import httpx
-from http_api_contracts import parse_error_payload, safe_http_base_url
+from http_api_contracts import HealthResponse, parse_error_payload, safe_http_base_url
 from lifecycle_events import EventPage
+from stove0_operator_contracts import (
+    ArtifactSelectionPage,
+    EvaluationPage,
+    EvaluationView,
+    RecipeCatalogView,
+    RecipeView,
+    SchedulerRun,
+    SchedulerStatus,
+    WorkPage,
+    WorkView,
+)
+from stove0_protocol import BranchSetEvaluation, EvaluationDefinition, WorkflowPreview
 
 
 class Stove0ApiError(RuntimeError):
@@ -60,25 +72,29 @@ class Stove0ApiClient:
             self._client.close()
             self._client = None
 
-    def health_live(self) -> dict[str, Any]:
-        return self._json("GET", "/health/live", authenticated=False)
+    def health_live(self) -> HealthResponse:
+        return HealthResponse.model_validate(self._json("GET", "/health/live", authenticated=False))
 
-    def health_ready(self) -> dict[str, Any]:
-        return self._json("GET", "/health/ready", authenticated=False)
+    def health_ready(self) -> HealthResponse:
+        return HealthResponse.model_validate(
+            self._json("GET", "/health/ready", authenticated=False)
+        )
 
     def list_events(self, *, after: str | None = None, limit: int = 100) -> EventPage:
         return EventPage.model_validate(
             self._json("GET", "/v1/events", params=_params(after=after, limit=limit))
         )
 
-    def list_recipes(self) -> dict[str, Any]:
-        return self._json("GET", "/v1/recipes")
+    def list_recipes(self) -> RecipeCatalogView:
+        return RecipeCatalogView.model_validate(self._json("GET", "/v1/recipes"))
 
-    def get_recipe(self, recipe_id: str, *, revision: int | None = None) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/recipes/{quote(recipe_id, safe='')}",
-            params=_params(revision=revision),
+    def get_recipe(self, recipe_id: str, *, revision: int | None = None) -> RecipeView:
+        return RecipeView.model_validate(
+            self._json(
+                "GET",
+                f"/v1/recipes/{quote(recipe_id, safe='')}",
+                params=_params(revision=revision),
+            )
         )
 
     def list_work(
@@ -91,21 +107,23 @@ class Stove0ApiClient:
         sort: str = "updated_at",
         order: str = "desc",
         all_items: bool = False,
-    ) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            "/v1/work",
-            params=_params(
-                **{
-                    "page": page,
-                    "per_page": per_page,
-                    "phase": phase,
-                    "q": query,
-                    "sort": sort,
-                    "order": order,
-                    "all": all_items,
-                }
-            ),
+    ) -> WorkPage:
+        return WorkPage.model_validate(
+            self._json(
+                "GET",
+                "/v1/work",
+                params=_params(
+                    **{
+                        "page": page,
+                        "per_page": per_page,
+                        "phase": phase,
+                        "q": query,
+                        "sort": sort,
+                        "order": order,
+                        "all": all_items,
+                    }
+                ),
+            )
         )
 
     def create_work(
@@ -116,26 +134,30 @@ class Stove0ApiClient:
         preview_sha256: str,
         recipe_revision: int | None = None,
         effective_intent: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            "/v1/work",
-            json={
-                "recipe_id": recipe_id,
-                "preview_sha256": preview_sha256,
-                "recipe_revision": recipe_revision,
-                "collection_ids": list(collection_ids),
-                "effective_intent": dict(effective_intent or {}),
-            },
+    ) -> WorkView:
+        return WorkView.model_validate(
+            self._json(
+                "POST",
+                "/v1/work",
+                json={
+                    "recipe_id": recipe_id,
+                    "preview_sha256": preview_sha256,
+                    "recipe_revision": recipe_revision,
+                    "collection_ids": list(collection_ids),
+                    "effective_intent": dict(effective_intent or {}),
+                },
+            )
         )
 
-    def get_work(self, work_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/work/{quote(work_id, safe='')}")
+    def get_work(self, work_id: str) -> WorkView:
+        return WorkView.model_validate(self._json("GET", f"/v1/work/{quote(work_id, safe='')}"))
 
-    def inspect_work_coordination(self, work_id: str) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/work/{quote(work_id, safe='')}/coordination",
+    def inspect_work_coordination(self, work_id: str) -> BranchSetEvaluation:
+        return BranchSetEvaluation.model_validate(
+            self._json(
+                "GET",
+                f"/v1/work/{quote(work_id, safe='')}/coordination",
+            )
         )
 
     def get_artifact_selection(
@@ -145,24 +167,32 @@ class Stove0ApiClient:
         page: int = 1,
         per_page: int = 100,
         all_items: bool = False,
-    ) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/artifact-selections/{quote(selection_sha256, safe='')}",
-            params=_params(page=page, per_page=per_page, **{"all": all_items}),
+    ) -> ArtifactSelectionPage:
+        return ArtifactSelectionPage.model_validate(
+            self._json(
+                "GET",
+                f"/v1/artifact-selections/{quote(selection_sha256, safe='')}",
+                params=_params(page=page, per_page=per_page, **{"all": all_items}),
+            )
         )
 
-    def step_work(self, work_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/v1/work/{quote(work_id, safe='')}/step")
+    def step_work(self, work_id: str) -> WorkView:
+        return WorkView.model_validate(
+            self._json("POST", f"/v1/work/{quote(work_id, safe='')}/step")
+        )
 
-    def retry_work(self, work_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/v1/work/{quote(work_id, safe='')}/retry")
+    def retry_work(self, work_id: str) -> WorkView:
+        return WorkView.model_validate(
+            self._json("POST", f"/v1/work/{quote(work_id, safe='')}/retry")
+        )
 
-    def cancel_work(self, work_id: str, *, reason: str | None = None) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/work/{quote(work_id, safe='')}/cancel",
-            json={"reason": reason},
+    def cancel_work(self, work_id: str, *, reason: str | None = None) -> WorkView:
+        return WorkView.model_validate(
+            self._json(
+                "POST",
+                f"/v1/work/{quote(work_id, safe='')}/cancel",
+                json={"reason": reason},
+            )
         )
 
     def preview_workflow(
@@ -172,16 +202,18 @@ class Stove0ApiClient:
         *,
         recipe_revision: int | None = None,
         effective_intent: Mapping[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            "/v1/workflow-previews",
-            json={
-                "recipe_id": recipe_id,
-                "recipe_revision": recipe_revision,
-                "collection_ids": list(collection_ids),
-                "effective_intent": dict(effective_intent or {}),
-            },
+    ) -> WorkflowPreview:
+        return WorkflowPreview.model_validate(
+            self._json(
+                "POST",
+                "/v1/workflow-previews",
+                json={
+                    "recipe_id": recipe_id,
+                    "recipe_revision": recipe_revision,
+                    "collection_ids": list(collection_ids),
+                    "effective_intent": dict(effective_intent or {}),
+                },
+            )
         )
 
     def list_evaluations(
@@ -194,49 +226,66 @@ class Stove0ApiClient:
         sort: str = "updated_at",
         order: str = "desc",
         all_items: bool = False,
-    ) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            "/v1/evaluations",
-            params=_params(
-                **{
-                    "page": page,
-                    "per_page": per_page,
-                    "phase": phase,
-                    "q": query,
-                    "sort": sort,
-                    "order": order,
-                    "all": all_items,
-                }
-            ),
+    ) -> EvaluationPage:
+        return EvaluationPage.model_validate(
+            self._json(
+                "GET",
+                "/v1/evaluations",
+                params=_params(
+                    **{
+                        "page": page,
+                        "per_page": per_page,
+                        "phase": phase,
+                        "q": query,
+                        "sort": sort,
+                        "order": order,
+                        "all": all_items,
+                    }
+                ),
+            )
         )
 
-    def create_evaluation(self, definition: Mapping[str, Any]) -> dict[str, Any]:
-        return self._json("POST", "/v1/evaluations", json=dict(definition))
+    def create_evaluation(self, definition: Mapping[str, Any]) -> EvaluationView:
+        request = EvaluationDefinition.model_validate(definition)
+        return EvaluationView.model_validate(
+            self._json(
+                "POST",
+                "/v1/evaluations",
+                json=request.model_dump(mode="json", by_alias=True, exclude_none=True),
+            )
+        )
 
-    def get_evaluation(self, evaluation_id: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/evaluations/{quote(evaluation_id, safe='')}")
+    def get_evaluation(self, evaluation_id: str) -> EvaluationView:
+        return EvaluationView.model_validate(
+            self._json("GET", f"/v1/evaluations/{quote(evaluation_id, safe='')}")
+        )
 
-    def step_evaluation(self, evaluation_id: str) -> dict[str, Any]:
-        return self._json("POST", f"/v1/evaluations/{quote(evaluation_id, safe='')}/step")
+    def step_evaluation(self, evaluation_id: str) -> EvaluationView:
+        return EvaluationView.model_validate(
+            self._json("POST", f"/v1/evaluations/{quote(evaluation_id, safe='')}/step")
+        )
 
     def cancel_evaluation(
         self,
         evaluation_id: str,
         *,
         reason: str | None = None,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/evaluations/{quote(evaluation_id, safe='')}/cancel",
-            json={"reason": reason},
+    ) -> EvaluationView:
+        return EvaluationView.model_validate(
+            self._json(
+                "POST",
+                f"/v1/evaluations/{quote(evaluation_id, safe='')}/cancel",
+                json={"reason": reason},
+            )
         )
 
-    def retry_evaluation_variant(self, evaluation_id: str, variant_id: str) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            f"/v1/evaluations/{quote(evaluation_id, safe='')}/variants/"
-            f"{quote(variant_id, safe='')}/retry",
+    def retry_evaluation_variant(self, evaluation_id: str, variant_id: str) -> EvaluationView:
+        return EvaluationView.model_validate(
+            self._json(
+                "POST",
+                f"/v1/evaluations/{quote(evaluation_id, safe='')}/variants/"
+                f"{quote(variant_id, safe='')}/retry",
+            )
         )
 
     def review_evaluation_variant(
@@ -246,16 +295,18 @@ class Stove0ApiClient:
         *,
         rating: int | None = None,
         note: str | None = None,
-    ) -> dict[str, Any]:
-        return self._json(
-            "PUT",
-            f"/v1/evaluations/{quote(evaluation_id, safe='')}/variants/"
-            f"{quote(variant_id, safe='')}/review",
-            json={"rating": rating, "note": note},
+    ) -> EvaluationView:
+        return EvaluationView.model_validate(
+            self._json(
+                "PUT",
+                f"/v1/evaluations/{quote(evaluation_id, safe='')}/variants/"
+                f"{quote(variant_id, safe='')}/review",
+                json={"rating": rating, "note": note},
+            )
         )
 
-    def scheduler_status(self) -> dict[str, Any]:
-        return self._json("GET", "/v1/admin/scheduler")
+    def scheduler_status(self) -> SchedulerStatus:
+        return SchedulerStatus.model_validate(self._json("GET", "/v1/admin/scheduler"))
 
     def run_scheduler(
         self,
@@ -263,11 +314,13 @@ class Stove0ApiClient:
         role: str = "combined",
         event_limit: int = 100,
         work_limit: int = 25,
-    ) -> dict[str, Any]:
-        return self._json(
-            "POST",
-            "/v1/admin/scheduler/run",
-            json={"role": role, "event_limit": event_limit, "work_limit": work_limit},
+    ) -> SchedulerRun:
+        return SchedulerRun.model_validate(
+            self._json(
+                "POST",
+                "/v1/admin/scheduler/run",
+                json={"role": role, "event_limit": event_limit, "work_limit": work_limit},
+            )
         )
 
     def _json(

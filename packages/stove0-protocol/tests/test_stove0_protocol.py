@@ -19,19 +19,6 @@ from stove0_protocol import (
     ExecutionEnvelope,
     ExecutionEnvelopePayload,
     JsonSchemaDocument,
-    ObservationEvidence,
-    ObservationFailure,
-    ObservationInapplicable,
-    ObservationRequest,
-    ObservationRequestPayload,
-    ObservationResult,
-    ObservationResultPayload,
-    ObserverContract,
-    ObserverContractPayload,
-    ObserverContractSupport,
-    ObserverDescriptor,
-    ObserverDescriptorPayload,
-    ObserverImplementation,
     OperationRef,
     RecipeRef,
     TargetPlanBinding,
@@ -45,6 +32,23 @@ from stove0_protocol import (
     WorkIdentity,
     WorkPayload,
     canonical_json_sha256,
+)
+from stove0_protocol.models import (
+    ObservationEvidence,
+    ObservationFailure,
+    ObservationInapplicable,
+    ObservationInvocation,
+    ObservationRequest,
+    ObservationRequestPayload,
+    ObservationResult,
+    ObservationResultPayload,
+    ObserverContract,
+    ObserverContractPayload,
+    ObserverContractSupport,
+    ObserverDescriptor,
+    ObserverDescriptorPayload,
+    ObserverImplementation,
+    ObserverRuntimeAuthority,
     validate_observation_result,
 )
 
@@ -341,8 +345,6 @@ def test_observation_request_identity_is_independent_of_claim_generation() -> No
     contract = _contract()
     descriptor = _descriptor(contract)
     request = _request(work, contract, descriptor)
-
-    from stove0_protocol import ObservationInvocation, ObserverRuntimeAuthority
 
     first = ObservationInvocation(
         request=request,
