@@ -5,30 +5,61 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Mapping, Sequence
-from typing import Any, Self
+from typing import Any, Literal, Self
 from urllib.parse import quote
 
 import httpx
 from http_api_contracts import HealthResponse, parse_error_payload, safe_http_base_url
-from lifecycle_events import EventPage
 from stove0_operator_contracts import (
     ArtifactSelectionPage,
     EvaluationPage,
+    EvaluationPhase,
+    EvaluationReviewIn,
     EvaluationView,
     RecipeCatalogView,
     RecipeView,
+    SchedulerRole,
     SchedulerRun,
+    SchedulerRunIn,
     SchedulerStatus,
+    Stove0EventPage,
+    WorkCancelIn,
+    WorkCreateIn,
+    WorkflowPreviewIn,
     WorkPage,
+    WorkPhase,
     WorkView,
 )
 from stove0_protocol import BranchSetEvaluation, EvaluationDefinition, WorkflowPreview
 
+type _WorkSort = Literal["updated_at", "phase", "work_id"]
+type _EvaluationSort = Literal["updated_at", "phase", "evaluation_id"]
+type _SortOrder = Literal["asc", "desc"]
+
+
+def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
+    if value not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise ValueError(f"{label} must be one of: {choices}")
+    return value
+
 
 class Stove0ApiError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "stove0_client_error",
+        observed_status: int | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
-        self.status_code = status_code
+        if observed_status is not None and not 400 <= observed_status <= 599:
+            raise ValueError("observed HTTP status must be a 4xx or 5xx response")
+        self.message = message
+        self.code = code
+        self.observed_status = observed_status
+        self.details = dict(details or {})
 
 
 class Stove0ApiClient:
@@ -80,8 +111,8 @@ class Stove0ApiClient:
             self._json("GET", "/health/ready", authenticated=False)
         )
 
-    def list_events(self, *, after: str | None = None, limit: int = 100) -> EventPage:
-        return EventPage.model_validate(
+    def list_events(self, *, after: str | None = None, limit: int = 100) -> Stove0EventPage:
+        return Stove0EventPage.model_validate(
             self._json("GET", "/v1/events", params=_params(after=after, limit=limit))
         )
 
@@ -102,10 +133,10 @@ class Stove0ApiClient:
         *,
         page: int = 1,
         per_page: int = 25,
-        phase: str | None = None,
+        phase: WorkPhase | None = None,
         query: str | None = None,
-        sort: str = "updated_at",
-        order: str = "desc",
+        sort: _WorkSort = "updated_at",
+        order: _SortOrder = "desc",
         all_items: bool = False,
     ) -> WorkPage:
         return WorkPage.model_validate(
@@ -118,8 +149,16 @@ class Stove0ApiClient:
                         "per_page": per_page,
                         "phase": phase,
                         "q": query,
-                        "sort": sort,
-                        "order": order,
+                        "sort": _one_of(
+                            sort,
+                            frozenset({"updated_at", "phase", "work_id"}),
+                            "work sort",
+                        ),
+                        "order": _one_of(
+                            order,
+                            frozenset({"asc", "desc"}),
+                            "sort order",
+                        ),
                         "all": all_items,
                     }
                 ),
@@ -135,17 +174,18 @@ class Stove0ApiClient:
         recipe_revision: int | None = None,
         effective_intent: Mapping[str, Any] | None = None,
     ) -> WorkView:
+        request = WorkCreateIn(
+            recipe_id=recipe_id,
+            preview_sha256=preview_sha256,
+            recipe_revision=recipe_revision,
+            collection_ids=tuple(collection_ids),
+            effective_intent=dict(effective_intent or {}),
+        )
         return WorkView.model_validate(
             self._json(
                 "POST",
                 "/v1/work",
-                json={
-                    "recipe_id": recipe_id,
-                    "preview_sha256": preview_sha256,
-                    "recipe_revision": recipe_revision,
-                    "collection_ids": list(collection_ids),
-                    "effective_intent": dict(effective_intent or {}),
-                },
+                json=request.model_dump(mode="json", exclude_none=True),
             )
         )
 
@@ -187,11 +227,12 @@ class Stove0ApiClient:
         )
 
     def cancel_work(self, work_id: str, *, reason: str | None = None) -> WorkView:
+        request = WorkCancelIn(reason=reason)
         return WorkView.model_validate(
             self._json(
                 "POST",
                 f"/v1/work/{quote(work_id, safe='')}/cancel",
-                json={"reason": reason},
+                json=request.model_dump(mode="json", exclude_none=True),
             )
         )
 
@@ -203,16 +244,17 @@ class Stove0ApiClient:
         recipe_revision: int | None = None,
         effective_intent: Mapping[str, Any] | None = None,
     ) -> WorkflowPreview:
+        request = WorkflowPreviewIn(
+            recipe_id=recipe_id,
+            recipe_revision=recipe_revision,
+            collection_ids=tuple(collection_ids),
+            effective_intent=dict(effective_intent or {}),
+        )
         return WorkflowPreview.model_validate(
             self._json(
                 "POST",
                 "/v1/workflow-previews",
-                json={
-                    "recipe_id": recipe_id,
-                    "recipe_revision": recipe_revision,
-                    "collection_ids": list(collection_ids),
-                    "effective_intent": dict(effective_intent or {}),
-                },
+                json=request.model_dump(mode="json", exclude_none=True),
             )
         )
 
@@ -221,10 +263,10 @@ class Stove0ApiClient:
         *,
         page: int = 1,
         per_page: int = 25,
-        phase: str | None = None,
+        phase: EvaluationPhase | None = None,
         query: str | None = None,
-        sort: str = "updated_at",
-        order: str = "desc",
+        sort: _EvaluationSort = "updated_at",
+        order: _SortOrder = "desc",
         all_items: bool = False,
     ) -> EvaluationPage:
         return EvaluationPage.model_validate(
@@ -237,8 +279,16 @@ class Stove0ApiClient:
                         "per_page": per_page,
                         "phase": phase,
                         "q": query,
-                        "sort": sort,
-                        "order": order,
+                        "sort": _one_of(
+                            sort,
+                            frozenset({"updated_at", "phase", "evaluation_id"}),
+                            "evaluation sort",
+                        ),
+                        "order": _one_of(
+                            order,
+                            frozenset({"asc", "desc"}),
+                            "sort order",
+                        ),
                         "all": all_items,
                     }
                 ),
@@ -271,11 +321,12 @@ class Stove0ApiClient:
         *,
         reason: str | None = None,
     ) -> EvaluationView:
+        request = WorkCancelIn(reason=reason)
         return EvaluationView.model_validate(
             self._json(
                 "POST",
                 f"/v1/evaluations/{quote(evaluation_id, safe='')}/cancel",
-                json={"reason": reason},
+                json=request.model_dump(mode="json", exclude_none=True),
             )
         )
 
@@ -296,12 +347,13 @@ class Stove0ApiClient:
         rating: int | None = None,
         note: str | None = None,
     ) -> EvaluationView:
+        request = EvaluationReviewIn(rating=rating, note=note)
         return EvaluationView.model_validate(
             self._json(
                 "PUT",
                 f"/v1/evaluations/{quote(evaluation_id, safe='')}/variants/"
                 f"{quote(variant_id, safe='')}/review",
-                json={"rating": rating, "note": note},
+                json=request.model_dump(mode="json", exclude_none=True),
             )
         )
 
@@ -311,15 +363,20 @@ class Stove0ApiClient:
     def run_scheduler(
         self,
         *,
-        role: str = "combined",
+        role: SchedulerRole = "combined",
         event_limit: int = 100,
         work_limit: int = 25,
     ) -> SchedulerRun:
+        request = SchedulerRunIn(
+            role=role,
+            event_limit=event_limit,
+            work_limit=work_limit,
+        )
         return SchedulerRun.model_validate(
             self._json(
                 "POST",
                 "/v1/admin/scheduler/run",
-                json={"role": role, "event_limit": event_limit, "work_limit": work_limit},
+                json=request.model_dump(mode="json"),
             )
         )
 
@@ -346,7 +403,7 @@ class Stove0ApiClient:
                 payload = response.json()
             except ValueError:
                 payload = None
-            _code, message, _details = parse_error_payload(
+            code, message, details = parse_error_payload(
                 payload,
                 fallback_message=(
                     str(payload.get("detail"))
@@ -356,7 +413,9 @@ class Stove0ApiClient:
             )
             raise Stove0ApiError(
                 message,
-                status_code=response.status_code,
+                code=code,
+                observed_status=response.status_code,
+                details=details,
             )
         value = response.json()
         if not isinstance(value, dict):

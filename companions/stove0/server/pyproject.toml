@@ -22,7 +22,6 @@ dependencies = [
   "alembic>=1.18.5,<2.0",
   "fastapi>=0.111,<1.0",
   "http-api-contracts>=0.1,<0.2",
-  "lifecycle-events>=0.1,<0.2",
   "psycopg[binary]>=3.3,<4.0",
   "pydantic>=2.7,<3.0",
   "riverhog-api-client>=0.1,<0.2",
@@ -46,7 +45,6 @@ stove0-server = "stove0_api.app:main"
 
 [tool.uv.sources]
 http-api-contracts = { workspace = true }
-lifecycle-events = { workspace = true }
 riverhog-api-client = { workspace = true }
 riverhog-protocol = { workspace = true }
 stove0-observer-client = { workspace = true }

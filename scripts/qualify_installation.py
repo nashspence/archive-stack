@@ -39,7 +39,7 @@ NATIVE_TRACE_EVENT_LIMIT = 128
 GOGURT_QUALIFICATION_ACTION_FAILURE_EXIT = 73
 MACOS_QUALIFICATION_DETACH_BUSY_DELAYS_SECONDS = (0.25, 0.5, 1.0, 2.0)
 WINDOWS_TASK_XML_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
-EVENT_PAGE = {
+RIVERHOG_EVENT_PAGE = {
     "events": [
         {
             "specversion": "1.0",
@@ -61,6 +61,29 @@ EVENT_PAGE = {
     "next_cursor": "1",
     "has_more": False,
 }
+STOVE0_WORK_ID = "a" * 64
+STOVE0_EVENT_PAGE = {
+    "events": [
+        {
+            "specversion": "1.0",
+            "id": "00000000-0000-4000-8000-000000000498",
+            "source": "urn:riverhog:stove0",
+            "type": "io.riverhog.stove0.work.created",
+            "subject": STOVE0_WORK_ID,
+            "time": "2026-08-14T00:00:00Z",
+            "datacontenttype": "application/json",
+            "data": {
+                "work_id": STOVE0_WORK_ID,
+                "phase": "eligible",
+                "parent_work_id": None,
+                "branch_set_sha256": None,
+                "join_plan_sha256": None,
+            },
+        }
+    ],
+    "next_cursor": "1",
+    "has_more": False,
+}
 
 
 class QualificationError(RuntimeError):
@@ -74,7 +97,12 @@ class QualificationHandler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlsplit(self.path)
         type(self).requests.append(parsed.path)
         if parsed.path == "/v1/events":
-            payload = json.dumps(EVENT_PAGE, sort_keys=True).encode("utf-8")
+            event_page = (
+                STOVE0_EVENT_PAGE
+                if self.headers.get("Authorization") == "Bearer qualification-token"
+                else RIVERHOG_EVENT_PAGE
+            )
+            payload = json.dumps(event_page, sort_keys=True).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -144,6 +172,7 @@ def _detach_macos_qualification_image(backing: Path, *, cwd: Path) -> None:
     command = ["hdiutil", "detach", "-force", str(backing)]
     completed: subprocess.CompletedProcess[str] | None = None
     attempts = 0
+    saw_resource_busy = False
     for delay in (*MACOS_QUALIFICATION_DETACH_BUSY_DELAYS_SECONDS, None):
         attempts += 1
         completed = subprocess.run(
@@ -155,9 +184,16 @@ def _detach_macos_qualification_image(backing: Path, *, cwd: Path) -> None:
         )
         if completed.returncode == 0:
             return
-        resource_busy = (
-            completed.returncode == 16 and "resource busy" in (completed.stderr or "").casefold()
-        )
+        stderr = completed.stderr or ""
+        if (
+            saw_resource_busy
+            and completed.returncode == 1
+            and "no such file or directory" in stderr.casefold()
+            and not backing.exists()
+        ):
+            return
+        resource_busy = completed.returncode == 16 and "resource busy" in stderr.casefold()
+        saw_resource_busy = saw_resource_busy or resource_busy
         if not resource_busy or delay is None:
             break
         time.sleep(delay)
@@ -425,7 +461,8 @@ def _run_client_operation(
         raise QualificationError(f"no disposable client operation for {root}")
     completed = _run(command, cwd=cwd, env=environment, capture=True)
     payload = json.loads(completed.stdout)
-    if payload != EVENT_PAGE:
+    expected = STOVE0_EVENT_PAGE if root == "stove0-client" else RIVERHOG_EVENT_PAGE
+    if payload != expected:
         raise QualificationError(f"{root} changed the disposable event response")
     return "lifecycle-event-list"
 

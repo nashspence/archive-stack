@@ -113,7 +113,7 @@ ProvenanceBuilder = Callable[
 @dataclass(frozen=True, slots=True)
 class ProducedCollection:
     collection_id: int
-    manifest_sha256: str
+    archive_root_sha256: str
     content_identity: str
     receipt: dict[str, Any]
 
@@ -671,14 +671,16 @@ def _finalized_receipt(payload: Mapping[str, Any]) -> ProducedCollection:
     content_identity = str(
         payload.get("content_identity") or collection.get("content_identity") or ""
     )
-    manifest_sha256 = str(collection.get("manifest_sha256") or payload.get("manifest_sha256") or "")
-    if len(manifest_sha256) != 64:
-        raise RuntimeError("finalized Riverhog receipt has no immutable manifest identity")
+    archive_root_sha256 = str(
+        collection.get("archive_root_sha256") or payload.get("archive_root_sha256") or ""
+    )
+    if len(archive_root_sha256) != 64:
+        raise RuntimeError("finalized Riverhog receipt has no immutable archive-root identity")
     if len(content_identity) != 64:
         raise RuntimeError("finalized Riverhog receipt has no content identity")
     return ProducedCollection(
         collection_id=collection_id,
-        manifest_sha256=manifest_sha256,
+        archive_root_sha256=archive_root_sha256,
         content_identity=content_identity,
         receipt=dict(payload),
     )

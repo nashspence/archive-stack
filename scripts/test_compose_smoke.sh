@@ -291,7 +291,9 @@ with RiverhogFtpAdapterClient(
     token='riverhog-ftp-adapter-compose-smoke-token',
     allow_insecure_http=True,
 ) as client:
-    assert client.ftp_adapter_health_ready() == {'service': 'riverhog-ftp-adapter', 'status': 'ok'}
+    health = client.ftp_adapter_health_ready()
+    assert health.service == 'riverhog-ftp-adapter'
+    assert health.status == 'ok'
     result = client.flush_ftp_adapter_source('ftp-smoke')
     assert result['completed'] == 1, result
     assert result['failed'] == [], result

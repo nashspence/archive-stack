@@ -2,9 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Annotated, Literal, cast
+from typing import Annotated, Any, Literal, cast
 
-from pydantic import Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    GetJsonSchemaHandler,
+    RootModel,
+    model_validator,
+)
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 from riverhog_protocol.paths import normalize_collection_id, normalize_tag
 
 ALL_PERMISSIONS: Literal["*"] = "*"
@@ -104,6 +113,72 @@ class ApplicationAccess:
     permission: ApplicationPermission
     resource: ApplicationResource = ALL_RESOURCES
 
+    def __post_init__(self) -> None:
+        permission, resource = _normalize_access_fields(self.permission, self.resource)
+        if permission != self.permission or resource != self.resource:
+            raise ApplicationAccessError("application access grants must be canonical")
+
+
+class ApplicationAccessGrant(BaseModel):
+    """One canonical public application-access request or response grant."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    permission: ApplicationPermission
+    resource: ApplicationResource = ALL_RESOURCES
+
+    @model_validator(mode="after")
+    def validate_relationship(self) -> ApplicationAccessGrant:
+        ApplicationAccess(self.permission, self.resource)
+        return self
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        schema = handler(core_schema)
+        schema.setdefault("allOf", []).append({"oneOf": _grant_relationship_schemas()})
+        return schema
+
+    def as_access(self) -> ApplicationAccess:
+        return ApplicationAccess(self.permission, self.resource)
+
+
+class ApplicationAccessGrantSet(RootModel[list[ApplicationAccessGrant]]):
+    """A nonempty, duplicate-free public grant set with canonical wildcard use."""
+
+    @model_validator(mode="after")
+    def validate_set(self) -> ApplicationAccessGrantSet:
+        normalized = normalize_access(item.as_access() for item in self.root)
+        if len(normalized) != len(self.root):
+            raise ValueError("application access grants must not contain duplicates")
+        return self
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls,
+        core_schema: CoreSchema,
+        handler: GetJsonSchemaHandler,
+    ) -> JsonSchemaValue:
+        schema = handler(core_schema)
+        schema["minItems"] = 1
+        schema["uniqueItems"] = True
+        schema.setdefault("allOf", []).append(
+            {
+                "if": {
+                    "contains": {
+                        "type": "object",
+                        "required": ["permission"],
+                        "properties": {"permission": {"const": ALL_PERMISSIONS}},
+                    }
+                },
+                "then": {"maxItems": 1},
+            }
+        )
+        return schema
+
 
 def normalize_access(
     values: Iterable[ApplicationAccess | tuple[str, str]],
@@ -160,6 +235,19 @@ def _normalize_access(value: ApplicationAccess | tuple[str, str]) -> Application
         resource = value.resource
     else:
         raw_permission, resource = value
+    normalized_permission, normalized_resource = _normalize_access_fields(
+        raw_permission,
+        resource,
+    )
+    return ApplicationAccess(normalized_permission, normalized_resource)
+
+
+def _normalize_access_fields(
+    raw_permission: str,
+    resource: str,
+) -> tuple[ApplicationPermission, ApplicationResource]:
+    if not isinstance(raw_permission, str) or not isinstance(resource, str):
+        raise ApplicationAccessError("application permission and resource must be strings")
     normalized_permission = raw_permission.strip().casefold()
     if normalized_permission not in APPLICATION_PERMISSIONS | {ALL_PERMISSIONS}:
         raise ApplicationAccessError(f"unknown application permission: {normalized_permission}")
@@ -174,10 +262,56 @@ def _normalize_access(value: ApplicationAccess | tuple[str, str]) -> Application
         and normalized_resource != ALL_RESOURCES
     ):
         raise ApplicationAccessError(f"{normalized_permission} does not accept a scoped resource")
-    return ApplicationAccess(
+    return (
         cast(ApplicationPermission, normalized_permission),
         normalized_resource,
     )
+
+
+def _grant_relationship_schemas() -> list[dict[str, Any]]:
+    collection_scoped = sorted(COLLECTION_SCOPED_PERMISSIONS)
+    unscoped = sorted(
+        APPLICATION_PERMISSIONS - COLLECTION_SCOPED_PERMISSIONS - {COLLECTIONS_CREATE}
+    )
+    return [
+        {
+            "required": ["permission"],
+            "properties": {
+                "permission": {"const": ALL_PERMISSIONS},
+                "resource": {"const": ALL_RESOURCES},
+            },
+        },
+        {
+            "required": ["permission"],
+            "properties": {
+                "permission": {"const": COLLECTIONS_CREATE},
+                "resource": {
+                    "type": "string",
+                    "pattern": r"^(?:\*|tag:[a-z0-9]+(?:-[a-z0-9]+)*)$",
+                },
+            },
+        },
+        {
+            "required": ["permission"],
+            "properties": {
+                "permission": {"enum": collection_scoped},
+                "resource": {
+                    "type": "string",
+                    "pattern": (
+                        r"^(?:\*|tag:[a-z0-9]+(?:-[a-z0-9]+)*|"
+                        r"collection:[1-9][0-9]*)$"
+                    ),
+                },
+            },
+        },
+        {
+            "required": ["permission"],
+            "properties": {
+                "permission": {"enum": unscoped},
+                "resource": {"const": ALL_RESOURCES},
+            },
+        },
+    ]
 
 
 def _normalize_resource(value: str) -> str:
@@ -210,6 +344,8 @@ __all__ = [
     "ARCHIVES_READ",
     "ApplicationAccess",
     "ApplicationAccessError",
+    "ApplicationAccessGrant",
+    "ApplicationAccessGrantSet",
     "ApplicationPermission",
     "ApplicationResource",
     "CATALOG_READ",

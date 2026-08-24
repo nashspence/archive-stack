@@ -66,7 +66,7 @@ def _spec() -> DerivedCollectionSpec:
 def _disposition(spec: DerivedCollectionSpec) -> ArtifactDisposition:
     return ArtifactDisposition(
         input_collection_id=1,
-        input_manifest_sha256=spec.inputs[0].manifest_sha256,
+        input_archive_root_sha256=spec.inputs[0].archive_root_sha256,
         input_path="camera/input.mov",
         status="transformed",
         outputs=("video/output.mkv",),
@@ -85,7 +85,7 @@ class RetrievalApi:
     def get_collection(self, collection_id: int) -> dict[str, Any]:
         return {
             "id": collection_id,
-            "manifest_sha256": "3" * 64 if self.changed_root else "1" * 64,
+            "archive_root_sha256": "3" * 64 if self.changed_root else "1" * 64,
             "content_identity": "2" * 64,
         }
 
@@ -348,7 +348,7 @@ class UploadApi:
             "content_identity": self.completion_content_identity,
             "collection": {
                 "id": 7,
-                "manifest_sha256": "7" * 64,
+                "archive_root_sha256": "7" * 64,
                 "content_identity": self.completion_content_identity,
             },
         }
@@ -380,7 +380,7 @@ class ProvenanceTransformApi(UploadApi):
         assert collection_id == 1
         return {
             "id": 1,
-            "manifest_sha256": "1" * 64,
+            "archive_root_sha256": "1" * 64,
             "content_identity": "2" * 64,
         }
 
@@ -695,7 +695,7 @@ def test_transform_provenance_fans_out_fans_in_and_recovers_staged_journals(
     dispositions = (
         ArtifactDisposition(
             input_collection_id=1,
-            input_manifest_sha256=spec.inputs[0].manifest_sha256,
+            input_archive_root_sha256=spec.inputs[0].archive_root_sha256,
             input_path="camera/a.mov",
             status="transformed",
             outputs=(
@@ -706,7 +706,7 @@ def test_transform_provenance_fans_out_fans_in_and_recovers_staged_journals(
         ),
         ArtifactDisposition(
             input_collection_id=1,
-            input_manifest_sha256=spec.inputs[0].manifest_sha256,
+            input_archive_root_sha256=spec.inputs[0].archive_root_sha256,
             input_path="camera/b.mov",
             status="transformed",
             outputs=("derived/joined.bin",),

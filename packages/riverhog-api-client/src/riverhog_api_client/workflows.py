@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import quote
 
 from riverhog_protocol.collection_workflow_transport import (
@@ -30,11 +30,23 @@ from riverhog_protocol.collection_workflow_transport import (
     TransformCapabilityDocument,
 )
 from riverhog_protocol.collection_workflows import RetirementPolicy
+from riverhog_protocol.errors import BadRequest
 
 RootInput = CollectionRootIdentityDocument | Mapping[str, Any]
 ArtifactInput = CollectionArtifactIdentityDocument | Mapping[str, Any]
 OutcomeInput = ProcessingOutcomeIdentityDocument | Mapping[str, Any]
 DerivationInput = CollectionDerivationDocument | Mapping[str, Any]
+type _ClaimSort = Literal[
+    "created_at", "updated_at", "expires_at", "state", "work_id", "execution_id"
+]
+type _SortOrder = Literal["asc", "desc"]
+
+
+def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
+    if value not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise BadRequest(f"{label} must be one of: {choices}")
+    return value
 
 
 def _dump(value: object) -> dict[str, Any]:
@@ -84,15 +96,28 @@ class CollectionWorkflowMethods:
         page: int = 1,
         per_page: int = 25,
         state: ClaimState | None = None,
-        sort: str = "updated_at",
-        order: str = "desc",
+        sort: _ClaimSort = "updated_at",
+        order: _SortOrder = "desc",
         all_items: bool = False,
     ) -> ProcessingClaimPageDocument:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset(
+                    {
+                        "created_at",
+                        "updated_at",
+                        "expires_at",
+                        "state",
+                        "work_id",
+                        "execution_id",
+                    }
+                ),
+                "processing-claim sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if state:
             params["state"] = state

@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from http_api_contracts import error_responses, operation_interface
 from riverhog_protocol.errors import BadRequest
+from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, RetrievalManager
 from riverhog_api.deps import ContainerDep
@@ -46,15 +47,23 @@ def list_retrieval_cache_objects(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    tag: str | None = Query(None),
+    tag: Annotated[CanonicalTag | None, Query()] = None,
     collection_id: int | None = Query(None, ge=1),
     source_store: str | None = Query(None),
-    state: str | None = Query(None),
-    protection: str | None = Query(None),
+    state: Literal["ready", "delete_pending", "deleting"] | None = Query(None),
+    protection: Literal["protected", "unleased"] | None = Query(None),
     expires_before: str | None = Query(None),
     expires_after: str | None = Query(None),
-    sort: str = Query("cached_at"),
-    order: str = Query("desc"),
+    sort: Literal[
+        "collection_id",
+        "source_store",
+        "object_id",
+        "stored_bytes",
+        "cached_at",
+        "verified_at",
+        "protected_until",
+    ] = Query("cached_at"),
+    order: Literal["asc", "desc"] = Query("desc"),
     all_items: bool = Query(False, alias="all"),
 ) -> RetrievalCacheObjectListOut:
     return RetrievalCacheObjectListOut.model_validate(
@@ -129,9 +138,9 @@ def create_retrieval_job(
     request: CreateRetrievalJobRequest,
     principal: RetrievalManager,
     container: ContainerDep,
-    if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+    if_match: Annotated[str, Header(alias="If-Match")],
 ) -> RetrievalJobOut:
-    plan_etag = (if_match or "").strip().strip('"')
+    plan_etag = if_match.strip().strip('"')
     payload = container.retrieval.create(
         app=principal.app,
         key_id=principal.key_id,

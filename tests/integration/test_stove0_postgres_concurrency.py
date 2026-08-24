@@ -26,6 +26,7 @@ from stove0_core import (
     WorkRecord,
     stove0_state_schema,
 )
+from stove0_operator_contracts import WorkCreatedEvent
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSubject,
@@ -122,7 +123,7 @@ def _work() -> WorkIdentity:
             inputs=(
                 CollectionRootRef(
                     collection_id=1,
-                    manifest_sha256="b" * 64,
+                    archive_root_sha256="b" * 64,
                     content_identity="c" * 64,
                 ),
             ),
@@ -308,7 +309,7 @@ def _active_target_work(
         dispositions=(
             ArtifactDisposition(
                 input_collection_id=work.inputs[0].collection_id,
-                input_manifest_sha256=work.inputs[0].manifest_sha256,
+                input_archive_root_sha256=work.inputs[0].archive_root_sha256,
                 input_path="source/input.bin",
                 status="transformed",
                 outputs=(output.path,),
@@ -317,7 +318,7 @@ def _active_target_work(
     )
     output_collection = OutputCollectionRef(
         collection_id=7,
-        manifest_sha256="6" * 64,
+        archive_root_sha256="6" * 64,
         content_identity="7" * 64,
         derivation_sha256=derivation.sha256,
     )
@@ -585,7 +586,7 @@ def _resolved_join(
     for offset, branch in enumerate(decision.plan.branches, start=10):
         root = CollectionRootRef(
             collection_id=offset,
-            manifest_sha256=f"{offset % 16:x}" * 64,
+            archive_root_sha256=f"{offset % 16:x}" * 64,
             content_identity=f"{(offset + 2) % 16:x}" * 64,
         )
         output = ArtifactSelection.seal(
@@ -863,18 +864,16 @@ def test_postgres_concurrent_nested_tree_admission_is_atomic_and_normalized(
     assert admission.data["branch_count"] == 1
     assert admission.data["admitted_work_count"] == 2
     created_events = {
-        str(item.data["work_id"]): item
+        item.data.work_id: item
         for item in events
-        if item.type == "io.riverhog.stove0.work.created" and "parent_work_id" in item.data
+        if isinstance(item, WorkCreatedEvent) and item.data.parent_work_id is not None
     }
     assert nested.work.work_id in created_events
     assert (
-        created_events[nested.work.work_id].data["parent_work_id"]
-        == decision.plan.parent_work.work_id
+        created_events[nested.work.work_id].data.parent_work_id == decision.plan.parent_work.work_id
     )
     assert (
-        created_events[leaf.workflow_plan.work.work_id].data["parent_work_id"]
-        == nested.work.work_id
+        created_events[leaf.workflow_plan.work.work_id].data.parent_work_id == nested.work.work_id
     )
 
 

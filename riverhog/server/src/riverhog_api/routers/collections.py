@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Response
 from http_api_contracts import operation_interface
 from riverhog_core.app_permissions import COLLECTIONS_DELETE
+from riverhog_protocol.paths import CanonicalTag
 from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.auth import CatalogReader, CollectionCreator, CollectionDeleter
@@ -40,10 +41,10 @@ def list_collections(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    sort: str = Query("id"),
-    order: str = Query("asc"),
+    sort: Literal["id", "created_at", "bytes", "files"] = Query("id"),
+    order: Literal["asc", "desc"] = Query("asc"),
     all_items: bool = Query(False, alias="all"),
-    tag: str | None = Query(None),
+    tag: Annotated[CanonicalTag | None, Query()] = None,
     encryption_format: str | None = Query(None),
     passphrase_id: str | None = Query(None),
 ) -> ListCollectionsResponse:
@@ -72,10 +73,10 @@ def list_collection_upload_sessions(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    tag: str | None = Query(None),
-    state: str | None = Query(None),
-    sort: str = Query("created_at"),
-    order: str = Query("desc"),
+    tag: Annotated[CanonicalTag | None, Query()] = None,
+    state: Literal["open", "uploading", "finalizing", "failed"] | None = Query(None),
+    sort: Literal["id", "created_at", "state", "bytes", "files"] = Query("created_at"),
+    order: Literal["asc", "desc"] = Query("desc"),
     all_items: bool = Query(False, alias="all"),
 ) -> ListCollectionUploadSessionsResponse:
     return ListCollectionUploadSessionsResponse.model_validate(

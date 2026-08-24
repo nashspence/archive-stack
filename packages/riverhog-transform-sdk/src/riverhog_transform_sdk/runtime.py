@@ -354,13 +354,13 @@ class CollectionTransformRuntime:
         normalized_dispositions = tuple(dispositions)
         inventory = self.inventory()
         expected = {
-            (current.root.collection_id, current.root.manifest_sha256, current.path)
+            (current.root.collection_id, current.root.archive_root_sha256, current.path)
             for current in inventory
         }
         actual = {
             (
                 current.input_collection_id,
-                current.input_manifest_sha256,
+                current.input_archive_root_sha256,
                 current.input_path,
             )
             for current in normalized_dispositions

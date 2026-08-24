@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Annotated
+from typing import Annotated, Literal
 
 from application_access import ApplicationPermission, ApplicationResource
 from fastapi import APIRouter, Query
@@ -29,8 +29,8 @@ def list_apps(
     _principal: KeyManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: str = Query("name"),
-    order: str = Query("asc"),
+    sort: Literal["name", "keys", "active_keys", "last_used_at"] = Query("name"),
+    order: Literal["asc", "desc"] = Query("asc"),
     q: str | None = Query(None),
     active: bool | None = Query(None),
     all_items: bool = Query(False, alias="all"),
@@ -58,7 +58,7 @@ def create_app_key(
     return AppKeyCreatedOut.model_validate(
         container.app_keys.create(
             app=app,
-            access=[(current.permission, current.resource) for current in request.access],
+            access=[(current.permission, current.resource) for current in request.access.root],
             grantor=principal,
             expires_in=(
                 timedelta(seconds=request.expires_in_seconds)
@@ -87,8 +87,8 @@ def list_app_key_access(
     _principal: KeyManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: str = Query("permission"),
-    order: str = Query("asc"),
+    sort: Literal["app", "key_id", "permission", "resource", "created_at"] = Query("permission"),
+    order: Literal["asc", "desc"] = Query("asc"),
     q: str | None = Query(None),
     app: str | None = Query(None),
     key_id: str | None = Query(None, alias="key"),
@@ -129,7 +129,7 @@ def replace_app_key_access(
         container.app_keys.replace_access(
             app=app,
             key_id=key_id,
-            access=[(current.permission, current.resource) for current in request.access],
+            access=[(current.permission, current.resource) for current in request.access.root],
             grantor=principal,
         )
     )
@@ -183,8 +183,8 @@ def list_app_keys(
     _principal: KeyManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: str = Query("created_at"),
-    order: str = Query("desc"),
+    sort: Literal["id", "created_at", "expires_at", "last_used_at"] = Query("created_at"),
+    order: Literal["asc", "desc"] = Query("desc"),
     q: str | None = Query(None),
     active: bool | None = Query(None),
     all_items: bool = Query(False, alias="all"),

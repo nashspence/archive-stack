@@ -17,7 +17,7 @@ from riverhog_protocol.collection_workflows import (
 def test_transport_acceptance_matches_canonical_root_and_artifact_contracts() -> None:
     root = {
         "collection_id": 17,
-        "manifest_sha256": "1" * 64,
+        "archive_root_sha256": "1" * 64,
         "content_identity": "2" * 64,
     }
     artifact = {
@@ -54,7 +54,7 @@ def test_opaque_work_document_is_digest_bound_without_application_ontology() -> 
         inputs=[
             {
                 "collection_id": 17,
-                "manifest_sha256": "1" * 64,
+                "archive_root_sha256": "1" * 64,
                 "content_identity": "2" * 64,
             }
         ],

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+import riverhog_api_client
 from fastapi import FastAPI
 from http_api_contracts import ERROR_STATUS_BY_CODE, safe_http_base_url
 from riverhog_api.app import create_app as create_riverhog_app
@@ -56,6 +57,22 @@ SUPPORTED_CLIENT_HELPERS = {
 }
 
 
+def test_riverhog_client_exports_the_complete_public_error_hierarchy() -> None:
+    assert {
+        "BadRequest",
+        "Conflict",
+        "DownloadAllowanceExceeded",
+        "Forbidden",
+        "HashMismatch",
+        "InvalidPath",
+        "InvalidState",
+        "NotFound",
+        "RiverhogError",
+        "ServiceUnavailable",
+        "Unauthorized",
+    } <= set(riverhog_api_client.__all__)
+
+
 def public_operations(app: FastAPI) -> list[tuple[str, str]]:
     operations: list[tuple[str, str]] = []
     for path, path_item in app.openapi()["paths"].items():
@@ -66,6 +83,18 @@ def public_operations(app: FastAPI) -> list[tuple[str, str]]:
                 continue
             operations.append((str(operation["operationId"]), f"{method.upper()} {path}"))
     return operations
+
+
+def _parameter_enum(schema: dict[str, Any]) -> set[str]:
+    if "enum" in schema:
+        return {str(value) for value in schema["enum"]}
+    variants = schema.get("anyOf", [])
+    return {
+        str(value)
+        for variant in variants
+        if variant.get("type") != "null"
+        for value in variant.get("enum", [])
+    }
 
 
 @pytest.mark.parametrize(
@@ -235,6 +264,66 @@ def test_archive_copy_wire_states_match_the_service_state_machine() -> None:
     schema = create_riverhog_app().openapi()["components"]["schemas"]["ArchiveCopyJobOut"]
 
     assert set(schema["properties"]["state"]["enum"]) == ARCHIVE_COPY_STATES
+
+
+@pytest.mark.parametrize(
+    "app_factory",
+    (create_riverhog_app, create_stove0_contract_app, create_adapter_contract_app),
+)
+def test_public_crud_control_parameters_have_closed_vocabularies(
+    app_factory: Callable[[], FastAPI],
+) -> None:
+    found = 0
+    for path_item in app_factory().openapi()["paths"].values():
+        for method, operation in path_item.items():
+            if method not in HTTP_METHODS:
+                continue
+            for parameter in operation.get("parameters", []):
+                if parameter["name"] not in {
+                    "order",
+                    "phase",
+                    "protection",
+                    "sort",
+                    "state",
+                    "status",
+                }:
+                    continue
+                found += 1
+                assert _parameter_enum(parameter["schema"]), parameter
+    if app_factory is not create_adapter_contract_app:
+        assert found > 0
+
+
+def test_retrieval_job_creation_requires_the_sealed_plan_precondition() -> None:
+    operation = create_riverhog_app().openapi()["paths"]["/v1/retrieval-jobs"]["post"]
+    if_match = next(
+        parameter for parameter in operation["parameters"] if parameter["name"] == "If-Match"
+    )
+
+    assert if_match["in"] == "header"
+    assert if_match["required"] is True
+
+
+def test_official_clients_reject_invalid_crud_controls_and_noncanonical_tags() -> None:
+    riverhog = ApiClient()
+    stove0 = Stove0ApiClient()
+    try:
+        with pytest.raises(BadRequest, match="collection sort must be one of"):
+            riverhog.list_collections(sort="newest")  # type: ignore[arg-type]
+        with pytest.raises(BadRequest, match="tag must be canonical"):
+            riverhog.create_tag("Not Canonical")
+        with pytest.raises(BadRequest, match="does not accept a scoped resource"):
+            riverhog.add_app_key_access(
+                "example",
+                "key",
+                permission="keys:manage",
+                resource="tag:incoming",
+            )
+        with pytest.raises(ValueError, match="evaluation sort must be one of"):
+            stove0.list_evaluations(sort="newest")  # type: ignore[arg-type]
+    finally:
+        riverhog.close()
+        stove0.close()
 
 
 @pytest.mark.parametrize(

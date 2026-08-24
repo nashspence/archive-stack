@@ -174,13 +174,13 @@ class RcloneReviewDestination:
             raise TargetEffectCommitUncertain(
                 "review delivery may have committed; inspect the configured destination"
             ) from exc
-        manifest_bytes, manifest_sha256 = _identity(manifest_path)
+        manifest_bytes, archive_root_sha256 = _identity(manifest_path)
         del manifest_bytes
         return {
             "format": "stove0-review-rclone-receipt/v1",
             "destination_identity": self.identity,
             "delivery_id": delivery_id,
-            "artifact_manifest_sha256": manifest_sha256,
+            "artifact_archive_root_sha256": archive_root_sha256,
             "artifact_count": len(artifacts),
             "total_bytes": sum(item.bytes for item in artifacts),
         }
@@ -452,7 +452,7 @@ class ReviewTargetService(PersistentTargetService):
                 dispositions = tuple(
                     ArtifactDisposition(
                         input_collection_id=artifact.collection.collection_id,
-                        input_manifest_sha256=artifact.collection.manifest_sha256,
+                        input_archive_root_sha256=artifact.collection.archive_root_sha256,
                         input_path=artifact.path,
                         status="transformed",
                         outputs=tuple(

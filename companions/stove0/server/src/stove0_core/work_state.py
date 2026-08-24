@@ -716,7 +716,7 @@ class Stove0WorkService:
         if len({item.request_id for item in normalized}) != len(normalized):
             raise ValueError("observation requests must be unique")
         roots = {
-            (item.collection_id, item.manifest_sha256, item.content_identity)
+            (item.collection_id, item.archive_root_sha256, item.content_identity)
             for item in record.work.inputs
         }
         for request in normalized:
@@ -725,7 +725,7 @@ class Stove0WorkService:
             if any(
                 (
                     subject.collection.collection_id,
-                    subject.collection.manifest_sha256,
+                    subject.collection.archive_root_sha256,
                     subject.collection.content_identity,
                 )
                 not in roots

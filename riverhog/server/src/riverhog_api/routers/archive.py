@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Query
 from http_api_contracts import error_responses
 from riverhog_core.app_permissions import ARCHIVES_MANAGE
@@ -46,9 +48,25 @@ def list_archive_copy_jobs(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    state: str | None = Query(None),
-    sort: str = Query("requested_at"),
-    order: str = Query("desc"),
+    state: Literal[
+        "requested",
+        "waiting",
+        "checking",
+        "copying",
+        "canceling",
+        "completed",
+        "failed",
+        "canceled",
+    ]
+    | None = Query(None),
+    sort: Literal[
+        "collection_id",
+        "source_store",
+        "destination_store",
+        "state",
+        "requested_at",
+    ] = Query("requested_at"),
+    order: Literal["asc", "desc"] = Query("desc"),
     all_items: bool = Query(False, alias="all"),
 ) -> ArchiveCopyJobListOut:
     return ArchiveCopyJobListOut.model_validate(
@@ -150,8 +168,15 @@ def list_archive_stores(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    sort: str = Query("store"),
-    order: str = Query("asc"),
+    sort: Literal[
+        "store",
+        "read_mode",
+        "read_priority",
+        "collections",
+        "objects",
+        "stored_bytes",
+    ] = Query("store"),
+    order: Literal["asc", "desc"] = Query("asc"),
     all_items: bool = Query(False, alias="all"),
 ) -> ArchiveStoreListOut:
     payload = container.archive_stores.list(

@@ -11,6 +11,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from riverhog_protocol.lifecycle_events import RiverhogEventPage
+from stove0_operator_contracts import Stove0EventPage
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts/qualify_installation.py"
@@ -27,12 +28,14 @@ def load_script() -> ModuleType:
     return module
 
 
-def test_disposable_event_fixture_is_an_exact_riverhog_lifecycle_page() -> None:
+def test_disposable_event_fixtures_are_exact_owned_lifecycle_pages() -> None:
     module = load_script()
 
-    page = RiverhogEventPage.model_validate(module.EVENT_PAGE)
+    riverhog = RiverhogEventPage.model_validate(module.RIVERHOG_EVENT_PAGE)
+    stove0 = Stove0EventPage.model_validate(module.STOVE0_EVENT_PAGE)
 
-    assert page.model_dump(mode="json", exclude_none=True) == module.EVENT_PAGE
+    assert riverhog.model_dump(mode="json", exclude_none=True) == module.RIVERHOG_EVENT_PAGE
+    assert stove0.model_dump(mode="json") == module.STOVE0_EVENT_PAGE
 
 
 def test_distribution_builds_are_serialized_into_a_clean_output(
@@ -206,6 +209,38 @@ def test_macos_qualification_mount_retries_classified_busy_detachment(
     ]
     assert commands[-3:] == [detach_command, detach_command, detach_command]
     assert sleeps == [0.25, 0.5]
+
+
+def test_macos_qualification_mount_accepts_busy_then_proven_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    detach_attempts = 0
+
+    def run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal detach_attempts
+        if command[1] != "detach":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        detach_attempts += 1
+        if detach_attempts == 1:
+            return subprocess.CompletedProcess(command, 16, "", "Resource busy")
+        return subprocess.CompletedProcess(command, 1, "", "No such file or directory")
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module.os, "getpid", lambda: 123)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    with module._qualification_mount(tmp_path) as mounted:
+        assert mounted == Path("/Volumes/GogurtQualification-123")
+
+    assert detach_attempts == 2
+    assert sleeps == [0.25]
 
 
 def test_macos_qualification_mount_bounds_busy_detachment_retries(

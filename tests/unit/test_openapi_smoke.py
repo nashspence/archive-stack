@@ -139,7 +139,7 @@ def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> Non
     roots = [
         CollectionRootIdentityIn(
             collection_id=index,
-            manifest_sha256="1" * 64,
+            archive_root_sha256="1" * 64,
             content_identity="2" * 64,
         )
         for index in range(1, 1002)
@@ -286,7 +286,7 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
             created_at="2026-07-26T20:00:00.000000Z",
             tags=("family",),
             content_identity="1" * 64,
-            manifest_sha256="2" * 64,
+            archive_root_sha256="2" * 64,
             encryption_format="age-v1-scrypt",
             passphrase_id="openapi-test-key-v1",
             files=1,
@@ -298,7 +298,7 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
 
 def test_application_access_openapi_uses_the_public_permission_and_resource_grammar() -> None:
     document = create_app().openapi()
-    access = document["components"]["schemas"]["AppAccessIn"]
+    access = document["components"]["schemas"]["ApplicationAccessGrant"]
     schemas = document["components"]["schemas"]
     permission = schemas[access["properties"]["permission"]["$ref"].rsplit("/", 1)[-1]]
     resource = schemas[access["properties"]["resource"]["$ref"].rsplit("/", 1)[-1]]

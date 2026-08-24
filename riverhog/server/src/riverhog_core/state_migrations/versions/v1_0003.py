@@ -131,7 +131,7 @@ def _create_collection_workflow_schema() -> None:
             primary_key=True,
         ),
         Column("collection_order", Integer(), nullable=False),
-        Column("manifest_sha256", String(64), nullable=False),
+        Column("archive_root_sha256", String(64), nullable=False),
         Column("content_etag", String(64), nullable=False),
         UniqueConstraint(
             "claim_id",

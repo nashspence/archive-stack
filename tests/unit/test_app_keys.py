@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from application_access import ApplicationAccessError
 from fastapi.security import HTTPAuthorizationCredentials
 from riverhog_api.auth import require_application, require_permission
 from riverhog_core.app_permissions import (
@@ -357,12 +358,8 @@ def test_app_names_access_and_expiry_are_validated(tmp_path: Path) -> None:
     service, _config = app_keys(tmp_path)
     with pytest.raises(BadRequest, match="app name"):
         create_key(service, app="not/an/app")
-    with pytest.raises(BadRequest, match="unknown application permission"):
-        create_key(
-            service,
-            app="local",
-            access=(ApplicationAccess("unknown:permission"),),
-        )
+    with pytest.raises(ApplicationAccessError, match="unknown application permission"):
+        ApplicationAccess("unknown:permission")
     with pytest.raises(BadRequest, match="expiry"):
         create_key(service, app="local", expires_in=timedelta(0))
 

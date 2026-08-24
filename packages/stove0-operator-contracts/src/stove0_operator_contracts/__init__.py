@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from lifecycle_events import CloudEvent, cloud_event
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 from stove0_observer_protocol import ObservationRequest, ObservationResult
 from stove0_protocol import (
     ArtifactSubject,
@@ -66,6 +75,215 @@ SchedulerRole = Literal["controller", "worker", "combined"]
 
 class OperatorModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class WorkflowPreviewIn(OperatorModel):
+    recipe_id: str = Field(min_length=1, max_length=160)
+    recipe_revision: int | None = Field(default=None, ge=1)
+    collection_ids: tuple[int, ...] = Field(min_length=1)
+    effective_intent: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @field_validator("collection_ids")
+    @classmethod
+    def canonical_collections(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if value != tuple(sorted(set(value))) or any(item < 1 for item in value):
+            raise ValueError("collection IDs must be positive, unique, and ordered")
+        return value
+
+
+class WorkCreateIn(WorkflowPreviewIn):
+    preview_sha256: Sha256
+
+
+class WorkCancelIn(OperatorModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class EvaluationReviewIn(OperatorModel):
+    rating: int | None = Field(default=None, ge=1, le=5)
+    note: str | None = Field(default=None, max_length=4000)
+
+
+class SchedulerRunIn(OperatorModel):
+    role: SchedulerRole = "combined"
+    event_limit: int = Field(default=100, ge=1, le=100)
+    work_limit: int = Field(default=25, ge=1, le=100)
+
+
+STOVE0_EVENT_SOURCE: Literal["urn:riverhog:stove0"] = "urn:riverhog:stove0"
+WORK_CREATED: Literal["io.riverhog.stove0.work.created"] = "io.riverhog.stove0.work.created"
+WORK_UPDATED: Literal["io.riverhog.stove0.work.updated"] = "io.riverhog.stove0.work.updated"
+BRANCH_SET_ADMITTED: Literal["io.riverhog.stove0.branch-set.admitted"] = (
+    "io.riverhog.stove0.branch-set.admitted"
+)
+JOIN_ADMITTED: Literal["io.riverhog.stove0.join.admitted"] = "io.riverhog.stove0.join.admitted"
+EVALUATION_CREATED: Literal["io.riverhog.stove0.evaluation.created"] = (
+    "io.riverhog.stove0.evaluation.created"
+)
+EVALUATION_UPDATED: Literal["io.riverhog.stove0.evaluation.updated"] = (
+    "io.riverhog.stove0.evaluation.updated"
+)
+type Stove0EventType = Literal[
+    "io.riverhog.stove0.work.created",
+    "io.riverhog.stove0.work.updated",
+    "io.riverhog.stove0.branch-set.admitted",
+    "io.riverhog.stove0.join.admitted",
+    "io.riverhog.stove0.evaluation.created",
+    "io.riverhog.stove0.evaluation.updated",
+]
+STOVE0_EVENT_TYPES = frozenset(
+    {
+        WORK_CREATED,
+        WORK_UPDATED,
+        BRANCH_SET_ADMITTED,
+        JOIN_ADMITTED,
+        EVALUATION_CREATED,
+        EVALUATION_UPDATED,
+    }
+)
+
+
+class Stove0EventData(OperatorModel):
+    def __getitem__(self, key: str) -> Any:
+        return self.model_dump(mode="json", exclude_none=True)[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.model_dump(mode="json", exclude_none=True).get(key, default)
+
+
+class WorkCreatedEventData(Stove0EventData):
+    work_id: Sha256
+    phase: WorkPhase
+    parent_work_id: Sha256 | None = None
+    branch_set_sha256: Sha256 | None = None
+    join_plan_sha256: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def exact_parent_binding(self) -> Self:
+        if self.parent_work_id is None:
+            if self.branch_set_sha256 is not None or self.join_plan_sha256 is not None:
+                raise ValueError("root work creation cannot declare branch or join identities")
+        elif self.branch_set_sha256 is None:
+            raise ValueError("child work creation requires its branch-set identity")
+        return self
+
+
+class WorkUpdatedEventData(Stove0EventData):
+    work_id: Sha256
+    phase: WorkPhase
+    revision: int = Field(ge=2)
+
+
+class BranchSetAdmittedEventData(WorkUpdatedEventData):
+    branch_set_sha256: Sha256
+    branch_count: int = Field(ge=1)
+    admitted_work_count: int = Field(ge=1)
+
+
+class JoinAdmittedEventData(WorkUpdatedEventData):
+    branch_set_sha256: Sha256
+    join_plan_sha256: Sha256
+    join_work_id: Sha256
+
+
+class EvaluationCreatedEventData(Stove0EventData):
+    evaluation_id: Sha256
+    phase: EvaluationPhase
+
+
+class EvaluationUpdatedEventData(EvaluationCreatedEventData):
+    revision: int = Field(ge=2)
+
+
+class Stove0CloudEvent(CloudEvent):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    source: Literal["urn:riverhog:stove0"]
+    subject: str = Field(min_length=1)
+    data: Any
+
+    @model_validator(mode="after")
+    def exact_subject(self) -> Self:
+        identity = (
+            self.data.evaluation_id
+            if isinstance(self.data, EvaluationCreatedEventData)
+            else self.data.work_id
+        )
+        if self.subject != identity:
+            raise ValueError("Stove0 event subject differs from its data identity")
+        return self
+
+
+class WorkCreatedEvent(Stove0CloudEvent):
+    type: Literal["io.riverhog.stove0.work.created"]
+    data: WorkCreatedEventData
+
+
+class WorkUpdatedEvent(Stove0CloudEvent):
+    type: Literal["io.riverhog.stove0.work.updated"]
+    data: WorkUpdatedEventData
+
+
+class BranchSetAdmittedEvent(Stove0CloudEvent):
+    type: Literal["io.riverhog.stove0.branch-set.admitted"]
+    data: BranchSetAdmittedEventData
+
+
+class JoinAdmittedEvent(Stove0CloudEvent):
+    type: Literal["io.riverhog.stove0.join.admitted"]
+    data: JoinAdmittedEventData
+
+
+class EvaluationCreatedEvent(Stove0CloudEvent):
+    type: Literal["io.riverhog.stove0.evaluation.created"]
+    data: EvaluationCreatedEventData
+
+
+class EvaluationUpdatedEvent(Stove0CloudEvent):
+    type: Literal["io.riverhog.stove0.evaluation.updated"]
+    data: EvaluationUpdatedEventData
+
+
+type Stove0LifecycleEvent = Annotated[
+    WorkCreatedEvent
+    | WorkUpdatedEvent
+    | BranchSetAdmittedEvent
+    | JoinAdmittedEvent
+    | EvaluationCreatedEvent
+    | EvaluationUpdatedEvent,
+    Field(discriminator="type"),
+]
+
+_STOVE0_EVENT_ADAPTER: TypeAdapter[Stove0LifecycleEvent] = TypeAdapter(Stove0LifecycleEvent)
+
+
+def parse_stove0_event(value: object) -> Stove0LifecycleEvent:
+    return _STOVE0_EVENT_ADAPTER.validate_python(value)
+
+
+def stove0_event(
+    *,
+    type: Stove0EventType,
+    subject: str,
+    data: Mapping[str, Any],
+) -> Stove0LifecycleEvent:
+    event = cloud_event(
+        source=STOVE0_EVENT_SOURCE,
+        type=type,
+        subject=subject,
+        data=data,
+    )
+    return parse_stove0_event(event.model_dump(mode="python", exclude_none=True))
+
+
+class Stove0EventPage(OperatorModel):
+    events: list[Stove0LifecycleEvent]
+    next_cursor: str
+    has_more: bool
+
+    def require_progress_after(self, cursor: str) -> None:
+        if self.events and self.next_cursor == cursor:
+            raise ValueError("nonempty Stove0 event page did not advance its cursor")
 
 
 class WorkClaimView(OperatorModel):
@@ -310,22 +528,56 @@ def _payload(value: BaseModel | Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "ArtifactSelectionPage",
+    "BRANCH_SET_ADMITTED",
+    "BranchSetAdmittedEvent",
+    "BranchSetAdmittedEventData",
     "EvaluationChildView",
+    "EVALUATION_CREATED",
+    "EVALUATION_UPDATED",
+    "EvaluationCreatedEvent",
+    "EvaluationCreatedEventData",
+    "EvaluationPhase",
     "EvaluationPage",
+    "EvaluationReviewIn",
     "EvaluationReviewView",
+    "EvaluationUpdatedEvent",
+    "EvaluationUpdatedEventData",
     "EvaluationView",
+    "JOIN_ADMITTED",
+    "JoinAdmittedEvent",
+    "JoinAdmittedEventData",
     "RecipeCatalogView",
     "RecipeView",
     "SchedulerEventBatch",
     "SchedulerFailure",
     "SchedulerPruning",
+    "SchedulerRole",
     "SchedulerRun",
+    "SchedulerRunIn",
     "SchedulerStatus",
     "SchedulerWorkBatch",
+    "STOVE0_EVENT_SOURCE",
+    "STOVE0_EVENT_TYPES",
+    "Stove0CloudEvent",
+    "Stove0EventData",
+    "Stove0EventPage",
+    "Stove0EventType",
+    "Stove0LifecycleEvent",
+    "WORK_CREATED",
+    "WORK_UPDATED",
+    "WorkCancelIn",
     "WorkClaimView",
+    "WorkCreateIn",
+    "WorkCreatedEvent",
+    "WorkCreatedEventData",
     "WorkFailureView",
     "WorkInapplicableView",
     "WorkPage",
     "WorkPhase",
+    "WorkUpdatedEvent",
+    "WorkUpdatedEventData",
     "WorkView",
+    "WorkflowPreviewIn",
+    "parse_stove0_event",
+    "stove0_event",
 ]

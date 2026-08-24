@@ -159,7 +159,7 @@ class DerivedCollectionWriter:
         )
         return DerivedCollectionReceipt(
             collection_id=receipt.collection_id,
-            manifest_sha256=receipt.manifest_sha256,
+            archive_root_sha256=receipt.archive_root_sha256,
             content_identity=receipt.content_identity,
             derivation=derivation,
         )

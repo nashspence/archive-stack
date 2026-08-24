@@ -67,7 +67,7 @@ def _validate_opaque_document(
 
 class CollectionRootIdentityDocument(RiverhogWorkflowDocument):
     collection_id: int = Field(ge=1)
-    manifest_sha256: SHA256
+    archive_root_sha256: SHA256
     content_identity: SHA256
 
     @model_validator(mode="after")
@@ -123,7 +123,7 @@ class ProcessingOutcomeIdentityDocument(RiverhogWorkflowDocument):
 
 class ArtifactDispositionInputDocument(RiverhogWorkflowDocument):
     collection_id: int = Field(ge=1)
-    manifest_sha256: SHA256
+    archive_root_sha256: SHA256
     path: str = Field(min_length=1, max_length=4096)
 
 

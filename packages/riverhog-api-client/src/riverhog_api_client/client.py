@@ -5,13 +5,20 @@ import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self, cast
 from urllib.parse import quote
 from xml.etree import ElementTree
 
 import httpx
+from application_access import (
+    ApplicationAccessGrant,
+    ApplicationAccessGrantSet,
+    ApplicationPermission,
+    ApplicationResource,
+)
 from file_download import verified_download
 from http_api_contracts import parse_error_payload, safe_http_base_url
+from pydantic import ValidationError
 from riverhog_protocol import PortableCollectionRecord
 from riverhog_protocol.errors import (
     BadRequest,
@@ -22,6 +29,7 @@ from riverhog_protocol.errors import (
     error_type_for_code,
 )
 from riverhog_protocol.lifecycle_events import RiverhogEventPage
+from riverhog_protocol.paths import validate_canonical_tag
 
 from riverhog_api_client.workflows import CollectionWorkflowMethods
 
@@ -32,6 +40,95 @@ _DOWNLOAD_TIMEOUT_SECONDS = 3600.0
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 _TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 DownloadProgress = Callable[[int, int | None], None]
+
+type _SortOrder = Literal["asc", "desc"]
+type _CollectionSort = Literal["id", "created_at", "bytes", "files"]
+type _UploadState = Literal["open", "uploading", "finalizing", "failed"]
+type _UploadSort = Literal["id", "created_at", "state", "bytes", "files"]
+type _CacheState = Literal["ready", "delete_pending", "deleting"]
+type _CacheProtection = Literal["protected", "unleased"]
+type _CacheSort = Literal[
+    "collection_id",
+    "source_store",
+    "object_id",
+    "stored_bytes",
+    "cached_at",
+    "verified_at",
+    "protected_until",
+]
+type _SearchSort = Literal["file_ref", "collection_id", "path", "bytes"]
+type _ProvenanceStatus = Literal["captured", "omitted"]
+type _ProvenanceSort = Literal["path", "bytes", "status"]
+type _ArchiveStoreSort = Literal[
+    "store", "read_mode", "read_priority", "collections", "objects", "stored_bytes"
+]
+type _AppSort = Literal["name", "keys", "active_keys", "last_used_at"]
+type _AppKeySort = Literal["id", "created_at", "expires_at", "last_used_at"]
+type _AccessSort = Literal["app", "key_id", "permission", "resource", "created_at"]
+type _TagSort = Literal["id", "created_at", "collections"]
+type _QuotaSort = Literal[
+    "app",
+    "key_id",
+    "monthly_bytes",
+    "accounted_bytes",
+    "reserved_bytes",
+    "remaining_bytes",
+]
+type _ArchiveCopyState = Literal[
+    "requested",
+    "waiting",
+    "checking",
+    "copying",
+    "canceling",
+    "completed",
+    "failed",
+    "canceled",
+]
+type _ArchiveCopySort = Literal[
+    "collection_id", "source_store", "destination_store", "state", "requested_at"
+]
+
+
+def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
+    if value not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise BadRequest(f"{label} must be one of: {choices}")
+    return value
+
+
+def _canonical_tag(value: str) -> str:
+    try:
+        return validate_canonical_tag(value)
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def _canonical_tags(values: Sequence[str]) -> list[str]:
+    tags = [_canonical_tag(value) for value in values]
+    if len(tags) != len(set(tags)):
+        raise BadRequest("collection tags must not contain duplicates")
+    return tags
+
+
+def _application_access_payload(
+    access: Sequence[Mapping[str, str]],
+) -> list[dict[str, Any]]:
+    try:
+        grants = ApplicationAccessGrantSet.model_validate([dict(current) for current in access])
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
+    return cast(list[dict[str, Any]], grants.model_dump(mode="json"))
+
+
+def _application_access_grant_payload(
+    permission: ApplicationPermission,
+    resource: ApplicationResource,
+) -> dict[str, Any]:
+    try:
+        grant = ApplicationAccessGrant(permission=permission, resource=resource)
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
+    return grant.model_dump(mode="json")
 
 
 def _bool_env(env_name: str, default: bool) -> bool:
@@ -455,32 +552,54 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         tag: str | None = None,
         collection_id: int | None = None,
         source_store: str | None = None,
-        state: str | None = None,
-        protection: str | None = None,
+        state: _CacheState | None = None,
+        protection: _CacheProtection | None = None,
         expires_before: str | None = None,
         expires_after: str | None = None,
-        sort: str = "cached_at",
-        order: str = "desc",
+        sort: _CacheSort = "cached_at",
+        order: _SortOrder = "desc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset(
+                    {
+                        "collection_id",
+                        "source_store",
+                        "object_id",
+                        "stored_bytes",
+                        "cached_at",
+                        "verified_at",
+                        "protected_until",
+                    }
+                ),
+                "retrieval-cache sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
-        if tag:
-            params["tag"] = tag
+        if tag is not None:
+            params["tag"] = _canonical_tag(tag)
         if collection_id is not None:
             params["collection_id"] = collection_id
         if source_store:
             params["source_store"] = source_store
         if state:
-            params["state"] = state
+            params["state"] = _one_of(
+                state,
+                frozenset({"ready", "delete_pending", "deleting"}),
+                "retrieval-cache state",
+            )
         if protection:
-            params["protection"] = protection
+            params["protection"] = _one_of(
+                protection,
+                frozenset({"protected", "unleased"}),
+                "retrieval-cache protection",
+            )
         if expires_before:
             params["expires_before"] = expires_before
         if expires_after:
@@ -635,7 +754,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "idempotency_key": idempotency_key,
-            "tags": list(tags),
+            "tags": _canonical_tags(tags),
             "provenance_mode": provenance_mode,
         }
         if ingest_source is not None:
@@ -719,24 +838,32 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        state: str | None = None,
+        state: _UploadState | None = None,
         tag: str | None = None,
-        sort: str = "created_at",
-        order: str = "desc",
+        sort: _UploadSort = "created_at",
+        order: _SortOrder = "desc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset({"id", "created_at", "state", "bytes", "files"}),
+                "collection-upload sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
         if state:
-            params["state"] = state
-        if tag:
-            params["tag"] = tag
+            params["state"] = _one_of(
+                state,
+                frozenset({"open", "uploading", "finalizing", "failed"}),
+                "collection-upload state",
+            )
+        if tag is not None:
+            params["tag"] = _canonical_tag(tag)
         if all_items:
             params["all"] = True
         return self._json("GET", "/v1/collection-upload-sessions", params=params)
@@ -825,16 +952,20 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         *,
         page: int = 1,
         per_page: int = 25,
-        sort: str = "file_ref",
-        order: str = "asc",
+        sort: _SearchSort = "file_ref",
+        order: _SortOrder = "asc",
         collection: int | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset({"file_ref", "collection_id", "path", "bytes"}),
+                "search sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if query:
             params["q"] = query
@@ -857,21 +988,29 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        status: str | None = None,
-        sort: str = "path",
-        order: str = "asc",
+        status: _ProvenanceStatus | None = None,
+        sort: _ProvenanceSort = "path",
+        order: _SortOrder = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset({"path", "bytes", "status"}),
+                "provenance sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
         if status:
-            params["status"] = status
+            params["status"] = _one_of(
+                status,
+                frozenset({"captured", "omitted"}),
+                "provenance status",
+            )
         if all_items:
             params["all"] = True
         return self._json(
@@ -966,8 +1105,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         tag: str | None = None,
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
-        sort: str = "id",
-        order: str = "asc",
+        sort: _CollectionSort = "id",
+        order: _SortOrder = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -975,13 +1114,21 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
         }
         if sort != "id":
-            params["sort"] = sort
+            params["sort"] = _one_of(
+                sort,
+                frozenset({"id", "created_at", "bytes", "files"}),
+                "collection sort",
+            )
         if order != "asc":
-            params["order"] = order
+            params["order"] = _one_of(
+                order,
+                frozenset({"asc", "desc"}),
+                "sort order",
+            )
         if q:
             params["q"] = q
-        if tag:
-            params["tag"] = tag
+        if tag is not None:
+            params["tag"] = _canonical_tag(tag)
         if encryption_format:
             params["encryption_format"] = encryption_format
         if passphrase_id:
@@ -996,15 +1143,28 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: str = "store",
-        order: str = "asc",
+        sort: _ArchiveStoreSort = "store",
+        order: _SortOrder = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset(
+                    {
+                        "store",
+                        "read_mode",
+                        "read_priority",
+                        "collections",
+                        "objects",
+                        "stored_bytes",
+                    }
+                ),
+                "archive-store sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
@@ -1021,16 +1181,20 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: str = "name",
-        order: str = "asc",
+        sort: _AppSort = "name",
+        order: _SortOrder = "asc",
         active: bool | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset({"name", "keys", "active_keys", "last_used_at"}),
+                "application sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
@@ -1047,9 +1211,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         access: Sequence[Mapping[str, str]],
         expires_in_seconds: int | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "access": [dict(current) for current in access],
-        }
+        payload: dict[str, Any] = {"access": _application_access_payload(access)}
         if expires_in_seconds is not None:
             payload["expires_in_seconds"] = expires_in_seconds
         return self._json(
@@ -1065,16 +1227,20 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: str = "created_at",
-        order: str = "desc",
+        sort: _AppKeySort = "created_at",
+        order: _SortOrder = "desc",
         active: bool | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset({"id", "created_at", "expires_at", "last_used_at"}),
+                "application-key sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
@@ -1106,8 +1272,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: str = "permission",
-        order: str = "asc",
+        sort: _AccessSort = "permission",
+        order: _SortOrder = "asc",
         app: str | None = None,
         key_id: str | None = None,
         permission: str | None = None,
@@ -1118,8 +1284,12 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset({"app", "key_id", "permission", "resource", "created_at"}),
+                "application-access sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
@@ -1147,7 +1317,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         return self._json(
             "PUT",
             f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
-            json={"access": [dict(current) for current in access]},
+            json={"access": _application_access_payload(access)},
         )
 
     def add_app_key_access(
@@ -1155,13 +1325,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         app: str,
         key_id: str,
         *,
-        permission: str,
-        resource: str,
+        permission: ApplicationPermission,
+        resource: ApplicationResource,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
-            json={"permission": permission, "resource": resource},
+            json=_application_access_grant_payload(permission, resource),
         )
 
     def remove_app_key_access(
@@ -1169,20 +1339,20 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         app: str,
         key_id: str,
         *,
-        permission: str,
-        resource: str,
+        permission: ApplicationPermission,
+        resource: ApplicationResource,
     ) -> dict[str, Any]:
         return self._json(
             "DELETE",
             f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
-            json={"permission": permission, "resource": resource},
+            json=_application_access_grant_payload(permission, resource),
         )
 
     def create_tag(self, tag: str) -> dict[str, Any]:
-        return self._json("POST", "/v1/tags", json={"id": tag})
+        return self._json("POST", "/v1/tags", json={"id": _canonical_tag(tag)})
 
     def get_tag(self, tag: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/tags/{quote(tag, safe='')}")
+        return self._json("GET", f"/v1/tags/{quote(_canonical_tag(tag), safe='')}")
 
     def list_tags(
         self,
@@ -1190,15 +1360,19 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: str = "id",
-        order: str = "asc",
+        sort: _TagSort = "id",
+        order: _SortOrder = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset({"id", "created_at", "collections"}),
+                "tag sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
@@ -1209,13 +1383,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def plan_tag_deletion(self, tag: str) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/tags/{quote(tag, safe='')}/deletion-plan",
+            f"/v1/tags/{quote(_canonical_tag(tag), safe='')}/deletion-plan",
         )
 
     def delete_tag(self, tag: str, *, challenge: str) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/tags/{quote(tag, safe='')}/delete",
+            f"/v1/tags/{quote(_canonical_tag(tag), safe='')}/delete",
             json={"challenge": challenge},
         )
 
@@ -1229,7 +1403,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         *,
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"tags": list(tags)}
+        payload: dict[str, Any] = {"tags": _canonical_tags(tags)}
         if event_context is not None:
             payload["event_context"] = dict(event_context)
         return self._json("PUT", f"/v1/collections/{collection_id}/tags", json=payload)
@@ -1244,7 +1418,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         payload = {} if event_context is None else {"event_context": dict(event_context)}
         return self._json(
             "POST",
-            f"/v1/collections/{collection_id}/tags/{quote(tag, safe='')}",
+            f"/v1/collections/{collection_id}/tags/{quote(_canonical_tag(tag), safe='')}",
             json=payload,
         )
 
@@ -1258,7 +1432,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         payload = {} if event_context is None else {"event_context": dict(event_context)}
         return self._json(
             "DELETE",
-            f"/v1/collections/{collection_id}/tags/{quote(tag, safe='')}",
+            f"/v1/collections/{collection_id}/tags/{quote(_canonical_tag(tag), safe='')}",
             json=payload,
         )
 
@@ -1284,8 +1458,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: str = "app",
-        order: str = "asc",
+        sort: _QuotaSort = "app",
+        order: _SortOrder = "asc",
         app: str | None = None,
         active: bool | None = None,
         all_items: bool = False,
@@ -1293,8 +1467,21 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset(
+                    {
+                        "app",
+                        "key_id",
+                        "monthly_bytes",
+                        "accounted_bytes",
+                        "reserved_bytes",
+                        "remaining_bytes",
+                    }
+                ),
+                "download-quota sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
@@ -1330,21 +1517,48 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        state: str | None = None,
-        sort: str = "requested_at",
-        order: str = "desc",
+        state: _ArchiveCopyState | None = None,
+        sort: _ArchiveCopySort = "requested_at",
+        order: _SortOrder = "desc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
-            "sort": sort,
-            "order": order,
+            "sort": _one_of(
+                sort,
+                frozenset(
+                    {
+                        "collection_id",
+                        "source_store",
+                        "destination_store",
+                        "state",
+                        "requested_at",
+                    }
+                ),
+                "archive-copy sort",
+            ),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
         }
         if q:
             params["q"] = q
         if state:
-            params["state"] = state
+            params["state"] = _one_of(
+                state,
+                frozenset(
+                    {
+                        "requested",
+                        "waiting",
+                        "checking",
+                        "copying",
+                        "canceling",
+                        "completed",
+                        "failed",
+                        "canceled",
+                    }
+                ),
+                "archive-copy state",
+            )
         if all_items:
             params["all"] = True
         return self._json("GET", "/v1/archive/copies", params=params)

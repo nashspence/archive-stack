@@ -8,7 +8,7 @@ from typing import Any, Self
 from urllib.parse import quote
 
 import httpx
-from http_api_contracts import parse_error_payload, safe_http_base_url
+from http_api_contracts import HealthResponse, parse_error_payload, safe_http_base_url
 
 
 class FtpAdapterApiError(RuntimeError):
@@ -71,11 +71,13 @@ class RiverhogFtpAdapterClient:
     def close(self) -> None:
         self._http.close()
 
-    def ftp_adapter_health_live(self) -> dict[str, Any]:
-        return self._json("GET", "/health/live", authenticated=False)
+    def ftp_adapter_health_live(self) -> HealthResponse:
+        return HealthResponse.model_validate(self._json("GET", "/health/live", authenticated=False))
 
-    def ftp_adapter_health_ready(self) -> dict[str, Any]:
-        return self._json("GET", "/health/ready", authenticated=False)
+    def ftp_adapter_health_ready(self) -> HealthResponse:
+        return HealthResponse.model_validate(
+            self._json("GET", "/health/ready", authenticated=False)
+        )
 
     def get_ftp_adapter_status(self) -> dict[str, Any]:
         return self._json("GET", "/v1/status")

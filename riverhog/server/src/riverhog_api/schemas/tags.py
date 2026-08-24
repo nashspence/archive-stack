@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from pydantic import field_validator
+from riverhog_protocol.paths import CanonicalTag
+
 from riverhog_api.schemas.common import RiverhogModel
 
 
 class CreateTagRequest(RiverhogModel):
-    id: str
+    id: CanonicalTag
 
 
 class TagOut(RiverhogModel):
-    id: str
+    id: CanonicalTag
     created_by_app: str
     created_by_key_id: str | None
     created_at: str
@@ -29,15 +32,22 @@ class TagListOut(RiverhogModel):
 
 
 class ReplaceCollectionTagsRequest(RiverhogModel):
-    tags: list[str]
+    tags: list[CanonicalTag]
     event_context: dict[str, Any] | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def validate_unique_tags(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("collection tags must not contain duplicates")
+        return value
 
 
 class CollectionTagsOut(RiverhogModel):
     collection_id: int
     metadata_revision: int
     record_etag: str
-    tags: list[str]
+    tags: list[CanonicalTag]
 
 
 class TagDependencySummaryOut(RiverhogModel):
@@ -55,7 +65,7 @@ class TagDependenciesOut(RiverhogModel):
 
 class TagDeletionPlanOut(RiverhogModel):
     status: Literal["ready", "blocked"]
-    tag: str
+    tag: CanonicalTag
     warning: str
     expires_at: str
     challenge: str | None
@@ -69,7 +79,7 @@ class DeleteTagRequest(RiverhogModel):
 
 class TagDeletionResultOut(RiverhogModel):
     status: Literal["deleted", "already_absent"]
-    tag: str
+    tag: CanonicalTag
 
 
 class MutateCollectionTagRequest(RiverhogModel):

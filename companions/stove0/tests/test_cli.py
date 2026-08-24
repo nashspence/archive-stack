@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from lifecycle_events import EventPage
 from stove0_cli import main as stove0_cli
+from stove0_operator_contracts import Stove0EventPage
 from typer.testing import CliRunner
 
 CONFORMANCE_CATALOG = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
@@ -21,7 +21,7 @@ class FakeClient:
 
     def __getattr__(self, name: str) -> Any:
         if name == "list_events":
-            return lambda **_kwargs: EventPage(events=[], next_cursor="0", has_more=False)
+            return lambda **_kwargs: Stove0EventPage(events=[], next_cursor="0", has_more=False)
         if name == "list_recipes":
             return lambda **_kwargs: {
                 "catalog_sha256": "b" * 64,

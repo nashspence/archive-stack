@@ -446,13 +446,13 @@ class TargetJobDeclaration(TargetProtocolModel):
         ):
             raise ValueError("target job plan differs from the stove0 workflow plan")
         work_roots = {
-            (item.collection_id, item.manifest_sha256, item.content_identity)
+            (item.collection_id, item.archive_root_sha256, item.content_identity)
             for item in workflow.work.inputs
         }
         if any(
             (
                 item.collection.collection_id,
-                item.collection.manifest_sha256,
+                item.collection.archive_root_sha256,
                 item.collection.content_identity,
             )
             not in work_roots
@@ -544,7 +544,7 @@ class TargetExecutionEvidence(TargetProtocolModel):
 
 class OutputCollectionRef(TargetProtocolModel):
     collection_id: int = Field(ge=1)
-    manifest_sha256: Sha256
+    archive_root_sha256: Sha256
     content_identity: Sha256
     derivation_sha256: Sha256
 
@@ -836,13 +836,13 @@ def validate_status_against_request(
     ):
         raise ValueError("target derivation differs from the accepted execution envelope")
     planned_inputs = {
-        (item.collection.collection_id, item.collection.manifest_sha256, item.path)
+        (item.collection.collection_id, item.collection.archive_root_sha256, item.path)
         for item in declaration.plan.inputs
     }
     disposition_inputs = {
         (
             item.input_collection_id,
-            item.input_manifest_sha256,
+            item.input_archive_root_sha256,
             item.input_path,
         )
         for item in derivation.dispositions
@@ -851,13 +851,13 @@ def validate_status_against_request(
         raise ValueError("target derivation does not account for every planned input artifact")
     input_contracts = {item.role: item for item in operation.inputs}
     planned_by_identity = {
-        (item.collection.collection_id, item.collection.manifest_sha256, item.path): item
+        (item.collection.collection_id, item.collection.archive_root_sha256, item.path): item
         for item in declaration.plan.inputs
     }
     for disposition in derivation.dispositions:
         identity = (
             disposition.input_collection_id,
-            disposition.input_manifest_sha256,
+            disposition.input_archive_root_sha256,
             disposition.input_path,
         )
         planned = planned_by_identity[identity]

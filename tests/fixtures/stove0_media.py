@@ -39,7 +39,7 @@ def media_preflight_request(
 ) -> TargetPreflightRequest:
     root = CollectionRootRef(
         collection_id=11,
-        manifest_sha256=sha("1"),
+        archive_root_sha256=sha("1"),
         content_identity=sha("2"),
     )
     inputs = (

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Query
+from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, CollectionTagManager, TagCreator, TagDeleter
 from riverhog_api.deps import ContainerDep
@@ -35,8 +38,8 @@ def list_tags(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    sort: str = Query("id"),
-    order: str = Query("asc"),
+    sort: Literal["id", "created_at", "collections"] = Query("id"),
+    order: Literal["asc", "desc"] = Query("asc"),
     all_items: bool = Query(False, alias="all"),
 ) -> TagListOut:
     return TagListOut.model_validate(
@@ -54,7 +57,7 @@ def list_tags(
 
 @router.get("/tags/{tag}", response_model=TagOut)
 def get_tag(
-    tag: str,
+    tag: CanonicalTag,
     container: ContainerDep,
     principal: CatalogReader,
 ) -> TagOut:
@@ -63,7 +66,7 @@ def get_tag(
 
 @router.post("/tags/{tag}/deletion-plan", response_model=TagDeletionPlanOut)
 def plan_tag_deletion(
-    tag: str,
+    tag: CanonicalTag,
     container: ContainerDep,
     _principal: TagDeleter,
 ) -> TagDeletionPlanOut:
@@ -72,7 +75,7 @@ def plan_tag_deletion(
 
 @router.post("/tags/{tag}/delete", response_model=TagDeletionResultOut)
 def delete_tag(
-    tag: str,
+    tag: CanonicalTag,
     request: DeleteTagRequest,
     container: ContainerDep,
     _principal: TagDeleter,
@@ -113,7 +116,7 @@ def replace_collection_tags(
 @router.post("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagsOut)
 def add_collection_tag(
     collection_id: int,
-    tag: str,
+    tag: CanonicalTag,
     request: MutateCollectionTagRequest,
     container: ContainerDep,
     principal: CollectionTagManager,
@@ -131,7 +134,7 @@ def add_collection_tag(
 @router.delete("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagsOut)
 def remove_collection_tag(
     collection_id: int,
-    tag: str,
+    tag: CanonicalTag,
     request: MutateCollectionTagRequest,
     container: ContainerDep,
     principal: CollectionTagManager,

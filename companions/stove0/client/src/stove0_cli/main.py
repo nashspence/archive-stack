@@ -6,7 +6,7 @@ import importlib.metadata
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, NoReturn
+from typing import Annotated, Any, NoReturn, cast
 
 import typer
 from pydantic import BaseModel
@@ -131,10 +131,10 @@ def list_work(
         lambda: state.client.list_work(
             page=page,
             per_page=per_page,
-            phase=phase,
+            phase=cast(Any, phase),
             query=query,
-            sort=sort,
-            order=order,
+            sort=cast(Any, sort),
+            order=cast(Any, order),
             all_items=all_items,
         ),
         table=(
@@ -258,10 +258,10 @@ def list_evaluations(
         lambda: state.client.list_evaluations(
             page=page,
             per_page=per_page,
-            phase=phase,
+            phase=cast(Any, phase),
             query=query,
-            sort=sort,
-            order=order,
+            sort=cast(Any, sort),
+            order=cast(Any, order),
             all_items=all_items,
         ),
         table=("evaluations", ("evaluation_id", "phase", "revision")),
@@ -357,7 +357,7 @@ def scheduler_run(
     _call(
         state,
         lambda: state.client.run_scheduler(
-            role=role,
+            role=cast(Any, role),
             event_limit=event_limit,
             work_limit=work_limit,
         ),

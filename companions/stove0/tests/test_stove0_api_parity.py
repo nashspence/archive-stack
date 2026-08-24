@@ -6,14 +6,13 @@ from pathlib import Path
 from typing import Any, cast, get_type_hints
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
-from lifecycle_events import EventPage
 from riverhog_api_client import ApiClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
 from stove0_api.app import Stove0Composition, _log_scheduler_failures, create_app
-from stove0_api.schemas import WorkflowPreviewIn
-from stove0_api_client import Stove0ApiClient
+from stove0_api_client import Stove0ApiClient, Stove0ApiError
 from stove0_cli import main as stove0_cli
 from stove0_core import (
     ClaimBinding,
@@ -29,6 +28,14 @@ from stove0_core import (
     Stove0WorkService,
     WorkflowPreviewService,
     WorkRecord,
+)
+from stove0_operator_contracts import (
+    EvaluationReviewIn,
+    SchedulerRunIn,
+    Stove0EventPage,
+    WorkCancelIn,
+    WorkCreateIn,
+    WorkflowPreviewIn,
 )
 from stove0_protocol import (
     ArtifactSelection,
@@ -68,7 +75,7 @@ class _LifecycleCatalogApi(CatalogApi):
     def get_collection(self, collection_id: int) -> dict[str, object]:
         return {
             "id": collection_id,
-            "manifest_sha256": "1" * 64,
+            "archive_root_sha256": "1" * 64,
             "content_identity": "2" * 64,
         }
 
@@ -84,8 +91,8 @@ class _LifecycleState:
         self.work_record: WorkRecord | None = None
         self.evaluation_record = _evaluation_record(_evaluation_definition())
 
-    def list_events(self, **_kwargs: object) -> EventPage:
-        return EventPage(events=[], next_cursor="0", has_more=False)
+    def list_events(self, **_kwargs: object) -> Stove0EventPage:
+        return Stove0EventPage(events=[], next_cursor="0", has_more=False)
 
     def list_work(self, **_kwargs: object) -> dict[str, object]:
         records = () if self.work_record is None else (self.work_record,)
@@ -346,7 +353,7 @@ def _evaluation_definition() -> EvaluationDefinition:
             inputs=(
                 CollectionRootRef(
                     collection_id=1,
-                    manifest_sha256="1" * 64,
+                    archive_root_sha256="1" * 64,
                     content_identity="2" * 64,
                 ),
             ),
@@ -381,7 +388,7 @@ def _fixture_work(recipe_id: str = "stove0.conformance-media/v1") -> WorkIdentit
             inputs=(
                 CollectionRootRef(
                     collection_id=1,
-                    manifest_sha256="1" * 64,
+                    archive_root_sha256="1" * 64,
                     content_identity="2" * 64,
                 ),
             ),
@@ -621,6 +628,29 @@ def test_every_stove0_operation_publishes_an_exact_response_schema() -> None:
                 )
 
 
+def test_stove0_request_bodies_have_one_shared_public_contract_owner() -> None:
+    expected = {
+        "create_work": ("request", WorkCreateIn),
+        "cancel_work": ("request", WorkCancelIn),
+        "preview_workflow": ("request", WorkflowPreviewIn),
+        "create_evaluation": ("definition", EvaluationDefinition),
+        "cancel_evaluation": ("request", WorkCancelIn),
+        "review_evaluation_variant": ("request", EvaluationReviewIn),
+        "run_scheduler": ("request", SchedulerRunIn),
+    }
+    actual = {
+        route.operation_id: (
+            parameter,
+            get_type_hints(route.endpoint)[parameter],
+        )
+        for route in create_app(_composition()).routes
+        if isinstance(route, APIRoute) and route.operation_id in expected
+        for parameter, _model in (expected[route.operation_id],)
+    }
+
+    assert actual == expected
+
+
 def test_workflow_request_accepts_the_complete_exact_input_set() -> None:
     request = WorkflowPreviewIn(
         recipe_id="fixture.recipe/v1",
@@ -752,6 +782,25 @@ def test_stove0_runtime_errors_use_the_shared_envelope() -> None:
         )
         assert malformed.status_code == 400
         assert malformed.json()["error"]["code"] == "bad_request"
+
+
+def test_stove0_client_preserves_the_public_wire_error() -> None:
+    app = create_app(_composition())
+    with TestClient(app) as transport:
+        client = Stove0ApiClient(
+            "http://testserver",
+            "invalid",
+            allow_insecure_http=True,
+        )
+        client._client = cast(Any, TimeoutNeutralTestClient(transport))  # type: ignore[assignment]
+        with pytest.raises(Stove0ApiError) as caught:
+            client.list_events()
+
+    error = caught.value
+    assert error.message == "valid stove0 bearer credentials are required"
+    assert error.code == "unauthorized"
+    assert error.observed_status == 401
+    assert error.details == {}
 
 
 def test_stove0_client_transport_configuration_is_connected(

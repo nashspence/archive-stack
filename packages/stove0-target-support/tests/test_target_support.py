@@ -174,7 +174,7 @@ def _input() -> InputArtifact:
         role="fixture.source/v1",
         collection=CollectionRootRef(
             collection_id=1,
-            manifest_sha256=_sha("1"),
+            archive_root_sha256=_sha("1"),
             content_identity=_sha("2"),
         ),
         path="source/input.bin",
@@ -444,7 +444,7 @@ def _success_status(
         dispositions=(
             ArtifactDisposition(
                 input_collection_id=_input().collection.collection_id,
-                input_manifest_sha256=_input().collection.manifest_sha256,
+                input_archive_root_sha256=_input().collection.archive_root_sha256,
                 input_path=_input().path,
                 status="transformed",
                 outputs=(output.path,),
@@ -461,7 +461,7 @@ def _success_status(
         outputs=(output,),
         output_collection=OutputCollectionRef(
             collection_id=7,
-            manifest_sha256=_sha("6"),
+            archive_root_sha256=_sha("6"),
             content_identity=_sha("7"),
             derivation_sha256=derivation.sha256,
         ),
@@ -576,7 +576,7 @@ def test_target_runtime_builds_complete_success_status(
         return (
             DerivedCollectionReceipt(
                 collection_id=output_collection.collection_id,
-                manifest_sha256=output_collection.manifest_sha256,
+                archive_root_sha256=output_collection.archive_root_sha256,
                 content_identity=output_collection.content_identity,
                 derivation=derivation,
             ),
@@ -646,7 +646,7 @@ def test_operation_contract_rejects_unpermitted_input_disposition() -> None:
     derivation = CollectionDerivation.from_mapping(status.derivation)
     rejected = ArtifactDisposition(
         input_collection_id=derivation.dispositions[0].input_collection_id,
-        input_manifest_sha256=derivation.dispositions[0].input_manifest_sha256,
+        input_archive_root_sha256=derivation.dispositions[0].input_archive_root_sha256,
         input_path=derivation.dispositions[0].input_path,
         status="rejected",
         code="fixture.rejected/v1",

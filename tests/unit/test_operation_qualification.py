@@ -36,6 +36,12 @@ def test_generated_operation_matrix_is_complete_and_fail_closed() -> None:
         "client-only-primitive",
         "standard-tool/protocol",
     }
+    assert {item.response_authority for item in matrix} == {
+        "canonical-document",
+        "http-json",
+        "operator-projection",
+        "stream-or-empty",
+    }
     assert all(
         item.client is not None
         for item in matrix

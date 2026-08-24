@@ -3,13 +3,18 @@ from __future__ import annotations
 import re
 import unicodedata
 from pathlib import PurePosixPath
+from typing import Annotated
+
+from pydantic import AfterValidator, Field
 
 __all__ = [
     "MAX_TAG_LENGTH",
+    "CanonicalTag",
     "PathNormalizationError",
     "normalize_collection_id",
     "normalize_relpath",
     "normalize_tag",
+    "validate_canonical_tag",
 ]
 
 
@@ -19,6 +24,20 @@ class PathNormalizationError(ValueError):
 
 _TAG_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 MAX_TAG_LENGTH = 80
+
+
+def validate_canonical_tag(value: str) -> str:
+    normalized = normalize_tag(value)
+    if normalized != value:
+        raise PathNormalizationError("tag must be canonical")
+    return normalized
+
+
+type CanonicalTag = Annotated[
+    str,
+    Field(max_length=MAX_TAG_LENGTH, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"),
+    AfterValidator(validate_canonical_tag),
+]
 
 
 def normalize_relpath(raw: str) -> str:

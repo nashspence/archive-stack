@@ -100,14 +100,14 @@ class JsonSchemaDocument(Stove0ProtocolModel):
 
 class CollectionRootRef(Stove0ProtocolModel):
     collection_id: int = Field(ge=1)
-    manifest_sha256: Sha256
+    archive_root_sha256: Sha256
     content_identity: Sha256
 
     @classmethod
     def from_identity(cls, value: CollectionRootIdentity) -> CollectionRootRef:
         return cls(
             collection_id=value.collection_id,
-            manifest_sha256=value.manifest_sha256,
+            archive_root_sha256=value.archive_root_sha256,
             content_identity=value.content_identity,
         )
 
@@ -224,7 +224,9 @@ class WorkPayload(Stove0ProtocolModel):
     def canonical_inputs(
         cls, value: tuple[CollectionRootRef, ...]
     ) -> tuple[CollectionRootRef, ...]:
-        ordered = tuple(sorted(value, key=lambda item: (item.collection_id, item.manifest_sha256)))
+        ordered = tuple(
+            sorted(value, key=lambda item: (item.collection_id, item.archive_root_sha256))
+        )
         if value != ordered or len(value) != len({item.collection_id for item in value}):
             raise ValueError("work inputs must be unique and canonically ordered")
         return value
@@ -783,7 +785,9 @@ class EvaluationDefinitionPayload(Stove0ProtocolModel):
     def canonical_inputs(
         cls, value: tuple[CollectionRootRef, ...]
     ) -> tuple[CollectionRootRef, ...]:
-        ordered = tuple(sorted(value, key=lambda item: (item.collection_id, item.manifest_sha256)))
+        ordered = tuple(
+            sorted(value, key=lambda item: (item.collection_id, item.archive_root_sha256))
+        )
         if value != ordered or len(value) != len({item.collection_id for item in value}):
             raise ValueError("evaluation inputs must be unique and canonically ordered")
         return value

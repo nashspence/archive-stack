@@ -46,7 +46,7 @@ def _sha(character: str) -> str:
 def _root() -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=1,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
 

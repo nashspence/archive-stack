@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from application_access import (
     CATALOG_READ,
     EVENTS_READ,
@@ -7,11 +8,15 @@ from application_access import (
     PROVENANCE_EXPORT,
     PROVENANCE_READ,
     ApplicationAccess,
+    ApplicationAccessError,
+    ApplicationAccessGrant,
+    ApplicationAccessGrantSet,
     collection_resource,
     normalize_access,
     permission_resources,
     tag_resource,
 )
+from jsonschema import Draft202012Validator
 
 
 def test_public_access_contract_normalizes_and_covers_grants() -> None:
@@ -27,3 +32,49 @@ def test_public_access_contract_normalizes_and_covers_grants() -> None:
     assert permission_resources(access, PROVENANCE_READ) == {"tag:docs"}
     assert collection_resource(42) == "collection:42"
     assert tag_resource("docs") == "tag:docs"
+
+
+def test_public_access_models_enforce_grant_and_set_relationships() -> None:
+    assert ApplicationAccessGrant(
+        permission="collections:create",
+        resource="tag:incoming",
+    ).as_access() == ApplicationAccess("collections:create", "tag:incoming")
+
+    with pytest.raises(ApplicationAccessError, match="does not accept a scoped resource"):
+        ApplicationAccess("keys:manage", "tag:incoming")
+    with pytest.raises(ValueError, match="must target a tag"):
+        ApplicationAccessGrant(
+            permission="collections:create",
+            resource="collection:1",
+        )
+    with pytest.raises(ValueError, match="used alone"):
+        ApplicationAccessGrantSet.model_validate(
+            [
+                {"permission": "*", "resource": "*"},
+                {"permission": "catalog:read", "resource": "*"},
+            ]
+        )
+    with pytest.raises(ValueError, match="must not contain duplicates"):
+        ApplicationAccessGrantSet.model_validate(
+            [
+                {"permission": "catalog:read", "resource": "*"},
+                {"permission": "catalog:read", "resource": "*"},
+            ]
+        )
+
+
+def test_access_grant_set_schema_projects_relational_rules() -> None:
+    validator = Draft202012Validator(ApplicationAccessGrantSet.model_json_schema())
+
+    assert not list(
+        validator.iter_errors([{"permission": "catalog:read", "resource": "collection:1"}])
+    )
+    assert list(validator.iter_errors([{"permission": "keys:manage", "resource": "collection:1"}]))
+    assert list(
+        validator.iter_errors(
+            [
+                {"permission": "*", "resource": "*"},
+                {"permission": "catalog:read", "resource": "*"},
+            ]
+        )
+    )
