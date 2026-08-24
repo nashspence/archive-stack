@@ -120,6 +120,8 @@ def _refresh_collection_identities(*, encryption_format: str, passphrase_id: str
             "tags": tags[collection_id],
             "files": files[collection_id],
         }
+        # passphrase_id is an opaque public identifier, not passphrase material.
+        # codeql[py/weak-sensitive-data-hashing]
         record_etag = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()

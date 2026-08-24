@@ -62,8 +62,6 @@ def main() -> int:
                             "collection": item.collection_id,
                             "store": item.store,
                             "descriptor_path": item.descriptor_path,
-                            "encryption_format": item.encryption_format,
-                            "passphrase_id": item.passphrase_id,
                         }
                         for item in items
                     ],
