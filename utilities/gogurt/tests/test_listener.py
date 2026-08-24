@@ -715,6 +715,45 @@ def test_listener_store_does_not_normalize_sqlite_owned_sidecars(
     assert store.summary() == {"counts": {}, "attention": []}
 
 
+def test_listener_runtime_keeps_one_database_connection_until_settled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, paths, _mount, _counter = _fixture(tmp_path)
+    active_connections = 0
+    observed_during_poll: list[int] = []
+    real_connect = sqlite3.connect
+
+    class TrackedConnection(sqlite3.Connection):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            nonlocal active_connections
+            super().__init__(*args, **kwargs)
+            active_connections += 1
+
+        def close(self) -> None:
+            nonlocal active_connections
+            if active_connections > 0:
+                active_connections -= 1
+            super().close()
+
+    def tracked_connect(database: str | Path, timeout: float = 5.0) -> sqlite3.Connection:
+        return real_connect(database, timeout=timeout, factory=TrackedConnection)
+
+    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
+    runtime = ListenerRuntime(config, paths, discover=lambda: [])
+
+    def one_poll() -> None:
+        observed_during_poll.append(active_connections)
+        runtime.request_stop()
+
+    monkeypatch.setattr(runtime, "run_once", one_poll)
+
+    runtime.run()
+
+    assert observed_during_poll == [1]
+    assert active_connections == 0
+
+
 class FakeAdapter:
     def __init__(
         self,
