@@ -159,6 +159,25 @@ def _settled_qualification_mount(
         cleanup()
 
 
+@contextmanager
+def _qualification_listener_mount(
+    scratch: Path,
+    *,
+    observe_failure: Callable[[BaseException], None],
+    settle_listener: Callable[[], None],
+) -> Iterator[Path]:
+    """Retain listener failure truth and settle its custody before releasing the mount."""
+
+    with _qualification_mount(scratch) as mount:
+        try:
+            yield mount
+        except BaseException as exc:
+            observe_failure(exc)
+            raise
+        finally:
+            settle_listener()
+
+
 def _source_checkout(root: Path, destination: Path, source_sha: str) -> None:
     archive = subprocess.run(
         ["git", "archive", "--format=tar", source_sha],
@@ -1120,8 +1139,63 @@ def _run_gogurt_listener_lifecycle(
 
     installed = False
     active_uninstall_pid: int | None = None
+    lifecycle_failure_retained = False
+
+    def retain_lifecycle_failure(exc: BaseException) -> None:
+        nonlocal lifecycle_failure_retained
+        _retain_gogurt_failure_evidence(
+            executable,
+            state_dir=state_dir,
+            scratch=scratch,
+            environment=environment,
+            evidence_dir=evidence_dir,
+            failure=exc,
+            phase="lifecycle",
+            native_transitions=native_trace.stop(),
+        )
+        lifecycle_failure_retained = True
+
+    def settle_listener() -> None:
+        nonlocal installed
+        if not installed:
+            native_trace.stop()
+            return
+        try:
+            removed = json.loads(
+                _run(
+                    [str(executable), "listener", "uninstall", "--json"],
+                    cwd=scratch,
+                    env=environment,
+                    capture=True,
+                ).stdout
+            )
+        except BaseException as exc:
+            _retain_gogurt_failure_evidence(
+                executable,
+                state_dir=state_dir,
+                scratch=scratch,
+                environment=environment,
+                evidence_dir=evidence_dir,
+                failure=exc,
+                phase="uninstall",
+                native_transitions=native_trace.stop(),
+            )
+            raise
+        installed = False
+        native_trace.stop()
+        if removed.get("installed") is not False or removed.get("health") != "absent":
+            raise QualificationError("Gogurt listener uninstall left native registration")
+        if Path(str(removed["state_dir"])).exists():
+            raise QualificationError("Gogurt listener uninstall left durable state")
+        if active_uninstall_pid is not None and _process_is_running(active_uninstall_pid):
+            raise QualificationError("Gogurt listener uninstall left its action process alive")
+
     try:
-        with _qualification_mount(scratch) as mount:
+        with _qualification_listener_mount(
+            scratch,
+            observe_failure=retain_lifecycle_failure,
+            settle_listener=settle_listener,
+        ) as mount:
 
             def write_marker(route: str, *, force: bool = False) -> None:
                 command = [
@@ -1401,50 +1475,21 @@ def _run_gogurt_listener_lifecycle(
                             "native manager registration disappeared with its definition file"
                         )
     except BaseException as exc:
-        native_transitions = native_trace.stop()
-        _retain_gogurt_failure_evidence(
-            executable,
-            state_dir=state_dir,
-            scratch=scratch,
-            environment=environment,
-            evidence_dir=evidence_dir,
-            failure=exc,
-            phase="lifecycle",
-            native_transitions=native_transitions,
-        )
-        raise
-    finally:
-        if installed:
+        # Mount construction/release errors occur outside the listener-body
+        # observer. Preserve them too without replacing a pre-settlement state
+        # snapshot when only the combined terminal diagnostic changed.
+        if not lifecycle_failure_retained:
+            retain_lifecycle_failure(exc)
+        elif evidence_dir is not None:
             try:
-                removed = json.loads(
-                    _run(
-                        [str(executable), "listener", "uninstall", "--json"],
-                        cwd=scratch,
-                        env=environment,
-                        capture=True,
-                    ).stdout
+                diagnostic = " ".join(f"{type(exc).__name__}: {exc}".splitlines())[:4096]
+                (evidence_dir / "lifecycle-failure.txt").write_text(
+                    diagnostic + "\n",
+                    encoding="utf-8",
                 )
-            except BaseException as exc:
-                _retain_gogurt_failure_evidence(
-                    executable,
-                    state_dir=state_dir,
-                    scratch=scratch,
-                    environment=environment,
-                    evidence_dir=evidence_dir,
-                    failure=exc,
-                    phase="uninstall",
-                    native_transitions=native_trace.stop(),
-                )
-                raise
-            native_trace.stop()
-            if removed.get("installed") is not False or removed.get("health") != "absent":
-                raise QualificationError("Gogurt listener uninstall left native registration")
-            if Path(str(removed["state_dir"])).exists():
-                raise QualificationError("Gogurt listener uninstall left durable state")
-            if active_uninstall_pid is not None and _process_is_running(active_uninstall_pid):
-                raise QualificationError("Gogurt listener uninstall left its action process alive")
-        else:
-            native_trace.stop()
+            except OSError:
+                pass
+        raise
 
 
 def _write_ots_fixture(path: Path) -> Path:

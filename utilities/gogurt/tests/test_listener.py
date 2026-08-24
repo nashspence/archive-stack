@@ -220,6 +220,22 @@ def test_same_route_marker_write_does_not_create_a_second_dispatch(tmp_path: Pat
         assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (1,)
 
 
+def test_retry_cannot_start_before_its_durable_eligibility_time(tmp_path: Path) -> None:
+    config, paths, mount, _counter = _fixture(tmp_path)
+    store = ListenerStore(paths.database_file)
+    store.create()
+    [dispatch_id] = store.observe(
+        [mount],
+        lambda point: core_plan_gogurt_action(config.routes_file, point),
+        now=1,
+    )
+    assert store.start_dispatch(dispatch_id, now=2) is not None
+    assert store.finish_dispatch(dispatch_id, return_code=73, error=None, now=3) == "retry"
+
+    assert store.start_dispatch(dispatch_id, now=7.99) is None
+    assert store.start_dispatch(dispatch_id, now=8) is not None
+
+
 @pytest.mark.parametrize("dispatch_state", ["completed", "running"])
 def test_discovery_failure_preserves_mount_generation_without_replay(
     tmp_path: Path,

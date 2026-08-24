@@ -4,6 +4,8 @@ import importlib.util
 import json
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -169,6 +171,68 @@ def test_qualification_mount_preserves_body_and_cleanup_failures(tmp_path: Path)
         "qualification failed with RuntimeError: lifecycle failed; "
         "mount cleanup also failed with QualificationError: detach failed"
     )
+
+
+def test_listener_is_settled_before_qualification_mount_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    events: list[str] = []
+
+    @contextmanager
+    def mount(_scratch: Path) -> Iterator[Path]:
+        events.append("attach")
+        try:
+            yield tmp_path / "mounted"
+        finally:
+            events.append("detach")
+
+    monkeypatch.setattr(module, "_qualification_mount", mount)
+
+    with module._qualification_listener_mount(
+        tmp_path,
+        observe_failure=lambda _exc: events.append("observe-failure"),
+        settle_listener=lambda: events.append("settle-listener"),
+    ):
+        events.append("lifecycle")
+
+    assert events == ["attach", "lifecycle", "settle-listener", "detach"]
+
+
+def test_listener_failure_is_retained_before_settlement_and_mount_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    events: list[str] = []
+
+    @contextmanager
+    def mount(_scratch: Path) -> Iterator[Path]:
+        events.append("attach")
+        try:
+            yield tmp_path / "mounted"
+        finally:
+            events.append("detach")
+
+    monkeypatch.setattr(module, "_qualification_mount", mount)
+
+    with pytest.raises(RuntimeError, match="lifecycle failed"):
+        with module._qualification_listener_mount(
+            tmp_path,
+            observe_failure=lambda _exc: events.append("observe-failure"),
+            settle_listener=lambda: events.append("settle-listener"),
+        ):
+            events.append("lifecycle")
+            raise RuntimeError("lifecycle failed")
+
+    assert events == [
+        "attach",
+        "lifecycle",
+        "observe-failure",
+        "settle-listener",
+        "detach",
+    ]
 
 
 def test_gogurt_failure_evidence_is_bounded_to_status_and_listener_logs(

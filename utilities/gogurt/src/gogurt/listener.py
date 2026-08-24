@@ -517,9 +517,13 @@ class ListenerStore:
             row = connection.execute(
                 """
                 SELECT plan_json FROM dispatches
-                WHERE dispatch_id = ? AND state IN ('queued', 'retry')
+                WHERE dispatch_id = ?
+                  AND (
+                    state = 'queued'
+                    OR (state = 'retry' AND next_retry_at <= ?)
+                  )
                 """,
-                (dispatch_id,),
+                (dispatch_id, now),
             ).fetchone()
             if row is None:
                 connection.rollback()
