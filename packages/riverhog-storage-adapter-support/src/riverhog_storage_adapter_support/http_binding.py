@@ -7,20 +7,27 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TypeVar
 
+from http_api_contracts import HttpOperationContract
 from pydantic import BaseModel, ValidationError
 from riverhog_storage_adapter_protocol import (
     AbortIncompleteUploadsRequest,
+    AdapterDescriptor,
+    CompletedObjectReceipt,
     DeleteObjectRequest,
     DeletePrefixRequest,
+    ImmutableObjectReceipt,
     MaintenanceResult,
     MultipartCompleteRequest,
     MultipartCreateRequest,
     MultipartHeadRequest,
+    MultipartPartReceipt,
     MultipartPartWriteRequest,
     MultipartUpload,
     ObjectHeadRequest,
+    ObjectMetadataReceipt,
     ObjectReadRequest,
     ReadPreparationRequest,
+    ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterError,
     StorageAdapterErrorBody,
@@ -264,25 +271,140 @@ class StorageAdapterHttpBinding:
         return model.model_validate_json(body)
 
 
-STORAGE_ADAPTER_HTTP_PATHS = frozenset(
-    {
-        "/v1/adapter",
+_CONTROL_ERRORS = (400, 401, 404, 409, 413, 500, 503)
+STORAGE_ADAPTER_HTTP_OPERATIONS = (
+    HttpOperationContract("GET", "/v1/adapter", response_type=AdapterDescriptor),
+    HttpOperationContract(
+        "POST",
         "/v1/multipart/create",
+        MultipartCreateRequest,
+        MultipartUpload,
+        "json",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/multipart/part",
+        MultipartPartWriteRequest,
+        MultipartPartReceipt,
+        "framed",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/multipart/list",
+        MultipartUpload,
+        list[MultipartPartReceipt],
+        "json",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/multipart/complete",
+        MultipartCompleteRequest,
+        CompletedObjectReceipt,
+        "json",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/multipart/head",
+        MultipartHeadRequest,
+        CompletedObjectReceipt,
+        "json",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/multipart/abort",
+        MultipartUpload,
+        None,
+        "json",
+        "none",
+        (204,),
+        _CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/objects/put",
+        SmallObjectWriteRequest,
+        ImmutableObjectReceipt,
+        "framed",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/objects/head",
+        ObjectHeadRequest,
+        ObjectMetadataReceipt,
+        "json",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/objects/read",
+        ObjectReadRequest,
+        None,
+        "json",
+        "binary",
+        (200, 206),
+        (*_CONTROL_ERRORS, 416),
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/objects/delete",
+        DeleteObjectRequest,
+        None,
+        "json",
+        "none",
+        (204,),
+        _CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/objects/delete-prefix",
+        DeletePrefixRequest,
+        MaintenanceResult,
+        "json",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/reads/prepare",
+        ReadPreparationRequest,
+        ReadStatus,
+        "json",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/reads/status",
+        ReadPreparationRequest,
+        ReadStatus,
+        "json",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/reads/cleanup",
+        ReadPreparationRequest,
+        None,
+        "json",
+        "none",
+        (204,),
+        _CONTROL_ERRORS,
+    ),
+    HttpOperationContract(
+        "POST",
         "/v1/maintenance/abort-incomplete",
-    }
+        AbortIncompleteUploadsRequest,
+        MaintenanceResult,
+        "json",
+        error_statuses=_CONTROL_ERRORS,
+    ),
+)
+STORAGE_ADAPTER_HTTP_PATHS = frozenset(
+    operation.path for operation in STORAGE_ADAPTER_HTTP_OPERATIONS
 )
 
 _ERROR_STATUS: dict[StorageAdapterErrorCode, int] = {
@@ -351,6 +473,7 @@ def _validated_stream(content: Iterator[bytes], expected_bytes: int) -> Iterator
 
 __all__ = [
     "STORAGE_ADAPTER_HTTP_PATHS",
+    "STORAGE_ADAPTER_HTTP_OPERATIONS",
     "StorageAdapterHttpBinding",
     "StorageAdapterHttpResponse",
     "StorageAdapterServiceError",

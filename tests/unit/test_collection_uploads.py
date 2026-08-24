@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from riverhog_age import decrypt_age_scrypt
-from riverhog_archive_contracts import RecoveryDescriptor
+from riverhog_archive_contracts import CollectionArchiveManifest, RecoveryDescriptor
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     CATALOG_READ,
@@ -16,7 +16,6 @@ from riverhog_core.app_permissions import (
     ApplicationAccess,
     ApplicationPrincipal,
 )
-from riverhog_core.archive_manifest import parse_collection_archive_manifest
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
@@ -623,7 +622,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         stored_by_suffix["manifest.json.age"].content,
         passphrase,
     )
-    parsed = parse_collection_archive_manifest(manifest)
+    parsed = CollectionArchiveManifest.from_json_bytes(manifest).to_mapping()
     provenance_descriptor = parsed["provenance"]
     assert isinstance(provenance_descriptor, dict)
     assert provenance_descriptor["identity"] == provenance.identity

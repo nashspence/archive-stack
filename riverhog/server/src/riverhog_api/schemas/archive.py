@@ -14,10 +14,10 @@ class ArchiveCopyOut(RiverhogModel):
     last_uploaded_at: str | None
     last_verified_at: str | None
     failure: str | None
-    collection_manifest: CollectionManifestOut | None = None
+    archive_root: ArchiveRootPublicationOut | None = None
 
 
-class CollectionManifestOut(RiverhogModel):
+class ArchiveRootPublicationOut(RiverhogModel):
     object_path: str | None = None
     sha256: str | None = None
     proof_object_path: str | None = None

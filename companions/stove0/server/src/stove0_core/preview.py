@@ -10,13 +10,16 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from stove0_protocol import (
-    BranchSetDecision,
-    BranchTargetPreview,
+from stove0_observer_protocol import (
     ObservationEvidence,
     ObservationInvocation,
     ObservationRequest,
     ObserverRuntimeAuthority,
+    validate_observation_result,
+)
+from stove0_protocol import (
+    BranchSetDecision,
+    BranchTargetPreview,
     PreviewOutcome,
     TargetPlanBinding,
     WorkflowPreview,
@@ -24,7 +27,6 @@ from stove0_protocol import (
     WorkflowPreviewRequest,
     WorkflowPreviewRequestPayload,
     WorkIdentity,
-    validate_observation_result,
 )
 from stove0_target_protocol import validate_preflight_response_against_request
 

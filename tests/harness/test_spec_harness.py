@@ -112,12 +112,12 @@ def test_catalog_search_and_archive_store_share_current_identity(harness: Harnes
 
 def test_application_retrieves_one_manifest_selected_file(harness: Harness) -> None:
     manifest, etag = harness.retrieval.collection_manifest(COLLECTION_ID)
-    assert manifest["files"] == [
-        {
-            "path": "readme.txt",
-            "bytes": len(b"current archive contract\n"),
-            "sha256": hashlib.sha256(b"current archive contract\n").hexdigest(),
-        }
+    assert [(item.path, item.bytes, item.sha256) for item in manifest.files] == [
+        (
+            "readme.txt",
+            len(b"current archive contract\n"),
+            hashlib.sha256(b"current archive contract\n").hexdigest(),
+        )
     ]
     changes = harness.retrieval.change_list()
     assert changes["changes"][0]["etag"] == etag

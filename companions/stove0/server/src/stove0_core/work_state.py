@@ -12,6 +12,12 @@ from collections.abc import Sequence
 from typing import Any, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from stove0_observer_protocol import (
+    ObservationRequest,
+    ObservationResult,
+    ObserverDescriptor,
+    validate_observation_result,
+)
 from stove0_protocol import (
     ArtifactSelection,
     BranchPlan,
@@ -25,15 +31,11 @@ from stove0_protocol import (
     ExecutionEnvelopePayload,
     JoinPlan,
     JoinWorkBinding,
-    ObservationRequest,
-    ObservationResult,
-    ObserverDescriptor,
     Sha256,
     TargetPlanBinding,
     WorkflowPlan,
     WorkflowPreview,
     WorkIdentity,
-    validate_observation_result,
 )
 from stove0_target_protocol import (
     AcceptedTargetJob,

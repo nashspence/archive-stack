@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,8 +20,42 @@ from riverhog_core.catalog_models import LifecycleEventRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
+from riverhog_protocol.lifecycle_events import RIVERHOG_EVENT_TYPES
+from time_formats import utc_timestamp_now
 
 from tests.unit.db_helpers import sqlite_url
+
+
+def _tag_event_data(collection_id: int, owner: str) -> dict[str, object]:
+    return {
+        "collection_id": collection_id,
+        "collection_created_at": utc_timestamp_now(),
+        "collection_tags": [],
+        "actor": {"app": "riverhog"},
+        "initiator": {"app": owner},
+    }
+
+
+def test_every_emitted_riverhog_event_type_has_one_public_contract() -> None:
+    root = Path(__file__).parents[2] / "riverhog/server/src/riverhog_core"
+    emitted: set[str] = set()
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "type"
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, str)
+                    and keyword.value.value.startswith(
+                        ("collection.", "archive_copy.", "retrieval.")
+                    )
+                ):
+                    emitted.add("io.riverhog.riverhog." + keyword.value.value)
+
+    assert emitted == RIVERHOG_EVENT_TYPES
 
 
 def test_context_expiry_targets_owner_and_subject_in_sql(tmp_path: Path) -> None:
@@ -29,21 +64,23 @@ def test_context_expiry_targets_owner_and_subject_in_sql(tmp_path: Path) -> None
     events = SqlAlchemyLifecycleEventService(config)
     events.emit(
         owner_app="alpha",
-        type="collection.uploading",
-        subject="one",
+        type="collection.tags_changed",
+        subject="1",
+        data=_tag_event_data(1, "alpha"),
         context_json='{"route":"phone"}',
     )
     events.emit(
         owner_app="alpha",
-        type="collection.uploading",
-        subject="two",
+        type="collection.tags_changed",
+        subject="2",
+        data=_tag_event_data(2, "alpha"),
         context_json='{"route":"desktop"}',
     )
     expires_at = "2026-08-02T00:00:00.000000Z"
     with session_scope(make_session_factory(config.database_url)) as session:
         events.expire_context(
             owner_app="alpha",
-            subject="one",
+            subject="1",
             expires_at=expires_at,
             session=session,
         )
@@ -55,8 +92,8 @@ def test_context_expiry_targets_owner_and_subject_in_sql(tmp_path: Path) -> None
                 LifecycleEventRecord.sequence
             )
         }
-        assert records["one"].context_expires_at == expires_at
-        assert records["two"].context_expires_at is None
+        assert records["1"].context_expires_at == expires_at
+        assert records["2"].context_expires_at is None
 
 
 def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
@@ -84,8 +121,18 @@ def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
             grantor=grantor,
         )["token"]
     )
-    events.emit(owner_app="alpha", type="collection.finalized", subject="alpha-collection")
-    events.emit(owner_app="beta", type="collection.finalized", subject="beta-collection")
+    events.emit(
+        owner_app="alpha",
+        type="collection.tags_changed",
+        subject="1",
+        data=_tag_event_data(1, "alpha"),
+    )
+    events.emit(
+        owner_app="beta",
+        type="collection.tags_changed",
+        subject="2",
+        data=_tag_event_data(2, "beta"),
+    )
     container = SimpleNamespace(app_keys=app_keys, lifecycle_events=events)
     api = FastAPI()
     api.dependency_overrides[get_container] = lambda: container
@@ -99,7 +146,7 @@ def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
                 headers={"Authorization": f"Bearer {alpha_token}"},
             )
             assert alpha.status_code == 200
-            assert [event["subject"] for event in alpha.json()["events"]] == ["alpha-collection"]
+            assert [event["subject"] for event in alpha.json()["events"]] == ["1"]
 
             operator = await client.get(
                 "/v1/events",
@@ -107,8 +154,8 @@ def test_lifecycle_event_api_scopes_normal_readers_to_their_application(
             )
             assert operator.status_code == 200
             assert [event["subject"] for event in operator.json()["events"]] == [
-                "alpha-collection",
-                "beta-collection",
+                "1",
+                "2",
             ]
 
     anyio.run(exercise)

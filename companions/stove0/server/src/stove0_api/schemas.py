@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from http_api_contracts import ErrorResponse, HealthResponse
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
@@ -43,39 +43,12 @@ class SchedulerRunIn(Stove0ApiModel):
     work_limit: int = Field(default=25, ge=1, le=100)
 
 
-class PageOut(Stove0ApiModel):
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=0)
-    total: int = Field(ge=0)
-    pages: int = Field(ge=0)
-    sort: str
-    order: str
-    filters: dict[str, Any]
-
-
-class WorkPageOut(PageOut):
-    work: list[dict[str, Any]]
-
-
-class ArtifactSelectionPageOut(PageOut):
-    selection_sha256: str
-    total_bytes: int = Field(ge=0)
-    artifacts: list[dict[str, Any]]
-
-
-class EvaluationPageOut(PageOut):
-    evaluations: list[dict[str, Any]]
-
-
 __all__ = [
-    "ArtifactSelectionPageOut",
     "EvaluationReviewIn",
     "ErrorResponse",
-    "EvaluationPageOut",
     "HealthResponse",
     "SchedulerRunIn",
     "WorkCancelIn",
     "WorkCreateIn",
-    "WorkPageOut",
     "WorkflowPreviewIn",
 ]

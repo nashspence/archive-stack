@@ -14,12 +14,17 @@ from pathlib import Path
 from typing import Literal, cast
 
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from http_api_contracts import error_payload
+from fastapi.security import HTTPBearer
+from http_api_contracts import ErrorResponse, HealthResponse, error_payload, operation_openapi
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from stove0_review_sampler_client import ReviewSamplerClient
-from stove0_target_support import TargetHttpBinding, terminal_state_retention_seconds
+from stove0_target_support import (
+    TARGET_HTTP_OPERATIONS,
+    TargetHttpBinding,
+    terminal_state_retention_seconds,
+)
 
 from stove0_review_target.target import (
     RcloneReviewDestination,
@@ -28,6 +33,8 @@ from stove0_review_target.target import (
 )
 
 SERVICE = "stove0-review-target"
+_PUBLIC_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+_bearer = HTTPBearer(auto_error=False)
 
 
 class SamplerConfig(BaseModel):
@@ -115,11 +122,16 @@ def create_app(*, token: str, target: ReviewTargetService) -> FastAPI:
         title="Stove0 review target", version="1", lifespan=lifespan, openapi_url="/v1/openapi.json"
     )
 
-    @app.get("/health/live", tags=["health"])
+    @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     def live() -> dict[str, str]:
         return {"service": SERVICE, "status": "ok"}
 
-    @app.get("/health/ready", tags=["health"])
+    @app.get(
+        "/health/ready",
+        response_model=HealthResponse,
+        responses={503: {"model": ErrorResponse}},
+        tags=["health"],
+    )
     def ready() -> Response:
         try:
             target.readiness()
@@ -141,12 +153,23 @@ def create_app(*, token: str, target: ReviewTargetService) -> FastAPI:
             content=result.body, status_code=result.status, headers=dict(result.headers)
         )
 
-    for path in ("/v1/target", "/v1/preflight", "/v1/jobs/{job_id}", "/v1/jobs/{job_id}/cancel"):
+    methods_by_path: dict[str, set[str]] = {}
+    for operation in TARGET_HTTP_OPERATIONS:
+        methods_by_path.setdefault(operation.path, set()).add(operation.method)
+        app.add_api_route(
+            operation.path,
+            dispatch,
+            methods=[operation.method],
+            dependencies=[Depends(_bearer)],
+            tags=["target"],
+            **operation_openapi(operation),
+        )
+    for path, supported in methods_by_path.items():
         app.add_api_route(
             path,
             dispatch,
-            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-            tags=["target"],
+            methods=sorted(_PUBLIC_METHODS - supported),
+            include_in_schema=False,
         )
     return app
 

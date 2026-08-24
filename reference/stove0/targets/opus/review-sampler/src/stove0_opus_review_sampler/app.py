@@ -14,14 +14,21 @@ from pathlib import Path
 from typing import cast
 
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from http_api_contracts import error_payload
-from stove0_review_sampler_support import SamplerHttpBinding, SamplerHttpResponse
+from fastapi.security import HTTPBearer
+from http_api_contracts import ErrorResponse, HealthResponse, error_payload, operation_openapi
+from stove0_review_sampler_support import (
+    SAMPLER_HTTP_OPERATIONS,
+    SamplerHttpBinding,
+    SamplerHttpResponse,
+)
 
 from stove0_opus_review_sampler.sampler import OpusReviewSampler
 
 SERVICE = "stove0-opus-review-sampler"
+_PUBLIC_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+_bearer = HTTPBearer(auto_error=False)
 
 
 def create_app(*, token: str, sampler: OpusReviewSampler) -> FastAPI:
@@ -31,11 +38,16 @@ def create_app(*, token: str, sampler: OpusReviewSampler) -> FastAPI:
     binding = SamplerHttpBinding(sampler)
     app = FastAPI(title=SERVICE, version="1", openapi_url="/v1/openapi.json")
 
-    @app.get("/health/live", tags=["health"])
+    @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     def live() -> dict[str, str]:
         return {"service": SERVICE, "status": "ok"}
 
-    @app.get("/health/ready", tags=["health"])
+    @app.get(
+        "/health/ready",
+        response_model=HealthResponse,
+        responses={503: {"model": ErrorResponse}},
+        tags=["health"],
+    )
     def ready() -> Response:
         result = subprocess.run(
             [sampler.ffmpeg, "-version"], check=False, capture_output=True, timeout=15
@@ -61,8 +73,24 @@ def create_app(*, token: str, sampler: OpusReviewSampler) -> FastAPI:
             content=result.body, status_code=result.status, headers=dict(result.headers)
         )
 
-    for path in ("/v1/sampler", "/v1/sample"):
-        app.add_api_route(path, dispatch, methods=["GET", "POST"], tags=["review-sampler"])
+    methods_by_path: dict[str, set[str]] = {}
+    for operation in SAMPLER_HTTP_OPERATIONS:
+        methods_by_path.setdefault(operation.path, set()).add(operation.method)
+        app.add_api_route(
+            operation.path,
+            dispatch,
+            methods=[operation.method],
+            dependencies=[Depends(_bearer)],
+            tags=["review-sampler"],
+            **operation_openapi(operation),
+        )
+    for path, supported in methods_by_path.items():
+        app.add_api_route(
+            path,
+            dispatch,
+            methods=sorted(_PUBLIC_METHODS - supported),
+            include_in_schema=False,
+        )
     return app
 
 

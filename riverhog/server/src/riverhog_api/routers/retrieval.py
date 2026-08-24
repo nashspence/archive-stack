@@ -122,7 +122,7 @@ def plan_retrieval(
 @router.post(
     "/retrieval-jobs",
     response_model=RetrievalJobOut,
-    responses=error_responses(429),
+    responses=error_responses("download_allowance_exceeded"),
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def create_retrieval_job(
@@ -230,7 +230,7 @@ def acknowledge_retrieval_job(
 @router.get(
     "/retrieval-jobs/{job_id}/content",
     response_class=StreamingResponse,
-    responses=error_responses(429),
+    responses=error_responses("download_allowance_exceeded"),
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def download_retrieval_file(

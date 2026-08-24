@@ -11,8 +11,12 @@ from typing import Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from riverhog_protocol.paths import normalize_relpath
-from stove0_observer_protocol import canonical_json_bytes, canonical_json_sha256
-from stove0_protocol import ArtifactSubject, ObservationEvidence
+from stove0_observer_protocol import (
+    ObservationEvidence,
+    canonical_json_bytes,
+    canonical_json_sha256,
+)
+from stove0_protocol import ArtifactSubject
 from stove0_target_protocol import InputArtifact
 
 from stove0_media_archive_contracts.observation import (

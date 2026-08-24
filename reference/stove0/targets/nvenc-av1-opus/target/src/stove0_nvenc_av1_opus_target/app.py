@@ -15,10 +15,12 @@ from pathlib import Path
 from typing import cast
 
 import uvicorn
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from http_api_contracts import error_payload
+from fastapi.security import HTTPBearer
+from http_api_contracts import ErrorResponse, HealthResponse, error_payload, operation_openapi
 from stove0_target_support import (
+    TARGET_HTTP_OPERATIONS,
     TargetHttpBinding,
     TargetHttpResponse,
     terminal_state_retention_seconds,
@@ -27,6 +29,8 @@ from stove0_target_support import (
 from stove0_nvenc_av1_opus_target.target import NvencAv1OpusTargetService
 
 TARGET_SERVICE = "stove0-nvenc-av1-opus-target"
+_PUBLIC_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+_bearer = HTTPBearer(auto_error=False)
 
 
 def create_target_app(*, token: str, target: NvencAv1OpusTargetService) -> FastAPI:
@@ -35,7 +39,6 @@ def create_target_app(*, token: str, target: NvencAv1OpusTargetService) -> FastA
         service=TARGET_SERVICE,
         token=token,
         binding=TargetHttpBinding(target),
-        paths=("/v1/target", "/v1/preflight", "/v1/jobs/{job_id}", "/v1/jobs/{job_id}/cancel"),
         close=target.close,
         ffmpeg=target.ffmpeg,
     )
@@ -47,7 +50,6 @@ def _create_app(
     service: str,
     token: str,
     binding: TargetHttpBinding,
-    paths: tuple[str, ...],
     close: Callable[[], None],
     ffmpeg: str,
 ) -> FastAPI:
@@ -64,11 +66,16 @@ def _create_app(
 
     app = FastAPI(title=service, version="1", lifespan=lifespan, openapi_url="/v1/openapi.json")
 
-    @app.get("/health/live", tags=["health"])
+    @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     def live() -> dict[str, str]:
         return {"service": service, "status": "ok"}
 
-    @app.get("/health/ready", tags=["health"])
+    @app.get(
+        "/health/ready",
+        response_model=HealthResponse,
+        responses={503: {"model": ErrorResponse}},
+        tags=["health"],
+    )
     def ready() -> Response:
         result = subprocess.run(
             [ffmpeg, "-hide_banner", "-encoders"],
@@ -97,12 +104,23 @@ def _create_app(
             content=result.body, status_code=result.status, headers=dict(result.headers)
         )
 
-    for path in paths:
+    methods_by_path: dict[str, set[str]] = {}
+    for operation in TARGET_HTTP_OPERATIONS:
+        methods_by_path.setdefault(operation.path, set()).add(operation.method)
+        app.add_api_route(
+            operation.path,
+            dispatch,
+            methods=[operation.method],
+            dependencies=[Depends(_bearer)],
+            tags=[role],
+            **operation_openapi(operation),
+        )
+    for path, supported in methods_by_path.items():
         app.add_api_route(
             path,
             dispatch,
-            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-            tags=[role],
+            methods=sorted(_PUBLIC_METHODS - supported),
+            include_in_schema=False,
         )
     return app
 

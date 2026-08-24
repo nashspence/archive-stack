@@ -246,7 +246,7 @@ def settle_processing_claim(
             claim_id,
             fence=request.fence,
             output_collection_id=request.output_collection_id,
-            derivation=request.derivation,
+            derivation=request.derivation.model_dump(mode="json"),
             outcome_claim_id=(request.outcome.claim_id if request.outcome is not None else None),
             outcome_fence=(request.outcome.fence if request.outcome is not None else None),
             outcome_id=(request.outcome.outcome_id if request.outcome is not None else None),

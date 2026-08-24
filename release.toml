@@ -168,6 +168,7 @@ reusable_library = [
   "packages/stove0-media-archive-contracts",
   "packages/stove0-observer-client",
   "packages/stove0-api-client",
+  "packages/stove0-operator-contracts",
   "packages/stove0-protocol",
   "packages/stove0-recipe-config",
   "packages/stove0-review-contracts",

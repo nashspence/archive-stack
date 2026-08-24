@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 import secrets
-from collections.abc import Callable
-from typing import Annotated, cast
+from collections.abc import Callable, Sequence
+from typing import Annotated, Any, cast
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -104,6 +104,55 @@ def require_any_permission(*permissions: str) -> PermissionDependency:
     return dependency
 
 
+def apply_openapi_permission_contract(
+    schema: dict[str, Any],
+    routes: Sequence[object],
+) -> dict[str, Any]:
+    """Project executable permission dependencies into each Riverhog operation."""
+
+    route_contracts: list[tuple[str, set[str], object]] = []
+    for route in routes:
+        candidates = getattr(route, "_effective_candidates", ())
+        if candidates:
+            route_contracts.extend(
+                (candidate.path_format, candidate.methods, candidate.dependant)
+                for candidate in candidates
+            )
+            continue
+        path = getattr(route, "path", "")
+        methods: set[str] = getattr(route, "methods", set())
+        dependant = getattr(route, "dependant", None)
+        if dependant is not None:
+            route_contracts.append((path, methods, dependant))
+
+    for path, methods, dependant in route_contracts:
+        if not str(path).startswith("/v1") or dependant is None:
+            continue
+        requirements: set[tuple[str, ...]] = set()
+        pending = [dependant]
+        while pending:
+            current = pending.pop()
+            call = getattr(current, "call", None)
+            permission = getattr(call, "riverhog_permission", None)
+            permissions = getattr(call, "riverhog_permissions", None)
+            if isinstance(permission, str):
+                requirements.add((permission,))
+            if isinstance(permissions, tuple) and all(
+                isinstance(item, str) for item in permissions
+            ):
+                requirements.add(tuple(sorted(permissions)))
+            pending.extend(getattr(current, "dependencies", ()))
+        if not requirements:
+            raise RuntimeError(f"public Riverhog operation has no permission contract: {path}")
+        path_item = schema["paths"][path]
+        projection = [{"any_of": list(group)} for group in sorted(requirements)]
+        for method in methods:
+            operation = path_item.get(str(method).casefold())
+            if isinstance(operation, dict):
+                operation["x-riverhog-permission-requirements"] = projection
+    return schema
+
+
 CatalogReader = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(CATALOG_READ))),
@@ -202,6 +251,7 @@ __all__ = [
     "TagCreator",
     "TagDeleter",
     "authenticate_token",
+    "apply_openapi_permission_contract",
     "require_application",
     "require_any_permission",
     "require_permission",

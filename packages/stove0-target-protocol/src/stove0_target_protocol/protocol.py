@@ -25,10 +25,10 @@ from stove0_protocol import (
     CollectionRootRef,
     ControllerEvidence,
     JsonSchemaDocument,
-    ObservationEvidence,
     OperationResultKind,
 )
 from stove0_protocol.jcs import canonical_json_bytes, canonical_json_sha256
+from stove0_protocol.models import ObservationEvidence
 
 TRANSFORM_TARGET_PROTOCOL: Literal["stove0-transform-target/v1"] = "stove0-transform-target/v1"
 EFFECT_TARGET_PROTOCOL: Literal["stove0-effect-target/v1"] = "stove0-effect-target/v1"

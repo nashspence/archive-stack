@@ -13,12 +13,11 @@ from stove0_media_archive_contracts import (
     MEDIA_METADATA_OBSERVER_CONTRACT,
     MediaMetadataFacts,
 )
+from stove0_observer_protocol import ObservationRequest, ObservationRequestPayload
 from stove0_observer_support import ObservationRuntime
 from stove0_protocol import (
     ArtifactSubject,
     CollectionRootRef,
-    ObservationRequest,
-    ObservationRequestPayload,
 )
 
 

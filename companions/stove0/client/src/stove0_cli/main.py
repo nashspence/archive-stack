@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
 import typer
+from pydantic import BaseModel
 from rich.console import Console
 from rich.pretty import Pretty
 from rich.table import Table
@@ -388,6 +389,8 @@ def _call(
         payload = operation()
     except (Stove0ApiError, ValueError) as exc:
         _fail(str(exc))
+    if isinstance(payload, BaseModel):
+        payload = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
     _render(payload, json_output=state.json_output, table=table)
 
 
@@ -418,6 +421,9 @@ def _render(
 def _table_value(item: dict[str, Any], column: str) -> str:
     if column in item:
         return str(item[column])
+    definition = item.get("definition")
+    if isinstance(definition, dict) and column in {"id", "revision"}:
+        return str(definition.get(column, ""))
     status = item.get("target_status")
     workflow = item.get("workflow_plan")
     branch_set = item.get("branch_set_plan")

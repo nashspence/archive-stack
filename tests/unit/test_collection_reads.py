@@ -124,7 +124,7 @@ def test_collection_list_query_count_is_independent_of_page_rows(tmp_path: Path)
     assert len(loaded_object_ids) == 24
     assert set(loaded_object_ids) == {"manifest", "proof"}
     assert all(
-        current.archive_copies[0].collection_manifest.proof_state == "uploaded"
+        current.archive_copies[0].archive_root.proof_state == "uploaded"
         for current in page.collections
     )
     assert all(current.archive_copies[0].object_count == 10 for current in page.collections)

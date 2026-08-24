@@ -1,5 +1,9 @@
 from stove0_observer_support.conformance import ObserverClient, conformance_report
-from stove0_observer_support.http_binding import ObserverHttpBinding, ObserverHttpResponse
+from stove0_observer_support.http_binding import (
+    OBSERVER_HTTP_OPERATIONS,
+    ObserverHttpBinding,
+    ObserverHttpResponse,
+)
 from stove0_observer_support.results import ObservationResultBuilder
 from stove0_observer_support.runtime import (
     CancellationCheck,
@@ -18,6 +22,7 @@ __all__ = [
     "Heartbeat",
     "ObservationRuntime",
     "ObservationResultBuilder",
+    "OBSERVER_HTTP_OPERATIONS",
     "OBSERVER_SCHEMA_BUNDLE_FORMAT",
     "ObserverHttpBinding",
     "ObserverHttpResponse",

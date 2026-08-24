@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import json
 import os
@@ -16,9 +14,18 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from riverhog_archive_contracts import (
+    PACK_INDEX_SCHEMA,
     RECOVERY_DESCRIPTOR_PATH,
+    ArchiveProvenanceIdentity,
+    CollectionArchiveManifest,
+    PackArchiveVolume,
     RecoveryDescriptor,
     RecoveryDescriptorError,
+    SegmentArchiveVolume,
+    StoredPartIdentity,
+)
+from riverhog_archive_contracts import (
+    ArchiveFileIdentity as FileIdentity,
 )
 
 from ._provenance import (
@@ -27,12 +34,9 @@ from ._provenance import (
     validate_provenance_archive,
 )
 
-MANIFEST_SCHEMA = "collection-archive-manifest/v1"
-PACK_INDEX_SCHEMA = "riverhog-pack-index/v1"
 PACK_INDEX_PATH = ".riverhog/pack-index.json"
 PACK_PADDING_PREFIX = ".riverhog/padding/"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
-_VOLUME_ID_RE = re.compile(r"(?:pack|segment)-[0-9]{12}")
 _PADDING_PATH_RE = re.compile(r"\.riverhog/padding/pack-[0-9]{12}-[0-9]{6}")
 
 
@@ -51,71 +55,12 @@ class RecoverySummary:
 
 
 @dataclass(frozen=True, slots=True)
-class FileIdentity:
-    path: str
-    bytes: int
-    sha256: str
-
-
-@dataclass(frozen=True, slots=True)
 class PackFileIdentity:
     path: str
     bytes: int
     sha256: str
     header_offset: int
     data_offset: int
-
-
-@dataclass(frozen=True, slots=True)
-class PartIdentity:
-    number: int
-    plaintext_start: int
-    plaintext_bytes: int
-    plaintext_sha256: str
-    stored_bytes: int
-    stored_sha256: str
-
-
-@dataclass(frozen=True, slots=True)
-class VolumeIdentity:
-    id: str
-    sequence: int
-    kind: str
-    path: str
-    plaintext_bytes: int
-    parts: tuple[PartIdentity, ...]
-    files: int | None = None
-    source_bytes: int | None = None
-    index_sha256: str | None = None
-    source_file: FileIdentity | None = None
-    file_offset: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class Manifest:
-    files: int
-    bytes: int
-    tree_sha256: str
-    volumes: tuple[VolumeIdentity, ...]
-    provenance: ProvenanceIdentity | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ProvenanceObjectIdentity:
-    id: str
-    kind: str
-    path: str
-    plaintext_bytes: int
-    sha256: str
-    stored_bytes: int
-    stored_sha256: str
-
-
-@dataclass(frozen=True, slots=True)
-class ProvenanceIdentity:
-    identity: str
-    index: ProvenanceObjectIdentity
-    bundles: tuple[ProvenanceObjectIdentity, ...]
 
 
 def recover_archive(
@@ -190,7 +135,7 @@ def recover_archive(
             command=age_command,
         )
         _verify_timestamp(manifest_path, proof_path, command=ots_command)
-        manifest = _parse_manifest(manifest_path.read_bytes())
+        manifest = CollectionArchiveManifest.from_json_bytes(manifest_path.read_bytes())
         _verify_attestation_inventory(checksums, manifest)
 
         for volume in manifest.volumes:
@@ -199,15 +144,13 @@ def recover_archive(
             plaintext = scratch / f"{volume.id}.plaintext"
             _age_decrypt(encrypted, plaintext, passphrase=passphrase, command=age_command)
             _verify_plaintext_parts(plaintext, volume)
-            if volume.kind == "pack":
+            if isinstance(volume, PackArchiveVolume):
                 recovered = _recover_pack(plaintext, staging=staging, volume=volume)
                 for current in recovered:
                     if current.path in expected_files:
                         raise RecoveryError(f"archive repeats a logical file: {current.path}")
                     expected_files[current.path] = current
-            else:
-                if volume.source_file is None or volume.file_offset is None:
-                    raise RecoveryError("segment volume has no source mapping")
+            elif isinstance(volume, SegmentArchiveVolume):
                 current = volume.source_file
                 previous = expected_files.get(current.path)
                 if previous is not None and previous != current:
@@ -222,6 +165,8 @@ def recover_archive(
                 raw_ranges.setdefault(current.path, []).append(
                     (volume.file_offset, volume.plaintext_bytes)
                 )
+            else:  # pragma: no cover - closed public union
+                raise RecoveryError("archive volume kind is unsupported")
             plaintext.unlink()
 
         _validate_raw_ranges(expected_files, raw_ranges)
@@ -292,116 +237,12 @@ def _verify_stored_identity(
         raise RecoveryError(f"stored archive object does not match recovery descriptor: {label}")
 
 
-def _parse_manifest(content: bytes) -> Manifest:
-    payload = json.loads(content)
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema") != MANIFEST_SCHEMA
-        or set(payload)
-        not in (
-            {"schema", "format", "tree", "volumes"},
-            {"schema", "format", "tree", "volumes", "provenance"},
-        )
-    ):
-        raise RecoveryError("root manifest schema is not collection-archive-manifest/v1")
-    if payload.get("format") != {
-        "encryption": "age-v1-scrypt",
-        "pack_index": PACK_INDEX_SCHEMA,
-        "part_digest": "sha256",
-        "selective_read": "age-chunk-range/v1",
-    }:
-        raise RecoveryError("root manifest format is unsupported")
-    tree = payload.get("tree")
-    raw_volumes = payload.get("volumes")
-    if (
-        not isinstance(tree, dict)
-        or set(tree) != {"files", "bytes", "sha256"}
-        or not isinstance(raw_volumes, list)
-        or not raw_volumes
-    ):
-        raise RecoveryError("root manifest structure is invalid")
-    files = _required_nonnegative_int(tree, "files")
-    byte_count = _required_nonnegative_int(tree, "bytes")
-    tree_sha256 = _required_sha256(tree, "sha256")
-    if files < 1:
-        raise RecoveryError("root manifest file count must be positive")
-
-    volumes: list[VolumeIdentity] = []
-    seen_ids: set[str] = set()
-    seen_paths: set[str] = set()
-    for sequence, raw in enumerate(raw_volumes):
-        volume = _parse_volume(raw, expected_sequence=sequence)
-        if volume.id in seen_ids or volume.path in seen_paths:
-            raise RecoveryError("root manifest repeats a volume identity")
-        seen_ids.add(volume.id)
-        seen_paths.add(volume.path)
-        volumes.append(volume)
-    provenance = _parse_provenance(payload["provenance"]) if "provenance" in payload else None
-    return Manifest(files, byte_count, tree_sha256, tuple(volumes), provenance)
-
-
-def _parse_provenance(value: object) -> ProvenanceIdentity:
-    if not isinstance(value, Mapping) or set(value) != {"identity", "index", "bundles"}:
-        raise RecoveryError("root manifest provenance descriptor is invalid")
-    identity = _required_sha256(value, "identity")
-    index = _parse_provenance_object(value.get("index"), kind="provenance-index")
-    raw_bundles = value.get("bundles")
-    if not isinstance(raw_bundles, list) or not raw_bundles:
-        raise RecoveryError("root manifest provenance bundles are invalid")
-    bundles = tuple(
-        _parse_provenance_object(item, kind="provenance-bundle") for item in raw_bundles
-    )
-    if index.sha256 != identity:
-        raise RecoveryError("root manifest provenance identity does not match its index")
-    if [item.id for item in bundles] != [
-        f"bundle-{sequence:012d}" for sequence in range(len(bundles))
-    ]:
-        raise RecoveryError("root manifest provenance bundle order is not canonical")
-    return ProvenanceIdentity(identity=identity, index=index, bundles=bundles)
-
-
-def _parse_provenance_object(value: object, *, kind: str) -> ProvenanceObjectIdentity:
-    fields = {
-        "id",
-        "kind",
-        "path",
-        "plaintext_bytes",
-        "sha256",
-        "stored_bytes",
-        "stored_sha256",
-    }
-    if not isinstance(value, Mapping) or set(value) != fields or value.get("kind") != kind:
-        raise RecoveryError("root manifest provenance object is invalid")
-    object_id = str(value.get("id") or "")
-    path = _normalize_relpath(str(value.get("path") or ""))
-    expected_path = (
-        "provenance/index.json.age"
-        if kind == "provenance-index"
-        else f"provenance/{object_id}.tar.age"
-    )
-    if path != expected_path:
-        raise RecoveryError("root manifest provenance path is not canonical")
-    plaintext_bytes = _required_nonnegative_int(value, "plaintext_bytes")
-    stored_bytes = _required_nonnegative_int(value, "stored_bytes")
-    if plaintext_bytes < 1 or stored_bytes < 1:
-        raise RecoveryError("root manifest provenance object is empty")
-    return ProvenanceObjectIdentity(
-        id=object_id,
-        kind=kind,
-        path=path,
-        plaintext_bytes=plaintext_bytes,
-        sha256=_required_sha256(value, "sha256"),
-        stored_bytes=stored_bytes,
-        stored_sha256=_required_sha256(value, "stored_sha256"),
-    )
-
-
 def _recover_provenance(
     archive: Path,
     *,
     scratch: Path,
     staging: Path,
-    descriptor: ProvenanceIdentity,
+    descriptor: ArchiveProvenanceIdentity,
     expected_files: Mapping[str, FileIdentity],
     checksums: Mapping[str, str] | None,
     passphrase: str,
@@ -456,168 +297,12 @@ def _recover_provenance(
     return validated
 
 
-def _parse_volume(value: object, *, expected_sequence: int) -> VolumeIdentity:
-    if not isinstance(value, dict):
-        raise RecoveryError("root manifest volume is not a mapping")
-    volume_id = str(value.get("id", ""))
-    sequence = _required_nonnegative_int(value, "sequence")
-    kind = str(value.get("kind", ""))
-    pack_fields = {
-        "id",
-        "sequence",
-        "kind",
-        "path",
-        "files",
-        "source_bytes",
-        "plaintext_bytes",
-        "age_state",
-        "index_sha256",
-        "plan_sha256",
-        "parts",
-    }
-    segment_fields = {
-        "id",
-        "sequence",
-        "kind",
-        "path",
-        "plaintext_bytes",
-        "age_state",
-        "file",
-        "parts",
-    }
-    expected_fields = (
-        pack_fields if kind == "pack" else segment_fields if kind == "segment" else set()
-    )
-    if set(value) != expected_fields:
-        raise RecoveryError("root manifest volume fields are invalid")
-    path = _normalize_relpath(str(value.get("path", "")))
-    plaintext_bytes = _required_nonnegative_int(value, "plaintext_bytes")
-    if sequence != expected_sequence or _VOLUME_ID_RE.fullmatch(volume_id) is None:
-        raise RecoveryError("root manifest volume identity is invalid")
-    if volume_id != f"{kind}-{sequence:012d}":
-        raise RecoveryError("root manifest volume kind is invalid")
-    suffix = "tar.age" if kind == "pack" else "bin.age"
-    if path != f"volumes/{volume_id}.{suffix}":
-        raise RecoveryError("root manifest volume path is not canonical")
-    _parse_age_state(value.get("age_state"), plaintext_bytes=plaintext_bytes)
-    parts = _parse_parts(value.get("parts"), plaintext_bytes=plaintext_bytes)
-    if kind == "pack":
-        file_count = _required_nonnegative_int(value, "files")
-        source_bytes = _required_nonnegative_int(value, "source_bytes")
-        index_sha256 = _required_sha256(value, "index_sha256")
-        _required_sha256(value, "plan_sha256")
-        if file_count < 1:
-            raise RecoveryError("pack volume file count must be positive")
-        return VolumeIdentity(
-            volume_id,
-            sequence,
-            kind,
-            path,
-            plaintext_bytes,
-            parts,
-            files=file_count,
-            source_bytes=source_bytes,
-            index_sha256=index_sha256,
-        )
-
-    raw_file = value.get("file")
-    if not isinstance(raw_file, dict) or set(raw_file) != {
-        "path",
-        "offset",
-        "bytes",
-        "file_bytes",
-        "sha256",
-    }:
-        raise RecoveryError("segment volume file mapping is invalid")
-    source = FileIdentity(
-        path=_normalize_relpath(str(raw_file.get("path", ""))),
-        bytes=_required_nonnegative_int(raw_file, "file_bytes"),
-        sha256=_required_sha256(raw_file, "sha256"),
-    )
-    offset = _required_nonnegative_int(raw_file, "offset")
-    placement_bytes = _required_nonnegative_int(raw_file, "bytes")
-    if placement_bytes != plaintext_bytes or offset + placement_bytes > source.bytes:
-        raise RecoveryError("segment volume file range is invalid")
-    return VolumeIdentity(
-        volume_id,
-        sequence,
-        kind,
-        path,
-        plaintext_bytes,
-        parts,
-        source_file=source,
-        file_offset=offset,
-    )
-
-
-def _parse_age_state(value: object, *, plaintext_bytes: int) -> None:
-    expected = {"format", "header_b64", "payload_nonce_b64", "plaintext_size"}
-    if not isinstance(value, dict) or set(value) != expected:
-        raise RecoveryError("volume age state is not a canonical mapping")
-    if value.get("format") != "age-v1-scrypt-resumable":
-        raise RecoveryError("volume age state format is unsupported")
-    if _required_nonnegative_int(value, "plaintext_size") != plaintext_bytes:
-        raise RecoveryError("volume age state plaintext size mismatch")
-    if not _decode_base64(value.get("header_b64")):
-        raise RecoveryError("volume age state header is empty")
-    if len(_decode_base64(value.get("payload_nonce_b64"))) != 16:
-        raise RecoveryError("volume age state payload nonce is invalid")
-
-
-def _decode_base64(value: object) -> bytes:
-    if not isinstance(value, str) or not value:
-        raise RecoveryError("volume age state base64 value is invalid")
-    try:
-        decoded = base64.b64decode(value + "=" * (-len(value) % 4), validate=True)
-    except (binascii.Error, TypeError, ValueError) as exc:
-        raise RecoveryError("volume age state base64 value is invalid") from exc
-    if base64.b64encode(decoded).decode("ascii").rstrip("=") != value:
-        raise RecoveryError("volume age state base64 value is not canonical")
-    return decoded
-
-
-def _parse_parts(value: object, *, plaintext_bytes: int) -> tuple[PartIdentity, ...]:
-    if not isinstance(value, list) or not value:
-        raise RecoveryError("volume parts must be a non-empty list")
-    parts: list[PartIdentity] = []
-    expected_start = 0
-    for number, raw in enumerate(value, start=1):
-        if not isinstance(raw, dict) or set(raw) != {
-            "number",
-            "plaintext_start",
-            "plaintext_bytes",
-            "plaintext_sha256",
-            "stored_bytes",
-            "stored_sha256",
-        }:
-            raise RecoveryError("volume part is not a canonical mapping")
-        part = PartIdentity(
-            number=_required_nonnegative_int(raw, "number"),
-            plaintext_start=_required_nonnegative_int(raw, "plaintext_start"),
-            plaintext_bytes=_required_nonnegative_int(raw, "plaintext_bytes"),
-            plaintext_sha256=_required_sha256(raw, "plaintext_sha256"),
-            stored_bytes=_required_nonnegative_int(raw, "stored_bytes"),
-            stored_sha256=_required_sha256(raw, "stored_sha256"),
-        )
-        if part.number != number or part.plaintext_start != expected_start:
-            raise RecoveryError("volume part order is invalid")
-        if part.stored_bytes < 1:
-            raise RecoveryError("volume stored part must not be empty")
-        expected_start += part.plaintext_bytes
-        parts.append(part)
-    if expected_start != plaintext_bytes:
-        raise RecoveryError("volume parts do not cover its plaintext")
-    return tuple(parts)
-
-
 def _recover_pack(
     plaintext: Path,
     *,
     staging: Path,
-    volume: VolumeIdentity,
+    volume: PackArchiveVolume,
 ) -> tuple[FileIdentity, ...]:
-    if volume.index_sha256 is None or volume.files is None or volume.source_bytes is None:
-        raise RecoveryError("pack volume identity is incomplete")
     with tarfile.open(plaintext, mode="r:") as archive:
         members = archive.getmembers()
         by_name: dict[str, tarfile.TarInfo] = {}
@@ -683,7 +368,7 @@ def _recover_pack(
 def _parse_pack_index(
     content: bytes,
     *,
-    volume: VolumeIdentity,
+    volume: PackArchiveVolume,
 ) -> tuple[PackFileIdentity, ...]:
     payload = json.loads(content)
     if (
@@ -794,7 +479,7 @@ def _recover_segment(
         shutil.copyfileobj(source, target, length=1024 * 1024)
 
 
-def _verify_stored_parts(path: Path, parts: Sequence[PartIdentity]) -> None:
+def _verify_stored_parts(path: Path, parts: Sequence[StoredPartIdentity]) -> None:
     if path.stat().st_size != sum(current.stored_bytes for current in parts):
         raise RecoveryError(f"stored volume byte count mismatch: {path.name}")
     with path.open("rb") as source:
@@ -813,7 +498,7 @@ def _verify_stored_parts(path: Path, parts: Sequence[PartIdentity]) -> None:
             raise RecoveryError(f"stored volume has trailing bytes: {path.name}")
 
 
-def _verify_plaintext_parts(path: Path, volume: VolumeIdentity) -> None:
+def _verify_plaintext_parts(path: Path, volume: PackArchiveVolume | SegmentArchiveVolume) -> None:
     if path.stat().st_size != volume.plaintext_bytes:
         raise RecoveryError(f"plaintext volume byte count mismatch: {volume.id}")
     with path.open("rb") as source:
@@ -904,7 +589,7 @@ def _verify_inventory_file(
 
 def _verify_attestation_inventory(
     checksums: Mapping[str, str] | None,
-    manifest: Manifest,
+    manifest: CollectionArchiveManifest,
 ) -> None:
     if checksums is None:
         return

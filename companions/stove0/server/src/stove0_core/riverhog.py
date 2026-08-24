@@ -12,21 +12,27 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Literal, Protocol
 
 from riverhog_protocol import Conflict, NotFound
+from riverhog_protocol.collection_workflow_transport import (
+    CapabilityAction,
+    CollectionDerivationResponseDocument,
+    ProcessingClaimDocument,
+    TransformCapabilityDocument,
+)
 from riverhog_protocol.collection_workflows import (
     CollectionArtifactIdentity,
     CollectionDerivation,
     CollectionProcessingOutcomeIdentity,
     CollectionRootIdentity,
+    RetirementPolicy,
 )
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
+from stove0_observer_protocol import ObservationRequest, ObserverRuntimeAuthority
 from stove0_protocol import (
     ArtifactSubject,
     BranchSetEvaluation,
     ControllerEvidence,
-    ObservationRequest,
-    ObserverRuntimeAuthority,
     TargetPlanBinding,
     WorkflowPlan,
     WorkflowPreviewRequest,
@@ -61,17 +67,17 @@ class RiverhogApi(Protocol):
         inputs: Sequence[Mapping[str, Any]],
         lease_seconds: int = 1800,
         purpose: str = "collection-work/v1",
-    ) -> dict[str, Any]: ...
+    ) -> ProcessingClaimDocument: ...
 
     def renew_processing_claim(
         self, claim_id: str, *, fence: int, lease_seconds: int = 1800
-    ) -> dict[str, Any]: ...
+    ) -> ProcessingClaimDocument: ...
 
     def restart_processing_claim(
         self, claim_id: str, *, fence: int, lease_seconds: int = 1800
-    ) -> dict[str, Any]: ...
+    ) -> ProcessingClaimDocument: ...
 
-    def get_processing_claim(self, claim_id: str) -> dict[str, Any]: ...
+    def get_processing_claim(self, claim_id: str) -> ProcessingClaimDocument: ...
 
     def create_transform_capability(
         self,
@@ -79,10 +85,10 @@ class RiverhogApi(Protocol):
         *,
         fence: int,
         audience: str,
-        actions: Sequence[str] = ("read-inputs",),
+        actions: Sequence[CapabilityAction] = ("read-inputs",),
         artifacts: Sequence[Mapping[str, Any]],
         ttl_seconds: int = 900,
-    ) -> dict[str, Any]: ...
+    ) -> TransformCapabilityDocument: ...
 
     def seal_processing_claim_plan(
         self,
@@ -96,9 +102,9 @@ class RiverhogApi(Protocol):
         operation_sha256: str,
         input_artifacts: Sequence[Mapping[str, Any]],
         output_tags: Sequence[str],
-        retirement_policy: str = "retain",
+        retirement_policy: RetirementPolicy = "retain",
         retirement_grace_seconds: int = 0,
-    ) -> dict[str, Any]: ...
+    ) -> ProcessingClaimDocument: ...
 
     def settle_processing_claim(
         self,
@@ -110,7 +116,7 @@ class RiverhogApi(Protocol):
         outcome_claim_id: str | None = None,
         outcome_fence: int | None = None,
         outcome_id: str | None = None,
-    ) -> dict[str, Any]: ...
+    ) -> ProcessingClaimDocument: ...
 
     def settle_processing_claim_outcomes(
         self,
@@ -118,19 +124,23 @@ class RiverhogApi(Protocol):
         *,
         fence: int,
         outcomes: Sequence[Mapping[str, Any]],
-        retirement_policy: str = "retain",
+        retirement_policy: RetirementPolicy = "retain",
         retirement_grace_seconds: int = 0,
-    ) -> dict[str, Any]: ...
+    ) -> ProcessingClaimDocument: ...
 
     def abandon_processing_claim(
         self, claim_id: str, *, fence: int, reason: str
-    ) -> dict[str, Any]: ...
+    ) -> ProcessingClaimDocument: ...
 
     def get_collection(self, collection_id: int) -> dict[str, Any]: ...
 
-    def get_collection_derivation(self, collection_id: int) -> dict[str, Any]: ...
+    def get_collection_derivation(
+        self, collection_id: int
+    ) -> CollectionDerivationResponseDocument: ...
 
-    def begin_processing_claim_retirement(self, claim_id: str, *, fence: int) -> dict[str, Any]: ...
+    def begin_processing_claim_retirement(
+        self, claim_id: str, *, fence: int
+    ) -> ProcessingClaimDocument: ...
 
     def plan_collection_deletion(
         self, collection_id: int, *, retirement_claim_id: str | None = None
@@ -145,7 +155,7 @@ class RiverhogApi(Protocol):
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
-    def release_processing_claim(self, claim_id: str, *, fence: int) -> dict[str, Any]: ...
+    def release_processing_claim(self, claim_id: str, *, fence: int) -> ProcessingClaimDocument: ...
 
 
 class Stove0RiverhogClient:
@@ -307,9 +317,7 @@ class Stove0RiverhogClient:
         if binding != claim:
             raise RuntimeError("Riverhog sealed a different claim generation")
         sealed = payload.get("plan")
-        if not isinstance(sealed, Mapping) or sealed.get("execution_id") != (
-            envelope.execution_envelope_sha256
-        ):
+        if sealed is None or sealed.get("execution_id") != envelope.execution_envelope_sha256:
             raise RuntimeError("Riverhog did not retain the sealed execution identity")
 
     def target_authority(
@@ -324,7 +332,7 @@ class Stove0RiverhogClient:
         if _target_binding(target_plan) != envelope.target_plan:
             raise ValueError("target evidence differs from the exact target plan")
         execution_id = envelope.execution_envelope_sha256
-        actions = (
+        actions: tuple[CapabilityAction, ...] = (
             ("read-inputs",)
             if envelope.workflow_plan.result_kind == "external-effect"
             else ("read-inputs", "write-output")
@@ -568,9 +576,9 @@ class Stove0RiverhogClient:
         claim: ClaimBinding,
         *,
         audience: str,
-        actions: Sequence[str],
+        actions: Sequence[CapabilityAction],
         artifacts: Sequence[CollectionArtifactIdentity],
-    ) -> dict[str, Any]:
+    ) -> TransformCapabilityDocument:
         payload = self.api.create_transform_capability(
             claim.claim_id,
             fence=claim.fence,
@@ -632,14 +640,14 @@ def _abandonment_reason(record: WorkRecord) -> str:
     raise ValueError("stove0 work has no terminal claim-abandonment outcome")
 
 
-def _claim_binding(value: Mapping[str, Any]) -> ClaimBinding:
+def _claim_binding(value: ProcessingClaimDocument | Mapping[str, Any]) -> ClaimBinding:
     return ClaimBinding(
         claim_id=_text(value.get("id"), "claim id"),
         fence=_positive_int(value.get("fence"), "claim fence"),
     )
 
 
-def _token(value: Mapping[str, Any]) -> str:
+def _token(value: TransformCapabilityDocument | Mapping[str, Any]) -> str:
     return _text(value.get("token"), "capability token")
 
 

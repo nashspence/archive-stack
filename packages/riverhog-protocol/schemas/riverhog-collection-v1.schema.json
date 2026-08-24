@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/schemas/riverhog-collection-v1.schema.json",
+  "title": "Riverhog v1 portable collection record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "collection", "content_identity", "encryption_format", "passphrase_id", "provenance_mode", "provenance_identity", "metadata_revision", "tags", "files"],
+  "properties": {
+    "format": {"const": "riverhog-collection/v1"},
+    "collection": {"type": "integer", "minimum": 1},
+    "content_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "encryption_format": {"type": "string", "minLength": 1},
+    "passphrase_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$"},
+    "provenance_mode": {"enum": ["captured", "mixed", "omitted"]},
+    "provenance_identity": {
+      "oneOf": [
+        {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        {"type": "null"}
+      ]
+    },
+    "metadata_revision": {"type": "integer", "minimum": 0},
+    "tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 80}
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "bytes", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "bytes": {"type": "integer", "minimum": 0},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

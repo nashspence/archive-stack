@@ -19,6 +19,7 @@ classifiers = [
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
+  "http-api-contracts>=0.1,<0.2",
   "jsonschema>=4.25,<5.0",
   "pydantic>=2.7,<3.0",
   "stove0-review-sampler-client>=0.1,<0.2",
@@ -30,6 +31,7 @@ stove0-review-sampler-conformance = "stove0_review_sampler_support.conformance:m
 stove0-review-sampler-schemas = "stove0_review_sampler_support.schemas:main"
 
 [tool.uv.sources]
+http-api-contracts = { workspace = true }
 stove0-review-sampler-client = { workspace = true }
 stove0-review-sampler-protocol = { workspace = true }
 

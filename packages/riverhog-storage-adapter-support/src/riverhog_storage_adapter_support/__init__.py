@@ -15,6 +15,7 @@ from riverhog_storage_adapter_support.framing import (
     parse_framed_request,
 )
 from riverhog_storage_adapter_support.http_binding import (
+    STORAGE_ADAPTER_HTTP_OPERATIONS,
     StorageAdapterHttpBinding,
     StorageAdapterHttpResponse,
     StorageAdapterServiceError,
@@ -28,6 +29,7 @@ __all__ = [
     "DEFAULT_MAXIMUM_HEADER_BYTES",
     "STORAGE_ADAPTER_CONFORMANCE_RESULT",
     "STORAGE_ADAPTER_SCHEMA_BUNDLE_FORMAT",
+    "STORAGE_ADAPTER_HTTP_OPERATIONS",
     "StorageAdapterClient",
     "StorageAdapterConformanceResult",
     "StorageAdapterHttpBinding",

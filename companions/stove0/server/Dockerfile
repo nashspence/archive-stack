@@ -31,6 +31,7 @@ COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/stove0-observer-client packages/stove0-observer-client
 COPY packages/stove0-observer-protocol packages/stove0-observer-protocol
+COPY packages/stove0-operator-contracts packages/stove0-operator-contracts
 COPY packages/stove0-protocol packages/stove0-protocol
 COPY packages/stove0-recipe-config packages/stove0-recipe-config
 COPY packages/stove0-target-client packages/stove0-target-client

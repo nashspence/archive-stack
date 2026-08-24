@@ -6,14 +6,28 @@ import json
 import threading
 from dataclasses import dataclass
 
+from http_api_contracts import HttpOperationContract
 from pydantic import BaseModel, ValidationError
 from stove0_observer_protocol import (
     ObservationInvocation,
+    ObservationResult,
     ObserverDescriptor,
     validate_observation_result,
 )
 
 from stove0_observer_support.runtime import ContentObserver, ObservationRuntime
+
+OBSERVER_HTTP_OPERATIONS = (
+    HttpOperationContract("GET", "/v1/observer", response_type=ObserverDescriptor),
+    HttpOperationContract(
+        "POST",
+        "/v1/observe",
+        ObservationInvocation,
+        ObservationResult,
+        "json",
+        error_statuses=(400, 401, 413, 500),
+    ),
+)
 
 _JSON_CONTENT_TYPE = "application/json"
 _DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
@@ -114,4 +128,4 @@ def _error(status: int, code: str, message: str) -> ObserverHttpResponse:
     )
 
 
-__all__ = ["ObserverHttpBinding", "ObserverHttpResponse"]
+__all__ = ["OBSERVER_HTTP_OPERATIONS", "ObserverHttpBinding", "ObserverHttpResponse"]

@@ -55,6 +55,7 @@ from stove0_target_support.configuration import (
 from stove0_target_support.conformance import TargetClient, conformance_report
 from stove0_target_support.execution import TargetExecutionSession
 from stove0_target_support.http_binding import (
+    TARGET_HTTP_OPERATIONS,
     TargetHttpBinding,
     TargetHttpResponse,
     TargetService,
@@ -88,6 +89,7 @@ __all__ = [
     "SHA256_PATTERN",
     "TRANSFORM_TARGET_PROTOCOL",
     "TARGET_SCHEMA_BUNDLE_FORMAT",
+    "TARGET_HTTP_OPERATIONS",
     "TARGET_TERMINAL_STATE_RETENTION_ENV",
     "InputArtifact",
     "InputDisposition",

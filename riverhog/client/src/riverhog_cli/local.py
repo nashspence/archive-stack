@@ -21,6 +21,7 @@ from riverhog_api_client.downloads import (
 from riverhog_cli_support.output import emit, format_list_ids
 from riverhog_protocol.errors import InvalidState, NotFound
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
+from riverhog_protocol.portable_collection import PortableCollectionRecord
 from riverhog_protocol.transport import RETRIEVAL_FILE_BATCH_MAX
 from state_schema import StateSchemaError
 from time_formats import parse_utc_timestamp
@@ -155,25 +156,14 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
 
 def _store_manifest(
     db: sqlite3.Connection,
-    payload: dict[str, Any],
+    record: PortableCollectionRecord,
     *,
     created_at: str,
 ) -> None:
-    collection_id = normalize_collection_id(payload["collection"])
-    files = payload.get("files")
-    raw_tags = payload.get("tags")
-    if (
-        payload.get("format") != "riverhog-collection/v1"
-        or not isinstance(files, list)
-        or not isinstance(raw_tags, list)
-    ):
-        raise InvalidState("Riverhog returned an unsupported collection manifest")
+    collection_id = normalize_collection_id(record.collection)
     parse_utc_timestamp(created_at)
-    tags = sorted({normalize_tag(str(tag)) for tag in raw_tags})
-    if tags != raw_tags:
-        raise InvalidState("Riverhog returned non-canonical collection tags")
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    etag = hashlib.sha256(canonical).hexdigest()
+    tags = list(record.tags)
+    etag = record.identity
     db.execute(
         """
         INSERT INTO desired_collections (
@@ -193,18 +183,13 @@ def _store_manifest(
         (collection_id, etag, created_at, json.dumps(tags, separators=(",", ":"))),
     )
     db.execute("DELETE FROM desired_files WHERE collection_id = ?", (collection_id,))
-    for current in files:
-        path = normalize_relpath(str(current["path"]))
-        byte_count = int(current["bytes"])
-        sha256 = str(current["sha256"])
-        if byte_count < 0 or len(sha256) != 64:
-            raise InvalidState("Riverhog returned invalid file metadata")
+    for current in record.files:
         db.execute(
             """
             INSERT INTO desired_files (collection_id, path, bytes, sha256)
             VALUES (?, ?, ?, ?)
             """,
-            (collection_id, path, byte_count, sha256),
+            (collection_id, current.path, current.bytes, current.sha256),
         )
 
 

@@ -8,6 +8,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
 
+from riverhog_protocol import PortableCollectionRecord
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
 from sqlalchemy import case, delete, desc, exists, func, or_, select, update
@@ -128,7 +129,7 @@ class SqlAlchemyRetrievalService:
         collection_id: int,
         *,
         principal: ApplicationPrincipal | None = None,
-    ) -> tuple[dict[str, object], str]:
+    ) -> tuple[PortableCollectionRecord, str]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
         if principal is not None and principal.artifact_scope is not None:
             raise NotFound(f"collection manifest not found: {normalized_id}")

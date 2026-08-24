@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from http import HTTPStatus
 from ipaddress import ip_address
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 
 class HttpApiModel(BaseModel):
@@ -28,6 +29,112 @@ class HealthResponse(HttpApiModel):
     status: Literal["ok"]
 
 
+HttpBodyKind = Literal["none", "json", "framed", "binary"]
+
+
+@dataclass(frozen=True, slots=True)
+class HttpOperationContract:
+    """One exact method/path binding projected into a running OpenAPI document."""
+
+    method: Literal["GET", "POST", "PUT", "DELETE", "PATCH"]
+    path: str
+    request_type: object | None = None
+    response_type: object | None = None
+    request_kind: HttpBodyKind = "none"
+    response_kind: HttpBodyKind = "json"
+    success_statuses: tuple[int, ...] = (200,)
+    error_statuses: tuple[int, ...] = (400, 401, 500)
+
+    def __post_init__(self) -> None:
+        if not self.path.startswith("/v1/"):
+            raise ValueError("HTTP operation path must be an absolute v1 path")
+        if self.request_kind in {"json", "framed"} and self.request_type is None:
+            raise ValueError("typed HTTP request body has no declaration model")
+        if self.response_kind == "json" and self.response_type is None:
+            raise ValueError("JSON HTTP response has no response model")
+        if self.response_kind == "none" and self.response_type is not None:
+            raise ValueError("empty HTTP response cannot have a response model")
+
+
+def inline_type_schema(value: object) -> dict[str, Any]:
+    """Return a self-contained JSON Schema for an OpenAPI request or response."""
+
+    schema = TypeAdapter(value).json_schema(ref_template="#/$defs/{model}")
+    definitions = schema.pop("$defs", {})
+
+    def expand(current: object, trail: frozenset[str] = frozenset()) -> object:
+        if isinstance(current, list):
+            return [expand(item, trail) for item in current]
+        if not isinstance(current, dict):
+            return current
+        reference = current.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/$defs/"):
+            name = reference.rsplit("/", 1)[-1]
+            if name in trail:
+                return current
+            target = definitions.get(name)
+            if isinstance(target, dict):
+                return expand(target, trail | {name})
+        expanded_items = {str(key): expand(item, trail) for key, item in current.items()}
+        discriminator = expanded_items.get("discriminator")
+        if isinstance(discriminator, dict) and "propertyName" in discriminator:
+            expanded_items["discriminator"] = {"propertyName": discriminator["propertyName"]}
+        return expanded_items
+
+    expanded = expand(schema)
+    if not isinstance(expanded, dict):  # pragma: no cover - TypeAdapter always returns an object
+        raise TypeError("JSON Schema root is not an object")
+    return expanded
+
+
+def operation_openapi(
+    contract: HttpOperationContract,
+    *,
+    error_type: object = ErrorResponse,
+) -> dict[str, Any]:
+    """Build FastAPI route metadata without changing framework-neutral dispatch."""
+
+    responses: dict[int, dict[str, Any]] = {}
+    for status in contract.success_statuses:
+        response: dict[str, Any] = {"description": HTTPStatus(status).phrase}
+        if contract.response_kind == "json":
+            response["content"] = {
+                "application/json": {"schema": inline_type_schema(contract.response_type)}
+            }
+        elif contract.response_kind == "binary":
+            response["content"] = {
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            }
+        responses[status] = response
+    for status in contract.error_statuses:
+        responses[status] = {
+            "description": HTTPStatus(status).phrase,
+            "content": {"application/json": {"schema": inline_type_schema(error_type)}},
+        }
+    extra: dict[str, Any] = {}
+    if contract.request_kind == "json":
+        extra["requestBody"] = {
+            "required": True,
+            "content": {"application/json": {"schema": inline_type_schema(contract.request_type)}},
+        }
+    elif contract.request_kind == "framed":
+        extra["requestBody"] = {
+            "required": True,
+            "content": {
+                "application/octet-stream": {
+                    "schema": {"type": "string", "format": "binary"},
+                    "x-riverhog-framing-declaration": inline_type_schema(contract.request_type),
+                }
+            },
+        }
+    return {
+        "status_code": contract.success_statuses[0],
+        "response_model": None,
+        "responses": responses,
+        "openapi_extra": extra or None,
+    }
+
+
 ERROR_STATUS_BY_CODE: dict[str, int] = {
     "bad_request": 400,
     "invalid_path": 400,
@@ -36,6 +143,7 @@ ERROR_STATUS_BY_CODE: dict[str, int] = {
     "forbidden": 403,
     "not_found": 404,
     "method_not_allowed": 405,
+    "length_required": 411,
     "conflict": 409,
     "hash_mismatch": 409,
     "input_upload_storage_hint_invalid": 409,
@@ -50,6 +158,7 @@ ERROR_STATUS_BY_CODE: dict[str, int] = {
     "service_unavailable": 503,
     "insufficient_storage": 507,
 }
+PUBLIC_ERROR_CODES = frozenset(ERROR_STATUS_BY_CODE)
 
 _ERROR_CODE_BY_STATUS: dict[int, str] = {
     400: "bad_request",
@@ -57,6 +166,7 @@ _ERROR_CODE_BY_STATUS: dict[int, str] = {
     403: "forbidden",
     404: "not_found",
     405: "method_not_allowed",
+    411: "length_required",
     409: "conflict",
     429: "too_many_active_input_uploads",
     500: "internal_error",
@@ -65,13 +175,23 @@ _ERROR_CODE_BY_STATUS: dict[int, str] = {
 }
 
 
-def error_responses(*statuses: int) -> dict[int | str, dict[str, Any]]:
-    return {status: {"model": ErrorResponse} for status in statuses}
+def error_responses(*codes: str) -> dict[int | str, dict[str, Any]]:
+    """Declare operation-specific public error codes beside a FastAPI route."""
 
+    unknown = set(codes) - PUBLIC_ERROR_CODES
+    if unknown:
+        raise ValueError(f"unknown public error codes: {', '.join(sorted(unknown))}")
+    grouped: dict[int, list[str]] = {}
+    for code in codes:
+        grouped.setdefault(ERROR_STATUS_BY_CODE[code], []).append(code)
+    return {
+        status: {
+            "model": ErrorResponse,
+            "x-riverhog-error-codes": sorted(set(status_codes)),
+        }
+        for status, status_codes in grouped.items()
+    }
 
-PUBLIC_ERROR_RESPONSES: dict[int, dict[str, Any]] = {
-    status: {"model": ErrorResponse} for status in (400, 401, 403, 404, 409, 500, 503)
-}
 
 OperationInterface = Literal[
     "human-cli+json",
@@ -127,6 +247,15 @@ def status_for_error_code(code: str, *, fallback: int = 500) -> int:
     return ERROR_STATUS_BY_CODE.get(code, fallback)
 
 
+def _default_operation_error_codes(path: str, method: str) -> set[str]:
+    codes = {"bad_request", "unauthorized", "forbidden", "internal_error"}
+    if "{" in path:
+        codes.add("not_found")
+    if method in {"delete", "patch", "post", "put"}:
+        codes.add("conflict")
+    return codes
+
+
 def error_payload(
     *,
     code: str,
@@ -158,11 +287,32 @@ def apply_openapi_error_contract(schema: dict[str, Any]) -> dict[str, Any]:
                 continue
             responses = operation.setdefault("responses", {})
             responses.pop("422", None)
-            for status in PUBLIC_ERROR_RESPONSES:
+            codes = _default_operation_error_codes(path, method)
+            for response in responses.values():
+                if not isinstance(response, Mapping):
+                    continue
+                declared = response.get("x-riverhog-error-codes", [])
+                if isinstance(declared, list):
+                    codes.update(str(code) for code in declared)
+            unknown = codes - PUBLIC_ERROR_CODES
+            if unknown:
+                raise ValueError(
+                    "OpenAPI operation declares unknown public error codes: "
+                    + ", ".join(sorted(unknown))
+                )
+            by_status: dict[int, list[str]] = {}
+            for code in sorted(codes):
+                by_status.setdefault(ERROR_STATUS_BY_CODE[code], []).append(code)
+            existing_error_statuses = [
+                status for status in responses if str(status).isdigit() and int(str(status)) >= 400
+            ]
+            for status in existing_error_statuses:
+                responses.pop(status, None)
+            for status, status_codes in by_status.items():
                 status_text = str(status)
-                existing = responses.get(status_text, {})
                 responses[status_text] = {
-                    "description": existing.get("description") or HTTPStatus(status).phrase,
+                    "description": HTTPStatus(status).phrase,
+                    "x-riverhog-error-codes": status_codes,
                     "content": {
                         "application/json": {
                             "schema": {"$ref": "#/components/schemas/ErrorResponse"}
@@ -189,16 +339,20 @@ def parse_error_payload(
 
 __all__ = [
     "ERROR_STATUS_BY_CODE",
+    "PUBLIC_ERROR_CODES",
     "ErrorBody",
     "ErrorResponse",
     "HealthResponse",
+    "HttpBodyKind",
+    "HttpOperationContract",
     "OperationInterface",
-    "PUBLIC_ERROR_RESPONSES",
     "apply_openapi_error_contract",
     "error_code_for_status",
     "error_payload",
     "error_responses",
     "operation_interface",
+    "operation_openapi",
+    "inline_type_schema",
     "parse_error_payload",
     "safe_http_base_url",
     "status_for_error_code",

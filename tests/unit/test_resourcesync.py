@@ -13,7 +13,9 @@ from riverhog_api.routers.resourcesync import (
     well_known_resourcesync,
 )
 from riverhog_api_client.client import ApiClient
+from riverhog_protocol import PortableCollectionRecord
 from starlette.requests import Request
+from starlette.responses import Response
 
 COLLECTION_ID = 42
 ETAG = "a" * 64
@@ -56,11 +58,17 @@ class RetrievalStub:
         assert collection_id == COLLECTION_ID
         assert principal == "app"
         return (
-            {
-                "format": "riverhog-collection/v1",
-                "collection": collection_id,
-                "files": [],
-            },
+            PortableCollectionRecord.create(
+                collection=collection_id,
+                content_identity="b" * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="collection-test-key-v1",
+                provenance_mode="omitted",
+                provenance_identity=None,
+                metadata_revision=0,
+                tags=(),
+                files=(("empty.txt", 0, "c" * 64),),
+            ),
             ETAG,
         )
 
@@ -216,11 +224,13 @@ def test_api_client_parses_resourcesync_discovery_capabilities_and_resources() -
 
 
 def test_portable_manifest_response_has_a_content_identity() -> None:
-    response = get_portable_collection_manifest(
+    response = Response()
+    record = get_portable_collection_manifest(
         COLLECTION_ID,
         "app",
         SimpleNamespace(retrieval=RetrievalStub()),
+        response,
     )
 
     assert response.headers["etag"] == f'"{ETAG}"'
-    assert b"riverhog-collection/v1" in response.body
+    assert record.format == "riverhog-collection/v1"

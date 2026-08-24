@@ -13,6 +13,15 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from stove0_observer_client import ContentObserverClient
+from stove0_observer_protocol import (
+    ObservationEvidence,
+    ObservationInvocation,
+    ObservationRequest,
+    ObservationResult,
+    ObserverDescriptor,
+    ObserverRuntimeAuthority,
+    validate_observation_result,
+)
 from stove0_protocol import (
     ArtifactSelection,
     BranchSetDecision,
@@ -20,18 +29,11 @@ from stove0_protocol import (
     BranchWorkBinding,
     ControllerEvidence,
     JoinWorkBinding,
-    ObservationEvidence,
-    ObservationInvocation,
-    ObservationRequest,
-    ObservationResult,
-    ObserverDescriptor,
-    ObserverRuntimeAuthority,
     OperationRef,
     WorkflowPlan,
     WorkflowPreview,
     WorkIdentity,
     branch_work,
-    validate_observation_result,
 )
 from stove0_target_client import TargetClient
 from stove0_target_protocol import (

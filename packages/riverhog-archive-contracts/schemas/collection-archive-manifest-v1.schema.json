@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/schemas/collection-archive-manifest-v1.schema.json",
+  "title": "Riverhog v1 immutable collection archive root",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "format", "tree", "volumes"],
+  "properties": {
+    "schema": {"const": "collection-archive-manifest/v1"},
+    "format": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["encryption", "pack_index", "part_digest", "selective_read"],
+      "properties": {
+        "encryption": {"const": "age-v1-scrypt"},
+        "pack_index": {"const": "riverhog-pack-index/v1"},
+        "part_digest": {"const": "sha256"},
+        "selective_read": {"const": "age-chunk-range/v1"}
+      }
+    },
+    "tree": {"$ref": "#/$defs/tree"},
+    "volumes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"oneOf": [{"$ref": "#/$defs/pack"}, {"$ref": "#/$defs/segment"}]}
+    },
+    "provenance": {"$ref": "#/$defs/provenance"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "tree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "bytes", "sha256"],
+      "properties": {
+        "files": {"type": "integer", "minimum": 1},
+        "bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "age_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "header_b64", "payload_nonce_b64", "plaintext_size"],
+      "properties": {
+        "format": {"const": "age-v1-scrypt-resumable"},
+        "header_b64": {"type": "string", "minLength": 1},
+        "payload_nonce_b64": {"type": "string", "minLength": 1},
+        "plaintext_size": {"type": "integer", "minimum": 0}
+      }
+    },
+    "part": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "plaintext_start", "plaintext_bytes", "plaintext_sha256", "stored_bytes", "stored_sha256"],
+      "properties": {
+        "number": {"type": "integer", "minimum": 1},
+        "plaintext_start": {"type": "integer", "minimum": 0},
+        "plaintext_bytes": {"type": "integer", "minimum": 0},
+        "plaintext_sha256": {"$ref": "#/$defs/sha256"},
+        "stored_bytes": {"type": "integer", "minimum": 1},
+        "stored_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sequence", "kind", "path", "files", "source_bytes", "plaintext_bytes", "age_state", "index_sha256", "plan_sha256", "parts"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^pack-[0-9]{12}$"},
+        "sequence": {"type": "integer", "minimum": 0},
+        "kind": {"const": "pack"},
+        "path": {"type": "string", "pattern": "^volumes/pack-[0-9]{12}\\.tar\\.age$"},
+        "files": {"type": "integer", "minimum": 1},
+        "source_bytes": {"type": "integer", "minimum": 0},
+        "plaintext_bytes": {"type": "integer", "minimum": 0},
+        "age_state": {"$ref": "#/$defs/age_state"},
+        "index_sha256": {"$ref": "#/$defs/sha256"},
+        "plan_sha256": {"$ref": "#/$defs/sha256"},
+        "parts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/part"}}
+      }
+    },
+    "segment_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "offset", "bytes", "file_bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "offset": {"type": "integer", "minimum": 0},
+        "bytes": {"type": "integer", "minimum": 0},
+        "file_bytes": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sequence", "kind", "path", "plaintext_bytes", "age_state", "file", "parts"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^segment-[0-9]{12}$"},
+        "sequence": {"type": "integer", "minimum": 0},
+        "kind": {"const": "segment"},
+        "path": {"type": "string", "pattern": "^volumes/segment-[0-9]{12}\\.bin\\.age$"},
+        "plaintext_bytes": {"type": "integer", "minimum": 0},
+        "age_state": {"$ref": "#/$defs/age_state"},
+        "file": {"$ref": "#/$defs/segment_file"},
+        "parts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/part"}}
+      }
+    },
+    "provenance_object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "path", "plaintext_bytes", "sha256", "stored_bytes", "stored_sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["provenance-index", "provenance-bundle"]},
+        "path": {"type": "string", "minLength": 1},
+        "plaintext_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "stored_bytes": {"type": "integer", "minimum": 1},
+        "stored_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "index", "bundles"],
+      "properties": {
+        "identity": {"$ref": "#/$defs/sha256"},
+        "index": {"$ref": "#/$defs/provenance_object"},
+        "bundles": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/provenance_object"}}
+      }
+    }
+  }
+}

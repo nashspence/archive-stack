@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
+from http_api_contracts import error_responses
 from riverhog_core.app_permissions import ARCHIVES_MANAGE
 
 from riverhog_api.auth import ArchiveManager, ArchiveReader
@@ -125,6 +126,7 @@ def plan_archive_copy_retirement(
 @router.post(
     "/archive/copies/retire",
     response_model=ArchiveCopyRetirementResultOut,
+    responses=error_responses("service_unavailable"),
 )
 def retire_archive_copy(
     request: RetireArchiveCopyRequest,

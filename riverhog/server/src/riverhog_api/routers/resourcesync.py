@@ -5,6 +5,7 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import APIRouter, Query, Request, Response
 from http_api_contracts import operation_interface
+from riverhog_protocol import PortableCollectionRecord
 
 from riverhog_api.auth import CatalogReader
 from riverhog_api.deps import ContainerDep
@@ -144,21 +145,18 @@ def resourcesync_change_list(
 
 @router.get(
     "/v1/catalog/collections/{collection_id}/manifest",
+    response_model=PortableCollectionRecord,
     openapi_extra=operation_interface("standard-tool/protocol"),
 )
 def get_portable_collection_manifest(
     collection_id: int,
     principal: CatalogReader,
     container: ContainerDep,
-) -> Response:
-    payload, etag = container.retrieval.collection_manifest(
+    response: Response,
+) -> PortableCollectionRecord:
+    record, etag = container.retrieval.collection_manifest(
         collection_id,
         principal=principal,
     )
-    import json
-
-    return Response(
-        content=json.dumps(payload, sort_keys=True, separators=(",", ":")),
-        media_type="application/json",
-        headers={"ETag": f'"{etag}"'},
-    )
+    response.headers["ETag"] = f'"{etag}"'
+    return record

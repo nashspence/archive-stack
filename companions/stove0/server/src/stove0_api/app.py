@@ -24,6 +24,7 @@ from http_api_contracts import (
     error_code_for_status,
     error_payload,
 )
+from lifecycle_events import EventPage
 from pydantic import ValidationError
 from riverhog_api_client import ApiClient
 from sqlalchemy import text
@@ -52,21 +53,35 @@ from stove0_core import (
     stove0_state_schema,
 )
 from stove0_observer_client import ContentObserverClient
-from stove0_protocol import CollectionRootRef, EvaluationDefinition, WorkIdentity
+from stove0_operator_contracts import (
+    ArtifactSelectionPage,
+    EvaluationPage,
+    EvaluationView,
+    RecipeCatalogView,
+    RecipeView,
+    SchedulerRun,
+    SchedulerStatus,
+    WorkPage,
+    WorkView,
+)
+from stove0_protocol import (
+    BranchSetEvaluation,
+    CollectionRootRef,
+    EvaluationDefinition,
+    WorkflowPreview,
+    WorkIdentity,
+)
 from stove0_target_client import TargetClient
 from time_formats import utc_timestamp_now
 
 from stove0_api.schemas import (
-    ArtifactSelectionPageOut,
     ErrorResponse,
-    EvaluationPageOut,
     EvaluationReviewIn,
     HealthResponse,
     SchedulerRunIn,
     WorkCancelIn,
     WorkCreateIn,
     WorkflowPreviewIn,
-    WorkPageOut,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -270,6 +285,7 @@ def create_app(
 
     @app.get(
         "/v1/events",
+        response_model=EventPage,
         dependencies=[Depends(authorize)],
         operation_id="list_events",
         tags=["events"],
@@ -277,43 +293,38 @@ def create_app(
     def list_events(
         after: str | None = None,
         limit: int = Query(default=100, ge=1, le=100),
-    ) -> dict[str, Any]:
-        return composition.state.list_events(after=after, limit=limit).model_dump(mode="json")
+    ) -> EventPage:
+        return composition.state.list_events(after=after, limit=limit)
 
     @app.get(
         "/v1/recipes",
+        response_model=RecipeCatalogView,
         dependencies=[Depends(authorize)],
         operation_id="list_recipes",
         tags=["recipes"],
     )
-    def list_recipes() -> dict[str, object]:
-        return {
-            "catalog_sha256": composition.recipes.sha256,
-            "recipes": [
-                {
-                    **recipe.model_dump(mode="json", exclude_none=True),
-                    "sha256": recipe.sha256,
-                }
-                for recipe in composition.recipes.recipes
-            ],
-        }
+    def list_recipes() -> RecipeCatalogView:
+        return RecipeCatalogView(
+            catalog_sha256=composition.recipes.sha256,
+            recipes=tuple(
+                RecipeView.from_definition(recipe) for recipe in composition.recipes.recipes
+            ),
+        )
 
     @app.get(
         "/v1/recipes/{recipe_id:path}",
+        response_model=RecipeView,
         dependencies=[Depends(authorize)],
         operation_id="get_recipe",
         tags=["recipes"],
     )
-    def get_recipe(recipe_id: str, revision: int | None = None) -> dict[str, Any]:
+    def get_recipe(recipe_id: str, revision: int | None = None) -> RecipeView:
         recipe = composition.recipes.recipe(recipe_id, revision)
-        return {
-            **recipe.model_dump(mode="json", exclude_none=True),
-            "sha256": recipe.sha256,
-        }
+        return RecipeView.from_definition(recipe)
 
     @app.get(
         "/v1/work",
-        response_model=WorkPageOut,
+        response_model=WorkPage,
         dependencies=[Depends(authorize)],
         operation_id="list_work",
         tags=["work"],
@@ -326,27 +337,30 @@ def create_app(
         sort: str = "updated_at",
         order: str = "desc",
         all_items: bool = Query(default=False, alias="all"),
-    ) -> dict[str, object]:
+    ) -> WorkPage:
         if sort not in {"updated_at", "phase", "work_id"} or order not in {"asc", "desc"}:
             raise HTTPException(status_code=400, detail="work sorting is invalid")
-        return composition.state.list_work(
-            page=page,
-            per_page=per_page,
-            phase=phase,
-            query=q,
-            sort=cast(Any, sort),
-            order=cast(Any, order),
-            all_items=all_items,
+        return WorkPage.from_page(
+            composition.state.list_work(
+                page=page,
+                per_page=per_page,
+                phase=phase,
+                query=q,
+                sort=cast(Any, sort),
+                order=cast(Any, order),
+                all_items=all_items,
+            )
         )
 
     @app.post(
         "/v1/work",
         status_code=201,
+        response_model=WorkView,
         dependencies=[Depends(authorize)],
         operation_id="create_work",
         tags=["work"],
     )
-    def create_work(request: WorkCreateIn) -> dict[str, Any]:
+    def create_work(request: WorkCreateIn) -> WorkView:
         identity = _work_identity(composition, request)
         existing = composition.state.load(identity.work_id)
         if existing is not None:
@@ -356,44 +370,43 @@ def create_app(
                     status_code=409,
                     detail="existing work was not initiated from the accepted preview",
                 )
-            return existing.model_dump(mode="json", exclude_none=True)
+            return WorkView.from_record(existing)
         preview = composition.preview.preview(identity)
         if preview.state != "ready" or preview.preview_sha256 != request.preview_sha256:
             raise HTTPException(
                 status_code=409,
                 detail="current workflow preview differs from the accepted preview",
             )
-        return composition.coordinator.create_or_resume(identity, preview=preview).model_dump(
-            mode="json", exclude_none=True
+        return WorkView.from_record(
+            composition.coordinator.create_or_resume(identity, preview=preview)
         )
 
     @app.get(
         "/v1/work/{work_id}",
+        response_model=WorkView,
         dependencies=[Depends(authorize)],
         operation_id="get_work",
         tags=["work"],
     )
-    def get_work(work_id: str) -> dict[str, Any]:
+    def get_work(work_id: str) -> WorkView:
         record = composition.state.load(work_id)
         if record is None:
             raise KeyError(work_id)
-        return record.model_dump(mode="json", exclude_none=True)
+        return WorkView.from_record(record)
 
     @app.get(
         "/v1/work/{work_id}/coordination",
+        response_model=BranchSetEvaluation,
         dependencies=[Depends(authorize)],
         operation_id="inspect_work_coordination",
         tags=["work"],
     )
-    def inspect_work_coordination(work_id: str) -> dict[str, Any]:
-        return composition.coordinator.inspect_coordination(work_id).model_dump(
-            mode="json",
-            exclude_none=True,
-        )
+    def inspect_work_coordination(work_id: str) -> BranchSetEvaluation:
+        return composition.coordinator.inspect_coordination(work_id)
 
     @app.get(
         "/v1/artifact-selections/{selection_sha256}",
-        response_model=ArtifactSelectionPageOut,
+        response_model=ArtifactSelectionPage,
         dependencies=[Depends(authorize)],
         operation_id="get_artifact_selection",
         tags=["artifact-selections"],
@@ -403,7 +416,7 @@ def create_app(
         page: int = Query(default=1, ge=1),
         per_page: int = Query(default=100, ge=1, le=1000),
         all_items: bool = Query(default=False, alias="all"),
-    ) -> dict[str, object]:
+    ) -> ArtifactSelectionPage:
         selection = composition.state.load_selection(selection_sha256)
         if selection is None:
             raise KeyError(selection_sha256)
@@ -419,62 +432,60 @@ def create_app(
             response_page = page
             response_per_page = per_page
             pages = (total + per_page - 1) // per_page
-        return {
-            "page": response_page,
-            "per_page": response_per_page,
-            "total": total,
-            "pages": pages,
-            "sort": "id",
-            "order": "asc",
-            "filters": {},
-            "selection_sha256": selection.selection_sha256,
-            "total_bytes": selection.total_bytes,
-            "artifacts": [item.model_dump(mode="json") for item in selected],
-        }
+        return ArtifactSelectionPage(
+            page=response_page,
+            per_page=response_per_page,
+            total=total,
+            pages=pages,
+            filters={},
+            selection_sha256=selection.selection_sha256,
+            total_bytes=selection.total_bytes,
+            artifacts=selected,
+        )
 
     @app.post(
         "/v1/work/{work_id}/step",
+        response_model=WorkView,
         dependencies=[Depends(authorize)],
         operation_id="step_work",
         tags=["work"],
     )
-    def step_work(work_id: str) -> dict[str, Any]:
-        return composition.coordinator.step(work_id).model_dump(mode="json", exclude_none=True)
+    def step_work(work_id: str) -> WorkView:
+        return WorkView.from_record(composition.coordinator.step(work_id))
 
     @app.post(
         "/v1/work/{work_id}/retry",
+        response_model=WorkView,
         dependencies=[Depends(authorize)],
         operation_id="retry_work",
         tags=["work"],
     )
-    def retry_work(work_id: str) -> dict[str, Any]:
-        return composition.coordinator.retry(work_id).model_dump(mode="json", exclude_none=True)
+    def retry_work(work_id: str) -> WorkView:
+        return WorkView.from_record(composition.coordinator.retry(work_id))
 
     @app.post(
         "/v1/work/{work_id}/cancel",
+        response_model=WorkView,
         dependencies=[Depends(authorize)],
         operation_id="cancel_work",
         tags=["work"],
     )
-    def cancel_work(work_id: str, request: WorkCancelIn) -> dict[str, Any]:
-        return composition.coordinator.cancel(work_id, reason=request.reason).model_dump(
-            mode="json", exclude_none=True
-        )
+    def cancel_work(work_id: str, request: WorkCancelIn) -> WorkView:
+        return WorkView.from_record(composition.coordinator.cancel(work_id, reason=request.reason))
 
     @app.post(
         "/v1/workflow-previews",
+        response_model=WorkflowPreview,
         dependencies=[Depends(authorize)],
         operation_id="preview_workflow",
         tags=["previews"],
     )
-    def preview_workflow(request: WorkflowPreviewIn) -> dict[str, Any]:
-        return composition.preview.preview(_work_identity(composition, request)).model_dump(
-            mode="json", exclude_none=True
-        )
+    def preview_workflow(request: WorkflowPreviewIn) -> WorkflowPreview:
+        return composition.preview.preview(_work_identity(composition, request))
 
     @app.get(
         "/v1/evaluations",
-        response_model=EvaluationPageOut,
+        response_model=EvaluationPage,
         dependencies=[Depends(authorize)],
         operation_id="list_evaluations",
         tags=["evaluations"],
@@ -487,88 +498,98 @@ def create_app(
         sort: str = "updated_at",
         order: str = "desc",
         all_items: bool = Query(default=False, alias="all"),
-    ) -> dict[str, object]:
+    ) -> EvaluationPage:
         if sort not in {"updated_at", "phase", "evaluation_id"} or order not in {
             "asc",
             "desc",
         }:
             raise HTTPException(status_code=400, detail="evaluation sorting is invalid")
-        return composition.state.list_evaluations(
-            page=page,
-            per_page=per_page,
-            phase=phase,
-            query=q,
-            sort=cast(Any, sort),
-            order=cast(Any, order),
-            all_items=all_items,
+        return EvaluationPage.from_page(
+            composition.state.list_evaluations(
+                page=page,
+                per_page=per_page,
+                phase=phase,
+                query=q,
+                sort=cast(Any, sort),
+                order=cast(Any, order),
+                all_items=all_items,
+            )
         )
 
     @app.post(
         "/v1/evaluations",
         status_code=201,
+        response_model=EvaluationView,
         dependencies=[Depends(authorize)],
         operation_id="create_evaluation",
         tags=["evaluations"],
     )
-    def create_evaluation(definition: EvaluationDefinition) -> dict[str, Any]:
-        return composition.evaluations.create_or_resume(definition).model_dump(
-            mode="json", exclude_none=True
-        )
+    def create_evaluation(definition: EvaluationDefinition) -> EvaluationView:
+        return EvaluationView.from_record(composition.evaluations.create_or_resume(definition))
 
     @app.get(
         "/v1/evaluations/{evaluation_id}",
+        response_model=EvaluationView,
         dependencies=[Depends(authorize)],
         operation_id="get_evaluation",
         tags=["evaluations"],
     )
-    def get_evaluation(evaluation_id: str) -> dict[str, Any]:
+    def get_evaluation(evaluation_id: str) -> EvaluationView:
         record = composition.state.load_evaluation(evaluation_id)
         if record is None:
             raise KeyError(evaluation_id)
-        return composition.evaluations.refresh(evaluation_id).model_dump(
-            mode="json", exclude_none=True
-        )
+        return EvaluationView.from_record(composition.evaluations.refresh(evaluation_id))
 
     @app.post(
         "/v1/evaluations/{evaluation_id}/step",
+        response_model=EvaluationView,
         dependencies=[Depends(authorize)],
         operation_id="step_evaluation",
         tags=["evaluations"],
     )
-    def step_evaluation(evaluation_id: str) -> dict[str, Any]:
-        return composition.evaluations.step(
-            evaluation_id,
-            controller=composition.coordinator,
-        ).model_dump(mode="json", exclude_none=True)
+    def step_evaluation(evaluation_id: str) -> EvaluationView:
+        return EvaluationView.from_record(
+            composition.evaluations.step(
+                evaluation_id,
+                controller=composition.coordinator,
+            )
+        )
 
     @app.post(
         "/v1/evaluations/{evaluation_id}/cancel",
+        response_model=EvaluationView,
         dependencies=[Depends(authorize)],
         operation_id="cancel_evaluation",
         tags=["evaluations"],
     )
-    def cancel_evaluation(evaluation_id: str, request: WorkCancelIn) -> dict[str, Any]:
-        return composition.evaluations.cancel(
-            evaluation_id,
-            controller=composition.coordinator,
-            reason=request.reason,
-        ).model_dump(mode="json", exclude_none=True)
+    def cancel_evaluation(evaluation_id: str, request: WorkCancelIn) -> EvaluationView:
+        return EvaluationView.from_record(
+            composition.evaluations.cancel(
+                evaluation_id,
+                controller=composition.coordinator,
+                reason=request.reason,
+            )
+        )
 
     @app.post(
         "/v1/evaluations/{evaluation_id}/variants/{variant_id}/retry",
+        response_model=EvaluationView,
         dependencies=[Depends(authorize)],
         operation_id="retry_evaluation_variant",
         tags=["evaluations"],
     )
-    def retry_evaluation_variant(evaluation_id: str, variant_id: str) -> dict[str, Any]:
-        return composition.evaluations.retry_failed(
-            evaluation_id,
-            variant_id,
-            controller=composition.coordinator,
-        ).model_dump(mode="json", exclude_none=True)
+    def retry_evaluation_variant(evaluation_id: str, variant_id: str) -> EvaluationView:
+        return EvaluationView.from_record(
+            composition.evaluations.retry_failed(
+                evaluation_id,
+                variant_id,
+                controller=composition.coordinator,
+            )
+        )
 
     @app.put(
         "/v1/evaluations/{evaluation_id}/variants/{variant_id}/review",
+        response_model=EvaluationView,
         dependencies=[Depends(authorize)],
         operation_id="review_evaluation_variant",
         tags=["evaluations"],
@@ -577,7 +598,7 @@ def create_app(
         evaluation_id: str,
         variant_id: str,
         request: EvaluationReviewIn,
-    ) -> dict[str, Any]:
+    ) -> EvaluationView:
         review = EvaluationReview(
             variant_id=variant_id,
             rating=request.rating,
@@ -585,36 +606,38 @@ def create_app(
             updated_by="operator",
             updated_at=utc_timestamp_now(),
         )
-        return composition.evaluations.review(evaluation_id, review).model_dump(
-            mode="json", exclude_none=True
-        )
+        return EvaluationView.from_record(composition.evaluations.review(evaluation_id, review))
 
     @app.get(
         "/v1/admin/scheduler",
+        response_model=SchedulerStatus,
         dependencies=[Depends(authorize)],
         operation_id="scheduler_status",
         tags=["scheduler"],
     )
-    def scheduler_status() -> dict[str, object]:
+    def scheduler_status() -> SchedulerStatus:
         saved = composition.state.load_cursor("riverhog-lifecycle/v1")
-        return {
-            "running": False,
-            "interval_seconds": composition.config.scheduler_interval_seconds,
-            "cursor": saved[0] if saved else "0",
-            "roles": ["controller", "worker", "combined"],
-        }
+        return SchedulerStatus(
+            running=False,
+            interval_seconds=composition.config.scheduler_interval_seconds,
+            cursor=saved[0] if saved else "0",
+            roles=("controller", "worker", "combined"),
+        )
 
     @app.post(
         "/v1/admin/scheduler/run",
+        response_model=SchedulerRun,
         dependencies=[Depends(authorize)],
         operation_id="run_scheduler",
         tags=["scheduler"],
     )
-    def run_scheduler_once(request: SchedulerRunIn) -> dict[str, object]:
-        return composition.scheduler.run_once(
-            role=request.role,
-            event_limit=request.event_limit,
-            work_limit=request.work_limit,
+    def run_scheduler_once(request: SchedulerRunIn) -> SchedulerRun:
+        return SchedulerRun.model_validate(
+            composition.scheduler.run_once(
+                role=request.role,
+                event_limit=request.event_limit,
+                work_limit=request.work_limit,
+            )
         )
 
     app.openapi_schema = apply_openapi_error_contract(app.openapi())

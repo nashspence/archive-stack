@@ -12,17 +12,7 @@ import pytest
 from jsonschema import Draft202012Validator
 from riverhog_protocol.collection_workflows import PRODUCER_EVIDENCE_PATH
 from stove0_observer_client import ContentObserverClient
-from stove0_observer_support import (
-    ObservationResultBuilder,
-    ObservationRuntime,
-    ObserverHttpBinding,
-    conformance_report,
-    observer_schema_bundle,
-)
-from stove0_protocol import (
-    ArtifactSubject,
-    CollectionRootRef,
-    JsonSchemaDocument,
+from stove0_observer_protocol import (
     ObservationInvocation,
     ObservationRequest,
     ObservationRequestPayload,
@@ -35,6 +25,18 @@ from stove0_protocol import (
     ObserverDescriptorPayload,
     ObserverImplementation,
     ObserverRuntimeAuthority,
+)
+from stove0_observer_support import (
+    ObservationResultBuilder,
+    ObservationRuntime,
+    ObserverHttpBinding,
+    conformance_report,
+    observer_schema_bundle,
+)
+from stove0_protocol import (
+    ArtifactSubject,
+    CollectionRootRef,
+    JsonSchemaDocument,
     canonical_json_sha256,
 )
 

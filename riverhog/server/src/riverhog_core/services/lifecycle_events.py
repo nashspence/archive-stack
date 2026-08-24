@@ -4,7 +4,14 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from lifecycle_events import CloudEvent, EventPage, cloud_event, normalize_event_context
+from lifecycle_events import CloudEvent, cloud_event, normalize_event_context
+from riverhog_protocol.lifecycle_events import (
+    RIVERHOG_EVENT_TYPE_PREFIX,
+    RiverhogEventPage,
+    RiverhogLifecycleEvent,
+    normalize_riverhog_event_type,
+    validate_riverhog_event,
+)
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
@@ -19,8 +26,6 @@ from riverhog_core.catalog_models import (
     RetrievalJobRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
-
-RIVERHOG_EVENT_TYPE_PREFIX = "io.riverhog.riverhog."
 
 
 def event_context_json(value: Mapping[str, Any] | None) -> str | None:
@@ -64,17 +69,14 @@ class SqlAlchemyLifecycleEventService:
         context_json: str | None = None,
         context_expires_at: str | None = None,
         session: Session | None = None,
-    ) -> CloudEvent:
-        normalized_type = (
-            type
-            if type.startswith(RIVERHOG_EVENT_TYPE_PREFIX)
-            else (RIVERHOG_EVENT_TYPE_PREFIX + type)
-        )
-        event = cloud_event(
-            source=self._config.event_source,
-            type=normalized_type,
-            subject=subject,
-            data=data,
+    ) -> RiverhogLifecycleEvent:
+        event = validate_riverhog_event(
+            cloud_event(
+                source=self._config.event_source,
+                type=normalize_riverhog_event_type(type),
+                subject=subject,
+                data=data,
+            )
         )
         record = LifecycleEventRecord(
             event_id=event.id,
@@ -97,7 +99,7 @@ class SqlAlchemyLifecycleEventService:
         owner_app: str | None,
         after: str | None,
         limit: int,
-    ) -> EventPage:
+    ) -> RiverhogEventPage:
         try:
             cursor = int((after or "0").strip())
         except ValueError as exc:
@@ -127,15 +129,15 @@ class SqlAlchemyLifecycleEventService:
             )
         has_more = len(rows) > limit
         selected = rows[:limit]
-        events: list[CloudEvent] = []
+        events: list[RiverhogLifecycleEvent] = []
         for row in selected:
             event = CloudEvent.model_validate_json(row.event_json)
             if row.context_json is not None:
                 data = dict(event.data)
                 data["context"] = decode_event_context(row.context_json)
                 event = event.model_copy(update={"data": data})
-            events.append(event)
-        return EventPage(
+            events.append(validate_riverhog_event(event))
+        return RiverhogEventPage(
             events=events,
             next_cursor=str(selected[-1].sequence if selected else cursor),
             has_more=has_more,
@@ -151,7 +153,7 @@ class SqlAlchemyLifecycleEventService:
         initiator: ApplicationPrincipal | None = None,
         event_context_json: str | None = None,
         session: Session | None = None,
-    ) -> CloudEvent | None:
+    ) -> RiverhogLifecycleEvent | None:
         if session is None:
             with session_scope(self._session_factory) as current_session:
                 return self.emit_collection(
@@ -224,7 +226,7 @@ class SqlAlchemyLifecycleEventService:
         details: Mapping[str, Any] | None = None,
         terminal: bool = False,
         session: Session,
-    ) -> CloudEvent:
+    ) -> RiverhogLifecycleEvent:
         expires_at = terminal_context_expiry(self._config) if terminal else None
         if expires_at is not None and job.event_context_json is not None:
             self.expire_context(

@@ -4,7 +4,8 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from lifecycle_events import EventPage
+from riverhog_protocol import PortableCollectionRecord
+from riverhog_protocol.lifecycle_events import RiverhogEventPage
 
 from riverhog_core.app_permissions import ApplicationAccess, ApplicationPrincipal
 from riverhog_core.domain.models import (
@@ -172,7 +173,7 @@ class RetrievalService(Protocol):
         collection_id: int,
         *,
         principal: ApplicationPrincipal | None = None,
-    ) -> tuple[JsonObject, str]: ...
+    ) -> tuple[PortableCollectionRecord, str]: ...
     def resource_list_page(
         self,
         *,
@@ -378,7 +379,7 @@ class LifecycleEventService(Protocol):
         owner_app: str | None,
         after: str | None,
         limit: int,
-    ) -> EventPage: ...
+    ) -> RiverhogEventPage: ...
 
 
 class SearchService(Protocol):

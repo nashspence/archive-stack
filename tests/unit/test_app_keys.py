@@ -20,9 +20,11 @@ from riverhog_core.app_permissions import (
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     AppKeyRecord,
+    CollectionFileRecord,
     CollectionRecord,
     CollectionTagRecord,
     KeyDownloadReservationRecord,
+    RetrievalJobFileRecord,
     RetrievalJobRecord,
     TagRecord,
 )
@@ -272,6 +274,23 @@ def test_revocation_cancels_key_jobs_and_releases_unused_download_reservations(
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:
         session.add(
+            CollectionRecord(
+                id=1,
+                creation_idempotency_key="revocation-fixture",
+                content_identity="0" * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="fixture-archive-key-v1",
+                record_etag="1" * 64,
+                metadata_revision=1,
+                metadata_updated_at=str(created["created_at"]),
+                created_by_app="fixture",
+                created_at=str(created["created_at"]),
+            )
+        )
+        session.add(
+            CollectionFileRecord(collection_id=1, path="video.mp4", bytes=100, sha256="2" * 64)
+        )
+        session.add(
             RetrievalJobRecord(
                 id="job-one",
                 app="review",
@@ -285,6 +304,14 @@ def test_revocation_cancels_key_jobs_and_releases_unused_download_reservations(
                 ready_at=None,
                 expires_at=None,
                 next_poll_at=str(created["created_at"]),
+            )
+        )
+        session.add(
+            RetrievalJobFileRecord(
+                job_id="job-one",
+                collection_id=1,
+                path="video.mp4",
+                file_order=0,
             )
         )
         session.add(
