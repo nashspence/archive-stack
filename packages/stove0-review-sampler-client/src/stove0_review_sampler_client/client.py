@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Self
+from collections.abc import Mapping
+from typing import Any, Self
 
 import httpx
 from http_api_contracts import parse_error_payload, safe_http_base_url
@@ -15,10 +16,21 @@ from stove0_review_sampler_protocol import (
 
 
 class SamplerProtocolError(RuntimeError):
-    def __init__(self, message: str, *, code: str, status: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "sampler_client_error",
+        observed_status: int | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
+        if observed_status is not None and not 400 <= observed_status <= 599:
+            raise ValueError("observed HTTP status must be a 4xx or 5xx response")
+        self.message = message
         self.code = code
-        self.status = status
+        self.observed_status = observed_status
+        self.details = dict(details or {})
 
 
 class ReviewSamplerClient:
@@ -74,22 +86,33 @@ class ReviewSamplerClient:
         return result
 
     def _json(self, method: str, path: str, *, content: bytes | None = None) -> object:
-        response = self._http.request(
-            method,
-            path,
-            content=content,
-            headers={"Content-Type": "application/json"} if content is not None else None,
-        )
+        try:
+            response = self._http.request(
+                method,
+                path,
+                content=content,
+                headers={"Content-Type": "application/json"} if content is not None else None,
+            )
+        except httpx.HTTPError as exc:
+            raise SamplerProtocolError(
+                f"sampler request failed: {exc}",
+                code="sampler_transport_error",
+            ) from exc
         if response.status_code >= 400:
             try:
                 payload = response.json()
             except ValueError:
                 payload = None
-            code, message, _details = parse_error_payload(
+            code, message, details = parse_error_payload(
                 payload,
                 fallback_message=response.text or f"HTTP {response.status_code}",
             )
-            raise SamplerProtocolError(message, code=code, status=response.status_code)
+            raise SamplerProtocolError(
+                message,
+                code=code,
+                observed_status=response.status_code,
+                details=details,
+            )
         return response.json()
 
 

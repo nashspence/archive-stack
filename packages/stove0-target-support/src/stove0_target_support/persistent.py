@@ -141,12 +141,19 @@ class PersistentTargetService:
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
         if request.protocol != self._contract.protocol:
-            raise TargetServiceError(409, "target-protocol-mismatch", "target protocol changed")
+            raise TargetServiceError(409, "target_protocol_mismatch", "target protocol changed")
         operation = self._operation(request.operation_id)
-        validate_declaration_against_operation(request, operation)
         support = self._contract.support_for(request.operation_id)
-        if request.operation_contract_sha256 != support.operation_contract_sha256:
-            raise TargetServiceError(409, "operation-contract-mismatch", "operation changed")
+        if (
+            request.operation_contract_sha256
+            not in {
+                operation.contract_sha256,
+                support.operation_contract_sha256,
+            }
+            or operation.contract_sha256 != support.operation_contract_sha256
+        ):
+            raise TargetServiceError(409, "operation_contract_mismatch", "operation changed")
+        validate_declaration_against_operation(request, operation)
         Draft202012Validator(operation.intent_schema.document).validate(request.intent)
         Draft202012Validator(support.options_schema.document).validate(request.target_options)
         plan_fields: dict[str, object] = {
@@ -176,10 +183,19 @@ class PersistentTargetService:
             or plan.target_implementation_id != self._contract.implementation_id
             or plan.protocol != self._contract.protocol
         ):
-            raise TargetServiceError(409, "target-contract-mismatch", "target contract changed")
+            raise TargetServiceError(409, "target_contract_mismatch", "target contract changed")
         operation = self._operation(plan.operation_id)
-        validate_declaration_against_operation(plan, operation)
         support = self._contract.support_for(plan.operation_id)
+        if (
+            plan.operation_contract_sha256
+            not in {
+                operation.contract_sha256,
+                support.operation_contract_sha256,
+            }
+            or operation.contract_sha256 != support.operation_contract_sha256
+        ):
+            raise TargetServiceError(409, "operation_contract_mismatch", "operation changed")
+        validate_declaration_against_operation(plan, operation)
         Draft202012Validator(operation.intent_schema.document).validate(plan.intent)
         Draft202012Validator(support.options_schema.document).validate(plan.target_options)
         with self._lock:
@@ -189,7 +205,7 @@ class PersistentTargetService:
             ):
                 raise TargetServiceError(
                     409,
-                    "job-request-mismatch",
+                    "job_request_mismatch",
                     "target job identity is already bound to another declaration",
                 )
             if existing is None:
@@ -204,7 +220,7 @@ class PersistentTargetService:
                 if prior_context is not None and prior_context != runtime_context:
                     raise TargetServiceError(
                         409,
-                        "target-runtime-mismatch",
+                        "target_runtime_mismatch",
                         "active target runtime endpoint changed",
                     )
                 self._runtime_contexts[job_id] = runtime_context
@@ -238,7 +254,7 @@ class PersistentTargetService:
         with self._lock:
             status = self._load_status(job_id)
             if status is None:
-                raise TargetServiceError(404, "job-not-found", "target job was not found")
+                raise TargetServiceError(404, "job_not_found", "target job was not found")
             return status
 
     def cancel_job(self, job_id: str, request: TargetCancelRequest) -> TargetJobStatus:
@@ -246,7 +262,7 @@ class PersistentTargetService:
         with self._lock:
             status = self._load_status(job_id)
             if status is None:
-                raise TargetServiceError(404, "job-not-found", "target job was not found")
+                raise TargetServiceError(404, "job_not_found", "target job was not found")
             if status.state == "interrupted":
                 return status
             if status.state in _TERMINAL_STATES:
@@ -330,7 +346,7 @@ class PersistentTargetService:
         except KeyError as exc:
             raise TargetServiceError(
                 400,
-                "unsupported-operation",
+                "unsupported_operation",
                 f"target does not support operation: {operation_id}",
             ) from exc
 

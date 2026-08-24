@@ -9,6 +9,7 @@ from riverhog_protocol import (
     PortableCollectionError,
     PortableCollectionFile,
     PortableCollectionRecord,
+    portable_collection_json_schema,
 )
 
 
@@ -37,6 +38,8 @@ def test_portable_collection_schema_names_the_public_model() -> None:
 
     assert schema["properties"]["format"]["const"] == "riverhog-collection/v1"
     assert schema["additionalProperties"] is False
+    assert "PortableCollectionRecord" in schema["$comment"]
+    assert portable_collection_json_schema() == schema
 
 
 def test_portable_collection_factory_cannot_emit_a_parser_invalid_file() -> None:

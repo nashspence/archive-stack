@@ -9,7 +9,8 @@ from typing import Any, Literal, Self
 from urllib.parse import quote
 
 import httpx
-from http_api_contracts import HealthResponse, parse_error_payload, safe_http_base_url
+from http_api_contracts import parse_error_payload, safe_http_base_url
+from pydantic import BaseModel, ConfigDict, Field
 from stove0_operator_contracts import (
     ArtifactSelectionPage,
     EvaluationPage,
@@ -35,6 +36,13 @@ from stove0_protocol import BranchSetEvaluation, EvaluationDefinition, WorkflowP
 type _WorkSort = Literal["updated_at", "phase", "work_id"]
 type _EvaluationSort = Literal["updated_at", "phase", "evaluation_id"]
 type _SortOrder = Literal["asc", "desc"]
+
+
+class HealthResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service: str = Field(min_length=1)
+    status: Literal["ok"]
 
 
 def _one_of(value: str, allowed: frozenset[str], label: str) -> str:

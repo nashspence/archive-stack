@@ -72,6 +72,7 @@ from stove0_target_support import (
     TargetPreflightResponse,
     TargetProgress,
     TargetRuntimeAuthority,
+    TargetServiceError,
     TransformPlan,
     TransformPlanPayload,
     canonical_json_bytes,
@@ -750,6 +751,75 @@ def test_framework_neutral_target_http_binding() -> None:
     assert job_response.status == 200
     assert TargetJobStatus.model_validate_json(job_response.body) == status
     assert binding.handle("PATCH", "/v1/target").status == 405
+
+
+def test_target_http_binding_maps_operation_schema_rejections_to_a_client_error() -> None:
+    operation, target, request = _request()
+    status = _success_status(operation, request)
+
+    class SchemaRejectingService(BindingTargetService):
+        def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
+            Draft202012Validator({"type": "integer"}).validate(request.intent)
+            raise AssertionError("schema rejection must stop preflight")
+
+    binding = TargetHttpBinding(SchemaRejectingService(target, request, status))
+    preflight_request = TargetPreflightRequest(
+        operation_id=operation.id,
+        operation_contract_sha256=operation.contract_sha256,
+        inputs=request.declaration.plan.inputs,
+        intent=request.declaration.plan.intent,
+        target_options=request.declaration.plan.target_options,
+    )
+
+    response = binding.handle(
+        "POST",
+        "/v1/preflight",
+        preflight_request.model_dump_json(exclude_none=True).encode(),
+    )
+
+    assert response.status == 400
+    assert b'"code":"invalid_target_request"' in response.body
+
+
+def test_persistent_target_service_uses_canonical_public_error_codes(tmp_path: Path) -> None:
+    operation, target, request = _request()
+    status = _success_status(operation, request)
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=tmp_path / "target-state",
+        execute=lambda *_args: status,
+    )
+    preflight = TargetPreflightRequest(
+        operation_id=operation.id,
+        operation_contract_sha256=operation.contract_sha256,
+        inputs=request.declaration.plan.inputs,
+        intent=request.declaration.plan.intent,
+        target_options=request.declaration.plan.target_options,
+    )
+    try:
+        with pytest.raises(TargetServiceError) as protocol_error:
+            service.preflight(preflight.model_copy(update={"protocol": EFFECT_TARGET_PROTOCOL}))
+        with pytest.raises(TargetServiceError) as contract_error:
+            service.preflight(preflight.model_copy(update={"operation_contract_sha256": _sha("0")}))
+        with pytest.raises(TargetServiceError) as operation_error:
+            service.preflight(preflight.model_copy(update={"operation_id": "unknown/v1"}))
+        with pytest.raises(TargetServiceError) as absence_error:
+            service.get_job(_sha("0"))
+    finally:
+        service.close()
+
+    assert {
+        protocol_error.value.code,
+        contract_error.value.code,
+        operation_error.value.code,
+        absence_error.value.code,
+    } == {
+        "target_protocol_mismatch",
+        "operation_contract_mismatch",
+        "unsupported_operation",
+        "job_not_found",
+    }
 
 
 def test_target_schema_bundle_is_deterministic_and_self_validating() -> None:

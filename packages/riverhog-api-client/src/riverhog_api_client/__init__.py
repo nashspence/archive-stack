@@ -12,7 +12,13 @@ from riverhog_protocol import (
     Unauthorized,
 )
 
-from riverhog_api_client.client import ApiClient
+from riverhog_api_client.client import (
+    ApiClient,
+    ApplicationPermission,
+    ApplicationResource,
+    ProvenanceMode,
+    RestorePolicy,
+)
 from riverhog_api_client.downloads import (
     RetrievalDownload,
     configured_download_concurrency,
@@ -28,6 +34,8 @@ from riverhog_api_client.uploads import (
 
 __all__ = [
     "ApiClient",
+    "ApplicationPermission",
+    "ApplicationResource",
     "BadRequest",
     "Conflict",
     "DownloadAllowanceExceeded",
@@ -37,6 +45,8 @@ __all__ = [
     "InvalidState",
     "NotFound",
     "RiverhogError",
+    "ProvenanceMode",
+    "RestorePolicy",
     "ServiceUnavailable",
     "Unauthorized",
     "RetrievalDownload",

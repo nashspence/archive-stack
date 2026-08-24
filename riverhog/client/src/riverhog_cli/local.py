@@ -8,10 +8,10 @@ import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
-from riverhog_api_client.client import ApiClient
+from riverhog_api_client.client import ApiClient, RestorePolicy
 from riverhog_api_client.downloads import (
     RetrievalDownload,
     configured_download_concurrency,
@@ -536,6 +536,7 @@ def _sync(
 ) -> dict[str, object]:
     if restore_policy not in {"allow", "never"}:
         raise typer.BadParameter("--restore-policy must be allow or never")
+    policy = cast(RestorePolicy, restore_policy)
     target = _target()
     with closing(_connect(target)) as db, ApiClient() as api:
         _refresh_catalog(db, api)
@@ -587,8 +588,8 @@ def _sync(
                     return payload
 
                 batch = missing[:RETRIEVAL_FILE_BATCH_MAX]
-                plan = api.plan_retrieval(batch, restore_policy=restore_policy)
-                if restore_policy == "never" and plan.get("requires_restore"):
+                plan = api.plan_retrieval(batch, restore_policy=policy)
+                if policy == "never" and plan.get("requires_restore"):
                     blocked = {
                         (
                             normalize_collection_id(current["collection_id"]),
@@ -602,11 +603,11 @@ def _sync(
                     batch = [current for current in batch if current not in blocked]
                     if not batch:
                         continue
-                    plan = api.plan_retrieval(batch, restore_policy=restore_policy)
+                    plan = api.plan_retrieval(batch, restore_policy=policy)
                 job = api.create_retrieval_job(
                     batch,
                     plan_etag=str(plan["etag"]),
-                    restore_policy=restore_policy,
+                    restore_policy=policy,
                 )
                 db.execute(
                     "INSERT INTO retrieval_jobs (id, state, files_json) VALUES (?, ?, ?)",

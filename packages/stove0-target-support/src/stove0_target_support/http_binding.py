@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
 from http_api_contracts import HttpOperationContract
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ValidationError
 from stove0_target_protocol import (
     TargetCancelRequest,
@@ -33,7 +34,7 @@ TARGET_HTTP_OPERATIONS = (
         TargetPreflightRequest,
         TargetPreflightResponse,
         "json",
-        error_statuses=(400, 401, 413, 500),
+        error_statuses=(400, 401, 409, 413, 500),
     ),
     HttpOperationContract(
         "PUT",
@@ -43,14 +44,19 @@ TARGET_HTTP_OPERATIONS = (
         "json",
         error_statuses=(400, 401, 409, 413, 500),
     ),
-    HttpOperationContract("GET", "/v1/jobs/{job_id}", response_type=TargetJobStatus),
+    HttpOperationContract(
+        "GET",
+        "/v1/jobs/{job_id}",
+        response_type=TargetJobStatus,
+        error_statuses=(400, 401, 404, 500),
+    ),
     HttpOperationContract(
         "POST",
         "/v1/jobs/{job_id}/cancel",
         TargetCancelRequest,
         TargetJobStatus,
         "json",
-        error_statuses=(400, 401, 413, 500),
+        error_statuses=(400, 401, 404, 413, 500),
     ),
 )
 
@@ -142,7 +148,7 @@ class TargetHttpBinding:
             return _error(404, "not_found", "target endpoint not found")
         except TargetServiceError as exc:
             return _error(exc.status, exc.code, exc.message)
-        except (ValidationError, ValueError) as exc:
+        except (JsonSchemaValidationError, ValidationError, ValueError) as exc:
             return _error(400, "invalid_target_request", str(exc))
         except Exception:
             return _error(500, "target_failed", "target execution failed")

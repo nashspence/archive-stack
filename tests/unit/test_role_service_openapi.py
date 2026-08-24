@@ -121,3 +121,14 @@ def test_unadvertised_role_methods_still_receive_runtime_method_rejection() -> N
                 headers={"Authorization": "Bearer secret"},
             )
         assert response.status_code == 405
+
+
+def test_target_operation_contract_declares_ordinary_conflict_and_absence() -> None:
+    by_operation = {
+        (contract.method, contract.path): set(contract.error_statuses)
+        for contract in TARGET_HTTP_OPERATIONS
+    }
+
+    assert 409 in by_operation[("POST", "/v1/preflight")]
+    assert 404 in by_operation[("GET", "/v1/jobs/{job_id}")]
+    assert 404 in by_operation[("POST", "/v1/jobs/{job_id}/cancel")]

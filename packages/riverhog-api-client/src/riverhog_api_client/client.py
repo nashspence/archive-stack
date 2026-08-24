@@ -5,7 +5,7 @@ import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal, Self, cast
+from typing import Annotated, Any, Literal, Self, cast
 from urllib.parse import quote
 from xml.etree import ElementTree
 
@@ -13,12 +13,10 @@ import httpx
 from application_access import (
     ApplicationAccessGrant,
     ApplicationAccessGrantSet,
-    ApplicationPermission,
-    ApplicationResource,
 )
 from file_download import verified_download
 from http_api_contracts import parse_error_payload, safe_http_base_url
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from riverhog_protocol import PortableCollectionRecord
 from riverhog_protocol.errors import (
     BadRequest,
@@ -40,6 +38,33 @@ _DOWNLOAD_TIMEOUT_SECONDS = 3600.0
 _DOWNLOAD_CHUNK_BYTES = 8 * 1024 * 1024
 _TRANSIENT_HTTP_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 DownloadProgress = Callable[[int, int | None], None]
+
+type RestorePolicy = Literal["allow", "never"]
+type ProvenanceMode = Literal["captured", "omitted"]
+type ApplicationPermission = Literal[
+    "*",
+    "catalog:read",
+    "retrieval:manage",
+    "collections:create",
+    "collection-transforms:control",
+    "collection-transforms:execute",
+    "collection-tags:manage",
+    "tags:create",
+    "tags:delete",
+    "collections:delete",
+    "archives:read",
+    "archives:manage",
+    "keys:manage",
+    "quotas:manage",
+    "events:read",
+    "events:read_all",
+    "provenance:read",
+    "provenance:export",
+]
+type ApplicationResource = Annotated[
+    str,
+    Field(pattern=r"^(?:\*|tag:[a-z0-9]+(?:-[a-z0-9]+)*|collection:[1-9][0-9]*)$"),
+]
 
 type _SortOrder = Literal["asc", "desc"]
 type _CollectionSort = Literal["id", "created_at", "bytes", "files"]
@@ -108,6 +133,30 @@ def _canonical_tags(values: Sequence[str]) -> list[str]:
     if len(tags) != len(set(tags)):
         raise BadRequest("collection tags must not contain duplicates")
     return tags
+
+
+def _restore_policy(value: RestorePolicy) -> RestorePolicy:
+    return cast(RestorePolicy, _one_of(value, frozenset({"allow", "never"}), "restore_policy"))
+
+
+def _provenance_choice(
+    mode: ProvenanceMode,
+    omission_reason: str | None,
+) -> tuple[ProvenanceMode, str | None]:
+    normalized_mode = cast(
+        ProvenanceMode,
+        _one_of(mode, frozenset({"captured", "omitted"}), "provenance_mode"),
+    )
+    if normalized_mode == "captured" and omission_reason is None:
+        return normalized_mode, None
+    if (
+        normalized_mode == "omitted"
+        and omission_reason is not None
+        and omission_reason
+        and omission_reason.strip() == omission_reason
+    ):
+        return normalized_mode, omission_reason
+    raise BadRequest("provenance_mode must be captured, or omitted with provenance_omission_reason")
 
 
 def _application_access_payload(
@@ -490,11 +539,11 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         files: Sequence[tuple[int, str]],
         *,
         lease_seconds: int | None = None,
-        restore_policy: str = "allow",
+        restore_policy: RestorePolicy = "allow",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "files": _file_selections_payload(files),
-            "restore_policy": restore_policy,
+            "restore_policy": _restore_policy(restore_policy),
         }
         if lease_seconds is not None:
             payload["lease_seconds"] = lease_seconds
@@ -506,12 +555,12 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         *,
         plan_etag: str,
         lease_seconds: int | None = None,
-        restore_policy: str = "allow",
+        restore_policy: RestorePolicy = "allow",
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "files": _file_selections_payload(files),
-            "restore_policy": restore_policy,
+            "restore_policy": _restore_policy(restore_policy),
         }
         if lease_seconds is not None:
             payload["lease_seconds"] = lease_seconds
@@ -749,9 +798,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         ingest_source: str | None = None,
         archive_store: str | None = None,
         event_context: Mapping[str, Any] | None = None,
-        provenance_mode: str = "captured",
+        provenance_mode: ProvenanceMode = "captured",
         provenance_omission_reason: str | None = None,
     ) -> dict[str, Any]:
+        provenance_mode, provenance_omission_reason = _provenance_choice(
+            provenance_mode,
+            provenance_omission_reason,
+        )
         payload: dict[str, Any] = {
             "idempotency_key": idempotency_key,
             "tags": _canonical_tags(tags),

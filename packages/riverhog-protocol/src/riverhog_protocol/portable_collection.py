@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sysconfig
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
@@ -16,6 +18,25 @@ _PASSPHRASE_ID_RE = re.compile(r"[A-Za-z0-9_-]{16,128}")
 
 class PortableCollectionError(ValueError):
     """The document is not the canonical portable Riverhog collection contract."""
+
+
+def portable_collection_json_schema() -> dict[str, Any]:
+    """Load the shipped structural projection of the canonical portable record."""
+
+    candidates = (
+        Path(__file__).parents[2] / "schemas" / "riverhog-collection-v1.schema.json",
+        Path(sysconfig.get_path("data"))
+        / "share"
+        / "riverhog-protocol"
+        / "schemas"
+        / "riverhog-collection-v1.schema.json",
+    )
+    for path in candidates:
+        if path.is_file():
+            document = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(document, dict):
+                return document
+    raise RuntimeError("the riverhog portable-collection schema is not installed")
 
 
 def _sha256(value: object, label: str) -> str:
@@ -267,4 +288,5 @@ __all__ = [
     "PortableCollectionError",
     "PortableCollectionFile",
     "PortableCollectionRecord",
+    "portable_collection_json_schema",
 ]

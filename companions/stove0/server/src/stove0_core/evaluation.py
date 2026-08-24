@@ -12,6 +12,11 @@ import threading
 from typing import Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from stove0_operator_contracts import (
+    validate_evaluation_child_shape,
+    validate_evaluation_review_shape,
+    validate_evaluation_state_shape,
+)
 from stove0_protocol import EvaluationDefinition
 from stove0_target_protocol import OutputCollectionRef
 
@@ -51,8 +56,7 @@ class EvaluationChild(EvaluationModel):
 
     @model_validator(mode="after")
     def validate_output(self) -> Self:
-        if (self.state == "complete") != (self.output is not None):
-            raise ValueError("only completed evaluation children may carry output identity")
+        validate_evaluation_child_shape(self.state, self.output)
         return self
 
 
@@ -65,10 +69,7 @@ class EvaluationReview(EvaluationModel):
 
     @model_validator(mode="after")
     def meaningful(self) -> Self:
-        if self.rating is None and not (self.note and self.note.strip()):
-            raise ValueError("evaluation review requires a rating or note")
-        if self.note is not None and self.note != self.note.strip():
-            raise ValueError("evaluation review note must be canonical")
+        validate_evaluation_review_shape(self.rating, self.note)
         return self
 
 
@@ -82,18 +83,7 @@ class EvaluationRecord(EvaluationModel):
 
     @model_validator(mode="after")
     def validate_children(self) -> Self:
-        expected = tuple(
-            (variant.id, self.definition.child_work(variant.id).work_id)
-            for variant in self.definition.matrix.variants
-        )
-        actual = tuple((child.variant_id, child.work_id) for child in self.children)
-        if actual != expected:
-            raise ValueError("evaluation children differ from the immutable matrix")
-        review_ids = [review.variant_id for review in self.reviews]
-        if review_ids != sorted(review_ids) or len(review_ids) != len(set(review_ids)):
-            raise ValueError("evaluation reviews must be unique and ordered by variant ID")
-        if not set(review_ids).issubset({child.variant_id for child in self.children}):
-            raise ValueError("evaluation review names an unknown variant")
+        validate_evaluation_state_shape(self.definition, self.children, self.reviews)
         return self
 
     @property

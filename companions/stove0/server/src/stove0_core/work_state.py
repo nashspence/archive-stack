@@ -18,6 +18,7 @@ from stove0_observer_protocol import (
     ObserverDescriptor,
     validate_observation_result,
 )
+from stove0_operator_contracts import validate_work_state_shape
 from stove0_protocol import (
     ArtifactSelection,
     BranchPlan,
@@ -30,7 +31,6 @@ from stove0_protocol import (
     ExecutionEnvelope,
     ExecutionEnvelopePayload,
     JoinPlan,
-    JoinWorkBinding,
     Sha256,
     TargetPlanBinding,
     WorkflowPlan,
@@ -166,100 +166,23 @@ class WorkRecord(Stove0StateModel):
 
     @model_validator(mode="after")
     def validate_shape(self) -> Self:
-        if self.phase == "eligible" and self.claim is not None:
-            raise ValueError("eligible work cannot already hold a claim")
-        inactive_without_claim = {"eligible", "failed", "canceled", "inapplicable"}
-        if self.phase not in inactive_without_claim and self.claim is None:
-            raise ValueError("active work phases require a claim")
-        if self.output is not None and self.phase not in {
-            "verifying",
-            "settled",
-            "retirement_pending",
-            "abandon_pending",
-            "complete",
-        }:
-            raise ValueError("output identity appears before verification")
-        if (
-            self.phase
-            in {
-                "abandon_pending",
-                "failed",
-                "canceled",
-                "inapplicable",
-            }
-            and self.output is not None
-        ):
-            raise ValueError("non-success terminal work cannot contain an output")
-        failure_phases = {"failed"}
-        if self.phase == "abandon_pending" and self.abandon_outcome == "failed":
-            failure_phases.add("abandon_pending")
-        if self.phase in failure_phases and self.failure is None:
-            raise ValueError("failed work requires failure details")
-        if self.phase not in failure_phases and self.failure is not None:
-            raise ValueError("only failed work may retain failure details")
-        inapplicable_phases = {"inapplicable"}
-        if self.phase == "abandon_pending" and self.abandon_outcome == "inapplicable":
-            inapplicable_phases.add("abandon_pending")
-        if self.phase in inapplicable_phases and self.inapplicable is None:
-            raise ValueError("inapplicable work requires a terminal outcome")
-        if self.phase not in inapplicable_phases and self.inapplicable is not None:
-            raise ValueError("only inapplicable work may retain that outcome")
-        if self.phase == "abandon_pending" and self.abandon_outcome is None:
-            raise ValueError("abandon_pending work requires a terminal outcome")
-        if self.phase != "abandon_pending" and self.abandon_outcome is not None:
-            raise ValueError("only abandon_pending work may retain an abandon outcome")
-        if self.retirement_remaining and self.phase != "retirement_pending":
-            raise ValueError("retirement work must remain in retirement_pending")
-        if self.branch_set_plan is not None:
-            if self.branch_set_plan.parent_work != self.work:
-                raise ValueError("branch-set plan differs from its parent work record")
-            if self.workflow_plan is not None or isinstance(self.work.fork_join, JoinWorkBinding):
-                raise ValueError("coordination parents cannot also be target work")
-            if self.phase not in {
-                "eligible",
-                "claimed",
-                "coordinating",
-                "retirement_pending",
-                "complete",
-                "abandon_pending",
-                "canceled",
-                "failed",
-                "inapplicable",
-            }:
-                raise ValueError("branch-set plan appears in an invalid coordination phase")
-        if self.coordination_settlement is not None:
-            if (
-                self.branch_set_plan is None
-                or self.coordination_settlement.work != self.work
-                or self.coordination_settlement.branch_set_sha256
-                != self.branch_set_plan.branch_set_sha256
-                or self.phase not in {"claimed", "coordinating", "retirement_pending", "complete"}
-            ):
-                raise ValueError("coordination settlement differs from its durable coordinator")
-        if self.preview_acceptance is not None:
-            if self.work.fork_join is not None:
-                raise ValueError("only parent work may retain a preview acceptance")
-            if self.branch_set_plan is not None and (
-                self.branch_set_plan.branch_set_sha256 != self.preview_acceptance.branch_set_sha256
-            ):
-                raise ValueError("admitted branch set differs from the accepted preview")
-        if self.expected_target_plan_sha256 is not None and self.workflow_plan is None:
-            raise ValueError("a target-plan expectation requires ordinary target work")
-        if self.join_plan is not None:
-            if self.branch_set_plan is None or self.join_plan.branch_set_sha256 != (
-                self.branch_set_plan.branch_set_sha256
-            ):
-                raise ValueError("resolved join plan differs from its branch set")
-        if self.phase == "coordinating" and self.branch_set_plan is None:
-            raise ValueError("coordinating work requires an immutable branch-set plan")
-        if self.coordination_cancel_requested and (
-            self.branch_set_plan is None
-            or self.phase
-            not in {"eligible", "claimed", "coordinating", "abandon_pending", "canceled"}
-        ):
-            raise ValueError("coordination cancellation belongs only to a branch-set parent")
-        if self.workflow_plan is not None and self.workflow_plan.work != self.work:
-            raise ValueError("workflow plan differs from its ordinary work record")
+        validate_work_state_shape(
+            work=self.work,
+            phase=self.phase,
+            claim=self.claim,
+            preview_acceptance=self.preview_acceptance,
+            expected_target_plan_sha256=self.expected_target_plan_sha256,
+            branch_set_plan=self.branch_set_plan,
+            coordination_settlement=self.coordination_settlement,
+            join_plan=self.join_plan,
+            coordination_cancel_requested=self.coordination_cancel_requested,
+            workflow_plan=self.workflow_plan,
+            output=self.output,
+            retirement_remaining=self.retirement_remaining,
+            failure=self.failure,
+            inapplicable=self.inapplicable,
+            abandon_outcome=self.abandon_outcome,
+        )
         return self
 
     @property

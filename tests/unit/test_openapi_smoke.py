@@ -124,6 +124,30 @@ def test_provenance_reads_publish_typed_captured_or_omitted_contracts() -> None:
     )
 
 
+def test_collection_upload_provenance_request_is_an_exact_choice() -> None:
+    schema = create_app().openapi()["components"]["schemas"][
+        "CreateOrResumeCollectionUploadSessionRequest"
+    ]
+
+    assert schema["properties"]["provenance_mode"]["enum"] == ["captured", "omitted"]
+    assert schema["properties"]["provenance_mode"]["default"] == "captured"
+    assert schema["oneOf"] == [
+        {
+            "properties": {
+                "provenance_mode": {"const": "captured"},
+                "provenance_omission_reason": {"type": "null"},
+            }
+        },
+        {
+            "properties": {
+                "provenance_mode": {"const": "omitted"},
+                "provenance_omission_reason": {"minLength": 1, "type": "string"},
+            },
+            "required": ["provenance_omission_reason"],
+        },
+    ]
+
+
 def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> None:
     schemas = create_app().openapi()["components"]["schemas"]
 
