@@ -95,6 +95,16 @@ def _wait_for_runs(counter: Path, expected: int) -> None:
     raise AssertionError(f"Gogurt action did not reach {expected} runs")
 
 
+def _wait_for_published_pid(pid_file: Path) -> int:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            return int(pid_file.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            time.sleep(0.02)
+    raise AssertionError("Gogurt action did not publish its process ID")
+
+
 def _heartbeat_payload(paths: ListenerPaths) -> dict[str, object]:
     payload = listener_module._read_heartbeat(paths.heartbeat_file)
     assert payload is not None
@@ -531,11 +541,7 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
     thread.start()
     action_pid: int | None = None
     try:
-        deadline = time.monotonic() + 5
-        while not pid_file.is_file() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert pid_file.is_file()
-        action_pid = int(pid_file.read_text(encoding="utf-8"))
+        action_pid = _wait_for_published_pid(pid_file)
         runtime.request_stop()
         thread.join(timeout=5)
         assert not thread.is_alive()
@@ -579,11 +585,7 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
     thread.start()
     action_pid: int | None = None
     try:
-        deadline = time.monotonic() + 5
-        while not pid_file.is_file() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert pid_file.is_file()
-        action_pid = int(pid_file.read_text(encoding="utf-8"))
+        action_pid = _wait_for_published_pid(pid_file)
         paths.stop_file.write_text("stop\n", encoding="utf-8")
         thread.join(timeout=5)
 
