@@ -64,6 +64,8 @@ COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
 COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
 COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
 COPY third_party/minisign/0.12/LICENSE /usr/share/licenses/riverhog-third-party/minisign/0.12/LICENSE
+RUN echo "01aa50818d6609e85a9610b7d04da037e8b28bcf3bb5b5b4963c0c3f7abdabbd  /usr/share/licenses/riverhog-third-party/minisign/0.12/LICENSE" \
+    | sha256sum -c -
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

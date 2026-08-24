@@ -196,17 +196,17 @@ deployed_implementations = ["linux/amd64"]
 platforms = ["linux/amd64"]
 
 [images.runtime]
-riverhog = { distribution = "riverhog-server", repository = "ghcr.io/nashspence/riverhog" }
-mango-fish = { distribution = "mango-fish", repository = "ghcr.io/nashspence/riverhog-mango-fish" }
-riverhog-ftp-adapter = { distribution = "riverhog-ftp-adapter", repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
-riverhog-storage-adapter-aws = { distribution = "riverhog-storage-adapter-aws", repository = "ghcr.io/nashspence/riverhog-storage-adapter-aws" }
-riverhog-storage-adapter-backblaze = { distribution = "riverhog-storage-adapter-backblaze", repository = "ghcr.io/nashspence/riverhog-storage-adapter-backblaze" }
-stove0 = { distribution = "stove0-server", repository = "ghcr.io/nashspence/riverhog-stove0" }
-stove0-exiftool-observer = { distribution = "stove0-exiftool-observer", repository = "ghcr.io/nashspence/riverhog-stove0-exiftool-observer" }
-stove0-ffprobe-sampling-observer = { distribution = "stove0-ffprobe-sampling-observer", repository = "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer" }
-stove0-nvenc-av1-opus-target = { distribution = "stove0-nvenc-av1-opus-target", repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target" }
-stove0-opus-target = { distribution = "stove0-opus-target", repository = "ghcr.io/nashspence/riverhog-stove0-opus-target" }
-stove0-review-target = { distribution = "stove0-review-target", repository = "ghcr.io/nashspence/riverhog-stove0-review-target" }
+riverhog = { distributions = ["riverhog-server"], repository = "ghcr.io/nashspence/riverhog" }
+mango-fish = { distributions = ["mango-fish"], repository = "ghcr.io/nashspence/riverhog-mango-fish" }
+riverhog-ftp-adapter = { distributions = ["riverhog-ftp-adapter"], repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
+riverhog-storage-adapter-aws = { distributions = ["riverhog-storage-adapter-aws"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-aws" }
+riverhog-storage-adapter-backblaze = { distributions = ["riverhog-storage-adapter-backblaze"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-backblaze" }
+stove0 = { distributions = ["stove0-server"], repository = "ghcr.io/nashspence/riverhog-stove0" }
+stove0-exiftool-observer = { distributions = ["stove0-exiftool-observer"], repository = "ghcr.io/nashspence/riverhog-stove0-exiftool-observer" }
+stove0-ffprobe-sampling-observer = { distributions = ["stove0-ffprobe-sampling-observer"], repository = "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer" }
+stove0-nvenc-av1-opus-target = { distributions = ["stove0-nvenc-av1-opus-target", "stove0-nvenc-av1-opus-review-sampler"], repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target" }
+stove0-opus-target = { distributions = ["stove0-opus-target", "stove0-opus-review-sampler"], repository = "ghcr.io/nashspence/riverhog-stove0-opus-target" }
+stove0-review-target = { distributions = ["stove0-review-target"], repository = "ghcr.io/nashspence/riverhog-stove0-review-target" }
 
 [images.test_only]
 test = { local_tag = "riverhog-test:dev" }

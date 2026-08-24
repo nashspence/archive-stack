@@ -7,9 +7,15 @@ WORKDIR /workspace
 COPY mise.toml mise.lock ./
 RUN mise trust mise.toml \
     && mise install --locked uv rclone \
-    && mkdir -p /opt/riverhog-tools/bin \
+    && rclone_path="$(mise which rclone)" \
+    && mkdir -p /opt/riverhog-tools/bin /opt/riverhog-tools/licenses/rclone/1.75.0 \
     && cp --preserve=mode,timestamps "$(mise which uv)" /opt/riverhog-tools/bin/uv \
-    && cp --preserve=mode,timestamps "$(mise which rclone)" /opt/riverhog-tools/bin/rclone \
+    && cp --preserve=mode,timestamps "${rclone_path}" /opt/riverhog-tools/bin/rclone \
+    && awk 'seen { if ($0 == "Authors and contributors") exit; print } $0 == "License" { seen=1; print }' \
+        "$(dirname "${rclone_path}")/README.txt" \
+        > /opt/riverhog-tools/licenses/rclone/1.75.0/LICENSE \
+    && echo "f47e4137bcc0bf4554ad5f9e3dd361c738fb95e27c24f5d0792bc2479bd241b6  /opt/riverhog-tools/licenses/rclone/1.75.0/LICENSE" \
+        | sha256sum -c - \
     && test "$(/opt/riverhog-tools/bin/uv --version)" = "$(mise exec uv -- uv --version)" \
     && /opt/riverhog-tools/bin/rclone version
 
@@ -63,6 +69,7 @@ LABEL org.opencontainers.image.title="stove0 review target" \
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
 COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
 COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
+COPY --from=locked-tools /opt/riverhog-tools/licenses/rclone/1.75.0/LICENSE /usr/share/licenses/riverhog-third-party/rclone/1.75.0/LICENSE
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tini \

@@ -1,0 +1,6 @@
+schema = "riverhog-third-party-attribution-source/v1"
+component = "minisign"
+version = "0.12"
+file = "LICENSE"
+url = "https://raw.githubusercontent.com/jedisct1/minisign/0.12/LICENSE"
+sha256 = "01aa50818d6609e85a9610b7d04da037e8b28bcf3bb5b5b4963c0c3f7abdabbd"

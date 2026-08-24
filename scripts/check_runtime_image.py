@@ -11,8 +11,34 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from runtime_image_attribution import locked_runtime_payloads
+
 REPO = Path(__file__).resolve().parents[1]
 FORBIDDEN_RUNTIME_COMMANDS = ("cc", "gcc", "git", "make", "mise", "uv")
+
+STANDALONE_ATTRIBUTION_PROGRAM = r"""
+import json
+from pathlib import Path
+
+observed = []
+for root in (
+    Path("/usr/share/licenses/riverhog-third-party"),
+    Path("/usr/local/share/licenses/riverhog-third-party"),
+):
+    if not root.is_dir():
+        continue
+    for component in sorted(root.iterdir()):
+        if not component.is_dir():
+            raise RuntimeError(f"invalid standalone attribution component: {component}")
+        for version in sorted(component.iterdir()):
+            if not version.is_dir():
+                raise RuntimeError(f"invalid standalone attribution version: {version}")
+            notices = sorted(path for path in version.rglob("*") if path.is_file())
+            if not notices or any(not path.read_bytes() for path in notices):
+                raise RuntimeError(f"standalone component has no attribution text: {version}")
+            observed.append([component.name, version.name])
+print(json.dumps(observed))
+"""
 
 
 def _run(*command: str) -> str:
@@ -113,6 +139,31 @@ def _command_status(tag: str, commands: list[str]) -> dict[str, bool]:
     )
 
 
+def _standalone_attributions(tag: str) -> dict[str, set[str]]:
+    pairs = json.loads(
+        _run(
+            "docker",
+            "run",
+            "--rm",
+            "--network=none",
+            "--entrypoint",
+            "/opt/venv/bin/python",
+            tag,
+            "-c",
+            STANDALONE_ATTRIBUTION_PROGRAM,
+        )
+    )
+    observed: dict[str, set[str]] = {}
+    seen: set[tuple[str, str]] = set()
+    for name, version in pairs:
+        identity = (str(name), str(version))
+        if identity in seen:
+            raise SystemExit(f"standalone attribution is duplicated: {identity}")
+        seen.add(identity)
+        observed.setdefault(identity[0], set()).add(identity[1])
+    return observed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("target")
@@ -142,12 +193,23 @@ def main() -> int:
     if build_tools := [name for name in FORBIDDEN_RUNTIME_COMMANDS if statuses[name]]:
         raise SystemExit(f"{args.target}: build-only commands in runtime image: {build_tools}")
 
+    expected_standalone = locked_runtime_payloads(REPO, dockerfile)
+    actual_standalone = _standalone_attributions(tag)
+    for name, version in expected_standalone.items():
+        actual_versions = actual_standalone.get(name, set())
+        if actual_versions != {version}:
+            raise SystemExit(
+                f"{args.target}: standalone attribution for {name} differs from its "
+                f"exact mise lock: expected={version!r} actual={sorted(actual_versions)!r}"
+            )
+
     print(
         json.dumps(
             {
                 "image": args.target,
                 "requested_distributions": sorted(roots),
                 "runtime_commands": root_scripts,
+                "standalone_runtime_payloads": expected_standalone,
                 "status": "ok",
                 "workspace_dependency_closure": sorted(expected),
             },

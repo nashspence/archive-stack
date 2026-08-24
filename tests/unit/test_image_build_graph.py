@@ -166,6 +166,8 @@ def test_runtime_image_isolation_is_derived_for_every_runtime_image() -> None:
     assert "docker-bake.hcl" in checker
     assert "_workspace_dependency_closure" in checker
     assert "FORBIDDEN_RUNTIME_COMMANDS" in checker
+    assert "locked_runtime_payloads" in checker
+    assert "STANDALONE_ATTRIBUTION_PROGRAM" in checker
 
 
 def _bake_graph() -> dict[str, object]:
