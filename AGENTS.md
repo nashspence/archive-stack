@@ -36,9 +36,7 @@ Durable documentation has distinct roles:
 
 - [README](README.md) is the human entrypoint;
 - [architecture](docs/architecture.md) owns the authority and implementation-boundary
-  mental model and repository map;
-- [operator responsibilities](docs/operator-responsibilities.md) owns human archive-safety
-  judgment.
+  mental model and repository map.
 
 Licensing and security reporting remain in their conventional top-level files. Do not add
 release reference or duplicate executable contracts to `main`.

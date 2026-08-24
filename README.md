@@ -38,9 +38,7 @@ development and test rails.
 
 - [Architecture](docs/architecture.md) explains authority, component boundaries, and the
   repository layout.
-- [Operator responsibilities](docs/operator-responsibilities.md) covers the human checks
-  around durable storage, recovery, and deletion.
-- [Provider qualification](docs/how-to/provider-qualification.md) defines the disposable B2,
+- [Provider qualification](qualification/provider/README.md) defines the disposable B2,
   Deep Archive, and CloudFront release test and its operator configuration.
 - [Licensing](LICENSE.md) defines the repository's release terms.
 

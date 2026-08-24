@@ -506,7 +506,7 @@ def test_provider_qualification_target_uses_locked_workspace(tmp_path: Path) -> 
     completed, docker_log_path, uv_log_path = _run_make(
         tmp_path,
         "provider-qualification",
-        "args=config-check config/provider-qualification.example.toml",
+        "args=config-check qualification/provider/config.toml",
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -514,7 +514,7 @@ def test_provider_qualification_target_uses_locked_workspace(tmp_path: Path) -> 
     assert _read_log_lines(uv_log_path) == [
         "|x -- uv run --locked --all-packages --group dev "
         "python scripts/provider_qualification.py config-check "
-        "config/provider-qualification.example.toml"
+        "qualification/provider/config.toml"
     ]
 
 

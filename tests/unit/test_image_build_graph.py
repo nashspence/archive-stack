@@ -10,7 +10,6 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BAKE_FILE = REPO_ROOT / "docker-bake.hcl"
 CI_FILE = REPO_ROOT / ".github/workflows/ci.yml"
-IMAGE_ROLES_FILE = REPO_ROOT / "image-roles.toml"
 SBOM_GENERATOR = (
     "docker.io/docker/buildkit-syft-scanner:stable-1@"
     "sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68"
@@ -153,14 +152,20 @@ PINNED_EXTERNAL_COMPOSE_IMAGES = {
 }
 
 
-def test_reviewed_stove0_image_roles_cover_every_maintained_stove0_image() -> None:
-    inventory = tomllib.loads(IMAGE_ROLES_FILE.read_text(encoding="utf-8"))
-    assert inventory["format"] == "riverhog-image-roles/v1"
-    assert set(inventory["images"]) == {
-        name for name in IMAGE_CONTRACTS if name == "stove0" or name.startswith("stove0-")
+def test_runtime_image_isolation_is_derived_for_every_runtime_image() -> None:
+    workflow = yaml.safe_load(CI_FILE.read_text(encoding="utf-8"))
+    steps = {step["name"]: step for step in workflow["jobs"]["images"]["steps"]}
+    assert steps["Verify runtime image isolation"] == {
+        "name": "Verify runtime image isolation",
+        "if": "matrix.target != 'test'",
+        "env": {"IMAGE_TARGET": "${{ matrix.target }}"},
+        "run": 'python3 scripts/check_runtime_image.py "$IMAGE_TARGET"',
     }
-    workflow = CI_FILE.read_text(encoding="utf-8")
-    assert 'python3 scripts/check_image_roles.py "$IMAGE_TARGET"' in workflow
+
+    checker = (REPO_ROOT / "scripts/check_runtime_image.py").read_text(encoding="utf-8")
+    assert "docker-bake.hcl" in checker
+    assert "_workspace_dependency_closure" in checker
+    assert "FORBIDDEN_RUNTIME_COMMANDS" in checker
 
 
 def _bake_graph() -> dict[str, object]:

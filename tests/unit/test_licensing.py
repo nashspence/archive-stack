@@ -187,7 +187,6 @@ def test_entrypoint_documents_route_to_one_operational_disclaimer() -> None:
         for path in (
             REPO_ROOT / "README.md",
             REPO_ROOT / "docs/architecture.md",
-            REPO_ROOT / "docs/operator-responsibilities.md",
         )
     ]
     normalized_readme = " ".join(readme.split())

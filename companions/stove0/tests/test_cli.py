@@ -9,7 +9,7 @@ from lifecycle_events import EventPage
 from stove0_cli import main as stove0_cli
 from typer.testing import CliRunner
 
-CONFORMANCE_CATALOG = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+CONFORMANCE_CATALOG = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
 
 
 class FakeClient:

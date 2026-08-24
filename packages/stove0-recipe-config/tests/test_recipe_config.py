@@ -10,7 +10,7 @@ from stove0_recipe_config.models import _validate_recipe_cycles
 
 
 def test_checked_example_is_a_portable_content_addressed_catalog() -> None:
-    path = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+    path = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
 
     catalog = RecipeCatalog.load(path)
     document = catalog.validation_document()

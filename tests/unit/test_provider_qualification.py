@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts/provider_qualification.py"
-CONFIG = REPO_ROOT / "config/provider-qualification.example.toml"
+CONFIG = REPO_ROOT / "qualification/provider/config.toml"
 
 
 def load_script() -> ModuleType:

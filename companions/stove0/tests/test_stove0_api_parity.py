@@ -556,7 +556,7 @@ def test_stove0_client_transport_configuration_is_connected(
 def test_installed_conformance_catalog_is_exact_through_api_client_and_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+    path = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
     catalog = RecipeCatalog.load(path)
     application = create_app(replace(_lifecycle_composition(), recipes=catalog))
 

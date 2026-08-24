@@ -44,7 +44,7 @@ services:
       - api_token
     volumes:
       - type: bind
-        source: ${RIVERHOG_FTP_ADAPTER_CONFIG_HOST_PATH:-./config/ftp-adapter.example.json}
+        source: ${RIVERHOG_FTP_ADAPTER_CONFIG_HOST_PATH:?RIVERHOG_FTP_ADAPTER_CONFIG_HOST_PATH is required}
         target: /etc/riverhog/ftp-adapter.json
         read_only: true
       - type: bind
