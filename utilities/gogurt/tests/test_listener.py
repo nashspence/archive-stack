@@ -754,7 +754,7 @@ def test_listener_sqlite_keeps_exclusive_database_descriptor_custody(
     def guarded_open(
         path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
         flags: int,
-        mode: int = 0o777,
+        mode: int = 0o600,
         *,
         dir_fd: int | None = None,
     ) -> int:
