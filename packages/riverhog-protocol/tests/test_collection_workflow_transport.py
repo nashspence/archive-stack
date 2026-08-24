@@ -7,6 +7,7 @@ from riverhog_protocol.collection_workflow_transport import (
     CollectionRootIdentityDocument,
     ProcessingClaimCreateDocument,
     ProcessingClaimDocument,
+    RetirementClaimReferenceDocument,
     TransformCapabilityCreateDocument,
 )
 from riverhog_protocol.collection_workflows import (
@@ -152,4 +153,38 @@ def test_processing_claim_projection_rejects_impossible_state_evidence() -> None
                 **abandoned,
                 "abandonment_reason": None,
             }
+        )
+
+
+def test_retirement_reference_identifies_one_exact_settlement_form() -> None:
+    direct = RetirementClaimReferenceDocument(
+        claim_id="1" * 64,
+        fence=2,
+        work_id="2" * 64,
+        execution_id="3" * 64,
+        output_collection_id=42,
+    )
+    delegated = RetirementClaimReferenceDocument(
+        claim_id="4" * 64,
+        fence=3,
+        work_id="5" * 64,
+        outcomes_sha256="6" * 64,
+    )
+
+    assert direct.output_collection_id == 42
+    assert delegated.outcomes_sha256 == "6" * 64
+    with pytest.raises(ValidationError, match="direct or delegated"):
+        RetirementClaimReferenceDocument(
+            claim_id="1" * 64,
+            fence=1,
+            work_id="2" * 64,
+        )
+    with pytest.raises(ValidationError, match="direct or delegated"):
+        RetirementClaimReferenceDocument(
+            claim_id="1" * 64,
+            fence=1,
+            work_id="2" * 64,
+            execution_id="3" * 64,
+            output_collection_id=42,
+            outcomes_sha256="4" * 64,
         )

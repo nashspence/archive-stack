@@ -1,27 +1,11 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import Field
+from riverhog_protocol import FileProvenanceBinding
 
 from riverhog_api.schemas.common import RiverhogModel
-
-
-class CapturedFileProvenanceBinding(RiverhogModel):
-    status: Literal["captured"]
-    journal_id: str
-    current_state_id: str
-
-
-class OmittedFileProvenanceBinding(RiverhogModel):
-    status: Literal["omitted"]
-    omission_reason: str
-
-
-FileProvenanceBinding = Annotated[
-    CapturedFileProvenanceBinding | OmittedFileProvenanceBinding,
-    Field(discriminator="status"),
-]
 
 
 class ProvenanceJournalOut(RiverhogModel):

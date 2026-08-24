@@ -70,7 +70,6 @@ from stove0_target_support import (
     OutputArtifact,
     OutputArtifactContract,
     OutputCollectionRef,
-    TargetCancelRequest,
     TargetContract,
     TargetContractPayload,
     TargetExecutionEvidence,
@@ -742,12 +741,7 @@ class FixtureTarget:
         self.accepted = request
         return self.get_job(registration_id, job_id)
 
-    def cancel_job(
-        self,
-        registration_id: str,
-        job_id: str,
-        _request: TargetCancelRequest,
-    ) -> TargetJobStatus:
+    def cancel_job(self, registration_id: str, job_id: str) -> TargetJobStatus:
         assert registration_id == "fixture-target"
         request = self.jobs[job_id]
         return TargetJobStatus(
@@ -1588,7 +1582,7 @@ def test_parent_cancellation_propagates_through_unclaimed_nested_subtree() -> No
     leaf = child.branch_set_plan.branches[0]
     assert isinstance(leaf, BranchPlan)
 
-    root = coordinator.cancel(root.work_id, reason="operator")
+    root = coordinator.cancel(root.work_id)
     assert root.coordination_cancel_requested is True
     coordinator.step(root.work_id)
     child = store.load(child.work_id)
@@ -1962,7 +1956,7 @@ def test_coordinator_propagates_target_cancellation_without_persisting_reason() 
     )
     _parent, record = _advance_child_to(coordinator, store, "executing")
 
-    pending = coordinator.cancel(record.work_id, reason="operator request")
+    pending = coordinator.cancel(record.work_id)
     assert pending.phase == "abandon_pending"
     canceled = coordinator.step(record.work_id)
     assert canceled.phase == "canceled"
@@ -1984,7 +1978,7 @@ def test_parent_cancellation_converges_children_before_abandoning_coordination()
     )
     parent, child = _advance_child_to(coordinator, store, "executing")
 
-    requested = coordinator.cancel(parent.work_id, reason="operator canceled graph")
+    requested = coordinator.cancel(parent.work_id)
     assert requested.phase == "coordinating"
     assert requested.coordination_cancel_requested is True
     waiting = coordinator.step(parent.work_id)

@@ -108,7 +108,7 @@ class EvaluationStore(Protocol):
 class EvaluationWorkController(Protocol):
     def step(self, work_id: str) -> WorkRecord: ...
 
-    def cancel(self, work_id: str, *, reason: str | None = None) -> WorkRecord: ...
+    def cancel(self, work_id: str) -> WorkRecord: ...
 
     def retry(self, work_id: str) -> WorkRecord: ...
 
@@ -210,12 +210,11 @@ class EvaluationService:
         evaluation_id: str,
         *,
         controller: EvaluationWorkController,
-        reason: str | None = None,
     ) -> EvaluationRecord:
         record = self.refresh(evaluation_id)
         for child in record.children:
             if child.state in {"pending", "active"}:
-                controller.cancel(child.work_id, reason=reason)
+                controller.cancel(child.work_id)
         return self.refresh(evaluation_id)
 
     def retry_failed(

@@ -7,11 +7,11 @@ import re
 from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
-from http_api_contracts import HttpOperationContract
+from http_api_contracts import HttpOperationContract, HttpPathParameterContract
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ValidationError
 from stove0_target_protocol import (
-    TargetCancelRequest,
+    Sha256,
     TargetContract,
     TargetJobRequest,
     TargetJobStatus,
@@ -23,6 +23,7 @@ _JSON_CONTENT_TYPE = "application/json"
 _DEFAULT_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 _JOB_PATH = re.compile(r"^/v1/jobs/([0-9a-f]{64})$")
 _CANCEL_PATH = re.compile(r"^/v1/jobs/([0-9a-f]{64})/cancel$")
+_JOB_ID_PARAMETER = (HttpPathParameterContract("job_id", Sha256),)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -43,20 +44,21 @@ TARGET_HTTP_OPERATIONS = (
         TargetJobStatus,
         "json",
         error_statuses=(400, 401, 409, 413, 500),
+        path_parameters=_JOB_ID_PARAMETER,
     ),
     HttpOperationContract(
         "GET",
         "/v1/jobs/{job_id}",
         response_type=TargetJobStatus,
         error_statuses=(400, 401, 404, 500),
+        path_parameters=_JOB_ID_PARAMETER,
     ),
     HttpOperationContract(
         "POST",
         "/v1/jobs/{job_id}/cancel",
-        TargetCancelRequest,
-        TargetJobStatus,
-        "json",
-        error_statuses=(400, 401, 404, 413, 500),
+        response_type=TargetJobStatus,
+        error_statuses=(400, 401, 404, 500),
+        path_parameters=_JOB_ID_PARAMETER,
     ),
 )
 
@@ -72,11 +74,7 @@ class TargetService(Protocol):
 
     def get_job(self, job_id: str) -> TargetJobStatus: ...
 
-    def cancel_job(
-        self,
-        job_id: str,
-        request: TargetCancelRequest,
-    ) -> TargetJobStatus: ...
+    def cancel_job(self, job_id: str) -> TargetJobStatus: ...
 
 
 class TargetServiceError(RuntimeError):
@@ -139,10 +137,9 @@ class TargetHttpBinding:
                 return _model_response(self.target.get_job(job_match.group(1)))
             cancel_match = _CANCEL_PATH.fullmatch(path)
             if cancel_match is not None and normalized_method == "POST":
-                cancel_request = self._parse(body or b"{}", TargetCancelRequest)
-                return _model_response(
-                    self.target.cancel_job(cancel_match.group(1), cancel_request)
-                )
+                if body:
+                    return _error(400, "bad_request", "target cancellation must not include a body")
+                return _model_response(self.target.cancel_job(cancel_match.group(1)))
             if path == "/v1/target" or path == "/v1/preflight" or job_match or cancel_match:
                 return _error(405, "method_not_allowed", "target endpoint method is not allowed")
             return _error(404, "not_found", "target endpoint not found")

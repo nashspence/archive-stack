@@ -62,8 +62,8 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
         "deployed_implementation": 13,
-        "reusable_library": 28,
-        "internal_build_unit": 6,
+        "reusable_library": 30,
+        "internal_build_unit": 4,
     }
     assert {project.name for project in projects} >= {
         "riverhog-client",

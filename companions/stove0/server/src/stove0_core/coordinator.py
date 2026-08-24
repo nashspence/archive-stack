@@ -39,7 +39,6 @@ from stove0_target_client import TargetClient
 from stove0_target_protocol import (
     OperationContract,
     OutputCollectionRef,
-    TargetCancelRequest,
     TargetContract,
     TargetJobDeclaration,
     TargetJobRequest,
@@ -180,12 +179,7 @@ class TargetPort(Protocol):
 
     def get_job(self, registration_id: str, job_id: str) -> TargetJobStatus: ...
 
-    def cancel_job(
-        self,
-        registration_id: str,
-        job_id: str,
-        request: TargetCancelRequest,
-    ) -> TargetJobStatus: ...
+    def cancel_job(self, registration_id: str, job_id: str) -> TargetJobStatus: ...
 
 
 class PlanningObservationTerminal(RuntimeError):
@@ -255,13 +249,8 @@ class HttpTargetPort:
     def get_job(self, registration_id: str, job_id: str) -> TargetJobStatus:
         return self._client(registration_id).status(job_id)
 
-    def cancel_job(
-        self,
-        registration_id: str,
-        job_id: str,
-        request: TargetCancelRequest,
-    ) -> TargetJobStatus:
-        return self._client(registration_id).cancel(job_id, request)
+    def cancel_job(self, registration_id: str, job_id: str) -> TargetJobStatus:
+        return self._client(registration_id).cancel(job_id)
 
     def _client(self, registration_id: str) -> TargetClient:
         try:
@@ -504,7 +493,7 @@ class Stove0Coordinator:
             expected_revision=record.revision,
         )
 
-    def cancel(self, work_id: str, *, reason: str | None = None) -> WorkRecord:
+    def cancel(self, work_id: str) -> WorkRecord:
         """Request cancellation without creating another workflow authority.
 
         Work that has not reached a target enters a durable claim-abandonment
@@ -541,7 +530,6 @@ class Stove0Coordinator:
         status = self.targets.cancel_job(
             record.workflow_plan.target_registration_id,
             record.target_request.declaration.job_id,
-            TargetCancelRequest(reason=reason),
         )
         operation = self.planning.operation_contract(record.workflow_plan.operation)
         return self.work.record_target_status(
@@ -853,7 +841,7 @@ class Stove0Coordinator:
             if child is None:
                 raise RuntimeError("coordination cancellation child is unavailable")
             if child.phase not in terminal:
-                self.cancel(child_id, reason="parent coordination canceled")
+                self.cancel(child_id)
                 return record
         return self.work.cancel(record.work_id, expected_revision=record.revision)
 

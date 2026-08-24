@@ -1,14 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import secrets
 from collections.abc import Sequence
 from datetime import timedelta
 
-from application_access import (
-    create_key_credentials,
-    token_sha256,
-)
 from application_access import (
     normalize_app_name as normalize_application_name,
 )
@@ -41,6 +38,16 @@ from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventServ
 _APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
 _KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
 _ACCESS_SORT_FIELDS = {"app", "key_id", "permission", "resource", "created_at"}
+
+
+def _token_sha256(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _create_key_credentials(prefix: str) -> tuple[str, str, str]:
+    key_id = secrets.token_hex(8)
+    token = f"{prefix}{secrets.token_urlsafe(32)}"
+    return key_id, token, _token_sha256(token)
 
 
 def normalize_app_name(value: str) -> str:
@@ -114,7 +121,7 @@ class SqlAlchemyAppKeyService:
     def authenticate(self, token: str) -> ApplicationPrincipal | None:
         if not token:
             return None
-        digest = token_sha256(token)
+        digest = _token_sha256(token)
         now = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             record = session.scalar(select(AppKeyRecord).where(AppKeyRecord.token_sha256 == digest))
@@ -149,7 +156,7 @@ class SqlAlchemyAppKeyService:
         with session_scope(self._session_factory) as session:
             _require_access_targets(session, normalized_access)
             while True:
-                key_id, token, digest = create_key_credentials("rh_app_")
+                key_id, token, digest = _create_key_credentials("rh_app_")
                 if session.get(AppKeyRecord, key_id) is None:
                     break
             record = AppKeyRecord(
@@ -201,7 +208,7 @@ class SqlAlchemyAppKeyService:
                 raise Forbidden("an application key cannot rotate authority it does not hold")
             if record.monthly_download_quota_bytes != 0 and not grantor.allows(QUOTAS_MANAGE):
                 raise Forbidden("quotas:manage is required to rotate a key with download allowance")
-            _new_id, token, digest = create_key_credentials("rh_app_")
+            _new_id, token, digest = _create_key_credentials("rh_app_")
             record.token_sha256 = digest
             return {
                 **self._record_payload(

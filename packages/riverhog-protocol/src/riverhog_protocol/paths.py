@@ -8,12 +8,15 @@ from typing import Annotated
 from pydantic import AfterValidator, Field
 
 __all__ = [
+    "CANONICAL_RELPATH_PATTERN",
     "MAX_TAG_LENGTH",
+    "CanonicalRelPath",
     "CanonicalTag",
     "PathNormalizationError",
     "normalize_collection_id",
     "normalize_relpath",
     "normalize_tag",
+    "validate_canonical_relpath",
     "validate_canonical_tag",
 ]
 
@@ -24,6 +27,21 @@ class PathNormalizationError(ValueError):
 
 _TAG_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 MAX_TAG_LENGTH = 80
+CANONICAL_RELPATH_PATTERN = r"^[^/\\]+(?:/[^/\\]+)*$"
+
+
+def validate_canonical_relpath(value: str) -> str:
+    normalized = normalize_relpath(value)
+    if normalized != value:
+        raise PathNormalizationError("path must be canonical")
+    return normalized
+
+
+type CanonicalRelPath = Annotated[
+    str,
+    Field(max_length=4096, pattern=CANONICAL_RELPATH_PATTERN),
+    AfterValidator(validate_canonical_relpath),
+]
 
 
 def validate_canonical_tag(value: str) -> str:

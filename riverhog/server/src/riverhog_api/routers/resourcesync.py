@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import Annotated, Any, cast
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from fastapi import APIRouter, Query, Request, Response
+from fastapi import APIRouter, Path, Query, Request, Response
 from http_api_contracts import operation_interface
 from riverhog_protocol import PortableCollectionRecord, portable_collection_json_schema
 
@@ -14,6 +14,15 @@ router = APIRouter(tags=["catalog"])
 _RS = "http://www.openarchives.org/rs/terms/"
 _SITEMAP = "http://www.sitemaps.org/schemas/sitemap/0.9"
 _RESOURCE_LIST_PAGE_SIZE = 10_000
+
+
+def _xml_responses() -> dict[int | str, dict[str, Any]]:
+    return {
+        200: {
+            "description": "OK",
+            "content": {"application/xml": {"schema": {"type": "string"}}},
+        }
+    }
 
 
 def _url(request: Request, path: str) -> str:
@@ -31,7 +40,12 @@ def _xml(root: Element) -> Response:
     )
 
 
-@router.get("/.well-known/resourcesync")
+@router.get(
+    "/.well-known/resourcesync",
+    response_class=Response,
+    responses=_xml_responses(),
+    openapi_extra=operation_interface("standard-tool/protocol"),
+)
 def well_known_resourcesync(
     request: Request,
     principal: CatalogReader,
@@ -44,7 +58,12 @@ def well_known_resourcesync(
     return _xml(root)
 
 
-@router.get("/resourcesync/capabilitylist.xml")
+@router.get(
+    "/resourcesync/capabilitylist.xml",
+    response_class=Response,
+    responses=_xml_responses(),
+    openapi_extra=operation_interface("standard-tool/protocol"),
+)
 def resourcesync_capability_list(
     request: Request,
     _principal: CatalogReader,
@@ -60,7 +79,12 @@ def resourcesync_capability_list(
     return _xml(root)
 
 
-@router.get("/resourcesync/resourcelist.xml")
+@router.get(
+    "/resourcesync/resourcelist.xml",
+    response_class=Response,
+    responses=_xml_responses(),
+    openapi_extra=operation_interface("standard-tool/protocol"),
+)
 def resourcesync_resource_list(
     request: Request,
     principal: CatalogReader,
@@ -81,9 +105,14 @@ def resourcesync_resource_list(
     return _xml(root)
 
 
-@router.get("/resourcesync/resourcelist/{page}.xml")
+@router.get(
+    "/resourcesync/resourcelist/{page}.xml",
+    response_class=Response,
+    responses=_xml_responses(),
+    openapi_extra=operation_interface("standard-tool/protocol"),
+)
 def resourcesync_resource_list_page(
-    page: int,
+    page: Annotated[int, Path(ge=1)],
     request: Request,
     principal: CatalogReader,
     container: ContainerDep,
@@ -114,12 +143,17 @@ def resourcesync_resource_list_page(
     return _xml(root)
 
 
-@router.get("/resourcesync/changelist.xml")
+@router.get(
+    "/resourcesync/changelist.xml",
+    response_class=Response,
+    responses=_xml_responses(),
+    openapi_extra=operation_interface("standard-tool/protocol"),
+)
 def resourcesync_change_list(
     request: Request,
     principal: CatalogReader,
     container: ContainerDep,
-    after: int = Query(0, ge=0),
+    after: Annotated[int, Query(ge=0)] = 0,
 ) -> Response:
     payload = container.retrieval.change_list(after=after, principal=principal)
     root = Element("urlset", {"xmlns": _SITEMAP, "xmlns:rs": _RS})
@@ -150,6 +184,12 @@ def resourcesync_change_list(
         200: {
             "description": "OK",
             "content": {"application/json": {"schema": portable_collection_json_schema()}},
+            "headers": {
+                "ETag": {
+                    "description": "Quoted SHA-256 identity of the canonical manifest bytes.",
+                    "schema": {"type": "string", "pattern": '^"[0-9a-f]{64}"$'},
+                }
+            },
         }
     },
     openapi_extra=operation_interface("standard-tool/protocol"),

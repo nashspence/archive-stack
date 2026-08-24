@@ -33,7 +33,6 @@ from stove0_operator_contracts import (
     EvaluationReviewIn,
     SchedulerRunIn,
     Stove0EventPage,
-    WorkCancelIn,
     WorkCreateIn,
     WorkflowPreviewIn,
 )
@@ -193,8 +192,7 @@ class _LifecycleCoordinator:
         )
         return self.state.work_record
 
-    def cancel(self, work_id: str, *, reason: str | None) -> WorkRecord:
-        del reason
+    def cancel(self, work_id: str) -> WorkRecord:
         current = self._load(work_id)
         self.state.work_record = WorkRecord(
             work=current.work,
@@ -550,7 +548,7 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert client.get_artifact_selection(selection.selection_sha256).total == 1
         assert client.step_work(created.work_id).phase == "claimed"
         assert client.retry_work(created.work_id).phase == "eligible"
-        assert client.cancel_work(created.work_id, reason="qualification").phase == "canceled"
+        assert client.cancel_work(created.work_id).phase == "canceled"
         assert preview.state == "ready"
         assert client.list_evaluations(all_items=True).total == 1
         assert (
@@ -559,7 +557,7 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         )
         assert client.get_evaluation(evaluation_id).evaluation_id == evaluation_id
         assert client.step_evaluation(evaluation_id).evaluation_id == evaluation_id
-        assert client.cancel_evaluation(evaluation_id, reason="qualification").phase == "canceled"
+        assert client.cancel_evaluation(evaluation_id).phase == "canceled"
         assert (
             client.retry_evaluation_variant(evaluation_id, "variant-a").evaluation_id
             == evaluation_id
@@ -631,10 +629,8 @@ def test_every_stove0_operation_publishes_an_exact_response_schema() -> None:
 def test_stove0_request_bodies_have_one_shared_public_contract_owner() -> None:
     expected = {
         "create_work": ("request", WorkCreateIn),
-        "cancel_work": ("request", WorkCancelIn),
         "preview_workflow": ("request", WorkflowPreviewIn),
         "create_evaluation": ("definition", EvaluationDefinition),
-        "cancel_evaluation": ("request", WorkCancelIn),
         "review_evaluation_variant": ("request", EvaluationReviewIn),
         "run_scheduler": ("request", SchedulerRunIn),
     }

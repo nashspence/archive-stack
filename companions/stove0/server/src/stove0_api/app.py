@@ -81,7 +81,6 @@ from stove0_api.schemas import (
     EvaluationReviewIn,
     HealthResponse,
     SchedulerRunIn,
-    WorkCancelIn,
     WorkCreateIn,
     WorkflowPreviewIn,
 )
@@ -470,8 +469,8 @@ def create_app(
         operation_id="cancel_work",
         tags=["work"],
     )
-    def cancel_work(work_id: str, request: WorkCancelIn) -> WorkView:
-        return WorkView.from_record(composition.coordinator.cancel(work_id, reason=request.reason))
+    def cancel_work(work_id: str) -> WorkView:
+        return WorkView.from_record(composition.coordinator.cancel(work_id))
 
     @app.post(
         "/v1/workflow-previews",
@@ -557,12 +556,11 @@ def create_app(
         operation_id="cancel_evaluation",
         tags=["evaluations"],
     )
-    def cancel_evaluation(evaluation_id: str, request: WorkCancelIn) -> EvaluationView:
+    def cancel_evaluation(evaluation_id: str) -> EvaluationView:
         return EvaluationView.from_record(
             composition.evaluations.cancel(
                 evaluation_id,
                 controller=composition.coordinator,
-                reason=request.reason,
             )
         )
 

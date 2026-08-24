@@ -10,6 +10,7 @@ from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from typing import cast
 
+from riverhog_protocol import RetirementClaimReferenceDocument
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     CollectionArtifactIdentity,
@@ -1825,16 +1826,14 @@ def require_retirement_exemption(
     if input_row is None or not (direct_output_ready or outcomes):
         raise Forbidden("retirement claim does not authorize this input collection")
     outcome_documents = [item.as_dict() for item in outcomes]
-    return {
-        "claim_id": claim.id,
-        "fence": claim.fence,
-        "work_id": claim.work_id,
-        "execution_id": claim.execution_id,
-        "output_collection_id": claim.output_collection_id,
-        "outcomes_sha256": (
-            canonical_json_sha256(outcome_documents) if outcome_documents else None
-        ),
-    }
+    return RetirementClaimReferenceDocument(
+        claim_id=claim.id,
+        fence=claim.fence,
+        work_id=claim.work_id,
+        execution_id=claim.execution_id,
+        output_collection_id=claim.output_collection_id,
+        outcomes_sha256=(canonical_json_sha256(outcome_documents) if outcome_documents else None),
+    ).model_dump(mode="json")
 
 
 __all__ = [

@@ -571,7 +571,7 @@ class FinishingController:
             replacement=replacement,
         )
 
-    def cancel(self, work_id: str, *, reason: str | None = None) -> WorkRecord:
+    def cancel(self, work_id: str) -> WorkRecord:
         record = self.work.store.load(work_id)
         assert record is not None
         replacement = WorkRecord.model_validate(
@@ -792,7 +792,6 @@ def test_canceling_evaluation_retains_completed_variant_outputs() -> None:
     record = service.cancel(
         record.evaluation_id,
         controller=controller,
-        reason="operator stopped evaluation",
     )
 
     assert record.phase == "partially_complete"

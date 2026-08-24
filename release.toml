@@ -150,7 +150,9 @@ deployed_implementation = [
   "utilities/mango-fish",
 ]
 reusable_library = [
+  "packages/application-access",
   "packages/file-download",
+  "packages/http-api-contracts",
   "packages/lifecycle-events",
   "packages/riverhog-age",
   "packages/riverhog-archive-contracts",
@@ -180,9 +182,7 @@ reusable_library = [
   "packages/stove0-target-support",
 ]
 internal_build_unit = [
-  "packages/application-access",
   "packages/config-validation",
-  "packages/http-api-contracts",
   "packages/riverhog-cli-support",
   "packages/state-schema",
   "packages/time-formats",

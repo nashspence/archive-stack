@@ -141,11 +141,32 @@ def test_collection_upload_provenance_request_is_an_exact_choice() -> None:
         {
             "properties": {
                 "provenance_mode": {"const": "omitted"},
-                "provenance_omission_reason": {"minLength": 1, "type": "string"},
+                "provenance_omission_reason": {"type": "string"},
             },
-            "required": ["provenance_omission_reason"],
+            "required": ["provenance_mode", "provenance_omission_reason"],
         },
     ]
+
+
+def test_collection_deletion_plan_types_the_retirement_evidence_reference() -> None:
+    schemas = create_app().openapi()["components"]["schemas"]
+
+    assert schemas["CollectionDeletionPlanOut"]["properties"]["retirement_claim"] == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/RetirementClaimReferenceDocument"},
+            {"type": "null"},
+        ]
+    }
+    reference = schemas["RetirementClaimReferenceDocument"]
+    assert reference["additionalProperties"] is False
+    assert set(reference["properties"]) == {
+        "claim_id",
+        "execution_id",
+        "fence",
+        "outcomes_sha256",
+        "output_collection_id",
+        "work_id",
+    }
 
 
 def test_wire_batches_are_bounded_without_limiting_workflow_cardinality() -> None:

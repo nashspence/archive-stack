@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
 from ipaddress import ip_address
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter
+
+CANONICAL_VISIBLE_TEXT_PATTERN = r"^\S(?:[\s\S]*\S)?$"
+CanonicalVisibleText = Annotated[
+    str,
+    StringConstraints(min_length=1, pattern=CANONICAL_VISIBLE_TEXT_PATTERN),
+]
 
 
 class HttpApiModel(BaseModel):
@@ -33,6 +40,18 @@ HttpBodyKind = Literal["none", "json", "framed", "binary"]
 
 
 @dataclass(frozen=True, slots=True)
+class HttpPathParameterContract:
+    """One required typed placeholder in an HTTP operation path."""
+
+    name: str
+    value_type: object
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.name) is None:
+            raise ValueError("HTTP path parameter name is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class HttpOperationContract:
     """One exact method/path binding projected into a running OpenAPI document."""
 
@@ -44,6 +63,7 @@ class HttpOperationContract:
     response_kind: HttpBodyKind = "json"
     success_statuses: tuple[int, ...] = (200,)
     error_statuses: tuple[int, ...] = (400, 401, 500)
+    path_parameters: tuple[HttpPathParameterContract, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.path.startswith("/v1/"):
@@ -54,6 +74,10 @@ class HttpOperationContract:
             raise ValueError("JSON HTTP response has no response model")
         if self.response_kind == "none" and self.response_type is not None:
             raise ValueError("empty HTTP response cannot have a response model")
+        placeholders = tuple(re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", self.path))
+        declared = tuple(parameter.name for parameter in self.path_parameters)
+        if placeholders != declared or len(declared) != len(set(declared)):
+            raise ValueError("HTTP path parameters must exactly match the operation path")
 
 
 def inline_type_schema(value: object) -> dict[str, Any]:
@@ -127,6 +151,16 @@ def operation_openapi(
                 }
             },
         }
+    if contract.path_parameters:
+        extra["parameters"] = [
+            {
+                "name": parameter.name,
+                "in": "path",
+                "required": True,
+                "schema": inline_type_schema(parameter.value_type),
+            }
+            for parameter in contract.path_parameters
+        ]
     return {
         "status_code": contract.success_statuses[0],
         "response_model": None,
@@ -278,11 +312,15 @@ def apply_openapi_error_contract(schema: dict[str, Any]) -> dict[str, Any]:
     components.update(definitions)
     components["ErrorResponse"] = error_schema
     for path, path_item in schema.get("paths", {}).items():
-        if not path.startswith("/v1") or not isinstance(path_item, Mapping):
+        if not isinstance(path_item, Mapping):
             continue
         for method, operation in path_item.items():
             if method not in {"delete", "get", "patch", "post", "put"} or not isinstance(
                 operation, dict
+            ):
+                continue
+            if not path.startswith("/v1") and operation.get("x-riverhog-interface") != (
+                "standard-tool/protocol"
             ):
                 continue
             responses = operation.setdefault("responses", {})
@@ -338,13 +376,16 @@ def parse_error_payload(
 
 
 __all__ = [
+    "CANONICAL_VISIBLE_TEXT_PATTERN",
     "ERROR_STATUS_BY_CODE",
     "PUBLIC_ERROR_CODES",
+    "CanonicalVisibleText",
     "ErrorBody",
     "ErrorResponse",
     "HealthResponse",
     "HttpBodyKind",
     "HttpOperationContract",
+    "HttpPathParameterContract",
     "OperationInterface",
     "apply_openapi_error_contract",
     "error_code_for_status",

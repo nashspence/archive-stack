@@ -131,14 +131,20 @@ def test_evaluation_review_request_is_meaningful_and_canonical() -> None:
 
     with pytest.raises(ValidationError, match="requires a rating or note"):
         EvaluationReviewIn()
-    with pytest.raises(ValidationError, match="must be canonical"):
+    with pytest.raises(ValidationError, match="pattern"):
         EvaluationReviewIn(note=" padded ")
 
     schema = EvaluationReviewIn.model_json_schema()
+    assert schema["properties"]["note"]["anyOf"][0] == {
+        "maxLength": 4000,
+        "minLength": 1,
+        "pattern": r"^\S(?:[\s\S]*\S)?$",
+        "type": "string",
+    }
     assert schema["anyOf"] == [
         {"properties": {"rating": {"type": "integer"}}, "required": ["rating"]},
         {
-            "properties": {"note": {"minLength": 1, "type": "string"}},
+            "properties": {"note": {"type": "string"}},
             "required": ["note"],
         },
     ]
