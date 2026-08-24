@@ -8,6 +8,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from riverhog_protocol.lifecycle_events import RiverhogEventPage
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts/qualify_installation.py"
@@ -22,6 +23,14 @@ def load_script() -> ModuleType:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_disposable_event_fixture_is_an_exact_riverhog_lifecycle_page() -> None:
+    module = load_script()
+
+    page = RiverhogEventPage.model_validate(module.EVENT_PAGE)
+
+    assert page.model_dump(mode="json", exclude_none=True) == module.EVENT_PAGE
 
 
 def test_distribution_builds_are_serialized_into_a_clean_output(

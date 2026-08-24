@@ -33,7 +33,7 @@ import release_installation as installation
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "riverhog-installation-qualification/v1"
-EVENT_SUBJECT = "qualification-sentinel"
+EVENT_SUBJECT = "1"
 NATIVE_TRACE_INTERVAL_SECONDS = 1.0
 NATIVE_TRACE_EVENT_LIMIT = 128
 GOGURT_QUALIFICATION_ACTION_FAILURE_EXIT = 73
@@ -44,11 +44,17 @@ EVENT_PAGE = {
             "specversion": "1.0",
             "id": "00000000-0000-4000-8000-000000000497",
             "source": "https://qualification.invalid/riverhog",
-            "type": "org.riverhog.qualification.observed.v1",
+            "type": "io.riverhog.riverhog.collection.tags_changed",
             "subject": EVENT_SUBJECT,
             "time": "2026-08-14T00:00:00Z",
             "datacontenttype": "application/json",
-            "data": {"qualification": "installed-client"},
+            "data": {
+                "actor": {"app": "riverhog-installation-qualification"},
+                "initiator": {"app": "riverhog-installation-qualification"},
+                "collection_id": 1,
+                "collection_created_at": "2026-08-14T00:00:00.000000Z",
+                "collection_tags": ["qualification"],
+            },
         }
     ],
     "next_cursor": "1",
