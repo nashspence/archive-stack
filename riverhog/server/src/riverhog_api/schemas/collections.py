@@ -2,26 +2,20 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from http_api_contracts import CanonicalVisibleText
 from pydantic import ConfigDict, Field, field_validator, model_validator
-from riverhog_protocol import COLLECTION_UPLOAD_FILE_BATCH_MAX
+from riverhog_protocol import (
+    CollectionUploadFileBatchDocument,
+    FileProvenanceBinding,
+    RetirementClaimReferenceDocument,
+)
+from riverhog_protocol import (
+    CollectionUploadFileIn as CollectionUploadFileIn,
+)
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
-from riverhog_api.schemas.provenance import FileProvenanceBinding
-
-
-class CollectionUploadFileIn(RiverhogModel):
-    path: str
-    bytes: int
-    sha256: str
-    raw_parts: CollectionUploadRawPartsIn | None = None
-    provenance: FileProvenanceBinding
-
-
-class CollectionUploadRawPartsIn(RiverhogModel):
-    part_plaintext_bytes: int = Field(ge=65536)
-    sha256s: list[str] = Field(min_length=1)
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
@@ -37,24 +31,21 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
                 {
                     "properties": {
                         "provenance_mode": {"const": "omitted"},
-                        "provenance_omission_reason": {
-                            "type": "string",
-                            "minLength": 1,
-                        },
+                        "provenance_omission_reason": {"type": "string"},
                     },
-                    "required": ["provenance_omission_reason"],
+                    "required": ["provenance_mode", "provenance_omission_reason"],
                 },
             ]
         }
     )
 
-    idempotency_key: str
+    idempotency_key: CanonicalVisibleText = Field(max_length=200)
     tags: list[CanonicalTag]
     ingest_source: str | None = None
     archive_store: str | None = None
     event_context: dict[str, Any] | None = None
     provenance_mode: Literal["captured", "omitted"] = "captured"
-    provenance_omission_reason: str | None = None
+    provenance_omission_reason: CanonicalVisibleText | None = None
 
     @field_validator("tags")
     @classmethod
@@ -75,15 +66,12 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
         return self
 
 
-class RegisterCollectionUploadSessionFilesRequest(RiverhogModel):
-    files: list[CollectionUploadFileIn] = Field(
-        min_length=1,
-        max_length=COLLECTION_UPLOAD_FILE_BATCH_MAX,
-    )
+class RegisterCollectionUploadSessionFilesRequest(CollectionUploadFileBatchDocument):
+    pass
 
 
 class CompleteCollectionUploadSessionRequest(RiverhogModel):
-    files_total: int = Field(ge=1)
+    files_total: int = Field(ge=1, strict=True)
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     provenance_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
@@ -136,7 +124,7 @@ class CollectionDeletionPlanOut(RiverhogModel):
     upload_file_count: int
     record_etag: str
     metadata_rows: dict[str, int]
-    retirement_claim: dict[str, Any] | None = None
+    retirement_claim: RetirementClaimReferenceDocument | None = None
     blockers: list[str]
     billing_note: str
 

@@ -4,7 +4,6 @@ from http_api_contracts import ErrorResponse, HealthResponse
 from stove0_operator_contracts import (
     EvaluationReviewIn,
     SchedulerRunIn,
-    WorkCancelIn,
     WorkCreateIn,
     WorkflowPreviewIn,
 )
@@ -14,7 +13,6 @@ __all__ = [
     "ErrorResponse",
     "HealthResponse",
     "SchedulerRunIn",
-    "WorkCancelIn",
     "WorkCreateIn",
     "WorkflowPreviewIn",
 ]

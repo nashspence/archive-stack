@@ -14,10 +14,20 @@ from application_access import (
     ApplicationAccessGrant,
     ApplicationAccessGrantSet,
 )
+from application_access import (
+    ApplicationPermission as ApplicationPermission,
+)
+from application_access import (
+    ApplicationResource as ApplicationResource,
+)
 from file_download import verified_download
-from http_api_contracts import parse_error_payload, safe_http_base_url
-from pydantic import Field, ValidationError
-from riverhog_protocol import PortableCollectionRecord
+from http_api_contracts import CanonicalVisibleText, parse_error_payload, safe_http_base_url
+from pydantic import Field, TypeAdapter, ValidationError
+from riverhog_protocol import (
+    CollectionUploadFileBatchDocument,
+    CollectionUploadFileIn,
+    PortableCollectionRecord,
+)
 from riverhog_protocol.errors import (
     BadRequest,
     HashMismatch,
@@ -41,31 +51,10 @@ DownloadProgress = Callable[[int, int | None], None]
 
 type RestorePolicy = Literal["allow", "never"]
 type ProvenanceMode = Literal["captured", "omitted"]
-type ApplicationPermission = Literal[
-    "*",
-    "catalog:read",
-    "retrieval:manage",
-    "collections:create",
-    "collection-transforms:control",
-    "collection-transforms:execute",
-    "collection-tags:manage",
-    "tags:create",
-    "tags:delete",
-    "collections:delete",
-    "archives:read",
-    "archives:manage",
-    "keys:manage",
-    "quotas:manage",
-    "events:read",
-    "events:read_all",
-    "provenance:read",
-    "provenance:export",
+type CollectionUploadIdempotencyKey = Annotated[
+    CanonicalVisibleText,
+    Field(max_length=200),
 ]
-type ApplicationResource = Annotated[
-    str,
-    Field(pattern=r"^(?:\*|tag:[a-z0-9]+(?:-[a-z0-9]+)*|collection:[1-9][0-9]*)$"),
-]
-
 type _SortOrder = Literal["asc", "desc"]
 type _CollectionSort = Literal["id", "created_at", "bytes", "files"]
 type _UploadState = Literal["open", "uploading", "finalizing", "failed"]
@@ -99,6 +88,10 @@ type _QuotaSort = Literal[
     "reserved_bytes",
     "remaining_bytes",
 ]
+
+_COLLECTION_UPLOAD_IDEMPOTENCY_KEY: TypeAdapter[CollectionUploadIdempotencyKey] = TypeAdapter(
+    CollectionUploadIdempotencyKey
+)
 type _ArchiveCopyState = Literal[
     "requested",
     "waiting",
@@ -133,6 +126,15 @@ def _canonical_tags(values: Sequence[str]) -> list[str]:
     if len(tags) != len(set(tags)):
         raise BadRequest("collection tags must not contain duplicates")
     return tags
+
+
+def _validated_collection_upload_idempotency_key(
+    value: CollectionUploadIdempotencyKey,
+) -> str:
+    try:
+        return _COLLECTION_UPLOAD_IDEMPOTENCY_KEY.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
 
 
 def _restore_policy(value: RestorePolicy) -> RestorePolicy:
@@ -792,7 +794,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
 
     def create_or_resume_collection_upload_session(
         self,
-        idempotency_key: str,
+        idempotency_key: CollectionUploadIdempotencyKey,
         tags: Sequence[str],
         *,
         ingest_source: str | None = None,
@@ -806,7 +808,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             provenance_omission_reason,
         )
         payload: dict[str, Any] = {
-            "idempotency_key": idempotency_key,
+            "idempotency_key": _validated_collection_upload_idempotency_key(idempotency_key),
             "tags": _canonical_tags(tags),
             "provenance_mode": provenance_mode,
         }
@@ -823,12 +825,25 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def register_collection_upload_session_files(
         self,
         collection_id: int,
-        files: Sequence[Mapping[str, Any]],
+        files: Sequence[CollectionUploadFileIn | Mapping[str, Any]],
     ) -> dict[str, Any]:
+        try:
+            batch = CollectionUploadFileBatchDocument.model_validate(
+                {
+                    "files": [
+                        file.model_dump(mode="json")
+                        if isinstance(file, CollectionUploadFileIn)
+                        else dict(file)
+                        for file in files
+                    ]
+                }
+            )
+        except ValidationError as exc:
+            raise BadRequest(str(exc)) from exc
         return self._json(
             "POST",
             f"/v1/collection-upload-sessions/{str(collection_id)}/files",
-            json={"files": [dict(file) for file in files]},
+            json=batch.model_dump(mode="json"),
         )
 
     def list_collection_upload_session_files(

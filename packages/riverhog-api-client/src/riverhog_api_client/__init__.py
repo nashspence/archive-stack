@@ -16,6 +16,7 @@ from riverhog_api_client.client import (
     ApiClient,
     ApplicationPermission,
     ApplicationResource,
+    CollectionUploadIdempotencyKey,
     ProvenanceMode,
     RestorePolicy,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "ApiClient",
     "ApplicationPermission",
     "ApplicationResource",
+    "CollectionUploadIdempotencyKey",
     "BadRequest",
     "Conflict",
     "DownloadAllowanceExceeded",

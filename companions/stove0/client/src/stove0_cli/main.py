@@ -215,10 +215,9 @@ def retry_work(context: typer.Context, work_id: str) -> None:
 def cancel_work(
     context: typer.Context,
     work_id: str,
-    reason: str | None = typer.Option(None),
 ) -> None:
     state = _context(context)
-    _call(state, lambda: state.client.cancel_work(work_id, reason=reason))
+    _call(state, lambda: state.client.cancel_work(work_id))
 
 
 @app.command("preview")
@@ -290,10 +289,9 @@ def step_evaluation(context: typer.Context, evaluation_id: str) -> None:
 def cancel_evaluation(
     context: typer.Context,
     evaluation_id: str,
-    reason: str | None = typer.Option(None),
 ) -> None:
     state = _context(context)
-    _call(state, lambda: state.client.cancel_evaluation(evaluation_id, reason=reason))
+    _call(state, lambda: state.client.cancel_evaluation(evaluation_id))
 
 
 @evaluation_app.command("retry")

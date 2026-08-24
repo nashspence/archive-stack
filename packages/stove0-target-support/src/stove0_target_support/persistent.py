@@ -22,7 +22,6 @@ from stove0_target_protocol import (
     EffectPlan,
     EffectPlanPayload,
     OperationContract,
-    TargetCancelRequest,
     TargetContract,
     TargetFailure,
     TargetInapplicable,
@@ -257,8 +256,7 @@ class PersistentTargetService:
                 raise TargetServiceError(404, "job_not_found", "target job was not found")
             return status
 
-    def cancel_job(self, job_id: str, request: TargetCancelRequest) -> TargetJobStatus:
-        del request
+    def cancel_job(self, job_id: str) -> TargetJobStatus:
         with self._lock:
             status = self._load_status(job_id)
             if status is None:

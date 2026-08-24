@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "application-access"
 version = "0.1.0"
-description = "Application principal and credential primitives."
+description = "Public Riverhog application-access contracts and canonical grant grammar."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

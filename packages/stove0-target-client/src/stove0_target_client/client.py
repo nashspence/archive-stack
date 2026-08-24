@@ -7,9 +7,9 @@ from typing import Any, TypeVar
 
 import httpx
 from http_api_contracts import parse_error_payload, safe_http_base_url
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from stove0_target_protocol import (
-    TargetCancelRequest,
+    Sha256,
     TargetContract,
     TargetJobRequest,
     TargetJobStatus,
@@ -18,6 +18,7 @@ from stove0_target_protocol import (
 )
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+_JOB_ID = TypeAdapter(Sha256)
 
 
 class TargetProtocolError(RuntimeError):
@@ -69,15 +70,14 @@ class TargetClient:
             request,
         )
 
-    def status(self, job_id: str) -> TargetJobStatus:
-        return self._request("GET", f"/v1/jobs/{job_id}", TargetJobStatus)
+    def status(self, job_id: Sha256) -> TargetJobStatus:
+        return self._request("GET", f"/v1/jobs/{_job_id(job_id)}", TargetJobStatus)
 
-    def cancel(self, job_id: str, request: TargetCancelRequest | None = None) -> TargetJobStatus:
+    def cancel(self, job_id: Sha256) -> TargetJobStatus:
         return self._request(
             "POST",
-            f"/v1/jobs/{job_id}/cancel",
+            f"/v1/jobs/{_job_id(job_id)}/cancel",
             TargetJobStatus,
-            request or TargetCancelRequest(),
         )
 
     def _request(
@@ -87,17 +87,20 @@ class TargetClient:
         model: type[ModelT],
         payload: BaseModel | None = None,
     ) -> ModelT:
+        request_kwargs: dict[str, Any] = {}
+        if payload is not None:
+            request_kwargs["json"] = payload.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_none=True,
+            )
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.request(
                     method,
                     f"{self.base_url}{path}",
                     headers=({"Authorization": f"Bearer {self.token}"} if self.token else None),
-                    json=(
-                        payload.model_dump(mode="json", by_alias=True, exclude_none=True)
-                        if payload is not None
-                        else None
-                    ),
+                    **request_kwargs,
                 )
         except httpx.HTTPError as exc:
             raise TargetProtocolError(
@@ -126,6 +129,13 @@ class TargetClient:
                 "target returned an invalid protocol response",
                 code="invalid_target_response",
             ) from exc
+
+
+def _job_id(value: str) -> str:
+    try:
+        return _JOB_ID.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise ValueError("target job ID must be a lowercase SHA-256") from exc
 
 
 __all__ = ["TargetClient", "TargetProtocolError"]

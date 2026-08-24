@@ -1649,14 +1649,12 @@ source = { editable = "packages/riverhog-ftp-adapter-api-client" }
 dependencies = [
     { name = "http-api-contracts" },
     { name = "httpx" },
-    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
-    { name = "pydantic", specifier = ">=2.7,<3.0" },
 ]
 
 [[package]]
@@ -1664,12 +1662,14 @@ name = "riverhog-protocol"
 version = "0.1.0"
 source = { editable = "packages/riverhog-protocol" }
 dependencies = [
+    { name = "http-api-contracts" },
     { name = "lifecycle-events" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "pydantic", specifier = ">=2.12,<3.0" },
 ]
@@ -2124,7 +2124,6 @@ source = { editable = "packages/stove0-api-client" }
 dependencies = [
     { name = "http-api-contracts" },
     { name = "httpx" },
-    { name = "pydantic" },
     { name = "stove0-operator-contracts" },
     { name = "stove0-protocol" },
 ]
@@ -2133,7 +2132,6 @@ dependencies = [
 requires-dist = [
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
-    { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "stove0-operator-contracts", editable = "packages/stove0-operator-contracts" },
     { name = "stove0-protocol", editable = "packages/stove0-protocol" },
 ]
@@ -2342,6 +2340,7 @@ name = "stove0-operator-contracts"
 version = "0.1.0"
 source = { editable = "packages/stove0-operator-contracts" }
 dependencies = [
+    { name = "http-api-contracts" },
     { name = "lifecycle-events" },
     { name = "pydantic" },
     { name = "stove0-observer-protocol" },
@@ -2352,6 +2351,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "stove0-observer-protocol", editable = "packages/stove0-observer-protocol" },

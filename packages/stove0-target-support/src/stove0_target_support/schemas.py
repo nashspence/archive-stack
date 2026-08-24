@@ -13,7 +13,6 @@ from stove0_target_protocol import (
     EFFECT_TARGET_PROTOCOL,
     TRANSFORM_TARGET_PROTOCOL,
     OperationContract,
-    TargetCancelRequest,
     TargetContract,
     TargetJobRequest,
     TargetJobStatus,
@@ -31,7 +30,6 @@ _SCHEMA_MODELS: tuple[type[BaseModel], ...] = (
     TargetPreflightResponse,
     TargetJobRequest,
     TargetJobStatus,
-    TargetCancelRequest,
 )
 
 
@@ -58,7 +56,6 @@ def target_schema_bundle() -> dict[str, Any]:
             },
             "GET /v1/jobs/{job_id}": "TargetJobStatus",
             "POST /v1/jobs/{job_id}/cancel": {
-                "request": "TargetCancelRequest",
                 "response": "TargetJobStatus",
             },
         },

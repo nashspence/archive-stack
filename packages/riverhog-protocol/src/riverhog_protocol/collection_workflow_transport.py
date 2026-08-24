@@ -368,6 +368,29 @@ class ProcessingClaimOutcomeSettlementDocument(RiverhogWorkflowDocument):
         return self
 
 
+class RetirementClaimReferenceDocument(RiverhogWorkflowDocument):
+    """Exact claim evidence authorizing one retirement deletion plan."""
+
+    claim_id: SHA256
+    fence: int = Field(ge=1)
+    work_id: SHA256
+    execution_id: SHA256 | None = None
+    output_collection_id: int | None = Field(default=None, ge=1)
+    outcomes_sha256: SHA256 | None = None
+
+    @model_validator(mode="after")
+    def validate_settlement_form(self) -> Self:
+        direct = self.execution_id is not None and self.output_collection_id is not None
+        delegated = self.outcomes_sha256 is not None
+        if direct == delegated:
+            raise ValueError("retirement claim must identify one direct or delegated settlement")
+        if direct and self.outcomes_sha256 is not None:
+            raise ValueError("direct retirement claims cannot identify delegated outcomes")
+        if delegated and (self.execution_id is not None or self.output_collection_id is not None):
+            raise ValueError("delegated retirement claims cannot identify a direct output")
+        return self
+
+
 class ProcessingClaimDocument(RiverhogWorkflowDocument):
     format: Literal["riverhog-processing-claim/v1"]
     id: SHA256
@@ -513,6 +536,7 @@ __all__ = [
     "ProcessingOutcomeBindingDocument",
     "ProcessingOutcomeIdentityDocument",
     "RecipeIdentityDocument",
+    "RetirementClaimReferenceDocument",
     "RiverhogWorkflowDocument",
     "TransformCapabilityCreateDocument",
     "TransformCapabilityDocument",

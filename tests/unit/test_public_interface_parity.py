@@ -6,13 +6,19 @@ from typing import Any
 import pytest
 import riverhog_api_client
 from application_access import (
-    ApplicationPermission as InternalApplicationPermission,
+    ApplicationPermission as CanonicalApplicationPermission,
 )
 from application_access import (
-    ApplicationResource as InternalApplicationResource,
+    ApplicationResource as CanonicalApplicationResource,
 )
 from fastapi import FastAPI
-from http_api_contracts import ERROR_STATUS_BY_CODE, safe_http_base_url
+from http_api_contracts import (
+    ERROR_STATUS_BY_CODE,
+    safe_http_base_url,
+)
+from http_api_contracts import (
+    HealthResponse as CanonicalHealthResponse,
+)
 from pydantic import TypeAdapter
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client import (
@@ -247,19 +253,17 @@ def test_public_http_health_and_error_schemas_are_conventional(
 def test_official_client_health_models_project_the_exact_http_contract() -> None:
     expected = create_stove0_contract_app().openapi()["components"]["schemas"]["HealthResponse"]
 
+    assert Stove0HealthResponse is CanonicalHealthResponse
+    assert FtpAdapterHealthResponse is CanonicalHealthResponse
     assert Stove0HealthResponse.model_json_schema() == expected
     assert FtpAdapterHealthResponse.model_json_schema() == expected
 
 
-def test_riverhog_client_owned_access_types_match_the_internal_validator() -> None:
-    assert (
-        TypeAdapter(ApplicationPermission).json_schema()
-        == TypeAdapter(InternalApplicationPermission).json_schema()
-    )
-    assert (
-        TypeAdapter(ApplicationResource).json_schema()
-        == TypeAdapter(InternalApplicationResource).json_schema()
-    )
+def test_riverhog_client_exports_the_canonical_public_access_types() -> None:
+    assert ApplicationPermission is CanonicalApplicationPermission
+    assert ApplicationResource is CanonicalApplicationResource
+    assert TypeAdapter(ApplicationPermission).json_schema()
+    assert TypeAdapter(ApplicationResource).json_schema()
 
 
 @pytest.mark.parametrize(

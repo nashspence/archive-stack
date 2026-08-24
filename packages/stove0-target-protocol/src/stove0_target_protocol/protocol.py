@@ -687,10 +687,6 @@ class TargetJobStatus(TargetProtocolModel):
         return self
 
 
-class TargetCancelRequest(TargetProtocolModel):
-    reason: str | None = Field(default=None, min_length=1, max_length=500)
-
-
 def validate_preflight_response_against_request(
     response: TargetPreflightResponse,
     request: TargetPreflightRequest,
@@ -894,7 +890,6 @@ __all__ = [
     "SemanticId",
     "Sha256",
     "TRANSFORM_TARGET_PROTOCOL",
-    "TargetCancelRequest",
     "TargetContract",
     "TargetContractPayload",
     "TargetExecutionEvidence",

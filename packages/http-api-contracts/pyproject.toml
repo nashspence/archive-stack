@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "http-api-contracts"
 version = "0.1.0"
-description = "Shared typed HTTP error, health, and OpenAPI contracts."
+description = "Public typed HTTP error, health, client, and operation contracts."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

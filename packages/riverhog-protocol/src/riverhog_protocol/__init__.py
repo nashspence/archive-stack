@@ -30,6 +30,14 @@ __all__ = [
     "error_type_for_code",
 ]
 
+from riverhog_protocol.collection_upload_transport import (
+    CapturedFileProvenanceBinding,
+    CollectionUploadFileBatchDocument,
+    CollectionUploadFileIn,
+    CollectionUploadRawPartsIn,
+    FileProvenanceBinding,
+    OmittedFileProvenanceBinding,
+)
 from riverhog_protocol.collection_workflow_transport import (
     CapabilityAction,
     ClaimState,
@@ -51,6 +59,7 @@ from riverhog_protocol.collection_workflow_transport import (
     ProcessingOutcomeBindingDocument,
     ProcessingOutcomeIdentityDocument,
     RecipeIdentityDocument,
+    RetirementClaimReferenceDocument,
     TransformCapabilityCreateDocument,
     TransformCapabilityDocument,
 )
@@ -93,12 +102,18 @@ from riverhog_protocol.transport import (
 
 __all__ += [
     "ArtifactDisposition",
+    "CapturedFileProvenanceBinding",
+    "CollectionUploadFileBatchDocument",
+    "CollectionUploadFileIn",
+    "CollectionUploadRawPartsIn",
     "CollectionArtifactIdentity",
     "CollectionDerivation",
     "CollectionRootIdentity",
     "CollectionProcessingOutcomeIdentity",
     "DERIVATION_EVIDENCE_PATH",
     "OperationIdentity",
+    "FileProvenanceBinding",
+    "OmittedFileProvenanceBinding",
     "PRODUCER_EVIDENCE_PATH",
     "ProducerEvidence",
     "RecipeIdentity",
@@ -132,6 +147,7 @@ __all__ += [
     "ProcessingOutcomeBindingDocument",
     "ProcessingOutcomeIdentityDocument",
     "RecipeIdentityDocument",
+    "RetirementClaimReferenceDocument",
     "TransformCapabilityCreateDocument",
     "TransformCapabilityDocument",
     "COLLECTION_FINALIZED",

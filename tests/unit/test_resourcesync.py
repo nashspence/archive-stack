@@ -105,11 +105,43 @@ def test_resourcesync_uses_the_configured_public_url_authority() -> None:
 
 
 def test_portable_manifest_openapi_uses_the_shipped_structural_projection() -> None:
-    response_schema = create_app().openapi()["paths"][
-        "/v1/catalog/collections/{collection_id}/manifest"
-    ]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    response = create_app().openapi()["paths"]["/v1/catalog/collections/{collection_id}/manifest"][
+        "get"
+    ]["responses"]["200"]
 
-    assert response_schema == portable_collection_json_schema()
+    assert response["content"]["application/json"]["schema"] == portable_collection_json_schema()
+    assert response["headers"]["ETag"]["schema"] == {
+        "type": "string",
+        "pattern": '^"[0-9a-f]{64}"$',
+    }
+
+
+def test_resourcesync_openapi_is_exact_about_xml_parameters_and_errors() -> None:
+    paths = create_app().openapi()["paths"]
+    for path in (
+        "/.well-known/resourcesync",
+        "/resourcesync/capabilitylist.xml",
+        "/resourcesync/resourcelist.xml",
+        "/resourcesync/resourcelist/{page}.xml",
+        "/resourcesync/changelist.xml",
+    ):
+        operation = paths[path]["get"]
+        assert operation["x-riverhog-interface"] == "standard-tool/protocol"
+        assert operation["responses"]["200"]["content"] == {
+            "application/xml": {"schema": {"type": "string"}}
+        }
+        assert "422" not in operation["responses"]
+        for response in operation["responses"].values():
+            if response.get("x-riverhog-error-codes"):
+                assert response["content"]["application/json"]["schema"] == {
+                    "$ref": "#/components/schemas/ErrorResponse"
+                }
+
+    page = paths["/resourcesync/resourcelist/{page}.xml"]["get"]["parameters"]
+    after = paths["/resourcesync/changelist.xml"]["get"]["parameters"]
+    assert page[0]["schema"]["minimum"] == 1
+    assert after[0]["schema"]["minimum"] == 0
+    assert after[0]["schema"]["default"] == 0
 
 
 def test_resourcesync_lists_portable_manifests_and_incremental_changes() -> None:

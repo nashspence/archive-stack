@@ -6,7 +6,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
+from http_api_contracts import operation_openapi
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 from riverhog_protocol import Conflict, Unauthorized
@@ -42,6 +44,7 @@ from stove0_target_client import TargetClient
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     EFFECT_TARGET_PROTOCOL,
+    TARGET_HTTP_OPERATIONS,
     TARGET_TERMINAL_STATE_RETENTION_ENV,
     EffectPlan,
     EffectPlanPayload,
@@ -53,7 +56,6 @@ from stove0_target_support import (
     OutputArtifactContract,
     OutputCollectionRef,
     PersistentTargetService,
-    TargetCancelRequest,
     TargetContract,
     TargetContractPayload,
     TargetEffectCommitUncertain,
@@ -639,6 +641,53 @@ def test_target_client_rejects_remote_plain_http_by_default() -> None:
     assert TargetClient("http://localhost:8000").base_url.startswith("http://")
 
 
+def test_target_client_rejects_noncanonical_job_ids_before_transport() -> None:
+    client = TargetClient("https://target.example")
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        client.status("not-a-job-id")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        client.cancel("A" * 64)  # type: ignore[arg-type]
+
+
+def test_target_client_sends_cancellation_without_a_request_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation, _target, request = _request()
+    expected = _success_status(operation, request)
+    real_client = httpx.Client
+
+    def respond(received: httpx.Request) -> httpx.Response:
+        assert received.method == "POST"
+        assert received.url.path == f"/v1/jobs/{request.declaration.job_id}/cancel"
+        assert received.content == b""
+        return httpx.Response(200, json=expected.model_dump(mode="json"))
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **_kwargs: real_client(transport=httpx.MockTransport(respond)),
+    )
+
+    assert TargetClient("https://target.example").cancel(request.declaration.job_id) == expected
+
+
+def test_target_http_operations_publish_exact_job_paths_and_empty_cancel() -> None:
+    jobs = [operation for operation in TARGET_HTTP_OPERATIONS if "{job_id}" in operation.path]
+    assert len(jobs) == 3
+    for operation in jobs:
+        extra = operation_openapi(operation)["openapi_extra"]
+        assert extra["parameters"] == [
+            {
+                "name": "job_id",
+                "in": "path",
+                "required": True,
+                "schema": {"pattern": "^[0-9a-f]{64}$", "type": "string"},
+            }
+        ]
+    cancel = next(operation for operation in jobs if operation.path.endswith("/cancel"))
+    assert "requestBody" not in operation_openapi(cancel)["openapi_extra"]
+
+
 def test_operation_contract_rejects_unpermitted_input_disposition() -> None:
     operation, _target_contract, request = _request()
     status = _success_status(operation, request)
@@ -710,11 +759,7 @@ class BindingTargetService:
         assert job_id == self.request.declaration.job_id
         return self.status_value
 
-    def cancel_job(
-        self,
-        job_id: str,
-        _request: TargetCancelRequest,
-    ) -> TargetJobStatus:
+    def cancel_job(self, job_id: str) -> TargetJobStatus:
         assert job_id == self.request.declaration.job_id
         return self.status_value
 
@@ -750,6 +795,14 @@ def test_framework_neutral_target_http_binding() -> None:
     )
     assert job_response.status == 200
     assert TargetJobStatus.model_validate_json(job_response.body) == status
+    assert (
+        binding.handle(
+            "POST",
+            f"/v1/jobs/{request.declaration.job_id}/cancel",
+            b'{"reason":"discarded"}',
+        ).status
+        == 400
+    )
     assert binding.handle("PATCH", "/v1/target").status == 405
 
 
@@ -997,13 +1050,7 @@ def test_persistent_target_shutdown_and_operator_cancel_have_distinct_state(
     try:
         canceled.put_job(request)
         assert started.wait(timeout=5)
-        assert (
-            canceled.cancel_job(
-                request.declaration.job_id,
-                TargetCancelRequest(reason="operator"),
-            ).state
-            == "canceling"
-        )
+        assert canceled.cancel_job(request.declaration.job_id).state == "canceling"
         deadline = time.monotonic() + 5
         while canceled.get_job(request.declaration.job_id).state != "canceled":
             assert time.monotonic() < deadline
@@ -1286,13 +1333,7 @@ def test_uncertain_effect_commit_stays_interrupted_and_never_auto_repeats(
         interrupted = service.get_job(request.declaration.job_id)
         assert interrupted.progress.phase == "external-commit-uncertain"
         assert service.put_job(request) == interrupted
-        assert (
-            service.cancel_job(
-                request.declaration.job_id,
-                TargetCancelRequest(reason="operator inspected uncertainty"),
-            )
-            == interrupted
-        )
+        assert service.cancel_job(request.declaration.job_id) == interrupted
         assert calls == 1
     finally:
         service.close()
@@ -1357,25 +1398,13 @@ def test_published_success_wins_late_cancel_and_cleanup_failure(tmp_path: Path) 
     try:
         service.put_job(request)
         assert published.wait(timeout=5)
-        assert (
-            service.cancel_job(
-                request.declaration.job_id,
-                TargetCancelRequest(reason="late operator request"),
-            ).state
-            == "canceling"
-        )
+        assert service.cancel_job(request.declaration.job_id).state == "canceling"
         release.set()
         deadline = time.monotonic() + 5
         while service.get_job(request.declaration.job_id).state != "succeeded":
             assert time.monotonic() < deadline
             time.sleep(0.01)
-        assert (
-            service.cancel_job(
-                request.declaration.job_id,
-                TargetCancelRequest(reason="later operator request"),
-            )
-            == success
-        )
+        assert service.cancel_job(request.declaration.job_id) == success
     finally:
         release.set()
         service.close()

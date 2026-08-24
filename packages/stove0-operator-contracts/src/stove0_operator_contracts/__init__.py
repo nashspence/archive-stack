@@ -1,10 +1,11 @@
-"""Exact public projections for the Stove0 v1 operator API."""
+"""Canonical public state relationships and projections for Stove0 operators."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, Self
 
+from http_api_contracts import CanonicalVisibleText
 from lifecycle_events import CloudEvent, cloud_event
 from pydantic import (
     BaseModel,
@@ -233,10 +234,6 @@ class WorkCreateIn(WorkflowPreviewIn):
     preview_sha256: Sha256
 
 
-class WorkCancelIn(OperatorModel):
-    reason: str | None = Field(default=None, max_length=1000)
-
-
 class EvaluationReviewIn(OperatorModel):
     model_config = ConfigDict(
         json_schema_extra={
@@ -244,14 +241,14 @@ class EvaluationReviewIn(OperatorModel):
                 {"required": ["rating"], "properties": {"rating": {"type": "integer"}}},
                 {
                     "required": ["note"],
-                    "properties": {"note": {"type": "string", "minLength": 1}},
+                    "properties": {"note": {"type": "string"}},
                 },
             ]
         }
     )
 
     rating: int | None = Field(default=None, ge=1, le=5)
-    note: str | None = Field(default=None, max_length=4000)
+    note: CanonicalVisibleText | None = Field(default=None, max_length=4000)
 
     @model_validator(mode="after")
     def meaningful(self) -> Self:
@@ -560,7 +557,7 @@ class EvaluationChildView(OperatorModel):
 class EvaluationReviewView(OperatorModel):
     variant_id: str = Field(min_length=1, max_length=160)
     rating: int | None = Field(default=None, ge=1, le=5)
-    note: str | None = Field(default=None, max_length=4000)
+    note: CanonicalVisibleText | None = Field(default=None, max_length=4000)
     updated_by: str = Field(min_length=1, max_length=160)
     updated_at: str = Field(min_length=1, max_length=40)
 
@@ -748,7 +745,6 @@ __all__ = [
     "Stove0LifecycleEvent",
     "WORK_CREATED",
     "WORK_UPDATED",
-    "WorkCancelIn",
     "WorkClaimView",
     "WorkCreateIn",
     "WorkCreatedEvent",

@@ -118,10 +118,26 @@ def test_search_uses_current_collection_filters() -> None:
 def test_collection_upload_selects_archive_store_without_materialization_policy() -> None:
     client = RecordingClient()
 
-    client.create_or_resume_collection_upload_session("upload-one", [], archive_store="b2")
+    client.create_or_resume_collection_upload_session(
+        "upload-one",
+        [],
+        archive_store="b2",
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture source has no provenance",
+    )
     client.register_collection_upload_session_files(
         1,
-        [{"path": "one.txt", "bytes": 1, "sha256": "a" * 64}],
+        [
+            {
+                "path": "one.txt",
+                "bytes": 1,
+                "sha256": "a" * 64,
+                "provenance": {
+                    "status": "omitted",
+                    "omission_reason": "fixture source has no provenance",
+                },
+            }
+        ],
     )
     client.complete_collection_upload_session(
         1,
@@ -134,10 +150,22 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
         "idempotency_key": "upload-one",
         "tags": [],
         "archive_store": "b2",
-        "provenance_mode": "captured",
+        "provenance_mode": "omitted",
+        "provenance_omission_reason": "fixture source has no provenance",
     }
     assert client.calls[1][2]["json"] == {
-        "files": [{"path": "one.txt", "bytes": 1, "sha256": "a" * 64}],
+        "files": [
+            {
+                "path": "one.txt",
+                "bytes": 1,
+                "sha256": "a" * 64,
+                "raw_parts": None,
+                "provenance": {
+                    "status": "omitted",
+                    "omission_reason": "fixture source has no provenance",
+                },
+            }
+        ],
     }
     assert client.calls[2][2]["json"] == {
         "files_total": 1,
@@ -155,6 +183,24 @@ def test_client_rejects_invalid_upload_provenance_before_transport() -> None:
             [],
             provenance_mode="captured",
             provenance_omission_reason="not omitted",
+        )
+
+    with pytest.raises(BadRequest):
+        client.create_or_resume_collection_upload_session(" padded ", [])
+    with pytest.raises(BadRequest):
+        client.register_collection_upload_session_files(
+            1,
+            [
+                {
+                    "path": "camera/../clip.mp4",
+                    "bytes": 1,
+                    "sha256": "a" * 64,
+                    "provenance": {
+                        "status": "omitted",
+                        "omission_reason": "source did not expose provenance",
+                    },
+                }
+            ],
         )
     with pytest.raises(BadRequest, match="provenance_mode"):
         client.create_or_resume_collection_upload_session(

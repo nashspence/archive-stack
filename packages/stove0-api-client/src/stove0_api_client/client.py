@@ -9,8 +9,13 @@ from typing import Any, Literal, Self
 from urllib.parse import quote
 
 import httpx
-from http_api_contracts import parse_error_payload, safe_http_base_url
-from pydantic import BaseModel, ConfigDict, Field
+from http_api_contracts import (
+    HealthResponse as HealthResponse,
+)
+from http_api_contracts import (
+    parse_error_payload,
+    safe_http_base_url,
+)
 from stove0_operator_contracts import (
     ArtifactSelectionPage,
     EvaluationPage,
@@ -24,7 +29,6 @@ from stove0_operator_contracts import (
     SchedulerRunIn,
     SchedulerStatus,
     Stove0EventPage,
-    WorkCancelIn,
     WorkCreateIn,
     WorkflowPreviewIn,
     WorkPage,
@@ -36,13 +40,6 @@ from stove0_protocol import BranchSetEvaluation, EvaluationDefinition, WorkflowP
 type _WorkSort = Literal["updated_at", "phase", "work_id"]
 type _EvaluationSort = Literal["updated_at", "phase", "evaluation_id"]
 type _SortOrder = Literal["asc", "desc"]
-
-
-class HealthResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    service: str = Field(min_length=1)
-    status: Literal["ok"]
 
 
 def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
@@ -234,14 +231,9 @@ class Stove0ApiClient:
             self._json("POST", f"/v1/work/{quote(work_id, safe='')}/retry")
         )
 
-    def cancel_work(self, work_id: str, *, reason: str | None = None) -> WorkView:
-        request = WorkCancelIn(reason=reason)
+    def cancel_work(self, work_id: str) -> WorkView:
         return WorkView.model_validate(
-            self._json(
-                "POST",
-                f"/v1/work/{quote(work_id, safe='')}/cancel",
-                json=request.model_dump(mode="json", exclude_none=True),
-            )
+            self._json("POST", f"/v1/work/{quote(work_id, safe='')}/cancel")
         )
 
     def preview_workflow(
@@ -323,19 +315,9 @@ class Stove0ApiClient:
             self._json("POST", f"/v1/evaluations/{quote(evaluation_id, safe='')}/step")
         )
 
-    def cancel_evaluation(
-        self,
-        evaluation_id: str,
-        *,
-        reason: str | None = None,
-    ) -> EvaluationView:
-        request = WorkCancelIn(reason=reason)
+    def cancel_evaluation(self, evaluation_id: str) -> EvaluationView:
         return EvaluationView.model_validate(
-            self._json(
-                "POST",
-                f"/v1/evaluations/{quote(evaluation_id, safe='')}/cancel",
-                json=request.model_dump(mode="json", exclude_none=True),
-            )
+            self._json("POST", f"/v1/evaluations/{quote(evaluation_id, safe='')}/cancel")
         )
 
     def retry_evaluation_variant(self, evaluation_id: str, variant_id: str) -> EvaluationView:

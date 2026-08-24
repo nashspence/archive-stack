@@ -4,19 +4,17 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Any, Literal, Self
+from typing import Any, Self
 from urllib.parse import quote
 
 import httpx
-from http_api_contracts import parse_error_payload, safe_http_base_url
-from pydantic import BaseModel, ConfigDict, Field
-
-
-class HealthResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    service: str = Field(min_length=1)
-    status: Literal["ok"]
+from http_api_contracts import (
+    HealthResponse as HealthResponse,
+)
+from http_api_contracts import (
+    parse_error_payload,
+    safe_http_base_url,
+)
 
 
 class FtpAdapterApiError(RuntimeError):
