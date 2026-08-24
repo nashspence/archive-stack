@@ -508,7 +508,11 @@ def _qualification_mount(scratch: Path) -> Iterator[Path]:
             backing,
             lambda: _qualification_mount_operation(
                 "macOS qualification disk-image detachment",
-                ["hdiutil", "detach", str(backing)],
+                # The listener and its action custody are settled before mount
+                # release. This image is disposable qualification-owned state,
+                # so ignore incidental macOS service handles without retrying
+                # or suppressing the checked detach result.
+                ["hdiutil", "detach", "-force", str(backing)],
                 cwd=scratch,
             ),
         ) as mounted:

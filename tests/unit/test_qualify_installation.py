@@ -132,11 +132,13 @@ def test_macos_qualification_mount_checks_detachment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = load_script()
+    commands: list[list[str]] = []
 
     def run(
         command: list[str],
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
         if command[1] == "detach":
             return subprocess.CompletedProcess(command, 9, "detach output", "detach error")
         return subprocess.CompletedProcess(command, 0, "", "")
@@ -155,6 +157,12 @@ def test_macos_qualification_mount_checks_detachment(
     diagnostic = str(captured.value)
     assert "stdout='detach output'" in diagnostic
     assert "stderr='detach error'" in diagnostic
+    assert commands[-1] == [
+        "hdiutil",
+        "detach",
+        "-force",
+        "/Volumes/GogurtQualification-123",
+    ]
 
 
 def test_qualification_mount_preserves_body_and_cleanup_failures(tmp_path: Path) -> None:
