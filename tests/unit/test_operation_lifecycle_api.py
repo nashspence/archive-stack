@@ -499,7 +499,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     source_collection = operator.get_collection(collection_id)
     source_identity = CollectionRootIdentity(
         collection_id=collection_id,
-        manifest_sha256=str(source_collection["manifest_sha256"]),
+        archive_root_sha256=str(source_collection["archive_root_sha256"]),
         content_identity=str(source_collection["content_identity"]),
     )
     source_artifact = {
@@ -659,7 +659,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         dispositions=(
             ArtifactDisposition(
                 input_collection_id=collection_id,
-                input_manifest_sha256=source_identity.manifest_sha256,
+                input_archive_root_sha256=source_identity.archive_root_sha256,
                 input_path="document.txt",
                 status="transformed",
                 outputs=(output_relative_path,),

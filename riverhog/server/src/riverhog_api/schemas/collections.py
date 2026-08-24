@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from riverhog_protocol import COLLECTION_UPLOAD_FILE_BATCH_MAX
+from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
@@ -25,12 +26,19 @@ class CollectionUploadRawPartsIn(RiverhogModel):
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     idempotency_key: str
-    tags: list[str]
+    tags: list[CanonicalTag]
     ingest_source: str | None = None
     archive_store: str | None = None
     event_context: dict[str, Any] | None = None
     provenance_mode: Literal["captured", "omitted"] = "captured"
     provenance_omission_reason: str | None = None
+
+    @field_validator("tags")
+    @classmethod
+    def validate_unique_tags(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("collection tags must not contain duplicates")
+        return value
 
 
 class RegisterCollectionUploadSessionFilesRequest(RiverhogModel):
@@ -49,9 +57,9 @@ class CompleteCollectionUploadSessionRequest(RiverhogModel):
 class CollectionSummaryOut(RiverhogModel):
     id: int
     created_at: str
-    tags: list[str]
+    tags: list[CanonicalTag]
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
-    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    archive_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     files: int
@@ -68,7 +76,7 @@ class ListCollectionsResponse(RiverhogModel):
     sort: str
     order: Literal["asc", "desc"]
     query: str | None
-    tag: str | None
+    tag: CanonicalTag | None
     encryption_format: str | None
     passphrase_id: str | None
     collections: list[CollectionSummaryOut]
@@ -161,7 +169,7 @@ class ListCollectionUploadSessionFilesResponse(RiverhogModel):
 class CollectionUploadListItemOut(RiverhogModel):
     collection_id: int
     created_at: str | None
-    tags: list[str]
+    tags: list[CanonicalTag]
     ingest_source: str | None
     archive_store: str
     encryption_format: str
@@ -173,7 +181,7 @@ class CollectionUploadListItemOut(RiverhogModel):
 
 
 class CollectionUploadListFiltersOut(RiverhogModel):
-    tag: str | None
+    tag: CanonicalTag | None
     state: str | None
 
 
@@ -201,12 +209,12 @@ class CollectionUploadLayoutOut(RiverhogModel):
 class CollectionUploadSessionOut(RiverhogModel):
     collection_id: int
     created_at: str
-    tags: list[str]
+    tags: list[CanonicalTag]
     ingest_source: str | None
     provenance_mode: Literal["captured", "mixed", "omitted"]
     provenance_identity: str | None
     content_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    archive_root_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     archive_store: str
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")

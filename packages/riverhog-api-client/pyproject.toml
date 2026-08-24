@@ -19,14 +19,17 @@ classifiers = [
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
+  "application-access>=0.1,<0.2",
   "file-download>=0.1,<0.2",
   "http-api-contracts>=0.1,<0.2",
   "httpx[http2]>=0.27,<1.0",
+  "pydantic>=2.7,<3.0",
   "riverhog-protocol>=0.1,<0.2",
   "riverhog-provenance>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
+application-access = { workspace = true }
 file-download = { workspace = true }
 http-api-contracts = { workspace = true }
 riverhog-protocol = { workspace = true }

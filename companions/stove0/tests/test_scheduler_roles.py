@@ -25,7 +25,7 @@ def _identity(index: int) -> WorkIdentity:
             inputs=(
                 CollectionRootRef(
                     collection_id=index,
-                    manifest_sha256=f"{index:064x}",
+                    archive_root_sha256=f"{index:064x}",
                     content_identity="b" * 64,
                 ),
             ),
@@ -382,7 +382,7 @@ class _LineageRiverhog:
         character = f"{collection_id % 16:x}"
         return {
             "id": collection_id,
-            "manifest_sha256": character * 64,
+            "archive_root_sha256": character * 64,
             "content_identity": f"{(collection_id + 1) % 16:x}" * 64,
             "tags": ["fixture"],
         }
@@ -402,7 +402,7 @@ def _lineage(
     character = f"{input_collection_id % 16:x}"
     root = CollectionRootIdentity(
         collection_id=input_collection_id,
-        manifest_sha256=character * 64,
+        archive_root_sha256=character * 64,
         content_identity=f"{(input_collection_id + 1) % 16:x}" * 64,
     )
     controller_evidence = {"format": "fixture-controller-evidence/v1"}
@@ -421,7 +421,7 @@ def _lineage(
         dispositions=(
             ArtifactDisposition(
                 input_collection_id=input_collection_id,
-                input_manifest_sha256=root.manifest_sha256,
+                input_archive_root_sha256=root.archive_root_sha256,
                 input_path="source/input.bin",
                 status="preserved",
             ),

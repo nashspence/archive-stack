@@ -133,7 +133,7 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
                     role=REVIEW_SOURCE_ROLE,
                     collection=CollectionRootRef(
                         collection_id=1,
-                        manifest_sha256=_sha("1"),
+                        archive_root_sha256=_sha("1"),
                         content_identity=_sha("2"),
                     ),
                     path="camera/source.wav",
@@ -391,7 +391,7 @@ def test_review_effect_deployment_has_one_fixed_effect_contract(tmp_path: Path) 
                     role=REVIEW_SOURCE_ROLE,
                     collection=CollectionRootRef(
                         collection_id=1,
-                        manifest_sha256=_sha("1"),
+                        archive_root_sha256=_sha("1"),
                         content_identity=_sha("2"),
                     ),
                     path="camera/source.wav",
@@ -554,7 +554,7 @@ def test_review_effect_executes_sampling_delivery_and_canonical_receipt_end_to_e
         role=REVIEW_SOURCE_ROLE,
         collection=CollectionRootRef(
             collection_id=1,
-            manifest_sha256=_sha("1"),
+            archive_root_sha256=_sha("1"),
             content_identity=_sha("2"),
         ),
         path="camera/source.wav",

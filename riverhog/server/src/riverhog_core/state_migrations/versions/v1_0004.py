@@ -74,7 +74,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         Column("collection_id", collection_id, nullable=False),
-        Column("manifest_sha256", String(64), nullable=False),
+        Column("archive_root_sha256", String(64), nullable=False),
         Column("content_etag", String(64), nullable=False),
         Column("derivation_sha256", String(64), nullable=False),
         Column("created_at", String(), nullable=False),

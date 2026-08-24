@@ -421,7 +421,7 @@ class FtpAdapter:
             "claim_id": claim_root.name,
             "source_event_id": str(manifest["source_event_id"]),
             "collection_id": receipt.collection_id,
-            "manifest_sha256": receipt.manifest_sha256,
+            "archive_root_sha256": receipt.archive_root_sha256,
             "content_identity": receipt.content_identity,
             "riverhog_receipt": receipt.receipt,
         }
@@ -454,7 +454,7 @@ class FtpAdapter:
             raise FtpAdapterError("durable FTP adapter receipt has no Riverhog receipt")
         return ProducedCollection(
             collection_id=int(payload["collection_id"]),
-            manifest_sha256=str(payload["manifest_sha256"]),
+            archive_root_sha256=str(payload["archive_root_sha256"]),
             content_identity=str(payload["content_identity"]),
             receipt=raw_receipt,
         )

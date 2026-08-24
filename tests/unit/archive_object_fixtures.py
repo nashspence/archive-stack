@@ -86,7 +86,7 @@ class FixtureArchive:
     pack_plan: PackVolumePlan
     pack_plaintext: bytes
     manifest_bytes: bytes
-    manifest_sha256: str
+    archive_root_sha256: str
     proof_bytes: bytes
     proof_sha256: str
     stored_objects: dict[str, bytes]
@@ -220,7 +220,7 @@ def make_archive(
         pack_plan=plan,
         pack_plaintext=plaintext,
         manifest_bytes=manifest,
-        manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+        archive_root_sha256=hashlib.sha256(manifest).hexdigest(),
         proof_bytes=proof,
         proof_sha256=hashlib.sha256(proof).hexdigest(),
         stored_objects={
@@ -338,7 +338,7 @@ def archive_receipt(
                 object_path=f"{prefix}/manifest.json.age",
                 plaintext_bytes=len(archive.manifest_bytes),
                 stored_bytes=len(archive.stored_objects["manifest.json.age"]),
-                sha256=archive.manifest_sha256,
+                sha256=archive.archive_root_sha256,
                 stored_sha256=hashlib.sha256(
                     archive.stored_objects["manifest.json.age"]
                 ).hexdigest(),

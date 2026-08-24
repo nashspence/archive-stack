@@ -144,8 +144,8 @@ def test_official_client_positive_disposable_lifecycle(tmp_path: Path) -> None:
         )
         client._http.close()  # type: ignore[attr-defined]
         client._http = TimeoutNeutralTestClient(transport, observer=observer)  # type: ignore[assignment]
-        assert client.ftp_adapter_health_live()["status"] == "ok"
-        assert client.ftp_adapter_health_ready()["status"] == "ok"
+        assert client.ftp_adapter_health_live().status == "ok"
+        assert client.ftp_adapter_health_ready().status == "ok"
         assert client.get_ftp_adapter_status()["format"] == "riverhog-ftp-adapter-status/v1"
         assert client.run_ftp_adapter_pass()["format"] == "riverhog-ftp-adapter-pass/v1"
         assert client.flush_ftp_adapter_source("camera-a")["sources"] == ["camera-a"]

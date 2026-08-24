@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query, Response
 
@@ -27,9 +27,9 @@ def list_collection_provenance(
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 25,
     q: str | None = None,
-    status: str | None = None,
-    sort: str = "path",
-    order: str = "asc",
+    status: Literal["captured", "omitted"] | None = None,
+    sort: Literal["path", "bytes", "status"] = "path",
+    order: Literal["asc", "desc"] = "asc",
     all_items: Annotated[bool, Query(alias="all")] = False,
 ) -> dict[str, Any]:
     return container.provenance.list_files(

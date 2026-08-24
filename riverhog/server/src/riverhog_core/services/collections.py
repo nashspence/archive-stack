@@ -222,7 +222,7 @@ def _collection_summary(
         created_at=collection.created_at,
         tags=tuple(sorted(current.tag_id for current in collection.tags)),
         content_identity=collection.content_identity,
-        manifest_sha256=_manifest_identity(copies),
+        archive_root_sha256=_archive_root_identity(copies),
         encryption_format=collection.encryption_format,
         passphrase_id=collection.passphrase_id,
         files=int(row.files),
@@ -309,12 +309,12 @@ def _like_pattern(value: str) -> str:
     return f"%{escaped}%"
 
 
-def _manifest_identity(copies: tuple[ArchiveCopyStatus, ...]) -> str:
+def _archive_root_identity(copies: tuple[ArchiveCopyStatus, ...]) -> str:
     identities = {
         current.archive_root.sha256
         for current in copies
         if current.archive_root is not None and current.archive_root.sha256
     }
     if len(identities) != 1:
-        raise RuntimeError("finalized collection has no unambiguous immutable manifest identity")
+        raise RuntimeError("finalized collection has no unambiguous archive-root identity")
     return str(next(iter(identities)))

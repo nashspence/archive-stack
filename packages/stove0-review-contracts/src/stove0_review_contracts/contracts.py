@@ -202,7 +202,7 @@ REVIEW_RCLONE_RECEIPT_SCHEMA = JsonSchemaDocument.from_schema(
             "format",
             "destination_identity",
             "delivery_id",
-            "artifact_manifest_sha256",
+            "artifact_archive_root_sha256",
             "artifact_count",
             "total_bytes",
         ],
@@ -210,7 +210,7 @@ REVIEW_RCLONE_RECEIPT_SCHEMA = JsonSchemaDocument.from_schema(
             "format": {"const": "stove0-review-rclone-receipt/v1"},
             "destination_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "delivery_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "artifact_manifest_sha256": {
+            "artifact_archive_root_sha256": {
                 "type": "string",
                 "pattern": "^[0-9a-f]{64}$",
             },

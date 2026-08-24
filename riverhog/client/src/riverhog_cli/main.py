@@ -341,8 +341,8 @@ def app_list_cmd(
         page=page,
         per_page=per_page,
         q=query,
-        sort=sort,
-        order=normalized_order,
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         active=active,
         all_items=all_items,
     )
@@ -397,8 +397,8 @@ def tag_list_cmd(
         page=page,
         per_page=per_page,
         q=query,
-        sort=sort,
-        order=normalized_order,
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         all_items=all_items,
     )
     if ids:
@@ -578,8 +578,8 @@ def app_key_list_cmd(
         page=page,
         per_page=per_page,
         q=query,
-        sort=sort,
-        order=normalized_order,
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         active=active,
         all_items=all_items,
     )
@@ -659,8 +659,8 @@ def app_key_access_list_cmd(
         page=page,
         per_page=per_page,
         q=query,
-        sort=sort,
-        order=normalized_order,
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         app=app_name,
         key_id=key_id,
         permission=permission,
@@ -710,7 +710,7 @@ def app_key_access_add_cmd(
     payload = client().add_app_key_access(
         app_name,
         key_id,
-        permission=access["permission"],
+        permission=cast(Any, access["permission"]),
         resource=access["resource"],
     )
     emit(payload if json_mode else format_app_access_set(payload), json_mode=json_mode)
@@ -730,7 +730,7 @@ def app_key_access_remove_cmd(
     payload = client().remove_app_key_access(
         app_name,
         key_id,
-        permission=access["permission"],
+        permission=cast(Any, access["permission"]),
         resource=access["resource"],
     )
     emit(payload if json_mode else format_app_access_set(payload), json_mode=json_mode)
@@ -799,8 +799,8 @@ def app_key_quota_list_cmd(
         page=page,
         per_page=per_page,
         q=query,
-        sort=sort,
-        order=normalized_order,
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         app=app_name,
         active=active,
         all_items=all_items,
@@ -1548,8 +1548,8 @@ def _sorted_collection_page(
         tag=tag,
         encryption_format=encryption_format,
         passphrase_id=passphrase_id,
-        sort=sort,
-        order=normalized_order,
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         all_items=all_items,
     )
 
@@ -1598,7 +1598,7 @@ def collection_list_cmd(
         tag=tag,
         encryption_format=encryption_format,
         passphrase_id=passphrase_id,
-        sort=sort,
+        sort=cast(Any, sort),
         order=order,
         all_items=all_items,
     )
@@ -1745,9 +1745,9 @@ def upload_list_cmd(
         per_page=per_page,
         q=query,
         tag=tag,
-        state=state,
-        sort=sort,
-        order=normalized_order,
+        state=cast(Any, state),
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         all_items=all_items,
     )
     if ids:
@@ -1843,8 +1843,8 @@ def find_cmd(
         query,
         page=page,
         per_page=per_page,
-        sort=sort,
-        order=normalized_order,
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         collection=collection,
         all_items=all_items,
     )
@@ -1902,9 +1902,9 @@ def provenance_list_cmd(
         page=page,
         per_page=per_page,
         q=query,
-        status=status,
-        sort=sort,
-        order=normalized_order,
+        status=cast(Any, status),
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         all_items=all_items,
     )
     if selectors:
@@ -2071,12 +2071,12 @@ def retrieval_cache_list_cmd(
         tag=tag,
         collection_id=collection_id,
         source_store=source_store,
-        state=state,
-        protection=protection,
+        state=cast(Any, state),
+        protection=cast(Any, protection),
         expires_before=expires_before,
         expires_after=expires_after,
-        sort=sort,
-        order=normalized_order,
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         all_items=all_items,
     )
     if selectors:
@@ -2129,8 +2129,8 @@ def archive_store_list_cmd(
         page=page,
         per_page=per_page,
         q=query,
-        sort=sort,
-        order=normalized_order,
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         all_items=all_items,
     )
     if ids:
@@ -2276,9 +2276,9 @@ def archive_copy_list_cmd(
         page=page,
         per_page=per_page,
         q=query,
-        state=state,
-        sort=sort,
-        order=normalized_order,
+        state=cast(Any, state),
+        sort=cast(Any, sort),
+        order=cast(Any, normalized_order),
         all_items=all_items,
     )
     if selectors:

@@ -4,8 +4,24 @@ import subprocess
 import sys
 
 import pytest
+from lifecycle_events import cloud_event
 from pydantic import ValidationError
-from stove0_operator_contracts import EvaluationView, WorkView
+from stove0_operator_contracts import (
+    BRANCH_SET_ADMITTED,
+    EVALUATION_CREATED,
+    EVALUATION_UPDATED,
+    JOIN_ADMITTED,
+    STOVE0_EVENT_TYPES,
+    WORK_CREATED,
+    WORK_UPDATED,
+    EvaluationView,
+    Stove0EventPage,
+    WorkCreateIn,
+    WorkflowPreviewIn,
+    WorkView,
+    parse_stove0_event,
+    stove0_event,
+)
 from stove0_protocol import (
     CollectionRootRef,
     EvaluationDefinition,
@@ -26,7 +42,7 @@ def _work() -> WorkIdentity:
             inputs=(
                 CollectionRootRef(
                     collection_id=1,
-                    manifest_sha256="2" * 64,
+                    archive_root_sha256="2" * 64,
                     content_identity="3" * 64,
                 ),
             ),
@@ -86,6 +102,93 @@ def test_evaluation_projection_adds_and_verifies_the_public_identity() -> None:
 
     assert view.format == "stove0-evaluation-view/v1"
     assert view.evaluation_id == definition.evaluation_id
+
+
+def test_operator_requests_share_one_exact_canonical_collection_contract() -> None:
+    preview = WorkflowPreviewIn(
+        recipe_id="fixture.recipe/v1",
+        collection_ids=(1, 2),
+    )
+    created = WorkCreateIn(
+        **preview.model_dump(mode="python"),
+        preview_sha256="4" * 64,
+    )
+
+    assert created.collection_ids == (1, 2)
+    with pytest.raises(ValidationError, match="positive, unique, and ordered"):
+        WorkflowPreviewIn(recipe_id="fixture.recipe/v1", collection_ids=(2, 1))
+
+
+def test_stove0_events_use_one_closed_typed_operator_vocabulary() -> None:
+    work_id = "1" * 64
+    evaluation_id = "2" * 64
+    events = [
+        stove0_event(
+            type=WORK_CREATED,
+            subject=work_id,
+            data={"work_id": work_id, "phase": "eligible"},
+        ),
+        stove0_event(
+            type=WORK_UPDATED,
+            subject=work_id,
+            data={"work_id": work_id, "phase": "claimed", "revision": 2},
+        ),
+        stove0_event(
+            type=BRANCH_SET_ADMITTED,
+            subject=work_id,
+            data={
+                "work_id": work_id,
+                "phase": "coordinating",
+                "revision": 3,
+                "branch_set_sha256": "3" * 64,
+                "branch_count": 2,
+                "admitted_work_count": 2,
+            },
+        ),
+        stove0_event(
+            type=JOIN_ADMITTED,
+            subject=work_id,
+            data={
+                "work_id": work_id,
+                "phase": "coordinating",
+                "revision": 4,
+                "branch_set_sha256": "3" * 64,
+                "join_plan_sha256": "4" * 64,
+                "join_work_id": "5" * 64,
+            },
+        ),
+        stove0_event(
+            type=EVALUATION_CREATED,
+            subject=evaluation_id,
+            data={"evaluation_id": evaluation_id, "phase": "planning"},
+        ),
+        stove0_event(
+            type=EVALUATION_UPDATED,
+            subject=evaluation_id,
+            data={"evaluation_id": evaluation_id, "phase": "running", "revision": 2},
+        ),
+    ]
+    page = Stove0EventPage(events=events, next_cursor="6", has_more=False)
+
+    assert {event.type for event in page.events} == STOVE0_EVENT_TYPES
+    assert page.events[2].data["branch_count"] == 2
+
+
+def test_stove0_events_reject_unknown_types_and_mismatched_subjects() -> None:
+    unknown = cloud_event(
+        source="urn:riverhog:stove0",
+        type="io.riverhog.stove0.work.mystery",
+        subject="1" * 64,
+        data={"work_id": "1" * 64, "phase": "eligible"},
+    )
+    with pytest.raises(ValidationError):
+        parse_stove0_event(unknown.model_dump(mode="python"))
+    with pytest.raises(ValidationError, match="subject differs"):
+        stove0_event(
+            type=WORK_CREATED,
+            subject="2" * 64,
+            data={"work_id": "1" * 64, "phase": "eligible"},
+        )
 
 
 def test_operator_contracts_do_not_load_server_or_transport_implementations() -> None:

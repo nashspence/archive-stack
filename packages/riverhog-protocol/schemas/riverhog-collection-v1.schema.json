@@ -9,7 +9,10 @@
     "format": {"const": "riverhog-collection/v1"},
     "collection": {"type": "integer", "minimum": 1},
     "content_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "encryption_format": {"type": "string", "minLength": 1},
+    "encryption_format": {
+      "type": "string",
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+    },
     "passphrase_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{16,128}$"},
     "provenance_mode": {"enum": ["captured", "mixed", "omitted"]},
     "provenance_identity": {
@@ -22,21 +25,43 @@
     "tags": {
       "type": "array",
       "uniqueItems": true,
-      "items": {"type": "string", "minLength": 1, "maxLength": 80}
+      "items": {
+        "type": "string",
+        "maxLength": 80,
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+      }
     },
     "files": {
       "type": "array",
       "minItems": 1,
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["path", "bytes", "sha256"],
         "properties": {
-          "path": {"type": "string", "minLength": 1},
+          "path": {
+            "type": "string",
+            "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(?:/|$))[^/]+(?:/[^/]+)*$"
+          },
           "bytes": {"type": "integer", "minimum": 0},
           "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"provenance_mode": {"const": "omitted"}}},
+      "then": {"properties": {"provenance_identity": {"type": "null"}}},
+      "else": {
+        "properties": {
+          "provenance_identity": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  ]
 }

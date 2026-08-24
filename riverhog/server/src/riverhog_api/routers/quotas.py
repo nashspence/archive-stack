@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Query
 from riverhog_protocol.errors import Forbidden
 
@@ -32,8 +34,15 @@ def list_download_quotas(
     _principal: QuotaManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: str = Query("app"),
-    order: str = Query("asc"),
+    sort: Literal[
+        "app",
+        "key_id",
+        "monthly_bytes",
+        "accounted_bytes",
+        "reserved_bytes",
+        "remaining_bytes",
+    ] = Query("app"),
+    order: Literal["asc", "desc"] = Query("asc"),
     q: str | None = Query(None),
     app: str | None = Query(None),
     active: bool | None = Query(None),

@@ -49,10 +49,9 @@ def _positive_int(value: object, label: str) -> int:
 
 
 def _sha256(value: object, label: str) -> str:
-    parsed = str(value)
-    if _SHA256_RE.fullmatch(parsed) is None:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
         raise ArchiveManifestError(f"{label} is not a SHA-256 identity")
-    return parsed
+    return value
 
 
 def _relative_path(value: object, label: str) -> str:
@@ -85,6 +84,11 @@ class CollectionTreeIdentity:
     bytes: int
     sha256: str
 
+    def __post_init__(self) -> None:
+        _positive_int(self.files, "archive tree files")
+        _nonnegative_int(self.bytes, "archive tree bytes")
+        _sha256(self.sha256, "archive tree sha256")
+
     @classmethod
     def from_mapping(cls, value: object) -> CollectionTreeIdentity:
         row = _mapping(value, {"files", "bytes", "sha256"}, "archive tree")
@@ -105,6 +109,17 @@ class AgeUploadState:
     payload_nonce_b64: str
     plaintext_size: int
     format: str = AGE_UPLOAD_STATE_FORMAT
+
+    def __post_init__(self) -> None:
+        if self.format != AGE_UPLOAD_STATE_FORMAT:
+            raise ArchiveManifestError("archive age state format is unsupported")
+        _nonnegative_int(self.plaintext_size, "archive age state plaintext size")
+        header_b64 = _base64(self.header_b64, "archive age header")
+        nonce_b64 = _base64(self.payload_nonce_b64, "archive age payload nonce")
+        if not base64.b64decode(header_b64 + "=" * (-len(header_b64) % 4)):
+            raise ArchiveManifestError("archive age header must not be empty")
+        if len(base64.b64decode(nonce_b64 + "=" * (-len(nonce_b64) % 4))) != 16:
+            raise ArchiveManifestError("archive age payload nonce must be 16 bytes")
 
     @classmethod
     def from_mapping(cls, value: object, *, plaintext_bytes: int) -> AgeUploadState:
@@ -147,6 +162,14 @@ class StoredPartIdentity:
     plaintext_sha256: str
     stored_bytes: int
     stored_sha256: str
+
+    def __post_init__(self) -> None:
+        _positive_int(self.number, "archive part number")
+        _nonnegative_int(self.plaintext_start, "archive part plaintext start")
+        _nonnegative_int(self.plaintext_bytes, "archive part plaintext bytes")
+        _sha256(self.plaintext_sha256, "archive part plaintext sha256")
+        _positive_int(self.stored_bytes, "archive part stored bytes")
+        _sha256(self.stored_sha256, "archive part stored sha256")
 
     @classmethod
     def from_mapping(
@@ -210,11 +233,39 @@ def _parts(value: object, *, plaintext_bytes: int) -> tuple[StoredPartIdentity, 
     return tuple(result)
 
 
+def _validate_parts(
+    value: object,
+    *,
+    plaintext_bytes: int,
+) -> tuple[StoredPartIdentity, ...]:
+    if (
+        not isinstance(value, tuple)
+        or not value
+        or not all(isinstance(item, StoredPartIdentity) for item in value)
+    ):
+        raise ArchiveManifestError("archive volume parts must be a non-empty tuple")
+    expected_start = 0
+    for number, part in enumerate(value, start=1):
+        if part.number != number or part.plaintext_start != expected_start:
+            raise ArchiveManifestError("archive part order is not canonical")
+        expected_start += part.plaintext_bytes
+    if expected_start != plaintext_bytes:
+        raise ArchiveManifestError("archive volume parts do not cover its plaintext")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveFileIdentity:
     path: str
     bytes: int
     sha256: str
+
+    def __post_init__(self) -> None:
+        path = _relative_path(self.path, "archive file path")
+        if path.startswith(".riverhog/"):
+            raise ArchiveManifestError("archive file path is reserved")
+        _nonnegative_int(self.bytes, "archive file bytes")
+        _sha256(self.sha256, "archive file sha256")
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +275,17 @@ class SegmentFilePlacement:
     bytes: int
     file_bytes: int
     sha256: str
+
+    def __post_init__(self) -> None:
+        path = _relative_path(self.path, "archive segment source path")
+        if path.startswith(".riverhog/"):
+            raise ArchiveManifestError("archive segment source path is reserved")
+        offset = _nonnegative_int(self.offset, "archive segment file offset")
+        byte_count = _nonnegative_int(self.bytes, "archive segment bytes")
+        file_bytes = _nonnegative_int(self.file_bytes, "archive segment file bytes")
+        if offset + byte_count > file_bytes:
+            raise ArchiveManifestError("archive segment placement is invalid")
+        _sha256(self.sha256, "archive segment file sha256")
 
     @classmethod
     def from_mapping(cls, value: object, *, plaintext_bytes: int) -> SegmentFilePlacement:
@@ -272,6 +334,23 @@ class PackArchiveVolume:
     parts: tuple[StoredPartIdentity, ...]
     kind: Literal["pack"] = "pack"
 
+    def __post_init__(self) -> None:
+        sequence = _nonnegative_int(self.sequence, "archive volume sequence")
+        if self.kind != "pack" or self.id != f"pack-{sequence:012d}":
+            raise ArchiveManifestError("archive volume identity is not canonical")
+        if self.path != f"volumes/{self.id}.tar.age":
+            raise ArchiveManifestError("archive volume path is not canonical")
+        _positive_int(self.files, "archive pack files")
+        _nonnegative_int(self.source_bytes, "archive pack source bytes")
+        plaintext_bytes = _nonnegative_int(self.plaintext_bytes, "archive volume bytes")
+        if not isinstance(self.age_state, AgeUploadState):
+            raise ArchiveManifestError("archive age state is invalid")
+        if self.age_state.plaintext_size != plaintext_bytes:
+            raise ArchiveManifestError("archive age state plaintext size does not match volume")
+        _sha256(self.index_sha256, "archive pack index sha256")
+        _sha256(self.plan_sha256, "archive pack plan sha256")
+        _validate_parts(self.parts, plaintext_bytes=plaintext_bytes)
+
     def to_mapping(self) -> dict[str, object]:
         return {
             "id": self.id,
@@ -298,6 +377,21 @@ class SegmentArchiveVolume:
     file: SegmentFilePlacement
     parts: tuple[StoredPartIdentity, ...]
     kind: Literal["segment"] = "segment"
+
+    def __post_init__(self) -> None:
+        sequence = _nonnegative_int(self.sequence, "archive volume sequence")
+        if self.kind != "segment" or self.id != f"segment-{sequence:012d}":
+            raise ArchiveManifestError("archive volume identity is not canonical")
+        if self.path != f"volumes/{self.id}.bin.age":
+            raise ArchiveManifestError("archive volume path is not canonical")
+        plaintext_bytes = _nonnegative_int(self.plaintext_bytes, "archive volume bytes")
+        if not isinstance(self.age_state, AgeUploadState):
+            raise ArchiveManifestError("archive age state is invalid")
+        if self.age_state.plaintext_size != plaintext_bytes:
+            raise ArchiveManifestError("archive age state plaintext size does not match volume")
+        if not isinstance(self.file, SegmentFilePlacement) or self.file.bytes != plaintext_bytes:
+            raise ArchiveManifestError("archive segment placement is invalid")
+        _validate_parts(self.parts, plaintext_bytes=plaintext_bytes)
 
     @property
     def source_file(self) -> ArchiveFileIdentity:
@@ -357,7 +451,9 @@ def _volume(value: object, *, expected_sequence: int) -> ArchiveVolume:
     )
     row = _mapping(value, fields, "archive volume")
     sequence = _nonnegative_int(row["sequence"], "archive volume sequence")
-    volume_id = str(row["id"])
+    volume_id = row["id"]
+    if not isinstance(volume_id, str):
+        raise ArchiveManifestError("archive volume identity is invalid")
     if sequence != expected_sequence or _VOLUME_ID_RE.fullmatch(volume_id) is None:
         raise ArchiveManifestError("archive volume identity is invalid")
     prefix = "pack" if kind == "pack" else "segment"
@@ -404,6 +500,27 @@ class ProvenanceObjectIdentity:
     stored_bytes: int
     stored_sha256: str
 
+    def __post_init__(self) -> None:
+        if self.kind not in {"provenance-index", "provenance-bundle"}:
+            raise ArchiveManifestError("archive provenance object kind is invalid")
+        expected_id = "provenance-index" if self.kind == "provenance-index" else self.id
+        if self.kind == "provenance-index" and self.id != expected_id:
+            raise ArchiveManifestError("archive provenance index identity is invalid")
+        if self.kind == "provenance-bundle" and re.fullmatch(r"bundle-[0-9]{12}", self.id) is None:
+            raise ArchiveManifestError("archive provenance bundle identity is invalid")
+        path = _relative_path(self.path, "archive provenance object path")
+        expected_path = (
+            "provenance/index.json.age"
+            if self.kind == "provenance-index"
+            else f"provenance/{self.id}.tar.age"
+        )
+        if path != expected_path:
+            raise ArchiveManifestError("archive provenance object path is not canonical")
+        _positive_int(self.plaintext_bytes, "archive provenance plaintext bytes")
+        _sha256(self.sha256, "archive provenance sha256")
+        _positive_int(self.stored_bytes, "archive provenance stored bytes")
+        _sha256(self.stored_sha256, "archive provenance stored sha256")
+
     @classmethod
     def from_mapping(
         cls,
@@ -418,7 +535,9 @@ class ProvenanceObjectIdentity:
         )
         if row["kind"] != kind:
             raise ArchiveManifestError("archive provenance object kind is invalid")
-        object_id = str(row["id"])
+        object_id = row["id"]
+        if not isinstance(object_id, str):
+            raise ArchiveManifestError("archive provenance object identity is invalid")
         path = _relative_path(row["path"], "archive provenance object path")
         expected_path = (
             "provenance/index.json.age"
@@ -457,6 +576,28 @@ class ArchiveProvenanceIdentity:
     index: ProvenanceObjectIdentity
     bundles: tuple[ProvenanceObjectIdentity, ...]
 
+    def __post_init__(self) -> None:
+        _sha256(self.identity, "archive provenance identity")
+        if (
+            not isinstance(self.index, ProvenanceObjectIdentity)
+            or self.index.kind != "provenance-index"
+            or self.index.sha256 != self.identity
+        ):
+            raise ArchiveManifestError("archive provenance index identity does not match")
+        if (
+            not isinstance(self.bundles, tuple)
+            or not self.bundles
+            or not all(
+                isinstance(item, ProvenanceObjectIdentity) and item.kind == "provenance-bundle"
+                for item in self.bundles
+            )
+        ):
+            raise ArchiveManifestError("archive provenance bundles must be a non-empty tuple")
+        if [item.id for item in self.bundles] != [
+            f"bundle-{sequence:012d}" for sequence in range(len(self.bundles))
+        ]:
+            raise ArchiveManifestError("archive provenance bundle order is not canonical")
+
     @classmethod
     def from_mapping(cls, value: object) -> ArchiveProvenanceIdentity:
         row = _mapping(value, {"identity", "index", "bundles"}, "archive provenance")
@@ -491,6 +632,30 @@ class CollectionArchiveManifest:
     volumes: tuple[ArchiveVolume, ...]
     provenance: ArchiveProvenanceIdentity | None = None
     schema: str = COLLECTION_ARCHIVE_MANIFEST_SCHEMA
+
+    def __post_init__(self) -> None:
+        if self.schema != COLLECTION_ARCHIVE_MANIFEST_SCHEMA:
+            raise ArchiveManifestError("collection archive manifest schema is unsupported")
+        if not isinstance(self.tree, CollectionTreeIdentity):
+            raise ArchiveManifestError("collection archive tree is invalid")
+        if (
+            not isinstance(self.volumes, tuple)
+            or not self.volumes
+            or not all(
+                isinstance(item, (PackArchiveVolume, SegmentArchiveVolume)) for item in self.volumes
+            )
+        ):
+            raise ArchiveManifestError("collection archive volumes must be a non-empty tuple")
+        if [item.sequence for item in self.volumes] != list(range(len(self.volumes))):
+            raise ArchiveManifestError("collection archive volume sequence is not canonical")
+        if len({item.id for item in self.volumes}) != len(self.volumes) or len(
+            {item.path for item in self.volumes}
+        ) != len(self.volumes):
+            raise ArchiveManifestError("collection archive repeats a volume identity")
+        if self.provenance is not None and not isinstance(
+            self.provenance, ArchiveProvenanceIdentity
+        ):
+            raise ArchiveManifestError("collection archive provenance is invalid")
 
     @classmethod
     def from_mapping(cls, value: object) -> CollectionArchiveManifest:

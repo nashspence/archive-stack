@@ -93,7 +93,7 @@ def _sha(character: str) -> str:
 def _root() -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=1,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
 
@@ -795,7 +795,7 @@ class FixtureTarget:
             dispositions=(
                 ArtifactDisposition(
                     input_collection_id=_root().collection_id,
-                    input_manifest_sha256=_root().manifest_sha256,
+                    input_archive_root_sha256=_root().archive_root_sha256,
                     input_path=_input().path,
                     status="transformed",
                     outputs=(output.path,),
@@ -812,7 +812,7 @@ class FixtureTarget:
             outputs=(output,),
             output_collection=OutputCollectionRef(
                 collection_id=7,
-                manifest_sha256=_sha("6"),
+                archive_root_sha256=_sha("6"),
                 content_identity=_sha("7"),
                 derivation_sha256=derivation.sha256,
             ),
@@ -901,14 +901,16 @@ class ForkJoinTarget(FixtureTarget):
                 )
             ),
             dispositions=tuple(
-                ArtifactDisposition(
-                    input_collection_id=item.collection.collection_id,
-                    input_manifest_sha256=item.collection.manifest_sha256,
-                    input_path=item.path,
-                    status="transformed",
-                    outputs=(output_path,),
+                sorted(
+                    ArtifactDisposition(
+                        input_collection_id=item.collection.collection_id,
+                        input_archive_root_sha256=item.collection.archive_root_sha256,
+                        input_path=item.path,
+                        status="transformed",
+                        outputs=(output_path,),
+                    )
+                    for item in declaration.plan.inputs
                 )
-                for item in declaration.plan.inputs
             ),
         )
         return TargetJobStatus(
@@ -921,7 +923,7 @@ class ForkJoinTarget(FixtureTarget):
             outputs=(output,),
             output_collection=OutputCollectionRef(
                 collection_id=100 + int(workflow.work.work_id[:12], 16) % 1_000_000_000,
-                manifest_sha256=workflow.work.work_id,
+                archive_root_sha256=workflow.work.work_id,
                 content_identity=workflow.workflow_plan_sha256,
                 derivation_sha256=derivation.sha256,
             ),

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 from http_api_contracts import operation_interface
+from riverhog_protocol.collection_workflow_transport import ClaimState
 from riverhog_protocol.collection_workflows import (
     CollectionArtifactIdentity,
     CollectionProcessingOutcomeIdentity,
@@ -53,7 +54,7 @@ def create_or_resume_processing_claim(
             inputs=tuple(
                 CollectionRootIdentity(
                     collection_id=item.collection_id,
-                    manifest_sha256=item.manifest_sha256,
+                    archive_root_sha256=item.archive_root_sha256,
                     content_identity=item.content_identity,
                 )
                 for item in request.inputs
@@ -75,9 +76,16 @@ def list_processing_claims(
     principal: CollectionTransformController,
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 25,
-    state: str | None = None,
-    sort: str = "updated_at",
-    order: str = "desc",
+    state: ClaimState | None = None,
+    sort: Literal[
+        "created_at",
+        "updated_at",
+        "expires_at",
+        "state",
+        "work_id",
+        "execution_id",
+    ] = "updated_at",
+    order: Literal["asc", "desc"] = "desc",
     all_items: Annotated[bool, Query(alias="all")] = False,
 ) -> ProcessingClaimPageOut:
     return ProcessingClaimPageOut.model_validate(

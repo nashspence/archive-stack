@@ -213,7 +213,7 @@ class StorageAdapterArchiveStore:
         passphrase_id: str,
     ) -> ArchiveArtifactRead:
         if object.kind not in {"manifest", "proof"}:
-            raise ValueError("only collection manifests and proofs are archive artifacts")
+            raise ValueError("only collection archive roots and proofs are archive artifacts")
         metadata = self._metadata(object)
         _verify_metadata(object, metadata)
         content = b"".join(
@@ -256,9 +256,9 @@ class StorageAdapterArchiveStore:
             _PLAINTEXT_SHA256_METADATA: plaintext_sha256,
         }
         if existing is not None and (
-            manifest_sha256 := existing.identity_metadata.get("riverhog-manifest-sha256")
+            archive_root_sha256 := existing.identity_metadata.get("riverhog-archive-root-sha256")
         ):
-            identity["riverhog-manifest-sha256"] = manifest_sha256
+            identity["riverhog-archive-root-sha256"] = archive_root_sha256
         ciphertext = encrypt_age_scrypt(
             proof_bytes,
             self._config.archive_passphrase_for(passphrase_id),

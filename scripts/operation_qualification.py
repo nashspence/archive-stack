@@ -8,6 +8,7 @@ import ast
 import hashlib
 import inspect
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -18,7 +19,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from statistics import median
-from typing import Any, TypeGuard, cast
+from typing import Any, TypeGuard, cast, get_origin, get_type_hints
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
@@ -158,6 +159,7 @@ class SupplementalOperation:
     method: str
     path: str
     classification: str
+    response_authority: str
     client_type: type[Any]
     client_method: str
     cli_commands: tuple[str, ...]
@@ -170,6 +172,7 @@ class Operation:
     method: str
     path: str
     classification: str
+    response_authority: str
     client: str | None
     cli_commands: tuple[str, ...]
     provider_evidence: str | None
@@ -395,7 +398,37 @@ def _declared_interface(operation_id: str, value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _openapi_operations(app: FastAPI) -> Iterator[tuple[str, str, str, str | None]]:
+def _response_authority(response_model: object) -> str:
+    if response_model is None:
+        return "stream-or-empty"
+    module = str(getattr(response_model, "__module__", ""))
+    if module == "stove0_operator_contracts":
+        return "operator-projection"
+    if (
+        get_origin(response_model) is dict
+        or response_model is dict
+        or module.startswith(("riverhog_api.", "stove0_api.", "riverhog_ftp_adapter."))
+    ):
+        return "http-json"
+    return "canonical-document"
+
+
+def _route_index(app: FastAPI) -> dict[tuple[str, str], APIRoute]:
+    indexed: dict[tuple[str, str], APIRoute] = {}
+    for route, path in _application_routes(app):
+        if not isinstance(route, APIRoute):
+            continue
+        documented_path = re.sub(r"\{([^}:]+):[^}]+\}", r"{\1}", path)
+        for method in route.methods or ():
+            if method.casefold() in SUPPORTED_ROUTE_METHODS:
+                indexed[(method.upper(), documented_path)] = route
+    return indexed
+
+
+def _openapi_operations(
+    app: FastAPI,
+) -> Iterator[tuple[str, str, str, str | None, str, object]]:
+    routes = _route_index(app)
     documented: set[tuple[str, str]] = set()
     for path, path_item in app.openapi()["paths"].items():
         for method, specification in path_item.items():
@@ -409,25 +442,40 @@ def _openapi_operations(app: FastAPI) -> Iterator[tuple[str, str, str, str | Non
                 operation_id,
                 specification.get("x-riverhog-interface"),
             )
-            yield operation_id, method.upper(), path, declared
-    for route, path in _application_routes(app):
-        if not isinstance(route, APIRoute) or route.include_in_schema:
+            route = routes[(method.upper(), path)]
+            yield (
+                operation_id,
+                method.upper(),
+                path,
+                declared,
+                _response_authority(route.response_model),
+                route.response_model,
+            )
+    for application_route, path in _application_routes(app):
+        if not isinstance(application_route, APIRoute) or application_route.include_in_schema:
             continue
         if not path.startswith(("/v1", "/internal/")):
             continue
-        operation_id = route.operation_id or route.name
+        operation_id = application_route.operation_id or application_route.name
         if not operation_id:
             raise QualificationError(f"omitted operation has no operationId: {path}")
         declared = _declared_interface(
             operation_id,
-            (route.openapi_extra or {}).get("x-riverhog-interface"),
+            (application_route.openapi_extra or {}).get("x-riverhog-interface"),
         )
-        for method in sorted(route.methods or ()):
+        for method in sorted(application_route.methods or ()):
             if method.casefold() not in SUPPORTED_ROUTE_METHODS:
                 continue
             if (method.upper(), path) in documented:
                 continue
-            yield operation_id, method.upper(), path, declared
+            yield (
+                operation_id,
+                method.upper(),
+                path,
+                declared,
+                _response_authority(application_route.response_model),
+                application_route.response_model,
+            )
 
 
 def _application_routes(app: FastAPI) -> Iterator[tuple[object, str]]:
@@ -469,6 +517,39 @@ def _client_owner(
             f"operation has ambiguous official client ownership: {operation_id}: {owners}"
         )
     return owners[0] if owners else None
+
+
+def _validate_client_response_authority(
+    operation_id: str,
+    client_types: tuple[type[Any], ...],
+    *,
+    authority: str,
+    response_model: object,
+) -> None:
+    methods = [
+        getattr(client_type, operation_id)
+        for client_type in client_types
+        if callable(getattr(client_type, operation_id, None))
+    ]
+    if not methods or authority == "stream-or-empty":
+        return
+    if len(methods) != 1:
+        raise QualificationError(
+            f"operation has ambiguous client response authority: {operation_id}"
+        )
+    return_type = get_type_hints(methods[0]).get("return")
+    if authority in {"canonical-document", "operator-projection"}:
+        if return_type is not response_model:
+            raise QualificationError(
+                f"client does not return the shared response model: {operation_id}: "
+                f"{return_type!r} != {response_model!r}"
+            )
+        return
+    if authority == "http-json" and get_origin(return_type) is not dict:
+        raise QualificationError(
+            f"ordinary CRUD client response is not an HTTP JSON mapping: "
+            f"{operation_id}: {return_type!r}"
+        )
 
 
 def _provider_evidence(application: str, operation_id: str) -> str | None:
@@ -528,8 +609,14 @@ def operation_matrix() -> tuple[Operation, ...]:
             ):
                 commands[operation_id].append(command)
 
-        for operation_id, method, path, declared in openapi:
+        for operation_id, method, path, declared, response_authority, response_model in openapi:
             owner = _client_owner(operation_id, surface.client_types)
+            _validate_client_response_authority(
+                operation_id,
+                surface.client_types,
+                authority=response_authority,
+                response_model=response_model,
+            )
             operation_commands = tuple(sorted(set(commands.get(operation_id, ()))))
             if declared is not None:
                 classification = declared
@@ -578,6 +665,7 @@ def operation_matrix() -> tuple[Operation, ...]:
                     method=method,
                     path=path,
                     classification=classification,
+                    response_authority=response_authority,
                     client=owner,
                     cli_commands=operation_commands,
                     provider_evidence=_provider_evidence(surface.name, operation_id),
@@ -610,6 +698,7 @@ def operation_matrix() -> tuple[Operation, ...]:
                     method=supplemental.method,
                     path=supplemental.path,
                     classification=supplemental.classification,
+                    response_authority=supplemental.response_authority,
                     client=supplemental.client_type.__name__,
                     cli_commands=supplemental.cli_commands,
                     provider_evidence=None,
@@ -635,6 +724,9 @@ def _summary(matrix: Sequence[Operation]) -> dict[str, object]:
         "operations": len(matrix),
         "applications": dict(sorted(Counter(item.application for item in matrix).items())),
         "classifications": dict(sorted(Counter(item.classification for item in matrix).items())),
+        "response_authorities": dict(
+            sorted(Counter(item.response_authority for item in matrix).items())
+        ),
         "provider_evidence_operations": sum(item.provider_evidence is not None for item in matrix),
         "matrix_sha256": _matrix_sha256(matrix),
     }

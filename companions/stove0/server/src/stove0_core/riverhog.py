@@ -400,7 +400,10 @@ class Stove0RiverhogClient:
             raise RuntimeError("Riverhog output tags differ from the sealed stove0 plan")
         output = OutputCollectionRef(
             collection_id=_positive_int(collection.get("id"), "collection id"),
-            manifest_sha256=_text(collection.get("manifest_sha256"), "manifest identity"),
+            archive_root_sha256=_text(
+                collection.get("archive_root_sha256"),
+                "archive-root identity",
+            ),
             content_identity=_text(collection.get("content_identity"), "content identity"),
             derivation_sha256=derivation.sha256,
         )
@@ -432,7 +435,7 @@ class Stove0RiverhogClient:
             f"branch/{item.branch_id}": (
                 CollectionRootIdentity(
                     collection_id=item.output_collection.collection_id,
-                    manifest_sha256=item.output_collection.manifest_sha256,
+                    archive_root_sha256=item.output_collection.archive_root_sha256,
                     content_identity=item.output_collection.content_identity,
                 ),
                 item.derivation_sha256,
@@ -444,7 +447,7 @@ class Stove0RiverhogClient:
             expected["join"] = (
                 CollectionRootIdentity(
                     collection_id=join.output_collection.collection_id,
-                    manifest_sha256=join.output_collection.manifest_sha256,
+                    archive_root_sha256=join.output_collection.archive_root_sha256,
                     content_identity=join.output_collection.content_identity,
                 ),
                 join.derivation_sha256,
@@ -603,7 +606,7 @@ def _artifact_identity(
     return CollectionArtifactIdentity(
         collection=CollectionRootIdentity(
             collection_id=value.collection.collection_id,
-            manifest_sha256=value.collection.manifest_sha256,
+            archive_root_sha256=value.collection.archive_root_sha256,
             content_identity=value.collection.content_identity,
         ),
         path=value.path,

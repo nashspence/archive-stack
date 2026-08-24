@@ -78,7 +78,7 @@ def _sha(character: str) -> str:
 def _root() -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=1,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
 
@@ -551,7 +551,7 @@ class FinishingController:
         else:
             output = OutputCollectionRef(
                 collection_id=100 + len(variant.variant_id),
-                manifest_sha256=_sha("a"),
+                archive_root_sha256=_sha("a"),
                 content_identity=_sha("b"),
                 derivation_sha256=_sha("c"),
             )

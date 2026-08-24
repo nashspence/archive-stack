@@ -7,7 +7,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal, cast
 
-from lifecycle_events import CloudEvent, EventPage, cloud_event
 from sqlalchemy import (
     Index,
     Integer,
@@ -31,6 +30,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.sql import Select
 from state_schema import StateSchema
+from stove0_operator_contracts import (
+    BRANCH_SET_ADMITTED,
+    EVALUATION_CREATED,
+    EVALUATION_UPDATED,
+    JOIN_ADMITTED,
+    WORK_CREATED,
+    WORK_UPDATED,
+    Stove0EventPage,
+    Stove0EventType,
+    parse_stove0_event,
+    stove0_event,
+)
 from stove0_protocol import ArtifactSelection, BranchSetDecision, JoinPlan, branch_work
 from time_formats import utc_timestamp_now
 
@@ -223,7 +234,7 @@ class SqlAlchemyStateStore:
             if inserted:
                 _emit(
                     session,
-                    type="work.created",
+                    type=WORK_CREATED,
                     subject=record.work_id,
                     data={"work_id": record.work_id, "phase": record.phase},
                 )
@@ -281,7 +292,7 @@ class SqlAlchemyStateStore:
                 )
             _emit(
                 session,
-                type="work.updated",
+                type=WORK_UPDATED,
                 subject=work_id,
                 data={
                     "work_id": work_id,
@@ -331,7 +342,7 @@ class SqlAlchemyStateStore:
                 if _insert_work_atomically(session, child, encoded=encoded, now=now):
                     _emit(
                         session,
-                        type="work.created",
+                        type=WORK_CREATED,
                         subject=child.work_id,
                         data={
                             "work_id": child.work_id,
@@ -370,7 +381,7 @@ class SqlAlchemyStateStore:
             )
             _emit(
                 session,
-                type="branch-set.admitted",
+                type=BRANCH_SET_ADMITTED,
                 subject=work_id,
                 data={
                     "work_id": work_id,
@@ -427,7 +438,7 @@ class SqlAlchemyStateStore:
             if _insert_work_atomically(session, child, encoded=encoded, now=now):
                 _emit(
                     session,
-                    type="work.created",
+                    type=WORK_CREATED,
                     subject=child.work_id,
                     data={
                         "work_id": child.work_id,
@@ -461,7 +472,7 @@ class SqlAlchemyStateStore:
             )
             _emit(
                 session,
-                type="join.admitted",
+                type=JOIN_ADMITTED,
                 subject=work_id,
                 data={
                     "work_id": work_id,
@@ -806,7 +817,7 @@ class SqlAlchemyStateStore:
             if inserted:
                 _emit(
                     session,
-                    type="evaluation.created",
+                    type=EVALUATION_CREATED,
                     subject=record.evaluation_id,
                     data={
                         "evaluation_id": record.evaluation_id,
@@ -867,7 +878,7 @@ class SqlAlchemyStateStore:
                 )
             _emit(
                 session,
-                type="evaluation.updated",
+                type=EVALUATION_UPDATED,
                 subject=evaluation_id,
                 data={
                     "evaluation_id": evaluation_id,
@@ -877,7 +888,7 @@ class SqlAlchemyStateStore:
             )
         return replacement
 
-    def list_events(self, *, after: str | None = None, limit: int = 100) -> EventPage:
+    def list_events(self, *, after: str | None = None, limit: int = 100) -> Stove0EventPage:
         try:
             cursor = int((after or "0").strip())
         except ValueError as exc:
@@ -894,8 +905,8 @@ class SqlAlchemyStateStore:
                 )
             )
         selected = rows[:limit]
-        return EventPage(
-            events=[CloudEvent.model_validate_json(row.event_json) for row in selected],
+        return Stove0EventPage(
+            events=[parse_stove0_event(json.loads(row.event_json)) for row in selected],
             next_cursor=str(selected[-1].sequence if selected else cursor),
             has_more=len(rows) > limit,
         )
@@ -1084,13 +1095,12 @@ def _insert_evaluation(
 def _emit(
     session: Session,
     *,
-    type: str,
+    type: Stove0EventType,
     subject: str,
     data: dict[str, object],
 ) -> None:
-    event = cloud_event(
-        source="urn:riverhog:stove0",
-        type=f"io.riverhog.stove0.{type}",
+    event = stove0_event(
+        type=type,
         subject=subject,
         data=data,
     )

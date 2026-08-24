@@ -82,7 +82,7 @@ class CatalogApi:
         assert collection_id == 11
         return {
             "id": 11,
-            "manifest_sha256": _sha("1"),
+            "archive_root_sha256": _sha("1"),
             "content_identity": _sha("2"),
         }
 
@@ -263,7 +263,7 @@ def _conformance_plan(
     )
     root = CollectionRootRef(
         collection_id=11,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
     work = planner.create_work("stove0.conformance-media/v1", (root,))
@@ -363,7 +363,7 @@ def test_installed_catalog_rejects_stale_observer_contract_before_observation() 
         (
             CollectionRootRef(
                 collection_id=11,
-                manifest_sha256=_sha("1"),
+                archive_root_sha256=_sha("1"),
                 content_identity=_sha("2"),
             ),
         ),
@@ -409,7 +409,7 @@ def test_planning_rejects_stale_target_operation_contract_before_preflight() -> 
         (
             CollectionRootRef(
                 collection_id=11,
-                manifest_sha256=_sha("1"),
+                archive_root_sha256=_sha("1"),
                 content_identity=_sha("2"),
             ),
         ),
@@ -463,7 +463,7 @@ def test_planner_seals_exact_nested_subrecipe_tree_without_target_smearing() -> 
         (
             CollectionRootRef(
                 collection_id=11,
-                manifest_sha256=_sha("1"),
+                archive_root_sha256=_sha("1"),
                 content_identity=_sha("2"),
             ),
         ),
@@ -523,7 +523,7 @@ def test_recipe_explicitly_rejects_unmatched_primary_and_sidecar_artifacts() -> 
         (
             CollectionRootRef(
                 collection_id=11,
-                manifest_sha256=_sha("1"),
+                archive_root_sha256=_sha("1"),
                 content_identity=_sha("2"),
             ),
         ),
@@ -625,7 +625,7 @@ def test_observer_preference_batches_unbounded_collection_work_without_omission(
     )
     root = CollectionRootRef(
         collection_id=11,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
     work = planner.create_work(recipe.id, (root,))
@@ -719,7 +719,7 @@ def test_media_observation_evidence_binds_exact_primary_sidecar_selection() -> N
     )
     root = CollectionRootRef(
         collection_id=11,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
     work = planner.create_work(recipe.id, (root,))
@@ -880,7 +880,7 @@ def test_review_recipe_projects_semantic_intent_and_options_before_preflight() -
     )
     root = CollectionRootRef(
         collection_id=11,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
     artifact_id = (
@@ -1067,7 +1067,7 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
     )
     root = CollectionRootRef(
         collection_id=11,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
     work = planner.create_work(recipe.id, (root,))
@@ -1085,7 +1085,7 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
     for collection_id, branch in enumerate(decision.plan.branches, start=21):
         output_root = CollectionRootRef(
             collection_id=collection_id,
-            manifest_sha256=f"{collection_id % 16:x}" * 64,
+            archive_root_sha256=f"{collection_id % 16:x}" * 64,
             content_identity=f"{(collection_id + 1) % 16:x}" * 64,
         )
         output = ArtifactSelection.seal(
@@ -1211,7 +1211,7 @@ def test_retirement_plan_accepts_overlapping_selections_covering_complete_invent
     planner = _retirement_planner(recipe)
     root = CollectionRootRef(
         collection_id=11,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
 
@@ -1247,7 +1247,7 @@ def test_retirement_plan_rejects_incomplete_inventory_before_target_preflight() 
     planner = _retirement_planner(recipe)
     root = CollectionRootRef(
         collection_id=11,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
 

@@ -176,7 +176,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
         )
 
         manifest_plaintext = b'{"schema":"collection-archive-manifest/v1"}'
-        manifest_sha256 = hashlib.sha256(manifest_plaintext).hexdigest()
+        archive_root_sha256 = hashlib.sha256(manifest_plaintext).hexdigest()
         manifest_content = encrypt_age_scrypt(
             manifest_plaintext,
             passphrase,
@@ -189,7 +189,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
             identity_metadata={
                 "riverhog-format": ROOT_MANIFEST_STORAGE_FORMAT,
                 "riverhog-plaintext-bytes": str(len(manifest_plaintext)),
-                "riverhog-plaintext-sha256": manifest_sha256,
+                "riverhog-plaintext-sha256": archive_root_sha256,
             },
             placement="immediate",
         )
@@ -201,7 +201,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
                 identity_metadata={
                     "riverhog-format": ROOT_MANIFEST_STORAGE_FORMAT,
                     "riverhog-plaintext-bytes": str(len(manifest_plaintext)),
-                    "riverhog-plaintext-sha256": manifest_sha256,
+                    "riverhog-plaintext-sha256": archive_root_sha256,
                 },
                 placement="immediate",
             )

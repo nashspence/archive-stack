@@ -522,7 +522,7 @@ class RecipePlanner:
         for root in work.inputs:
             current = self.riverhog.get_collection(root.collection_id)
             if (
-                str(current.get("manifest_sha256") or "") != root.manifest_sha256
+                str(current.get("archive_root_sha256") or "") != root.archive_root_sha256
                 or str(current.get("content_identity") or "") != root.content_identity
             ):
                 raise RuntimeError(f"collection root changed: {root.collection_id}")
@@ -680,7 +680,7 @@ def _uncovered_inventory(
     covered = {
         (
             artifact.collection.collection_id,
-            artifact.collection.manifest_sha256,
+            artifact.collection.archive_root_sha256,
             artifact.path,
             artifact.bytes,
             artifact.sha256,
@@ -693,7 +693,7 @@ def _uncovered_inventory(
         for raw in inventory
         if (
             cast(CollectionRootRef, raw["collection"]).collection_id,
-            cast(CollectionRootRef, raw["collection"]).manifest_sha256,
+            cast(CollectionRootRef, raw["collection"]).archive_root_sha256,
             str(raw["path"]),
             raw["bytes"],
             str(raw["sha256"]),

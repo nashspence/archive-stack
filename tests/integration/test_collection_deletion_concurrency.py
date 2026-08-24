@@ -500,7 +500,7 @@ def _seed_derived_output(
         dispositions=(
             ArtifactDisposition(
                 input_collection_id=COLLECTION_ID,
-                input_manifest_sha256=root.manifest_sha256,
+                input_archive_root_sha256=root.archive_root_sha256,
                 input_path=FILE_PATH,
                 status="transformed",
                 outputs=(output_path,),
@@ -602,14 +602,14 @@ def _seed_multi_input_derived_output(
         dispositions=(
             ArtifactDisposition(
                 input_collection_id=COLLECTION_ID,
-                input_manifest_sha256=roots[0].manifest_sha256,
+                input_archive_root_sha256=roots[0].archive_root_sha256,
                 input_path=FILE_PATH,
                 status="transformed",
                 outputs=("derived/document.txt",),
             ),
             ArtifactDisposition(
                 input_collection_id=SECOND_COLLECTION_ID,
-                input_manifest_sha256=roots[1].manifest_sha256,
+                input_archive_root_sha256=roots[1].archive_root_sha256,
                 input_path=SECOND_FILE_PATH,
                 status="transformed",
                 outputs=("derived/second.txt",),
@@ -1187,7 +1187,7 @@ def test_postgres_last_outcome_attachment_and_claim_closure_converge(
                 source_claim_id=child_id,
                 output_collection=CollectionRootIdentity(
                     collection_id=output_id,
-                    manifest_sha256="1" * 64,
+                    archive_root_sha256="1" * 64,
                     content_identity=("4" if output_id == 2 else "5") * 64,
                 ),
                 derivation_sha256=derivation.sha256,

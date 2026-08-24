@@ -1,10 +1,15 @@
 from riverhog_protocol import (
     BadRequest,
     Conflict,
+    DownloadAllowanceExceeded,
+    Forbidden,
     HashMismatch,
+    InvalidPath,
+    InvalidState,
     NotFound,
     RiverhogError,
     ServiceUnavailable,
+    Unauthorized,
 )
 
 from riverhog_api_client.client import ApiClient
@@ -25,10 +30,15 @@ __all__ = [
     "ApiClient",
     "BadRequest",
     "Conflict",
+    "DownloadAllowanceExceeded",
+    "Forbidden",
     "HashMismatch",
+    "InvalidPath",
+    "InvalidState",
     "NotFound",
     "RiverhogError",
     "ServiceUnavailable",
+    "Unauthorized",
     "RetrievalDownload",
     "configured_download_concurrency",
     "configured_download_window",

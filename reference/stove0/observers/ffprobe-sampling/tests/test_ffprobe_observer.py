@@ -86,7 +86,7 @@ def test_ffprobe_observer_reports_contract_facts_and_exact_image(
                     role="stove0.review.source/v1",
                     collection=CollectionRootRef(
                         collection_id=1,
-                        manifest_sha256=_sha("2"),
+                        archive_root_sha256=_sha("2"),
                         content_identity=_sha("3"),
                     ),
                     path="camera/source.mp4",

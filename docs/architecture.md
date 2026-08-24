@@ -1,7 +1,7 @@
 # Architecture
 
-Riverhog is an encrypted archive platform with independently packaged components. Executable
-contracts define interfaces, configuration, formats, and commands; this page records authority.
+Executable contracts define Riverhog's independently packaged components; this page only records
+authority.
 
 ## Authority model
 
@@ -28,8 +28,11 @@ contracts define interfaces, configuration, formats, and commands; this page rec
 
 ## Boundary model
 
-Each product owns its implementation. Focused packages may be shared; implementation modules
-may not. Runtime integration crosses published HTTP and CloudEvents contracts.
+Products own their implementations. Focused packages may be shared; implementation modules may
+not. Runtime integration crosses published HTTP and CloudEvents contracts.
+
+Shared models own identity-bearing documents. Exact HTTP/OpenAPI contracts own ordinary CRUD;
+official clients may expose their JSON.
 
 - The Riverhog server owns archive construction, catalog publication, copies, retrieval, and
   verified logical-file delivery.
@@ -53,14 +56,13 @@ Workspace dependency and import checks enforce the implementation-owner boundari
 - [`riverhog/client`](../riverhog/client/) is the direct platform CLI. Its `local` commands
   maintain client-owned local materialization.
 - [`reference/riverhog/ingress`](../reference/riverhog/ingress/) contains maintained
-  content-opaque protocol-ingress implementations; v1 includes the FTP adapter.
-- [`reference/riverhog/storage`](../reference/riverhog/storage/) contains isolated
-  implementations of the provider-neutral storage-adapter contract.
-- [`riverhog/recovery`](../riverhog/recovery/) is a permissively licensed reference;
-  archives remain recoverable with standard tools.
+  content-opaque ingress; v1 includes FTP.
+- [`reference/riverhog/storage`](../reference/riverhog/storage/) contains isolated,
+  provider-neutral storage adapters.
+- [`riverhog/recovery`](../riverhog/recovery/) is a permissively licensed reference; archives
+  remain recoverable with standard tools.
 - [`companions`](../companions/) contains content-opaque applications.
-- [`reference/stove0`](../reference/stove0/) contains first-party implementations
-  of independently implementable Stove0 observer, target, and target-internal sampler contracts.
+- [`reference/stove0`](../reference/stove0/) contains first-party observer, target, and
+  target-internal sampler implementations.
 - [`utilities`](../utilities/) contains portable operator and event tools.
-- [`packages`](../packages/) contains reusable protocol, client,
-  configuration, event, transport, and CLI primitives.
+- [`packages`](../packages/) contains reusable, implementation-neutral primitives.

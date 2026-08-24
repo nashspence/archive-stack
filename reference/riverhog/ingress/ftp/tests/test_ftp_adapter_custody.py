@@ -59,7 +59,7 @@ class _Producer:
             raise ConnectionError("finalized response was lost")
         return ProducedCollection(
             collection_id=41,
-            manifest_sha256="a" * 64,
+            archive_root_sha256="a" * 64,
             content_identity="b" * 64,
             receipt={"state": "finalized"},
         )

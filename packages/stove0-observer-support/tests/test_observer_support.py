@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -55,7 +56,7 @@ class RetrievalApi:
     def get_collection(self, collection_id: int) -> dict[str, Any]:
         return {
             "id": collection_id,
-            "manifest_sha256": _sha("1"),
+            "archive_root_sha256": _sha("1"),
             "content_identity": _sha("2"),
         }
 
@@ -198,7 +199,7 @@ def _request(
                     role="fixture.source/v1",
                     collection=CollectionRootRef(
                         collection_id=1,
-                        manifest_sha256=_sha("1"),
+                        archive_root_sha256=_sha("1"),
                         content_identity=_sha("2"),
                     ),
                     path="camera/input.mov",
@@ -360,7 +361,7 @@ def test_subject_batch_preference_is_not_a_request_limit() -> None:
     )
     root = CollectionRootRef(
         collection_id=1,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
     subjects = tuple(
@@ -446,6 +447,32 @@ def test_framework_neutral_observer_http_binding() -> None:
     result = ObservationResult.model_validate_json(result_response.body)
     assert result.facts == {"bytes": len(api.data)}
     assert binding.handle("DELETE", "/v1/observer").status == 405
+
+
+def test_observer_descriptor_failure_uses_the_public_error_envelope() -> None:
+    class FailingDescriptorObserver:
+        def descriptor(self) -> ObserverDescriptor:
+            raise RuntimeError("private descriptor failure")
+
+        def observe(
+            self,
+            _request: ObservationRequest,
+            _runtime: ObservationRuntime,
+        ) -> ObservationResult:
+            raise AssertionError("descriptor endpoint must not execute observation")
+
+    response = ObserverHttpBinding(FailingDescriptorObserver()).handle(
+        "GET",
+        "/v1/observer",
+    )
+
+    assert response.status == 500
+    assert json.loads(response.body) == {
+        "error": {
+            "code": "observer_failed",
+            "message": "content observer descriptor failed",
+        }
+    }
 
 
 def test_observer_binding_serializes_workspace_execution_by_default() -> None:

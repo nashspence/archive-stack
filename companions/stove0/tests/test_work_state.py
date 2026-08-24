@@ -83,7 +83,7 @@ def _sha(character: str) -> str:
 def _root() -> CollectionRootRef:
     return CollectionRootRef(
         collection_id=1,
-        manifest_sha256=_sha("1"),
+        archive_root_sha256=_sha("1"),
         content_identity=_sha("2"),
     )
 
@@ -482,7 +482,7 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
         dispositions=(
             ArtifactDisposition(
                 input_collection_id=_root().collection_id,
-                input_manifest_sha256=_root().manifest_sha256,
+                input_archive_root_sha256=_root().archive_root_sha256,
                 input_path=plan.inputs[0].path,
                 status="transformed",
                 outputs=(output.path,),
@@ -491,7 +491,7 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
     )
     output_collection = OutputCollectionRef(
         collection_id=7,
-        manifest_sha256=_sha("6"),
+        archive_root_sha256=_sha("6"),
         content_identity=_sha("7"),
         derivation_sha256=derivation.sha256,
     )
@@ -698,7 +698,7 @@ def test_stale_revision_and_invalid_success_order_fail_closed() -> None:
             record.work_id,
             OutputCollectionRef(
                 collection_id=7,
-                manifest_sha256=_sha("6"),
+                archive_root_sha256=_sha("6"),
                 content_identity=_sha("7"),
                 derivation_sha256=_sha("8"),
             ),
@@ -829,6 +829,13 @@ def test_unified_state_store_is_restart_safe_and_compare_and_swap(tmp_path: Path
 
     restarted = SqlAlchemyStateStore(f"sqlite+pysqlite:///{path}")
     assert restarted.load(created.work_id) == claimed
+    events = restarted.list_events().events
+    assert [event.type for event in events] == [
+        "io.riverhog.stove0.work.created",
+        "io.riverhog.stove0.work.updated",
+    ]
+    assert events[0].data["work_id"] == created.work_id
+    assert events[1].data["revision"] == claimed.revision
 
     with pytest.raises(ConcurrentWorkUpdate, match="stale stove0 work revision"):
         store.compare_and_swap(
@@ -851,7 +858,7 @@ def test_sql_runnable_scan_ignores_terminal_history_and_uses_a_keyset(
                 inputs=(
                     CollectionRootRef(
                         collection_id=index + 1,
-                        manifest_sha256=f"{index + 1:064x}",
+                        archive_root_sha256=f"{index + 1:064x}",
                         content_identity=_sha("2"),
                     ),
                 ),

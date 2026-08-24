@@ -72,7 +72,7 @@ class CollectionSummary:
     created_at: str
     tags: tuple[str, ...]
     content_identity: str
-    manifest_sha256: str
+    archive_root_sha256: str
     encryption_format: str
     passphrase_id: str
     files: int

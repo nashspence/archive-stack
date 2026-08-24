@@ -69,7 +69,10 @@ class ObserverHttpBinding:
         if normalized_method == "GET" and path == "/v1/observer":
             if body:
                 return _error(400, "bad_request", "GET /v1/observer must not include a body")
-            return _model_response(self.observer.descriptor())
+            try:
+                return _model_response(self.observer.descriptor())
+            except Exception:
+                return _error(500, "observer_failed", "content observer descriptor failed")
         if normalized_method == "POST" and path == "/v1/observe":
             if len(body) > self.maximum_request_bytes:
                 return _error(413, "request_too_large", "observer request exceeds its size limit")

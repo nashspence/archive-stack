@@ -235,7 +235,7 @@ class ClaimedCollectionReader:
         payload = self.api.get_collection(expected.collection_id)
         actual = CollectionRootIdentity(
             collection_id=_positive_int(payload.get("id"), "collection id"),
-            manifest_sha256=str(payload.get("manifest_sha256") or ""),
+            archive_root_sha256=str(payload.get("archive_root_sha256") or ""),
             content_identity=str(payload.get("content_identity") or ""),
         )
         if actual != expected:

@@ -140,7 +140,7 @@ def test_review_evaluation_expands_one_normal_work_per_variant() -> None:
         inputs=(
             CollectionRootRef(
                 collection_id=1,
-                manifest_sha256=_sha("b"),
+                archive_root_sha256=_sha("b"),
                 content_identity=_sha("c"),
             ),
         ),
@@ -181,7 +181,7 @@ def test_materialized_trial_requires_exactly_one_variant() -> None:
             inputs=(
                 CollectionRootRef(
                     collection_id=1,
-                    manifest_sha256=_sha("b"),
+                    archive_root_sha256=_sha("b"),
                     content_identity=_sha("c"),
                 ),
             ),

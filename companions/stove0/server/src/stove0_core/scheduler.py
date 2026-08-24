@@ -116,7 +116,7 @@ class Stove0Scheduler:
             return []
         root = CollectionRootRef(
             collection_id=collection_id,
-            manifest_sha256=str(current.get("manifest_sha256") or ""),
+            archive_root_sha256=str(current.get("archive_root_sha256") or ""),
             content_identity=str(current.get("content_identity") or ""),
         )
         tags = tuple(str(item) for item in current.get("tags", []))

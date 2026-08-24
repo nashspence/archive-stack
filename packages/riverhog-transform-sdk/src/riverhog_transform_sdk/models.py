@@ -82,7 +82,7 @@ class DerivedCollectionReceipt:
     """Finalized output identity returned by a transform target."""
 
     collection_id: int
-    manifest_sha256: str
+    archive_root_sha256: str
     content_identity: str
     derivation: CollectionDerivation
 
@@ -91,8 +91,8 @@ class DerivedCollectionReceipt:
             raise ValueError("derived collection id must be positive")
         object.__setattr__(
             self,
-            "manifest_sha256",
-            _sha256(self.manifest_sha256, "derived collection manifest identity"),
+            "archive_root_sha256",
+            _sha256(self.archive_root_sha256, "derived collection archive-root identity"),
         )
         object.__setattr__(
             self,
@@ -103,7 +103,7 @@ class DerivedCollectionReceipt:
     def as_dict(self) -> dict[str, object]:
         return {
             "collection_id": self.collection_id,
-            "manifest_sha256": self.manifest_sha256,
+            "archive_root_sha256": self.archive_root_sha256,
             "content_identity": self.content_identity,
             "derivation": self.derivation.as_dict(),
         }
@@ -112,7 +112,7 @@ class DerivedCollectionReceipt:
     def from_mapping(cls, value: Mapping[str, object]) -> DerivedCollectionReceipt:
         if set(value) != {
             "collection_id",
-            "manifest_sha256",
+            "archive_root_sha256",
             "content_identity",
             "derivation",
         }:
@@ -125,7 +125,7 @@ class DerivedCollectionReceipt:
             raise ValueError("derived collection receipt id is invalid")
         return cls(
             collection_id=collection_id,
-            manifest_sha256=str(value.get("manifest_sha256") or ""),
+            archive_root_sha256=str(value.get("archive_root_sha256") or ""),
             content_identity=str(value.get("content_identity") or ""),
             derivation=CollectionDerivation.from_mapping(derivation),
         )

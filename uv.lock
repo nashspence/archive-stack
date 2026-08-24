@@ -1548,18 +1548,22 @@ name = "riverhog-api-client"
 version = "0.1.0"
 source = { editable = "packages/riverhog-api-client" }
 dependencies = [
+    { name = "application-access" },
     { name = "file-download" },
     { name = "http-api-contracts" },
     { name = "httpx", extra = ["http2"] },
+    { name = "pydantic" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "application-access", editable = "packages/application-access" },
     { name = "file-download", editable = "packages/file-download" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.27,<1.0" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
 ]
@@ -2118,7 +2122,6 @@ source = { editable = "packages/stove0-api-client" }
 dependencies = [
     { name = "http-api-contracts" },
     { name = "httpx" },
-    { name = "lifecycle-events" },
     { name = "stove0-operator-contracts" },
     { name = "stove0-protocol" },
 ]
@@ -2127,7 +2130,6 @@ dependencies = [
 requires-dist = [
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
-    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "stove0-operator-contracts", editable = "packages/stove0-operator-contracts" },
     { name = "stove0-protocol", editable = "packages/stove0-protocol" },
 ]
@@ -2336,6 +2338,7 @@ name = "stove0-operator-contracts"
 version = "0.1.0"
 source = { editable = "packages/stove0-operator-contracts" }
 dependencies = [
+    { name = "lifecycle-events" },
     { name = "pydantic" },
     { name = "stove0-observer-protocol" },
     { name = "stove0-protocol" },
@@ -2345,6 +2348,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "stove0-observer-protocol", editable = "packages/stove0-observer-protocol" },
     { name = "stove0-protocol", editable = "packages/stove0-protocol" },
@@ -2559,7 +2563,6 @@ dependencies = [
     { name = "alembic" },
     { name = "fastapi" },
     { name = "http-api-contracts" },
-    { name = "lifecycle-events" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "riverhog-api-client" },
@@ -2583,7 +2586,6 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.18.5,<2.0" },
     { name = "fastapi", specifier = ">=0.111,<1.0" },
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
-    { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3,<4.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },

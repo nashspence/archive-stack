@@ -13,7 +13,7 @@ import threading
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Literal, cast
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -24,7 +24,6 @@ from http_api_contracts import (
     error_code_for_status,
     error_payload,
 )
-from lifecycle_events import EventPage
 from pydantic import ValidationError
 from riverhog_api_client import ApiClient
 from sqlalchemy import text
@@ -56,12 +55,15 @@ from stove0_observer_client import ContentObserverClient
 from stove0_operator_contracts import (
     ArtifactSelectionPage,
     EvaluationPage,
+    EvaluationPhase,
     EvaluationView,
     RecipeCatalogView,
     RecipeView,
     SchedulerRun,
     SchedulerStatus,
+    Stove0EventPage,
     WorkPage,
+    WorkPhase,
     WorkView,
 )
 from stove0_protocol import (
@@ -285,7 +287,7 @@ def create_app(
 
     @app.get(
         "/v1/events",
-        response_model=EventPage,
+        response_model=Stove0EventPage,
         dependencies=[Depends(authorize)],
         operation_id="list_events",
         tags=["events"],
@@ -293,7 +295,7 @@ def create_app(
     def list_events(
         after: str | None = None,
         limit: int = Query(default=100, ge=1, le=100),
-    ) -> EventPage:
+    ) -> Stove0EventPage:
         return composition.state.list_events(after=after, limit=limit)
 
     @app.get(
@@ -332,22 +334,20 @@ def create_app(
     def list_work(
         page: int = Query(default=1, ge=1),
         per_page: int = Query(default=25, ge=1, le=100),
-        phase: str | None = None,
+        phase: WorkPhase | None = None,
         q: str | None = None,
-        sort: str = "updated_at",
-        order: str = "desc",
+        sort: Literal["updated_at", "phase", "work_id"] = "updated_at",
+        order: Literal["asc", "desc"] = "desc",
         all_items: bool = Query(default=False, alias="all"),
     ) -> WorkPage:
-        if sort not in {"updated_at", "phase", "work_id"} or order not in {"asc", "desc"}:
-            raise HTTPException(status_code=400, detail="work sorting is invalid")
         return WorkPage.from_page(
             composition.state.list_work(
                 page=page,
                 per_page=per_page,
                 phase=phase,
                 query=q,
-                sort=cast(Any, sort),
-                order=cast(Any, order),
+                sort=sort,
+                order=order,
                 all_items=all_items,
             )
         )
@@ -493,25 +493,20 @@ def create_app(
     def list_evaluations(
         page: int = Query(default=1, ge=1),
         per_page: int = Query(default=25, ge=1, le=100),
-        phase: str | None = None,
+        phase: EvaluationPhase | None = None,
         q: str | None = None,
-        sort: str = "updated_at",
-        order: str = "desc",
+        sort: Literal["updated_at", "phase", "evaluation_id"] = "updated_at",
+        order: Literal["asc", "desc"] = "desc",
         all_items: bool = Query(default=False, alias="all"),
     ) -> EvaluationPage:
-        if sort not in {"updated_at", "phase", "evaluation_id"} or order not in {
-            "asc",
-            "desc",
-        }:
-            raise HTTPException(status_code=400, detail="evaluation sorting is invalid")
         return EvaluationPage.from_page(
             composition.state.list_evaluations(
                 page=page,
                 per_page=per_page,
                 phase=phase,
                 query=q,
-                sort=cast(Any, sort),
-                order=cast(Any, order),
+                sort=sort,
+                order=order,
                 all_items=all_items,
             )
         )
@@ -654,7 +649,7 @@ def _work_identity(
         roots.append(
             CollectionRootRef(
                 collection_id=collection_id,
-                manifest_sha256=str(current.get("manifest_sha256") or ""),
+                archive_root_sha256=str(current.get("archive_root_sha256") or ""),
                 content_identity=str(current.get("content_identity") or ""),
             )
         )

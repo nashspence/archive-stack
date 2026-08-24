@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-from application_access import ApplicationPermission, ApplicationResource
+from application_access import (
+    ApplicationAccessGrant,
+    ApplicationAccessGrantSet,
+    ApplicationPermission,
+    ApplicationResource,
+)
 from pydantic import Field
 
 from riverhog_api.schemas.common import RiverhogModel
@@ -27,9 +32,8 @@ class AppListOut(RiverhogModel):
     apps: list[AppSummaryOut]
 
 
-class AppAccessIn(RiverhogModel):
-    permission: ApplicationPermission
-    resource: ApplicationResource = "*"
+class AppAccessIn(ApplicationAccessGrant):
+    pass
 
 
 class AppAccessOut(AppAccessIn):
@@ -81,12 +85,12 @@ class AppKeyListOut(RiverhogModel):
 
 
 class CreateAppKeyRequest(RiverhogModel):
-    access: list[AppAccessIn] = Field(min_length=1)
+    access: ApplicationAccessGrantSet
     expires_in_seconds: int | None = Field(default=None, ge=1)
 
 
 class ReplaceAppAccessRequest(RiverhogModel):
-    access: list[AppAccessIn] = Field(min_length=1)
+    access: ApplicationAccessGrantSet
 
 
 class MutateAppAccessRequest(AppAccessIn):

@@ -123,15 +123,15 @@ class CollectionRootIdentity:
     """Immutable identity used by collection workflow contracts."""
 
     collection_id: int
-    manifest_sha256: str
+    archive_root_sha256: str
     content_identity: str
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "collection_id", int(normalize_collection_id(self.collection_id)))
         object.__setattr__(
             self,
-            "manifest_sha256",
-            _sha256(self.manifest_sha256, "collection manifest identity"),
+            "archive_root_sha256",
+            _sha256(self.archive_root_sha256, "collection archive-root identity"),
         )
         object.__setattr__(
             self,
@@ -142,17 +142,17 @@ class CollectionRootIdentity:
     def as_dict(self) -> dict[str, object]:
         return {
             "collection_id": self.collection_id,
-            "manifest_sha256": self.manifest_sha256,
+            "archive_root_sha256": self.archive_root_sha256,
             "content_identity": self.content_identity,
         }
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> CollectionRootIdentity:
-        if set(value) != {"collection_id", "manifest_sha256", "content_identity"}:
+        if set(value) != {"collection_id", "archive_root_sha256", "content_identity"}:
             raise ValueError("collection root identity fields are invalid")
         return cls(
             collection_id=_positive_uint(value.get("collection_id"), "collection id"),
-            manifest_sha256=str(value.get("manifest_sha256") or ""),
+            archive_root_sha256=str(value.get("archive_root_sha256") or ""),
             content_identity=str(value.get("content_identity") or ""),
         )
 
@@ -527,7 +527,7 @@ class TransformIntent:
 @dataclass(frozen=True, order=True, slots=True)
 class ArtifactDisposition:
     input_collection_id: int
-    input_manifest_sha256: str
+    input_archive_root_sha256: str
     input_path: str
     status: DispositionState
     outputs: tuple[str, ...] = ()
@@ -542,8 +542,8 @@ class ArtifactDisposition:
         )
         object.__setattr__(
             self,
-            "input_manifest_sha256",
-            _sha256(self.input_manifest_sha256, "input manifest identity"),
+            "input_archive_root_sha256",
+            _sha256(self.input_archive_root_sha256, "input archive-root identity"),
         )
         object.__setattr__(self, "input_path", normalize_relpath(self.input_path))
         state = str(self.status)
@@ -568,7 +568,7 @@ class ArtifactDisposition:
         payload: dict[str, object] = {
             "input": {
                 "collection_id": self.input_collection_id,
-                "manifest_sha256": self.input_manifest_sha256,
+                "archive_root_sha256": self.input_archive_root_sha256,
                 "path": self.input_path,
             },
             "status": self.status,
@@ -591,7 +591,7 @@ class ArtifactDisposition:
         input_value = value.get("input")
         if not isinstance(input_value, Mapping) or set(input_value) != {
             "collection_id",
-            "manifest_sha256",
+            "archive_root_sha256",
             "path",
         }:
             raise ValueError("artifact disposition input fields are invalid")
@@ -610,7 +610,7 @@ class ArtifactDisposition:
             input_collection_id=_positive_uint(
                 input_value.get("collection_id"), "input collection id"
             ),
-            input_manifest_sha256=str(input_value.get("manifest_sha256") or ""),
+            input_archive_root_sha256=str(input_value.get("archive_root_sha256") or ""),
             input_path=str(input_value.get("path") or ""),
             status=cast(DispositionState, str(value.get("status") or "")),
             outputs=tuple(str(item) for item in outputs),
@@ -673,14 +673,14 @@ class CollectionDerivation:
         dispositions = tuple(sorted(self.dispositions))
         if not dispositions or dispositions != self.dispositions:
             raise ValueError("artifact dispositions must be nonempty and canonically ordered")
-        roots = {(item.collection_id, item.manifest_sha256) for item in self.inputs}
+        roots = {(item.collection_id, item.archive_root_sha256) for item in self.inputs}
         if any(
-            (item.input_collection_id, item.input_manifest_sha256) not in roots
+            (item.input_collection_id, item.input_archive_root_sha256) not in roots
             for item in dispositions
         ):
             raise ValueError("artifact disposition references an unknown input root")
         disposition_inputs = [
-            (item.input_collection_id, item.input_manifest_sha256, item.input_path)
+            (item.input_collection_id, item.input_archive_root_sha256, item.input_path)
             for item in dispositions
         ]
         if len(disposition_inputs) != len(set(disposition_inputs)):

@@ -280,7 +280,7 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
         dispositions=(
             ArtifactDisposition(
                 input_collection_id=1,
-                input_manifest_sha256="a" * 64,
+                input_archive_root_sha256="a" * 64,
                 input_path="camera/input.mov",
                 status="transformed",
                 outputs=("video/output.mkv",),
@@ -905,7 +905,7 @@ def test_multiple_processing_outcomes_retain_outputs_and_authorize_retirement(
             dispositions=(
                 ArtifactDisposition(
                     input_collection_id=1,
-                    input_manifest_sha256=root.manifest_sha256,
+                    input_archive_root_sha256=root.archive_root_sha256,
                     input_path=source_path,
                     status="transformed",
                     outputs=(output_path,),

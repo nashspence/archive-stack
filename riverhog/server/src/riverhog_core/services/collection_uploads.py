@@ -1371,7 +1371,7 @@ class SqlAlchemyCollectionUploadService:
                 "riverhog-format": ROOT_PROOF_STORAGE_FORMAT,
                 "riverhog-plaintext-bytes": str(len(proof_bytes)),
                 "riverhog-plaintext-sha256": hashlib.sha256(proof_bytes).hexdigest(),
-                "riverhog-manifest-sha256": root.plaintext_sha256,
+                "riverhog-archive-root-sha256": root.plaintext_sha256,
             },
             placement="immediate",
         )
@@ -2412,13 +2412,13 @@ def _finalized_payload(
         else None
     )
     if manifest is None or not manifest.sha256:
-        raise RuntimeError("finalized collection has no immutable manifest identity")
+        raise RuntimeError("finalized collection has no immutable archive-root identity")
     summary = {
         "id": collection.id,
         "created_at": collection.created_at,
         "tags": tags,
         "content_identity": collection.content_identity,
-        "manifest_sha256": manifest.sha256,
+        "archive_root_sha256": manifest.sha256,
         "encryption_format": collection.encryption_format,
         "passphrase_id": collection.passphrase_id,
         "files": len(collection.files),
@@ -2434,7 +2434,7 @@ def _finalized_payload(
         "provenance_mode": collection.provenance_mode,
         "provenance_identity": collection.provenance_identity,
         "content_identity": collection.content_identity,
-        "manifest_sha256": manifest.sha256,
+        "archive_root_sha256": manifest.sha256,
         "archive_store": copy.store if copy else store_name,
         "encryption_format": collection.encryption_format,
         "passphrase_id": collection.passphrase_id,

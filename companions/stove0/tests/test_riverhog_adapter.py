@@ -65,7 +65,7 @@ def _authorities(
             inputs=(
                 CollectionRootRef(
                     collection_id=1,
-                    manifest_sha256=_sha("2"),
+                    archive_root_sha256=_sha("2"),
                     content_identity=_sha("3"),
                 ),
             ),
@@ -282,7 +282,7 @@ class FixtureApi:
         assert self.derivation is not None
         return {
             "id": collection_id,
-            "manifest_sha256": _sha("7"),
+            "archive_root_sha256": _sha("7"),
             "content_identity": _sha("8"),
             "tags": list(self.derivation.output_tags),
         }
@@ -349,7 +349,7 @@ def _verifying_record(
         dispositions=(
             ArtifactDisposition(
                 input_collection_id=1,
-                input_manifest_sha256=_sha("2"),
+                input_archive_root_sha256=_sha("2"),
                 input_path="source/input.bin",
                 status="transformed",
                 outputs=(output.path,),
@@ -358,7 +358,7 @@ def _verifying_record(
     )
     output_ref = OutputCollectionRef(
         collection_id=7,
-        manifest_sha256=_sha("7"),
+        archive_root_sha256=_sha("7"),
         content_identity=_sha("8"),
         derivation_sha256=derivation.sha256,
     )
@@ -466,7 +466,7 @@ def test_riverhog_adapter_closes_only_the_exact_generic_outcome_set() -> None:
     )
     output_root = CollectionRootRef(
         collection_id=7,
-        manifest_sha256=_sha("7"),
+        archive_root_sha256=_sha("7"),
         content_identity=_sha("8"),
     )
     output_selection = ArtifactSelection.seal(
@@ -501,7 +501,7 @@ def test_riverhog_adapter_closes_only_the_exact_generic_outcome_set() -> None:
         source_claim_id=_sha("f"),
         output_collection=CollectionRootIdentity(
             collection_id=7,
-            manifest_sha256=_sha("7"),
+            archive_root_sha256=_sha("7"),
             content_identity=_sha("8"),
         ),
         derivation_sha256=_sha("d"),

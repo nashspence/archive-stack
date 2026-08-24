@@ -19,10 +19,9 @@ class PortableCollectionError(ValueError):
 
 
 def _sha256(value: object, label: str) -> str:
-    parsed = str(value)
-    if _SHA256_RE.fullmatch(parsed) is None:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
         raise PortableCollectionError(f"{label} is not a SHA-256 identity")
-    return parsed
+    return value
 
 
 def _nonnegative_int(value: object, label: str) -> int:
@@ -31,11 +30,29 @@ def _nonnegative_int(value: object, label: str) -> int:
     return value
 
 
+def _string(value: object, label: str) -> str:
+    if not isinstance(value, str):
+        raise PortableCollectionError(f"{label} must be a string")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class PortableCollectionFile:
     path: str
     bytes: int
     sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, str):
+            raise PortableCollectionError("portable collection file path is invalid")
+        try:
+            path = normalize_relpath(self.path)
+        except ValueError as exc:
+            raise PortableCollectionError("portable collection file path is invalid") from exc
+        if path != self.path:
+            raise PortableCollectionError("portable collection file path is not canonical")
+        _nonnegative_int(self.bytes, "portable collection file bytes")
+        _sha256(self.sha256, "portable collection file sha256")
 
     @classmethod
     def from_mapping(cls, value: object) -> PortableCollectionFile:
@@ -78,9 +95,16 @@ class PortableCollectionRecord:
         if collection != self.collection:
             raise PortableCollectionError("portable collection id is not canonical")
         _sha256(self.content_identity, "portable collection content identity")
-        if not self.encryption_format or self.encryption_format.strip() != self.encryption_format:
+        if (
+            not isinstance(self.encryption_format, str)
+            or not self.encryption_format
+            or self.encryption_format.strip() != self.encryption_format
+        ):
             raise PortableCollectionError("portable collection encryption format is invalid")
-        if _PASSPHRASE_ID_RE.fullmatch(self.passphrase_id) is None:
+        if (
+            not isinstance(self.passphrase_id, str)
+            or _PASSPHRASE_ID_RE.fullmatch(self.passphrase_id) is None
+        ):
             raise PortableCollectionError("portable collection passphrase id is invalid")
         if self.provenance_mode not in {"captured", "mixed", "omitted"}:
             raise PortableCollectionError("portable collection provenance mode is invalid")
@@ -91,12 +115,18 @@ class PortableCollectionRecord:
         if self.provenance_mode != "omitted" and self.provenance_identity is None:
             raise PortableCollectionError("captured provenance requires an identity")
         _nonnegative_int(self.metadata_revision, "portable collection metadata revision")
-        if not self.files:
+        if (
+            not isinstance(self.files, tuple)
+            or not self.files
+            or not all(isinstance(item, PortableCollectionFile) for item in self.files)
+        ):
             raise PortableCollectionError("portable collection files must not be empty")
         if tuple(sorted(self.files, key=lambda item: item.path)) != self.files or len(
             {item.path for item in self.files}
         ) != len(self.files):
             raise PortableCollectionError("portable collection files are not canonical")
+        if not isinstance(self.tags, tuple) or not all(isinstance(item, str) for item in self.tags):
+            raise PortableCollectionError("portable collection tags are invalid")
         normalized_tags: list[str] = []
         for raw in self.tags:
             try:
@@ -137,7 +167,9 @@ class PortableCollectionRecord:
             files=tuple(
                 sorted(
                     (
-                        PortableCollectionFile(path, byte_count, sha256)
+                        PortableCollectionFile.from_mapping(
+                            {"path": path, "bytes": byte_count, "sha256": sha256}
+                        )
                         for path, byte_count, sha256 in files
                     ),
                     key=lambda item: item.path,
@@ -171,14 +203,23 @@ class PortableCollectionRecord:
         if mode not in {"captured", "mixed", "omitted"}:
             raise PortableCollectionError("portable collection provenance mode is invalid")
         return cls(
-            format=str(value["format"]),
+            format=_string(value["format"], "portable collection format"),
             collection=_nonnegative_int(value["collection"], "portable collection id"),
-            content_identity=str(value["content_identity"]),
-            encryption_format=str(value["encryption_format"]),
-            passphrase_id=str(value["passphrase_id"]),
+            content_identity=_string(
+                value["content_identity"], "portable collection content identity"
+            ),
+            encryption_format=_string(
+                value["encryption_format"], "portable collection encryption format"
+            ),
+            passphrase_id=_string(value["passphrase_id"], "portable collection passphrase id"),
             provenance_mode=mode,
             provenance_identity=(
-                None if value["provenance_identity"] is None else str(value["provenance_identity"])
+                None
+                if value["provenance_identity"] is None
+                else _string(
+                    value["provenance_identity"],
+                    "portable collection provenance identity",
+                )
             ),
             metadata_revision=_nonnegative_int(
                 value["metadata_revision"], "portable collection metadata revision"

@@ -468,7 +468,7 @@ operations:
   outputs: []
   effect_receipt_schema:
     id: stove0.review.rclone-receipt/v1
-    sha256: 10be16474ab1686e6717f47977d5660d0b9d9f6cc860bff68e8c9c1228b23c48
+    sha256: 063b0413fa84c41a596b8b1bd4c26d5b38c6c046b40a7742530a95c47912b79d
     document:
       $schema: https://json-schema.org/draft/2020-12/schema
       type: object
@@ -476,7 +476,7 @@ operations:
       - format
       - destination_identity
       - delivery_id
-      - artifact_manifest_sha256
+      - artifact_archive_root_sha256
       - artifact_count
       - total_bytes
       properties:
@@ -488,7 +488,7 @@ operations:
         delivery_id:
           type: string
           pattern: ^[0-9a-f]{64}$
-        artifact_manifest_sha256:
+        artifact_archive_root_sha256:
           type: string
           pattern: ^[0-9a-f]{64}$
         artifact_count:
@@ -499,7 +499,7 @@ operations:
           minimum: 0
       additionalProperties: false
   source_retirement_permitted: false
-  contract_sha256: 24308b8f81d21030bf84d1fa418dcab51b91e5bc51ea909801890205c5891042
+  contract_sha256: 7ff2c8c93f9ea1c06019a987de31242b1c72b5108ba646cf1a829b1b678a9f71
 recipes:
 - id: stove0.audio-archive/v1
   revision: 1

@@ -317,7 +317,7 @@ class NvencAv1OpusTargetService(PersistentTargetService):
                 dispositions = tuple(
                     ArtifactDisposition(
                         input_collection_id=artifact.collection.collection_id,
-                        input_manifest_sha256=artifact.collection.manifest_sha256,
+                        input_archive_root_sha256=artifact.collection.archive_root_sha256,
                         input_path=artifact.path,
                         status="transformed",
                         outputs=tuple(
