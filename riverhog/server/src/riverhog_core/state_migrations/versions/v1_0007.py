@@ -1,6 +1,6 @@
 """Bind collection archive encryption identity before the v1 release."""
 
-import hmac
+import hashlib
 import json
 import os
 from collections import defaultdict
@@ -16,7 +16,6 @@ branch_labels: str | None = None
 depends_on: str | None = None
 
 _CUTOVER_PASSPHRASE_ID_ENV = "RIVERHOG_STATE_UPGRADE_PASSPHRASE_ID"
-_COLLECTION_RECORD_ETAG_DOMAIN = b"riverhog-collection-record-etag/v1"
 
 
 def upgrade() -> None:
@@ -121,14 +120,10 @@ def _refresh_collection_identities(*, encryption_format: str, passphrase_id: str
             "tags": tags[collection_id],
             "files": files[collection_id],
         }
-        canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-        record_etag = hmac.digest(
-            _COLLECTION_RECORD_ETAG_DOMAIN,
-            canonical_payload,
-            "sha256",
-        ).hex()
+        # passphrase_id is an opaque public identifier, not passphrase material.
+        record_etag = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         connection.execute(
             text("UPDATE collections SET record_etag = :record_etag WHERE id = :collection_id"),
             {"record_etag": record_etag, "collection_id": collection_id},

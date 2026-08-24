@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import hmac
+import hashlib
 import json
 from collections.abc import Iterable, Sequence
 
 from riverhog_protocol.manifest import collection_content_identity
-
-_COLLECTION_RECORD_ETAG_DOMAIN = b"riverhog-collection-record-etag/v1"
 
 
 def collection_record_manifest(
@@ -36,11 +34,8 @@ def collection_record_manifest(
             for path, byte_count, sha256 in sorted(files)
         ],
     }
-    return payload, hmac.digest(
-        _COLLECTION_RECORD_ETAG_DOMAIN,
-        _canonical_json(payload),
-        "sha256",
-    ).hex()
+    # passphrase_id is an opaque public identifier, not passphrase material.
+    return payload, hashlib.sha256(_canonical_json(payload)).hexdigest()
 
 
 def collection_metadata_manifest(
