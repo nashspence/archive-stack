@@ -37,6 +37,7 @@ EVENT_SUBJECT = "1"
 NATIVE_TRACE_INTERVAL_SECONDS = 1.0
 NATIVE_TRACE_EVENT_LIMIT = 128
 GOGURT_QUALIFICATION_ACTION_FAILURE_EXIT = 73
+MACOS_QUALIFICATION_DETACH_BUSY_DELAYS_SECONDS = (0.25, 0.5, 1.0, 2.0)
 WINDOWS_TASK_XML_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
 EVENT_PAGE = {
     "events": [
@@ -133,6 +134,40 @@ def _qualification_mount_operation(
     stderr = (completed.stderr or "").strip()[-2000:] or "<empty>"
     raise QualificationError(
         f"{operation} failed with exit {completed.returncode}; "
+        f"command={command!r}; stdout={stdout!r}; stderr={stderr!r}"
+    )
+
+
+def _detach_macos_qualification_image(backing: Path, *, cwd: Path) -> None:
+    """Release a settled disposable image through transient Disk Arbitration lag."""
+
+    command = ["hdiutil", "detach", "-force", str(backing)]
+    completed: subprocess.CompletedProcess[str] | None = None
+    attempts = 0
+    for delay in (*MACOS_QUALIFICATION_DETACH_BUSY_DELAYS_SECONDS, None):
+        attempts += 1
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode == 0:
+            return
+        resource_busy = (
+            completed.returncode == 16 and "resource busy" in (completed.stderr or "").casefold()
+        )
+        if not resource_busy or delay is None:
+            break
+        time.sleep(delay)
+
+    assert completed is not None
+    stdout = (completed.stdout or "").strip()[-2000:] or "<empty>"
+    stderr = (completed.stderr or "").strip()[-2000:] or "<empty>"
+    raise QualificationError(
+        "macOS qualification disk-image detachment "
+        f"failed with exit {completed.returncode} after {attempts} attempt(s); "
         f"command={command!r}; stdout={stdout!r}; stderr={stderr!r}"
     )
 
@@ -506,15 +541,10 @@ def _qualification_mount(scratch: Path) -> Iterator[Path]:
         )
         with _settled_qualification_mount(
             backing,
-            lambda: _qualification_mount_operation(
-                "macOS qualification disk-image detachment",
-                # The listener and its action custody are settled before mount
-                # release. This image is disposable qualification-owned state,
-                # so ignore incidental macOS service handles without retrying
-                # or suppressing the checked detach result.
-                ["hdiutil", "detach", "-force", str(backing)],
-                cwd=scratch,
-            ),
+            # The listener and its action custody are settled before mount
+            # release. Disk Arbitration can retain an incidental handle briefly
+            # after that proof, so retry only its classified resource-busy exit.
+            lambda: _detach_macos_qualification_image(backing, cwd=scratch),
         ) as mounted:
             yield mounted
         return

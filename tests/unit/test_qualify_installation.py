@@ -146,6 +146,8 @@ def test_macos_qualification_mount_checks_detachment(
     monkeypatch.setattr(module.sys, "platform", "darwin")
     monkeypatch.setattr(module.os, "getpid", lambda: 123)
     monkeypatch.setattr(module.subprocess, "run", run)
+    sleeps: list[float] = []
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
 
     with pytest.raises(
         module.QualificationError,
@@ -163,6 +165,91 @@ def test_macos_qualification_mount_checks_detachment(
         "-force",
         "/Volumes/GogurtQualification-123",
     ]
+    assert sleeps == []
+
+
+def test_macos_qualification_mount_retries_classified_busy_detachment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    commands: list[list[str]] = []
+    detach_attempts = 0
+
+    def run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal detach_attempts
+        commands.append(command)
+        if command[1] != "detach":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        detach_attempts += 1
+        if detach_attempts < 3:
+            return subprocess.CompletedProcess(command, 16, "", "Resource busy")
+        return subprocess.CompletedProcess(command, 0, "detached", "")
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module.os, "getpid", lambda: 123)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    with module._qualification_mount(tmp_path) as mounted:
+        assert mounted == Path("/Volumes/GogurtQualification-123")
+
+    detach_command = [
+        "hdiutil",
+        "detach",
+        "-force",
+        "/Volumes/GogurtQualification-123",
+    ]
+    assert commands[-3:] == [detach_command, detach_command, detach_command]
+    assert sleeps == [0.25, 0.5]
+
+
+def test_macos_qualification_mount_bounds_busy_detachment_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    detach_commands: list[list[str]] = []
+
+    def run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[1] != "detach":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        detach_commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            16,
+            "detach output",
+            "hdiutil: Resource busy",
+        )
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module.os, "getpid", lambda: 123)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    with pytest.raises(
+        module.QualificationError,
+        match=(
+            "macOS qualification disk-image detachment failed with exit 16 "
+            r"after 5 attempt\(s\)"
+        ),
+    ) as captured:
+        with module._qualification_mount(tmp_path):
+            pass
+
+    diagnostic = str(captured.value)
+    assert "stdout='detach output'" in diagnostic
+    assert "stderr='hdiutil: Resource busy'" in diagnostic
+    assert len(detach_commands) == 5
+    assert sleeps == [0.25, 0.5, 1.0, 2.0]
 
 
 def test_qualification_mount_preserves_body_and_cleanup_failures(tmp_path: Path) -> None:
