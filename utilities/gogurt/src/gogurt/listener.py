@@ -405,7 +405,20 @@ class ListenerStore:
     def hold_runtime_open(self) -> Iterator[None]:
         """Keep SQLite's WAL and shared-memory lifecycle owned by one listener runtime."""
 
-        with closing(self._connect()):
+        with closing(self._connect()) as connection:
+            # sqlite3.connect() is lazy. Execute against the initialized schema
+            # so this connection actually participates in the WAL lifecycle.
+            journal_mode = connection.execute("PRAGMA journal_mode").fetchone()
+            schema = connection.execute(
+                "SELECT value FROM listener_meta WHERE key = 'schema'"
+            ).fetchone()
+            if (
+                journal_mode is None
+                or str(journal_mode[0]).casefold() != "wal"
+                or schema is None
+                or str(schema[0]) != str(LISTENER_STATE_SCHEMA)
+            ):
+                raise ListenerError("Gogurt listener state is not the active WAL schema")
             yield
 
     def observe(
