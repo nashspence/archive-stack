@@ -107,7 +107,10 @@ def test_macos_qualification_mount_reports_the_exact_failed_operation(
 
     with pytest.raises(
         module.QualificationError,
-        match="macOS qualification disk-image creation failed with exit 1",
+        match=(
+            "macOS qualification disk-image creation failed with exit 1 "
+            r"after 1 attempt\(s\)"
+        ),
     ) as captured:
         with module._qualification_mount(tmp_path):
             pytest.fail("a failed disk-image creation exposed a mount")
@@ -119,6 +122,7 @@ def test_macos_qualification_mount_reports_the_exact_failed_operation(
         [
             "hdiutil",
             "create",
+            "-ov",
             "-size",
             "16m",
             "-fs",
@@ -128,6 +132,52 @@ def test_macos_qualification_mount_reports_the_exact_failed_operation(
             str(tmp_path / "gogurt-listener.dmg"),
         ]
     ]
+
+
+def test_macos_qualification_mount_retries_classified_busy_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    commands: list[list[str]] = []
+    create_attempts = 0
+
+    def run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal create_attempts
+        commands.append(command)
+        if command[1] != "create":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        create_attempts += 1
+        if create_attempts < 3:
+            return subprocess.CompletedProcess(command, 1, "", "Resource busy")
+        return subprocess.CompletedProcess(command, 0, "created", "")
+
+    sleeps: list[float] = []
+    monkeypatch.setattr(module.sys, "platform", "darwin")
+    monkeypatch.setattr(module.os, "getpid", lambda: 123)
+    monkeypatch.setattr(module.subprocess, "run", run)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    with module._qualification_mount(tmp_path) as mounted:
+        assert mounted == Path("/Volumes/GogurtQualification-123")
+
+    create_command = [
+        "hdiutil",
+        "create",
+        "-ov",
+        "-size",
+        "16m",
+        "-fs",
+        "HFS+",
+        "-volname",
+        "GogurtQualification",
+        str(tmp_path / "gogurt-listener.dmg"),
+    ]
+    assert commands[:3] == [create_command, create_command, create_command]
+    assert sleeps == [0.25, 0.5]
 
 
 def test_macos_qualification_mount_checks_detachment(
