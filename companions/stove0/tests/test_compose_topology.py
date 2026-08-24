@@ -42,7 +42,7 @@ def test_reference_topology_uses_one_postgres_authority_and_distinct_roles() -> 
     recipe_mount = services["api"]["volumes"][0]
     assert recipe_mount == {
         "type": "bind",
-        "source": "${STOVE0_RECIPES_HOST_PATH:-./config/recipes.example.yaml}",
+        "source": "${STOVE0_RECIPES_HOST_PATH:?STOVE0_RECIPES_HOST_PATH is required}",
         "target": "/etc/stove0/recipes.yaml",
         "read_only": True,
     }

@@ -175,7 +175,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      CONFIG_PATH: config/provider-qualification.example.toml
+      CONFIG_PATH: qualification/provider/config.toml
       RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET: ${{ vars.RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET }}
       RIVERHOG_QUALIFICATION_AWS_REGION: ${{ vars.RIVERHOG_QUALIFICATION_AWS_REGION }}
     steps:
@@ -230,7 +230,7 @@ jobs:
       id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
-      CONFIG_PATH: config/provider-qualification.example.toml
+      CONFIG_PATH: qualification/provider/config.toml
       RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET: ${{ vars.RIVERHOG_QUALIFICATION_AWS_DEEP_ARCHIVE_BUCKET }}
       RIVERHOG_QUALIFICATION_AWS_REGION: ${{ vars.RIVERHOG_QUALIFICATION_AWS_REGION }}
       RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET: ${{ vars.RIVERHOG_QUALIFICATION_B2_ARCHIVE_BUCKET }}

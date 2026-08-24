@@ -39,7 +39,7 @@ x-stove0-common: &stove0-common
   <<: [*stove0-image, *hardening]
   volumes:
     - type: bind
-      source: ${STOVE0_RECIPES_HOST_PATH:-./config/recipes.example.yaml}
+      source: ${STOVE0_RECIPES_HOST_PATH:?STOVE0_RECIPES_HOST_PATH is required}
       target: /etc/stove0/recipes.yaml
       read_only: true
   tmpfs:

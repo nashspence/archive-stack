@@ -95,7 +95,8 @@ def test_reference_compose_is_ftp_only_bounded_and_unprivileged() -> None:
         if item["target"] == "/etc/riverhog/ftp-adapter.json"
     )
     assert config_mount["source"] == (
-        "${RIVERHOG_FTP_ADAPTER_CONFIG_HOST_PATH:-./config/ftp-adapter.example.json}"
+        "${RIVERHOG_FTP_ADAPTER_CONFIG_HOST_PATH:"
+        "?RIVERHOG_FTP_ADAPTER_CONFIG_HOST_PATH is required}"
     )
     assert "archive" not in {key.casefold() for key in compose.get("volumes", {})}
 
@@ -111,9 +112,7 @@ def test_reference_configuration_is_current_and_secret_injected(
     monkeypatch.setenv("RIVERHOG_TOKEN_FILE", str(riverhog_token))
     monkeypatch.setenv("RIVERHOG_FTP_ADAPTER_API_TOKEN_FILE", str(adapter_token))
 
-    config = load_config(
-        REPO_ROOT / "reference/riverhog/ingress/ftp/config/ftp-adapter.example.json"
-    )
+    config = load_config(REPO_ROOT / "qualification/fixtures/riverhog-ftp-adapter/config.json")
 
     assert config.host_id == "urn:uuid:00000000-0000-4000-8000-000000000001"
     assert config.riverhog_base_url == "http://app:8000"

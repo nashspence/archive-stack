@@ -380,8 +380,8 @@ def _run_gogurt(
     listener_lifecycle_repetitions: int,
     gogurt_evidence_dir: Path | None,
 ) -> str:
-    examples = scratch / "gogurt-examples"
-    shutil.copytree(source_root / "utilities/gogurt/config/examples", examples)
+    fixtures = scratch / "gogurt-fixtures"
+    shutil.copytree(source_root / "qualification/fixtures/gogurt", fixtures)
     mount = scratch / "gogurt-mount"
     mount.mkdir()
     (mount / ".gogurt").write_text("example-camera-card\n", encoding="utf-8")
@@ -391,7 +391,7 @@ def _run_gogurt(
             "run",
             str(mount),
             "--config",
-            str(examples / "gogurt-routes.yaml"),
+            str(fixtures / "gogurt-routes.yaml"),
             "--dry-run",
         ],
         cwd=scratch,

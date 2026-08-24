@@ -24,8 +24,8 @@ from gogurt.listener import ListenerError
 from typer.testing import CliRunner
 
 RUNNER = CliRunner()
-EXAMPLE_ROOT = Path(__file__).resolve().parents[1] / "config" / "examples"
-EXAMPLE_CONFIG = EXAMPLE_ROOT / "gogurt-routes.yaml"
+FIXTURE_ROOT = Path(__file__).resolve().parents[3] / "qualification/fixtures/gogurt"
+FIXTURE_CONFIG = FIXTURE_ROOT / "gogurt-routes.yaml"
 
 
 def test_console_main_reports_listener_errors_without_a_traceback(
@@ -47,8 +47,8 @@ def test_console_main_reports_listener_errors_without_a_traceback(
     assert captured.out == ""
 
 
-def test_loads_portable_gogurt_actions_from_public_example() -> None:
-    actions = load_gogurt_actions(EXAMPLE_CONFIG)
+def test_loads_portable_gogurt_actions_from_qualification_fixture() -> None:
+    actions = load_gogurt_actions(FIXTURE_CONFIG)
 
     assert [(action.route, action.command) for action in actions] == [
         (
@@ -66,9 +66,9 @@ def test_loads_portable_gogurt_actions_from_public_example() -> None:
 def test_plans_and_executes_one_direct_argv_action(tmp_path: Path) -> None:
     mount = tmp_path / "mount"
     mount.mkdir()
-    write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", mount)
+    write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", mount)
 
-    plan = plan_gogurt_action(EXAMPLE_CONFIG, mount)
+    plan = plan_gogurt_action(FIXTURE_CONFIG, mount)
 
     assert plan == {
         "status": "ready",
@@ -78,7 +78,7 @@ def test_plans_and_executes_one_direct_argv_action(tmp_path: Path) -> None:
         "marker_name": DEFAULT_GOGURT_MARKER_NAME,
         "command": [
             sys.executable,
-            str((EXAMPLE_ROOT / "scripts" / "fake_archive_device.py").resolve()),
+            str((FIXTURE_ROOT / "scripts" / "fake_archive_device.py").resolve()),
             str(mount.resolve()),
             "example-camera",
         ],
@@ -91,7 +91,7 @@ def test_plans_and_executes_one_direct_argv_action(tmp_path: Path) -> None:
 
 
 def test_action_plan_reports_an_unmarked_mount(tmp_path: Path) -> None:
-    plan = plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+    plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
 
     assert plan["status"] == "unmarked"
     assert plan["mount_point"] == str(tmp_path.resolve())
@@ -104,25 +104,25 @@ def test_action_plan_rejects_unsafe_markers(tmp_path: Path) -> None:
     target.write_text("example-camera-card\n", encoding="utf-8")
     marker.symlink_to(target)
     with pytest.raises(ConfigError, match="regular file"):
-        plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+        plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
 
     marker.unlink()
     marker.write_bytes(b"x" * (MAX_GOGURT_MARKER_BYTES + 1))
     with pytest.raises(ConfigError, match="exceeds"):
-        plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+        plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
 
     marker.write_bytes(b"\xff\n")
     with pytest.raises(ConfigError, match="strict UTF-8"):
-        plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+        plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
 
     marker.write_text(" example-camera-card\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="surrounding whitespace"):
-        plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+        plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
 
 
 def test_action_execution_revalidates_marker_identity(tmp_path: Path) -> None:
-    write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
-    plan = plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+    write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
+    plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
     marker = tmp_path / DEFAULT_GOGURT_MARKER_NAME
     replacement = tmp_path / ".replacement"
     replacement.write_text("example-camera-card\n", encoding="utf-8")
@@ -197,30 +197,30 @@ def test_route_command_rejects_mount_directory_as_the_executable(tmp_path: Path)
 
 
 def test_write_gogurt_marker_refuses_to_replace_different_route(tmp_path: Path) -> None:
-    marker = write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+    marker = write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
 
     assert marker == tmp_path / DEFAULT_GOGURT_MARKER_NAME
     assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
-    assert route_for_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card") == ("example-camera-card")
+    assert route_for_gogurt_marker(FIXTURE_CONFIG, "example-camera-card") == ("example-camera-card")
 
     marker.write_text("other\n", encoding="utf-8")
     with pytest.raises(FileExistsError):
-        write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+        write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
 
-    write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path, force=True)
+    write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path, force=True)
     assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
 
 
 def test_same_route_marker_write_is_an_identity_preserving_noop(tmp_path: Path) -> None:
-    marker = write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+    marker = write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
     before = marker.stat()
-    before_plan = plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+    before_plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
 
-    preview = plan_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
-    repeated = write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+    preview = plan_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
+    repeated = write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
 
     after = marker.stat()
-    after_plan = plan_gogurt_action(EXAMPLE_CONFIG, tmp_path)
+    after_plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
     assert preview["status"] == "would_keep"
     assert repeated == marker
     assert marker.read_bytes() == b"example-camera-card\n"
@@ -268,7 +268,7 @@ def test_write_gogurt_marker_refuses_a_symlink_target(tmp_path: Path) -> None:
     (tmp_path / DEFAULT_GOGURT_MARKER_NAME).symlink_to(target)
 
     with pytest.raises(ConfigError, match="regular file"):
-        write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path, force=True)
+        write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path, force=True)
 
 
 def test_write_gogurt_marker_uses_exclusive_temporary_creation(tmp_path: Path) -> None:
@@ -277,7 +277,7 @@ def test_write_gogurt_marker_uses_exclusive_temporary_creation(tmp_path: Path) -
     former_temporary = tmp_path / (f".{DEFAULT_GOGURT_MARKER_NAME}.{os.getpid()}.tmp")
     former_temporary.symlink_to(protected)
 
-    marker = write_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+    marker = write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
 
     assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
     assert protected.read_text(encoding="utf-8") == "unchanged\n"
@@ -290,7 +290,7 @@ def test_write_gogurt_marker_accepts_the_exact_portable_component_limit(
     marker_name = "m" * 255
 
     marker = write_gogurt_marker(
-        EXAMPLE_CONFIG,
+        FIXTURE_CONFIG,
         "example-camera-card",
         tmp_path,
         marker_name=marker_name,
@@ -301,7 +301,7 @@ def test_write_gogurt_marker_accepts_the_exact_portable_component_limit(
 
 
 def test_plan_gogurt_marker_does_not_write(tmp_path: Path) -> None:
-    plan = plan_gogurt_marker(EXAMPLE_CONFIG, "example-camera-card", tmp_path)
+    plan = plan_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
 
     assert plan["dry_run"] is True
     assert plan["status"] == "would_write"
@@ -312,7 +312,7 @@ def test_plan_gogurt_marker_does_not_write(tmp_path: Path) -> None:
 def test_plan_gogurt_marker_reports_invalid_marker_name(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="invalid gogurt marker name"):
         plan_gogurt_marker(
-            EXAMPLE_CONFIG,
+            FIXTURE_CONFIG,
             "example-camera-card",
             tmp_path,
             marker_name="nested/.gogurt",
@@ -321,11 +321,11 @@ def test_plan_gogurt_marker_reports_invalid_marker_name(tmp_path: Path) -> None:
 
 def test_missing_gogurt_route_reports_available_routes() -> None:
     with pytest.raises(ConfigError, match="available: example-camera-card"):
-        route_for_gogurt_marker(EXAMPLE_CONFIG, "missing")
+        route_for_gogurt_marker(FIXTURE_CONFIG, "missing")
 
 
 def test_gogurt_cli_lists_runs_and_writes(tmp_path: Path) -> None:
-    listed = RUNNER.invoke(app, ["list", "--config", str(EXAMPLE_CONFIG), "--json"])
+    listed = RUNNER.invoke(app, ["list", "--config", str(FIXTURE_CONFIG), "--json"])
     assert listed.exit_code == 0
     assert json.loads(listed.stdout) == [
         {
@@ -346,7 +346,7 @@ def test_gogurt_cli_lists_runs_and_writes(tmp_path: Path) -> None:
             "example-camera-card",
             str(tmp_path),
             "--config",
-            str(EXAMPLE_CONFIG),
+            str(FIXTURE_CONFIG),
         ],
     )
     assert written.exit_code == 0
@@ -354,7 +354,7 @@ def test_gogurt_cli_lists_runs_and_writes(tmp_path: Path) -> None:
 
     planned = RUNNER.invoke(
         app,
-        ["run", str(tmp_path), "--config", str(EXAMPLE_CONFIG), "--dry-run"],
+        ["run", str(tmp_path), "--config", str(FIXTURE_CONFIG), "--dry-run"],
     )
     assert planned.exit_code == 0
     assert "gogurt action available" in planned.stderr
@@ -362,14 +362,14 @@ def test_gogurt_cli_lists_runs_and_writes(tmp_path: Path) -> None:
 
     awaiting = RUNNER.invoke(
         app,
-        ["run", str(tmp_path), "--config", str(EXAMPLE_CONFIG)],
+        ["run", str(tmp_path), "--config", str(FIXTURE_CONFIG)],
     )
     assert awaiting.exit_code == 0
     assert "gogurt action awaiting confirmation" in awaiting.stderr
 
     autorun = RUNNER.invoke(
         app,
-        ["run", str(tmp_path), "--config", str(EXAMPLE_CONFIG), "--autorun"],
+        ["run", str(tmp_path), "--config", str(FIXTURE_CONFIG), "--autorun"],
     )
     assert autorun.exit_code == 0
     assert "gogurt launching" in autorun.stderr
@@ -383,7 +383,7 @@ def test_gogurt_cli_write_dry_run_does_not_create_marker(tmp_path: Path) -> None
             "example-camera-card",
             str(tmp_path),
             "--config",
-            str(EXAMPLE_CONFIG),
+            str(FIXTURE_CONFIG),
             "--dry-run",
         ],
     )
@@ -424,7 +424,7 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
 
     installed = RUNNER.invoke(
         app,
-        ["listener", "install", "--config", str(EXAMPLE_CONFIG), "--autorun", "--json"],
+        ["listener", "install", "--config", str(FIXTURE_CONFIG), "--autorun", "--json"],
     )
     assert installed.exit_code == 0
     assert json.loads(installed.stdout) == payload
@@ -443,7 +443,7 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
 
     refused = RUNNER.invoke(
         app,
-        ["listener", "install", "--config", str(EXAMPLE_CONFIG)],
+        ["listener", "install", "--config", str(FIXTURE_CONFIG)],
     )
     assert refused.exit_code == 1
     assert isinstance(refused.exception, ConfigError)

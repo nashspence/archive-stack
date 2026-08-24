@@ -250,7 +250,7 @@ class ConformanceTargets:
 def _conformance_plan(
     preferred_batch_size: int,
 ) -> tuple[BranchSetDecision, BranchSetDecision]:
-    path = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+    path = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
     catalog = RecipeCatalog.load(path)
     observers = BatchMediaObservers(preferred_batch_size)
     planner = RecipePlanner(
@@ -339,7 +339,7 @@ def test_deployment_owned_conformance_catalog_routes_exact_artifacts_independent
 
 
 def test_installed_catalog_rejects_stale_observer_contract_before_observation() -> None:
-    path = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+    path = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
     catalog = RecipeCatalog.load(path)
     recipe = catalog.recipe("stove0.conformance-media/v1")
     stale_observer = recipe.observers[0].model_copy(update={"contract_sha256": _sha("f")})
@@ -938,7 +938,7 @@ def test_review_recipe_projects_semantic_intent_and_options_before_preflight() -
 
 
 def test_reference_recipes_embed_exact_maintained_contracts_and_explicit_cost_policy() -> None:
-    path = Path(__file__).parents[3] / "companions/stove0/config/recipes.example.yaml"
+    path = Path(__file__).parents[3] / "qualification/fixtures/stove0/recipes.yaml"
     catalog = RecipeCatalog.load(path)
 
     assert catalog.operations == tuple(
