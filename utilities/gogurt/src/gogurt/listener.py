@@ -291,12 +291,26 @@ def _combine_diagnostics(*values: str | None) -> str | None:
     return combined[: LISTENER_DIAGNOSTIC_LIMIT - 1] + "…"
 
 
+def _secure_sqlite_database_metadata(path: Path) -> bool:
+    """Validate and normalize the database without opening a non-SQLite descriptor."""
+
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise OSError(f"Gogurt listener state path is not a regular file: {path}")
+    if os.name != "nt":
+        os.chmod(path, PRIVATE_FILE_MODE, follow_symlinks=False)
+    return True
+
+
 def _secure_listener_state(paths: ListenerPaths) -> None:
     ensure_private_directory(paths.state_dir)
+    _secure_sqlite_database_metadata(paths.database_file)
     ensure_private_files(
         (
             paths.config_file,
-            paths.database_file,
             paths.heartbeat_file,
             paths.lock_file,
             paths.log_file,
@@ -334,13 +348,17 @@ class ListenerStore:
 
     def _connect(self, *, timeout_seconds: float = 30) -> sqlite3.Connection:
         ensure_private_directory(self.path.parent)
-        ensure_private_file(self.path)
+        if not _secure_sqlite_database_metadata(self.path):
+            raise FileNotFoundError(self.path)
         connection = sqlite3.connect(self.path, timeout=timeout_seconds)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
 
     def create(self) -> None:
+        ensure_private_directory(self.path.parent)
+        if not _secure_sqlite_database_metadata(self.path):
+            ensure_private_file(self.path)
         with closing(self._connect()) as connection:
             journal_mode = connection.execute("PRAGMA journal_mode").fetchone()
             if journal_mode is None or str(journal_mode[0]).casefold() != "wal":
@@ -400,26 +418,6 @@ class ListenerStore:
                 """
             )
             connection.commit()
-
-    @contextmanager
-    def hold_runtime_open(self) -> Iterator[None]:
-        """Keep SQLite's WAL and shared-memory lifecycle owned by one listener runtime."""
-
-        with closing(self._connect()) as connection:
-            # sqlite3.connect() is lazy. Execute against the initialized schema
-            # so this connection actually participates in the WAL lifecycle.
-            journal_mode = connection.execute("PRAGMA journal_mode").fetchone()
-            schema = connection.execute(
-                "SELECT value FROM listener_meta WHERE key = 'schema'"
-            ).fetchone()
-            if (
-                journal_mode is None
-                or str(journal_mode[0]).casefold() != "wal"
-                or schema is None
-                or str(schema[0]) != str(LISTENER_STATE_SCHEMA)
-            ):
-                raise ListenerError("Gogurt listener state is not the active WAL schema")
-            yield
 
     def observe(
         self,
@@ -1021,33 +1019,28 @@ class ListenerRuntime:
 
     def run(self) -> None:
         self.store.create()
-        # SQLite removes and recreates WAL/SHM state when the last connection
-        # closes. Keep one connection for the complete native-runtime lifetime
-        # so short polling, status, and dispatch transactions cannot churn that
-        # mapped state while the listener owns it.
-        with self.store.hold_runtime_open():
-            worker = threading.Thread(
-                target=self._supervised_worker,
-                name="gogurt-dispatch",
-                daemon=True,
-            )
-            worker.start()
+        worker = threading.Thread(
+            target=self._supervised_worker,
+            name="gogurt-dispatch",
+            daemon=True,
+        )
+        worker.start()
+        try:
+            while not self.stop_event.is_set():
+                self.run_once()
+                self._wait_for_next_poll()
+        finally:
+            self.request_stop()
+            self._settle_worker(worker)
             try:
-                while not self.stop_event.is_set():
-                    self.run_once()
-                    self._wait_for_next_poll()
-            finally:
-                self.request_stop()
-                self._settle_worker(worker)
-                try:
-                    self._heartbeat()
-                except Exception as heartbeat_exc:
-                    if self._worker_failure is None:
-                        raise
-                    self.logger.error(
-                        "final heartbeat=%s",
-                        _safe_diagnostic("listener final heartbeat", heartbeat_exc),
-                    )
+                self._heartbeat()
+            except Exception as heartbeat_exc:
+                if self._worker_failure is None:
+                    raise
+                self.logger.error(
+                    "final heartbeat=%s",
+                    _safe_diagnostic("listener final heartbeat", heartbeat_exc),
+                )
         if self._worker_failure is not None:
             raise ListenerError(str(self._runtime_diagnostic)) from self._worker_failure
 

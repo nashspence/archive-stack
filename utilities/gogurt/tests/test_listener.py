@@ -683,16 +683,23 @@ def test_listener_state_security_leaves_sqlite_sidecars_under_sqlite_ownership(
     wal.touch()
     shm.touch()
     secured: list[Path] = []
+    sqlite_metadata: list[Path] = []
 
     monkeypatch.setattr(
         listener_module,
         "ensure_private_files",
         lambda paths: secured.extend(paths),
     )
+    monkeypatch.setattr(
+        listener_module,
+        "_secure_sqlite_database_metadata",
+        lambda path: sqlite_metadata.append(path) is None,
+    )
 
     listener_module._secure_listener_state(paths)
 
-    assert paths.database_file in secured
+    assert sqlite_metadata == [paths.database_file]
+    assert paths.config_file in secured
     assert wal not in secured
     assert shm not in secured
 
@@ -733,20 +740,34 @@ def test_listener_store_does_not_normalize_sqlite_owned_sidecars(
     assert store.summary() == {"counts": {}, "attention": []}
 
 
-def test_listener_store_runtime_custody_keeps_wal_state_attached(tmp_path: Path) -> None:
+@pytest.mark.skipif(os.name == "nt", reason="POSIX SQLite descriptor and mode contract")
+def test_listener_sqlite_keeps_exclusive_database_descriptor_custody(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     paths = _paths(tmp_path)
     store = ListenerStore(paths.database_file)
     store.create()
+    paths.database_file.chmod(0o644)
+    real_open = os.open
 
-    with store.hold_runtime_open():
-        with closing(store._connect()) as connection:
-            connection.execute(
-                "INSERT INTO listener_meta(key, value) VALUES ('qualification', 'complete')"
-            )
-            connection.commit()
+    def guarded_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if Path(os.fsdecode(os.fspath(path))) == paths.database_file:
+            raise AssertionError("only SQLite may open its live database")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
 
-        assert paths.database_file.with_name("listener.sqlite3-wal").is_file()
-        assert paths.database_file.with_name("listener.sqlite3-shm").is_file()
+    monkeypatch.setattr(os, "open", guarded_open)
+
+    listener_module._secure_listener_state(paths)
+
+    assert stat.S_IMODE(paths.database_file.stat().st_mode) == 0o600
+    assert store.summary() == {"counts": {}, "attention": []}
 
 
 class FakeAdapter:
