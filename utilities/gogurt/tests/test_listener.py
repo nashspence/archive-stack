@@ -683,16 +683,23 @@ def test_listener_state_security_leaves_sqlite_sidecars_under_sqlite_ownership(
     wal.touch()
     shm.touch()
     secured: list[Path] = []
+    sqlite_metadata: list[Path] = []
 
     monkeypatch.setattr(
         listener_module,
         "ensure_private_files",
         lambda paths: secured.extend(paths),
     )
+    monkeypatch.setattr(
+        listener_module,
+        "_secure_sqlite_database_metadata",
+        lambda path: sqlite_metadata.append(path) is None,
+    )
 
     listener_module._secure_listener_state(paths)
 
-    assert paths.database_file in secured
+    assert sqlite_metadata == [paths.database_file]
+    assert paths.config_file in secured
     assert wal not in secured
     assert shm not in secured
 
@@ -733,43 +740,34 @@ def test_listener_store_does_not_normalize_sqlite_owned_sidecars(
     assert store.summary() == {"counts": {}, "attention": []}
 
 
-def test_listener_runtime_keeps_one_database_connection_until_settled(
+@pytest.mark.skipif(os.name == "nt", reason="POSIX SQLite descriptor and mode contract")
+def test_listener_sqlite_keeps_exclusive_database_descriptor_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config, paths, _mount, _counter = _fixture(tmp_path)
-    active_connections = 0
-    observed_during_poll: list[int] = []
-    real_connect = sqlite3.connect
+    paths = _paths(tmp_path)
+    store = ListenerStore(paths.database_file)
+    store.create()
+    paths.database_file.chmod(0o644)
+    real_open = os.open
 
-    class TrackedConnection(sqlite3.Connection):
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            nonlocal active_connections
-            super().__init__(*args, **kwargs)
-            active_connections += 1
+    def guarded_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o600,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if Path(os.fsdecode(os.fspath(path))) == paths.database_file:
+            raise AssertionError("only SQLite may open its live database")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
 
-        def close(self) -> None:
-            nonlocal active_connections
-            if active_connections > 0:
-                active_connections -= 1
-            super().close()
+    monkeypatch.setattr(os, "open", guarded_open)
 
-    def tracked_connect(database: str | Path, timeout: float = 5.0) -> sqlite3.Connection:
-        return real_connect(database, timeout=timeout, factory=TrackedConnection)
+    listener_module._secure_listener_state(paths)
 
-    monkeypatch.setattr(sqlite3, "connect", tracked_connect)
-    runtime = ListenerRuntime(config, paths, discover=lambda: [])
-
-    def one_poll() -> None:
-        observed_during_poll.append(active_connections)
-        runtime.request_stop()
-
-    monkeypatch.setattr(runtime, "run_once", one_poll)
-
-    runtime.run()
-
-    assert observed_during_poll == [1]
-    assert active_connections == 0
+    assert stat.S_IMODE(paths.database_file.stat().st_mode) == 0o600
+    assert store.summary() == {"counts": {}, "attention": []}
 
 
 class FakeAdapter:
