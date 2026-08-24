@@ -124,8 +124,8 @@ def _refresh_collection_identities(*, encryption_format: str, passphrase_id: str
             "utf-8"
         )
         # passphrase_id is an opaque public identifier, not passphrase material.
-        record_etag = hashlib.sha256(  # codeql[py/weak-sensitive-data-hashing]
-            canonical_payload
+        record_etag = hashlib.sha256(
+            canonical_payload  # codeql[py/weak-sensitive-data-hashing]
         ).hexdigest()
         connection.execute(
             text("UPDATE collections SET record_etag = :record_etag WHERE id = :collection_id"),

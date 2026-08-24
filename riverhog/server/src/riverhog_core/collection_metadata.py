@@ -35,8 +35,8 @@ def collection_record_manifest(
         ],
     }
     # passphrase_id is an opaque public identifier, not passphrase material.
-    return payload, hashlib.sha256(  # codeql[py/weak-sensitive-data-hashing]
-        _canonical_json(payload)
+    return payload, hashlib.sha256(
+        _canonical_json(payload)  # codeql[py/weak-sensitive-data-hashing]
     ).hexdigest()
 
 
