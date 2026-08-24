@@ -31,6 +31,7 @@ CORPUS_SCHEMA = "riverhog-provider-qualification-corpus/v1"
 CHECKPOINT_SCHEMA = "riverhog-provider-qualification-checkpoint/v1"
 EVIDENCE_SCHEMA = "riverhog-provider-qualification-evidence/v1"
 QUALIFICATION_MARKER = "riverhog-provider-qualification"
+QUALIFICATION_PASSPHRASE_ID = "qualification-key-v1"
 AWS_DEEP_ARCHIVE_MINIMUM_DAYS = 180
 DEFAULT_AWS_EXPIRATION_DAYS = 185
 DEFAULT_B2_DELETE_DAYS = 1
@@ -2399,10 +2400,17 @@ def write_runtime_environment(
         "RIVERHOG_ARCHIVE_STORES": "b2-archive,aws-deep-archive",
         "RIVERHOG_ARCHIVE_WRITE_STORE": "b2-archive",
         "RIVERHOG_ARCHIVE_READ_ORDER": "aws-deep-archive,b2-archive",
-        "RIVERHOG_ARCHIVE_PASSPHRASE": _required_env(
-            values, "RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE"
+        "RIVERHOG_ARCHIVE_PASSPHRASES_JSON": json.dumps(
+            {
+                QUALIFICATION_PASSPHRASE_ID: _required_env(
+                    values, "RIVERHOG_QUALIFICATION_ARCHIVE_PASSPHRASE"
+                )
+            },
+            sort_keys=True,
+            separators=(",", ":"),
         ),
-        "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE": "true",
+        "RIVERHOG_ARCHIVE_ACTIVE_PASSPHRASE_ID": QUALIFICATION_PASSPHRASE_ID,
+        "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASES": "true",
         "RIVERHOG_BOOTSTRAP_TOKEN": _required_env(values, "RIVERHOG_QUALIFICATION_BOOTSTRAP_TOKEN"),
         "RIVERHOG_PUBLIC_BASE_URL": "",
         "RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY": "48h",
@@ -3258,8 +3266,14 @@ def _independent_provider_recovery(
         )
         identities.append(f"{relative}:{byte_count}:{sha256}")
         total_bytes += byte_count
+    if not any(identity.startswith("recovery.json:") for identity in identities):
+        raise QualificationError("provider archive has no plaintext recovery descriptor")
     output = scratch / f"{store}-recovered"
-    summary = recover_archive(archive, output, passphrase=passphrase)
+    summary = recover_archive(
+        archive,
+        output,
+        passphrases={QUALIFICATION_PASSPHRASE_ID: passphrase},
+    )
     if summary.files != len(corpus.files) or summary.bytes != corpus.bytes:
         raise QualificationError("independent recovery summary differs from the corpus")
     _verify_recovered_tree(output, corpus)
@@ -3447,6 +3461,10 @@ def operate_qualification(
             session = api.get_collection_upload_session(collection_id)
             if session.get("state") != "finalized":
                 raise QualificationError("qualification upload did not finalize")
+            if session.get("encryption_format") != "age-v1-scrypt":
+                raise QualificationError("qualification upload has an invalid encryption format")
+            if session.get("passphrase_id") != QUALIFICATION_PASSPHRASE_ID:
+                raise QualificationError("qualification upload did not retain its encryption key")
             if int(session.get("files_total", -1)) != len(corpus.files):
                 raise QualificationError("finalized collection file count is invalid")
             _assert_resourcesync(api, collection_id, base_url=base_url)

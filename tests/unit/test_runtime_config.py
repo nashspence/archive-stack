@@ -33,7 +33,10 @@ def test_runtime_configuration_fields_have_explicit_production_consumers() -> No
         for node in ast.walk(ast.parse(path.read_text()))
         if isinstance(node, ast.Attribute)
     }
-    validation_only = {"archive_require_explicit_passphrase"}
+    validation_only = {
+        "archive_active_passphrase_id",
+        "archive_require_explicit_passphrases",
+    }
     configuration_fields = {
         field.name
         for model in (
@@ -122,7 +125,8 @@ def test_storage_adapter_http_requires_explicit_opt_in(tmp_path: Path) -> None:
     configured = _config(
         tmp_path,
         archive_stores={"archive": replace(registration, allow_insecure_http=True)},
-        archive_passphrase="archive-secret",
+        archive_passphrases={"runtime-test-key-v1": "archive-secret"},
+        archive_active_passphrase_id="runtime-test-key-v1",
     )
     assert configured.archive_store("archive").base_url == "http://adapter.example.test"
 
@@ -130,15 +134,47 @@ def test_storage_adapter_http_requires_explicit_opt_in(tmp_path: Path) -> None:
 def test_load_runtime_config_parses_archive_security_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "true")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_PASSPHRASE", "archive-secret")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASES", "true")
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_PASSPHRASES_JSON",
+        '{"runtime-test-key-v1":"archive-secret"}',
+    )
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_ACTIVE_PASSPHRASE_ID", "runtime-test-key-v1")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR", "12")
 
     config = load_runtime_config()
 
-    assert config.archive_require_explicit_passphrase is True
-    assert config.archive_passphrase == "archive-secret"
+    assert config.archive_require_explicit_passphrases is True
+    assert config.archive_active_passphrase_id == "runtime-test-key-v1"
+    assert config.archive_passphrase_for("runtime-test-key-v1") == "archive-secret"
     assert config.archive_scrypt_work_factor == 12
+
+
+def test_archive_key_generations_have_one_explicit_active_binding(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        archive_passphrases={
+            "runtime-test-key-v1": "first-secret",
+            "runtime-test-key-v2": "second-secret",
+        },
+        archive_active_passphrase_id="runtime-test-key-v2",
+    )
+
+    assert config.archive_active_encryption.format == "age-v1-scrypt"
+    assert config.archive_active_encryption.passphrase_id == "runtime-test-key-v2"
+    assert config.archive_passphrase_for("runtime-test-key-v1") == "first-secret"
+    with pytest.raises(ValueError, match="not configured"):
+        config.archive_passphrase_for("runtime-test-key-v3")
+
+    with pytest.raises(ValueError, match="distinct secrets"):
+        _config(
+            tmp_path,
+            archive_passphrases={
+                "runtime-test-key-v1": "same-secret",
+                "runtime-test-key-v2": "same-secret",
+            },
+            archive_active_passphrase_id="runtime-test-key-v2",
+        )
 
 
 def test_load_runtime_config_parses_archive_multipart_safeguards(
@@ -260,7 +296,11 @@ def test_load_runtime_config_builds_named_archive_stores(
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ADAPTER_TOKEN_FILE", "/run/secrets/b2.token")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ADAPTER_MAX_CONNECTIONS", "48")
     monkeypatch.setenv("RIVERHOG_ARCHIVE_STORE_B2_ADAPTER_TIMEOUT_SECONDS", "75.5")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_PASSPHRASE", "archive-secret")
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_PASSPHRASES_JSON",
+        '{"runtime-test-key-v1":"archive-secret"}',
+    )
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_ACTIVE_PASSPHRASE_ID", "runtime-test-key-v1")
 
     config = load_runtime_config()
 
@@ -354,7 +394,11 @@ def test_storage_adapter_url_requires_an_unambiguous_https_authority(
     monkeypatch.setenv(
         "RIVERHOG_ARCHIVE_STORE_ARCHIVE_ADAPTER_TOKEN_FILE", "/run/secrets/archive.token"
     )
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_PASSPHRASE", "archive-secret")
+    monkeypatch.setenv(
+        "RIVERHOG_ARCHIVE_PASSPHRASES_JSON",
+        '{"runtime-test-key-v1":"archive-secret"}',
+    )
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_ACTIVE_PASSPHRASE_ID", "runtime-test-key-v1")
 
     with pytest.raises(ValueError, match="archive store archive adapter URL"):
         load_runtime_config()

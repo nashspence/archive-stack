@@ -14,6 +14,7 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionDeletionRecord,
     CollectionProofMaturationRecord,
+    CollectionRecord,
     RetrievalJobObjectRecord,
     RetrievalJobRecord,
 )
@@ -173,7 +174,7 @@ class SqlAlchemyProofMaturationService:
 
     def _mature(self, *, collection_id: int, store: str) -> None:
         try:
-            manifest_identity, proof_identity = self._artifact_identities(
+            manifest_identity, proof_identity, passphrase_id = self._artifact_identities(
                 collection_id=collection_id,
                 store=store,
             )
@@ -181,12 +182,14 @@ class SqlAlchemyProofMaturationService:
             manifest = archive_store.read_archive_artifact(
                 collection_id=collection_id,
                 object=manifest_identity,
+                passphrase_id=passphrase_id,
             )
             if not _receipt_matches_identity(manifest.receipt, manifest_identity):
                 raise RuntimeError("archive manifest differs from its catalog record")
             proof = archive_store.read_archive_artifact(
                 collection_id=collection_id,
                 object=proof_identity,
+                passphrase_id=passphrase_id,
             )
             self._proof_verifier.verify(
                 manifest_bytes=manifest.content,
@@ -204,10 +207,12 @@ class SqlAlchemyProofMaturationService:
                 collection_id=collection_id,
                 object=proof_identity,
                 proof_bytes=upgraded.proof_bytes,
+                passphrase_id=passphrase_id,
             )
             persisted = archive_store.read_archive_artifact(
                 collection_id=collection_id,
                 object=_identity_from_receipt(receipt),
+                passphrase_id=passphrase_id,
             )
             if persisted.content != upgraded.proof_bytes:
                 raise RuntimeError("persisted archive proof differs from the upgraded proof")
@@ -241,10 +246,11 @@ class SqlAlchemyProofMaturationService:
         *,
         collection_id: int,
         store: str,
-    ) -> tuple[ArchiveObjectIdentity, ArchiveObjectIdentity]:
+    ) -> tuple[ArchiveObjectIdentity, ArchiveObjectIdentity, str]:
         with session_scope(self._session_factory) as session:
+            collection = session.get(CollectionRecord, collection_id)
             copy = session.get(CollectionArchiveCopyRecord, (collection_id, store))
-            if copy is None or copy.state != "uploaded":
+            if collection is None or copy is None or copy.state != "uploaded":
                 raise RuntimeError("archive copy is not uploaded")
             records = {
                 current.object_id: current
@@ -261,7 +267,11 @@ class SqlAlchemyProofMaturationService:
                 proof = records["proof"]
             except KeyError as exc:
                 raise RuntimeError("archive copy has no manifest and proof pair") from exc
-            return _identity_from_record(manifest), _identity_from_record(proof)
+            return (
+                _identity_from_record(manifest),
+                _identity_from_record(proof),
+                collection.passphrase_id,
+            )
 
     def _record_waiting(self, *, collection_id: int, store: str) -> None:
         with session_scope(self._session_factory) as session:

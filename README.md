@@ -13,7 +13,7 @@ Riverhog is designed for one operator per deployment, not as a multi-tenant stor
 It is provided as-is software, not a storage provider or independent custodian, and does not
 guarantee preservation, availability, confidentiality, or recoverability. The operator
 retains control of and responsibility for the configured storage accounts, credentials,
-billing, lifecycle policies, redundant copies, archive-passphrase safekeeping, archived
+billing, lifecycle policies, redundant copies, archive passphrase-map safekeeping, archived
 data, and tested recovery. Loss of the passphrase or all valid archive copies may permanently
 prevent recovery. This warning supplements, but does not replace, the warranty and liability
 limitations in the applicable software license.

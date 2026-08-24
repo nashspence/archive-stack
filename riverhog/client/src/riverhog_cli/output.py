@@ -44,6 +44,8 @@ def format_collections(payload: Mapping[str, object]) -> str:
             f"files={collection.get('files', 0)}  "
             f"bytes={_bytes(collection.get('bytes'))}  "
             f"tags={tag_text or 'none'}  "
+            f"encryption={collection.get('encryption_format', 'unknown')}:"
+            f"{collection.get('passphrase_id', 'unknown')}  "
             f"archive={_archive_copy_states(collection)}"
         )
     return "\n".join(lines)
@@ -95,6 +97,8 @@ def format_collection_summary(
         f"tags: {tag_text or 'none'}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
+        f"encryption: {payload.get('encryption_format', 'unknown')}:"
+        f"{payload.get('passphrase_id', 'unknown')}",
         f"remote storage: {_bytes(payload.get('remote_storage_bytes'))}",
         f"archive copies: {_archive_copy_states(payload)}",
     ]
@@ -189,6 +193,8 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
         f"state: {payload.get('state', 'unknown')}",
         f"files: {payload.get('files_uploaded', 0)}/{payload.get('files_total', 0)}",
         f"bytes: {_bytes(payload.get('uploaded_bytes'))}/{_bytes(payload.get('bytes_total'))}",
+        f"encryption: {payload.get('encryption_format', 'unknown')}:"
+        f"{payload.get('passphrase_id', 'unknown')}",
     ]
     if payload.get("archive_phase"):
         lines.append(f"archive phase: {payload['archive_phase']}")
@@ -209,6 +215,8 @@ def format_collection_uploads(payload: Mapping[str, object]) -> str:
             f"files={upload.get('files', 0)}  "
             f"bytes={_bytes(upload.get('bytes'))}  "
             f"uploaded={_bytes(upload.get('uploaded_bytes'))}  "
+            f"encryption={upload.get('encryption_format', 'unknown')}:"
+            f"{upload.get('passphrase_id', 'unknown')}  "
             f"tags={tag_text or 'none'}"
         )
     return "\n".join(lines)

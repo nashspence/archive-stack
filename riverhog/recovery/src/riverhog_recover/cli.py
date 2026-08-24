@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import getpass
 import importlib.metadata
+import json
+import os
 import sys
 from pathlib import Path
 
-from riverhog_recover.recovery import RecoveryError, recover_archive
+from riverhog_recover.recovery import RecoveryError, read_recovery_descriptor, recover_archive
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -22,9 +24,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("archive", type=Path, help="downloaded opaque archive directory")
     parser.add_argument("output", type=Path, help="new directory for recovered files")
     parser.add_argument(
-        "--passphrase-file",
+        "--passphrases-file",
         type=Path,
-        help="read the archive passphrase from a permission-restricted file",
+        help="read an opaque key-ID to passphrase JSON map from a permission-restricted file",
     )
     parser.add_argument(
         "--minisign-public-key",
@@ -37,17 +39,27 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _passphrase(path: Path | None) -> str:
+def _passphrases(path: Path | None, *, archive: Path) -> dict[str, str]:
+    descriptor = read_recovery_descriptor(archive)
+    passphrase_id = descriptor.encryption.passphrase_id
     if path is None:
-        value = getpass.getpass("Archive passphrase: ")
-    else:
-        try:
-            value = path.read_text(encoding="utf-8").rstrip("\r\n")
-        except OSError as exc:
-            raise RecoveryError(f"cannot read passphrase file: {exc}") from exc
-    if not value:
-        raise RecoveryError("archive passphrase is empty")
-    return value
+        value = getpass.getpass(f"Archive passphrase ({passphrase_id}): ")
+        if not value:
+            raise RecoveryError(f"archive passphrase is empty for key ID {passphrase_id}")
+        return {passphrase_id: value}
+    try:
+        if os.name != "nt" and path.stat().st_mode & 0o077:
+            raise RecoveryError("passphrases file must not be accessible by group or others")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except RecoveryError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RecoveryError(f"cannot read passphrases file: {exc}") from exc
+    if not isinstance(payload, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) and value for key, value in payload.items()
+    ):
+        raise RecoveryError("passphrases file must contain a string-to-string JSON object")
+    return payload
 
 
 def main() -> None:
@@ -56,7 +68,7 @@ def main() -> None:
         summary = recover_archive(
             args.archive,
             args.output,
-            passphrase=_passphrase(args.passphrase_file),
+            passphrases=_passphrases(args.passphrases_file, archive=args.archive),
             age_command=args.age_command,
             ots_command=args.ots_command,
             minisign_public_key=args.minisign_public_key,

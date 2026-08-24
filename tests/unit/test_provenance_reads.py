@@ -99,6 +99,8 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
                 id=1,
                 creation_idempotency_key="fixture",
                 content_identity="a" * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="fixture-archive-key-v1",
                 provenance_mode="captured",
                 provenance_identity="b" * 64,
                 record_etag="c" * 64,

@@ -10,6 +10,12 @@ from pathlib import Path
 import pytest
 import riverhog_recover.recovery as recovery_module
 from riverhog_age import encrypt_age_scrypt
+from riverhog_archive_contracts import (
+    ARCHIVE_ENCRYPTION_FORMAT,
+    ArchiveRootCiphertextIdentity,
+    CollectionEncryptionBinding,
+    RecoveryDescriptor,
+)
 from riverhog_core.archive_manifest import build_collection_archive_manifest
 from riverhog_core.domain.archive import (
     ArchiveFile,
@@ -36,6 +42,7 @@ from riverhog_recover import RecoveryError, recover_archive
 from tests.fixtures.archive import age_state_json
 
 PASSPHRASE = "correct horse battery archive"
+PASSPHRASE_ID = "recovery-test-key-v1"
 OFFICIAL_AGE = shutil.which("age")
 OFFICIAL_BATCHPASS = shutil.which("age-plugin-batchpass")
 
@@ -92,6 +99,8 @@ if proof != expected:
 def _write_archive(
     root: Path,
     *,
+    passphrase: str = PASSPHRASE,
+    passphrase_id: str = PASSPHRASE_ID,
     with_provenance: bool = False,
     provenance_journal: bytes | None = None,
     provenance_journals: Mapping[str, bytes] | None = None,
@@ -112,7 +121,7 @@ def _write_archive(
             lambda path: (expected[path],),
         )
     )
-    pack_ciphertext = encrypt_age_scrypt(pack_plaintext, PASSPHRASE, log_n=1)
+    pack_ciphertext = encrypt_age_scrypt(pack_plaintext, passphrase, log_n=1)
     sealed_pack = SealedPackVolume(
         volume_id=pack_plan.volume_id,
         sequence=0,
@@ -135,7 +144,7 @@ def _write_archive(
     for sequence, plaintext in enumerate((b"first-", b"second"), start=1):
         volume_id = f"segment-{sequence:012d}"
         relative_path = f"volumes/{volume_id}.bin.age"
-        ciphertext = encrypt_age_scrypt(plaintext, PASSPHRASE, log_n=1)
+        ciphertext = encrypt_age_scrypt(plaintext, passphrase, log_n=1)
         raw_ciphertexts[relative_path] = ciphertext
         raw_volumes.append(
             SealedRawVolume(
@@ -225,7 +234,7 @@ def _write_archive(
                 provenance.index_bytes,
             ),
         ):
-            ciphertext = encrypt_age_scrypt(plaintext, PASSPHRASE, log_n=1)
+            ciphertext = encrypt_age_scrypt(plaintext, passphrase, log_n=1)
             provenance_ciphertexts[relative_path] = ciphertext
             sealed.append(
                 SealedProvenanceObject(
@@ -253,9 +262,22 @@ def _write_archive(
     )
     proof = f"sha256:{_sha256(manifest)}\n".encode()
 
+    encrypted_manifest = encrypt_age_scrypt(manifest, passphrase, log_n=1)
+    descriptor = RecoveryDescriptor(
+        encryption=CollectionEncryptionBinding(
+            format=ARCHIVE_ENCRYPTION_FORMAT,
+            passphrase_id=passphrase_id,
+        ),
+        root=ArchiveRootCiphertextIdentity(
+            path="manifest.json.age",
+            stored_bytes=len(encrypted_manifest),
+            stored_sha256=_sha256(encrypted_manifest),
+        ),
+    ).to_json_bytes()
     ciphertext: dict[str, bytes] = {
-        "manifest.json.age": encrypt_age_scrypt(manifest, PASSPHRASE, log_n=1),
-        "manifest.json.ots.age": encrypt_age_scrypt(proof, PASSPHRASE, log_n=1),
+        "manifest.json.age": encrypted_manifest,
+        "manifest.json.ots.age": encrypt_age_scrypt(proof, passphrase, log_n=1),
+        "recovery.json": descriptor,
         sealed_pack.relative_path: pack_ciphertext,
         **raw_ciphertexts,
         **provenance_ciphertexts,
@@ -284,7 +306,7 @@ def test_recovers_complete_collection_without_server_or_database(tmp_path: Path)
     summary = recover_archive(
         archive,
         output,
-        passphrase=PASSPHRASE,
+        passphrases={PASSPHRASE_ID: PASSPHRASE},
         ots_command=str(ots),
     )
 
@@ -294,13 +316,54 @@ def test_recovers_complete_collection_without_server_or_database(tmp_path: Path)
     assert {path: (output / path).read_bytes() for path in expected} == expected
 
 
+def test_recovery_selects_exact_key_generations_without_trial_decryption(tmp_path: Path) -> None:
+    second_id = "recovery-test-key-v2"
+    second_passphrase = "second independent archive secret"
+    first_archive = tmp_path / "archive-one"
+    second_archive = tmp_path / "archive-two"
+    expected, _journal = _write_archive(first_archive)
+    _write_archive(
+        second_archive,
+        passphrase=second_passphrase,
+        passphrase_id=second_id,
+    )
+    ots = _write_ots_command(tmp_path / "ots-fixture")
+    passphrases = {
+        PASSPHRASE_ID: PASSPHRASE,
+        second_id: second_passphrase,
+    }
+
+    for archive, output in (
+        (first_archive, tmp_path / "recovered-one"),
+        (second_archive, tmp_path / "recovered-two"),
+    ):
+        recover_archive(
+            archive,
+            output,
+            passphrases=passphrases,
+            ots_command=str(ots),
+        )
+        assert {path: (output / path).read_bytes() for path in expected} == expected
+
+    with pytest.raises(RecoveryError, match=second_id):
+        recover_archive(
+            second_archive,
+            tmp_path / "missing-key-output",
+            passphrases={PASSPHRASE_ID: PASSPHRASE},
+            ots_command=str(ots),
+        )
+
+
 def test_cli_recovers_with_permission_restricted_passphrase_file(tmp_path: Path) -> None:
     archive = tmp_path / "archive"
     expected, _journal = _write_archive(archive)
     output = tmp_path / "recovered"
-    passphrase_file = tmp_path / "passphrase"
-    passphrase_file.write_text(PASSPHRASE, encoding="utf-8")
-    passphrase_file.chmod(0o600)
+    passphrases_file = tmp_path / "passphrases.json"
+    passphrases_file.write_text(
+        f'{{"{PASSPHRASE_ID}":"{PASSPHRASE}"}}',
+        encoding="utf-8",
+    )
+    passphrases_file.chmod(0o600)
     ots = _write_ots_command(tmp_path / "ots-fixture")
 
     completed = subprocess.run(
@@ -310,8 +373,8 @@ def test_cli_recovers_with_permission_restricted_passphrase_file(tmp_path: Path)
             "riverhog_recover.cli",
             str(archive),
             str(output),
-            "--passphrase-file",
-            str(passphrase_file),
+            "--passphrases-file",
+            str(passphrases_file),
             "--ots-command",
             str(ots),
         ],
@@ -387,11 +450,27 @@ def test_ciphertext_corruption_fails_without_publishing_partial_output(
         recover_archive(
             archive,
             output,
-            passphrase=PASSPHRASE,
+            passphrases={PASSPHRASE_ID: PASSPHRASE},
             ots_command=str(ots),
         )
 
     assert not output.exists()
+
+
+def test_recovery_descriptor_rejects_changed_root_before_decryption(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    _write_archive(archive)
+    (archive / "SHA256SUMS").unlink()
+    root = archive / "manifest.json.age"
+    root.write_bytes(root.read_bytes() + b"changed")
+
+    with pytest.raises(RecoveryError, match="does not match recovery descriptor"):
+        recover_archive(
+            archive,
+            tmp_path / "output",
+            passphrases={PASSPHRASE_ID: PASSPHRASE},
+            ots_command=str(_write_ots_command(tmp_path / "ots-fixture")),
+        )
 
 
 def test_client_transform_riverhog_recovery_restores_exact_derivative_history(
@@ -444,7 +523,7 @@ def test_client_transform_riverhog_recovery_restores_exact_derivative_history(
     summary = recover_archive(
         archive,
         output,
-        passphrase=PASSPHRASE,
+        passphrases={PASSPHRASE_ID: PASSPHRASE},
         ots_command=str(ots),
     )
 

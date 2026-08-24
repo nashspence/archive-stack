@@ -73,6 +73,8 @@ class CollectionSummary:
     tags: tuple[str, ...]
     content_identity: str
     manifest_sha256: str
+    encryption_format: str
+    passphrase_id: str
     files: int
     bytes: int
     remote_storage_bytes: int = 0
@@ -89,6 +91,8 @@ class CollectionListPage:
     order: str
     query: str | None
     tag: str | None
+    encryption_format: str | None
+    passphrase_id: str | None
     collections: list[CollectionSummary]
 
 

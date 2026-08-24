@@ -216,12 +216,24 @@ def test_collection_upload_contract_exposes_server_planned_plaintext_units() -> 
     assert source["properties"]["sha256"]
 
 
-def test_collection_contracts_expose_the_stable_creation_timestamp() -> None:
-    schemas = create_app().openapi()["components"]["schemas"]
+def test_collection_contracts_expose_creation_and_encryption_identities() -> None:
+    document = create_app().openapi()
+    schemas = document["components"]["schemas"]
 
     assert "created_at" in schemas["CollectionSummaryOut"]["required"]
     assert "remote_storage_bytes" in schemas["CollectionSummaryOut"]["required"]
     assert "created_at" in schemas["CollectionUploadSessionOut"]["required"]
+    for schema in (
+        "CollectionSummaryOut",
+        "CollectionUploadListItemOut",
+        "CollectionUploadSessionFilesRegistrationOut",
+        "CollectionUploadSessionOut",
+    ):
+        assert {"encryption_format", "passphrase_id"} <= set(schemas[schema]["required"])
+    list_parameters = {
+        parameter["name"] for parameter in document["paths"]["/v1/collections"]["get"]["parameters"]
+    }
+    assert {"encryption_format", "passphrase_id"} <= list_parameters
 
     mapped = map_collection(
         CollectionSummary(
@@ -230,6 +242,8 @@ def test_collection_contracts_expose_the_stable_creation_timestamp() -> None:
             tags=("family",),
             content_identity="1" * 64,
             manifest_sha256="2" * 64,
+            encryption_format="age-v1-scrypt",
+            passphrase_id="openapi-test-key-v1",
             files=1,
             bytes=10,
         )

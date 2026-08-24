@@ -7,12 +7,20 @@ from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
+from riverhog_archive_contracts import ARCHIVE_ENCRYPTION_FORMAT
 from riverhog_core.archive_store_registry import ArchiveStoreBinding, ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
     SessionFactory,
     dispose_session_factory,
     make_session_factory,
+    session_scope,
     validate_db,
+)
+from riverhog_core.catalog_models import (
+    CollectionArchiveCopyRecord,
+    CollectionArchiveObjectRecord,
+    CollectionRecord,
+    CollectionUploadRecord,
 )
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.ports.download_allowance import DownloadAllowance
@@ -66,6 +74,7 @@ from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArc
 from riverhog_core.stores.storage_adapter_retrieval_cache import StorageAdapterRetrievalCache
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
 from riverhog_storage_adapter_support import StorageAdapterClient
+from sqlalchemy import select
 
 
 @dataclass(slots=True)
@@ -152,6 +161,7 @@ def _build_default_container(
     session_factory: SessionFactory,
     startup_cleanup: ExitStack,
 ) -> ServiceContainer:
+    _require_archive_encryption_bindings(config, session_factory=session_factory)
     throughput_tuning = ArchiveThroughputTuning.from_env(os.environ)
     transfer_resources = ArchiveTransferResources.from_tuning(throughput_tuning)
     adapters: dict[str, StorageAdapterClient] = {}
@@ -286,6 +296,55 @@ def _build_default_container(
             [*adapters.values(), *([cache_client] if cache_client is not None else [])]
         ),
     )
+
+
+def _require_archive_encryption_bindings(
+    config: RuntimeConfig,
+    *,
+    session_factory: SessionFactory,
+) -> None:
+    with session_scope(session_factory) as session:
+        bindings = set(
+            session.query(CollectionRecord.encryption_format, CollectionRecord.passphrase_id)
+        ) | set(
+            session.query(
+                CollectionUploadRecord.encryption_format,
+                CollectionUploadRecord.passphrase_id,
+            )
+        )
+        descriptor_exists = (
+            select(CollectionArchiveObjectRecord.object_id)
+            .where(
+                CollectionArchiveObjectRecord.collection_id
+                == CollectionArchiveCopyRecord.collection_id,
+                CollectionArchiveObjectRecord.store == CollectionArchiveCopyRecord.store,
+                CollectionArchiveObjectRecord.kind == "recovery-descriptor",
+            )
+            .exists()
+        )
+        missing_descriptor = session.execute(
+            select(
+                CollectionArchiveCopyRecord.collection_id,
+                CollectionArchiveCopyRecord.store,
+            )
+            .where(
+                CollectionArchiveCopyRecord.state == "uploaded",
+                ~descriptor_exists,
+            )
+            .limit(1)
+        ).first()
+    for encryption_format, passphrase_id in bindings:
+        if encryption_format != ARCHIVE_ENCRYPTION_FORMAT:
+            raise ValueError(
+                f"unsupported persisted archive encryption format: {encryption_format}"
+            )
+        config.archive_passphrase_for(passphrase_id)
+    if missing_descriptor is not None:
+        collection_id, store = missing_descriptor
+        raise ValueError(
+            "uploaded archive copy has no recovery descriptor: "
+            f"collection={collection_id} store={store}"
+        )
 
 
 @lru_cache(maxsize=1)

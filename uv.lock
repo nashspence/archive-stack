@@ -18,6 +18,7 @@ members = [
     "mango-fish",
     "riverhog-age",
     "riverhog-api-client",
+    "riverhog-archive-contracts",
     "riverhog-cli-support",
     "riverhog-client",
     "riverhog-ftp-adapter",
@@ -1555,6 +1556,11 @@ requires-dist = [
 ]
 
 [[package]]
+name = "riverhog-archive-contracts"
+version = "0.1.0"
+source = { editable = "packages/riverhog-archive-contracts" }
+
+[[package]]
 name = "riverhog-cli-support"
 version = "0.1.0"
 source = { editable = "packages/riverhog-cli-support" }
@@ -1658,6 +1664,12 @@ requires-dist = [{ name = "jsonschema", specifier = ">=4.23,<5.0" }]
 name = "riverhog-recover"
 version = "0.1.0"
 source = { editable = "riverhog/recovery" }
+dependencies = [
+    { name = "riverhog-archive-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "riverhog-archive-contracts", editable = "packages/riverhog-archive-contracts" }]
 
 [[package]]
 name = "riverhog-server"
@@ -1673,6 +1685,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "riverhog-age" },
+    { name = "riverhog-archive-contracts" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
     { name = "riverhog-storage-adapter-protocol" },
@@ -1695,6 +1708,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-age", editable = "packages/riverhog-age" },
+    { name = "riverhog-archive-contracts", editable = "packages/riverhog-archive-contracts" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
     { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },

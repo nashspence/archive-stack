@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from riverhog_core.app_permissions import (
+    CATALOG_READ,
+    ApplicationAccess,
+    ApplicationPrincipal,
+    collection_resource,
+)
 from riverhog_core.catalog_db import (
     create_catalog_engine,
     initialize_db,
@@ -35,6 +41,8 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                     id=collection_id,
                     creation_idempotency_key=f"fixture-{collection_id}",
                     content_identity=f"{collection_id:064x}",
+                    encryption_format="age-v1-scrypt",
+                    passphrase_id=f"fixture-archive-key-v{1 if collection_id % 2 else 2}",
                     provenance_mode="omitted",
                     provenance_identity=None,
                     record_etag=f"{collection_id:064x}",
@@ -121,4 +129,39 @@ def test_collection_list_query_count_is_independent_of_page_rows(tmp_path: Path)
     )
     assert all(current.archive_copies[0].object_count == 10 for current in page.collections)
     assert twelve_row_selects == one_row_selects
+    engine.dispose()
+
+
+def test_collection_encryption_filters_preserve_catalog_authorization(tmp_path: Path) -> None:
+    config, engine = _seed_collections(tmp_path / "catalog.sqlite3", count=4)
+    service = SqlAlchemyCollectionService(config)
+    principal = ApplicationPrincipal(
+        app="scoped-reader",
+        key_id="key-1",
+        access=frozenset({ApplicationAccess(CATALOG_READ, collection_resource(2))}),
+    )
+
+    visible = service.list(
+        page=1,
+        per_page=25,
+        q=None,
+        encryption_format="age-v1-scrypt",
+        passphrase_id="fixture-archive-key-v2",
+        principal=principal,
+    )
+    hidden = service.list(
+        page=1,
+        per_page=25,
+        q=None,
+        passphrase_id="fixture-archive-key-v1",
+        principal=principal,
+    )
+
+    assert [item.id for item in visible.collections] == [2]
+    assert visible.encryption_format == "age-v1-scrypt"
+    assert visible.passphrase_id == "fixture-archive-key-v2"
+    assert visible.collections[0].encryption_format == "age-v1-scrypt"
+    assert visible.collections[0].passphrase_id == "fixture-archive-key-v2"
+    assert hidden.total == 0
+    assert hidden.collections == []
     engine.dispose()

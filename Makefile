@@ -31,6 +31,7 @@ MYPY_SOURCES = \
 	packages/http-api-contracts/src \
 	packages/lifecycle-events/src \
 	packages/riverhog-age/src \
+	packages/riverhog-archive-contracts/src \
 	packages/riverhog-ftp-adapter-api-client/src \
 	packages/riverhog-api-client/src \
 	packages/riverhog-cli-support/src \
@@ -64,6 +65,7 @@ MYPY_SOURCES = \
 	reference/riverhog/storage/aws/src \
 	reference/riverhog/storage/backblaze/src \
 	scripts/operation_qualification.py \
+	scripts/pre_v1_encryption_cutover.py \
 	scripts/provider_qualification.py \
 	scripts/release.py \
 	scripts/release_installation.py \

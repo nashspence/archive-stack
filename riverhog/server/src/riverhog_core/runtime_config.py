@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -11,10 +12,16 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from http_api_contracts import safe_http_base_url
+from riverhog_archive_contracts import (
+    ARCHIVE_ENCRYPTION_FORMAT,
+    CollectionEncryptionBinding,
+    normalize_passphrase_id,
+)
 from time_formats import parse_duration
 
 _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 DEV_ARCHIVE_PASSPHRASE = "riverhog-dev-archive-passphrase"
+DEV_ARCHIVE_PASSPHRASE_ID = "riverhog-dev-key-v1"
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
 DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
 DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS = 32
@@ -137,8 +144,11 @@ class RuntimeConfig:
     retrieval_max_lease: timedelta = field(default_factory=lambda: timedelta(days=7))
     retrieval_pending_timeout: timedelta = field(default_factory=lambda: timedelta(hours=72))
     retrieval_cache_sweep_interval: timedelta = field(default_factory=lambda: timedelta(minutes=5))
-    archive_passphrase: str = DEV_ARCHIVE_PASSPHRASE
-    archive_require_explicit_passphrase: bool = False
+    archive_passphrases: Mapping[str, str] = field(
+        default_factory=lambda: {DEV_ARCHIVE_PASSPHRASE_ID: DEV_ARCHIVE_PASSPHRASE}
+    )
+    archive_active_passphrase_id: str = DEV_ARCHIVE_PASSPHRASE_ID
+    archive_require_explicit_passphrases: bool = False
     archive_scrypt_work_factor: int = DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR
     archive_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     retrieval_restore_poll_interval: timedelta = field(default_factory=lambda: timedelta(minutes=5))
@@ -314,16 +324,36 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_RETRIEVAL_RESTORE_POLL_INTERVAL must be > 0")
         if self.archive_scrypt_work_factor < 1 or self.archive_scrypt_work_factor > 22:
             raise ValueError("RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR must be in 1..22")
-        if not self.archive_passphrase:
-            raise ValueError("RIVERHOG_ARCHIVE_PASSPHRASE must be set")
-        if (
-            self.archive_require_explicit_passphrase
-            and self.archive_passphrase == DEV_ARCHIVE_PASSPHRASE
+        archive_passphrases: dict[str, str] = {}
+        for passphrase_id, passphrase in self.archive_passphrases.items():
+            try:
+                normalized_id = normalize_passphrase_id(passphrase_id)
+            except ValueError as exc:
+                raise ValueError(f"invalid archive passphrase ID: {passphrase_id!r}") from exc
+            if not isinstance(passphrase, str) or not passphrase:
+                raise ValueError(f"archive passphrase {normalized_id!r} must not be empty")
+            archive_passphrases[normalized_id] = passphrase
+        if not archive_passphrases:
+            raise ValueError("RIVERHOG_ARCHIVE_PASSPHRASES_JSON must define at least one key")
+        if len(set(archive_passphrases.values())) != len(archive_passphrases):
+            raise ValueError("archive passphrase IDs must identify distinct secrets")
+        try:
+            active_passphrase_id = normalize_passphrase_id(self.archive_active_passphrase_id)
+        except ValueError as exc:
+            raise ValueError("RIVERHOG_ARCHIVE_ACTIVE_PASSPHRASE_ID is invalid") from exc
+        if active_passphrase_id not in archive_passphrases:
+            raise ValueError(
+                "RIVERHOG_ARCHIVE_ACTIVE_PASSPHRASE_ID is not present in "
+                "RIVERHOG_ARCHIVE_PASSPHRASES_JSON"
+            )
+        object.__setattr__(self, "archive_passphrases", archive_passphrases)
+        object.__setattr__(self, "archive_active_passphrase_id", active_passphrase_id)
+        if self.archive_require_explicit_passphrases and (
+            active_passphrase_id == DEV_ARCHIVE_PASSPHRASE_ID
+            or DEV_ARCHIVE_PASSPHRASE in archive_passphrases.values()
         ):
             raise ValueError(
-                "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
-                "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a "
-                "non-development secret"
+                "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASES rejects the development key"
             )
 
     def archive_store(self, name: str) -> StorageAdapterRegistration:
@@ -332,6 +362,20 @@ class RuntimeConfig:
             return self.archive_stores[normalized]
         except KeyError as exc:
             raise ValueError(f"archive store is not configured: {normalized}") from exc
+
+    @property
+    def archive_active_encryption(self) -> CollectionEncryptionBinding:
+        return CollectionEncryptionBinding(
+            format=ARCHIVE_ENCRYPTION_FORMAT,
+            passphrase_id=self.archive_active_passphrase_id,
+        )
+
+    def archive_passphrase_for(self, passphrase_id: str) -> str:
+        normalized = normalize_passphrase_id(passphrase_id)
+        try:
+            return self.archive_passphrases[normalized]
+        except KeyError as exc:
+            raise ValueError(f"archive passphrase ID is not configured: {normalized}") from exc
 
 
 def _parse_archive_stores(
@@ -508,13 +552,26 @@ def load_runtime_config() -> RuntimeConfig:
         if (value := os.getenv("RIVERHOG_ATTESTATION_PUBLIC_KEY_FILE", "").strip())
         else None
     )
-    archive_passphrase_supplied = "RIVERHOG_ARCHIVE_PASSPHRASE" in os.environ
-    archive_passphrase = (
-        os.getenv("RIVERHOG_ARCHIVE_PASSPHRASE", DEV_ARCHIVE_PASSPHRASE).strip()
-        or DEV_ARCHIVE_PASSPHRASE
+    configured_archive_passphrases = os.getenv("RIVERHOG_ARCHIVE_PASSPHRASES_JSON", "").strip()
+    archive_passphrases_supplied = bool(configured_archive_passphrases)
+    archive_passphrases_raw = configured_archive_passphrases or json.dumps(
+        {DEV_ARCHIVE_PASSPHRASE_ID: DEV_ARCHIVE_PASSPHRASE}
     )
-    archive_require_explicit_passphrase = _parse_bool(
-        os.getenv("RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE", "false")
+    try:
+        archive_passphrases_value = json.loads(archive_passphrases_raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("RIVERHOG_ARCHIVE_PASSPHRASES_JSON must be valid JSON") from exc
+    if not isinstance(archive_passphrases_value, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in archive_passphrases_value.items()
+    ):
+        raise ValueError("RIVERHOG_ARCHIVE_PASSPHRASES_JSON must be a string-to-string object")
+    archive_passphrases = dict(archive_passphrases_value)
+    archive_active_passphrase_id = (
+        os.getenv("RIVERHOG_ARCHIVE_ACTIVE_PASSPHRASE_ID", "").strip() or DEV_ARCHIVE_PASSPHRASE_ID
+    )
+    archive_require_explicit_passphrases = _parse_bool(
+        os.getenv("RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASES", "false")
     )
     archive_scrypt_work_factor = _parse_int(
         os.getenv(
@@ -526,12 +583,10 @@ def load_runtime_config() -> RuntimeConfig:
     )
     if archive_scrypt_work_factor > 22:
         raise ValueError("RIVERHOG_ARCHIVE_SCRYPT_WORK_FACTOR must be <= 22")
-    if archive_require_explicit_passphrase and (
-        not archive_passphrase_supplied or archive_passphrase == DEV_ARCHIVE_PASSPHRASE
-    ):
+    if archive_require_explicit_passphrases and not archive_passphrases_supplied:
         raise ValueError(
-            "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASE requires "
-            "RIVERHOG_ARCHIVE_PASSPHRASE to be explicitly set to a non-development secret"
+            "RIVERHOG_ARCHIVE_REQUIRE_EXPLICIT_PASSPHRASES requires "
+            "RIVERHOG_ARCHIVE_PASSPHRASES_JSON"
         )
     return RuntimeConfig(
         event_source=os.getenv("RIVERHOG_EVENT_SOURCE", "urn:riverhog").strip(),
@@ -563,8 +618,9 @@ def load_runtime_config() -> RuntimeConfig:
         retrieval_cache_sweep_interval=parse_duration(
             os.getenv("RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL", "5m")
         ),
-        archive_passphrase=archive_passphrase,
-        archive_require_explicit_passphrase=archive_require_explicit_passphrase,
+        archive_passphrases=archive_passphrases,
+        archive_active_passphrase_id=archive_active_passphrase_id,
+        archive_require_explicit_passphrases=archive_require_explicit_passphrases,
         archive_scrypt_work_factor=archive_scrypt_work_factor,
         archive_upload_sweep_interval=archive_upload_sweep_interval,
         retrieval_restore_poll_interval=retrieval_restore_poll_interval,

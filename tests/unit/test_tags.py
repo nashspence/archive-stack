@@ -223,6 +223,8 @@ def test_tag_deletion_plan_reports_only_bounded_catalog_dependencies(tmp_path: P
             idempotency_key="photos-upload",
             provenance_mode="omitted",
             provenance_omission_reason="fixture does not exercise source observation",
+            encryption_format="age-v1-scrypt",
+            passphrase_id="fixture-archive-key-v1",
             initiated_by_app="uploader",
             archive_store="archive",
             state="open",

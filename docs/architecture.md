@@ -1,28 +1,28 @@
 # Architecture
 
-Riverhog is an encrypted archive platform with independently packaged clients, adapters,
-orchestration, utilities, and shared packages. Executable contracts define interfaces,
-configuration, formats, and commands; this page records ownership and authority.
+Riverhog is an encrypted archive platform with independently packaged components. Executable
+contracts define interfaces, configuration, formats, and commands; this page records authority.
 
 ## Authority model
 
-- Archive stores are the durable authority for encrypted archive bytes. A collection may
-  have verified copies in multiple named stores; copy retirement and collection deletion
-  are archive mutations.
-- Each component's database is its operational state and schema authority. Riverhog's catalog
-  records identity, placement, and workflows but is unnecessary to recover a known copy.
-- Collection ingress writes server-encrypted units directly to immutable final archive keys
-  in its selected store; ingress is not a storage tier. Checkpoints, unsealed membership, and
-  open multipart uploads are operational state. Sealed objects and published immutable roots
-  alone are archive authority. Retrieval caches hold rebuildable ciphertext.
+- Archive stores own durable encrypted bytes. Collections may have verified named-store copies;
+  retirement and deletion are archive mutations.
+- Component databases own operational state. Riverhog's catalog records identity, placement,
+  and workflows but is unnecessary to recover a known copy.
+- Collection ingress writes server-encrypted units directly to immutable final archive keys in
+  its selected store; ingress is not a storage tier. Checkpoints, unsealed membership, and
+  multipart uploads are operational state. Sealed objects and published immutable roots alone
+  are archive authority; retrieval caches are rebuildable.
+- Riverhog's host is the trusted plaintext and encryption boundary. Each collection freezes
+  v1 format and opaque passphrase ID before ingress. Configuration holds secrets; plaintext
+  `recovery.json` selects the exact ID for independent recovery.
 - Payload loops exclude control-plane and reporting work. Phase-separated timing records and
   `make transfer-profile` qualify goodput against a same-path raw baseline.
 - Per-file provenance is append-only custody history. Journals remain exact prefixes across
-  handoffs; clients capture or continue them by default, and omissions require a reason. The
-  immutable index and journals are authoritative; database rows are a rebuildable projection.
-- A collection is an immutable logical namespace and deletion unit. Tags are mutable
-  catalog metadata. Applications own desired state and materializations derived through
-  public APIs.
+  handoffs; clients capture or continue them by default, and omissions require a reason.
+  Immutable journals and their index are authoritative; database rows are a rebuildable projection.
+- Collections are immutable namespaces and deletion units; tags are mutable. Applications own
+  API-derived desired state and materializations.
 - Downstream configuration owns deployment identity, credentials, destinations, recipients,
   and topology.
 

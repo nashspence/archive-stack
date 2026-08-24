@@ -978,6 +978,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         per_page: int = 25,
         q: str | None = None,
         tag: str | None = None,
+        encryption_format: str | None = None,
+        passphrase_id: str | None = None,
         sort: str = "id",
         order: str = "asc",
         all_items: bool = False,
@@ -994,6 +996,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["q"] = q
         if tag:
             params["tag"] = tag
+        if encryption_format:
+            params["encryption_format"] = encryption_format
+        if passphrase_id:
+            params["passphrase_id"] = passphrase_id
         if all_items:
             params["all"] = True
         return self._json("GET", "/v1/collections", params=params)

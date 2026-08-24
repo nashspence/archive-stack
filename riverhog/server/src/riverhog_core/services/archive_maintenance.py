@@ -144,17 +144,21 @@ class SqlAlchemyArchiveMaintenanceService:
                 manifest = collection_metadata_manifest(
                     collection_id=collection_id,
                     content_identity=collection.content_identity,
+                    encryption_format=collection.encryption_format,
+                    passphrase_id=collection.passphrase_id,
                     record_etag=collection.record_etag,
                     metadata_revision=collection.metadata_revision,
                     tags=tags,
                     updated_at=collection.metadata_updated_at,
                 )
                 prefix = copy.archive_storage_prefix
+                passphrase_id = collection.passphrase_id
 
             receipt = self._archive_stores.require(store).store.publish_collection_metadata(
                 collection_id=collection_id,
                 archive_storage_prefix=prefix,
                 manifest=manifest,
+                passphrase_id=passphrase_id,
             )
             with session_scope(self._session_factory) as session:
                 publication = session.get(

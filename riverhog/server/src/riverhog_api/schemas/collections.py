@@ -52,6 +52,8 @@ class CollectionSummaryOut(RiverhogModel):
     tags: list[str]
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    encryption_format: str
+    passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     files: int
     bytes: int
     remote_storage_bytes: int
@@ -67,6 +69,8 @@ class ListCollectionsResponse(RiverhogModel):
     order: Literal["asc", "desc"]
     query: str | None
     tag: str | None
+    encryption_format: str | None
+    passphrase_id: str | None
     collections: list[CollectionSummaryOut]
 
 
@@ -133,6 +137,8 @@ class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
     collection_id: int
     ingest_source: str | None
     archive_store: str
+    encryption_format: str
+    passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     state: Literal["open", "uploading"]
     files: list[CollectionUploadFileOut]
     volumes: list[CollectionUploadVolumeSummaryOut]
@@ -158,6 +164,8 @@ class CollectionUploadListItemOut(RiverhogModel):
     tags: list[str]
     ingest_source: str | None
     archive_store: str
+    encryption_format: str
+    passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     state: Literal["open", "uploading", "finalizing", "failed"]
     files: int
     bytes: int
@@ -200,6 +208,8 @@ class CollectionUploadSessionOut(RiverhogModel):
     content_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     archive_store: str
+    encryption_format: str
+    passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     state: Literal["open", "uploading", "finalizing", "finalized", "failed", "canceled"]
     layout: CollectionUploadLayoutOut | None
     files_total: int

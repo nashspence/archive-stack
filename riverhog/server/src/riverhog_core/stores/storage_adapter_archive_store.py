@@ -158,6 +158,7 @@ class StorageAdapterArchiveStore:
         collection_id: int,
         archive_storage_prefix: str,
         manifest: bytes,
+        passphrase_id: str,
     ) -> MutableManifestReceipt:
         self._put_archive_root_guidance()
         object_path = f"{_archive_prefix(archive_storage_prefix)}/metadata.json.age"
@@ -166,6 +167,7 @@ class StorageAdapterArchiveStore:
             "collection-metadata-format": "riverhog-collection-metadata/v1",
             "riverhog-collection-id": str(collection_id),
             "riverhog-encryption": "age-v1-scrypt",
+            "riverhog-passphrase-id": passphrase_id,
             _PLAINTEXT_BYTES_METADATA: str(len(manifest)),
             _PLAINTEXT_SHA256_METADATA: plaintext_sha256,
         }
@@ -185,7 +187,7 @@ class StorageAdapterArchiveStore:
             )
         ciphertext = encrypt_age_scrypt(
             manifest,
-            self._config.archive_passphrase,
+            self._config.archive_passphrase_for(passphrase_id),
             log_n=self._config.archive_scrypt_work_factor,
         )
         receipt = self._put_small(
@@ -208,12 +210,19 @@ class StorageAdapterArchiveStore:
         *,
         collection_id: int,
         object: ArchiveObjectIdentity,
+        passphrase_id: str,
     ) -> ArchiveArtifactRead:
         if object.kind not in {"manifest", "proof"}:
             raise ValueError("only collection manifests and proofs are archive artifacts")
         metadata = self._metadata(object)
         _verify_metadata(object, metadata)
-        content = b"".join(self.iter_archive_object(collection_id=collection_id, object=object))
+        content = b"".join(
+            self.iter_archive_object(
+                collection_id=collection_id,
+                object=object,
+                passphrase_id=passphrase_id,
+            )
+        )
         _verify_plaintext(object, content)
         return ArchiveArtifactRead(
             receipt=self._receipt_from_identity(object, metadata=metadata, verified=True),
@@ -226,6 +235,7 @@ class StorageAdapterArchiveStore:
         collection_id: int,
         object: ArchiveObjectIdentity,
         proof_bytes: bytes,
+        passphrase_id: str,
     ) -> ArchiveObjectUploadReceipt:
         _ = collection_id
         if object.object_id != "proof" or object.kind != "proof":
@@ -241,6 +251,7 @@ class StorageAdapterArchiveStore:
         plaintext_sha256 = hashlib.sha256(proof_bytes).hexdigest()
         identity = {
             "riverhog-format": ROOT_PROOF_STORAGE_FORMAT,
+            "riverhog-passphrase-id": passphrase_id,
             _PLAINTEXT_BYTES_METADATA: str(len(proof_bytes)),
             _PLAINTEXT_SHA256_METADATA: plaintext_sha256,
         }
@@ -250,7 +261,7 @@ class StorageAdapterArchiveStore:
             identity["riverhog-manifest-sha256"] = manifest_sha256
         ciphertext = encrypt_age_scrypt(
             proof_bytes,
-            self._config.archive_passphrase,
+            self._config.archive_passphrase_for(passphrase_id),
             log_n=self._config.archive_scrypt_work_factor,
         )
         stored = self._put_small(
@@ -281,9 +292,9 @@ class StorageAdapterArchiveStore:
         self._put_archive_root_guidance()
         prefix = _archive_prefix(archive_storage_prefix)
         rows = (
-            ("checksums", checksums, False),
-            ("signature", signature, False),
-            ("signature-proof", proof, True),
+            ("checksums", checksums),
+            ("signature", signature),
+            ("signature-proof", proof),
         )
         return CollectionArchiveUploadReceipt(
             objects=tuple(
@@ -291,10 +302,10 @@ class StorageAdapterArchiveStore:
                     object_id=object_id,
                     object_path=f"{prefix}/{ATTESTATION_FILENAMES[object_id]}",
                     content=content,
-                    accept_existing=accept_existing,
-                    replace=False,
+                    accept_existing=False,
+                    replace=True,
                 )
-                for object_id, content, accept_existing in rows
+                for object_id, content in rows
             )
         )
 
@@ -373,6 +384,7 @@ class StorageAdapterArchiveStore:
         *,
         collection_id: int,
         object: ArchiveObjectIdentity,
+        passphrase_id: str,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
         return iter_decrypt_age_scrypt(
@@ -381,7 +393,7 @@ class StorageAdapterArchiveStore:
                 object=object,
                 attribution=attribution,
             ),
-            self._config.archive_passphrase,
+            self._config.archive_passphrase_for(passphrase_id),
         )
 
     def iter_stored_archive_object(

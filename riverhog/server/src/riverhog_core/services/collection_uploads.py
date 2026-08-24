@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from riverhog_age import encrypt_age_scrypt
+from riverhog_archive_contracts import CollectionEncryptionBinding
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.paths import (
@@ -40,6 +41,10 @@ from riverhog_core.archive_manifest import validate_collection_archive_plan
 from riverhog_core.archive_provenance import (
     ArchiveProvenancePublisher,
     SealedArchiveProvenance,
+)
+from riverhog_core.archive_recovery_descriptor import (
+    ArchiveRecoveryDescriptorPublisher,
+    SealedRecoveryDescriptor,
 )
 from riverhog_core.archive_root import ArchiveRootPublisher, SealedArchiveRoot
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
@@ -172,11 +177,14 @@ class SqlAlchemyCollectionUploadService:
         tuning = throughput_tuning or ArchiveThroughputTuning.from_env(os.environ)
         self._throughput = tuning
         self._resources = transfer_resources or ArchiveTransferResources.from_tuning(tuning)
-        self._age_sessions = ResumableAgeSessionCache(
-            config.archive_passphrase,
-            max_entries=tuning.age_session_cache_entries,
-            derivation_gate=self._resources.age_derivations,
-        )
+        self._age_sessions = {
+            passphrase_id: ResumableAgeSessionCache(
+                passphrase,
+                max_entries=tuning.age_session_cache_entries,
+                derivation_gate=self._resources.age_derivations,
+            )
+            for passphrase_id, passphrase in config.archive_passphrases.items()
+        }
 
     def create_or_resume(
         self,
@@ -266,6 +274,8 @@ class SqlAlchemyCollectionUploadService:
                 ingest_source=ingest_source,
                 provenance_mode=normalized_provenance_mode,
                 provenance_omission_reason=normalized_omission_reason,
+                encryption_format=self._config.archive_active_encryption.format,
+                passphrase_id=self._config.archive_active_encryption.passphrase_id,
                 initiated_by_app=initiator.app,
                 initiated_by_key_id=initiator.key_id,
                 event_context_json=context_json,
@@ -423,6 +433,8 @@ class SqlAlchemyCollectionUploadService:
                 "collection_id": normalized_id,
                 "ingest_source": upload.ingest_source,
                 "archive_store": upload.archive_store,
+                "encryption_format": upload.encryption_format,
+                "passphrase_id": upload.passphrase_id,
                 "state": upload.state,
                 "files": [_file_payload(row) for row in records if row is not None],
                 "volumes": [_volume_summary(row) for row in batch.volumes],
@@ -683,6 +695,7 @@ class SqlAlchemyCollectionUploadService:
             if plan_sha256 != record.plan_sha256:
                 raise Conflict("archive upload unit plan identity changed")
             store_name = upload.archive_store
+            passphrase_id = upload.passphrase_id
             kind = record.kind
             object_path = record.object_path
             relative_path = record.relative_path
@@ -701,7 +714,8 @@ class SqlAlchemyCollectionUploadService:
                         store_name=store_name,
                         collection_id=normalized_id,
                         object_id=volume_id,
-                    )
+                    ),
+                    passphrase_id=passphrase_id,
                 )
                 pack_checkpoint = pack_uploader.open(
                     collection_id=normalized_id,
@@ -739,7 +753,8 @@ class SqlAlchemyCollectionUploadService:
                         store_name=store_name,
                         collection_id=normalized_id,
                         object_id=volume_id,
-                    )
+                    ),
+                    passphrase_id=passphrase_id,
                 )
                 raw_checkpoint = raw_uploader.open(
                     collection_id=normalized_id,
@@ -895,6 +910,8 @@ class SqlAlchemyCollectionUploadService:
                         "tags": list(_upload_tags(upload)),
                         "ingest_source": upload.ingest_source,
                         "archive_store": upload.archive_store,
+                        "encryption_format": upload.encryption_format,
+                        "passphrase_id": upload.passphrase_id,
                         "state": upload.state,
                         "files": int(files or 0),
                         "bytes": int(byte_count or 0),
@@ -917,6 +934,7 @@ class SqlAlchemyCollectionUploadService:
             payload = _upload_payload(session, upload, state="canceled")
             store_name = upload.archive_store
             prefix = upload.archive_storage_prefix
+            passphrase_id = upload.passphrase_id
             checkpoints = [
                 (current.kind, current.checkpoint_json)
                 for current in upload.archive_objects
@@ -933,7 +951,8 @@ class SqlAlchemyCollectionUploadService:
                             store_name=store_name,
                             collection_id=normalized_id,
                             object_id=pack_checkpoint.volume_id,
-                        )
+                        ),
+                        passphrase_id=passphrase_id,
                     ).abort(pack_checkpoint)
             else:
                 raw_checkpoint = RawUploadCheckpoint.from_json(checkpoint_json)
@@ -943,7 +962,8 @@ class SqlAlchemyCollectionUploadService:
                             store_name=store_name,
                             collection_id=normalized_id,
                             object_id=raw_checkpoint.volume_id,
-                        )
+                        ),
+                        passphrase_id=passphrase_id,
                     ).abort(raw_checkpoint)
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, normalized_id)
@@ -958,16 +978,19 @@ class SqlAlchemyCollectionUploadService:
     def _pack_uploader(
         self,
         object_store: ArchiveMultipartObjectStore,
+        *,
+        passphrase_id: str,
     ) -> PackVolumeUploader:
+        passphrase = self._config.archive_passphrase_for(passphrase_id)
         return PackVolumeUploader(
             object_store=object_store,
             checkpoint_store=self._checkpoints,
-            passphrase=self._config.archive_passphrase,
+            passphrase=passphrase,
             scrypt_log_n=self._config.archive_scrypt_work_factor,
             source_read_chunk_bytes=self._throughput.source_read_chunk_bytes,
             resources=self._resources,
             timing_observer=log_transfer_timing,
-            session_cache=self._age_sessions,
+            session_cache=self._age_sessions[passphrase_id],
         )
 
     def _volume_object_store(
@@ -996,16 +1019,19 @@ class SqlAlchemyCollectionUploadService:
     def _raw_uploader(
         self,
         object_store: ArchiveMultipartObjectStore,
+        *,
+        passphrase_id: str,
     ) -> RawVolumeUploader:
+        passphrase = self._config.archive_passphrase_for(passphrase_id)
         return RawVolumeUploader(
             object_store=object_store,
             checkpoint_store=self._checkpoints,
-            passphrase=self._config.archive_passphrase,
+            passphrase=passphrase,
             scrypt_log_n=self._config.archive_scrypt_work_factor,
             source_read_chunk_bytes=self._throughput.source_read_chunk_bytes,
             resources=self._resources,
             timing_observer=log_transfer_timing,
-            session_cache=self._age_sessions,
+            session_cache=self._age_sessions[passphrase_id],
         )
 
     def _raw_volume_digests(
@@ -1179,6 +1205,7 @@ class SqlAlchemyCollectionUploadService:
             if upload is None:
                 return
             store_name = upload.archive_store
+            passphrase_id = upload.passphrase_id
             pending = [
                 (
                     current.object_id,
@@ -1201,7 +1228,8 @@ class SqlAlchemyCollectionUploadService:
                         store_name=store_name,
                         collection_id=collection_id,
                         object_id=volume_id,
-                    )
+                    ),
+                    passphrase_id=passphrase_id,
                 ).sealed_receipt(
                     plan=parse_pack_volume_plan(plan_json),
                     checkpoint=checkpoint,
@@ -1215,7 +1243,8 @@ class SqlAlchemyCollectionUploadService:
                         store_name=store_name,
                         collection_id=collection_id,
                         object_id=volume_id,
-                    )
+                    ),
+                    passphrase_id=passphrase_id,
                 ).sealed_receipt(raw_checkpoint)
             else:
                 raise RuntimeError(f"unsupported archive volume kind: {kind}")
@@ -1283,12 +1312,17 @@ class SqlAlchemyCollectionUploadService:
             if not prefix:
                 raise RuntimeError("collection archive storage prefix is missing")
             provenance = _upload_provenance_archive(upload)
+            encryption = CollectionEncryptionBinding(
+                format=upload.encryption_format,
+                passphrase_id=upload.passphrase_id,
+            )
+            passphrase = self._config.archive_passphrase_for(upload.passphrase_id)
 
         archive_store = self._archive_stores.require(store_name)
         sealed_provenance = (
             ArchiveProvenancePublisher(
                 object_store=archive_store.immutable_objects,
-                passphrase=self._config.archive_passphrase,
+                passphrase=passphrase,
                 scrypt_log_n=self._config.archive_scrypt_work_factor,
             ).publish(
                 archive_storage_prefix=prefix,
@@ -1299,7 +1333,7 @@ class SqlAlchemyCollectionUploadService:
         )
         root = ArchiveRootPublisher(
             object_store=archive_store.immutable_objects,
-            passphrase=self._config.archive_passphrase,
+            passphrase=passphrase,
             scrypt_log_n=self._config.archive_scrypt_work_factor,
         ).publish(
             archive_storage_prefix=prefix,
@@ -1316,10 +1350,17 @@ class SqlAlchemyCollectionUploadService:
                 else ()
             ),
         )
+        recovery_descriptor = ArchiveRecoveryDescriptorPublisher(
+            object_store=archive_store.immutable_objects
+        ).publish(
+            archive_storage_prefix=prefix,
+            root=root,
+            encryption=encryption,
+        )
         proof_bytes = self._persisted_proof(collection_id, root.manifest_bytes)
         proof_ciphertext = encrypt_age_scrypt(
             proof_bytes,
-            self._config.archive_passphrase,
+            passphrase,
             log_n=self._config.archive_scrypt_work_factor,
         )
         proof_receipt = archive_store.immutable_objects.put_immutable_object(
@@ -1358,6 +1399,7 @@ class SqlAlchemyCollectionUploadService:
             root=root,
             proof_bytes=proof_bytes,
             proof_receipt=proof_receipt,
+            recovery_descriptor=recovery_descriptor,
             sealed_provenance=sealed_provenance,
         )
 
@@ -1392,6 +1434,7 @@ class SqlAlchemyCollectionUploadService:
         root: SealedArchiveRoot,
         proof_bytes: bytes,
         proof_receipt: object,
+        recovery_descriptor: SealedRecoveryDescriptor,
         sealed_provenance: SealedArchiveProvenance | None,
     ) -> None:
         from riverhog_core.archive_catalog import ArchiveCatalogProjection
@@ -1420,6 +1463,8 @@ class SqlAlchemyCollectionUploadService:
             _, record_etag = collection_record_manifest(
                 collection_id=collection_id,
                 content_identity=content_identity,
+                encryption_format=upload.encryption_format,
+                passphrase_id=upload.passphrase_id,
                 provenance_mode=_final_provenance_mode(upload),
                 provenance_identity=upload.provenance_identity,
                 metadata_revision=1,
@@ -1430,6 +1475,8 @@ class SqlAlchemyCollectionUploadService:
                 id=collection_id,
                 creation_idempotency_key=upload.idempotency_key,
                 content_identity=content_identity,
+                encryption_format=upload.encryption_format,
+                passphrase_id=upload.passphrase_id,
                 provenance_mode=_final_provenance_mode(upload),
                 provenance_identity=upload.provenance_identity,
                 record_etag=record_etag,
@@ -1626,8 +1673,23 @@ class SqlAlchemyCollectionUploadService:
                     CollectionArchiveObjectRecord(
                         collection_id=collection_id,
                         store=upload.archive_store,
-                        object_id="proof",
+                        object_id="recovery-descriptor",
                         object_order=artifact_order + 1,
+                        kind="recovery-descriptor",
+                        object_path=recovery_descriptor.object_path,
+                        plaintext_bytes=recovery_descriptor.bytes,
+                        stored_bytes=recovery_descriptor.bytes,
+                        sha256=recovery_descriptor.sha256,
+                        stored_sha256=recovery_descriptor.sha256,
+                        version_id=recovery_descriptor.version_id,
+                        uploaded_at=recovery_descriptor.completed_at,
+                        verified_at=now,
+                    ),
+                    CollectionArchiveObjectRecord(
+                        collection_id=collection_id,
+                        store=upload.archive_store,
+                        object_id="proof",
+                        object_order=artifact_order + 2,
                         kind="proof",
                         object_path=proof_receipt.object_path,
                         plaintext_bytes=len(proof_bytes),
@@ -1718,7 +1780,7 @@ class SqlAlchemyCollectionUploadService:
                     "archive_objects": (
                         len(projection.volumes)
                         + (len(sealed_provenance.bundles) + 1 if sealed_provenance else 0)
-                        + 2
+                        + 3
                     ),
                 },
                 terminal=True,
@@ -2304,6 +2366,8 @@ def _upload_payload(
         "provenance_mode": upload.provenance_mode,
         "provenance_identity": upload.provenance_identity,
         "archive_store": upload.archive_store,
+        "encryption_format": upload.encryption_format,
+        "passphrase_id": upload.passphrase_id,
         "state": state or upload.state,
         "layout": _layout_payload(_planner_checkpoint(upload).policy),
         "files_total": int(files_total),
@@ -2355,6 +2419,8 @@ def _finalized_payload(
         "tags": tags,
         "content_identity": collection.content_identity,
         "manifest_sha256": manifest.sha256,
+        "encryption_format": collection.encryption_format,
+        "passphrase_id": collection.passphrase_id,
         "files": len(collection.files),
         "bytes": sum(current.bytes for current in collection.files),
         "remote_storage_bytes": stored_bytes,
@@ -2370,6 +2436,8 @@ def _finalized_payload(
         "content_identity": collection.content_identity,
         "manifest_sha256": manifest.sha256,
         "archive_store": copy.store if copy else store_name,
+        "encryption_format": collection.encryption_format,
+        "passphrase_id": collection.passphrase_id,
         "state": "finalized",
         "layout": None,
         "files_total": summary["files"],

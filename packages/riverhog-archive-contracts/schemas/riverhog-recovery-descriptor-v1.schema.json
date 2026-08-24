@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nashspence.github.io/riverhog/v1/schemas/riverhog-recovery-descriptor-v1.schema.json",
+  "title": "Riverhog v1 recovery descriptor",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "encryption", "root"],
+  "properties": {
+    "schema": {"const": "riverhog-recovery-descriptor/v1"},
+    "encryption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "passphrase_id"],
+      "properties": {
+        "format": {"const": "age-v1-scrypt"},
+        "passphrase_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{16,128}$"
+        }
+      }
+    },
+    "root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "stored_bytes", "stored_sha256"],
+      "properties": {
+        "path": {"const": "manifest.json.age"},
+        "stored_bytes": {"type": "integer", "minimum": 1},
+        "stored_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

@@ -44,12 +44,16 @@ def list_collections(
     order: str = Query("asc"),
     all_items: bool = Query(False, alias="all"),
     tag: str | None = Query(None),
+    encryption_format: str | None = Query(None),
+    passphrase_id: str | None = Query(None),
 ) -> ListCollectionsResponse:
     summary = container.collections.list(
         page=page,
         per_page=per_page,
         q=q,
         tag=tag,
+        encryption_format=encryption_format,
+        passphrase_id=passphrase_id,
         sort=sort,
         order=order,
         all_items=all_items,

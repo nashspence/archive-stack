@@ -30,7 +30,7 @@ def archive_copy_is_complete(copy: CollectionArchiveCopyRecord) -> bool:
     return bool(
         copy.state == "uploaded"
         and copy.last_verified_at
-        and {"manifest", "proof"}.issubset(object_ids)
+        and {"manifest", "recovery-descriptor", "proof"}.issubset(object_ids)
         and any(current.kind in {"pack", "segment"} for current in copy.objects)
         and provenance_complete
         and all(current.verified_at for current in copy.objects)

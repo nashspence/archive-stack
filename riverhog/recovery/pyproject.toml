@@ -18,7 +18,10 @@ classifiers = [
   "Typing :: Typed",
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
-dependencies = []
+dependencies = ["riverhog-archive-contracts>=0.1,<0.2"]
+
+[tool.uv.sources]
+riverhog-archive-contracts = { workspace = true }
 
 [project.scripts]
 riverhog-recover = "riverhog_recover.cli:main"

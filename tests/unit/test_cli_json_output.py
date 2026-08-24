@@ -28,6 +28,8 @@ def test_collection_list_json_emits_the_api_response_without_a_second_model(
                 "files": 2,
                 "bytes": 100,
                 "remote_storage_bytes": 128,
+                "encryption_format": "age-v1-scrypt",
+                "passphrase_id": "fixture-archive-key-v2",
                 "archive_copies": [
                     {
                         "store": "deep",
@@ -47,9 +49,12 @@ def test_collection_list_json_emits_the_api_response_without_a_second_model(
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
     result = CliRunner().invoke(app, ["collection", "list", "--json"])
+    human = CliRunner().invoke(app, ["collection", "list"])
 
     assert result.exit_code == 0
     assert json.loads(result.stdout) == payload
+    assert human.exit_code == 0
+    assert "encryption=age-v1-scrypt:fixture-archive-key-v2" in human.stdout
 
 
 def test_collection_show_human_and_json_use_one_identical_api_response(monkeypatch) -> None:
@@ -60,6 +65,8 @@ def test_collection_show_human_and_json_use_one_identical_api_response(monkeypat
         "files": 1,
         "bytes": 100,
         "remote_storage_bytes": 128,
+        "encryption_format": "age-v1-scrypt",
+        "passphrase_id": "fixture-archive-key-v2",
         "archive_copies": [{"store": "deep", "state": "uploaded"}],
     }
     calls: list[int] = []
@@ -76,6 +83,7 @@ def test_collection_show_human_and_json_use_one_identical_api_response(monkeypat
 
     assert human.exit_code == 0
     assert "remote storage: 128 B" in human.stdout
+    assert "encryption: age-v1-scrypt:fixture-archive-key-v2" in human.stdout
     assert machine.exit_code == 0
     assert json.loads(machine.stdout) == payload
     assert calls == [42, 42]

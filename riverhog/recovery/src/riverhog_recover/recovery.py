@@ -15,6 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from riverhog_archive_contracts import (
+    RECOVERY_DESCRIPTOR_PATH,
+    RecoveryDescriptor,
+    RecoveryDescriptorError,
+)
+
 from ._provenance import (
     ValidatedProvenance,
     build_portable_provenance_set,
@@ -116,7 +122,7 @@ def recover_archive(
     archive_dir: Path,
     output_dir: Path,
     *,
-    passphrase: str,
+    passphrases: Mapping[str, str],
     age_command: str = "age",
     ots_command: str = "ots",
     minisign_public_key: Path | None = None,
@@ -128,9 +134,6 @@ def recover_archive(
         raise RecoveryError(f"archive directory does not exist: {archive}")
     if output.exists():
         raise RecoveryError(f"output path already exists: {output}")
-    if not passphrase:
-        raise RecoveryError("archive passphrase is empty")
-
     output.parent.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix=f".{output.name}.recover-", dir=output.parent))
     staging = scratch / "output"
@@ -146,8 +149,29 @@ def recover_archive(
                 command=minisign_command,
             )
 
-        encrypted_manifest = _archive_file(archive, "manifest.json.age")
-        _verify_inventory_file(encrypted_manifest, "manifest.json.age", checksums)
+        descriptor = read_recovery_descriptor(archive)
+        descriptor_path = _archive_file(archive, RECOVERY_DESCRIPTOR_PATH)
+        _verify_inventory_file(descriptor_path, RECOVERY_DESCRIPTOR_PATH, checksums)
+        encrypted_manifest = _archive_file(archive, descriptor.root.path)
+        _verify_stored_identity(
+            encrypted_manifest,
+            expected_bytes=descriptor.root.stored_bytes,
+            expected_sha256=descriptor.root.stored_sha256,
+            label=descriptor.root.path,
+        )
+        try:
+            passphrase = passphrases[descriptor.encryption.passphrase_id]
+        except KeyError as exc:
+            raise RecoveryError(
+                "no passphrase is available for archive key ID "
+                f"{descriptor.encryption.passphrase_id}"
+            ) from exc
+        if not isinstance(passphrase, str) or not passphrase:
+            raise RecoveryError(
+                f"archive passphrase is empty for key ID {descriptor.encryption.passphrase_id}"
+            )
+
+        _verify_inventory_file(encrypted_manifest, descriptor.root.path, checksums)
         manifest_path = scratch / "manifest.json"
         _age_decrypt(
             encrypted_manifest,
@@ -244,6 +268,28 @@ def recover_archive(
         raise RecoveryError(str(exc)) from exc
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def read_recovery_descriptor(archive_dir: Path) -> RecoveryDescriptor:
+    archive = archive_dir.expanduser().resolve()
+    try:
+        content = _archive_file(archive, RECOVERY_DESCRIPTOR_PATH).read_bytes()
+        return RecoveryDescriptor.from_json_bytes(content)
+    except RecoveryDescriptorError as exc:
+        raise RecoveryError(str(exc)) from exc
+    except OSError as exc:
+        raise RecoveryError(f"cannot read {RECOVERY_DESCRIPTOR_PATH}: {exc}") from exc
+
+
+def _verify_stored_identity(
+    path: Path,
+    *,
+    expected_bytes: int,
+    expected_sha256: str,
+    label: str,
+) -> None:
+    if path.stat().st_size != expected_bytes or _sha256(path) != expected_sha256:
+        raise RecoveryError(f"stored archive object does not match recovery descriptor: {label}")
 
 
 def _parse_manifest(content: bytes) -> Manifest:
@@ -862,7 +908,7 @@ def _verify_attestation_inventory(
 ) -> None:
     if checksums is None:
         return
-    expected = {"manifest.json.age", "manifest.json.ots.age"}
+    expected = {RECOVERY_DESCRIPTOR_PATH, "manifest.json.age", "manifest.json.ots.age"}
     if manifest.provenance is not None:
         expected.update(
             current.path for current in (manifest.provenance.index, *manifest.provenance.bundles)

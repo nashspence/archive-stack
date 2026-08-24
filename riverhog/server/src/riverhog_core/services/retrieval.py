@@ -101,11 +101,14 @@ class SqlAlchemyRetrievalService:
         self._resources = transfer_resources or ArchiveTransferResources.from_tuning(
             self._throughput
         )
-        self._age_sessions = ResumableAgeSessionCache(
-            config.archive_passphrase,
-            max_entries=self._throughput.age_session_cache_entries,
-            derivation_gate=self._resources.age_derivations,
-        )
+        self._age_sessions = {
+            passphrase_id: ResumableAgeSessionCache(
+                passphrase,
+                max_entries=self._throughput.age_session_cache_entries,
+                derivation_gate=self._resources.age_derivations,
+            )
+            for passphrase_id, passphrase in config.archive_passphrases.items()
+        }
         self._lifecycle_events = SqlAlchemyLifecycleEventService(
             config,
             session_factory=self._session_factory,
@@ -151,6 +154,8 @@ class SqlAlchemyRetrievalService:
             payload, etag = collection_record_manifest(
                 collection_id=normalized_id,
                 content_identity=collection.content_identity,
+                encryption_format=collection.encryption_format,
+                passphrase_id=collection.passphrase_id,
                 provenance_mode=collection.provenance_mode,
                 provenance_identity=collection.provenance_identity,
                 metadata_revision=collection.metadata_revision,
@@ -907,6 +912,11 @@ class SqlAlchemyRetrievalService:
             attribution = _download_attribution(job)
             expected_bytes = file_record.bytes
             expected_sha256 = file_record.sha256
+            collection = session.get(CollectionRecord, collection_id)
+            if collection is None:
+                raise NotFound(f"collection not found: {collection_id}")
+            passphrase_id = collection.passphrase_id
+            passphrase = self._config.archive_passphrase_for(passphrase_id)
 
         kinds = {record.kind for _placement, record, _cached in records}
         if kinds == {"pack"} and len(records) == 1:
@@ -934,10 +944,10 @@ class SqlAlchemyRetrievalService:
                     cached=cached,
                     attribution=attribution,
                 ),
-                passphrase=self._config.archive_passphrase,
+                passphrase=passphrase,
                 read_working_bytes=self._throughput.retrieval_read_chunk_bytes,
                 resources=self._resources,
-                session_cache=self._age_sessions,
+                session_cache=self._age_sessions[passphrase_id],
                 timing_observer=log_transfer_timing,
                 policy=PackRangeRetrievalPolicy.from_env(
                     os.environ,
@@ -975,11 +985,11 @@ class SqlAlchemyRetrievalService:
             chunks = RawFileRangeReader(
                 RawVolumeRangeReader(
                     _DispatchArchiveRangeStore(range_stores),
-                    passphrase=self._config.archive_passphrase,
+                    passphrase=passphrase,
                     request_concurrency=self._throughput.retrieval_request_concurrency,
                     read_working_bytes=self._throughput.retrieval_read_chunk_bytes,
                     resources=self._resources,
-                    session_cache=self._age_sessions,
+                    session_cache=self._age_sessions[passphrase_id],
                     timing_observer=log_transfer_timing,
                 )
             ).iter_file(sources)

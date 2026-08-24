@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from riverhog_archive_contracts import normalize_passphrase_id
 from riverhog_protocol.errors import BadRequest, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id, normalize_tag
 from sqlalchemy import String, cast, exists, func, or_, select
@@ -79,6 +80,8 @@ class SqlAlchemyCollectionService:
         per_page: int,
         q: str | None,
         tag: str | None = None,
+        encryption_format: str | None = None,
+        passphrase_id: str | None = None,
         sort: str = "id",
         order: str = "asc",
         all_items: bool = False,
@@ -93,6 +96,14 @@ class SqlAlchemyCollectionService:
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
         normalized_tag = _normalize_tag(tag) if tag is not None else None
+        normalized_format = _normalize_filter(encryption_format, name="encryption_format")
+        if passphrase_id is None:
+            normalized_passphrase_id = None
+        else:
+            try:
+                normalized_passphrase_id = normalize_passphrase_id(passphrase_id)
+            except ValueError as exc:
+                raise BadRequest(str(exc)) from exc
         filters = [collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)]
         if q is not None:
             filters.append(
@@ -120,6 +131,10 @@ class SqlAlchemyCollectionService:
                     )
                 )
             )
+        if normalized_format is not None:
+            filters.append(CollectionRecord.encryption_format == normalized_format)
+        if normalized_passphrase_id is not None:
+            filters.append(CollectionRecord.passphrase_id == normalized_passphrase_id)
         with session_scope(self._session_factory) as session:
             total = int(
                 session.scalar(select(func.count()).select_from(CollectionRecord).where(*filters))
@@ -150,6 +165,8 @@ class SqlAlchemyCollectionService:
                 order=order,
                 query=q,
                 tag=normalized_tag,
+                encryption_format=normalized_format,
+                passphrase_id=normalized_passphrase_id,
                 collections=[_collection_summary(row, aggregates=aggregates) for row in rows],
             )
 
@@ -206,11 +223,22 @@ def _collection_summary(
         tags=tuple(sorted(current.tag_id for current in collection.tags)),
         content_identity=collection.content_identity,
         manifest_sha256=_manifest_identity(copies),
+        encryption_format=collection.encryption_format,
+        passphrase_id=collection.passphrase_id,
         files=int(row.files),
         bytes=int(row.bytes),
         remote_storage_bytes=sum(current.stored_bytes or 0 for current in copies),
         archive_copies=copies,
     )
+
+
+def _normalize_filter(value: str | None, *, name: str) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or normalized != value or len(normalized) > 128:
+        raise BadRequest(f"{name} is invalid")
+    return normalized
 
 
 def _archive_copy_status(

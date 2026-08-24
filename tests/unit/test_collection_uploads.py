@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from riverhog_age import decrypt_age_scrypt
+from riverhog_archive_contracts import RecoveryDescriptor
 from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     CATALOG_READ,
@@ -175,12 +176,148 @@ def test_collection_ingress_uses_the_configured_source_read_chunk(
         throughput_tuning=tuning,
     )
 
-    pack_uploader = service._pack_uploader(multipart)
-    raw_uploader = service._raw_uploader(multipart)
+    pack_uploader = service._pack_uploader(
+        multipart,
+        passphrase_id=_config.archive_active_passphrase_id,
+    )
+    raw_uploader = service._raw_uploader(
+        multipart,
+        passphrase_id=_config.archive_active_passphrase_id,
+    )
     assert pack_uploader._source_read_chunk_bytes == 256 * 1024
     assert raw_uploader._source_read_chunk_bytes == 256 * 1024
     assert pack_uploader._timing_observer is log_transfer_timing
     assert raw_uploader._timing_observer is log_transfer_timing
+
+
+def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: Path) -> None:
+    database_url = sqlite_url(tmp_path / "catalog.sqlite3")
+    initialize_db(database_url)
+    with session_scope(make_session_factory(database_url)) as session:
+        session.add(
+            TagRecord(
+                id="docs",
+                created_by_app="fixture",
+                created_at="2026-08-08T00:00:00.000000Z",
+            )
+        )
+    passphrases = {
+        "collection-test-key-v1": "first archive secret",
+        "collection-test-key-v2": "second archive secret",
+    }
+    archive_store = MemoryArchiveStore()
+    multipart = MemoryMultipartStore()
+    root = MemoryImmutableStore()
+    binding = replace(
+        archive_store_binding(archive_store),
+        multipart_objects=multipart,
+        immutable_objects=root,
+        object_ranges=_UnusedRangeStore(),
+    )
+
+    def service(active: str) -> SqlAlchemyCollectionUploadService:
+        return SqlAlchemyCollectionUploadService(
+            RuntimeConfig(
+                database_url=database_url,
+                archive_passphrases=passphrases,
+                archive_active_passphrase_id=active,
+                archive_scrypt_work_factor=1,
+            ),
+            ArchiveStoreRegistry({"archive": binding}),
+            proof_stamper=FixtureProofStamper(),
+        )
+
+    first = service("collection-test-key-v1").create_or_resume(
+        idempotency_key="before-rotation",
+        tags=("docs",),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture has no source provenance",
+    )
+    rotated = service("collection-test-key-v2")
+    resumed = rotated.create_or_resume(
+        idempotency_key="before-rotation",
+        tags=("docs",),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture has no source provenance",
+    )
+    assert first["passphrase_id"] == resumed["passphrase_id"] == "collection-test-key-v1"
+
+    content = b"frozen generation\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    collection_id = int(first["collection_id"])
+    rotated.register_files(
+        collection_id,
+        ({"path": "file.txt", "bytes": len(content), "sha256": sha256},),
+    )
+    rotated.complete(
+        collection_id,
+        files_total=1,
+        content_identity=collection_content_identity((("file.txt", len(content), sha256),)),
+    )
+    volume = rotated.list_volumes(collection_id)["volumes"][0]
+    rotated.upload_unit(
+        collection_id,
+        str(volume["volume_id"]),
+        0,
+        plan_sha256=str(volume["plan_sha256"]),
+        content=content,
+    )
+    assert rotated.process_due_finalizations() == 1
+    finalized = rotated.get(collection_id)
+    assert finalized["passphrase_id"] == "collection-test-key-v1"
+    descriptor_object = next(
+        stored for path, stored in root.objects.items() if path.endswith("/recovery.json")
+    )
+    descriptor = RecoveryDescriptor.from_json_bytes(descriptor_object.content)
+    assert descriptor.encryption.passphrase_id == "collection-test-key-v1"
+    encrypted_root = next(
+        stored for path, stored in root.objects.items() if path.endswith("/manifest.json.age")
+    )
+    assert decrypt_age_scrypt(encrypted_root.content, passphrases["collection-test-key-v1"])
+
+    archive_store.new_archive_prefix = "archives/memory/reencrypted-copy"
+    after_rotation = rotated.create_or_resume(
+        idempotency_key="after-rotation",
+        tags=("docs",),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture has no source provenance",
+    )
+    assert after_rotation["passphrase_id"] == "collection-test-key-v2"
+    reencrypted_collection_id = int(after_rotation["collection_id"])
+    rotated.register_files(
+        reencrypted_collection_id,
+        ({"path": "file.txt", "bytes": len(content), "sha256": sha256},),
+    )
+    rotated.complete(
+        reencrypted_collection_id,
+        files_total=1,
+        content_identity=collection_content_identity((("file.txt", len(content), sha256),)),
+    )
+    reencrypted_volume = rotated.list_volumes(reencrypted_collection_id)["volumes"][0]
+    rotated.upload_unit(
+        reencrypted_collection_id,
+        str(reencrypted_volume["volume_id"]),
+        0,
+        plan_sha256=str(reencrypted_volume["plan_sha256"]),
+        content=content,
+    )
+    assert rotated.process_due_finalizations() == 1
+    reencrypted = rotated.get(reencrypted_collection_id)
+    assert reencrypted_collection_id != collection_id
+    assert reencrypted["content_identity"] == finalized["content_identity"]
+    assert reencrypted["passphrase_id"] == "collection-test-key-v2"
 
 
 def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_lease(
@@ -193,7 +330,8 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
     )
     config = RuntimeConfig(
         database_url=database_url,
-        archive_passphrase="test archive secret",
+        archive_passphrases={"collection-test-key-v1": "test archive secret"},
+        archive_active_passphrase_id="collection-test-key-v1",
         archive_scrypt_work_factor=1,
         archive_stores={"archive": archive},
     )
@@ -457,6 +595,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         "provenance-bundle",
         "provenance-index",
         "manifest",
+        "recovery-descriptor",
         "proof",
     ]
     assert bindings_by_path["captured.bin"].status == "captured"
@@ -470,10 +609,11 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
 
     stored_by_suffix = {path.rsplit("/", 1)[-1]: stored for path, stored in root.objects.items()}
     index_stored = stored_by_suffix["index.json.age"]
-    index = decrypt_age_scrypt(index_stored.content, config.archive_passphrase)
+    passphrase = config.archive_passphrase_for(config.archive_active_passphrase_id)
+    index = decrypt_age_scrypt(index_stored.content, passphrase)
     bundle_record = next(item for item in objects if item.kind == "provenance-bundle")
     bundle_stored = root.objects[bundle_record.object_path]
-    bundle = decrypt_age_scrypt(bundle_stored.content, config.archive_passphrase)
+    bundle = decrypt_age_scrypt(bundle_stored.content, passphrase)
     validated = validate_provenance_archive(index, {bundle_record.object_id: bundle})
     assert validated.identity == provenance.identity
     assert validated.bindings == bindings
@@ -481,7 +621,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
 
     manifest = decrypt_age_scrypt(
         stored_by_suffix["manifest.json.age"].content,
-        config.archive_passphrase,
+        passphrase,
     )
     parsed = parse_collection_archive_manifest(manifest)
     provenance_descriptor = parsed["provenance"]
@@ -655,11 +795,13 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert [current.object_id for current in objects] == [
         "pack-000000000000",
         "manifest",
+        "recovery-descriptor",
         "proof",
     ]
     assert objects[0].object_path.endswith("/volumes/pack-000000000000.tar.age")
     assert objects[1].object_path.endswith("/manifest.json.age")
-    assert objects[2].object_path.endswith("/manifest.json.ots.age")
+    assert objects[2].object_path.endswith("/recovery.json")
+    assert objects[3].object_path.endswith("/manifest.json.ots.age")
 
     resumed = service.create_or_resume(
         idempotency_key="upload-1",
