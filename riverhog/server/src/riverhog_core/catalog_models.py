@@ -40,6 +40,8 @@ class CollectionRecord(Base):
     id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     creation_idempotency_key: Mapped[str] = mapped_column(String)
     content_identity: Mapped[str] = mapped_column(String(64))
+    encryption_format: Mapped[str] = mapped_column(String, nullable=False)
+    passphrase_id: Mapped[str] = mapped_column(String, nullable=False)
     provenance_mode: Mapped[str] = mapped_column(String, default="omitted")
     provenance_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
     record_etag: Mapped[str] = mapped_column(String(64))
@@ -76,6 +78,8 @@ class CollectionRecord(Base):
             "creation_idempotency_key",
             name="uq_collections_application_idempotency_key",
         ),
+        Index("ix_collections_encryption_format", "encryption_format", "id"),
+        Index("ix_collections_passphrase_id", "passphrase_id", "id"),
     )
 
 
@@ -827,6 +831,8 @@ class CollectionUploadRecord(Base):
     provenance_mode: Mapped[str] = mapped_column(String)
     provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     provenance_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    encryption_format: Mapped[str] = mapped_column(String, nullable=False)
+    passphrase_id: Mapped[str] = mapped_column(String, nullable=False)
     initiated_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     event_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -171,14 +171,16 @@ def test_archive_copy_preserves_the_independent_object_manifest(
         f"{prefix}/{relative_path}": content
         for relative_path, content in archive.stored_objects.items()
     }
-    assert source.prepared == [("pack-000000000000", "manifest", "proof")]
-    assert source.cleaned == [("pack-000000000000", "manifest", "proof")]
+    expected_ids = ("pack-000000000000", "manifest", "recovery-descriptor", "proof")
+    assert source.prepared == [expected_ids]
+    assert source.cleaned == [expected_ids]
     with session_scope(make_session_factory(config.database_url)) as session:
         copy = session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2"))
         assert copy is not None
         assert [(current.kind, current.object_id) for current in copy.objects] == [
             ("pack", "pack-000000000000"),
             ("manifest", "manifest"),
+            ("recovery-descriptor", "recovery-descriptor"),
             ("proof", "proof"),
         ]
         pack = copy.objects[0]
@@ -219,7 +221,7 @@ def test_archive_copy_preserves_the_independent_object_manifest(
     assert events[-1].data["context"] == {"workflow": "promotion"}
     transfer_messages = [message for message in caplog.messages if "transfer operation=" in message]
     assert any("operation=archive_copy_part" in message for message in transfer_messages)
-    assert sum("operation=archive_copy_object" in message for message in transfer_messages) == 2
+    assert sum("operation=archive_copy_object" in message for message in transfer_messages) == 3
     assert all("integrity_seconds=" in message for message in transfer_messages)
     assert all("pack-000000000000" not in message for message in transfer_messages)
 
@@ -297,6 +299,7 @@ def test_archive_copy_preserves_immutable_provenance_objects(tmp_path: Path) -> 
         *(bundle.bundle_id for bundle in archive.provenance.bundles),
         "provenance-index",
         "manifest",
+        "recovery-descriptor",
         "proof",
     )
     prefix = "archives/b2/new-copy"
@@ -314,6 +317,7 @@ def test_archive_copy_preserves_immutable_provenance_objects(tmp_path: Path) -> 
             *(("provenance-bundle", bundle.bundle_id) for bundle in archive.provenance.bundles),
             ("provenance-index", "provenance-index"),
             ("manifest", "manifest"),
+            ("recovery-descriptor", "recovery-descriptor"),
             ("proof", "proof"),
         ]
 
@@ -379,6 +383,7 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
     assert set(destination.objects) == {
         "archives/deep/new-copy/volumes/pack-000000000000.tar.age",
         "archives/deep/new-copy/manifest.json.age",
+        "archives/deep/new-copy/recovery.json",
         "archives/deep/new-copy/manifest.json.ots.age",
     }
     pack_path = "archives/deep/new-copy/volumes/pack-000000000000.tar.age"
@@ -443,7 +448,7 @@ def test_archive_copy_waits_for_selected_source_objects(tmp_path: Path) -> None:
     with session_scope(make_session_factory(config.database_url)) as session:
         job = session.get(ArchiveCopyJobRecord, (COLLECTION_ID, "b2"))
         assert job is not None and job.state == "waiting"
-    assert source.prepared == [("pack-000000000000", "manifest", "proof")]
+    assert source.prepared == [("pack-000000000000", "manifest", "recovery-descriptor", "proof")]
     assert destination.objects == {}
 
 
@@ -498,7 +503,7 @@ def test_archive_copy_canceled_during_source_check_cleans_the_requested_read(
 
     assert service.process_due(limit=1) == 1
     assert service.get(COLLECTION_ID, destination_store="b2")["state"] == "canceled"
-    assert source.cleaned == [("pack-000000000000", "manifest", "proof")]
+    assert source.cleaned == [("pack-000000000000", "manifest", "recovery-descriptor", "proof")]
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
 
 
@@ -515,7 +520,7 @@ def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
 
     assert canceled["state"] == "canceled"
     assert canceled["completed_at"] is not None
-    assert source.cleaned == [("pack-000000000000", "manifest", "proof")]
+    assert source.cleaned == [("pack-000000000000", "manifest", "recovery-descriptor", "proof")]
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
     filtered = service.list(
         page=1,

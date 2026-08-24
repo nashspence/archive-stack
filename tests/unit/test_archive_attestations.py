@@ -113,6 +113,7 @@ def test_publishes_from_upload_evidence_and_matures_exact_archive_root(tmp_path)
         f"{_sha256(content)}  {relative_path}"
         for relative_path, content in sorted(directly_attested.items())
     ]
+    assert any(line.endswith("  recovery.json") for line in checksums.decode().splitlines())
     assert store.attestation_artifacts["signature"] == _Signer().sign(checksums)
     assert store.read == []
 

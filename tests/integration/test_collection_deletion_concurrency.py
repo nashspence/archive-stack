@@ -127,8 +127,10 @@ class BlockingArchiveStore:
         collection_id: int,
         archive_storage_prefix: str,
         manifest: bytes,
+        passphrase_id: str,
     ) -> MutableManifestReceipt:
         assert collection_id == COLLECTION_ID
+        assert passphrase_id == "fixture-archive-key-v1"
         self.metadata_started.set()
         if not self.allow_metadata.wait(10):
             raise RuntimeError("timed out waiting to finish metadata publication")
@@ -173,6 +175,7 @@ class RetirementArchiveStore:
         collection_id: int,
         archive_storage_prefix: str,
         manifest: bytes,
+        passphrase_id: str,
     ) -> MutableManifestReceipt:
         raise AssertionError("retirement proof does not publish mutable metadata")
 
@@ -228,6 +231,8 @@ def _seed(database_url: str) -> None:
                 id=COLLECTION_ID,
                 creation_idempotency_key="fixture-docs",
                 content_identity="0" * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="fixture-archive-key-v1",
                 record_etag="0" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
@@ -263,6 +268,7 @@ def _seed(database_url: str) -> None:
             (
                 ("segment-000000000000", "segment", "volumes/segment-000000000000.bin.age", 100),
                 ("manifest", "manifest", "manifest.json.age", 20),
+                ("recovery-descriptor", "recovery-descriptor", "recovery.json", 15),
                 ("proof", "proof", "manifest.json.ots.age", 10),
             )
         ):
@@ -302,6 +308,8 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
                 id=SECOND_COLLECTION_ID,
                 creation_idempotency_key="fixture-second",
                 content_identity="1" * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="fixture-archive-key-v1",
                 record_etag="1" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
@@ -337,6 +345,7 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
             (
                 ("segment-000000000000", "segment", "volumes/segment.bin.age"),
                 ("manifest", "manifest", "manifest.json.age"),
+                ("recovery-descriptor", "recovery-descriptor", "recovery.json"),
                 ("proof", "proof", "manifest.json.ots.age"),
             )
         ):
@@ -504,6 +513,8 @@ def _seed_derived_output(
                 id=output_collection_id,
                 creation_idempotency_key=execution_id,
                 content_identity=("4" if output_collection_id == 2 else "5") * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="fixture-archive-key-v1",
                 record_etag=("3" if output_collection_id == 2 else "4") * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
@@ -611,6 +622,8 @@ def _seed_multi_input_derived_output(
                 id=2,
                 creation_idempotency_key=EXECUTION_ID,
                 content_identity="4" * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="fixture-archive-key-v1",
                 record_etag="3" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
@@ -772,7 +785,7 @@ def test_deletion_marker_rejects_retrieval_started_during_remote_delete(
 
     assert not thread.is_alive()
     assert failures == []
-    assert store.deleted == [("segment-000000000000", "manifest", "proof")]
+    assert store.deleted == [("segment-000000000000", "manifest", "recovery-descriptor", "proof")]
     factory = make_session_factory(database_url)
     with session_scope(factory) as session:
         assert session.get(CollectionRecord, COLLECTION_ID) is None

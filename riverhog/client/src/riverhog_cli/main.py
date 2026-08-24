@@ -1522,6 +1522,8 @@ def _sorted_collection_page(
     per_page: int,
     query: str | None,
     tag: str | None,
+    encryption_format: str | None,
+    passphrase_id: str | None,
     sort: str,
     order: str,
     all_items: bool = False,
@@ -1540,6 +1542,8 @@ def _sorted_collection_page(
         per_page=per_page,
         q=query,
         tag=tag,
+        encryption_format=encryption_format,
+        passphrase_id=passphrase_id,
         sort=sort,
         order=normalized_order,
         all_items=all_items,
@@ -1559,6 +1563,14 @@ def collection_list_cmd(
     tag: Annotated[
         str | None,
         typer.Option("--tag", help="Restrict results to one exact tag"),
+    ] = None,
+    encryption_format: Annotated[
+        str | None,
+        typer.Option("--encryption-format", help="Restrict results to one archive format"),
+    ] = None,
+    passphrase_id: Annotated[
+        str | None,
+        typer.Option("--passphrase-id", help="Restrict results to one opaque key ID"),
     ] = None,
     all_items: Annotated[
         bool,
@@ -1580,6 +1592,8 @@ def collection_list_cmd(
         per_page=per_page,
         query=query,
         tag=tag,
+        encryption_format=encryption_format,
+        passphrase_id=passphrase_id,
         sort=sort,
         order=order,
         all_items=all_items,

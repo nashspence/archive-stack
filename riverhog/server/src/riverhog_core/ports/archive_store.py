@@ -121,6 +121,7 @@ class ArchiveStore(Protocol):
         collection_id: int,
         archive_storage_prefix: str,
         manifest: bytes,
+        passphrase_id: str,
     ) -> MutableManifestReceipt: ...
 
     def read_archive_artifact(
@@ -128,6 +129,7 @@ class ArchiveStore(Protocol):
         *,
         collection_id: int,
         object: ArchiveObjectIdentity,
+        passphrase_id: str,
     ) -> ArchiveArtifactRead: ...
 
     def replace_archive_proof(
@@ -136,6 +138,7 @@ class ArchiveStore(Protocol):
         collection_id: int,
         object: ArchiveObjectIdentity,
         proof_bytes: bytes,
+        passphrase_id: str,
     ) -> ArchiveObjectUploadReceipt: ...
 
     def publish_archive_attestation(
@@ -182,6 +185,7 @@ class ArchiveStore(Protocol):
         *,
         collection_id: int,
         object: ArchiveObjectIdentity,
+        passphrase_id: str,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]: ...
 

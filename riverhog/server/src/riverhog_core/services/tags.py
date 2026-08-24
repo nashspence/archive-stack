@@ -414,6 +414,8 @@ class SqlAlchemyTagService:
             _, collection.record_etag = collection_record_manifest(
                 collection_id=collection_id,
                 content_identity=collection.content_identity,
+                encryption_format=collection.encryption_format,
+                passphrase_id=collection.passphrase_id,
                 provenance_mode=collection.provenance_mode,
                 provenance_identity=collection.provenance_identity,
                 metadata_revision=collection.metadata_revision,

@@ -191,10 +191,18 @@ def test_metadata_publication_keeps_archive_semantics_in_riverhog() -> None:
         collection_id=17,
         archive_storage_prefix="archives/opaque",
         manifest=manifest,
+        passphrase_id=RuntimeConfig().archive_active_passphrase_id,
     )
     stored = adapter.objects[published.object_path]
 
-    assert decrypt_age_scrypt(stored.content, RuntimeConfig().archive_passphrase) == manifest
+    config = RuntimeConfig()
+    assert (
+        decrypt_age_scrypt(
+            stored.content,
+            config.archive_passphrase_for(config.archive_active_passphrase_id),
+        )
+        == manifest
+    )
     assert stored.placement == "immediate"
     assert store.read_mode() == "immediate"
     assert store.new_collection_archive_storage_prefix().startswith("archives/")
@@ -227,6 +235,7 @@ def test_encrypted_archive_artifact_write_and_read_stay_in_riverhog() -> None:
         collection_id=17,
         object=previous,
         proof_bytes=b"proof-bytes",
+        passphrase_id=RuntimeConfig().archive_active_passphrase_id,
     )
     identity = ArchiveObjectIdentity(
         object_id=receipt.object_id,
@@ -239,7 +248,11 @@ def test_encrypted_archive_artifact_write_and_read_stay_in_riverhog() -> None:
         version_id=receipt.version_id,
     )
 
-    artifact = store.read_archive_artifact(collection_id=17, object=identity)
+    artifact = store.read_archive_artifact(
+        collection_id=17,
+        object=identity,
+        passphrase_id=RuntimeConfig().archive_active_passphrase_id,
+    )
 
     assert artifact.content == b"proof-bytes"
     assert adapter.objects[proof_path].placement == "immediate"
@@ -276,6 +289,32 @@ def test_verification_is_metadata_only_and_explicit_hashing_reads_once() -> None
         archive=CollectionArchiveIdentity(objects=(identity,)),
     )
     assert adapter.reads == 0
+
+
+def test_attestation_publication_replaces_a_changed_signed_closure() -> None:
+    adapter = _MemoryAdapter()
+    store = _store(adapter)
+    prefix = "archives/opaque"
+
+    store.publish_archive_attestation(
+        collection_id=17,
+        archive_storage_prefix=prefix,
+        checksums=b"first checksums\n",
+        signature=b"first signature\n",
+        proof=b"first proof\n",
+    )
+    store.publish_archive_attestation(
+        collection_id=17,
+        archive_storage_prefix=prefix,
+        checksums=b"checksums including recovery.json\n",
+        signature=b"replacement signature\n",
+        proof=b"replacement proof\n",
+    )
+
+    assert adapter.objects[f"{prefix}/SHA256SUMS"].content == (
+        b"checksums including recovery.json\n"
+    )
+    assert adapter.objects[f"{prefix}/SHA256SUMS.minisig"].content == (b"replacement signature\n")
 
 
 def test_read_preparation_carries_only_exact_opaque_objects() -> None:

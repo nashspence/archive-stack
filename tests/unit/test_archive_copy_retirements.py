@@ -71,7 +71,7 @@ def test_retirement_plan_counts_the_target_objects(tmp_path: Path) -> None:
     assert plan["status"] == "ready"
     target = cast(dict[str, object], plan["target_copy"])
     retained = cast(list[dict[str, object]], plan["retained_copies"])
-    assert target["object_count"] == 3
+    assert target["object_count"] == 4
     assert [current["store"] for current in retained] == ["b2"]
     assert plan["retired_retrieval_job_count"] == 0
     assert plan["challenge"]
@@ -110,8 +110,9 @@ def test_retirement_verifies_a_retained_copy_then_deletes_every_target_object(
 
     assert result["status"] == "retired"
     assert result["verified_store"] == "b2"
-    assert b2_store.verified == [("pack-000000000000", "manifest", "proof")]
-    assert deep_store.deleted == [("pack-000000000000", "manifest", "proof")]
+    expected = ("pack-000000000000", "manifest", "recovery-descriptor", "proof")
+    assert b2_store.verified == [expected]
+    assert deep_store.deleted == [expected]
     with session_scope(make_session_factory(config.database_url)) as session:
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "deep")) is None
         assert session.get(CollectionArchiveCopyRecord, (COLLECTION_ID, "b2")) is not None

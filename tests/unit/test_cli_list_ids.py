@@ -16,6 +16,8 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
             assert kwargs["all_items"] is True
             assert kwargs["q"] == "camera"
             assert kwargs["tag"] == "photos"
+            assert kwargs["encryption_format"] == "age-v1-scrypt"
+            assert kwargs["passphrase_id"] == "fixture-archive-key-v2"
             return {
                 "page": 1,
                 "per_page": 2,
@@ -38,6 +40,10 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
             "camera",
             "--tag",
             "photos",
+            "--encryption-format",
+            "age-v1-scrypt",
+            "--passphrase-id",
+            "fixture-archive-key-v2",
             "--all",
             "--ids",
         ],

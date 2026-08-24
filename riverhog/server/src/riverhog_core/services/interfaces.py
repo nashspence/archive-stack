@@ -31,6 +31,8 @@ class CollectionService(Protocol):
         per_page: int,
         q: str | None,
         tag: str | None = None,
+        encryption_format: str | None = None,
+        passphrase_id: str | None = None,
         sort: str = "id",
         order: str = "asc",
         all_items: bool = False,

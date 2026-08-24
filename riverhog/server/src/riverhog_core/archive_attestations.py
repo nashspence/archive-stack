@@ -16,7 +16,9 @@ ATTESTATION_FILENAMES = {
     "signature": "SHA256SUMS.minisig",
     "signature-proof": "SHA256SUMS.minisig.ots",
 }
-DIRECTLY_ATTESTED_KINDS = frozenset({"provenance-bundle", "provenance-index", "manifest", "proof"})
+DIRECTLY_ATTESTED_KINDS = frozenset(
+    {"provenance-bundle", "provenance-index", "manifest", "proof", "recovery-descriptor"}
+)
 TRUSTED_COMMENT = "riverhog archive-copy attestation/v1"
 
 
@@ -57,7 +59,7 @@ def archive_copy_checksums(
     attested_kinds = {
         current.kind for current in objects if current.kind in DIRECTLY_ATTESTED_KINDS
     }
-    if not {"manifest", "proof"}.issubset(attested_kinds):
+    if not {"manifest", "proof", "recovery-descriptor"}.issubset(attested_kinds):
         raise ValueError("archive copy has no complete immutable root to attest")
     return "".join(f"{sha256}  {relative_path}\n" for relative_path, sha256 in sorted(rows)).encode(
         "utf-8"

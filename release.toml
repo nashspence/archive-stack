@@ -153,6 +153,7 @@ reusable_library = [
   "packages/file-download",
   "packages/lifecycle-events",
   "packages/riverhog-age",
+  "packages/riverhog-archive-contracts",
   "packages/riverhog-ftp-adapter-api-client",
   "packages/riverhog-api-client",
   "packages/riverhog-protocol",

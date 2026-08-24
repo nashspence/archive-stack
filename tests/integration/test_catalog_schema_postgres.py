@@ -70,13 +70,14 @@ def test_postgres_catalog_schema_is_current_and_stays_operator_controlled(
 
     after = {index["name"] for index in inspect(engine).get_indexes("retrieval_jobs")}
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0006"
+    assert upgraded.current_revision == validated.current_revision == "v1_0007"
     assert after == before
     engine.dispose()
 
 
 def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_authorization(
     isolated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine = create_catalog_engine(isolated_database_url)
     fixture_sql = V1_FIXTURE.read_text(encoding="utf-8")
@@ -101,6 +102,7 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
             {"stored_sha256": "d" * 64},
         )
 
+    monkeypatch.setenv("RIVERHOG_STATE_UPGRADE_PASSPHRASE_ID", "fixture-archive-key-v1")
     status = catalog_state_schema(isolated_database_url).upgrade()
     principal = SqlAlchemyAppKeyService(
         RuntimeConfig(database_url=isolated_database_url)
@@ -122,7 +124,10 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
             text("SELECT event_id, owner_app, subject FROM lifecycle_events WHERE sequence = 1")
         ).one()
         existing_provenance = connection.execute(
-            text("SELECT provenance_mode, provenance_identity FROM collections WHERE id = 1")
+            text(
+                "SELECT encryption_format, passphrase_id, provenance_mode, "
+                "provenance_identity FROM collections WHERE id = 1"
+            )
         ).one()
         provenance_projection_counts = connection.execute(
             text(
@@ -173,7 +178,12 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
         "2026-02-01T00:00:00.000000Z",
     )
     assert tuple(lifecycle_event) == ("riverhog-v1-event", "fixture-client", "1")
-    assert tuple(existing_provenance) == ("omitted", None)
+    assert tuple(existing_provenance) == (
+        "age-v1-scrypt",
+        "fixture-archive-key-v1",
+        "omitted",
+        None,
+    )
     assert tuple(provenance_projection_counts) == (0, 0, 0)
     migrated_plan = json.loads(migrated_retrieval.constraints_json)
     assert migrated_plan["restore_policy"] == "allow"
@@ -197,6 +207,8 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
         "format": "riverhog-collection/v1",
         "collection": 1,
         "content_identity": "a" * 64,
+        "encryption_format": "age-v1-scrypt",
+        "passphrase_id": "fixture-archive-key-v1",
         "provenance_mode": "omitted",
         "provenance_identity": None,
         "metadata_revision": 1,
@@ -210,6 +222,27 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
         ],
     }
     assert len(record_etag) == 64
+    engine.dispose()
+
+
+def test_postgres_v1_fixture_requires_explicit_pre_v1_encryption_identity(
+    isolated_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_catalog_engine(isolated_database_url)
+    fixture_sql = V1_FIXTURE.read_text(encoding="utf-8")
+    with engine.begin() as connection:
+        for statement in fixture_sql.split(";\n"):
+            if statement.strip():
+                connection.exec_driver_sql(statement)
+    monkeypatch.delenv("RIVERHOG_STATE_UPGRADE_PASSPHRASE_ID", raising=False)
+
+    with pytest.raises(
+        RuntimeError,
+        match="RIVERHOG_STATE_UPGRADE_PASSPHRASE_ID is required",
+    ):
+        catalog_state_schema(isolated_database_url).upgrade()
+
     engine.dispose()
 
 

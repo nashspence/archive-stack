@@ -10,6 +10,13 @@ bucket permissions, provider contacts, and archive-passphrase safeguards current
 Periodically exercise object listing, metadata reads, retrieval requests, and downloads in
 every store.
 
+Treat the authorized Riverhog host as the trusted plaintext and encryption boundary. Protect
+secret-bearing persistent storage with full-disk or equivalent volume encryption, restrict
+administrative, network, and secret-file access, use least-privilege provider credentials, and
+keep the host and runtime security-maintained. Riverhog-controlled surfaces must keep
+passphrases out of source, images, logs, databases, archives, generated documentation, and
+API or CLI output.
+
 After account, credential, provider, or storage-class changes, inspect the affected store
 with `riverhog archive store show` and retrieve known files through the application
 interface. A storage summary or object listing alone does not establish recoverability.

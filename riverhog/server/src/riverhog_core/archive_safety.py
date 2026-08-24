@@ -42,7 +42,9 @@ export or download tools, `age`, `ots`, `sha256sum`, `minisign`, and `tar`.
 The matching `riverhog-recover` release artifact is the maintained reference
 implementation. Preserve every relative object path exactly during export.
 
-You need read access to the object tree and the separate archive passphrase.
+You need read access to the object tree and the separately safeguarded passphrase named by
+the archive's plaintext `recovery.json`. The descriptor contains an opaque passphrase ID and
+the encrypted root's exact stored identity; it never contains the secret.
 Prepare cold objects for reading through the provider before exporting them.
 Treat every object as read-only unless an exact mutation is explicitly authorized.
 
@@ -51,8 +53,8 @@ recover from its `manifest.json.age` and required proof. If present, verify
 `SHA256SUMS` with `SHA256SUMS.minisig` and an independently obtained public key,
 then verify `SHA256SUMS.minisig.ots`. The root `minisign.pub` is a convenience
 copy, not an independent trust anchor. The signed checksums cover the immutable
-root artifacts; the encrypted manifest binds every volume's ordered stored-part
-lengths and SHA-256 values.
+root artifacts, including `recovery.json`; the encrypted manifest binds every
+volume's ordered stored-part lengths and SHA-256 values.
 """
 
 

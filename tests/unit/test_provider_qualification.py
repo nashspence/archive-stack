@@ -1204,7 +1204,12 @@ def test_operator_advances_across_short_restore_invocations(
 
         def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             assert collection_id == 42
-            return {"state": "finalized", "files_total": 1}
+            return {
+                "state": "finalized",
+                "files_total": 1,
+                "encryption_format": "age-v1-scrypt",
+                "passphrase_id": module.QUALIFICATION_PASSPHRASE_ID,
+            }
 
         def plan_retrieval(self, files, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
             assert files == ((42, "file.txt"),)

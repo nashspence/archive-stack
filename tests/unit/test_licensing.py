@@ -87,7 +87,14 @@ def test_reference_recovery_is_independent_and_advertised() -> None:
         (REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8").split()
     )
 
-    assert config["project"]["dependencies"] == []
+    assert config["project"]["dependencies"] == ["riverhog-archive-contracts>=0.1,<0.2"]
+    contracts = tomllib.loads(
+        (REPO_ROOT / "packages/riverhog-archive-contracts/pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert contracts["project"]["dependencies"] == []
+    assert contracts["project"]["license"] == "Apache-2.0"
     assert config["project"]["scripts"] == {"riverhog-recover": "riverhog_recover.cli:main"}
     assert "permissively licensed reference" in architecture
     assert "archives remain recoverable with standard tools" in architecture

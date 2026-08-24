@@ -1494,6 +1494,7 @@ def _run_recovery(
     finally:
         sys.path.remove(str(source_root))
     passphrase_value = cast(str, fixture.PASSPHRASE)
+    passphrase_id = cast(str, fixture.PASSPHRASE_ID)
     write_archive = cast(
         Callable[[Path], tuple[dict[str, bytes], bytes | None]],
         fixture._write_archive,
@@ -1502,13 +1503,13 @@ def _run_recovery(
     archive = scratch / "recovery-archive"
     archive.mkdir()
     expected, _journal = write_archive(archive)
-    passphrase = scratch / "passphrase.txt"
-    passphrase.write_text(
+    passphrases = scratch / "passphrases.json"
+    passphrases.write_text(
         # codeql[py/clear-text-storage-sensitive-data]
-        passphrase_value + "\n",
+        json.dumps({passphrase_id: passphrase_value}, sort_keys=True, separators=(",", ":")),
         encoding="utf-8",
     )
-    passphrase.chmod(0o600)
+    passphrases.chmod(0o600)
     output = scratch / "recovered"
     ots = _write_ots_fixture(scratch)
     try:
@@ -1517,8 +1518,8 @@ def _run_recovery(
                 str(executable),
                 str(archive),
                 str(output),
-                "--passphrase-file",
-                str(passphrase),
+                "--passphrases-file",
+                str(passphrases),
                 "--ots-command",
                 str(ots),
             ],
@@ -1526,7 +1527,7 @@ def _run_recovery(
             env=environment,
         )
     finally:
-        passphrase.unlink(missing_ok=True)
+        passphrases.unlink(missing_ok=True)
     actual = {
         path.relative_to(output).as_posix(): path.read_bytes()
         for path in output.rglob("*")

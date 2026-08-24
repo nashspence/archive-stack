@@ -53,13 +53,14 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
     prefix = f"garage-archive-ingress-test/{uuid.uuid4().hex}"
     archive_prefix = f"archives/{prefix}/opaque"
     passphrase = (
-        os.environ.get("RIVERHOG_ARCHIVE_PASSPHRASE", "").strip()
+        os.environ.get("RIVERHOG_GARAGE_ARCHIVE_PASSPHRASE", "").strip()
         or "garage archive ingress integration passphrase"
     )
     base = load_runtime_config()
     config = replace(
         base,
-        archive_passphrase=passphrase,
+        archive_passphrases={"garage-test-key-v1": passphrase},
+        archive_active_passphrase_id="garage-test-key-v1",
         archive_scrypt_work_factor=12,
     )
     cache_registration = config.retrieval_cache
@@ -217,7 +218,16 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
             stored_sha256=stored_sha256,
             version_id=completed.version_id,
         )
-        assert b"".join(archive.iter_archive_object(collection_id=1, object=identity)) == plaintext
+        assert (
+            b"".join(
+                archive.iter_archive_object(
+                    collection_id=1,
+                    object=identity,
+                    passphrase_id="garage-test-key-v1",
+                )
+            )
+            == plaintext
+        )
     finally:
         cutoff = format_utc_timestamp(datetime.now(UTC) + timedelta(seconds=1))
         for client in (archive_client, cache_client):

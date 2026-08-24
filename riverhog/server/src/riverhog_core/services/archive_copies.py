@@ -81,7 +81,15 @@ _SORT_FIELDS = {
     "requested_at",
 }
 _COPY_OBJECT_KINDS = frozenset(
-    {"pack", "segment", "provenance-bundle", "provenance-index", "manifest", "proof"}
+    {
+        "pack",
+        "segment",
+        "provenance-bundle",
+        "provenance-index",
+        "manifest",
+        "recovery-descriptor",
+        "proof",
+    }
 )
 
 
@@ -1087,6 +1095,7 @@ class SqlAlchemyArchiveCopyService:
             content_type = {
                 "manifest": "application/vnd.riverhog.collection-manifest+age",
                 "proof": "application/vnd.riverhog.collection-manifest-proof+age",
+                "recovery-descriptor": "application/vnd.riverhog.recovery-descriptor+json",
                 "provenance-index": "application/vnd.riverhog.provenance-index+age",
                 "provenance-bundle": "application/vnd.riverhog.provenance-bundle+age",
             }[source.kind]
@@ -1277,8 +1286,8 @@ class SqlAlchemyArchiveCopyService:
             )
         session.flush()
         session.add_all(cache_leases)
-        if not {"manifest", "proof"}.issubset(copied):
-            raise Conflict("archive copy result has no root and proof")
+        if not {"manifest", "recovery-descriptor", "proof"}.issubset(copied):
+            raise Conflict("archive copy result has no complete recoverable root")
         destination.state = "uploaded"
         destination.archive_storage_prefix = destination_storage_prefix
         destination.last_uploaded_at = max(uploaded_at)
@@ -1458,6 +1467,8 @@ def _destination_object_path(
         relative = "manifest.json.age"
     elif source.kind == "proof":
         relative = "manifest.json.ots.age"
+    elif source.kind == "recovery-descriptor":
+        relative = "recovery.json"
     elif source.kind == "provenance-index":
         relative = "provenance/index.json.age"
     elif source.kind == "provenance-bundle":

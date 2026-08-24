@@ -450,6 +450,8 @@ def test_collection_upload_control_commands_have_human_json_parity(
             "files_uploaded": 2,
             "bytes_total": 10,
             "tags": ["my-trip"],
+            "encryption_format": "age-v1-scrypt",
+            "passphrase_id": "fixture-archive-key-v1",
             "created_at": "2026-08-13T00:00:00Z",
         }
 
@@ -486,6 +488,7 @@ def test_collection_upload_control_commands_have_human_json_parity(
         assert structured.exit_code == 0, structured.output
         assert str(COLLECTION_ID) in human.stdout
         assert state in human.stdout
+        assert "age-v1-scrypt:fixture-archive-key-v1" in human.stdout
         payload = json.loads(structured.stdout)
         if "uploads" in payload:
             payload = payload["uploads"][0]

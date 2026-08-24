@@ -79,6 +79,7 @@ RIVERHOG_COLLECTION_WORKFLOW_SURFACE = (
     REPO / "riverhog/server/src/riverhog_core/state_migrations/versions/v1_0004.py",
     REPO / "riverhog/server/src/riverhog_core/state_migrations/versions/v1_0005.py",
     REPO / "riverhog/server/src/riverhog_core/state_migrations/versions/v1_0006.py",
+    REPO / "riverhog/server/src/riverhog_core/state_migrations/versions/v1_0007.py",
 )
 EXTERNAL_DISTRIBUTION_MODULES = {
     "alembic": {"alembic"},

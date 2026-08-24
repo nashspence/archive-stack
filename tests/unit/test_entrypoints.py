@@ -101,6 +101,17 @@ def test_readme_section_order_is_intentional() -> None:
     ]
 
 
+def test_operator_guidance_preserves_the_archive_host_trust_boundary() -> None:
+    guidance = " ".join(
+        (REPO / "docs/operator-responsibilities.md").read_text(encoding="utf-8").split()
+    )
+
+    assert "trusted plaintext and encryption boundary" in guidance
+    assert "full-disk or equivalent volume encryption" in guidance
+    assert "least-privilege provider credentials" in guidance
+    assert "passphrases out of source, images, logs, databases, archives" in guidance
+
+
 def test_agents_requires_post_push_github_validation() -> None:
     agents = " ".join((REPO / "AGENTS.md").read_text(encoding="utf-8").split())
 

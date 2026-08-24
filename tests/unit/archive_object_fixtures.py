@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import cast
 
 from riverhog_age import ResumableAgeScryptSession, decrypt_age_scrypt, encrypt_age_scrypt
+from riverhog_archive_contracts import (
+    ARCHIVE_ENCRYPTION_FORMAT,
+    ArchiveRootCiphertextIdentity,
+    CollectionEncryptionBinding,
+    RecoveryDescriptor,
+)
 from riverhog_core.archive_manifest import build_collection_archive_manifest
 from riverhog_core.archive_store_registry import ArchiveStoreBinding
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
@@ -52,7 +58,11 @@ from riverhog_core.ports.archive_store import (
     MutableManifestReceipt,
 )
 from riverhog_core.ports.download_allowance import DownloadAttribution
-from riverhog_core.runtime_config import DEV_ARCHIVE_PASSPHRASE, RuntimeConfig
+from riverhog_core.runtime_config import (
+    DEV_ARCHIVE_PASSPHRASE,
+    DEV_ARCHIVE_PASSPHRASE_ID,
+    RuntimeConfig,
+)
 from riverhog_provenance import (
     FileProvenanceBinding,
     ProvenanceArchive,
@@ -177,6 +187,17 @@ def make_archive(
         f"file: manifest.json\nsha256: {hashlib.sha256(manifest).hexdigest()}\n"
     ).encode()
     manifest_ciphertext = encrypt_age_scrypt(manifest, DEV_ARCHIVE_PASSPHRASE, log_n=1)
+    recovery_descriptor = RecoveryDescriptor(
+        encryption=CollectionEncryptionBinding(
+            format=ARCHIVE_ENCRYPTION_FORMAT,
+            passphrase_id=DEV_ARCHIVE_PASSPHRASE_ID,
+        ),
+        root=ArchiveRootCiphertextIdentity(
+            path="manifest.json.age",
+            stored_bytes=len(manifest_ciphertext),
+            stored_sha256=hashlib.sha256(manifest_ciphertext).hexdigest(),
+        ),
+    ).to_json_bytes()
     proof_ciphertext = encrypt_age_scrypt(proof, DEV_ARCHIVE_PASSPHRASE, log_n=1)
     parts_json = json.dumps(
         [
@@ -206,6 +227,7 @@ def make_archive(
             f"volumes/{plan.volume_id}.tar.age": pack_ciphertext,
             **provenance_ciphertexts,
             "manifest.json.age": manifest_ciphertext,
+            "recovery.json": recovery_descriptor,
             "manifest.json.ots.age": proof_ciphertext,
         },
         pack_age_state_json=state_json,
@@ -325,6 +347,18 @@ def archive_receipt(
                 verified_at=UPLOADED_AT,
             ),
             ArchiveObjectUploadReceipt(
+                object_id="recovery-descriptor",
+                kind="recovery-descriptor",
+                object_path=f"{prefix}/recovery.json",
+                plaintext_bytes=len(archive.stored_objects["recovery.json"]),
+                stored_bytes=len(archive.stored_objects["recovery.json"]),
+                sha256=hashlib.sha256(archive.stored_objects["recovery.json"]).hexdigest(),
+                stored_sha256=hashlib.sha256(archive.stored_objects["recovery.json"]).hexdigest(),
+                version_id="fixture-recovery-descriptor-version",
+                uploaded_at=UPLOADED_AT,
+                verified_at=UPLOADED_AT,
+            ),
+            ArchiveObjectUploadReceipt(
                 object_id="proof",
                 kind="proof",
                 object_path=f"{prefix}/manifest.json.ots.age",
@@ -399,7 +433,12 @@ def add_archive_copy(
         if archive.provenance is not None
         else []
     )
-    artifacts = [*provenance_artifacts, ("manifest", "manifest"), ("proof", "proof")]
+    artifacts = [
+        *provenance_artifacts,
+        ("manifest", "manifest"),
+        ("recovery-descriptor", "recovery-descriptor"),
+        ("proof", "proof"),
+    ]
     for order, (object_id, kind) in enumerate(artifacts, start=1):
         object_receipt = receipt.require_object(object_id)
         copy.objects.append(
@@ -443,6 +482,8 @@ def seed_archive_copy(
         _manifest, record_etag = collection_record_manifest(
             collection_id=current.collection_id,
             content_identity=content_identity,
+            encryption_format=ARCHIVE_ENCRYPTION_FORMAT,
+            passphrase_id=DEV_ARCHIVE_PASSPHRASE_ID,
             provenance_mode=provenance_mode,
             provenance_identity=provenance_identity,
             metadata_revision=1,
@@ -460,6 +501,8 @@ def seed_archive_copy(
             id=current.collection_id,
             creation_idempotency_key="fixture-docs",
             content_identity=content_identity,
+            encryption_format=ARCHIVE_ENCRYPTION_FORMAT,
+            passphrase_id=DEV_ARCHIVE_PASSPHRASE_ID,
             provenance_mode=provenance_mode,
             provenance_identity=provenance_identity,
             record_etag=record_etag,
@@ -725,7 +768,9 @@ class MemoryArchiveStore:
         collection_id: int,
         archive_storage_prefix: str,
         manifest: bytes,
+        passphrase_id: str,
     ) -> MutableManifestReceipt:
+        assert passphrase_id == DEV_ARCHIVE_PASSPHRASE_ID
         self.published_metadata.append((collection_id, archive_storage_prefix, manifest))
         object_path = f"{archive_storage_prefix}/metadata.json.age"
         return MutableManifestReceipt(
@@ -741,7 +786,9 @@ class MemoryArchiveStore:
         *,
         collection_id: int,
         object: ArchiveObjectIdentity,
+        passphrase_id: str,
     ) -> ArchiveArtifactRead:
+        assert passphrase_id == DEV_ARCHIVE_PASSPHRASE_ID
         assert collection_id == COLLECTION_ID
         assert self.archive is not None
         stored = self._stored_object(object)
@@ -766,7 +813,9 @@ class MemoryArchiveStore:
         collection_id: int,
         object: ArchiveObjectIdentity,
         proof_bytes: bytes,
+        passphrase_id: str,
     ) -> ArchiveObjectUploadReceipt:
+        assert passphrase_id == DEV_ARCHIVE_PASSPHRASE_ID
         assert collection_id == COLLECTION_ID
         assert object.object_id == "proof"
         assert self.archive is not None
@@ -885,8 +934,10 @@ class MemoryArchiveStore:
         *,
         collection_id: int,
         object: ArchiveObjectIdentity,
+        passphrase_id: str,
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
+        assert passphrase_id == DEV_ARCHIVE_PASSPHRASE_ID
         _ = attribution
         assert collection_id == COLLECTION_ID
         assert self.archive is not None
