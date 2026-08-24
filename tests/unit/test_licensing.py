@@ -126,6 +126,10 @@ def test_published_images_carry_source_and_license_identity() -> None:
 
 def test_standalone_runtime_tools_preserve_their_exact_attribution_text() -> None:
     riverhog = (REPO_ROOT / "riverhog/server/Dockerfile").read_text(encoding="utf-8")
+    exiftool = (REPO_ROOT / "reference/stove0/observers/exiftool/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+    review = (REPO_ROOT / "reference/stove0/targets/review/Dockerfile").read_text(encoding="utf-8")
     av1 = (REPO_ROOT / "reference/stove0/targets/nvenc-av1-opus/Dockerfile").read_text(
         encoding="utf-8"
     )
@@ -134,6 +138,10 @@ def test_standalone_runtime_tools_preserve_their_exact_attribution_text() -> Non
         "third_party/minisign/0.12/LICENSE "
         "/usr/share/licenses/riverhog-third-party/minisign/0.12/LICENSE"
     ) in riverhog
+    assert "riverhog-third-party/exiftool/13.59/LICENSE" in exiftool
+    assert "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986" in exiftool
+    assert "riverhog-third-party/rclone/1.75.0/LICENSE" in review
+    assert "f47e4137bcc0bf4554ad5f9e3dd361c738fb95e27c24f5d0792bc2479bd241b6" in review
     assert "riverhog-third-party/ffmpeg/${FFMPEG_REF}/COPYING.GPLv2" in av1
     assert "riverhog-third-party/nv-codec-headers/${NV_CODEC_HEADERS_REF}/ATTRIBUTION" in av1
     assert "awk '1; /\\*\\// { exit }'" in av1

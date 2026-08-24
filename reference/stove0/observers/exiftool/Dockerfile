@@ -8,10 +8,17 @@ COPY mise.toml mise.lock ./
 RUN mise trust mise.toml \
     && mise install --locked "http:exiftool" uv \
     && exiftool_path="$(mise which exiftool)" \
-    && mkdir -p /opt/riverhog-tools/bin /opt/riverhog-tools/exiftool \
+    && mkdir -p \
+        /opt/riverhog-tools/bin \
+        /opt/riverhog-tools/exiftool \
+        /opt/riverhog-tools/licenses/exiftool/13.59 \
     && cp --preserve=mode,timestamps "$(mise which uv)" /opt/riverhog-tools/bin/uv \
     && cp --preserve=mode,timestamps "${exiftool_path}" /opt/riverhog-tools/exiftool/exiftool \
     && cp -a "$(dirname "${exiftool_path}")/lib" /opt/riverhog-tools/exiftool/lib \
+    && cp "$(dirname "${exiftool_path}")/LICENSE" \
+        /opt/riverhog-tools/licenses/exiftool/13.59/LICENSE \
+    && echo "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986  /opt/riverhog-tools/licenses/exiftool/13.59/LICENSE" \
+        | sha256sum -c - \
     && test "$(/opt/riverhog-tools/bin/uv --version)" = "$(mise exec uv -- uv --version)"
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS build
@@ -62,6 +69,7 @@ LABEL org.opencontainers.image.title="stove0 ExifTool observer" \
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
 COPY LICENSES/CAL-1.0.txt /usr/share/licenses/riverhog/CAL-1.0.txt
 COPY THIRD_PARTY_NOTICES.md /usr/share/doc/riverhog/THIRD_PARTY_NOTICES.md
+COPY --from=locked-tools /opt/riverhog-tools/licenses/exiftool/13.59/LICENSE /usr/share/licenses/riverhog-third-party/exiftool/13.59/LICENSE
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates perl tini \

@@ -43,6 +43,12 @@ def _copy_release_contract(module: ModuleType, destination: Path) -> None:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    for image in module.RUNTIME_IMAGE_TARGETS:
+        source = module._bake_dockerfile(REPO_ROOT, image)
+        relative = source.relative_to(REPO_ROOT)
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
 
 
 def test_release_contract_classifies_every_coordinated_distribution() -> None:
@@ -115,6 +121,95 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "end_user_artifacts": ["linux-x64", "macos-arm64", "windows-x64"],
         "deployed_implementations": ["linux/amd64"],
     }
+
+
+def test_image_notices_require_the_exact_locked_standalone_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    payload = {
+        "python": [],
+        "deb": [],
+        "standalone": [
+            {
+                "kind": "standalone",
+                "name": "minisign",
+                "version": "0.11",
+                "notices": [
+                    {
+                        "source": "/usr/share/licenses/minisign/LICENSE",
+                        "content": module.base64.b64encode(b"license\n").decode("ascii"),
+                    }
+                ],
+            }
+        ],
+        "missing": [],
+    }
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(payload)
+        ),
+    )
+
+    with pytest.raises(module.ReleaseError, match="differs from its exact mise lock"):
+        module._image_notice_components(
+            REPO_ROOT,
+            "example:test",
+            first_party=set(),
+            expected_standalone={"minisign": "0.12"},
+        )
+
+
+def test_image_notices_accept_exact_locked_standalone_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_script()
+    payload = {
+        "python": [],
+        "deb": [],
+        "standalone": [
+            {
+                "kind": "standalone",
+                "name": "minisign",
+                "version": "0.12",
+                "notices": [
+                    {
+                        "source": "/usr/share/licenses/minisign/LICENSE",
+                        "content": module.base64.b64encode(b"license\n").decode("ascii"),
+                    }
+                ],
+            }
+        ],
+        "missing": [],
+    }
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(payload)
+        ),
+    )
+
+    assert module._image_notice_components(
+        REPO_ROOT,
+        "example:test",
+        first_party=set(),
+        expected_standalone={"minisign": "0.12"},
+    ) == [
+        {
+            "kind": "standalone",
+            "name": "minisign",
+            "version": "0.12",
+            "notices": [
+                {
+                    "source": "/usr/share/licenses/minisign/LICENSE",
+                    "content": b"license\n",
+                }
+            ],
+        }
+    ]
 
 
 def test_dry_run_can_write_the_same_sha_bound_summary_it_prints(

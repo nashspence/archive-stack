@@ -8,6 +8,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -22,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 import release_installation as installation
+from runtime_image_attribution import RuntimeAttributionError, locked_runtime_payloads
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_CONFIG = "release.toml"
@@ -58,47 +60,50 @@ PROJECT_URLS = {
 }
 RUNTIME_IMAGE_TARGETS = {
     "riverhog": {
-        "distribution": "riverhog-server",
+        "distributions": ["riverhog-server"],
         "repository": "ghcr.io/nashspence/riverhog",
     },
     "riverhog-ftp-adapter": {
-        "distribution": "riverhog-ftp-adapter",
+        "distributions": ["riverhog-ftp-adapter"],
         "repository": "ghcr.io/nashspence/riverhog-ftp-adapter",
     },
     "riverhog-storage-adapter-aws": {
-        "distribution": "riverhog-storage-adapter-aws",
+        "distributions": ["riverhog-storage-adapter-aws"],
         "repository": "ghcr.io/nashspence/riverhog-storage-adapter-aws",
     },
     "riverhog-storage-adapter-backblaze": {
-        "distribution": "riverhog-storage-adapter-backblaze",
+        "distributions": ["riverhog-storage-adapter-backblaze"],
         "repository": "ghcr.io/nashspence/riverhog-storage-adapter-backblaze",
     },
     "mango-fish": {
-        "distribution": "mango-fish",
+        "distributions": ["mango-fish"],
         "repository": "ghcr.io/nashspence/riverhog-mango-fish",
     },
     "stove0": {
-        "distribution": "stove0-server",
+        "distributions": ["stove0-server"],
         "repository": "ghcr.io/nashspence/riverhog-stove0",
     },
     "stove0-exiftool-observer": {
-        "distribution": "stove0-exiftool-observer",
+        "distributions": ["stove0-exiftool-observer"],
         "repository": "ghcr.io/nashspence/riverhog-stove0-exiftool-observer",
     },
     "stove0-ffprobe-sampling-observer": {
-        "distribution": "stove0-ffprobe-sampling-observer",
+        "distributions": ["stove0-ffprobe-sampling-observer"],
         "repository": "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer",
     },
     "stove0-nvenc-av1-opus-target": {
-        "distribution": "stove0-nvenc-av1-opus-target",
+        "distributions": [
+            "stove0-nvenc-av1-opus-target",
+            "stove0-nvenc-av1-opus-review-sampler",
+        ],
         "repository": "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target",
     },
     "stove0-opus-target": {
-        "distribution": "stove0-opus-target",
+        "distributions": ["stove0-opus-target", "stove0-opus-review-sampler"],
         "repository": "ghcr.io/nashspence/riverhog-stove0-opus-target",
     },
     "stove0-review-target": {
-        "distribution": "stove0-review-target",
+        "distributions": ["stove0-review-target"],
         "repository": "ghcr.io/nashspence/riverhog-stove0-review-target",
     },
 }
@@ -252,6 +257,38 @@ def _bake_targets(root: Path) -> set[str]:
     if targets is None:
         raise ReleaseError("docker-bake.hcl default group has no targets")
     return set(re.findall(r'"([^"]+)"', targets.group("body")))
+
+
+def _bake_dockerfile(root: Path, target: str) -> Path:
+    bake = (root / "docker-bake.hcl").read_text(encoding="utf-8")
+    match = re.search(
+        rf'target "{re.escape(target)}" \{{.*?dockerfile\s*=\s*"([^"]+)"',
+        bake,
+        re.DOTALL,
+    )
+    if match is None:
+        raise ReleaseError(f"release image target has no Dockerfile: {target}")
+    return root / match.group(1)
+
+
+def _dockerfile_distribution_roots(dockerfile: Path) -> list[str]:
+    text = dockerfile.read_text(encoding="utf-8").replace("\\\n", " ")
+    commands = [
+        line.removeprefix("RUN ")
+        for line in text.splitlines()
+        if line.startswith("RUN uv sync --frozen ")
+    ]
+    if len(commands) != 1:
+        raise ReleaseError(f"runtime Dockerfile must contain one frozen uv sync: {dockerfile}")
+    words = shlex.split(commands[0])
+    roots = [
+        _normalize_name(words[index + 1])
+        for index, word in enumerate(words[:-1])
+        if word == "--package"
+    ]
+    if not roots or len(roots) != len(set(roots)):
+        raise ReleaseError(f"runtime Dockerfile has invalid distribution roots: {dockerfile}")
+    return roots
 
 
 def _buildkit_sbom_attestation(root: Path) -> str:
@@ -484,10 +521,21 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
     if set(runtime_images) | set(test_images) != _bake_targets(root):
         raise ReleaseError("release image inventory differs from docker-bake.hcl")
     image_distributions = {
-        _normalize_name(str(value.get("distribution", ""))) for value in runtime_images.values()
+        _normalize_name(str(distribution))
+        for value in runtime_images.values()
+        for distribution in value.get("distributions", [])
     }
     if not image_distributions <= seen_names:
         raise ReleaseError("a runtime image refers to an unknown distribution")
+    for target, value in runtime_images.items():
+        configured_roots = [
+            _normalize_name(str(distribution)) for distribution in value["distributions"]
+        ]
+        dockerfile_roots = _dockerfile_distribution_roots(_bake_dockerfile(root, target))
+        if configured_roots != dockerfile_roots:
+            raise ReleaseError(
+                f"runtime image distribution roots differ from its Dockerfile: {target}"
+            )
     repositories = [str(value.get("repository", "")) for value in runtime_images.values()]
     if len(set(repositories)) != len(repositories) or any(
         not value.startswith("ghcr.io/nashspence/riverhog") for value in repositories
@@ -676,7 +724,7 @@ def build_release_plan(root: Path, version: str, *, allow_dirty: bool = False) -
         images.append(
             {
                 "target": target,
-                "distribution": value["distribution"],
+                "distributions": value["distributions"],
                 "repository": repository,
                 "platforms": list(config["images"]["platforms"]),
                 "tags": [f"{repository}:{version}", f"{repository}:sha-{source_sha}"],
@@ -1297,6 +1345,7 @@ def _image_notice_components(
     reference: str,
     *,
     first_party: set[str],
+    expected_standalone: dict[str, str],
 ) -> list[dict[str, Any]]:
     raw = _run(
         [
@@ -1322,6 +1371,26 @@ def _image_notice_components(
             "image payload packages have no packaged attribution text: "
             + ", ".join(sorted(missing))
         )
+    standalone = payload.get("standalone")
+    if not isinstance(standalone, list):
+        raise ReleaseError("image attribution inventory returned an invalid standalone list")
+    observed: dict[str, set[str]] = {}
+    seen: set[tuple[str, str]] = set()
+    for item in standalone:
+        if not isinstance(item, dict):
+            raise ReleaseError("image attribution inventory returned an invalid standalone item")
+        identity = (str(item.get("name", "")), str(item.get("version", "")))
+        if not all(identity) or identity in seen:
+            raise ReleaseError(f"image standalone attribution identity is invalid: {identity}")
+        seen.add(identity)
+        observed.setdefault(identity[0], set()).add(identity[1])
+    for name, version in expected_standalone.items():
+        actual_versions = observed.get(name, set())
+        if actual_versions != {version}:
+            raise ReleaseError(
+                f"image standalone attribution for {name} differs from its exact mise lock: "
+                f"expected={version!r} actual={sorted(actual_versions)!r}"
+            )
     result: list[dict[str, Any]] = []
     for item in [
         *cast(list[dict[str, Any]], payload.get("python")),
@@ -1400,12 +1469,13 @@ def _build_release_images(
     graph, _direct, licenses = _project_dependency_graph(root, projects)
     project_versions = {project.name: project.version for project in projects}
     project_names = set(project_versions)
-    bake = (root / "docker-bake.hcl").read_text(encoding="utf-8")
     sbom_attestation = _buildkit_sbom_attestation(root)
     github_cache = os.environ.get("RIVERHOG_RELEASE_GHA_CACHE") == "true"
     records: list[dict[str, Any]] = []
     for target, image in config["images"]["runtime"].items():
-        distribution = _normalize_name(str(image["distribution"]))
+        distributions = [
+            _normalize_name(str(distribution)) for distribution in image["distributions"]
+        ]
         local_repository = f"riverhog-release-dry-run-{source_sha[:12]}/{target}"
         local_version_tag = f"{local_repository}:{version}"
         local_sha_tag = f"{local_repository}:sha-{source_sha}"
@@ -1481,10 +1551,17 @@ def _build_release_images(
             raise ReleaseError(f"release image labels differ from the release plan: {target}")
         if image_data.get("Os") != "linux" or image_data.get("Architecture") != "amd64":
             raise ReleaseError(f"release image has an unqualified platform: {target}")
+        dockerfile_path = _bake_dockerfile(root, target)
+        dockerfile = dockerfile_path.relative_to(root).as_posix()
+        try:
+            expected_standalone = locked_runtime_payloads(root, dockerfile_path)
+        except RuntimeAttributionError as error:
+            raise ReleaseError(str(error)) from error
         notice_components = _image_notice_components(
             root,
             local_version_tag,
             first_party=project_names,
+            expected_standalone=expected_standalone,
         )
         installed_raw = _run(
             [
@@ -1503,7 +1580,9 @@ def _build_release_images(
         ).stdout
         installed_pairs = cast(list[list[str]], json.loads(installed_raw))
         installed = {_normalize_name(name): value for name, value in installed_pairs}
-        expected_internal = _dependency_closure(graph, distribution)
+        expected_internal = set().union(
+            *(_dependency_closure(graph, distribution) for distribution in distributions)
+        )
         installed_internal = set(installed) & project_names
         if installed_internal != expected_internal:
             raise ReleaseError(
@@ -1550,30 +1629,33 @@ def _build_release_images(
                     "license": "NOASSERTION",
                 }
             )
-        repository = str(image["repository"])
-        dockerfile_match = re.search(
-            rf'target "{re.escape(target)}" \{{.*?dockerfile\s*=\s*"([^"]+)"',
-            bake,
-            re.DOTALL,
+        components.extend(
+            {
+                "kind": "standalone",
+                "name": str(component["name"]),
+                "version": str(component["version"]),
+                "license": "NOASSERTION",
+            }
+            for component in notice_components
+            if component["kind"] == "standalone"
         )
-        if dockerfile_match is None:
-            raise ReleaseError(f"release image target has no Dockerfile: {target}")
+        repository = str(image["repository"])
         records.append(
             {
                 "kind": "image",
                 "name": repository,
                 "sha256": digest.removeprefix("sha256:"),
                 "size": int(image_data.get("Size", 0)),
-                "distribution": distribution,
+                "distributions": distributions,
                 "version": version,
                 "license": labels.get("org.opencontainers.image.licenses", "NOASSERTION"),
                 "platforms": list(config["images"]["platforms"]),
                 "tags": [f"{repository}:{version}", f"{repository}:sha-{source_sha}"],
                 "dependencies": [
                     {"name": name, "version": project_versions[name]}
-                    for name in sorted(expected_internal - {distribution})
+                    for name in sorted(expected_internal - set(distributions))
                 ],
-                "dockerfile": dockerfile_match.group(1),
+                "dockerfile": dockerfile,
                 "buildkit_sbom_attestation": sbom_attestation,
                 "_components": components,
                 "_notice_components": notice_components,
