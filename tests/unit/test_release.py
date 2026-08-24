@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import os
@@ -122,6 +123,75 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "end_user_artifacts": ["linux-x64", "macos-arm64", "windows-x64"],
         "deployed_implementations": ["linux/amd64"],
     }
+
+
+def test_reusable_library_public_annotations_do_not_leak_internal_build_units() -> None:
+    release = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))
+    internal_modules = {
+        Path(path).name.replace("-", "_") for path in release["python"]["internal_build_unit"]
+    }
+    failures: list[str] = []
+
+    def annotation_leaks(annotation: ast.expr | None, imports: dict[str, str]) -> bool:
+        if annotation is None:
+            return False
+        return any(
+            isinstance(node, ast.Name) and node.id in imports for node in ast.walk(annotation)
+        )
+
+    def check_function(
+        source: Path,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        imports: dict[str, str],
+    ) -> None:
+        annotations = [
+            *(argument.annotation for argument in (*node.args.posonlyargs, *node.args.args)),
+            *(argument.annotation for argument in node.args.kwonlyargs),
+            node.args.vararg.annotation if node.args.vararg else None,
+            node.args.kwarg.annotation if node.args.kwarg else None,
+            node.returns,
+        ]
+        if any(annotation_leaks(annotation, imports) for annotation in annotations):
+            failures.append(f"{source.relative_to(REPO_ROOT)}:{node.lineno} {node.name}")
+
+    for relative in release["python"]["reusable_library"]:
+        for source in sorted((REPO_ROOT / relative).glob("src/**/*.py")):
+            tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+            imports: dict[str, str] = {}
+            for node in tree.body:
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    root = node.module.split(".", 1)[0]
+                    if root in internal_modules:
+                        for name in node.names:
+                            imports[name.asname or name.name] = root
+                elif isinstance(node, ast.Import):
+                    for name in node.names:
+                        root = name.name.split(".", 1)[0]
+                        if root in internal_modules:
+                            imports[name.asname or root] = root
+            if not imports:
+                continue
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if not node.name.startswith("_"):
+                        check_function(source, node, imports)
+                elif isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
+                    for member in node.body:
+                        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            if not member.name.startswith("_"):
+                                check_function(source, member, imports)
+                        elif (
+                            isinstance(member, ast.AnnAssign)
+                            and isinstance(member.target, ast.Name)
+                            and not member.target.id.startswith("_")
+                            and annotation_leaks(member.annotation, imports)
+                        ):
+                            failures.append(
+                                f"{source.relative_to(REPO_ROOT)}:{member.lineno} "
+                                f"{node.name}.{member.target.id}"
+                            )
+
+    assert failures == []
 
 
 def test_image_notices_require_the_exact_locked_standalone_identity(

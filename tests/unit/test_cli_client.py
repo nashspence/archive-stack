@@ -8,6 +8,7 @@ import httpx
 import pytest
 from riverhog_api_client.client import ApiClient
 from riverhog_protocol.errors import (
+    BadRequest,
     DownloadAllowanceExceeded,
     Forbidden,
     ServiceUnavailable,
@@ -145,6 +146,32 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
     }
 
 
+def test_client_rejects_invalid_upload_provenance_before_transport() -> None:
+    client = RecordingClient()
+
+    with pytest.raises(BadRequest, match="provenance_mode"):
+        client.create_or_resume_collection_upload_session(
+            "upload-one",
+            [],
+            provenance_mode="captured",
+            provenance_omission_reason="not omitted",
+        )
+    with pytest.raises(BadRequest, match="provenance_mode"):
+        client.create_or_resume_collection_upload_session(
+            "upload-one",
+            [],
+            provenance_mode="omitted",
+        )
+    with pytest.raises(BadRequest, match="provenance_mode"):
+        client.create_or_resume_collection_upload_session(
+            "upload-one",
+            [],
+            provenance_mode="obsolete",  # type: ignore[arg-type]
+        )
+
+    assert client.calls == []
+
+
 def test_collection_upload_cancellation_allows_bounded_remote_cleanup() -> None:
     client = RecordingClient()
 
@@ -207,6 +234,21 @@ def test_retrieval_plan_and_job_share_exact_file_selection() -> None:
             {"json": payload, "headers": {"If-Match": '"' + "a" * 64 + '"'}},
         ),
     ]
+
+
+def test_client_rejects_unknown_restore_policy_before_transport() -> None:
+    client = RecordingClient()
+
+    with pytest.raises(BadRequest, match="restore_policy"):
+        client.plan_retrieval([], restore_policy="sometimes")  # type: ignore[arg-type]
+    with pytest.raises(BadRequest, match="restore_policy"):
+        client.create_retrieval_job(
+            [],
+            plan_etag="a" * 64,
+            restore_policy="sometimes",  # type: ignore[arg-type]
+        )
+
+    assert client.calls == []
 
 
 def test_retrieval_cache_reads_use_list_and_composite_identity_routes() -> None:

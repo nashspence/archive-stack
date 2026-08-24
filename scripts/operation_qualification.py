@@ -23,6 +23,7 @@ from typing import Any, TypeGuard, cast, get_origin, get_type_hints
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
+from pydantic import BaseModel, TypeAdapter
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client.client import ApiClient
 from riverhog_cli import main as riverhog_cli
@@ -407,6 +408,7 @@ def _response_authority(response_model: object) -> str:
     if (
         get_origin(response_model) is dict
         or response_model is dict
+        or module == "http_api_contracts"
         or module.startswith(("riverhog_api.", "stove0_api.", "riverhog_ftp_adapter."))
     ):
         return "http-json"
@@ -545,10 +547,18 @@ def _validate_client_response_authority(
                 f"{return_type!r} != {response_model!r}"
             )
         return
-    if authority == "http-json" and get_origin(return_type) is not dict:
+    if authority == "http-json":
+        if get_origin(return_type) is dict:
+            return
+        if (
+            isinstance(return_type, type)
+            and issubclass(return_type, BaseModel)
+            and TypeAdapter(return_type).json_schema() == TypeAdapter(response_model).json_schema()
+        ):
+            return
         raise QualificationError(
-            f"ordinary CRUD client response is not an HTTP JSON mapping: "
-            f"{operation_id}: {return_type!r}"
+            f"ordinary CRUD client response is neither an HTTP JSON mapping nor an exact "
+            f"client-owned projection: {operation_id}: {return_type!r}"
         )
 
 

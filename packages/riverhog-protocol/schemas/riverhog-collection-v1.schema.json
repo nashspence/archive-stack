@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nashspence.github.io/riverhog/v1/schemas/riverhog-collection-v1.schema.json",
+  "$comment": "This schema is the structural projection. riverhog_protocol.PortableCollectionRecord is the canonical semantic and canonical-JSON authority.",
   "title": "Riverhog v1 portable collection record",
   "type": "object",
   "additionalProperties": false,

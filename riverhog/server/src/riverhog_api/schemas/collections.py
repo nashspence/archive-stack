@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from riverhog_protocol import COLLECTION_UPLOAD_FILE_BATCH_MAX
 from riverhog_protocol.paths import CanonicalTag
 
@@ -25,6 +25,29 @@ class CollectionUploadRawPartsIn(RiverhogModel):
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "provenance_mode": {"const": "captured"},
+                        "provenance_omission_reason": {"type": "null"},
+                    }
+                },
+                {
+                    "properties": {
+                        "provenance_mode": {"const": "omitted"},
+                        "provenance_omission_reason": {
+                            "type": "string",
+                            "minLength": 1,
+                        },
+                    },
+                    "required": ["provenance_omission_reason"],
+                },
+            ]
+        }
+    )
+
     idempotency_key: str
     tags: list[CanonicalTag]
     ingest_source: str | None = None
@@ -39,6 +62,17 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
         if len(value) != len(set(value)):
             raise ValueError("collection tags must not contain duplicates")
         return value
+
+    @model_validator(mode="after")
+    def validate_provenance_choice(self) -> CreateOrResumeCollectionUploadSessionRequest:
+        if self.provenance_mode == "captured":
+            if self.provenance_omission_reason is not None:
+                raise ValueError("captured provenance cannot have an omission reason")
+            return self
+        reason = self.provenance_omission_reason
+        if reason is None or not reason or reason.strip() != reason:
+            raise ValueError("omitted provenance requires a canonical omission reason")
+        return self
 
 
 class RegisterCollectionUploadSessionFilesRequest(RiverhogModel):

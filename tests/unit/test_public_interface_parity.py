@@ -5,10 +5,19 @@ from typing import Any
 
 import pytest
 import riverhog_api_client
+from application_access import (
+    ApplicationPermission as InternalApplicationPermission,
+)
+from application_access import (
+    ApplicationResource as InternalApplicationResource,
+)
 from fastapi import FastAPI
 from http_api_contracts import ERROR_STATUS_BY_CODE, safe_http_base_url
+from pydantic import TypeAdapter
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client import (
+    ApplicationPermission,
+    ApplicationResource,
     configured_download_concurrency,
     configured_download_window,
     configured_upload_concurrency,
@@ -20,8 +29,14 @@ from riverhog_api_client.client import ApiClient
 from riverhog_cli import main as riverhog_cli
 from riverhog_cli import upload_progress as riverhog_upload_progress
 from riverhog_core.services.archive_copy_states import ARCHIVE_COPY_STATES
-from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
+from riverhog_ftp_adapter_api_client import (
+    HealthResponse as FtpAdapterHealthResponse,
+)
+from riverhog_ftp_adapter_api_client import (
+    RiverhogFtpAdapterClient,
+)
 from riverhog_protocol.errors import BadRequest
+from stove0_api_client import HealthResponse as Stove0HealthResponse
 from stove0_api_client import Stove0ApiClient
 
 from scripts.operation_qualification import (
@@ -227,6 +242,24 @@ def test_public_http_health_and_error_schemas_are_conventional(
             assert {ERROR_STATUS_BY_CODE[code] for code in response["x-riverhog-error-codes"]} == {
                 int(status)
             }
+
+
+def test_official_client_health_models_project_the_exact_http_contract() -> None:
+    expected = create_stove0_contract_app().openapi()["components"]["schemas"]["HealthResponse"]
+
+    assert Stove0HealthResponse.model_json_schema() == expected
+    assert FtpAdapterHealthResponse.model_json_schema() == expected
+
+
+def test_riverhog_client_owned_access_types_match_the_internal_validator() -> None:
+    assert (
+        TypeAdapter(ApplicationPermission).json_schema()
+        == TypeAdapter(InternalApplicationPermission).json_schema()
+    )
+    assert (
+        TypeAdapter(ApplicationResource).json_schema()
+        == TypeAdapter(InternalApplicationResource).json_schema()
+    )
 
 
 @pytest.mark.parametrize(

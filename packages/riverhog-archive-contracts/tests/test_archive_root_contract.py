@@ -76,6 +76,7 @@ def test_checked_schema_names_the_same_archive_root_contract() -> None:
 
     assert schema["properties"]["schema"]["const"] == "collection-archive-manifest/v1"
     assert schema["additionalProperties"] is False
+    assert "CollectionArchiveManifest" in schema["$comment"]
     Draft202012Validator(schema).validate(_manifest_mapping())
 
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from xml.etree import ElementTree
 
 import httpx
+from riverhog_api.app import create_app
 from riverhog_api.routers.resourcesync import (
     get_portable_collection_manifest,
     resourcesync_capability_list,
@@ -13,7 +14,7 @@ from riverhog_api.routers.resourcesync import (
     well_known_resourcesync,
 )
 from riverhog_api_client.client import ApiClient
-from riverhog_protocol import PortableCollectionRecord
+from riverhog_protocol import PortableCollectionRecord, portable_collection_json_schema
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -101,6 +102,14 @@ def test_resourcesync_uses_the_configured_public_url_authority() -> None:
     )
 
     assert b"https://public.example.test/riverhog/resourcesync/capabilitylist.xml" in response.body
+
+
+def test_portable_manifest_openapi_uses_the_shipped_structural_projection() -> None:
+    response_schema = create_app().openapi()["paths"][
+        "/v1/catalog/collections/{collection_id}/manifest"
+    ]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+
+    assert response_schema == portable_collection_json_schema()
 
 
 def test_resourcesync_lists_portable_manifests_and_incremental_changes() -> None:

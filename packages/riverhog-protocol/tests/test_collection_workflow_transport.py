@@ -6,6 +6,8 @@ from riverhog_protocol.collection_workflow_transport import (
     CollectionArtifactIdentityDocument,
     CollectionRootIdentityDocument,
     ProcessingClaimCreateDocument,
+    ProcessingClaimDocument,
+    TransformCapabilityCreateDocument,
 )
 from riverhog_protocol.collection_workflows import (
     CollectionArtifactIdentity,
@@ -73,4 +75,81 @@ def test_opaque_work_document_is_digest_bound_without_application_ontology() -> 
             work_document=document,
             work_document_sha256="5" * 64,
             inputs=request.inputs,
+        )
+
+
+def test_transform_capability_actions_are_the_exact_read_contract() -> None:
+    artifact = {
+        "collection": {
+            "collection_id": 17,
+            "archive_root_sha256": "1" * 64,
+            "content_identity": "2" * 64,
+        },
+        "path": "camera/clip.mp4",
+        "bytes": 42,
+        "sha256": "3" * 64,
+    }
+
+    for actions in (["read-inputs"], ["read-inputs", "write-output"]):
+        capability = TransformCapabilityCreateDocument(
+            fence=1,
+            audience="transform:test",
+            actions=actions,
+            artifacts=[artifact],
+        )
+        assert capability.actions == actions
+
+    for actions in (["write-output"], ["read-inputs", "manage-output-tags"]):
+        with pytest.raises(ValidationError, match="read-inputs"):
+            TransformCapabilityCreateDocument(
+                fence=1,
+                audience="transform:test",
+                actions=actions,
+                artifacts=[artifact],
+            )
+
+
+def test_processing_claim_projection_rejects_impossible_state_evidence() -> None:
+    work_document = {"format": "fixture-work/v1"}
+    active = {
+        "format": "riverhog-processing-claim/v1",
+        "id": "4" * 64,
+        "work_id": "5" * 64,
+        "consumer": {"app": "fixture"},
+        "purpose": "fixture",
+        "state": "active",
+        "fence": 1,
+        "expires_at": "2026-08-24T00:15:00.000000Z",
+        "created_at": "2026-08-24T00:00:00.000000Z",
+        "updated_at": "2026-08-24T00:00:00.000000Z",
+        "work_document": work_document,
+        "work_document_sha256": canonical_json_sha256(work_document),
+        "inputs": [
+            {
+                "collection_id": 17,
+                "archive_root_sha256": "1" * 64,
+                "content_identity": "2" * 64,
+            }
+        ],
+    }
+
+    assert ProcessingClaimDocument.model_validate(active).state == "active"
+    abandoned = {
+        **active,
+        "state": "abandoned",
+        "abandoned_at": "2026-08-24T00:01:00.000000Z",
+        "abandonment_reason": "target reported inapplicable",
+    }
+    assert ProcessingClaimDocument.model_validate(abandoned).state == "abandoned"
+
+    with pytest.raises(ValidationError, match="settlement timestamp"):
+        ProcessingClaimDocument.model_validate({**active, "state": "settled"})
+    with pytest.raises(ValidationError, match="unsettled claim"):
+        ProcessingClaimDocument.model_validate({**active, "output_collection_id": 19})
+    with pytest.raises(ValidationError, match="abandonment reason"):
+        ProcessingClaimDocument.model_validate(
+            {
+                **abandoned,
+                "abandonment_reason": None,
+            }
         )

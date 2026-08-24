@@ -21,6 +21,7 @@ urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "
 dependencies = [
   "http-api-contracts>=0.1,<0.2",
   "httpx>=0.27,<1.0",
+  "pydantic>=2.7,<3.0",
   "stove0-operator-contracts>=0.1,<0.2",
   "stove0-protocol>=0.1,<0.2",
 ]

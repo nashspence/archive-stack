@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal, Self
 
 from lifecycle_events import CloudEvent, cloud_event
@@ -23,6 +23,7 @@ from stove0_protocol import (
     CoordinationSettlement,
     EvaluationDefinition,
     JoinPlan,
+    JoinWorkBinding,
     Sha256,
     WorkflowPlan,
     WorkIdentity,
@@ -73,6 +74,143 @@ EvaluationChildState = Literal[
 SchedulerRole = Literal["controller", "worker", "combined"]
 
 
+def validate_work_state_shape(
+    *,
+    work: WorkIdentity,
+    phase: WorkPhase,
+    claim: object | None,
+    preview_acceptance: object | None,
+    expected_target_plan_sha256: str | None,
+    branch_set_plan: BranchSetPlan | None,
+    coordination_settlement: CoordinationSettlement | None,
+    join_plan: JoinPlan | None,
+    coordination_cancel_requested: bool,
+    workflow_plan: WorkflowPlan | None,
+    output: OutputCollectionRef | None,
+    retirement_remaining: Sequence[int],
+    failure: object | None,
+    inapplicable: object | None,
+    abandon_outcome: Literal["inapplicable", "failed", "canceled"] | None,
+) -> None:
+    """Validate the one work-state relationship shared by storage and projection."""
+
+    if phase == "eligible" and claim is not None:
+        raise ValueError("eligible work cannot already hold a claim")
+    inactive_without_claim = {"eligible", "failed", "canceled", "inapplicable"}
+    if phase not in inactive_without_claim and claim is None:
+        raise ValueError("active work phases require a claim")
+    if output is not None and phase not in {
+        "verifying",
+        "settled",
+        "retirement_pending",
+        "abandon_pending",
+        "complete",
+    }:
+        raise ValueError("output identity appears before verification")
+    if phase in {"abandon_pending", "failed", "canceled", "inapplicable"} and output is not None:
+        raise ValueError("non-success terminal work cannot contain an output")
+    failure_phases = {"failed"}
+    if phase == "abandon_pending" and abandon_outcome == "failed":
+        failure_phases.add("abandon_pending")
+    if phase in failure_phases and failure is None:
+        raise ValueError("failed work requires failure details")
+    if phase not in failure_phases and failure is not None:
+        raise ValueError("only failed work may retain failure details")
+    inapplicable_phases = {"inapplicable"}
+    if phase == "abandon_pending" and abandon_outcome == "inapplicable":
+        inapplicable_phases.add("abandon_pending")
+    if phase in inapplicable_phases and inapplicable is None:
+        raise ValueError("inapplicable work requires a terminal outcome")
+    if phase not in inapplicable_phases and inapplicable is not None:
+        raise ValueError("only inapplicable work may retain that outcome")
+    if phase == "abandon_pending" and abandon_outcome is None:
+        raise ValueError("abandon_pending work requires a terminal outcome")
+    if phase != "abandon_pending" and abandon_outcome is not None:
+        raise ValueError("only abandon_pending work may retain an abandon outcome")
+    if retirement_remaining and phase != "retirement_pending":
+        raise ValueError("retirement work must remain in retirement_pending")
+    if branch_set_plan is not None:
+        if branch_set_plan.parent_work != work:
+            raise ValueError("branch-set plan differs from its parent work record")
+        if workflow_plan is not None or isinstance(work.fork_join, JoinWorkBinding):
+            raise ValueError("coordination parents cannot also be target work")
+        if phase not in {
+            "eligible",
+            "claimed",
+            "coordinating",
+            "retirement_pending",
+            "complete",
+            "abandon_pending",
+            "canceled",
+            "failed",
+            "inapplicable",
+        }:
+            raise ValueError("branch-set plan appears in an invalid coordination phase")
+    if coordination_settlement is not None:
+        if (
+            branch_set_plan is None
+            or coordination_settlement.work != work
+            or coordination_settlement.branch_set_sha256 != branch_set_plan.branch_set_sha256
+            or phase not in {"claimed", "coordinating", "retirement_pending", "complete"}
+        ):
+            raise ValueError("coordination settlement differs from its durable coordinator")
+    if preview_acceptance is not None:
+        preview_branch_set = getattr(preview_acceptance, "branch_set_sha256", None)
+        if work.fork_join is not None:
+            raise ValueError("only parent work may retain a preview acceptance")
+        if branch_set_plan is not None and branch_set_plan.branch_set_sha256 != preview_branch_set:
+            raise ValueError("admitted branch set differs from the accepted preview")
+    if expected_target_plan_sha256 is not None and workflow_plan is None:
+        raise ValueError("a target-plan expectation requires ordinary target work")
+    if join_plan is not None and (
+        branch_set_plan is None or join_plan.branch_set_sha256 != branch_set_plan.branch_set_sha256
+    ):
+        raise ValueError("resolved join plan differs from its branch set")
+    if phase == "coordinating" and branch_set_plan is None:
+        raise ValueError("coordinating work requires an immutable branch-set plan")
+    if coordination_cancel_requested and (
+        branch_set_plan is None
+        or phase not in {"eligible", "claimed", "coordinating", "abandon_pending", "canceled"}
+    ):
+        raise ValueError("coordination cancellation belongs only to a branch-set parent")
+    if workflow_plan is not None and workflow_plan.work != work:
+        raise ValueError("workflow plan differs from its ordinary work record")
+
+
+def validate_evaluation_child_shape(
+    state: EvaluationChildState,
+    output: OutputCollectionRef | None,
+) -> None:
+    if (state == "complete") != (output is not None):
+        raise ValueError("only completed evaluation children may carry output identity")
+
+
+def validate_evaluation_review_shape(rating: int | None, note: str | None) -> None:
+    if rating is None and not (note and note.strip()):
+        raise ValueError("evaluation review requires a rating or note")
+    if note is not None and note != note.strip():
+        raise ValueError("evaluation review note must be canonical")
+
+
+def validate_evaluation_state_shape(
+    definition: EvaluationDefinition,
+    children: Sequence[object],
+    reviews: Sequence[object],
+) -> None:
+    expected = tuple(
+        (variant.id, definition.child_work(variant.id).work_id)
+        for variant in definition.matrix.variants
+    )
+    actual = tuple((item.variant_id, item.work_id) for item in children)  # type: ignore[attr-defined]
+    if actual != expected:
+        raise ValueError("evaluation children differ from the immutable matrix")
+    review_ids = [item.variant_id for item in reviews]  # type: ignore[attr-defined]
+    if review_ids != sorted(review_ids) or len(review_ids) != len(set(review_ids)):
+        raise ValueError("evaluation reviews must be unique and ordered by variant ID")
+    if not set(review_ids).issubset({item.variant_id for item in children}):  # type: ignore[attr-defined]
+        raise ValueError("evaluation review names an unknown variant")
+
+
 class OperatorModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -100,8 +238,25 @@ class WorkCancelIn(OperatorModel):
 
 
 class EvaluationReviewIn(OperatorModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "anyOf": [
+                {"required": ["rating"], "properties": {"rating": {"type": "integer"}}},
+                {
+                    "required": ["note"],
+                    "properties": {"note": {"type": "string", "minLength": 1}},
+                },
+            ]
+        }
+    )
+
     rating: int | None = Field(default=None, ge=1, le=5)
     note: str | None = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def meaningful(self) -> Self:
+        validate_evaluation_review_shape(self.rating, self.note)
+        return self
 
 
 class SchedulerRunIn(OperatorModel):
@@ -346,6 +501,23 @@ class WorkView(OperatorModel):
     def exact_identity(self) -> Self:
         if self.work_id != self.work.work_id:
             raise ValueError("work view ID differs from its immutable work identity")
+        validate_work_state_shape(
+            work=self.work,
+            phase=self.phase,
+            claim=self.claim,
+            preview_acceptance=self.preview_acceptance,
+            expected_target_plan_sha256=self.expected_target_plan_sha256,
+            branch_set_plan=self.branch_set_plan,
+            coordination_settlement=self.coordination_settlement,
+            join_plan=self.join_plan,
+            coordination_cancel_requested=self.coordination_cancel_requested,
+            workflow_plan=self.workflow_plan,
+            output=self.output,
+            retirement_remaining=self.retirement_remaining,
+            failure=self.failure,
+            inapplicable=self.inapplicable,
+            abandon_outcome=self.abandon_outcome,
+        )
         return self
 
     @classmethod
@@ -379,6 +551,11 @@ class EvaluationChildView(OperatorModel):
     state: EvaluationChildState
     output: OutputCollectionRef | None = None
 
+    @model_validator(mode="after")
+    def exact_output(self) -> Self:
+        validate_evaluation_child_shape(self.state, self.output)
+        return self
+
 
 class EvaluationReviewView(OperatorModel):
     variant_id: str = Field(min_length=1, max_length=160)
@@ -386,6 +563,11 @@ class EvaluationReviewView(OperatorModel):
     note: str | None = Field(default=None, max_length=4000)
     updated_by: str = Field(min_length=1, max_length=160)
     updated_at: str = Field(min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def meaningful(self) -> Self:
+        validate_evaluation_review_shape(self.rating, self.note)
+        return self
 
 
 class EvaluationView(OperatorModel):
@@ -403,6 +585,7 @@ class EvaluationView(OperatorModel):
     def exact_identity(self) -> Self:
         if self.evaluation_id != self.definition.evaluation_id:
             raise ValueError("evaluation view ID differs from its immutable definition")
+        validate_evaluation_state_shape(self.definition, self.children, self.reviews)
         return self
 
     @classmethod
@@ -580,4 +763,8 @@ __all__ = [
     "WorkflowPreviewIn",
     "parse_stove0_event",
     "stove0_event",
+    "validate_evaluation_child_shape",
+    "validate_evaluation_review_shape",
+    "validate_evaluation_state_shape",
+    "validate_work_state_shape",
 ]

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TypeVar
+from collections.abc import Mapping
+from typing import Any, TypeVar
 
 import httpx
-from http_api_contracts import safe_http_base_url
+from http_api_contracts import parse_error_payload, safe_http_base_url
 from pydantic import BaseModel
 from stove0_observer_protocol import (
     ObservationInvocation,
@@ -17,9 +18,21 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 class ObserverProtocolError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "observer_client_error",
+        observed_status: int | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
-        self.status_code = status_code
+        if observed_status is not None and not 400 <= observed_status <= 599:
+            raise ValueError("observed HTTP status must be a 4xx or 5xx response")
+        self.message = message
+        self.code = code
+        self.observed_status = observed_status
+        self.details = dict(details or {})
 
 
 class ContentObserverClient:
@@ -72,16 +85,32 @@ class ContentObserverClient:
                     ),
                 )
         except httpx.HTTPError as exc:
-            raise ObserverProtocolError(f"observer request failed: {exc}") from exc
-        if response.status_code >= 400:
             raise ObserverProtocolError(
-                f"observer returned {response.status_code}: {response.text}",
-                status_code=response.status_code,
+                f"observer request failed: {exc}",
+                code="observer_transport_error",
+            ) from exc
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            code, message, details = parse_error_payload(
+                payload,
+                fallback_message=response.text or f"HTTP {response.status_code}",
+            )
+            raise ObserverProtocolError(
+                message,
+                code=code,
+                observed_status=response.status_code,
+                details=details,
             )
         try:
             return model.model_validate(response.json())
         except (TypeError, ValueError) as exc:
-            raise ObserverProtocolError("observer returned an invalid protocol response") from exc
+            raise ObserverProtocolError(
+                "observer returned an invalid protocol response",
+                code="invalid_observer_response",
+            ) from exc
 
 
 __all__ = ["ContentObserverClient", "ObserverProtocolError"]

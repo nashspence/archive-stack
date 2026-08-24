@@ -84,6 +84,7 @@ from riverhog_protocol.portable_collection import (
     PortableCollectionError,
     PortableCollectionFile,
     PortableCollectionRecord,
+    portable_collection_json_schema,
 )
 from riverhog_protocol.transport import (
     COLLECTION_UPLOAD_FILE_BATCH_MAX,
@@ -110,6 +111,7 @@ __all__ += [
     "PortableCollectionError",
     "PortableCollectionFile",
     "PortableCollectionRecord",
+    "portable_collection_json_schema",
     "CapabilityAction",
     "ClaimState",
     "CollectionArtifactIdentityDocument",

@@ -17,7 +17,7 @@ from typing import Annotated, Any, Literal, TypedDict, cast
 
 import httpx
 import typer
-from riverhog_api_client.client import ApiClient
+from riverhog_api_client.client import ApiClient, ProvenanceMode
 from riverhog_api_client.producer import COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES
 from riverhog_api_client.uploads import (
     configured_upload_concurrency,
@@ -964,7 +964,7 @@ def _create_or_resume_collection_upload_session(
     *,
     ingest_source: str | None,
     archive_store: str | None = None,
-    provenance_mode: str,
+    provenance_mode: ProvenanceMode,
     provenance_omission_reason: str | None,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(

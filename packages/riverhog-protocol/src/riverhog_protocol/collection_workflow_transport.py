@@ -263,6 +263,10 @@ class TransformCapabilityCreateDocument(RiverhogWorkflowDocument):
 
     @model_validator(mode="after")
     def validate_capability(self) -> Self:
+        if self.actions not in (["read-inputs"], ["read-inputs", "write-output"]):
+            raise ValueError(
+                "capability actions must be read-inputs, optionally followed by write-output"
+            )
         if self.actions != sorted(set(self.actions)):
             raise ValueError("capability actions must be unique and canonically ordered")
         artifacts = [
@@ -357,6 +361,12 @@ class ProcessingClaimOutcomeSettlementDocument(RiverhogWorkflowDocument):
     retirement_policy: RetirementPolicy
     retirement_grace_seconds: int = Field(ge=0)
 
+    @model_validator(mode="after")
+    def validate_retirement(self) -> Self:
+        if self.retirement_policy == "retain" and self.retirement_grace_seconds:
+            raise ValueError("retained collection work cannot declare retirement grace")
+        return self
+
 
 class ProcessingClaimDocument(RiverhogWorkflowDocument):
     format: Literal["riverhog-processing-claim/v1"]
@@ -398,12 +408,35 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
                 raise ValueError("processing outcome settlement identity is invalid")
             if self.plan is not None or self.state not in {"settled", "retiring", "released"}:
                 raise ValueError("processing outcome settlement is inconsistent with claim state")
-        if self.state == "abandoned" and (
-            self.abandoned_at is None or self.abandonment_reason is None
+        settled = self.state in {"settled", "retiring", "released"}
+        if settled != (self.settled_at is not None):
+            raise ValueError("claim settlement timestamp is inconsistent with claim state")
+        abandoned = self.state == "abandoned"
+        if abandoned != (self.abandoned_at is not None):
+            raise ValueError("claim abandonment timestamp is inconsistent with claim state")
+        if abandoned != (self.abandonment_reason is not None):
+            raise ValueError("claim abandonment reason is inconsistent with claim state")
+        if self.abandonment_reason is not None and (
+            self.abandonment_reason.strip() != self.abandonment_reason
         ):
-            raise ValueError("abandoned claim has no abandonment evidence")
-        if self.state == "released" and self.released_at is None:
-            raise ValueError("released claim has no release evidence")
+            raise ValueError("claim abandonment reason must be canonical")
+        released = self.state == "released"
+        if released != (self.released_at is not None):
+            raise ValueError("claim release timestamp is inconsistent with claim state")
+        if self.plan is not None and self.outcomes:
+            raise ValueError("direct collection work cannot retain delegated outcomes")
+        if settled:
+            if self.plan is not None:
+                if self.output_collection_id is None or self.outcome_settlement is not None:
+                    raise ValueError("direct claim settlement evidence is incomplete")
+            elif (
+                self.output_collection_id is not None
+                or not self.outcomes
+                or self.outcome_settlement is None
+            ):
+                raise ValueError("delegated claim settlement evidence is incomplete")
+        elif self.output_collection_id is not None or self.outcome_settlement is not None:
+            raise ValueError("unsettled claim cannot publish settlement evidence")
         return self
 
 

@@ -14,6 +14,7 @@ from stove0_operator_contracts import (
     STOVE0_EVENT_TYPES,
     WORK_CREATED,
     WORK_UPDATED,
+    EvaluationReviewIn,
     EvaluationView,
     Stove0EventPage,
     WorkCreateIn,
@@ -79,6 +80,13 @@ def test_work_projection_adds_and_verifies_the_public_identity() -> None:
     assert view.work_id == work.work_id
     with pytest.raises(ValidationError, match="work view ID differs"):
         WorkView.model_validate({**view.model_dump(mode="json"), "work_id": "f" * 64})
+    with pytest.raises(ValidationError, match="eligible work cannot already hold a claim"):
+        WorkView.model_validate(
+            {
+                **view.model_dump(mode="json"),
+                "claim": {"claim_id": "claim", "fence": 1},
+            }
+        )
 
 
 def test_evaluation_projection_adds_and_verifies_the_public_identity() -> None:
@@ -102,6 +110,38 @@ def test_evaluation_projection_adds_and_verifies_the_public_identity() -> None:
 
     assert view.format == "stove0-evaluation-view/v1"
     assert view.evaluation_id == definition.evaluation_id
+    with pytest.raises(ValidationError, match="only completed evaluation children"):
+        EvaluationView.model_validate(
+            {
+                **view.model_dump(mode="json"),
+                "children": [
+                    {
+                        "variant_id": "variant-a",
+                        "work_id": child.work_id,
+                        "state": "complete",
+                    }
+                ],
+            }
+        )
+
+
+def test_evaluation_review_request_is_meaningful_and_canonical() -> None:
+    assert EvaluationReviewIn(rating=5).rating == 5
+    assert EvaluationReviewIn(note="use variant a").note == "use variant a"
+
+    with pytest.raises(ValidationError, match="requires a rating or note"):
+        EvaluationReviewIn()
+    with pytest.raises(ValidationError, match="must be canonical"):
+        EvaluationReviewIn(note=" padded ")
+
+    schema = EvaluationReviewIn.model_json_schema()
+    assert schema["anyOf"] == [
+        {"properties": {"rating": {"type": "integer"}}, "required": ["rating"]},
+        {
+            "properties": {"note": {"minLength": 1, "type": "string"}},
+            "required": ["note"],
+        },
+    ]
 
 
 def test_operator_requests_share_one_exact_canonical_collection_contract() -> None:
