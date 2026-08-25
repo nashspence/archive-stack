@@ -14,9 +14,9 @@ class _Adapter:
             implementation_id="fixture.storage/v1",
             implementation_version="1.0.0",
             read_mode="immediate",
-            minimum_nonfinal_part_bytes=1,
-            maximum_part_bytes=1024,
-            maximum_part_count=10_000,
+            minimum_nonfinal_segment_bytes=1,
+            maximum_segment_bytes=1024,
+            maximum_segment_count=10_000,
         )
 
 
@@ -46,6 +46,6 @@ def test_composition_binds_every_capability_to_each_configured_archive_store(
         binding = registry.require(name)
         expected = adapters[name]
         assert binding.store._adapter is expected  # type: ignore[attr-defined]
-        assert binding.multipart_objects._adapter is expected  # type: ignore[attr-defined]
+        assert binding.resumable_objects._adapter is expected  # type: ignore[attr-defined]
         assert binding.immutable_objects._adapter is expected  # type: ignore[attr-defined]
         assert binding.object_ranges._adapter is expected  # type: ignore[attr-defined]

@@ -7,7 +7,7 @@ from riverhog_core.archive_root import ArchiveRootPublisher
 from riverhog_core.domain.archive import (
     ArchiveFile,
     SealedPackVolume,
-    StoredPartReceipt,
+    StoredArchivePart,
 )
 from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
 from riverhog_core.ports.archive_objects import ImmutableObjectReceipt
@@ -44,8 +44,8 @@ class MemoryImmutableStore:
             return existing.receipt
         receipt = ImmutableObjectReceipt(
             object_path=object_path,
-            version_id="v1",
-            etag="etag",
+            revision="v1",
+            entity_token="etag",
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
             completed_at="2026-08-03T00:00:00Z",
@@ -74,17 +74,16 @@ def test_root_publish_is_logically_idempotent_and_never_rewrites_manifest() -> N
         index_sha256=plan.index_sha256,
         plan_sha256=plan.plan_sha256,
         parts=(
-            StoredPartReceipt(
+            StoredArchivePart(
                 number=1,
                 plaintext_start=0,
                 plaintext_bytes=len(plaintext),
                 plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
                 stored_bytes=len(plaintext) + 1,
                 stored_sha256=hashlib.sha256(b"x" + plaintext).hexdigest(),
-                etag="etag",
             ),
         ),
-        version_id="pack-v1",
+        revision="pack-v1",
         completed_at="2026-08-03T00:00:00Z",
     )
     store = MemoryImmutableStore()

@@ -41,7 +41,7 @@ def build_recovery_descriptor(
 class SealedRecoveryDescriptor:
     object_path: str
     relative_path: str
-    version_id: str | None
+    revision: str | None
     bytes: int
     sha256: str
     completed_at: str
@@ -90,7 +90,7 @@ class ArchiveRecoveryDescriptorPublisher:
         return SealedRecoveryDescriptor(
             object_path=receipt.object_path,
             relative_path=RECOVERY_DESCRIPTOR_PATH,
-            version_id=receipt.version_id,
+            revision=receipt.revision,
             bytes=len(content),
             sha256=sha256,
             completed_at=receipt.completed_at,

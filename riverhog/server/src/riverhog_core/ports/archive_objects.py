@@ -14,72 +14,81 @@ class ArchiveObjectIdentityConflict(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class MultipartPartReceipt:
+class ResumableWriteConstraints:
+    minimum_nonfinal_segment_bytes: int
+    maximum_segment_bytes: int | None
+    maximum_segment_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class WriteSegmentReceipt:
     number: int
-    etag: str
+    segment_token: str
     bytes: int
     sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class MultipartUpload:
+class WriteSession:
     object_path: str
-    upload_id: str
+    write_token: str
 
 
 @dataclass(frozen=True, slots=True)
 class CompletedObjectReceipt:
     object_path: str
-    version_id: str | None
-    etag: str | None
+    revision: str | None
+    entity_token: str | None
     bytes: int
     completed_at: str
     retrieval_cache: RetrievalCacheReceipt | None = None
 
 
-class ArchiveMultipartObjectStore(Protocol):
-    def create_multipart_upload(
+class ArchiveResumableObjectStore(Protocol):
+    def write_constraints(self) -> ResumableWriteConstraints: ...
+
+    def begin_write(
         self,
         *,
         object_path: str,
         content_type: str,
         metadata: dict[str, str],
-    ) -> MultipartUpload: ...
+    ) -> WriteSession: ...
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        session: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt: ...
+    ) -> WriteSegmentReceipt: ...
 
-    def list_parts(self, *, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]: ...
+    def list_segments(self, *, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]: ...
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
         *,
-        upload: MultipartUpload,
-        parts: tuple[MultipartPartReceipt, ...],
+        session: WriteSession,
+        segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt: ...
 
-    def head_completed_object(
+    def find_completed_write(
         self,
         *,
         object_path: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None: ...
 
-    def abort_multipart_upload(self, *, upload: MultipartUpload) -> None: ...
+    def abort_write(self, *, session: WriteSession) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
 class ImmutableObjectReceipt:
     object_path: str
-    version_id: str | None
-    etag: str | None
+    revision: str | None
+    entity_token: str | None
     stored_bytes: int
     stored_sha256: str
     completed_at: str
@@ -104,7 +113,7 @@ class ArchiveObjectRangeStore(Protocol):
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,

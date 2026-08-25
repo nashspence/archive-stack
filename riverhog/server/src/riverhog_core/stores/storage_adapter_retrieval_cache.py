@@ -9,34 +9,35 @@ from datetime import datetime
 from typing import Any
 
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
     ObjectLocator,
     ObjectReadRequest,
     SmallObjectWriteRequest,
     StorageAdapterPort,
     StorageAdapterRejection,
+    WriteCompleteRequest,
+    WriteStartRequest,
 )
 from riverhog_storage_adapter_protocol import (
     CompletedObjectReceipt as AdapterCompletedObjectReceipt,
 )
 from riverhog_storage_adapter_protocol import (
-    MultipartPartReceipt as AdapterMultipartPartReceipt,
+    WriteSegmentReceipt as AdapterWriteSegmentReceipt,
 )
 from riverhog_storage_adapter_protocol import (
-    MultipartUpload as AdapterMultipartUpload,
+    WriteSession as AdapterWriteSession,
 )
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.ports.archive_objects import (
-    ArchiveMultipartObjectStore,
     ArchiveObjectIdentityConflict,
+    ArchiveResumableObjectStore,
     CompletedObjectReceipt,
-    MultipartPartReceipt,
-    MultipartUpload,
+    ResumableWriteConstraints,
+    WriteSegmentReceipt,
+    WriteSession,
 )
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
 from riverhog_core.throughput import (
@@ -56,22 +57,21 @@ class StorageAdapterRetrievalCache:
         self,
         adapter: StorageAdapterPort,
         *,
-        multipart_part_bytes: int,
+        write_segment_bytes: int,
         throughput_tuning: ArchiveThroughputTuning,
         transfer_resources: ArchiveTransferResources,
     ) -> None:
         descriptor = adapter.descriptor()
         if descriptor.read_mode != "immediate":
             raise ValueError("retrieval cache adapter must provide immediate reads")
-        if not (
-            descriptor.minimum_nonfinal_part_bytes
-            <= multipart_part_bytes
-            <= descriptor.maximum_part_bytes
+        if write_segment_bytes < descriptor.minimum_nonfinal_segment_bytes or (
+            descriptor.maximum_segment_bytes is not None
+            and write_segment_bytes > descriptor.maximum_segment_bytes
         ):
-            raise ValueError("retrieval cache multipart part size is outside adapter limits")
+            raise ValueError("retrieval cache write segment size is outside adapter limits")
         self._adapter = adapter
         self._descriptor = descriptor
-        self._part_bytes = multipart_part_bytes
+        self._segment_bytes = write_segment_bytes
         self._throughput = throughput_tuning
         self._resources = transfer_resources
 
@@ -81,83 +81,83 @@ class StorageAdapterRetrievalCache:
         digest = hashlib.sha256(identity).hexdigest()
         return f"objects/{digest[:2]}/{digest}"
 
-    def abort_incomplete_multipart_uploads(
+    def abort_incomplete_writes(
         self,
         *,
         initiated_before: datetime,
     ) -> int:
         if initiated_before.tzinfo is None:
-            raise ValueError("retrieval cache multipart cutoff must be timezone-aware")
-        return self._adapter.abort_incomplete_uploads(
-            AbortIncompleteUploadsRequest(
+            raise ValueError("retrieval cache write cutoff must be timezone-aware")
+        return self._adapter.abort_incomplete_writes(
+            AbortIncompleteWritesRequest(
                 object_prefix="objects/",
                 initiated_before=format_utc_timestamp(initiated_before),
             )
         )
 
-    def multipart_object_store(
+    def resumable_object_store(
         self,
         *,
         source_store: str,
         collection_id: int,
         object_id: str,
-    ) -> ArchiveMultipartObjectStore:
-        return _StorageAdapterRetrievalCacheMultipartObjectStore(
+    ) -> ArchiveResumableObjectStore:
+        return _StorageAdapterRetrievalCacheResumableObjectStore(
             adapter=self._adapter,
             object_path=self._object_path(source_store, collection_id, object_id),
             metadata=_cache_identity(source_store, collection_id, object_id),
         )
 
-    def verify_multipart_object(
+    def verify_resumable_object(
         self,
         *,
         completed: CompletedObjectReceipt,
-        parts: tuple[MultipartPartReceipt, ...] = (),
+        segments: tuple[WriteSegmentReceipt, ...] = (),
     ) -> RetrievalCacheReceipt:
         content = self._adapter.iter_object(
             ObjectReadRequest(
                 object=ObjectLocator(
                     object_path=completed.object_path,
-                    revision=completed.version_id,
+                    revision=completed.revision,
                 ),
                 expected_bytes=completed.bytes,
             )
         )
         digest = hashlib.sha256()
         size = 0
-        expected_parts = tuple(sorted(parts, key=lambda current: current.number))
-        _validate_integrity_parts(expected_parts, expected_bytes=completed.bytes)
-        part_index = 0
-        part_size = 0
-        part_digest = hashlib.sha256()
+        expected_segments = tuple(sorted(segments, key=lambda current: current.number))
+        _validate_integrity_segments(expected_segments, expected_bytes=completed.bytes)
+        segment_index = 0
+        segment_size = 0
+        segment_digest = hashlib.sha256()
         for chunk in content:
             digest.update(chunk)
             size += len(chunk)
             remaining = memoryview(chunk)
-            while remaining and part_index < len(expected_parts):
-                expected = expected_parts[part_index]
-                accepted = min(len(remaining), expected.bytes - part_size)
-                part_digest.update(remaining[:accepted])
-                part_size += accepted
+            while remaining and segment_index < len(expected_segments):
+                expected = expected_segments[segment_index]
+                accepted = min(len(remaining), expected.bytes - segment_size)
+                segment_digest.update(remaining[:accepted])
+                segment_size += accepted
                 remaining = remaining[accepted:]
-                if part_size == expected.bytes:
-                    if expected.sha256 is None or part_digest.hexdigest() != expected.sha256:
+                if segment_size == expected.bytes:
+                    if expected.sha256 is None or segment_digest.hexdigest() != expected.sha256:
                         raise RuntimeError(
-                            "retrieval cache multipart part failed integrity verification"
+                            "retrieval cache write segment failed integrity verification"
                         )
-                    part_index += 1
-                    part_size = 0
-                    part_digest = hashlib.sha256()
-            if remaining and expected_parts:
-                raise RuntimeError("retrieval cache object exceeds its multipart receipts")
+                    segment_index += 1
+                    segment_size = 0
+                    segment_digest = hashlib.sha256()
+            if remaining and expected_segments:
+                raise RuntimeError("retrieval cache object exceeds its write receipts")
         if size != completed.bytes or (
-            expected_parts and (part_index != len(expected_parts) or part_size != 0)
+            expected_segments and (segment_index != len(expected_segments) or segment_size != 0)
         ):
-            raise RuntimeError("retrieval cache multipart object length mismatch")
+            raise RuntimeError("retrieval cache resumable object length mismatch")
         verified_at = format_utc_timestamp(utc_now())
         return RetrievalCacheReceipt(
             object_path=completed.object_path,
-            version_id=completed.version_id,
+            revision=completed.revision,
             stored_bytes=size,
             stored_sha256=digest.hexdigest(),
             cached_at=completed.completed_at,
@@ -175,9 +175,13 @@ class StorageAdapterRetrievalCache:
     ) -> RetrievalCacheReceipt:
         if content_length < 0:
             raise ValueError("retrieval cache content length must be non-negative")
-        maximum = self._descriptor.maximum_part_bytes * self._descriptor.maximum_part_count
-        if content_length > maximum:
-            raise ValueError("retrieval cache object exceeds adapter multipart limits")
+        if (
+            self._descriptor.maximum_segment_bytes is not None
+            and self._descriptor.maximum_segment_count is not None
+            and content_length
+            > self._descriptor.maximum_segment_bytes * self._descriptor.maximum_segment_count
+        ):
+            raise ValueError("retrieval cache object exceeds adapter write limits")
         object_path = self._object_path(source_store, collection_id, object_id)
         metadata = _cache_identity(source_store, collection_id, object_id)
         started = time.perf_counter()
@@ -188,7 +192,7 @@ class StorageAdapterRetrievalCache:
         integrity_seconds = 0.0
         remote_seconds = 0.0
 
-        if content_length < self._descriptor.minimum_nonfinal_part_bytes:
+        if content_length < self._descriptor.minimum_nonfinal_segment_bytes:
             body = bytearray()
             if content_length:
                 queue_wait_seconds += self._resources.upload_bytes.acquire(content_length)
@@ -230,12 +234,12 @@ class StorageAdapterRetrievalCache:
             finally:
                 if content_length:
                     self._resources.upload_bytes.release(content_length)
-            version_id = receipt.revision
+            revision = receipt.revision
             cached_at = receipt.completed_at
         else:
             remote_started = time.perf_counter()
-            upload = self._adapter.create_multipart_upload(
-                MultipartCreateRequest(
+            session = self._adapter.begin_write(
+                WriteStartRequest(
                     object_path=object_path,
                     content_type="application/octet-stream",
                     identity_metadata=metadata,
@@ -245,28 +249,28 @@ class StorageAdapterRetrievalCache:
             remote_seconds += time.perf_counter() - remote_started
             try:
                 (
-                    parts,
+                    segments,
                     written,
-                    part_queue_seconds,
-                    part_source_seconds,
-                    part_integrity_seconds,
-                    part_remote_seconds,
-                ) = self._upload_multipart_content(
-                    upload=upload,
+                    segment_queue_seconds,
+                    segment_source_seconds,
+                    segment_integrity_seconds,
+                    segment_remote_seconds,
+                ) = self._write_segmented_content(
+                    session=session,
                     content=content,
                     digest=digest,
                 )
-                queue_wait_seconds += part_queue_seconds
-                source_seconds += part_source_seconds
-                integrity_seconds += part_integrity_seconds
-                remote_seconds += part_remote_seconds
+                queue_wait_seconds += segment_queue_seconds
+                source_seconds += segment_source_seconds
+                integrity_seconds += segment_integrity_seconds
+                remote_seconds += segment_remote_seconds
                 if written != content_length:
                     raise ValueError("retrieval cache stream length changed")
                 remote_started = time.perf_counter()
-                completed = self._adapter.complete_multipart_upload(
-                    MultipartCompleteRequest(
-                        upload=upload,
-                        parts=parts,
+                completed = self._adapter.complete_write(
+                    WriteCompleteRequest(
+                        session=session,
+                        segments=segments,
                         expected_bytes=written,
                         expected_identity_metadata=metadata,
                         expected_placement="immediate",
@@ -274,9 +278,9 @@ class StorageAdapterRetrievalCache:
                 )
                 remote_seconds += time.perf_counter() - remote_started
             except Exception:
-                self._adapter.abort_multipart_upload(upload)
+                self._adapter.abort_write(session)
                 raise
-            version_id = completed.revision
+            revision = completed.revision
             cached_at = completed.completed_at
 
         log_transfer_timing(
@@ -298,44 +302,44 @@ class StorageAdapterRetrievalCache:
         current = format_utc_timestamp(utc_now())
         return RetrievalCacheReceipt(
             object_path=object_path,
-            version_id=version_id,
+            revision=revision,
             stored_bytes=written,
             stored_sha256=digest.hexdigest(),
             cached_at=cached_at,
             verified_at=current,
         )
 
-    def _upload_multipart_content(
+    def _write_segmented_content(
         self,
         *,
-        upload: AdapterMultipartUpload,
+        session: AdapterWriteSession,
         content: Iterable[bytes],
         digest: Any,
     ) -> tuple[
-        tuple[AdapterMultipartPartReceipt, ...],
+        tuple[AdapterWriteSegmentReceipt, ...],
         int,
         float,
         float,
         float,
         float,
     ]:
-        worker_count = self._throughput.multipart_concurrency
+        worker_count = self._throughput.write_concurrency
         window = worker_count * 2
         chunks = iter(content)
         buffer = bytearray()
         source_done = False
         written = 0
-        next_part_number = 1
-        pending: dict[Future[tuple[AdapterMultipartPartReceipt, float, float]], int] = {}
-        completed: dict[int, AdapterMultipartPartReceipt] = {}
+        next_segment_number = 1
+        pending: dict[Future[tuple[AdapterWriteSegmentReceipt, float, float]], int] = {}
+        completed: dict[int, AdapterWriteSegmentReceipt] = {}
         queue_wait_seconds = 0.0
         source_seconds = 0.0
         integrity_seconds = 0.0
         remote_seconds = 0.0
 
-        def next_part() -> bytes | None:
+        def next_segment() -> bytes | None:
             nonlocal integrity_seconds, source_done, source_seconds, written
-            while len(buffer) < self._part_bytes and not source_done:
+            while len(buffer) < self._segment_bytes and not source_done:
                 source_started = time.perf_counter()
                 try:
                     chunk = bytes(next(chunks))
@@ -350,9 +354,9 @@ class StorageAdapterRetrievalCache:
                     digest.update(chunk)
                     integrity_seconds += time.perf_counter() - integrity_started
                     written += len(chunk)
-            if len(buffer) >= self._part_bytes:
-                body = bytes(buffer[: self._part_bytes])
-                del buffer[: self._part_bytes]
+            if len(buffer) >= self._segment_bytes:
+                body = bytes(buffer[: self._segment_bytes])
+                del buffer[: self._segment_bytes]
                 return body
             if source_done and buffer:
                 body = bytes(buffer)
@@ -364,26 +368,29 @@ class StorageAdapterRetrievalCache:
             queue_wait_seconds += retrieval_wait
             with ThreadPoolExecutor(
                 max_workers=worker_count,
-                thread_name_prefix="riverhog-retrieval-cache-part",
+                thread_name_prefix="riverhog-retrieval-cache-segment",
             ) as executor:
 
                 def fill() -> None:
-                    nonlocal next_part_number, queue_wait_seconds
+                    nonlocal next_segment_number, queue_wait_seconds
                     while len(pending) < window:
-                        body = next_part()
+                        body = next_segment()
                         if body is None:
                             return
-                        if next_part_number > self._descriptor.maximum_part_count:
-                            raise ValueError("retrieval cache object exceeds adapter part count")
+                        if (
+                            self._descriptor.maximum_segment_count is not None
+                            and next_segment_number > self._descriptor.maximum_segment_count
+                        ):
+                            raise ValueError("retrieval cache object exceeds adapter segment count")
                         reserved = len(body)
                         queue_wait_seconds += self._resources.upload_bytes.acquire(reserved)
-                        part_number = next_part_number
-                        next_part_number += 1
+                        segment_number = next_segment_number
+                        next_segment_number += 1
                         try:
                             future = executor.submit(
-                                self._upload_part,
-                                upload=upload,
-                                part_number=part_number,
+                                self._write_segment,
+                                session=session,
+                                segment_number=segment_number,
                                 body=body,
                             )
                         except BaseException:
@@ -391,23 +398,23 @@ class StorageAdapterRetrievalCache:
                             raise
 
                         def release_buffer(
-                            _future: Future[tuple[AdapterMultipartPartReceipt, float, float]],
+                            _future: Future[tuple[AdapterWriteSegmentReceipt, float, float]],
                             amount: int = reserved,
                         ) -> None:
                             self._resources.upload_bytes.release(amount)
 
                         future.add_done_callback(release_buffer)
-                        pending[future] = part_number
+                        pending[future] = segment_number
 
                 fill()
                 while pending:
                     done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
                     for future in done:
-                        part_number = pending.pop(future)
-                        receipt, upload_wait, upload_seconds = future.result()
-                        completed[part_number] = receipt
-                        queue_wait_seconds += upload_wait
-                        remote_seconds += upload_seconds
+                        segment_number = pending.pop(future)
+                        receipt, write_wait, write_seconds = future.result()
+                        completed[segment_number] = receipt
+                        queue_wait_seconds += write_wait
+                        remote_seconds += write_seconds
                     fill()
 
         return (
@@ -419,28 +426,28 @@ class StorageAdapterRetrievalCache:
             remote_seconds,
         )
 
-    def _upload_part(
+    def _write_segment(
         self,
         *,
-        upload: AdapterMultipartUpload,
-        part_number: int,
+        session: AdapterWriteSession,
+        segment_number: int,
         body: bytes,
-    ) -> tuple[AdapterMultipartPartReceipt, float, float]:
-        with self._resources.upload_requests.reserve() as upload_wait:
+    ) -> tuple[AdapterWriteSegmentReceipt, float, float]:
+        with self._resources.upload_requests.reserve() as write_wait:
             remote_started = time.perf_counter()
-            receipt = self._adapter.upload_part(
-                upload=upload,
-                number=part_number,
+            receipt = self._adapter.write_segment(
+                session=session,
+                number=segment_number,
                 content=body,
             )
             remote_seconds = time.perf_counter() - remote_started
-        return receipt, upload_wait, remote_seconds
+        return receipt, write_wait, remote_seconds
 
     def iter_object(
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         expected_sha256: str,
     ) -> Iterator[bytes]:
@@ -448,7 +455,7 @@ class StorageAdapterRetrievalCache:
         size = 0
         for chunk in self._adapter.iter_object(
             ObjectReadRequest(
-                object=ObjectLocator(object_path=object_path, revision=version_id),
+                object=ObjectLocator(object_path=object_path, revision=revision),
                 expected_bytes=expected_bytes,
             )
         ):
@@ -462,30 +469,30 @@ class StorageAdapterRetrievalCache:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
         return self._adapter.iter_object(
             ObjectReadRequest(
-                object=ObjectLocator(object_path=object_path, revision=version_id),
+                object=ObjectLocator(object_path=object_path, revision=revision),
                 expected_bytes=expected_bytes,
                 offset=offset,
                 size=size,
             )
         )
 
-    def delete(self, *, object_path: str, version_id: str | None) -> None:
+    def delete(self, *, object_path: str, revision: str | None) -> None:
         self._adapter.delete_object(
             DeleteObjectRequest(
-                object=ObjectLocator(object_path=object_path, revision=version_id),
-                mode="exact_revision" if version_id is not None else "current",
+                object=ObjectLocator(object_path=object_path, revision=revision),
+                mode="exact_revision" if revision is not None else "current",
             )
         )
 
 
-class _StorageAdapterRetrievalCacheMultipartObjectStore:
+class _StorageAdapterRetrievalCacheResumableObjectStore:
     def __init__(
         self,
         *,
@@ -497,87 +504,95 @@ class _StorageAdapterRetrievalCacheMultipartObjectStore:
         self._object_path = object_path
         self._metadata = metadata
 
-    def create_multipart_upload(
+    def write_constraints(self) -> ResumableWriteConstraints:
+        descriptor = self._adapter.descriptor()
+        return ResumableWriteConstraints(
+            minimum_nonfinal_segment_bytes=descriptor.minimum_nonfinal_segment_bytes,
+            maximum_segment_bytes=descriptor.maximum_segment_bytes,
+            maximum_segment_count=descriptor.maximum_segment_count,
+        )
+
+    def begin_write(
         self,
         *,
         object_path: str,
         content_type: str,
         metadata: dict[str, str],
-    ) -> MultipartUpload:
+    ) -> WriteSession:
         _ = object_path
-        upload = self._adapter.create_multipart_upload(
-            MultipartCreateRequest(
+        session = self._adapter.begin_write(
+            WriteStartRequest(
                 object_path=self._object_path,
                 content_type=content_type,
                 identity_metadata=self._cache_metadata(metadata),
                 placement="immediate",
             )
         )
-        return MultipartUpload(upload.object_path, upload.upload_id)
+        return WriteSession(session.object_path, session.write_token)
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        session: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt:
-        self._require_path(upload.object_path)
-        receipt = self._adapter.upload_part(
-            upload=AdapterMultipartUpload(
-                object_path=upload.object_path,
-                upload_id=upload.upload_id,
+    ) -> WriteSegmentReceipt:
+        self._require_path(session.object_path)
+        receipt = self._adapter.write_segment(
+            session=AdapterWriteSession(
+                object_path=session.object_path,
+                write_token=session.write_token,
             ),
             number=number,
             content=content,
         )
-        return MultipartPartReceipt(
+        return WriteSegmentReceipt(
             receipt.number,
-            receipt.part_token,
+            receipt.segment_token,
             receipt.stored_bytes,
             receipt.stored_sha256,
         )
 
-    def list_parts(self, *, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
-        self._require_path(upload.object_path)
+    def list_segments(self, *, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
+        self._require_path(session.object_path)
         return tuple(
-            MultipartPartReceipt(
+            WriteSegmentReceipt(
                 current.number,
-                current.part_token,
+                current.segment_token,
                 current.stored_bytes,
                 current.stored_sha256,
             )
-            for current in self._adapter.list_parts(
-                AdapterMultipartUpload(
-                    object_path=upload.object_path,
-                    upload_id=upload.upload_id,
+            for current in self._adapter.list_segments(
+                AdapterWriteSession(
+                    object_path=session.object_path,
+                    write_token=session.write_token,
                 )
             )
         )
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
         *,
-        upload: MultipartUpload,
-        parts: tuple[MultipartPartReceipt, ...],
+        session: WriteSession,
+        segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
-        self._require_path(upload.object_path)
-        receipt = self._adapter.complete_multipart_upload(
-            MultipartCompleteRequest(
-                upload=AdapterMultipartUpload(
-                    object_path=upload.object_path,
-                    upload_id=upload.upload_id,
+        self._require_path(session.object_path)
+        receipt = self._adapter.complete_write(
+            WriteCompleteRequest(
+                session=AdapterWriteSession(
+                    object_path=session.object_path,
+                    write_token=session.write_token,
                 ),
-                parts=tuple(
-                    AdapterMultipartPartReceipt(
+                segments=tuple(
+                    AdapterWriteSegmentReceipt(
                         number=current.number,
-                        part_token=current.etag,
+                        segment_token=current.segment_token,
                         stored_bytes=current.bytes,
                         stored_sha256=current.sha256,
                     )
-                    for current in parts
+                    for current in segments
                 ),
                 expected_bytes=expected_bytes,
                 expected_identity_metadata=self._cache_metadata(expected_metadata),
@@ -586,7 +601,7 @@ class _StorageAdapterRetrievalCacheMultipartObjectStore:
         )
         return _completed(receipt)
 
-    def head_completed_object(
+    def find_completed_write(
         self,
         *,
         object_path: str,
@@ -594,8 +609,8 @@ class _StorageAdapterRetrievalCacheMultipartObjectStore:
     ) -> CompletedObjectReceipt | None:
         _ = object_path
         try:
-            receipt = self._adapter.head_completed_object(
-                MultipartHeadRequest(
+            receipt = self._adapter.find_completed_write(
+                CompletedWriteLookupRequest(
                     object_path=self._object_path,
                     expected_identity_metadata=self._cache_metadata(expected_metadata),
                     expected_placement="immediate",
@@ -607,18 +622,18 @@ class _StorageAdapterRetrievalCacheMultipartObjectStore:
             raise
         return _completed(receipt) if receipt is not None else None
 
-    def abort_multipart_upload(self, *, upload: MultipartUpload) -> None:
-        self._require_path(upload.object_path)
-        self._adapter.abort_multipart_upload(
-            AdapterMultipartUpload(
-                object_path=upload.object_path,
-                upload_id=upload.upload_id,
+    def abort_write(self, *, session: WriteSession) -> None:
+        self._require_path(session.object_path)
+        self._adapter.abort_write(
+            AdapterWriteSession(
+                object_path=session.object_path,
+                write_token=session.write_token,
             )
         )
 
     def _require_path(self, object_path: str) -> None:
         if object_path != self._object_path:
-            raise ValueError("retrieval cache multipart object path changed")
+            raise ValueError("retrieval cache resumable object path changed")
 
     def _cache_metadata(self, source_metadata: dict[str, str]) -> dict[str, str]:
         if not source_metadata:
@@ -643,26 +658,26 @@ def _cache_identity(source_store: str, collection_id: int, object_id: str) -> di
 def _completed(receipt: AdapterCompletedObjectReceipt) -> CompletedObjectReceipt:
     return CompletedObjectReceipt(
         object_path=receipt.object_path,
-        version_id=receipt.revision,
-        etag=receipt.entity_token,
+        revision=receipt.revision,
+        entity_token=receipt.entity_token,
         bytes=receipt.stored_bytes,
         completed_at=receipt.completed_at,
     )
 
 
-def _validate_integrity_parts(
-    parts: tuple[MultipartPartReceipt, ...],
+def _validate_integrity_segments(
+    segments: tuple[WriteSegmentReceipt, ...],
     *,
     expected_bytes: int,
 ) -> None:
-    if not parts:
+    if not segments:
         return
     if (
-        tuple(current.number for current in parts) != tuple(range(1, len(parts) + 1))
-        or sum(current.bytes for current in parts) != expected_bytes
-        or any(current.sha256 is None or len(current.sha256) != 64 for current in parts)
+        tuple(current.number for current in segments) != tuple(range(1, len(segments) + 1))
+        or sum(current.bytes for current in segments) != expected_bytes
+        or any(current.sha256 is None or len(current.sha256) != 64 for current in segments)
     ):
-        raise ValueError("retrieval cache multipart integrity receipts are invalid")
+        raise ValueError("retrieval cache write integrity receipts are invalid")
 
 
 __all__ = ["StorageAdapterRetrievalCache"]

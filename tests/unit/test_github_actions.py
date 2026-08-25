@@ -388,7 +388,7 @@ def test_provider_qualification_is_resumable_dummy_only_and_cloudfront_required(
     assert workflow["on"]["schedule"] == [{"cron": "23 1,7,13,19 * * *"}]
     assert set(workflow["on"]["workflow_dispatch"]["inputs"]["corpus_profile"]["options"]) == {
         "regular",
-        "multipart",
+        "resumable",
     }
     assert set(workflow["on"]["workflow_dispatch"]["inputs"]["mode"]["options"]) == {
         "auto",

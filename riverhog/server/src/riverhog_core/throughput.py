@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 DEFAULT_UPLOAD_PREPARE_CONCURRENCY = 8
-DEFAULT_MULTIPART_CONCURRENCY = 4
+DEFAULT_WRITE_CONCURRENCY = 4
 DEFAULT_UPLOAD_REQUEST_CONCURRENCY = 4
 DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES = 1280 * 1024 * 1024
 DEFAULT_RETRIEVAL_REQUEST_CONCURRENCY = 8
@@ -28,13 +28,13 @@ _TRANSFER_LOG = logging.getLogger("riverhog.transfer")
 class ArchiveThroughputTuning:
     """Runtime-only transfer controls.
 
-    Layout-affecting values such as pack size and multipart plaintext size are intentionally
+    Layout-affecting values such as pack size and archive-part plaintext size are intentionally
     not included here: those values belong in the immutable collection plan. Every field in
     this class can be changed between collections without changing archive semantics.
     """
 
     upload_prepare_concurrency: int = DEFAULT_UPLOAD_PREPARE_CONCURRENCY
-    multipart_concurrency: int = DEFAULT_MULTIPART_CONCURRENCY
+    write_concurrency: int = DEFAULT_WRITE_CONCURRENCY
     upload_request_concurrency: int = DEFAULT_UPLOAD_REQUEST_CONCURRENCY
     upload_max_inflight_bytes: int = DEFAULT_UPLOAD_MAX_INFLIGHT_BYTES
     source_read_chunk_bytes: int = DEFAULT_SOURCE_READ_CHUNK_BYTES
@@ -52,8 +52,8 @@ class ArchiveThroughputTuning:
             maximum=MAX_WORKER_CONCURRENCY,
         )
         _bounded_int(
-            self.multipart_concurrency,
-            name="multipart concurrency",
+            self.write_concurrency,
+            name="write concurrency",
             minimum=1,
             maximum=MAX_WORKER_CONCURRENCY,
         )
@@ -99,10 +99,10 @@ class ArchiveThroughputTuning:
                 "RIVERHOG_ARCHIVE_PREPARE_CONCURRENCY",
                 DEFAULT_UPLOAD_PREPARE_CONCURRENCY,
             ),
-            multipart_concurrency=_env_int(
+            write_concurrency=_env_int(
                 values,
-                "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY",
-                DEFAULT_MULTIPART_CONCURRENCY,
+                "RIVERHOG_ARCHIVE_WRITE_CONCURRENCY",
+                DEFAULT_WRITE_CONCURRENCY,
             ),
             upload_request_concurrency=_env_int(
                 values,

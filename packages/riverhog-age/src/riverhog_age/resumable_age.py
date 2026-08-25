@@ -6,7 +6,7 @@ This module is intentionally small and Riverhog-oriented. It supports:
 * standard age v1 scrypt recipient files, no compression, no armor;
 * deterministic regeneration of payload chunk ciphertext once a session is created;
 * export/import of upload-session state without persisting the plaintext file key;
-* portable multipart planning that aligns every unit to age chunk boundaries.
+* provider-independent unit planning aligned to age chunk boundaries.
 
 It does NOT implement X25519 recipients, plugins, armor, or general age CLI UX.
 """
@@ -20,7 +20,7 @@ import hmac
 import json
 import math
 import os
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 
 from cryptography.exceptions import InvalidTag
@@ -37,12 +37,8 @@ FILE_KEY_SIZE = 16
 SCRYPT_SALT_SIZE = 16
 ZERO_AEAD_NONCE = b"\x00" * 12
 DEFAULT_SCRYPT_LOG_N = 18
-PORTABLE_MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024
-PORTABLE_MULTIPART_MAX_PART_BYTES = 5 * 1024 * 1024 * 1024
-PORTABLE_MULTIPART_MAX_PARTS = 10_000
-# 1024 age chunks is about 64 MiB per part, safely above the 5 MiB
-# minimum and low enough to keep 70--500 GiB archives under 10,000 parts.
-DEFAULT_CHUNKS_PER_MULTIPART_PART = 1024
+# 1024 age chunks is about 64 MiB per archive unit.
+DEFAULT_CHUNKS_PER_AGE_UNIT = 1024
 
 
 class AgeFormatError(ValueError):
@@ -124,10 +120,10 @@ def plaintext_bytes_for_ciphertext_offset(
 
 
 @dataclass(frozen=True)
-class MultipartPartPlan:
-    """A portable multipart unit whose contents align to age chunk boundaries."""
+class AgeAlignedUnitPlan:
+    """A provider-independent unit aligned to age chunk boundaries."""
 
-    part_number: int
+    unit_number: int
     first_chunk: int
     chunk_count: int
     includes_age_prefix: bool
@@ -294,29 +290,27 @@ class ResumableAgeScryptSession:
             out.extend(self.encrypt_chunk(idx, plaintext[start:end], final=final))
         return bytes(out)
 
-    def multipart_part_plans(
+    def age_aligned_unit_plans(
         self,
         plaintext_size: int,
         *,
-        chunks_per_part: int = DEFAULT_CHUNKS_PER_MULTIPART_PART,
-        enforce_portable_limits: bool = True,
-    ) -> list[MultipartPartPlan]:
-        return make_multipart_part_plans(
+        chunks_per_unit: int = DEFAULT_CHUNKS_PER_AGE_UNIT,
+    ) -> list[AgeAlignedUnitPlan]:
+        return make_age_aligned_unit_plans(
             plaintext_size,
             age_prefix_len=len(self.age_prefix),
-            chunks_per_part=chunks_per_part,
-            enforce_portable_limits=enforce_portable_limits,
+            chunks_per_unit=chunks_per_unit,
         )
 
     def encrypt_part(
         self,
-        plan: MultipartPartPlan,
+        plan: AgeAlignedUnitPlan,
         plaintext_chunk_provider: Callable[[int, int, int], bytes],
         *,
         plaintext_size: int,
     ) -> bytes:
         """
-        Encrypt bytes for one multipart unit from deterministic plaintext chunks.
+        Encrypt bytes for one age-aligned unit from deterministic plaintext chunks.
 
         `plaintext_chunk_provider(chunk_index, start, end)` must return plaintext
         bytes for [start:end] in the original tar stream.
@@ -561,84 +555,60 @@ def age_ciphertext_len_for_plaintext_len(plaintext_size: int, *, age_prefix_len:
     return age_prefix_len + payload_ciphertext
 
 
-def make_multipart_part_plans(
+def make_age_aligned_unit_plans(
     plaintext_size: int,
     *,
     age_prefix_len: int,
-    chunks_per_part: int = DEFAULT_CHUNKS_PER_MULTIPART_PART,
-    enforce_portable_limits: bool = True,
-) -> list[MultipartPartPlan]:
+    chunks_per_unit: int = DEFAULT_CHUNKS_PER_AGE_UNIT,
+) -> list[AgeAlignedUnitPlan]:
     """
-    Build portable multipart plans aligned to age chunks.
+    Build provider-independent ciphertext units aligned to age chunks.
 
-    Part 1 includes the age header and 16-byte payload nonce, followed by a fixed
-    group of encrypted age chunks. Later parts contain only encrypted chunks.
+    Unit 1 includes the age header and 16-byte payload nonce, followed by a fixed
+    group of encrypted age chunks. Later units contain only encrypted chunks.
     """
 
     if plaintext_size < 0:
         raise ValueError("plaintext_size must be non-negative")
     if age_prefix_len < PAYLOAD_NONCE_SIZE:
         raise ValueError("age_prefix_len must include header and 16-byte payload nonce")
-    if chunks_per_part <= 0:
-        raise ValueError("chunks_per_part must be positive")
+    if chunks_per_unit <= 0:
+        raise ValueError("chunks_per_unit must be positive")
 
     chunk_count = age_chunk_count_for_plaintext_len(plaintext_size)
-    plans: list[MultipartPartPlan] = []
+    plans: list[AgeAlignedUnitPlan] = []
     ciphertext_offset = 0
-    part_number = 1
-    for first_chunk in range(0, chunk_count, chunks_per_part):
-        this_count = min(chunks_per_part, chunk_count - first_chunk)
+    unit_number = 1
+    for first_chunk in range(0, chunk_count, chunks_per_unit):
+        this_count = min(chunks_per_unit, chunk_count - first_chunk)
         includes_prefix = first_chunk == 0
         plaintext_start = first_chunk * CHUNK_SIZE
         plaintext_end = min((first_chunk + this_count) * CHUNK_SIZE, plaintext_size)
         if plaintext_size == 0:
             plaintext_start = plaintext_end = 0
         # Each age chunk adds a 16-byte AEAD tag. The plaintext bytes covered
-        # by this part are contiguous, so part length is prefix + plaintext span
+        # by this unit are contiguous, so unit length is prefix + plaintext span
         # + one tag per chunk. This avoids looping over every chunk for huge archives.
-        part_len = (
+        unit_len = (
             (age_prefix_len if includes_prefix else 0)
             + (plaintext_end - plaintext_start)
             + (this_count * AEAD_TAG_SIZE)
         )
         plans.append(
-            MultipartPartPlan(
-                part_number=part_number,
+            AgeAlignedUnitPlan(
+                unit_number=unit_number,
                 first_chunk=first_chunk,
                 chunk_count=this_count,
                 includes_age_prefix=includes_prefix,
                 plaintext_start=plaintext_start,
                 plaintext_end=plaintext_end,
                 ciphertext_start=ciphertext_offset,
-                ciphertext_end=ciphertext_offset + part_len,
+                ciphertext_end=ciphertext_offset + unit_len,
             )
         )
-        ciphertext_offset += part_len
-        part_number += 1
-    if enforce_portable_limits:
-        _validate_multipart_part_plans(plans)
+        ciphertext_offset += unit_len
+        unit_number += 1
     return plans
-
-
-def _validate_multipart_part_plans(plans: Sequence[MultipartPartPlan]) -> None:
-    if len(plans) > PORTABLE_MULTIPART_MAX_PARTS:
-        raise ValueError(
-            f"portable multipart construction supports at most {PORTABLE_MULTIPART_MAX_PARTS} "
-            "parts; "
-            f"plan has {len(plans)} parts. Increase chunks_per_part."
-        )
-    for plan in plans[:-1]:
-        if plan.ciphertext_len < PORTABLE_MULTIPART_MIN_PART_BYTES:
-            raise ValueError(
-                f"multipart unit {plan.part_number} is below the 5 MiB portable minimum; "
-                f"increase chunks_per_part or disable enforcement for tests"
-            )
-    for plan in plans:
-        if plan.ciphertext_len > PORTABLE_MULTIPART_MAX_PART_BYTES:
-            raise ValueError(
-                f"multipart unit {plan.part_number} exceeds the 5 GiB portable maximum; "
-                "decrease chunks_per_part"
-            )
 
 
 def parse_scrypt_header_from_age_file(age_file: bytes) -> ParsedScryptHeader:

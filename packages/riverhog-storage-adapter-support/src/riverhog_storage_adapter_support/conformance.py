@@ -13,16 +13,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 from riverhog_storage_adapter_protocol import (
     STORAGE_ADAPTER_PROTOCOL,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
     ObjectHeadRequest,
     ObjectLocator,
     ObjectReadRequest,
     ReadPreparationRequest,
     SmallObjectWriteRequest,
+    WriteCompleteRequest,
+    WriteStartRequest,
     normalize_object_path,
 )
 
@@ -67,7 +67,7 @@ def run_storage_adapter_conformance(
     descriptor = client.descriptor()
     checks: list[str] = ["descriptor"]
     small_path = f"{normalized_prefix}/small.bin"
-    multipart_path = f"{normalized_prefix}/multipart.bin"
+    write_path = f"{normalized_prefix}/resumable-write.bin"
     small_content = b"riverhog storage adapter conformance v1\n"
     small_sha256 = hashlib.sha256(small_content).hexdigest()
     small_request = SmallObjectWriteRequest(
@@ -137,72 +137,79 @@ def run_storage_adapter_conformance(
             raise AssertionError("create-only write accepted a changed identity")
         checks.append("identity-conflict")
 
-        part_count = 2 if descriptor.maximum_part_count >= 2 else 1
-        first_part_bytes = descriptor.minimum_nonfinal_part_bytes if part_count == 2 else 1
-        if first_part_bytes > descriptor.maximum_part_bytes:
-            raise AssertionError("adapter descriptor contains unusable multipart limits")
-        part_contents = [b"a" * first_part_bytes]
-        if part_count == 2:
-            part_contents.append(b"final")
-        multipart_request = MultipartCreateRequest(
-            object_path=multipart_path,
+        segment_count = (
+            2
+            if descriptor.maximum_segment_count is None or descriptor.maximum_segment_count >= 2
+            else 1
+        )
+        first_segment_bytes = descriptor.minimum_nonfinal_segment_bytes if segment_count == 2 else 1
+        if (
+            descriptor.maximum_segment_bytes is not None
+            and first_segment_bytes > descriptor.maximum_segment_bytes
+        ):
+            raise AssertionError("adapter descriptor contains unusable write-segment limits")
+        segment_contents = [b"a" * first_segment_bytes]
+        if segment_count == 2:
+            segment_contents.append(b"final")
+        write_request = WriteStartRequest(
+            object_path=write_path,
             content_type="application/octet-stream",
-            identity_metadata={"riverhog-conformance": "multipart/v1"},
+            identity_metadata={"riverhog-conformance": "resumable-write/v1"},
             placement="immediate",
         )
-        upload = client.create_multipart_upload(multipart_request)
-        uploaded_parts = tuple(
-            client.upload_part(upload=upload, number=index, content=content)
-            for index, content in enumerate(part_contents, start=1)
+        session = client.begin_write(write_request)
+        written_segments = tuple(
+            client.write_segment(session=session, number=index, content=content)
+            for index, content in enumerate(segment_contents, start=1)
         )
-        listed_parts = client.list_parts(upload)
-        if listed_parts != uploaded_parts:
-            raise AssertionError("multipart listing differs from uploaded part receipts")
-        checks.append("multipart-reconciliation")
+        listed_segments = client.list_segments(session)
+        if listed_segments != written_segments:
+            raise AssertionError("write listing differs from written segment receipts")
+        checks.append("write-reconciliation")
 
-        total_bytes = sum(len(content) for content in part_contents)
-        completion_request = MultipartCompleteRequest(
-            upload=upload,
-            parts=listed_parts,
+        total_bytes = sum(len(content) for content in segment_contents)
+        completion_request = WriteCompleteRequest(
+            session=session,
+            segments=listed_segments,
             expected_bytes=total_bytes,
-            expected_identity_metadata=multipart_request.identity_metadata,
-            expected_placement=multipart_request.placement,
+            expected_identity_metadata=write_request.identity_metadata,
+            expected_placement=write_request.placement,
         )
-        completed = client.complete_multipart_upload(completion_request)
-        recovered_completion = client.complete_multipart_upload(completion_request)
+        completed = client.complete_write(completion_request)
+        recovered_completion = client.complete_write(completion_request)
         if recovered_completion != completed:
             raise AssertionError("lost completion response did not reconcile exactly")
-        headed_completion = client.head_completed_object(
-            MultipartHeadRequest(
-                object_path=multipart_path,
-                expected_identity_metadata=multipart_request.identity_metadata,
-                expected_placement=multipart_request.placement,
+        headed_completion = client.find_completed_write(
+            CompletedWriteLookupRequest(
+                object_path=write_path,
+                expected_identity_metadata=write_request.identity_metadata,
+                expected_placement=write_request.placement,
             )
         )
         if headed_completion != completed:
-            raise AssertionError("completed multipart head differs from its receipt")
-        checks.append("multipart-completion-recovery")
+            raise AssertionError("completed write lookup differs from its receipt")
+        checks.append("write-completion-recovery")
 
-        multipart_content = b"".join(part_contents)
-        stored_multipart = b"".join(
+        write_content = b"".join(segment_contents)
+        stored_write = b"".join(
             client.iter_object(
                 ObjectReadRequest(
                     object=ObjectLocator(
-                        object_path=multipart_path,
+                        object_path=write_path,
                         revision=completed.revision,
                     ),
                     expected_bytes=total_bytes,
                 )
             )
         )
-        if stored_multipart != multipart_content:
-            raise AssertionError("completed multipart bytes differ from their inputs")
-        checks.append("multipart-stream")
+        if stored_write != write_content:
+            raise AssertionError("completed write bytes differ from its segments")
+        checks.append("write-stream")
 
         preparation = ReadPreparationRequest(
             objects=(
                 ObjectLocator(
-                    object_path=multipart_path,
+                    object_path=write_path,
                     revision=completed.revision,
                 ),
             )
@@ -218,12 +225,12 @@ def run_storage_adapter_conformance(
         client.cleanup_read(preparation)
         checks.append("read-preparation")
 
-        aborted = client.create_multipart_upload(
-            multipart_request.model_copy(update={"object_path": f"{normalized_prefix}/aborted.bin"})
+        aborted = client.begin_write(
+            write_request.model_copy(update={"object_path": f"{normalized_prefix}/aborted.bin"})
         )
-        client.abort_multipart_upload(aborted)
-        client.abort_multipart_upload(aborted)
-        checks.append("multipart-abort")
+        client.abort_write(aborted)
+        client.abort_write(aborted)
+        checks.append("write-abort")
 
         delete_request = (
             DeleteObjectRequest(
@@ -258,7 +265,7 @@ def run_storage_adapter_conformance(
         if (
             client.head_object(
                 ObjectHeadRequest(
-                    object=ObjectLocator(object_path=multipart_path),
+                    object=ObjectLocator(object_path=write_path),
                     expected_placement="immediate",
                 )
             )

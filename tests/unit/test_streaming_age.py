@@ -45,10 +45,9 @@ def test_prepare_age_part_consumes_large_source_chunk_without_plaintext_part_sta
         log_n=1,
         plaintext_size=len(content),
     )
-    plan = session.multipart_part_plans(
+    plan = session.age_aligned_unit_plans(
         len(content),
-        chunks_per_part=256,
-        enforce_portable_limits=False,
+        chunks_per_unit=256,
     )[0]
 
     prepared = prepare_age_part(

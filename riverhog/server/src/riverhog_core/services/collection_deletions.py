@@ -221,7 +221,7 @@ class SqlAlchemyCollectionDeletionService:
             assert self._retrieval_cache is not None
             self._retrieval_cache.delete(
                 object_path=current.object_path,
-                version_id=current.version_id,
+                revision=current.revision,
             )
 
     def _delete_archive_objects(self, plan: dict[str, object]) -> None:

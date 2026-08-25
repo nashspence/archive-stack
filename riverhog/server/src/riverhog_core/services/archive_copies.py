@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -39,10 +40,10 @@ from riverhog_core.catalog_models import (
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.pack_upload import PACK_VOLUME_CONTENT_TYPE
 from riverhog_core.ports.archive_objects import (
-    ArchiveMultipartObjectStore,
+    ArchiveResumableObjectStore,
     ImmutableArchiveObjectStore,
-    MultipartPartReceipt,
-    MultipartUpload,
+    WriteSegmentReceipt,
+    WriteSession,
 )
 from riverhog_core.ports.archive_store import (
     ArchiveObjectIdentity,
@@ -62,8 +63,8 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
-from riverhog_core.stores.mirrored_archive_multipart_object_store import (
-    MirroredArchiveMultipartObjectStore,
+from riverhog_core.stores.mirrored_archive_resumable_object_store import (
+    MirroredArchiveResumableObjectStore,
 )
 from riverhog_core.throughput import (
     ArchiveThroughputTuning,
@@ -71,6 +72,7 @@ from riverhog_core.throughput import (
     TransferTiming,
     log_transfer_timing,
 )
+from riverhog_core.write_segments import WriteSegmentPlan, plan_write_segments
 
 _LOG = logging.getLogger(__name__)
 _SORT_FIELDS = {
@@ -97,16 +99,44 @@ _COPY_OBJECT_KINDS = frozenset(
 class _CopiedObject:
     object_id: str
     object_path: str
-    version_id: str | None
+    revision: str | None
     completed_at: str
-    part_receipts_json: str | None = None
+    archive_parts_json: str | None = None
     retrieval_cache: RetrievalCacheReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _CopiedPart:
-    receipt: MultipartPartReceipt
+    receipt: WriteSegmentReceipt
     timing: TransferTiming
+
+
+class _ArchivePartReservation:
+    """Hold one buffered archive part against the shared byte budget."""
+
+    def __init__(
+        self,
+        resources: ArchiveTransferResources,
+        *,
+        stored_bytes: int,
+        consumers: int,
+    ) -> None:
+        self._resources = resources
+        self._stored_bytes = stored_bytes
+        self._remaining = consumers
+        self._lock = threading.Lock()
+
+    def release(self, count: int = 1) -> None:
+        if count < 1:
+            return
+        release = False
+        with self._lock:
+            if count > self._remaining:
+                raise RuntimeError("archive-part buffer reservation released too many times")
+            self._remaining -= count
+            release = self._remaining == 0
+        if release:
+            self._resources.upload_bytes.release(self._stored_bytes)
 
 
 class SqlAlchemyArchiveCopyService:
@@ -679,7 +709,7 @@ class SqlAlchemyArchiveCopyService:
                             ),
                             plaintext_bytes=current.plaintext_bytes,
                             sha256=current.sha256,
-                            multipart_content_length=current.stored_bytes,
+                            expected_stored_bytes=current.stored_bytes,
                         )
                     )
                     continue
@@ -687,7 +717,7 @@ class SqlAlchemyArchiveCopyService:
                     record.kind != current.kind
                     or record.plaintext_bytes != current.plaintext_bytes
                     or record.sha256 != current.sha256
-                    or record.multipart_content_length != current.stored_bytes
+                    or record.expected_stored_bytes != current.stored_bytes
                 ):
                     raise Conflict("archive copy upload checkpoint does not match its manifest")
 
@@ -765,7 +795,7 @@ class SqlAlchemyArchiveCopyService:
         destination_store_name: str,
         destination_storage_prefix: str,
         source_store: ArchiveStore,
-        destination_object_store: ArchiveMultipartObjectStore,
+        destination_object_store: ArchiveResumableObjectStore,
         source: CollectionArchiveObjectRecord,
         identity: ArchiveObjectIdentity,
     ) -> _CopiedObject:
@@ -773,12 +803,12 @@ class SqlAlchemyArchiveCopyService:
             source=source,
             destination_storage_prefix=destination_storage_prefix,
         )
-        part_rows = _part_rows(source.part_receipts_json)
+        part_rows = _part_rows(source.archive_parts_json)
         metadata = _volume_metadata(source)
         content_type = (
             PACK_VOLUME_CONTENT_TYPE if source.kind == "pack" else RAW_VOLUME_CONTENT_TYPE
         )
-        completed = destination_object_store.head_completed_object(
+        completed = destination_object_store.find_completed_write(
             object_path=destination_path,
             expected_metadata=metadata,
         )
@@ -788,9 +818,9 @@ class SqlAlchemyArchiveCopyService:
             return _CopiedObject(
                 source.object_id,
                 completed.object_path,
-                completed.version_id,
+                completed.revision,
                 completed.completed_at,
-                source.part_receipts_json,
+                source.archive_parts_json,
                 completed.retrieval_cache,
             )
 
@@ -801,13 +831,13 @@ class SqlAlchemyArchiveCopyService:
             )
             if checkpoint is None:
                 raise Conflict("archive copy upload checkpoint disappeared")
-            upload = (
-                MultipartUpload(destination_path, checkpoint.multipart_upload_id)
-                if checkpoint.multipart_upload_id
+            write_session = (
+                WriteSession(destination_path, checkpoint.write_token)
+                if checkpoint.write_token
                 else None
             )
-        if upload is None:
-            upload = destination_object_store.create_multipart_upload(
+        if write_session is None:
+            write_session = destination_object_store.begin_write(
                 object_path=destination_path,
                 content_type=content_type,
                 metadata=metadata,
@@ -819,15 +849,19 @@ class SqlAlchemyArchiveCopyService:
                 )
                 if checkpoint is None:
                     raise Conflict("archive copy upload checkpoint disappeared")
-                checkpoint.multipart_upload_id = upload.upload_id
+                checkpoint.write_token = write_session.write_token
                 checkpoint.object_path = destination_path
 
-        remote_parts = {
+        segment_plans = plan_write_segments(
+            tuple(_part_int(current, "stored_bytes") for current in part_rows),
+            destination_object_store.write_constraints(),
+        )
+        remote_segments = {
             current.number: current
-            for current in destination_object_store.list_parts(upload=upload)
+            for current in destination_object_store.list_segments(session=write_session)
         }
-        if set(remote_parts) - {_part_int(current, "number") for current in part_rows}:
-            raise Conflict("archive copy multipart upload has unexpected parts")
+        if set(remote_segments) - {current.number for current in segment_plans}:
+            raise Conflict("archive copy resumable write has unexpected segments")
         committed = self._copy_volume_parts(
             collection_id=collection_id,
             destination_store_name=destination_store_name,
@@ -835,22 +869,23 @@ class SqlAlchemyArchiveCopyService:
             destination_object_store=destination_object_store,
             source=source,
             identity=identity,
-            upload=upload,
+            write_session=write_session,
             part_rows=part_rows,
-            remote_parts=remote_parts,
+            segment_plans=segment_plans,
+            remote_segments=remote_segments,
         )
-        completed = destination_object_store.complete_multipart_upload(
-            upload=upload,
-            parts=committed,
+        completed = destination_object_store.complete_write(
+            session=write_session,
+            segments=committed,
             expected_bytes=source.stored_bytes,
             expected_metadata=metadata,
         )
         return _CopiedObject(
             source.object_id,
             completed.object_path,
-            completed.version_id,
+            completed.revision,
             completed.completed_at,
-            _part_rows_json(part_rows, committed),
+            source.archive_parts_json,
             completed.retrieval_cache,
         )
 
@@ -860,16 +895,16 @@ class SqlAlchemyArchiveCopyService:
         store_name: str,
         collection_id: int,
         object_id: str,
-    ) -> ArchiveMultipartObjectStore:
+    ) -> ArchiveResumableObjectStore:
         binding = self._archive_stores.require(store_name)
-        archive = binding.multipart_objects
+        archive = binding.resumable_objects
         if (
             not self._config.retrieval_cache_new_archive_enabled
             or self._retrieval_cache is None
             or binding.store.read_mode() != "restore_required"
         ):
             return archive
-        return MirroredArchiveMultipartObjectStore(
+        return MirroredArchiveResumableObjectStore(
             archive=archive,
             cache=self._retrieval_cache,
             source_store=store_name,
@@ -883,15 +918,16 @@ class SqlAlchemyArchiveCopyService:
         collection_id: int,
         destination_store_name: str,
         source_store: ArchiveStore,
-        destination_object_store: ArchiveMultipartObjectStore,
+        destination_object_store: ArchiveResumableObjectStore,
         source: CollectionArchiveObjectRecord,
         identity: ArchiveObjectIdentity,
-        upload: MultipartUpload,
+        write_session: WriteSession,
         part_rows: Sequence[dict[str, object]],
-        remote_parts: Mapping[int, MultipartPartReceipt],
-    ) -> tuple[MultipartPartReceipt, ...]:
-        worker_count = min(self._throughput.multipart_concurrency, len(part_rows))
-        window = min(len(part_rows), worker_count * 2)
+        segment_plans: Sequence[WriteSegmentPlan],
+        remote_segments: Mapping[int, WriteSegmentReceipt],
+    ) -> tuple[WriteSegmentReceipt, ...]:
+        worker_count = min(self._throughput.write_concurrency, len(segment_plans))
+        window = min(len(segment_plans), worker_count * 2)
         source_chunks = iter(
             source_store.iter_stored_archive_object(
                 collection_id=collection_id,
@@ -899,71 +935,114 @@ class SqlAlchemyArchiveCopyService:
             )
         )
         source_buffer = bytearray()
-        rows = iter(part_rows)
-        pending: dict[Future[_CopiedPart], dict[str, object]] = {}
-        committed: dict[int, MultipartPartReceipt] = {}
+        pending: dict[Future[_CopiedPart], WriteSegmentPlan] = {}
+        committed: dict[int, WriteSegmentReceipt] = {}
         exhausted = False
         retrieval_wait_seconds = 0.0
         retrieval_wait_recorded = False
 
-        def read_part(row: Mapping[str, object]) -> tuple[bytes, int, float, float]:
-            nonlocal retrieval_wait_recorded
-            reserved = _part_int(row, "stored_bytes")
-            byte_wait_seconds = self._resources.upload_bytes.acquire(reserved)
-            try:
-                source_started = time.perf_counter()
-                while len(source_buffer) < reserved:
-                    try:
-                        chunk = bytes(next(source_chunks))
-                    except StopIteration as exc:
-                        raise Conflict(
-                            "source archive volume ended before its part receipts"
-                        ) from exc
-                    if chunk:
-                        source_buffer.extend(chunk)
-                content = bytes(source_buffer[:reserved])
-                del source_buffer[:reserved]
-                source_seconds = time.perf_counter() - source_started
-                queue_wait_seconds = byte_wait_seconds
-                if not retrieval_wait_recorded:
-                    queue_wait_seconds += retrieval_wait_seconds
-                    retrieval_wait_recorded = True
-                return content, reserved, queue_wait_seconds, source_seconds
-            except BaseException:
-                self._resources.upload_bytes.release(reserved)
-                raise
+        plans_by_part: dict[int, list[WriteSegmentPlan]] = {}
+        for plan in segment_plans:
+            plans_by_part.setdefault(plan.archive_part_number, []).append(plan)
 
-        def upload_part(
-            row: Mapping[str, object],
+        def segment_inputs() -> Iterator[
+            tuple[WriteSegmentPlan, bytes, float, float, float, _ArchivePartReservation]
+        ]:
+            nonlocal retrieval_wait_recorded
+            for row in part_rows:
+                archive_part_number = _part_int(row, "number")
+                archive_part_bytes = _part_int(row, "stored_bytes")
+                plans = tuple(plans_by_part.get(archive_part_number, ()))
+                if not plans:
+                    raise Conflict("archive part has no destination write segments")
+                byte_wait_seconds = self._resources.upload_bytes.acquire(archive_part_bytes)
+                reservation = _ArchivePartReservation(
+                    self._resources,
+                    stored_bytes=archive_part_bytes,
+                    consumers=len(plans),
+                )
+                transferred = 0
+                try:
+                    source_started = time.perf_counter()
+                    while len(source_buffer) < archive_part_bytes:
+                        try:
+                            chunk = bytes(next(source_chunks))
+                        except StopIteration as exc:
+                            raise Conflict(
+                                "source archive volume ended before its part receipts"
+                            ) from exc
+                        if chunk:
+                            source_buffer.extend(chunk)
+                    source_seconds = time.perf_counter() - source_started
+                    integrity_started = time.perf_counter()
+                    content_view = memoryview(source_buffer)[:archive_part_bytes]
+                    try:
+                        stored_sha256 = hashlib.sha256(content_view).hexdigest()
+                    finally:
+                        content_view.release()
+                    if stored_sha256 != str(row["stored_sha256"]):
+                        raise Conflict(
+                            f"source archive volume part {archive_part_number} failed verification"
+                        )
+                    integrity_seconds = time.perf_counter() - integrity_started
+                    offset = 0
+                    for plan in plans:
+                        if plan.archive_part_offset != offset:
+                            raise Conflict(
+                                "destination write segments do not cover an archive part"
+                            )
+                        content = bytes(source_buffer[: plan.stored_bytes])
+                        del source_buffer[: plan.stored_bytes]
+                        offset += plan.stored_bytes
+                        transferred += 1
+                        queue_wait_seconds = byte_wait_seconds if transferred == 1 else 0.0
+                        if not retrieval_wait_recorded:
+                            queue_wait_seconds += retrieval_wait_seconds
+                            retrieval_wait_recorded = True
+                        yield (
+                            plan,
+                            content,
+                            queue_wait_seconds,
+                            source_seconds if transferred == 1 else 0.0,
+                            integrity_seconds if transferred == 1 else 0.0,
+                            reservation,
+                        )
+                    if offset != archive_part_bytes:
+                        raise Conflict("destination write segments do not cover an archive part")
+                finally:
+                    reservation.release(len(plans) - transferred)
+            if source_buffer or any(bytes(chunk) for chunk in source_chunks):
+                raise Conflict("source archive volume has bytes beyond its part receipts")
+
+        inputs = iter(segment_inputs())
+
+        def write_segment(
+            plan: WriteSegmentPlan,
             content: bytes,
             queue_wait_seconds: float,
             source_seconds: float,
+            integrity_seconds: float,
         ) -> _CopiedPart:
-            number = _part_int(row, "number")
-            integrity_started = time.perf_counter()
-            if hashlib.sha256(content).hexdigest() != str(row["stored_sha256"]):
-                raise Conflict(f"source archive volume part {number} failed verification")
-            integrity_seconds = time.perf_counter() - integrity_started
-            receipt = remote_parts.get(number)
+            receipt = remote_segments.get(plan.number)
             remote_seconds = 0.0
             if receipt is None:
                 with self._resources.upload_requests.reserve() as request_wait_seconds:
                     queue_wait_seconds += request_wait_seconds
                     remote_started = time.perf_counter()
-                    receipt = destination_object_store.upload_part(
-                        upload=upload,
-                        number=number,
+                    receipt = destination_object_store.write_segment(
+                        session=write_session,
+                        number=plan.number,
                         content=content,
                     )
                     remote_seconds = time.perf_counter() - remote_started
             if receipt.bytes != len(content):
-                raise Conflict("archive copy multipart part byte count changed")
-            receipt = replace(receipt, sha256=str(row["stored_sha256"]))
+                raise Conflict("archive copy write-segment byte count changed")
+            receipt = replace(receipt, sha256=hashlib.sha256(content).hexdigest())
             return _CopiedPart(
                 receipt=receipt,
                 timing=TransferTiming(
-                    operation="archive_copy_part",
-                    identity=f"{source.object_id}:{number}",
+                    operation="archive_copy_segment",
+                    identity=f"{source.object_id}:{plan.number}",
                     plaintext_bytes=len(content),
                     stored_bytes=len(content),
                     queue_wait_seconds=queue_wait_seconds,
@@ -983,42 +1062,45 @@ class SqlAlchemyArchiveCopyService:
             retrieval_wait_seconds = current_retrieval_wait_seconds
             with ThreadPoolExecutor(
                 max_workers=worker_count,
-                thread_name_prefix="riverhog-archive-copy-part",
+                thread_name_prefix="riverhog-archive-copy-segment",
             ) as executor:
 
                 def fill() -> None:
-                    nonlocal exhausted
+                    nonlocal exhausted, retrieval_wait_recorded
                     while not exhausted and len(pending) < window:
                         try:
-                            row = next(rows)
-                        except StopIteration:
-                            exhausted = True
-                            if source_buffer or any(bytes(chunk) for chunk in source_chunks):
-                                raise Conflict(
-                                    "source archive volume has bytes beyond its part receipts"
-                                ) from None
-                            return
-                        content, reserved, queue_wait_seconds, source_seconds = read_part(row)
-                        try:
-                            future = executor.submit(
-                                upload_part,
-                                row,
+                            (
+                                plan,
                                 content,
                                 queue_wait_seconds,
                                 source_seconds,
+                                integrity_seconds,
+                                reservation,
+                            ) = next(inputs)
+                        except StopIteration:
+                            exhausted = True
+                            return
+                        try:
+                            future = executor.submit(
+                                write_segment,
+                                plan,
+                                content,
+                                queue_wait_seconds,
+                                source_seconds,
+                                integrity_seconds,
                             )
                         except BaseException:
-                            self._resources.upload_bytes.release(reserved)
+                            reservation.release()
                             raise
 
                         def release_buffer(
                             _future: Future[_CopiedPart],
-                            amount: int = reserved,
+                            current: _ArchivePartReservation = reservation,
                         ) -> None:
-                            self._resources.upload_bytes.release(amount)
+                            current.release()
 
                         future.add_done_callback(release_buffer)
-                        pending[future] = row
+                        pending[future] = plan
 
                 fill()
                 try:
@@ -1026,17 +1108,17 @@ class SqlAlchemyArchiveCopyService:
                         done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
                         completed_parts: list[_CopiedPart] = []
                         for future in done:
-                            row = pending.pop(future)
+                            plan = pending.pop(future)
                             result = future.result()
-                            committed[_part_int(row, "number")] = result.receipt
+                            committed[plan.number] = result.receipt
                             completed_parts.append(result)
                         checkpoint_started = time.perf_counter()
-                        self._record_copy_part(
+                        self._record_copy_segments(
                             collection_id=collection_id,
                             destination_store=destination_store_name,
                             object_id=source.object_id,
-                            parts=tuple(committed[number] for number in sorted(committed)),
-                            total_parts=len(part_rows),
+                            segments=tuple(committed[number] for number in sorted(committed)),
+                            total_segments=len(segment_plans),
                         )
                         checkpoint_seconds = time.perf_counter() - checkpoint_started
                         checkpoint_share = checkpoint_seconds / len(completed_parts)
@@ -1055,8 +1137,8 @@ class SqlAlchemyArchiveCopyService:
                     for future in pending:
                         future.cancel()
                     raise
-        if set(committed) != {_part_int(row, "number") for row in part_rows}:
-            raise Conflict("archive copy part receipts do not cover the volume")
+        if set(committed) != {current.number for current in segment_plans}:
+            raise Conflict("archive copy write-segment receipts do not cover the volume")
         return tuple(committed[number] for number in sorted(committed))
 
     def _copy_small_immutable_object(
@@ -1134,18 +1216,18 @@ class SqlAlchemyArchiveCopyService:
         return _CopiedObject(
             source.object_id,
             receipt.object_path,
-            receipt.version_id,
+            receipt.revision,
             receipt.completed_at,
         )
 
-    def _record_copy_part(
+    def _record_copy_segments(
         self,
         *,
         collection_id: int,
         destination_store: str,
         object_id: str,
-        parts: Sequence[MultipartPartReceipt],
-        total_parts: int,
+        segments: Sequence[WriteSegmentReceipt],
+        total_segments: int,
     ) -> None:
         with session_scope(self._session_factory) as session:
             record = session.get(
@@ -1154,17 +1236,21 @@ class SqlAlchemyArchiveCopyService:
             )
             if record is None:
                 raise Conflict("archive copy upload checkpoint disappeared")
-            record.multipart_parts_json = json.dumps(
+            record.write_segments_json = json.dumps(
                 [
-                    {"number": current.number, "etag": current.etag, "bytes": current.bytes}
-                    for current in parts
+                    {
+                        "number": current.number,
+                        "segment_token": current.segment_token,
+                        "bytes": current.bytes,
+                    }
+                    for current in segments
                 ],
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            record.uploaded_bytes = sum(current.bytes for current in parts)
-            record.uploaded_parts = len(parts)
-            record.total_parts = total_parts
+            record.uploaded_bytes = sum(current.bytes for current in segments)
+            record.uploaded_segments = len(segments)
+            record.total_segments = total_segments
 
     def _require_copy_active(self, collection_id: int, destination_store: str) -> None:
         with session_scope(self._session_factory) as session:
@@ -1222,9 +1308,9 @@ class SqlAlchemyArchiveCopyService:
                 stored_bytes=current.stored_bytes,
                 sha256=current.sha256,
                 stored_sha256=current.stored_sha256,
-                version_id=receipt.version_id,
+                revision=receipt.revision,
                 age_state_json=current.age_state_json,
-                part_receipts_json=receipt.part_receipts_json,
+                archive_parts_json=receipt.archive_parts_json,
                 plan_sha256=current.plan_sha256,
                 index_sha256=current.index_sha256,
                 uploaded_at=receipt.completed_at,
@@ -1267,7 +1353,7 @@ class SqlAlchemyArchiveCopyService:
                     collection_id=source.collection_id,
                     object_id=copied_record.object_id,
                     object_path=cache_receipt.object_path,
-                    version_id=cache_receipt.version_id,
+                    revision=cache_receipt.revision,
                     stored_bytes=cache_receipt.stored_bytes,
                     stored_sha256=cache_receipt.stored_sha256,
                     cached_at=cache_receipt.cached_at,
@@ -1537,7 +1623,6 @@ def _part_rows(value: str | None) -> list[dict[str, object]]:
         "plaintext_sha256",
         "stored_bytes",
         "stored_sha256",
-        "etag",
     }
     for number, current in enumerate(raw, start=1):
         if not isinstance(current, dict) or set(current) != expected_keys:
@@ -1583,23 +1668,6 @@ def _iter_exact_parts(
         del buffer[:needed]
     if buffer or any(bytes(chunk) for chunk in source):
         raise Conflict("source archive volume has bytes beyond its part receipts")
-
-
-def _part_rows_json(
-    rows: Sequence[Mapping[str, object]],
-    receipts: Sequence[MultipartPartReceipt],
-) -> str:
-    if len(rows) != len(receipts):
-        raise Conflict("archive copy part receipts do not cover the volume")
-    payload = []
-    for row, receipt in zip(rows, receipts, strict=True):
-        if (
-            _part_int(row, "number") != receipt.number
-            or _part_int(row, "stored_bytes") != receipt.bytes
-        ):
-            raise Conflict("destination archive part identity changed")
-        payload.append({**row, "etag": receipt.etag})
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def _part_int(row: Mapping[str, object], key: str) -> int:

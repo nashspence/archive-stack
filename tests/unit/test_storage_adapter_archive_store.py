@@ -13,17 +13,13 @@ from riverhog_core.ports.archive_store import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArchiveStore
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
     ImmutableObjectReceipt,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
-    MultipartPartReceipt,
-    MultipartUpload,
     ObjectHeadRequest,
     ObjectMetadataReceipt,
     ObjectReadRequest,
@@ -31,6 +27,10 @@ from riverhog_storage_adapter_protocol import (
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterRejection,
+    WriteCompleteRequest,
+    WriteSegmentReceipt,
+    WriteSession,
+    WriteStartRequest,
 )
 
 
@@ -50,16 +50,16 @@ class _MemoryAdapter:
         self.reads = 0
         self.preparations: list[ReadPreparationRequest] = []
         self.deleted: list[DeleteObjectRequest] = []
-        self.aborted: list[AbortIncompleteUploadsRequest] = []
+        self.aborted: list[AbortIncompleteWritesRequest] = []
 
     def descriptor(self) -> AdapterDescriptor:
         return AdapterDescriptor(
             implementation_id="fixture.storage/v1",
             implementation_version="1.0.0",
             read_mode=self.read_mode,  # type: ignore[arg-type]
-            minimum_nonfinal_part_bytes=1,
-            maximum_part_bytes=1024 * 1024,
-            maximum_part_count=10_000,
+            minimum_nonfinal_segment_bytes=1,
+            maximum_segment_bytes=1024 * 1024,
+            maximum_segment_count=10_000,
         )
 
     def put_small_object(
@@ -130,38 +130,38 @@ class _MemoryAdapter:
             del self.objects[path]
         return len(paths)
 
-    def abort_incomplete_uploads(self, request: AbortIncompleteUploadsRequest) -> int:
+    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
         self.aborted.append(request)
         return 0
 
-    def create_multipart_upload(self, request: MultipartCreateRequest) -> MultipartUpload:
+    def begin_write(self, request: WriteStartRequest) -> WriteSession:
         raise NotImplementedError(request)
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        upload: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt:
+    ) -> WriteSegmentReceipt:
         raise NotImplementedError(upload, number, content)
 
-    def list_parts(self, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
+    def list_segments(self, upload: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
         raise NotImplementedError(upload)
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
-        request: MultipartCompleteRequest,
+        request: WriteCompleteRequest,
     ) -> CompletedObjectReceipt:
         raise NotImplementedError(request)
 
-    def head_completed_object(
+    def find_completed_write(
         self,
-        request: MultipartHeadRequest,
+        request: CompletedWriteLookupRequest,
     ) -> CompletedObjectReceipt | None:
         raise NotImplementedError(request)
 
-    def abort_multipart_upload(self, upload: MultipartUpload) -> None:
+    def abort_write(self, upload: WriteSession) -> None:
         raise NotImplementedError(upload)
 
     def _immutable(self, object_path: str, stored: _Stored) -> ImmutableObjectReceipt:
@@ -228,7 +228,7 @@ def test_encrypted_archive_artifact_write_and_read_stay_in_riverhog() -> None:
         stored_bytes=0,
         sha256=hashlib.sha256(b"").hexdigest(),
         stored_sha256=None,
-        version_id=None,
+        revision=None,
     )
 
     receipt = store.replace_archive_proof(
@@ -245,7 +245,7 @@ def test_encrypted_archive_artifact_write_and_read_stay_in_riverhog() -> None:
         stored_bytes=receipt.stored_bytes,
         sha256=receipt.sha256,
         stored_sha256=receipt.stored_sha256,
-        version_id=receipt.version_id,
+        revision=receipt.revision,
     )
 
     artifact = store.read_archive_artifact(
@@ -280,7 +280,7 @@ def test_verification_is_metadata_only_and_explicit_hashing_reads_once() -> None
         stored_bytes=len(content),
         sha256="a" * 64,
         stored_sha256=hashlib.sha256(content).hexdigest(),
-        version_id="version-pack",
+        revision="version-pack",
     )
     store = _store(adapter)
 
@@ -328,7 +328,7 @@ def test_read_preparation_carries_only_exact_opaque_objects() -> None:
         stored_bytes=2,
         sha256="a" * 64,
         stored_sha256="b" * 64,
-        version_id="version-segment",
+        revision="version-segment",
     )
 
     assert (
@@ -344,7 +344,7 @@ def test_read_preparation_carries_only_exact_opaque_objects() -> None:
         "objects": [
             {
                 "object_path": identity.object_path,
-                "revision": identity.version_id,
+                "revision": identity.revision,
             }
         ]
     }
@@ -374,7 +374,7 @@ def test_deletion_uses_all_versions_and_verifies_current_absence() -> None:
         stored_bytes=len(content),
         sha256="a" * 64,
         stored_sha256=hashlib.sha256(content).hexdigest(),
-        version_id="version-manifest",
+        revision="version-manifest",
     )
 
     _store(adapter).delete_collection_archive(collection_id=17, objects=(identity,))
@@ -403,7 +403,7 @@ def test_plaintext_attestations_round_trip_and_the_proof_is_replaceable() -> Non
         stored_bytes=signature.stored_bytes,
         sha256=signature.sha256,
         stored_sha256=signature.stored_sha256,
-        version_id=signature.version_id,
+        revision=signature.revision,
     )
     proof = published.require_object("signature-proof")
     proof_identity = ArchiveObjectIdentity(
@@ -414,7 +414,7 @@ def test_plaintext_attestations_round_trip_and_the_proof_is_replaceable() -> Non
         stored_bytes=proof.stored_bytes,
         sha256=proof.sha256,
         stored_sha256=proof.stored_sha256,
-        version_id=proof.version_id,
+        revision=proof.revision,
     )
 
     assert (
@@ -444,7 +444,7 @@ def test_incomplete_sweep_and_discard_stay_scoped_to_the_archive_namespace() -> 
     )
 
     assert (
-        store.abort_incomplete_multipart_uploads(
+        store.abort_incomplete_writes(
             initiated_before=datetime(2026, 8, 21, tzinfo=UTC),
         )
         == 0

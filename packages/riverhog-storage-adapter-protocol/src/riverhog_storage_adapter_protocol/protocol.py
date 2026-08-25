@@ -100,14 +100,17 @@ class AdapterDescriptor(StorageAdapterModel):
     implementation_id: SemanticId
     implementation_version: str = Field(min_length=1, max_length=120)
     read_mode: ReadMode
-    minimum_nonfinal_part_bytes: int = Field(ge=1)
-    maximum_part_bytes: int = Field(ge=1)
-    maximum_part_count: int = Field(ge=1)
+    minimum_nonfinal_segment_bytes: int = Field(ge=1)
+    maximum_segment_bytes: int | None = Field(default=None, ge=1)
+    maximum_segment_count: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
-    def validate_part_limits(self) -> Self:
-        if self.minimum_nonfinal_part_bytes > self.maximum_part_bytes:
-            raise ValueError("minimum non-final part bytes exceed maximum part bytes")
+    def validate_segment_limits(self) -> Self:
+        if (
+            self.maximum_segment_bytes is not None
+            and self.minimum_nonfinal_segment_bytes > self.maximum_segment_bytes
+        ):
+            raise ValueError("minimum non-final segment bytes exceed maximum segment bytes")
         return self
 
 
@@ -121,9 +124,9 @@ class ObjectLocator(StorageAdapterModel):
         return normalize_object_path(value)
 
 
-class MultipartUpload(StorageAdapterModel):
+class WriteSession(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
-    upload_id: str = Field(min_length=1, max_length=4000)
+    write_token: str = Field(min_length=1, max_length=4000)
 
     @field_validator("object_path")
     @classmethod
@@ -131,7 +134,7 @@ class MultipartUpload(StorageAdapterModel):
         return normalize_object_path(value)
 
 
-class MultipartCreateRequest(StorageAdapterModel):
+class WriteStartRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
     content_type: str = Field(min_length=1, max_length=255)
     identity_metadata: OpaqueIdentityMetadata
@@ -148,34 +151,34 @@ class MultipartCreateRequest(StorageAdapterModel):
         return _canonical_metadata(value)
 
 
-class MultipartPartReceipt(StorageAdapterModel):
+class WriteSegmentReceipt(StorageAdapterModel):
     number: int = Field(ge=1)
-    part_token: str = Field(min_length=1, max_length=4000)
+    segment_token: str = Field(min_length=1, max_length=4000)
     stored_bytes: int = Field(ge=1)
     stored_sha256: Sha256 | None = None
 
 
-class MultipartPartWriteRequest(StorageAdapterModel):
-    upload: MultipartUpload
+class WriteSegmentRequest(StorageAdapterModel):
+    session: WriteSession
     number: int = Field(ge=1)
     stored_bytes: int = Field(ge=1)
 
 
-class MultipartCompleteRequest(StorageAdapterModel):
-    upload: MultipartUpload
-    parts: tuple[MultipartPartReceipt, ...] = Field(min_length=1)
+class WriteCompleteRequest(StorageAdapterModel):
+    session: WriteSession
+    segments: tuple[WriteSegmentReceipt, ...] = Field(min_length=1)
     expected_bytes: int = Field(ge=1)
     expected_identity_metadata: OpaqueIdentityMetadata
     expected_placement: ObjectPlacement
 
-    @field_validator("parts")
+    @field_validator("segments")
     @classmethod
-    def canonical_parts(
+    def canonical_segments(
         cls,
-        value: tuple[MultipartPartReceipt, ...],
-    ) -> tuple[MultipartPartReceipt, ...]:
-        if [part.number for part in value] != list(range(1, len(value) + 1)):
-            raise ValueError("multipart parts must be contiguous and ordered from one")
+        value: tuple[WriteSegmentReceipt, ...],
+    ) -> tuple[WriteSegmentReceipt, ...]:
+        if [segment.number for segment in value] != list(range(1, len(value) + 1)):
+            raise ValueError("write segments must be contiguous and ordered from one")
         return value
 
     @field_validator("expected_identity_metadata")
@@ -185,12 +188,12 @@ class MultipartCompleteRequest(StorageAdapterModel):
 
     @model_validator(mode="after")
     def validate_bytes(self) -> Self:
-        if sum(part.stored_bytes for part in self.parts) != self.expected_bytes:
-            raise ValueError("multipart byte count does not equal its parts")
+        if sum(segment.stored_bytes for segment in self.segments) != self.expected_bytes:
+            raise ValueError("write byte count does not equal its segments")
         return self
 
 
-class MultipartHeadRequest(StorageAdapterModel):
+class CompletedWriteLookupRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
     expected_identity_metadata: OpaqueIdentityMetadata
     expected_placement: ObjectPlacement
@@ -336,7 +339,7 @@ class ReadStatus(StorageAdapterModel):
     expires_at: str | None = Field(default=None, max_length=100)
 
 
-class AbortIncompleteUploadsRequest(StorageAdapterModel):
+class AbortIncompleteWritesRequest(StorageAdapterModel):
     object_prefix: str = Field(min_length=1, max_length=4096)
     initiated_before: str = Field(min_length=1, max_length=100)
 
@@ -373,29 +376,29 @@ class StorageAdapterPort(Protocol):
 
     def descriptor(self) -> AdapterDescriptor: ...
 
-    def create_multipart_upload(self, request: MultipartCreateRequest) -> MultipartUpload: ...
+    def begin_write(self, request: WriteStartRequest) -> WriteSession: ...
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        session: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt: ...
+    ) -> WriteSegmentReceipt: ...
 
-    def list_parts(self, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]: ...
+    def list_segments(self, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]: ...
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
-        request: MultipartCompleteRequest,
+        request: WriteCompleteRequest,
     ) -> CompletedObjectReceipt: ...
 
-    def head_completed_object(
+    def find_completed_write(
         self,
-        request: MultipartHeadRequest,
+        request: CompletedWriteLookupRequest,
     ) -> CompletedObjectReceipt | None: ...
 
-    def abort_multipart_upload(self, upload: MultipartUpload) -> None: ...
+    def abort_write(self, session: WriteSession) -> None: ...
 
     def put_small_object(
         self,
@@ -417,24 +420,24 @@ class StorageAdapterPort(Protocol):
 
     def cleanup_read(self, request: ReadPreparationRequest) -> None: ...
 
-    def abort_incomplete_uploads(self, request: AbortIncompleteUploadsRequest) -> int: ...
+    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int: ...
 
 
 __all__ = [
     "STORAGE_ADAPTER_PROTOCOL",
-    "AbortIncompleteUploadsRequest",
+    "AbortIncompleteWritesRequest",
     "AdapterDescriptor",
     "CompletedObjectReceipt",
     "DeleteObjectRequest",
     "DeletePrefixRequest",
     "ImmutableObjectReceipt",
     "MaintenanceResult",
-    "MultipartCompleteRequest",
-    "MultipartCreateRequest",
-    "MultipartHeadRequest",
-    "MultipartPartReceipt",
-    "MultipartPartWriteRequest",
-    "MultipartUpload",
+    "WriteCompleteRequest",
+    "WriteStartRequest",
+    "CompletedWriteLookupRequest",
+    "WriteSegmentReceipt",
+    "WriteSegmentRequest",
+    "WriteSession",
     "ObjectLocator",
     "ObjectHeadRequest",
     "ObjectMetadataReceipt",

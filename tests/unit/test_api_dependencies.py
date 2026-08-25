@@ -13,7 +13,7 @@ from riverhog_core.runtime_config import RuntimeConfig, StorageAdapterRegistrati
 from tests.unit.db_helpers import sqlite_url
 
 
-def test_default_container_closes_startup_resources_after_adapter_rejection(
+def test_default_container_closes_startup_resources_after_missing_required_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -35,10 +35,7 @@ def test_default_container_closes_startup_resources_after_adapter_rejection(
             return None
 
         def descriptor(self) -> Any:
-            return SimpleNamespace(
-                minimum_nonfinal_part_bytes=config.archive_multipart_part_bytes + 1,
-                maximum_part_bytes=config.archive_multipart_part_bytes + 2,
-            )
+            return SimpleNamespace(read_mode="restore_required")
 
         def close(self) -> None:
             closed.append("adapter")
@@ -55,7 +52,7 @@ def test_default_container_closes_startup_resources_after_adapter_rejection(
     )
     deps.default_container.cache_clear()
 
-    with pytest.raises(ValueError, match="does not accept the configured multipart size"):
+    with pytest.raises(ValueError, match="require a retrieval cache adapter"):
         deps.default_container()
 
     assert closed == ["adapter", "db"]

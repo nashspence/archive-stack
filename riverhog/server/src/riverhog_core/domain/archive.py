@@ -21,7 +21,7 @@ class SealedProvenanceObject:
     plaintext_sha256: str
     stored_bytes: int
     stored_sha256: str
-    version_id: str | None
+    revision: str | None
     completed_at: str
 
 
@@ -93,14 +93,13 @@ class RawVolumePlan:
 
 
 @dataclass(frozen=True, slots=True)
-class StoredPartReceipt:
+class StoredArchivePart:
     number: int
     plaintext_start: int
     plaintext_bytes: int
     plaintext_sha256: str
     stored_bytes: int
     stored_sha256: str
-    etag: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,8 +113,8 @@ class SealedPackVolume:
     age_state_json: str
     index_sha256: str
     plan_sha256: str
-    parts: tuple[StoredPartReceipt, ...]
-    version_id: str | None
+    parts: tuple[StoredArchivePart, ...]
+    revision: str | None
     completed_at: str
     retrieval_cache: RetrievalCacheReceipt | None = None
 
@@ -144,8 +143,8 @@ class SealedRawVolume:
     file_bytes: int
     file_sha256: str
     age_state_json: str
-    parts: tuple[StoredPartReceipt, ...]
-    version_id: str | None
+    parts: tuple[StoredArchivePart, ...]
+    revision: str | None
     completed_at: str
     retrieval_cache: RetrievalCacheReceipt | None = None
 

@@ -20,7 +20,7 @@ from riverhog_protocol.raw_ingress import (
 from riverhog_core.domain.archive import (
     ArchiveFile,
     SealedRawVolume,
-    StoredPartReceipt,
+    StoredArchivePart,
     VerifiedRawFile,
 )
 
@@ -155,7 +155,7 @@ def verify_raw_file(
 ) -> VerifiedRawFile:
     """Re-read sealed raw volumes, stream-decrypt, and verify the flat file SHA-256.
 
-    Pack members are verified before their containing multipart part is committed. A large
+    Pack members are verified before their containing archive part is committed. A large
     file spans resumable upload parts, so its registered flat SHA-256 is instead verified by
     this bounded-memory read before the immutable root may be published.
     """
@@ -238,7 +238,7 @@ def _validated_raw_volume_set(
     return normalized_file, ordered
 
 
-def _part_identity(part: StoredPartReceipt) -> dict[str, object]:
+def _part_identity(part: StoredArchivePart) -> dict[str, object]:
     return {
         "number": part.number,
         "plaintext_start": part.plaintext_start,
@@ -250,7 +250,7 @@ def _part_identity(part: StoredPartReceipt) -> dict[str, object]:
 
 
 def _validate_part_receipts(
-    parts: Sequence[StoredPartReceipt],
+    parts: Sequence[StoredArchivePart],
     *,
     plaintext_bytes: int,
 ) -> None:
@@ -265,7 +265,6 @@ def _validate_part_receipts(
             or part.stored_bytes < 1
             or _SHA256_RE.fullmatch(part.plaintext_sha256) is None
             or _SHA256_RE.fullmatch(part.stored_sha256) is None
-            or not part.etag
         ):
             raise ValueError("raw volume part receipt is invalid")
         expected_start += part.plaintext_bytes
@@ -275,7 +274,7 @@ def _validate_part_receipts(
 
 def _iter_verified_stored_parts(
     chunks: Iterable[bytes],
-    parts: Sequence[StoredPartReceipt],
+    parts: Sequence[StoredArchivePart],
 ) -> Iterator[bytes]:
     source = iter(chunks)
     buffer = bytearray()
@@ -309,7 +308,7 @@ def _iter_verified_stored_parts(
 
 def _consume_verified_plaintext_parts(
     chunks: Iterable[bytes],
-    parts: Sequence[StoredPartReceipt],
+    parts: Sequence[StoredArchivePart],
     *,
     file_digest: _Digest,
 ) -> int:

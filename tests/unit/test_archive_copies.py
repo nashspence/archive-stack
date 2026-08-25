@@ -22,8 +22,8 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.ports.archive_objects import (
     CompletedObjectReceipt,
-    MultipartPartReceipt,
-    MultipartUpload,
+    WriteSegmentReceipt,
+    WriteSession,
 )
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveReadStatus
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
@@ -54,20 +54,20 @@ class _ArchiveCopyCache:
     def __init__(self) -> None:
         self.store = MemoryArchiveStore(new_archive_prefix="archives/cache/new-copy")
 
-    def multipart_object_store(self, **_: object) -> MemoryArchiveStore:
+    def resumable_object_store(self, **_: object) -> MemoryArchiveStore:
         return self.store
 
-    def verify_multipart_object(
+    def verify_resumable_object(
         self,
         *,
         completed: CompletedObjectReceipt,
-        parts: tuple[MultipartPartReceipt, ...] = (),
+        segments: tuple[WriteSegmentReceipt, ...] = (),
     ) -> RetrievalCacheReceipt:
-        assert parts
+        assert segments
         content = self.store.objects[completed.object_path]
         return RetrievalCacheReceipt(
             object_path=completed.object_path,
-            version_id=completed.version_id,
+            revision=completed.revision,
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
             cached_at=completed.completed_at,
@@ -75,7 +75,7 @@ class _ArchiveCopyCache:
         )
 
 
-def _multipart_archive(files: dict[str, bytes], *, parts: int = 4) -> FixtureArchive:
+def _multiple_archive_parts(files: dict[str, bytes], *, parts: int = 4) -> FixtureArchive:
     archive = make_archive(files)
     ciphertext = archive.stored_objects[f"volumes/{archive.pack_plan.volume_id}.tar.age"]
     plaintext = archive.pack_plaintext
@@ -102,7 +102,6 @@ def _multipart_archive(files: dict[str, bytes], *, parts: int = 4) -> FixtureArc
                 "plaintext_sha256": hashlib.sha256(plain).hexdigest(),
                 "stored_bytes": len(stored),
                 "stored_sha256": hashlib.sha256(stored).hexdigest(),
-                "etag": f"source-part-{number}",
             }
         )
         plaintext_start += len(plain)
@@ -220,7 +219,7 @@ def test_archive_copy_preserves_the_independent_object_manifest(
     ]
     assert events[-1].data["context"] == {"workflow": "promotion"}
     transfer_messages = [message for message in caplog.messages if "transfer operation=" in message]
-    assert any("operation=archive_copy_part" in message for message in transfer_messages)
+    assert any("operation=archive_copy_segment" in message for message in transfer_messages)
     assert sum("operation=archive_copy_object" in message for message in transfer_messages) == 3
     assert all("integrity_seconds=" in message for message in transfer_messages)
     assert all("pack-000000000000" not in message for message in transfer_messages)
@@ -229,7 +228,7 @@ def test_archive_copy_preserves_the_independent_object_manifest(
 def test_archive_copy_pipelines_source_parts_into_parallel_destination_requests(
     tmp_path: Path,
 ) -> None:
-    archive = _multipart_archive(FILES)
+    archive = _multiple_archive_parts(FILES)
 
     class ConcurrentDestination(MemoryArchiveStore):
         def __init__(self) -> None:
@@ -239,20 +238,20 @@ def test_archive_copy_pipelines_source_parts_into_parallel_destination_requests(
             self.active = 0
             self.maximum_active = 0
 
-        def upload_part(
+        def write_segment(
             self,
             *,
-            upload: MultipartUpload,
+            session: WriteSession,
             number: int,
             content: bytes,
-        ) -> MultipartPartReceipt:
+        ) -> WriteSegmentReceipt:
             with self.lock:
                 self.active += 1
                 self.maximum_active = max(self.maximum_active, self.active)
             if number <= 2:
                 self.rendezvous.wait(timeout=2)
             try:
-                return super().upload_part(upload=upload, number=number, content=content)
+                return super().write_segment(session=session, number=number, content=content)
             finally:
                 with self.lock:
                     self.active -= 1
@@ -562,16 +561,16 @@ def test_archive_copy_cancellation_stops_an_active_transfer_before_commit(
     release = threading.Event()
 
     class BlockingDestination(MemoryArchiveStore):
-        def upload_part(
+        def write_segment(
             self,
             *,
-            upload: MultipartUpload,
+            session: WriteSession,
             number: int,
             content: bytes,
-        ) -> MultipartPartReceipt:
+        ) -> WriteSegmentReceipt:
             started.set()
             assert release.wait(timeout=5)
-            return super().upload_part(upload=upload, number=number, content=content)
+            return super().write_segment(session=session, number=number, content=content)
 
     destination = BlockingDestination(new_archive_prefix="archives/b2/new-copy")
     config, _archive, _source, _destination, service = _service(

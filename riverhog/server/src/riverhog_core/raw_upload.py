@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 
-from riverhog_age import CHUNK_SIZE, MultipartPartPlan, ResumableAgeScryptSession, UploadState
+from riverhog_age import CHUNK_SIZE, AgeAlignedUnitPlan, ResumableAgeScryptSession, UploadState
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
 
@@ -15,17 +15,17 @@ from riverhog_core.archive_formats import RAW_VOLUME_STORAGE_FORMAT
 from riverhog_core.domain.archive import (
     RawVolumePlan,
     SealedRawVolume,
-    StoredPartReceipt,
+    StoredArchivePart,
 )
 from riverhog_core.ports.archive_objects import (
-    ArchiveMultipartObjectStore,
+    ArchiveResumableObjectStore,
     CompletedObjectReceipt,
-    MultipartPartReceipt,
-    MultipartUpload,
+    WriteSegmentReceipt,
+    WriteSession,
 )
 from riverhog_core.ports.archive_upload_checkpoints import RawUploadCheckpointStore
 from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
-from riverhog_core.raw_volume import raw_multipart_part_plans
+from riverhog_core.raw_volume import raw_age_aligned_unit_plans
 from riverhog_core.retrieval_cache_receipts import (
     parse_retrieval_cache_receipt,
     retrieval_cache_receipt_payload,
@@ -48,6 +48,7 @@ from riverhog_core.throughput import (
     TransferTiming,
     WeightedByteSemaphore,
 )
+from riverhog_core.write_segments import WriteSegmentPlan, plan_write_segments
 
 RAW_UPLOAD_CHECKPOINT_SCHEMA = "raw-upload-checkpoint/v1"
 RAW_VOLUME_CONTENT_TYPE = "application/vnd.riverhog.raw-segment+age"
@@ -58,8 +59,8 @@ TransferTimingObserver = Callable[[TransferTiming], None]
 
 @dataclass(frozen=True, slots=True)
 class CompletedRawObject:
-    version_id: str | None
-    etag: str | None
+    revision: str | None
+    entity_token: str | None
     bytes: int
     completed_at: str
     retrieval_cache: RetrievalCacheReceipt | None = None
@@ -78,14 +79,16 @@ class RawUploadCheckpoint:
     file_sha256: str
     target_part_plaintext_bytes: int
     expected_part_sha256s: tuple[str, ...]
-    upload_id: str
+    write_token: str
     age_state_json: str
     next_part: int
-    parts: tuple[StoredPartReceipt, ...]
+    archive_parts: tuple[StoredArchivePart, ...]
+    write_segments: tuple[WriteSegmentReceipt, ...]
     completed: CompletedRawObject | None = None
 
     def to_json(self) -> str:
-        ordered = tuple(sorted(self.parts, key=lambda current: current.number))
+        ordered = tuple(sorted(self.archive_parts, key=lambda current: current.number))
+        ordered_segments = tuple(sorted(self.write_segments, key=lambda current: current.number))
         return canonical_json_bytes(
             {
                 "schema": RAW_UPLOAD_CHECKPOINT_SCHEMA,
@@ -100,14 +103,15 @@ class RawUploadCheckpoint:
                 "file_sha256": self.file_sha256,
                 "target_part_plaintext_bytes": self.target_part_plaintext_bytes,
                 "expected_part_sha256s": list(self.expected_part_sha256s),
-                "upload_id": self.upload_id,
+                "write_token": self.write_token,
                 "age_state": json.loads(self.age_state_json),
                 "next_part": self.next_part,
-                "parts": [_part_payload(current) for current in ordered],
+                "archive_parts": [_archive_part_payload(current) for current in ordered],
+                "write_segments": [_write_segment_payload(current) for current in ordered_segments],
                 "completed": (
                     {
-                        "version_id": self.completed.version_id,
-                        "etag": self.completed.etag,
+                        "revision": self.completed.revision,
+                        "entity_token": self.completed.entity_token,
                         "bytes": self.completed.bytes,
                         "completed_at": self.completed.completed_at,
                         "retrieval_cache": retrieval_cache_receipt_payload(
@@ -141,21 +145,24 @@ class RawUploadCheckpoint:
             "file_sha256",
             "target_part_plaintext_bytes",
             "expected_part_sha256s",
-            "upload_id",
+            "write_token",
             "age_state",
             "next_part",
-            "parts",
+            "archive_parts",
+            "write_segments",
             "completed",
         }
         if set(payload) != expected_fields:
             raise ValueError("raw upload checkpoint fields are invalid")
         age_state = payload.get("age_state")
-        raw_parts = payload.get("parts")
+        raw_parts = payload.get("archive_parts")
+        raw_segments = payload.get("write_segments")
         raw_expected = payload.get("expected_part_sha256s")
         if (
             not isinstance(age_state, dict)
             or not isinstance(raw_parts, list)
             or not isinstance(raw_expected, list)
+            or not isinstance(raw_segments, list)
         ):
             raise ValueError("raw upload checkpoint structure is invalid")
         age_state_json = canonical_json_bytes(age_state).decode("utf-8")
@@ -167,6 +174,7 @@ class RawUploadCheckpoint:
             _sha(current, "expected part plaintext") for current in raw_expected
         )
         parts = _parts_from_payload(raw_parts)
+        segments = _segments_from_payload(raw_segments)
         next_part = _uint(payload.get("next_part"), "next part")
         if next_part != _first_missing_part(parts):
             raise ValueError("raw upload next part does not match its receipts")
@@ -175,6 +183,8 @@ class RawUploadCheckpoint:
             _require_complete_coverage(parts, plaintext_bytes=plaintext_bytes)
             if completed.bytes != sum(current.stored_bytes for current in parts):
                 raise ValueError("completed raw upload stored byte count mismatch")
+            if completed.bytes != sum(current.bytes for current in segments):
+                raise ValueError("completed raw write-segment byte count mismatch")
         collection_id = _uint(payload.get("collection_id"), "collection id")
         if collection_id < 1:
             raise ValueError("collection id must be positive")
@@ -187,8 +197,8 @@ class RawUploadCheckpoint:
             raise ValueError("raw upload file range is invalid")
         file_sha256 = _sha(payload.get("file_sha256"), "raw upload file")
         object_path = str(payload.get("object_path", ""))
-        upload_id = str(payload.get("upload_id", ""))
-        if not object_path or not upload_id:
+        write_token = str(payload.get("write_token", ""))
+        if not object_path or not write_token:
             raise ValueError("raw upload storage identity is invalid")
         target_part_plaintext_bytes = _uint(
             payload.get("target_part_plaintext_bytes"),
@@ -208,17 +218,19 @@ class RawUploadCheckpoint:
             file_sha256=file_sha256,
             target_part_plaintext_bytes=target_part_plaintext_bytes,
             expected_part_sha256s=expected_part_sha256s,
-            upload_id=upload_id,
+            write_token=write_token,
             age_state_json=age_state_json,
             next_part=next_part,
-            parts=parts,
+            archive_parts=parts,
+            write_segments=segments,
             completed=completed,
         )
 
 
 @dataclass(frozen=True, slots=True)
 class _UploadedRawPart:
-    receipt: StoredPartReceipt
+    receipt: StoredArchivePart
+    write_segments: tuple[WriteSegmentReceipt, ...]
     queue_wait_seconds: float
     source_seconds: float
     crypto_seconds: float
@@ -230,7 +242,7 @@ class RawVolumeUploader:
     def __init__(
         self,
         *,
-        object_store: ArchiveMultipartObjectStore,
+        object_store: ArchiveResumableObjectStore,
         checkpoint_store: RawUploadCheckpointStore,
         passphrase: str,
         scrypt_log_n: int,
@@ -332,7 +344,7 @@ class RawVolumeUploader:
             ):
                 raise ValueError("raw upload checkpoint does not match the requested upload")
             if checkpoint.completed is None:
-                completed = self._object_store.head_completed_object(
+                completed = self._object_store.find_completed_write(
                     object_path=object_path,
                     expected_metadata=_metadata(plan, checkpoint.age_state_json),
                 )
@@ -341,7 +353,7 @@ class RawVolumeUploader:
                 self._reconcile_recorded_parts(checkpoint)
             return checkpoint
 
-        completed = self._object_store.head_completed_object(
+        completed = self._object_store.find_completed_write(
             object_path=object_path,
             expected_metadata=_metadata(plan),
         )
@@ -355,7 +367,7 @@ class RawVolumeUploader:
                 plaintext_size=plan.plaintext_bytes,
             )
             crypto_seconds = time.perf_counter() - crypto_started
-        planned_parts = raw_multipart_part_plans(
+        planned_parts = raw_age_aligned_unit_plans(
             plan,
             session,
             target_plaintext_bytes=target_part_plaintext_bytes,
@@ -369,7 +381,7 @@ class RawVolumeUploader:
         )
         self._session_cache.remember(age_state_json, session)
         remote_started = time.perf_counter()
-        upload = self._object_store.create_multipart_upload(
+        write_session = self._object_store.begin_write(
             object_path=object_path,
             content_type=RAW_VOLUME_CONTENT_TYPE,
             metadata=_metadata(plan, age_state_json),
@@ -387,10 +399,11 @@ class RawVolumeUploader:
             file_sha256=plan.file_sha256,
             target_part_plaintext_bytes=target_part_plaintext_bytes,
             expected_part_sha256s=expected_digests,
-            upload_id=upload.upload_id,
+            write_token=write_session.write_token,
             age_state_json=age_state_json,
             next_part=0,
-            parts=(),
+            archive_parts=(),
+            write_segments=(),
         )
         checkpoint_started = time.perf_counter()
         checkpoint = self._save(checkpoint)
@@ -411,7 +424,7 @@ class RawVolumeUploader:
         )
         return checkpoint
 
-    def upload_next_part(
+    def upload_next_unit(
         self,
         *,
         plan: RawVolumePlan,
@@ -421,45 +434,49 @@ class RawVolumeUploader:
         if checkpoint.completed is not None:
             return checkpoint
         session = self._session_cache.get(checkpoint.age_state_json)
-        plans = raw_multipart_part_plans(
+        plans = raw_age_aligned_unit_plans(
             plan,
             session,
             target_plaintext_bytes=checkpoint.target_part_plaintext_bytes,
         )
         if checkpoint.next_part >= len(plans):
             return self._complete(checkpoint)
-        return self.upload_part(
+        return self.upload_unit(
             plan=plan,
             checkpoint=checkpoint,
-            part_number=checkpoint.next_part + 1,
+            unit_number=checkpoint.next_part + 1,
             plaintext=plaintext,
         )
 
-    def upload_part(
+    def upload_unit(
         self,
         *,
         plan: RawVolumePlan,
         checkpoint: RawUploadCheckpoint,
-        part_number: int,
+        unit_number: int,
         plaintext: bytes | Iterable[bytes],
     ) -> RawUploadCheckpoint:
         self._validate(plan, checkpoint)
         if checkpoint.completed is not None:
             return checkpoint
         planned = self._planned_parts(plan, checkpoint)
-        if part_number < 1 or part_number > len(planned):
+        if unit_number < 1 or unit_number > len(planned):
             raise ValueError("raw upload part number is outside the plan")
-        if _part_by_number(checkpoint.parts, part_number) is not None:
+        if _part_by_number(checkpoint.archive_parts, unit_number) is not None:
             return checkpoint
-        uploaded = self._prepare_and_upload_part(
+        uploaded = self._prepare_and_write_archive_part(
             plan=plan,
             checkpoint=checkpoint,
-            part=planned[part_number - 1],
+            part=planned[unit_number - 1],
             plaintext_chunks=_chunks(plaintext),
         )
-        checkpoint, checkpoint_seconds = self._record_part(checkpoint, uploaded.receipt)
+        checkpoint, checkpoint_seconds = self._record_part(
+            checkpoint,
+            uploaded.receipt,
+            uploaded.write_segments,
+        )
         self._observe(uploaded, checkpoint_seconds=checkpoint_seconds)
-        if len(checkpoint.parts) == len(planned):
+        if len(checkpoint.archive_parts) == len(planned):
             return self._complete(checkpoint)
         return checkpoint
 
@@ -478,8 +495,8 @@ class RawVolumeUploader:
             file_bytes=checkpoint.file_bytes,
             file_sha256=checkpoint.file_sha256,
             age_state_json=checkpoint.age_state_json,
-            parts=tuple(sorted(checkpoint.parts, key=lambda current: current.number)),
-            version_id=completed.version_id,
+            parts=tuple(sorted(checkpoint.archive_parts, key=lambda current: current.number)),
+            revision=completed.revision,
             completed_at=completed.completed_at,
             retrieval_cache=completed.retrieval_cache,
         )
@@ -487,20 +504,20 @@ class RawVolumeUploader:
     def abort(self, checkpoint: RawUploadCheckpoint) -> None:
         if checkpoint.completed is not None:
             raise ValueError("cannot abort a completed raw object")
-        self._object_store.abort_multipart_upload(
-            upload=MultipartUpload(checkpoint.object_path, checkpoint.upload_id)
+        self._object_store.abort_write(
+            session=WriteSession(checkpoint.object_path, checkpoint.write_token)
         )
         self._checkpoint_store.delete_raw_upload_checkpoint(
             collection_id=checkpoint.collection_id,
             volume_id=checkpoint.volume_id,
         )
 
-    def _prepare_and_upload_part(
+    def _prepare_and_write_archive_part(
         self,
         *,
         plan: RawVolumePlan,
         checkpoint: RawUploadCheckpoint,
-        part: MultipartPartPlan,
+        part: AgeAlignedUnitPlan,
         plaintext_chunks: Iterable[bytes],
     ) -> _UploadedRawPart:
         started = time.perf_counter()
@@ -526,7 +543,7 @@ class RawVolumeUploader:
                 )
                 expected_digest = _expected_part_digest(
                     checkpoint,
-                    part.part_number,
+                    part.unit_number,
                 )
                 if expected_digest is not None and prepared.plaintext_sha256 != expected_digest:
                     raise ValueError(
@@ -536,23 +553,46 @@ class RawVolumeUploader:
                 self._byte_budget.release(working_bytes)
                 byte_reserved = False
                 raise
+        segment_receipts: list[WriteSegmentReceipt] = []
+        request_wait_seconds = 0.0
+        remote_seconds = 0.0
         try:
-            with self._request_gate.reserve() as request_wait_seconds:
-                remote_started = time.perf_counter()
-                remote = self._object_store.upload_part(
-                    upload=MultipartUpload(checkpoint.object_path, checkpoint.upload_id),
-                    number=part.part_number,
-                    content=prepared.ciphertext,
+            segment_plans = tuple(
+                current
+                for current in self._write_segment_plans(checkpoint)
+                if current.archive_part_number == part.unit_number
+            )
+            for segment_plan in segment_plans:
+                with self._request_gate.reserve() as current_wait_seconds:
+                    request_wait_seconds += current_wait_seconds
+                    content = prepared.ciphertext[
+                        segment_plan.archive_part_offset : segment_plan.archive_part_offset
+                        + segment_plan.stored_bytes
+                    ]
+                    remote_started = time.perf_counter()
+                    remote = self._object_store.write_segment(
+                        session=WriteSession(checkpoint.object_path, checkpoint.write_token),
+                        number=segment_plan.number,
+                        content=content,
+                    )
+                    remote_seconds += time.perf_counter() - remote_started
+                if remote.number != segment_plan.number or remote.bytes != len(content):
+                    raise RuntimeError(
+                        "resumable store returned an inconsistent write-segment receipt"
+                    )
+                segment_receipts.append(
+                    replace(
+                        remote,
+                        sha256=hashlib.sha256(content).hexdigest(),
+                    )
                 )
-                remote_seconds = time.perf_counter() - remote_started
         finally:
             if byte_reserved:
                 self._byte_budget.release(working_bytes)
         queue_wait_seconds = prepare_wait_seconds + byte_wait_seconds + request_wait_seconds
-        if remote.number != part.part_number or remote.bytes != prepared.stored_bytes:
-            raise RuntimeError("multipart store returned an inconsistent raw part receipt")
         return _UploadedRawPart(
-            receipt=_stored_part_receipt(part, prepared, remote),
+            receipt=_stored_archive_part(part, prepared),
+            write_segments=tuple(segment_receipts),
             queue_wait_seconds=queue_wait_seconds,
             source_seconds=prepared.source_seconds,
             crypto_seconds=prepared.crypto_seconds,
@@ -563,16 +603,20 @@ class RawVolumeUploader:
     def _record_part(
         self,
         checkpoint: RawUploadCheckpoint,
-        part: StoredPartReceipt,
+        part: StoredArchivePart,
+        write_segments: tuple[WriteSegmentReceipt, ...],
     ) -> tuple[RawUploadCheckpoint, float]:
-        existing = _part_by_number(checkpoint.parts, part.number)
+        existing = _part_by_number(checkpoint.archive_parts, part.number)
         if existing is not None and existing != part:
             raise RuntimeError("raw upload part receipt changed for an immutable part number")
-        parts = checkpoint.parts if existing is not None else (*checkpoint.parts, part)
+        parts = (
+            checkpoint.archive_parts if existing is not None else (*checkpoint.archive_parts, part)
+        )
         updated = replace(
             checkpoint,
             next_part=_first_missing_part(parts),
-            parts=tuple(sorted(parts, key=lambda current: current.number)),
+            archive_parts=tuple(sorted(parts, key=lambda current: current.number)),
+            write_segments=_merge_write_segments(checkpoint.write_segments, write_segments),
         )
         started = time.perf_counter()
         persisted = self._save(updated)
@@ -582,22 +626,14 @@ class RawVolumeUploader:
         if checkpoint.completed is not None:
             return checkpoint
         expected_parts = self._planned_parts(_checkpoint_plan(checkpoint), checkpoint)
-        parts = tuple(sorted(checkpoint.parts, key=lambda current: current.number))
+        parts = tuple(sorted(checkpoint.archive_parts, key=lambda current: current.number))
         if tuple(current.number for current in parts) != tuple(
-            current.part_number for current in expected_parts
+            current.unit_number for current in expected_parts
         ):
             raise RuntimeError("cannot complete a raw volume with pending parts")
-        completed = self._object_store.complete_multipart_upload(
-            upload=MultipartUpload(checkpoint.object_path, checkpoint.upload_id),
-            parts=tuple(
-                MultipartPartReceipt(
-                    current.number,
-                    current.etag,
-                    current.stored_bytes,
-                    current.stored_sha256,
-                )
-                for current in parts
-            ),
+        completed = self._object_store.complete_write(
+            session=WriteSession(checkpoint.object_path, checkpoint.write_token),
+            segments=tuple(sorted(checkpoint.write_segments, key=lambda current: current.number)),
             expected_bytes=sum(current.stored_bytes for current in parts),
             expected_metadata=_metadata(
                 _checkpoint_plan(checkpoint),
@@ -611,16 +647,21 @@ class RawVolumeUploader:
         checkpoint: RawUploadCheckpoint,
         completed: CompletedObjectReceipt,
     ) -> RawUploadCheckpoint:
-        if completed.bytes != sum(current.stored_bytes for current in checkpoint.parts):
+        if completed.bytes != sum(current.stored_bytes for current in checkpoint.archive_parts):
             raise RuntimeError("completed raw object byte count mismatch")
         if completed.object_path != checkpoint.object_path:
             raise RuntimeError("completed raw object path mismatch")
         sealed = replace(
             checkpoint,
-            parts=tuple(sorted(checkpoint.parts, key=lambda current: current.number)),
+            archive_parts=tuple(
+                sorted(checkpoint.archive_parts, key=lambda current: current.number)
+            ),
+            write_segments=tuple(
+                sorted(checkpoint.write_segments, key=lambda current: current.number)
+            ),
             completed=CompletedRawObject(
-                version_id=completed.version_id,
-                etag=completed.etag,
+                revision=completed.revision,
+                entity_token=completed.entity_token,
                 bytes=completed.bytes,
                 completed_at=completed.completed_at,
                 retrieval_cache=completed.retrieval_cache,
@@ -632,9 +673,9 @@ class RawVolumeUploader:
         self,
         plan: RawVolumePlan,
         checkpoint: RawUploadCheckpoint,
-    ) -> tuple[MultipartPartPlan, ...]:
+    ) -> tuple[AgeAlignedUnitPlan, ...]:
         session = self._session_cache.get(checkpoint.age_state_json)
-        return raw_multipart_part_plans(
+        return raw_age_aligned_unit_plans(
             plan,
             session,
             target_plaintext_bytes=checkpoint.target_part_plaintext_bytes,
@@ -658,8 +699,8 @@ class RawVolumeUploader:
             len(checkpoint.expected_part_sha256s) != len(planned_parts)
         ):
             raise ValueError("raw upload expected part digest count is invalid")
-        by_number = {current.part_number: current for current in planned_parts}
-        for part in checkpoint.parts:
+        by_number = {current.unit_number: current for current in planned_parts}
+        for part in checkpoint.archive_parts:
             planned = by_number.get(part.number)
             if planned is None or (
                 part.plaintext_start != planned.plaintext_start
@@ -669,29 +710,50 @@ class RawVolumeUploader:
             expected_digest = _expected_part_digest(checkpoint, part.number)
             if expected_digest is not None and part.plaintext_sha256 != expected_digest:
                 raise ValueError("raw upload checkpoint part digest does not match its manifest")
-        if checkpoint.next_part != _first_missing_part(checkpoint.parts):
+        expected_segments = tuple(
+            current
+            for current in self._write_segment_plans(checkpoint)
+            if current.archive_part_number in {part.number for part in checkpoint.archive_parts}
+        )
+        if tuple((current.number, current.bytes) for current in checkpoint.write_segments) != tuple(
+            (current.number, current.stored_bytes) for current in expected_segments
+        ):
+            raise ValueError("raw upload checkpoint write segments do not match its archive parts")
+        if checkpoint.next_part != _first_missing_part(checkpoint.archive_parts):
             raise ValueError("raw upload checkpoint next part is invalid")
-        if checkpoint.completed is not None and len(checkpoint.parts) != len(planned_parts):
+        if checkpoint.completed is not None and len(checkpoint.archive_parts) != len(planned_parts):
             raise ValueError("completed raw upload checkpoint has pending parts")
 
     def _reconcile_recorded_parts(self, checkpoint: RawUploadCheckpoint) -> None:
         remote = {
             current.number: current
-            for current in self._object_store.list_parts(
-                upload=MultipartUpload(checkpoint.object_path, checkpoint.upload_id)
+            for current in self._object_store.list_segments(
+                session=WriteSession(checkpoint.object_path, checkpoint.write_token)
             )
         }
-        for current in checkpoint.parts:
+        for current in checkpoint.write_segments:
             found = remote.get(current.number)
-            if found is None or found.etag != current.etag or found.bytes != current.stored_bytes:
-                raise RuntimeError("multipart store no longer contains a recorded raw part")
+            if found is None or (
+                found.segment_token != current.segment_token or found.bytes != current.bytes
+            ):
+                raise RuntimeError("resumable store no longer contains a recorded write segment")
+
+    def _write_segment_plans(
+        self,
+        checkpoint: RawUploadCheckpoint,
+    ) -> tuple[WriteSegmentPlan, ...]:
+        archive_parts = self._planned_parts(_checkpoint_plan(checkpoint), checkpoint)
+        return plan_write_segments(
+            tuple(current.ciphertext_len for current in archive_parts),
+            self._object_store.write_constraints(),
+        )
 
     def _observe(self, uploaded: _UploadedRawPart, *, checkpoint_seconds: float) -> None:
         if self._timing_observer is None:
             return
         self._observe_timing(
             TransferTiming(
-                operation="raw_upload_part",
+                operation="raw_write_segment",
                 identity=str(uploaded.receipt.number),
                 plaintext_bytes=uploaded.receipt.plaintext_bytes,
                 stored_bytes=uploaded.receipt.stored_bytes,
@@ -735,18 +797,19 @@ def merge_raw_upload_checkpoints(
         "file_sha256",
         "target_part_plaintext_bytes",
         "expected_part_sha256s",
-        "upload_id",
+        "write_token",
         "age_state_json",
     )
     if any(getattr(current, name) != getattr(candidate, name) for name in static_fields):
-        raise ValueError("raw upload checkpoints do not describe the same multipart object")
-    parts = {part.number: part for part in current.parts}
-    for part in candidate.parts:
+        raise ValueError("raw upload checkpoints do not describe the same resumable write")
+    parts = {part.number: part for part in current.archive_parts}
+    for part in candidate.archive_parts:
         existing = parts.get(part.number)
         if existing is not None and existing != part:
             raise RuntimeError("raw upload checkpoint contains conflicting part receipts")
         parts[part.number] = part
     ordered = tuple(sorted(parts.values(), key=lambda part: part.number))
+    segments = _merge_write_segments(current.write_segments, candidate.write_segments)
     completed = current.completed or candidate.completed
     if current.completed is not None and candidate.completed is not None:
         if current.completed != candidate.completed:
@@ -754,7 +817,8 @@ def merge_raw_upload_checkpoints(
     merged = replace(
         current,
         next_part=_first_missing_part(ordered),
-        parts=ordered,
+        archive_parts=ordered,
+        write_segments=segments,
         completed=completed,
     )
     if completed is not None:
@@ -796,19 +860,17 @@ def _checkpoint_plan(checkpoint: RawUploadCheckpoint) -> RawVolumePlan:
     )
 
 
-def _stored_part_receipt(
-    part: MultipartPartPlan,
+def _stored_archive_part(
+    part: AgeAlignedUnitPlan,
     prepared: PreparedAgePart,
-    remote: MultipartPartReceipt,
-) -> StoredPartReceipt:
-    return StoredPartReceipt(
-        number=part.part_number,
+) -> StoredArchivePart:
+    return StoredArchivePart(
+        number=part.unit_number,
         plaintext_start=part.plaintext_start,
         plaintext_bytes=prepared.plaintext_bytes,
         plaintext_sha256=prepared.plaintext_sha256,
         stored_bytes=prepared.stored_bytes,
         stored_sha256=prepared.stored_sha256,
-        etag=remote.etag,
     )
 
 
@@ -827,27 +889,25 @@ def _expected_part_digest(
     return checkpoint.expected_part_sha256s[number - 1]
 
 
-def _parts_from_payload(value: list[object]) -> tuple[StoredPartReceipt, ...]:
-    parts: list[StoredPartReceipt] = []
+def _parts_from_payload(value: list[object]) -> tuple[StoredArchivePart, ...]:
+    parts: list[StoredArchivePart] = []
     previous_number = 0
     previous_end = 0
     for raw in value:
         if not isinstance(raw, dict):
             raise ValueError("raw upload part is invalid")
-        part = StoredPartReceipt(
+        part = StoredArchivePart(
             number=_uint(raw.get("number"), "part number"),
             plaintext_start=_uint(raw.get("plaintext_start"), "part plaintext start"),
             plaintext_bytes=_uint(raw.get("plaintext_bytes"), "part plaintext bytes"),
             plaintext_sha256=_sha(raw.get("plaintext_sha256"), "part plaintext"),
             stored_bytes=_uint(raw.get("stored_bytes"), "part stored bytes"),
             stored_sha256=_sha(raw.get("stored_sha256"), "part stored"),
-            etag=str(raw.get("etag", "")),
         )
         if (
             part.number <= previous_number
             or part.plaintext_start < previous_end
             or part.stored_bytes < 1
-            or not part.etag
         ):
             raise ValueError("raw upload part order is invalid")
         previous_number = part.number
@@ -857,7 +917,7 @@ def _parts_from_payload(value: list[object]) -> tuple[StoredPartReceipt, ...]:
 
 
 def _require_complete_coverage(
-    parts: tuple[StoredPartReceipt, ...],
+    parts: tuple[StoredArchivePart, ...],
     *,
     plaintext_bytes: int,
 ) -> None:
@@ -870,7 +930,7 @@ def _require_complete_coverage(
         raise ValueError("completed raw upload does not cover its plaintext")
 
 
-def _first_missing_part(parts: tuple[StoredPartReceipt, ...]) -> int:
+def _first_missing_part(parts: tuple[StoredArchivePart, ...]) -> int:
     numbers = {current.number for current in parts}
     current = 1
     while current in numbers:
@@ -879,13 +939,13 @@ def _first_missing_part(parts: tuple[StoredPartReceipt, ...]) -> int:
 
 
 def _part_by_number(
-    parts: tuple[StoredPartReceipt, ...],
+    parts: tuple[StoredArchivePart, ...],
     number: int,
-) -> StoredPartReceipt | None:
+) -> StoredArchivePart | None:
     return next((current for current in parts if current.number == number), None)
 
 
-def _part_payload(current: StoredPartReceipt) -> dict[str, object]:
+def _archive_part_payload(current: StoredArchivePart) -> dict[str, object]:
     return {
         "number": current.number,
         "plaintext_start": current.plaintext_start,
@@ -893,8 +953,53 @@ def _part_payload(current: StoredPartReceipt) -> dict[str, object]:
         "plaintext_sha256": current.plaintext_sha256,
         "stored_bytes": current.stored_bytes,
         "stored_sha256": current.stored_sha256,
-        "etag": current.etag,
     }
+
+
+def _segments_from_payload(raw_segments: list[object]) -> tuple[WriteSegmentReceipt, ...]:
+    segments: list[WriteSegmentReceipt] = []
+    for raw in raw_segments:
+        if not isinstance(raw, dict):
+            raise ValueError("raw upload write segment is invalid")
+        segment = WriteSegmentReceipt(
+            number=_uint(raw.get("number"), "segment number"),
+            segment_token=str(raw.get("segment_token", "")),
+            bytes=_uint(raw.get("stored_bytes"), "segment bytes"),
+            sha256=(
+                _sha(raw.get("stored_sha256"), "segment stored")
+                if raw.get("stored_sha256") is not None
+                else None
+            ),
+        )
+        if segment.number < 1 or segment.bytes < 1 or not segment.segment_token:
+            raise ValueError("raw upload write-segment receipt is invalid")
+        segments.append(segment)
+    ordered = tuple(sorted(segments, key=lambda current: current.number))
+    if len({current.number for current in ordered}) != len(ordered):
+        raise ValueError("raw upload write segment numbers are duplicated")
+    return ordered
+
+
+def _write_segment_payload(current: WriteSegmentReceipt) -> dict[str, object]:
+    return {
+        "number": current.number,
+        "segment_token": current.segment_token,
+        "stored_bytes": current.bytes,
+        "stored_sha256": current.sha256,
+    }
+
+
+def _merge_write_segments(
+    current: tuple[WriteSegmentReceipt, ...],
+    candidate: tuple[WriteSegmentReceipt, ...],
+) -> tuple[WriteSegmentReceipt, ...]:
+    merged = {segment.number: segment for segment in current}
+    for segment in candidate:
+        existing = merged.get(segment.number)
+        if existing is not None and existing != segment:
+            raise RuntimeError("raw upload checkpoint contains conflicting write segments")
+        merged[segment.number] = segment
+    return tuple(sorted(merged.values(), key=lambda segment: segment.number))
 
 
 def _completed_from_payload(value: object) -> CompletedRawObject | None:
@@ -906,11 +1011,11 @@ def _completed_from_payload(value: object) -> CompletedRawObject | None:
     completed_at = str(value.get("completed_at", ""))
     if byte_count < 1 or not completed_at:
         raise ValueError("raw upload completion receipt is invalid")
-    version = value.get("version_id")
-    etag = value.get("etag")
+    revision = value.get("revision")
+    entity_token = value.get("entity_token")
     return CompletedRawObject(
-        version_id=str(version) if version is not None else None,
-        etag=str(etag) if etag is not None else None,
+        revision=str(revision) if revision is not None else None,
+        entity_token=str(entity_token) if entity_token is not None else None,
         bytes=byte_count,
         completed_at=completed_at,
         retrieval_cache=parse_retrieval_cache_receipt(value.get("retrieval_cache")),

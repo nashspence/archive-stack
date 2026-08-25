@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from riverhog_age import (
     AEAD_TAG_SIZE,
     CHUNK_SIZE,
-    PORTABLE_MULTIPART_MAX_PARTS,
     AgeDecryptError,
     AgeFormatError,
     ResumableAgeScryptSession,
@@ -184,19 +183,17 @@ def test_deterministic_regeneration_after_export_import_state():
     ) == session1.encrypt_chunk(chunk_index, plaintext[start:end], final=False)
 
 
-def test_multipart_part_plans_reconstruct_exact_age_file():
+def test_age_aligned_unit_plans_reconstruct_exact_age_file():
     plaintext = os.urandom(CHUNK_SIZE * 7 + 9)
     session = new_test_session(len(plaintext))
     full = session.encrypt_plaintext(plaintext)
 
-    # Use small part grouping so this test exercises multiple parts without huge fixtures.
-    plans = session.multipart_part_plans(
-        len(plaintext), chunks_per_part=3, enforce_portable_limits=False
-    )
+    # Use small grouping so this test exercises multiple units without huge fixtures.
+    plans = session.age_aligned_unit_plans(len(plaintext), chunks_per_unit=3)
     assert len(plans) == 3
     assert plans[0].includes_age_prefix is True
     assert all(not p.includes_age_prefix for p in plans[1:])
-    assert [p.part_number for p in plans] == [1, 2, 3]
+    assert [p.unit_number for p in plans] == [1, 2, 3]
     assert plans[0].ciphertext_start == 0
     assert plans[-1].ciphertext_end == len(full)
 
@@ -214,24 +211,22 @@ def test_resume_from_middle_missing_part():
     plaintext = os.urandom(CHUNK_SIZE * 9 + 321)
     original = new_test_session(len(plaintext))
     state = original.export_state(plaintext_size=len(plaintext)).to_json_bytes()
-    plans = original.multipart_part_plans(
-        len(plaintext), chunks_per_part=2, enforce_portable_limits=False
-    )
+    plans = original.age_aligned_unit_plans(len(plaintext), chunks_per_unit=2)
 
     def provider(_chunk_index, start, end):
         return plaintext[start:end]
 
     uploaded_parts = {
-        p.part_number: original.encrypt_part(p, provider, plaintext_size=len(plaintext))
+        p.unit_number: original.encrypt_part(p, provider, plaintext_size=len(plaintext))
         for p in plans
-        if p.part_number != 3
+        if p.unit_number != 3
     }
 
     resumed = ResumableAgeScryptSession.from_state(PASS, state)
     missing_plan = plans[2]
     uploaded_parts[3] = resumed.encrypt_part(missing_plan, provider, plaintext_size=len(plaintext))
 
-    reconstructed = b"".join(uploaded_parts[p.part_number] for p in plans)
+    reconstructed = b"".join(uploaded_parts[p.unit_number] for p in plans)
     assert reconstructed == original.encrypt_plaintext(plaintext)
 
 
@@ -359,10 +354,10 @@ def test_upload_state_parser_rejects_malformed_state():
         UploadState.from_json_bytes(json.dumps(bad_nonce).encode("utf-8"))
 
 
-def test_default_s3_plan_handles_70_gib_archive_shape():
+def test_default_age_unit_plan_handles_70_gib_archive_shape():
     session = new_test_session()
     seventy_gib = 70 * 1024**3
-    plans = session.multipart_part_plans(seventy_gib)
+    plans = session.age_aligned_unit_plans(seventy_gib)
     assert len(plans) < 10_000
     assert all(p.ciphertext_len >= 5 * 1024 * 1024 for p in plans[:-1])
     assert plans[-1].ciphertext_end == age_ciphertext_len_for_plaintext_len(
@@ -370,29 +365,20 @@ def test_default_s3_plan_handles_70_gib_archive_shape():
     )
 
 
-def test_s3_plan_rejects_too_many_small_parts_when_enforced():
+def test_age_unit_plan_has_no_provider_count_or_size_limits():
     session = new_test_session()
-    with pytest.raises(ValueError, match="Increase chunks_per_part|below the 5 MiB"):
-        session.multipart_part_plans(70 * 1024**3, chunks_per_part=1)
+    unit_count = 10_001
+    plans = session.age_aligned_unit_plans(unit_count * CHUNK_SIZE, chunks_per_unit=1)
 
-
-def test_s3_plan_accepts_exactly_max_parts_and_rejects_one_more():
-    session = new_test_session()
-    max_size = PORTABLE_MULTIPART_MAX_PARTS * CHUNK_SIZE
-    plans = session.multipart_part_plans(max_size, chunks_per_part=1, enforce_portable_limits=False)
-    assert len(plans) == PORTABLE_MULTIPART_MAX_PARTS
-
-    with pytest.raises(ValueError, match="at most"):
-        session.multipart_part_plans(max_size + CHUNK_SIZE, chunks_per_part=1)
+    assert len(plans) == unit_count
+    assert plans[0].ciphertext_len < 5 * 1024 * 1024
 
 
 def test_ranged_plaintext_provider_reconstructs_exact_age_file():
     plaintext = bytes((i * 7 + 11) % 256 for i in range(CHUNK_SIZE * 5 + 711))
     session = new_test_session(len(plaintext))
     full = session.encrypt_plaintext(plaintext)
-    plans = session.multipart_part_plans(
-        len(plaintext), chunks_per_part=2, enforce_portable_limits=False
-    )
+    plans = session.age_aligned_unit_plans(len(plaintext), chunks_per_unit=2)
 
     def provider(_chunk_index, start, end):
         return plaintext[start:end]

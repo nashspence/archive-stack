@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import replace
 
-from riverhog_age import CHUNK_SIZE, PORTABLE_MULTIPART_MIN_PART_BYTES
+from riverhog_age import CHUNK_SIZE
 from riverhog_protocol.pack_ingress import (
     PackUnitDescriptor,
     PackUnitPayloadReader,
@@ -96,10 +96,10 @@ def plan_pack_volume(
     normalized = _normalized_files(files, max_member_bytes=max_member_bytes)
     if sequence < 0:
         raise ValueError("pack sequence must be non-negative")
-    if part_plaintext_bytes < PORTABLE_MULTIPART_MIN_PART_BYTES:
-        raise ValueError("pack multipart plaintext target is below the portable minimum")
+    if part_plaintext_bytes < 1:
+        raise ValueError("pack archive-part plaintext target must be positive")
     if part_plaintext_bytes % CHUNK_SIZE:
-        raise ValueError("pack multipart plaintext target must align to the age chunk size")
+        raise ValueError("pack archive-part target must align to the age chunk size")
 
     volume_id = f"pack-{sequence:012d}"
     members: list[PackMemberPlan] = []
@@ -144,8 +144,6 @@ def plan_pack_volume(
                     padding=padding,
                 )
             )
-            if units[-1].plaintext_bytes < PORTABLE_MULTIPART_MIN_PART_BYTES:
-                raise RuntimeError("planned a non-final multipart unit below the portable minimum")
             unit_index += 1
             unit_start = cursor
             unit_sources = []
@@ -194,7 +192,7 @@ def pack_volume_plan_payload(plan: PackVolumePlan) -> dict[str, object]:
     """Return the persisted canonical recipe for a completed v1 pack layout.
 
     The recipe rebuilds and verifies final identity; it does not make plan-first
-    assembly or multipart transfer an archive-format requirement.
+    assembly or resumable transfer an archive-format requirement.
     """
 
     return {

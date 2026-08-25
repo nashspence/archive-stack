@@ -1502,10 +1502,10 @@ def _upload_collection_via_session(
 def _archive_wait_status(payload: Mapping[str, object]) -> str:
     phase = payload.get("archive_phase")
     status = f", archive_phase={phase}" if phase else ""
-    uploaded_parts = payload.get("archive_uploaded_parts")
-    total_parts = payload.get("archive_total_parts")
-    if isinstance(uploaded_parts, int) and isinstance(total_parts, int) and total_parts > 0:
-        status += f", parts={uploaded_parts}/{total_parts}"
+    uploaded_units = payload.get("archive_uploaded_units")
+    total_units = payload.get("archive_total_units")
+    if isinstance(uploaded_units, int) and isinstance(total_units, int) and total_units > 0:
+        status += f", units={uploaded_units}/{total_units}"
     latest_failure = payload.get("latest_failure")
     if latest_failure:
         status += f", latest_failure={latest_failure}"

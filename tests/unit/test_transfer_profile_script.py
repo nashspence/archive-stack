@@ -27,7 +27,7 @@ def test_transfer_log_summary_selects_scenario_and_omits_identity() -> None:
     module = load_script()
     text = (
         "ignored line\n"
-        "transfer operation=pack_upload_part identity_sha256=secret-digest "
+        "transfer operation=pack_write_segment identity_sha256=secret-digest "
         "plaintext_bytes=1048576 stored_bytes=1048600 queue_seconds=0.1 "
         "source_seconds=0.2 integrity_seconds=0.3 crypto_seconds=0.4 "
         "processing_seconds=0.5 remote_seconds=0.6 checkpoint_seconds=0.7 "
@@ -42,7 +42,7 @@ def test_transfer_log_summary_selects_scenario_and_omits_identity() -> None:
     )
 
     assert summary.records == 1
-    assert summary.operations == {"pack_upload_part": 1}
+    assert summary.operations == {"pack_write_segment": 1}
     assert summary.bottlenecks == {"downstream": 1}
     assert summary.plaintext_bytes == 1048576
     assert summary.stored_bytes == 1048600
@@ -67,7 +67,7 @@ def test_transfer_profile_runs_without_echoing_command(
     module = load_script()
     log = tmp_path / "transfer.log"
     log.write_text(
-        "transfer operation=raw_upload_part identity_sha256=private "
+        "transfer operation=raw_write_segment identity_sha256=private "
         "plaintext_bytes=2097152 stored_bytes=2097200 queue_seconds=0 "
         "source_seconds=0.1 crypto_seconds=0.2 remote_seconds=0.3 "
         "checkpoint_seconds=0.1 downstream_seconds=0 elapsed_seconds=0.7 "
@@ -122,7 +122,7 @@ def test_transfer_profile_runs_without_echoing_command(
     assert result["target_utilization"] == 0.9
     assert result["items_per_second"] == 0.5
     assert result["seconds_per_item"] == 2.0
-    assert result["transfer_log"]["operations"] == {"raw_upload_part": 1}
+    assert result["transfer_log"]["operations"] == {"raw_write_segment": 1}
     assert "/private/input" not in json.dumps(result)
 
 

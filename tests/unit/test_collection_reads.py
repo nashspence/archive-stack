@@ -77,7 +77,7 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                         stored_bytes=1,
                         sha256="a" * 64,
                         stored_sha256="b" * 64,
-                        version_id=f"version-{collection_id}-{object_id}",
+                        revision=f"version-{collection_id}-{object_id}",
                         uploaded_at=NOW,
                         verified_at=NOW,
                     )

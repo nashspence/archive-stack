@@ -8,7 +8,7 @@ from typing import Literal
 
 from riverhog_age import encrypt_age_scrypt, iter_decrypt_age_scrypt
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     DeleteObjectRequest,
     DeletePrefixRequest,
@@ -78,15 +78,15 @@ class StorageAdapterArchiveStore:
     def new_collection_archive_storage_prefix(self) -> str:
         return f"archives/{secrets.token_hex(_OPAQUE_ARCHIVE_ID_BYTES)}"
 
-    def abort_incomplete_multipart_uploads(
+    def abort_incomplete_writes(
         self,
         *,
         initiated_before: datetime,
     ) -> int:
         if initiated_before.tzinfo is None:
-            raise ValueError("multipart upload cutoff must be timezone-aware")
-        return self._adapter.abort_incomplete_uploads(
-            AbortIncompleteUploadsRequest(
+            raise ValueError("resumable-write cutoff must be timezone-aware")
+        return self._adapter.abort_incomplete_writes(
+            AbortIncompleteWritesRequest(
                 object_prefix="archives/",
                 initiated_before=format_utc_timestamp(initiated_before),
             )
@@ -94,8 +94,8 @@ class StorageAdapterArchiveStore:
 
     def discard_collection_archive_upload(self, *, archive_storage_prefix: str) -> None:
         prefix = _archive_prefix(archive_storage_prefix)
-        self._adapter.abort_incomplete_uploads(
-            AbortIncompleteUploadsRequest(
+        self._adapter.abort_incomplete_writes(
+            AbortIncompleteWritesRequest(
                 object_prefix=f"{prefix}/",
                 initiated_before=format_utc_timestamp(utc_now() + timedelta(seconds=1)),
             )
@@ -142,7 +142,7 @@ class StorageAdapterArchiveStore:
             for current in objects
             if self._head(
                 object_path=current.object_path,
-                version_id=None,
+                revision=None,
                 placement=_object_placement(current.kind),
             )
             is not None
@@ -173,14 +173,14 @@ class StorageAdapterArchiveStore:
         }
         existing = self._head(
             object_path=object_path,
-            version_id=None,
+            revision=None,
             placement="immediate",
         )
         if existing is not None and _metadata_contains(existing, identity):
             stored_sha256 = _required_stored_sha256(existing, object_path=object_path)
             return MutableManifestReceipt(
                 object_path=existing.object_path,
-                version_id=existing.revision,
+                revision=existing.revision,
                 stored_bytes=existing.stored_bytes,
                 stored_sha256=stored_sha256,
                 published_at=existing.completed_at,
@@ -199,7 +199,7 @@ class StorageAdapterArchiveStore:
         )
         return MutableManifestReceipt(
             object_path=receipt.object_path,
-            version_id=receipt.revision,
+            revision=receipt.revision,
             stored_bytes=receipt.stored_bytes,
             stored_sha256=receipt.stored_sha256,
             published_at=receipt.completed_at,
@@ -245,7 +245,7 @@ class StorageAdapterArchiveStore:
         _archive_prefix_from_object(object.object_path)
         existing = self._head(
             object_path=object.object_path,
-            version_id=None,
+            revision=None,
             placement="immediate",
         )
         plaintext_sha256 = hashlib.sha256(proof_bytes).hexdigest()
@@ -413,7 +413,7 @@ class StorageAdapterArchiveStore:
             ObjectReadRequest(
                 object=ObjectLocator(
                     object_path=object.object_path,
-                    revision=object.version_id,
+                    revision=object.revision,
                 ),
                 expected_bytes=object.stored_bytes,
             )
@@ -439,7 +439,7 @@ class StorageAdapterArchiveStore:
     def _metadata(self, object: ArchiveObjectIdentity) -> ObjectMetadataReceipt:
         metadata = self._head(
             object_path=object.object_path,
-            version_id=object.version_id,
+            revision=object.revision,
             placement=_object_placement(object.kind),
         )
         if metadata is None:
@@ -450,12 +450,12 @@ class StorageAdapterArchiveStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         placement: ObjectPlacement,
     ) -> ObjectMetadataReceipt | None:
         return self._adapter.head_object(
             ObjectHeadRequest(
-                object=ObjectLocator(object_path=object_path, revision=version_id),
+                object=ObjectLocator(object_path=object_path, revision=revision),
                 expected_placement=placement,
             )
         )
@@ -499,7 +499,7 @@ class StorageAdapterArchiveStore:
         }
         existing = self._head(
             object_path=object_path,
-            version_id=None,
+            revision=None,
             placement="immediate",
         )
         if existing is not None:
@@ -600,7 +600,7 @@ class StorageAdapterArchiveStore:
             stored_bytes=stored.stored_bytes,
             sha256=plaintext_sha256,
             stored_sha256=stored.stored_sha256,
-            version_id=stored.revision,
+            revision=stored.revision,
             uploaded_at=stored.completed_at,
             verified_at=stored.completed_at,
         )
@@ -625,7 +625,7 @@ class StorageAdapterArchiveStore:
             stored_sha256=(
                 metadata.stored_sha256 or metadata.identity_metadata.get("riverhog-stored-sha256")
             ),
-            version_id=metadata.revision,
+            revision=metadata.revision,
             uploaded_at=metadata.completed_at,
             verified_at=utc_timestamp_now() if verified else None,
         )
@@ -637,7 +637,7 @@ def _read_request(objects: Sequence[ArchiveObjectIdentity]) -> ReadPreparationRe
             (
                 ObjectLocator(
                     object_path=current.object_path,
-                    revision=current.version_id,
+                    revision=current.revision,
                 )
                 for current in objects
             ),
@@ -659,7 +659,7 @@ def _verify_metadata(
 ) -> None:
     if actual.object_path != expected.object_path or actual.stored_bytes != expected.stored_bytes:
         raise RuntimeError("archive object metadata differs from its durable identity")
-    if expected.version_id is not None and actual.revision != expected.version_id:
+    if expected.revision is not None and actual.revision != expected.revision:
         raise RuntimeError("archive object revision differs from its durable identity")
     if expected.stored_sha256 is not None and actual.stored_sha256 is not None:
         if actual.stored_sha256 != expected.stored_sha256:

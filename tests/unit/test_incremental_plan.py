@@ -4,7 +4,6 @@ import hashlib
 import json
 
 import pytest
-from riverhog_age import PORTABLE_MULTIPART_MIN_PART_BYTES
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.domain.archive import ArchiveFile
 from riverhog_core.incremental_plan import (
@@ -14,6 +13,8 @@ from riverhog_core.incremental_plan import (
     new_incremental_volume_planner,
     parse_incremental_volume_planner_checkpoint,
 )
+
+TEST_ARCHIVE_PART_BYTES = 5 * 1024 * 1024
 
 
 def _ordered(order: int, path: str, byte_count: int) -> OrderedArchiveFile:
@@ -33,8 +34,8 @@ def _policy() -> CollectionVolumePolicy:
         pack_files=2,
         pack_member_bytes=8,
         pack_part_plaintext_bytes=5 * 1024 * 1024,
-        raw_volume_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
-        raw_part_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
+        raw_volume_plaintext_bytes=TEST_ARCHIVE_PART_BYTES,
+        raw_part_plaintext_bytes=TEST_ARCHIVE_PART_BYTES,
     )
 
 
@@ -62,7 +63,7 @@ def test_large_file_flushes_pending_pack_and_emits_canonical_segments() -> None:
         new_incremental_volume_planner(policy=_policy()),
         (
             _ordered(0, "small.txt", 3),
-            _ordered(1, "large.bin", 2 * PORTABLE_MULTIPART_MIN_PART_BYTES + 4),
+            _ordered(1, "large.bin", 2 * TEST_ARCHIVE_PART_BYTES + 4),
         ),
         final=True,
     )

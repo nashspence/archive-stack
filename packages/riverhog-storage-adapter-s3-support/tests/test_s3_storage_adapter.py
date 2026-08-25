@@ -10,12 +10,10 @@ from typing import Any, cast
 import pytest
 from botocore.exceptions import ClientError, ConnectionClosedError
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
     ObjectHeadRequest,
     ObjectLocator,
     ObjectReadRequest,
@@ -23,6 +21,8 @@ from riverhog_storage_adapter_protocol import (
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterRejection,
+    WriteCompleteRequest,
+    WriteStartRequest,
 )
 from riverhog_storage_adapter_s3_support import (
     S3StorageAdapter,
@@ -150,10 +150,10 @@ class _FakeS3Client:
         if request.get("IfNoneMatch") != "*":
             raise AssertionError("multipart completion must remain create-only")
         if key in self.current:
-            raise _client_error("PreconditionFailed", 412, "CompleteMultipartUpload")
+            raise _client_error("PreconditionFailed", 412, "CompleteWriteSession")
         upload_id = str(request["UploadId"])
         if upload_id not in self.uploads:
-            raise _client_error("NoSuchUpload", 404, "CompleteMultipartUpload")
+            raise _client_error("NoSuchUpload", 404, "CompleteWriteSession")
         upload = self.uploads.pop(upload_id)
         content = b"".join(upload["parts"][number] for number in sorted(upload["parts"]))
         return self._store(upload["request"], content)
@@ -323,38 +323,38 @@ def test_small_object_preserves_conditional_multipart_fallback(
     assert not client.uploads
 
 
-def test_multipart_reconciles_parts_and_lost_completion_without_a_whole_digest() -> None:
+def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
     client = _FakeS3Client()
     adapter = S3StorageAdapter(client, _config())
-    create = MultipartCreateRequest(
+    create = WriteStartRequest(
         object_path="archives/collection/volume.age",
         content_type="application/octet-stream",
         identity_metadata={"riverhog-plan-sha256": "a" * 64},
         placement="archive",
     )
-    upload = adapter.create_multipart_upload(create)
-    first_content = b"f" * adapter.descriptor().minimum_nonfinal_part_bytes
-    parts = (
-        adapter.upload_part(upload=upload, number=1, content=first_content),
-        adapter.upload_part(upload=upload, number=2, content=b"second"),
+    session = adapter.begin_write(create)
+    first_content = b"f" * adapter.descriptor().minimum_nonfinal_segment_bytes
+    segments = (
+        adapter.write_segment(session=session, number=1, content=first_content),
+        adapter.write_segment(session=session, number=2, content=b"second"),
     )
-    assert adapter.list_parts(upload) == parts
-    completion = MultipartCompleteRequest(
-        upload=upload,
-        parts=parts,
+    assert adapter.list_segments(session) == segments
+    completion = WriteCompleteRequest(
+        session=session,
+        segments=segments,
         expected_bytes=len(first_content) + 6,
         expected_identity_metadata=create.identity_metadata,
         expected_placement=create.placement,
     )
 
-    first = adapter.complete_multipart_upload(completion)
-    recovered = adapter.complete_multipart_upload(completion)
+    first = adapter.complete_write(completion)
+    recovered = adapter.complete_write(completion)
 
     assert recovered == first
     assert not hasattr(first, "stored_sha256")
     assert (
-        adapter.head_completed_object(
-            MultipartHeadRequest(
+        adapter.find_completed_write(
+            CompletedWriteLookupRequest(
                 object_path=first.object_path,
                 expected_identity_metadata=create.identity_metadata,
                 expected_placement=create.placement,
@@ -492,8 +492,8 @@ def test_read_preparation_mechanics_remain_adapter_private() -> None:
 def test_incomplete_upload_cleanup_is_prefix_and_cutoff_scoped() -> None:
     client = _FakeS3Client()
     adapter = S3StorageAdapter(client, _config())
-    upload = adapter.create_multipart_upload(
-        MultipartCreateRequest(
+    session = adapter.begin_write(
+        WriteStartRequest(
             object_path="archives/collection/volume.age",
             content_type="application/octet-stream",
             identity_metadata={"riverhog-plan-sha256": "a" * 64},
@@ -501,15 +501,15 @@ def test_incomplete_upload_cleanup_is_prefix_and_cutoff_scoped() -> None:
         )
     )
 
-    aborted = adapter.abort_incomplete_uploads(
-        AbortIncompleteUploadsRequest(
+    aborted = adapter.abort_incomplete_writes(
+        AbortIncompleteWritesRequest(
             object_prefix="archives/",
             initiated_before="2026-01-02T00:00:00Z",
         )
     )
 
     assert aborted == 1
-    assert upload.upload_id not in client.uploads
+    assert session.write_token not in client.uploads
 
 
 def test_s3_transport_and_source_boundary_are_adapter_owned() -> None:

@@ -23,9 +23,9 @@ class _Adapter:
             implementation_id="fixture.storage/v1",
             implementation_version="1.0.0",
             read_mode="immediate",
-            minimum_nonfinal_part_bytes=1,
-            maximum_part_bytes=1024,
-            maximum_part_count=10,
+            minimum_nonfinal_segment_bytes=1,
+            maximum_segment_bytes=1024,
+            maximum_segment_count=10,
         )
 
     def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:

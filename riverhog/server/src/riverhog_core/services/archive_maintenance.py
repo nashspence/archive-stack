@@ -169,7 +169,7 @@ class SqlAlchemyArchiveMaintenanceService:
                     return
                 publication.published_revision = revision
                 publication.object_path = receipt.object_path
-                publication.version_id = receipt.version_id
+                publication.revision = receipt.revision
                 publication.stored_bytes = receipt.stored_bytes
                 publication.stored_sha256 = receipt.stored_sha256
                 publication.published_at = receipt.published_at
@@ -199,16 +199,14 @@ class SqlAlchemyArchiveMaintenanceService:
                 )
                 publication.failure = str(exc)[:1000]
 
-    def abort_incomplete_multipart_uploads(self, *, initiated_before: datetime) -> int:
+    def abort_incomplete_writes(self, *, initiated_before: datetime) -> int:
         aborted = 0
         for store_name, binding in self._archive_stores.items():
             try:
-                count = binding.store.abort_incomplete_multipart_uploads(
-                    initiated_before=initiated_before
-                )
+                count = binding.store.abort_incomplete_writes(initiated_before=initiated_before)
             except Exception:
                 _LOG.exception(
-                    "incomplete archive multipart upload sweep failed: store=%s",
+                    "incomplete archive write sweep failed: store=%s",
                     store_name,
                 )
                 continue

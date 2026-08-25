@@ -1781,9 +1781,9 @@ def _corpus_layout(profile: str) -> tuple[tuple[str, int], ...]:
     )
     if profile == "regular":
         return common
-    if profile == "multipart":
-        return (*common, ("direct/multipart-boundary.bin", 128 * MIB + 64 * 1024))
-    raise QualificationError("corpus profile must be regular or multipart")
+    if profile == "resumable":
+        return (*common, ("direct/resumable-boundary.bin", 128 * MIB + 64 * 1024))
+    raise QualificationError("corpus profile must be regular or resumable")
 
 
 def create_corpus(output: Path, *, profile: str) -> CorpusManifest:
@@ -2136,9 +2136,9 @@ def evidence_from_checkpoint(checkpoint: QualificationCheckpoint) -> dict[str, o
     required_by_phase = {
         phase: set(assertions) for phase, assertions in _REQUIRED_PASS_ASSERTIONS_BY_PHASE.items()
     }
-    if checkpoint.corpus_profile == "multipart":
+    if checkpoint.corpus_profile == "resumable":
         required_by_phase["immediate-qualified"].update(
-            {"multipart-client-interrupted", "multipart-client-restarted"}
+            {"resumable-client-interrupted", "resumable-client-restarted"}
         )
     if checkpoint.phase == "cleaned":
         missing = {
@@ -2650,7 +2650,7 @@ def _upload_collection_with_observation(
     resolved_root = str(root.expanduser().resolve())
     observed: set[str] = set()
     collection_id: int | None = checkpoint.collection_id
-    interrupt_client = checkpoint.corpus_profile == "multipart"
+    interrupt_client = checkpoint.corpus_profile == "resumable"
     interrupted = False
 
     def observe() -> None:
@@ -2697,7 +2697,7 @@ def _upload_collection_with_observation(
     with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr:
         while True:
             if interrupted:
-                observed.add("multipart-client-restarted")
+                observed.add("resumable-client-restarted")
             process = subprocess.Popen(  # noqa: S603
                 command,
                 env=environment,
@@ -2725,7 +2725,7 @@ def _upload_collection_with_observation(
                         process.kill()
                         process.wait(timeout=30)
                     interrupted = True
-                    observed.add("multipart-client-interrupted")
+                    observed.add("resumable-client-interrupted")
                     restart = True
                     break
                 time.sleep(0.1)
@@ -2757,7 +2757,7 @@ def _upload_collection_with_observation(
         "unit-readback",
     }
     if interrupt_client:
-        required.update({"multipart-client-interrupted", "multipart-client-restarted"})
+        required.update({"resumable-client-interrupted", "resumable-client-restarted"})
     if not required <= observed:
         raise QualificationError(
             "upload completed before required session observations were established: "
@@ -3053,12 +3053,12 @@ def _b2_namespace_versions(
                 if not isinstance(item, dict):
                     raise QualificationError("B2 version listing returned an invalid item")
                 key = item.get("Key")
-                version_id = item.get("VersionId")
-                if not isinstance(key, str) or not isinstance(version_id, str):
+                revision = item.get("VersionId")
+                if not isinstance(key, str) or not isinstance(revision, str):
                     raise QualificationError("B2 version listing omitted an object identity")
                 if not key.startswith(prefix):
                     raise QualificationError("B2 version listing escaped the run namespace")
-                versions.append({"Key": key, "VersionId": version_id})
+                versions.append({"Key": key, "VersionId": revision})
         if not response.get("IsTruncated"):
             break
         key_marker = response.get("NextKeyMarker")
@@ -3362,9 +3362,9 @@ def _verify_cloudfront_egress(
         if _SHA256_RE.fullmatch(expected_sha) is None:
             raise QualificationError("Deep Archive object has no Riverhog ciphertext identity")
         object_url = f"{base_url}/{_quote(key, safe='/')}"
-        version_id = head.get("VersionId")
-        if isinstance(version_id, str) and version_id and version_id != "null":
-            object_url = f"{object_url}?versionId={_quote(version_id, safe='')}"
+        revision = head.get("VersionId")
+        if isinstance(revision, str) and revision and revision != "null":
+            object_url = f"{object_url}?versionId={_quote(revision, safe='')}"
         signed = signer.generate_presigned_url(
             object_url,
             date_less_than=datetime.now(UTC) + _timedelta(minutes=15),
@@ -3936,7 +3936,7 @@ def _parser() -> argparse.ArgumentParser:
 
     corpus = commands.add_parser("corpus-create", help="create a deterministic corpus")
     corpus.add_argument("output", type=Path)
-    corpus.add_argument("--profile", choices=("regular", "multipart"), default="regular")
+    corpus.add_argument("--profile", choices=("regular", "resumable"), default="regular")
 
     state = commands.add_parser("checkpoint-start", help="create a resumable checkpoint")
     state.add_argument("checkpoint", type=Path)

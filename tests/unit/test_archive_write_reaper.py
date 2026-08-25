@@ -11,12 +11,12 @@ from riverhog_api import app as api_app
 from riverhog_api.deps import ServiceContainer
 
 
-class _ArchiveUploadService:
+class _ArchiveWriteService:
     def __init__(self, *, result: int = 2) -> None:
         self.initiated_before: datetime | None = None
         self.result = result
 
-    def abort_incomplete_multipart_uploads(
+    def abort_incomplete_writes(
         self,
         *,
         initiated_before: datetime,
@@ -24,7 +24,7 @@ class _ArchiveUploadService:
         self.initiated_before = initiated_before
         return self.result
 
-    def abort_incomplete_cache_multipart_uploads(
+    def abort_incomplete_cache_writes(
         self,
         *,
         initiated_before: datetime,
@@ -88,9 +88,9 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_workflows.reap_expired_claims.assert_called_once_with(limit=100)
 
 
-def test_archive_multipart_sweep_uses_the_configured_max_age(monkeypatch) -> None:
-    service = _ArchiveUploadService()
-    cache_service = _ArchiveUploadService(result=3)
+def test_archive_write_sweep_uses_the_configured_max_age(monkeypatch) -> None:
+    service = _ArchiveWriteService()
+    cache_service = _ArchiveWriteService(result=3)
     container = cast(
         ServiceContainer,
         SimpleNamespace(archive_maintenance=service, retrieval=cache_service),
@@ -98,7 +98,7 @@ def test_archive_multipart_sweep_uses_the_configured_max_age(monkeypatch) -> Non
     now = datetime(2026, 7, 16, 12, tzinfo=UTC)
     monkeypatch.setattr(api_app, "utc_now", lambda: now)
 
-    aborted = api_app._abort_incomplete_archive_multipart_uploads(
+    aborted = api_app._abort_incomplete_archive_writes(
         container,
         max_age=timedelta(days=3),
     )
@@ -108,10 +108,10 @@ def test_archive_multipart_sweep_uses_the_configured_max_age(monkeypatch) -> Non
     assert cache_service.initiated_before == datetime(2026, 7, 13, 12, tzinfo=UTC)
 
 
-def test_archive_multipart_sweep_waits_for_archive_operations() -> None:
+def test_archive_write_sweep_waits_for_archive_operations() -> None:
     async def exercise() -> None:
-        service = _ArchiveUploadService()
-        cache_service = _ArchiveUploadService(result=0)
+        service = _ArchiveWriteService()
+        cache_service = _ArchiveWriteService(result=0)
         container = cast(
             ServiceContainer,
             SimpleNamespace(archive_maintenance=service, retrieval=cache_service),
@@ -119,7 +119,7 @@ def test_archive_multipart_sweep_waits_for_archive_operations() -> None:
         operation_lock = asyncio.Lock()
         await operation_lock.acquire()
         task = asyncio.create_task(
-            api_app._run_archive_multipart_reaper(
+            api_app._run_archive_write_reaper(
                 lambda: container,
                 sweep_interval=timedelta(days=1),
                 max_age=timedelta(days=3),
