@@ -154,10 +154,12 @@ def test_opus_preflight_fixes_exact_unbounded_metadata_projection(tmp_path: Path
     assert response.plan.observation_result_sha256s == (
         request.observations[0].result.result_sha256,
     )
-    assert projection.items[0].archive_path == "audio/primary.opus"
-    assert projection.items[0].xmp_path == "audio/primary.opus.xmp"
+    assert projection.items[0].archive_path == "audio/primary/archive.opus"
+    assert projection.items[0].xmp_path == "audio/primary/archive.opus.xmp"
     assert projection.items[0].derived_from == ("primary", "sidecar")
-    assert projection.retained_xmp_sidecars[0].output_path == ("source-artifacts/sidecar.xmp")
+    assert projection.retained_xmp_sidecars[0].output_path == (
+        "audio/~source-artifacts/sidecar.xmp"
+    )
     assert {output.role for output in AUDIO_ARCHIVE_OPERATION.outputs} == {
         "stove0.media.audio-archive/v1",
         METADATA_XMP_ROLE,

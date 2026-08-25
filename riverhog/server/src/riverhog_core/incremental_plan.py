@@ -72,7 +72,7 @@ class IncrementalVolumePlanBatch:
 
     @property
     def volumes(self) -> tuple[PackVolumePlan | RawVolumePlan, ...]:
-        return (*self.packs, *self.raw_volumes)
+        return tuple(sorted((*self.packs, *self.raw_volumes), key=lambda current: current.sequence))
 
 
 def new_incremental_volume_planner(

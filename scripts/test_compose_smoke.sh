@@ -27,6 +27,13 @@ if ! [[ "${smoke_audio_frames}" =~ ^[0-9]+$ ]] ||
 fi
 smoke_claim_file_count=$((smoke_file_count + 1))
 smoke_max_bytes=$((smoke_file_count * (smoke_audio_frames * 2 + 4096) + 16384))
+# Three independent readers exercise each input in this lifecycle. Account for
+# age-unit amplification as well as logical payload so quota policy remains
+# enabled without becoming the scale qualification's limiting resource.
+smoke_download_quota_bytes=$((8 * (smoke_max_bytes + smoke_claim_file_count * 65552)))
+if (( smoke_download_quota_bytes < 16777216 )); then
+  smoke_download_quota_bytes=16777216
+fi
 stove0_project="${COMPOSE_PROJECT_NAME}-stove0"
 adapter_project="${COMPOSE_PROJECT_NAME}-ftp-adapter"
 stove0_compose_file="${ROOT_DIR}/companions/stove0/compose.yaml"
@@ -103,17 +110,20 @@ assert created['app'] == 'smoke'
 request = urllib.request.Request(
     'http://127.0.0.1:8000/v1/apps/smoke/keys/' + created['id'] + '/download-quota',
     method='PUT',
-    data=json.dumps({'monthly_bytes': 16777216}).encode(),
+    data=json.dumps({'monthly_bytes': int(os.environ['RIVERHOG_SMOKE_DOWNLOAD_QUOTA_BYTES'])}).encode(),
     headers={
         'Authorization': 'Bearer ' + os.environ['RIVERHOG_SMOKE_TOKEN'],
         'Content-Type': 'application/json',
     },
 )
 quota = json.load(urllib.request.urlopen(request))
-assert quota['monthly_bytes'] == 16777216
+assert quota['monthly_bytes'] == int(os.environ['RIVERHOG_SMOKE_DOWNLOAD_QUOTA_BYTES'])
 print(created['token'])"
 smoke_token="$(
-  compose exec -T --env "RIVERHOG_SMOKE_TOKEN=${bootstrap_token}" app python -c "${create_code}"
+  compose exec -T \
+    --env "RIVERHOG_SMOKE_TOKEN=${bootstrap_token}" \
+    --env "RIVERHOG_SMOKE_DOWNLOAD_QUOTA_BYTES=${smoke_download_quota_bytes}" \
+    app python -c "${create_code}"
 )"
 test -n "${smoke_token}"
 
@@ -347,11 +357,19 @@ while time.monotonic() < deadline:
     rows = payload['work']
     if rows:
         last = rows[0]
-        if last['phase'] == 'complete':
-            assert last['output']['collection_id'] > 0
+        terminal_failure = next(
+            (
+                row
+                for row in rows
+                if row['phase'] in {'failed', 'canceled', 'inapplicable', 'abandon_pending'}
+            ),
+            None,
+        )
+        if terminal_failure is not None:
+            raise RuntimeError(json.dumps(diagnostic(terminal_failure), sort_keys=True))
+        if all(row['phase'] == 'complete' for row in rows):
+            assert any((row.get('output') or {}).get('collection_id', 0) > 0 for row in rows)
             break
-        if last['phase'] in {'failed', 'canceled', 'inapplicable', 'abandon_pending'}:
-            raise RuntimeError(json.dumps(diagnostic(last), sort_keys=True))
     time.sleep(0.5)
 else:
     request = urllib.request.Request(
@@ -365,7 +383,13 @@ else:
     )
     scheduler_diagnostic = json.load(urllib.request.urlopen(request, timeout=30))
     raise TimeoutError(
-        json.dumps({'work': diagnostic(last), 'scheduler': scheduler_diagnostic}, sort_keys=True)
+        json.dumps(
+            {
+                'work': [diagnostic(row) for row in rows],
+                'scheduler': scheduler_diagnostic,
+            },
+            sort_keys=True,
+        )
     )"
 stove0_compose exec -T api python -c "${wait_code}"
 scale_elapsed_ns=$(( $(date +%s%N) - scale_started_ns ))
@@ -390,7 +414,7 @@ with ApiClient() as client:
     projected_xmp = [row for row in output_files if row['path'].endswith('.opus.xmp')]
     retained_xmp = [
         row for row in output_files
-        if row['path'].startswith('source-artifacts/') and row['path'].endswith('.xmp')
+        if row['path'].startswith('audio/~source-artifacts/') and row['path'].endswith('.xmp')
     ]
     assert len(archive_outputs) == audio_count
     assert len(projected_xmp) == audio_count

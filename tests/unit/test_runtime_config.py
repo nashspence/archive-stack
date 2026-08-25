@@ -284,6 +284,16 @@ def test_load_runtime_config_parses_retrieval_settings(
     assert config.retrieval_restore_poll_interval == timedelta(minutes=11)
 
 
+def test_load_runtime_config_connects_the_collection_upload_custody_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_COLLECTION_UPLOAD_CUSTODY_LEASE", "45m")
+
+    config = load_runtime_config()
+
+    assert config.collection_upload_custody_lease == timedelta(minutes=45)
+
+
 def test_load_runtime_config_builds_named_archive_stores(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

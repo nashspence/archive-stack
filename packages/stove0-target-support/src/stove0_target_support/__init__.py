@@ -69,7 +69,7 @@ from stove0_target_support.persistent import (
     TargetExecutionFailure,
     TargetExecutionInapplicable,
 )
-from stove0_target_support.runtime import TargetExecutionRuntime
+from stove0_target_support.runtime import TargetCollectionPublication, TargetExecutionRuntime
 from stove0_target_support.schemas import (
     TARGET_SCHEMA_BUNDLE_FORMAT,
     target_schema_bundle,
@@ -111,6 +111,7 @@ __all__ = [
     "TargetExecutionFailure",
     "TargetExecutionInapplicable",
     "TargetExecutionRuntime",
+    "TargetCollectionPublication",
     "TargetExecutionSession",
     "TargetFailure",
     "TargetInapplicable",

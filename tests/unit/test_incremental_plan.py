@@ -58,6 +58,53 @@ def test_incremental_planner_restart_reproduces_volume_boundaries() -> None:
     assert [current.sequence for current in resumed.packs] == [0, 1]
 
 
+@pytest.mark.parametrize(
+    "policy",
+    (
+        _policy(),
+        CollectionVolumePolicy(
+            pack_source_bytes=18,
+            pack_files=3,
+            pack_member_bytes=12,
+            pack_part_plaintext_bytes=10 * 1024 * 1024,
+            raw_volume_plaintext_bytes=2 * TEST_ARCHIVE_PART_BYTES,
+            raw_part_plaintext_bytes=TEST_ARCHIVE_PART_BYTES,
+        ),
+    ),
+)
+def test_artifact_at_a_time_construction_seals_the_exact_one_shot_v1_plans(
+    policy: CollectionVolumePolicy,
+) -> None:
+    long_path = f"long/{'p' * 120}/zero.bin"
+    files = (
+        _ordered(0, "a.txt", 3),
+        _ordered(1, "b.txt", 4),
+        _ordered(2, long_path, 0),
+        _ordered(3, "large.bin", 2 * TEST_ARCHIVE_PART_BYTES + 7),
+        _ordered(4, "z.txt", 2),
+    )
+    one_shot = advance_incremental_volume_plan(
+        new_incremental_volume_planner(policy=policy),
+        files,
+        final=True,
+    )
+
+    checkpoint = new_incremental_volume_planner(policy=policy)
+    emitted = []
+    for file in files:
+        batch = advance_incremental_volume_plan(checkpoint, (file,))
+        emitted.extend(batch.volumes)
+        checkpoint = parse_incremental_volume_planner_checkpoint(
+            incremental_volume_planner_checkpoint_bytes(batch.checkpoint)
+        )
+    sealed = advance_incremental_volume_plan(checkpoint, (), final=True)
+    emitted.extend(sealed.volumes)
+
+    assert sealed.checkpoint == one_shot.checkpoint
+    assert tuple(emitted) == one_shot.volumes
+    assert [item.sequence for item in emitted] == list(range(len(emitted)))
+
+
 def test_large_file_flushes_pending_pack_and_emits_canonical_segments() -> None:
     batch = advance_incremental_volume_plan(
         new_incremental_volume_planner(policy=_policy()),

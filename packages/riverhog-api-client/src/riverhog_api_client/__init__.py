@@ -64,7 +64,9 @@ __all__ = [
 from riverhog_api_client.producer import (
     COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES,
     CollectionProducer,
+    IncrementalCollectionProducer,
     ProducedCollection,
+    ProducerArtifactCustody,
     ProducerArtifactIdentity,
     ProducerFile,
     ProducerInput,
@@ -77,8 +79,10 @@ from riverhog_api_client.producer import (
 __all__ += [
     "COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES",
     "CollectionProducer",
+    "IncrementalCollectionProducer",
     "ProducedCollection",
     "ProducerArtifactIdentity",
+    "ProducerArtifactCustody",
     "ProducerFile",
     "ProducerInput",
     "ProducerProvenance",

@@ -56,7 +56,9 @@ class _RetrievalService:
 def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizations() -> None:
     collection_uploads = SimpleNamespace(
         requeue_interrupted_finalizations_for_startup=Mock(return_value=2),
+        requeue_interrupted_orphan_discards_for_startup=Mock(return_value=1),
         process_due_finalizations=Mock(return_value=1),
+        reap_expired_custody_transfers=Mock(return_value=1),
     )
     archive_copies = SimpleNamespace(
         requeue_interrupted_copies_for_startup=Mock(return_value=0),
@@ -84,7 +86,11 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_uploads.requeue_interrupted_finalizations_for_startup.assert_called_once_with(
         limit=100
     )
+    collection_uploads.requeue_interrupted_orphan_discards_for_startup.assert_called_once_with(
+        limit=100
+    )
     collection_uploads.process_due_finalizations.assert_called_once_with(limit=1)
+    collection_uploads.reap_expired_custody_transfers.assert_called_once_with(limit=100)
     collection_workflows.reap_expired_claims.assert_called_once_with(limit=100)
 
 

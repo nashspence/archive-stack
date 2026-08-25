@@ -110,6 +110,14 @@ def _process_archive_maintenance(
                 "startup requeued interrupted collection finalizations: count=%s",
                 requeued_finalizations,
             )
+        requeued_discards = (
+            container.collection_uploads.requeue_interrupted_orphan_discards_for_startup(limit=100)
+        )
+        if requeued_discards:
+            _LOG.info(
+                "startup restored interrupted collection upload discards: count=%s",
+                requeued_discards,
+            )
         requeued_copies = container.archive_copies.requeue_interrupted_copies_for_startup(limit=100)
         if requeued_copies:
             _LOG.info("startup requeued interrupted archive copies: count=%s", requeued_copies)
@@ -122,6 +130,7 @@ def _process_archive_maintenance(
                 requeued_metadata,
             )
     container.collection_uploads.process_due_finalizations(limit=1)
+    container.collection_uploads.reap_expired_custody_transfers(limit=100)
     container.collection_workflows.reap_expired_claims(limit=100)
     container.archive_copies.process_due(limit=1)
     container.archive_maintenance.process_due_metadata_publications(limit=10)

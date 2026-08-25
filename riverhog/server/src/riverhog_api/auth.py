@@ -165,6 +165,15 @@ CollectionCreator = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(COLLECTIONS_CREATE))),
 ]
+CollectionUploadReader = Annotated[
+    ApplicationPrincipal,
+    Depends(
+        cast(
+            Callable[..., object],
+            require_any_permission(COLLECTIONS_CREATE, COLLECTIONS_DELETE),
+        )
+    ),
+]
 CollectionTransformController = Annotated[
     ApplicationPrincipal,
     Depends(cast(Callable[..., object], require_permission(COLLECTION_TRANSFORMS_CONTROL))),
@@ -242,6 +251,7 @@ __all__ = [
     "CollectionTransformController",
     "CollectionTransformExecutor",
     "CollectionTransformLeaseManager",
+    "CollectionUploadReader",
     "EventsReader",
     "KeyManager",
     "QuotaManager",

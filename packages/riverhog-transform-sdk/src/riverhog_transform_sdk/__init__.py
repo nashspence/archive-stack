@@ -17,7 +17,10 @@ from riverhog_transform_sdk.runtime import (
     CollectionTransformRuntime,
 )
 from riverhog_transform_sdk.workspace import TransformWorkspace, WorkspaceAssurance
-from riverhog_transform_sdk.writer import DerivedCollectionWriter
+from riverhog_transform_sdk.writer import (
+    DerivedCollectionWriter,
+    IncrementalDerivedCollectionWriter,
+)
 
 __all__ = [
     "CancellationCheck",
@@ -32,6 +35,7 @@ __all__ = [
     "DerivedCollectionReceipt",
     "DerivedCollectionSpec",
     "DerivedCollectionWriter",
+    "IncrementalDerivedCollectionWriter",
     "Heartbeat",
     "TransformWorkspace",
     "WorkspaceAssurance",

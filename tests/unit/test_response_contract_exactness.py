@@ -228,6 +228,7 @@ def test_finalized_and_failed_upload_sessions_require_terminal_evidence() -> Non
         "encryption_format": "age-x25519/v1",
         "passphrase_id": "0123456789abcdef",
         "state": "finalized",
+        "custody_mode": "producer-retained",
         "registration_constraints": None,
         "files_total": 0,
         "files_pending": 0,
@@ -237,6 +238,9 @@ def test_finalized_and_failed_upload_sessions_require_terminal_evidence() -> Non
         "uploaded_bytes": 0,
         "missing_bytes": 0,
         "upload_state_expires_at": None,
+        "custodied_files": 0,
+        "custodied_bytes": 0,
+        "orphaned_at": None,
         "collection": None,
     }
     with pytest.raises(ValidationError, match="immutable collection evidence"):
@@ -501,4 +505,10 @@ def test_file_and_access_set_responses_reuse_their_canonical_owners() -> None:
     )
 
     upload_file_schema = create_app().openapi()["components"]["schemas"]["CollectionUploadFileOut"]
-    assert set(upload_file_schema["properties"]) == {"path", "bytes", "sha256", "provenance"}
+    assert set(upload_file_schema["properties"]) == {
+        "path",
+        "bytes",
+        "sha256",
+        "provenance",
+        "custody_receipt",
+    }

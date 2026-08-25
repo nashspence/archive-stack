@@ -120,6 +120,47 @@ def test_search_uses_current_collection_filters() -> None:
     ]
 
 
+def test_collection_upload_custody_transfer_and_operator_controls_use_exact_routes() -> None:
+    client = RecordingClient()
+
+    client.create_or_resume_collection_upload_session(
+        "execution-1",
+        ("derived",),
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture",
+        custody_mode="custody-transfer",
+    )
+    client.heartbeat_collection_upload_session(42)
+    client.plan_collection_upload_discard(42)
+    client.discard_collection_upload(42, challenge="discard-upload:fixture")
+
+    assert client.calls == [
+        (
+            "POST",
+            "/v1/collection-upload-sessions",
+            {
+                "json": {
+                    "idempotency_key": "execution-1",
+                    "tags": ["derived"],
+                    "provenance_mode": "omitted",
+                    "custody_mode": "custody-transfer",
+                    "provenance_omission_reason": "fixture",
+                }
+            },
+        ),
+        ("POST", "/v1/collection-upload-sessions/42/heartbeat", {}),
+        ("POST", "/v1/collection-upload-sessions/42/discard-plan", {}),
+        (
+            "POST",
+            "/v1/collection-upload-sessions/42/discard",
+            {
+                "json": {"challenge": "discard-upload:fixture"},
+                "timeout": 1800.0,
+            },
+        ),
+    ]
+
+
 def test_collection_upload_selects_archive_store_without_materialization_policy() -> None:
     client = RecordingClient()
 

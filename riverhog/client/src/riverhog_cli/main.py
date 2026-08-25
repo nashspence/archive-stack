@@ -75,6 +75,9 @@ from riverhog_cli.output import (
     format_collection_summary,
     format_collection_tags,
     format_collection_upload,
+    format_collection_upload_discard_plan,
+    format_collection_upload_discard_result,
+    format_collection_upload_files,
     format_collection_upload_plan,
     format_collection_uploads,
     format_collections,
@@ -1777,6 +1780,25 @@ def upload_show_cmd(
     emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
 
 
+@collection_upload_app.command("files")
+def upload_files_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection upload session id")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    all_items: Annotated[bool, typer.Option("--all", help="Return every registered file")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List exact registered artifacts and their Riverhog custody state."""
+
+    payload = client().list_collection_upload_session_files(
+        collection_id,
+        page=page,
+        per_page=per_page,
+        all_items=all_items,
+    )
+    emit(payload if json_mode else format_collection_upload_files(payload), json_mode=json_mode)
+
+
 @collection_upload_app.command("cancel")
 def upload_cancel_cmd(
     collection_id: Annotated[int, typer.Argument(help="Open collection upload session id")],
@@ -1808,6 +1830,60 @@ def upload_watch_cmd(
         raise typer.Exit(1)
     if completion_state == "timeout":
         raise typer.Exit(124)
+
+
+@collection_upload_app.command("discard")
+def upload_discard_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Orphaned upload session id")],
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "--plan",
+            help="Show the custody-loss plan and confirmation challenge",
+        ),
+    ] = False,
+    confirm: Annotated[
+        str | None,
+        typer.Option("--confirm", help="Short-lived challenge returned by a prior plan"),
+    ] = None,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Permanently discard one retained orphaned upload session."""
+
+    if dry_run and confirm is not None:
+        raise typer.BadParameter("--dry-run and --confirm cannot be used together")
+    api = client()
+    if dry_run:
+        payload = api.plan_collection_upload_discard(collection_id)
+        emit(
+            payload if json_mode else format_collection_upload_discard_plan(payload),
+            json_mode=json_mode,
+        )
+        return
+    if confirm is not None:
+        payload = api.discard_collection_upload(collection_id, challenge=confirm)
+        emit(
+            payload if json_mode else format_collection_upload_discard_result(payload),
+            json_mode=json_mode,
+        )
+        return
+    if json_mode:
+        raise typer.BadParameter("--json requires --dry-run or --confirm")
+    plan = api.plan_collection_upload_discard(collection_id)
+    emit(format_collection_upload_discard_plan(plan), json_mode=False)
+    blockers = plan.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        raise typer.Exit(1)
+    challenge = plan.get("challenge")
+    if not isinstance(challenge, str) or not challenge:
+        raise typer.BadParameter("server did not return an upload discard challenge")
+    typed_id = typer.prompt("Type the complete upload session id to discard", type=int)
+    if typed_id != collection_id:
+        typer.echo("Upload session id did not match; nothing was discarded.", err=True)
+        raise typer.Exit(1)
+    payload = api.discard_collection_upload(collection_id, challenge=challenge)
+    emit(format_collection_upload_discard_result(payload), json_mode=False)
 
 
 @app.command("find")

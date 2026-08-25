@@ -15,7 +15,7 @@ from typing import Any, Final
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
-from riverhog_protocol import RiverhogError, ServiceUnavailable
+from riverhog_protocol import DownloadAllowanceExceeded, RiverhogError, ServiceUnavailable
 from riverhog_transform_sdk import ClaimedCollectionRuntimeRegistry
 from stove0_target_protocol import (
     EFFECT_TARGET_PROTOCOL,
@@ -593,6 +593,9 @@ def _failure_status(
             retryable = True
         elif status == 409 or failure.code in {"conflict", "invalid_state"}:
             code = "target-conflict"
+            retryable = True
+        elif isinstance(failure, DownloadAllowanceExceeded):
+            code = "target-download-allowance"
             retryable = True
         elif isinstance(failure, ServiceUnavailable) or (status is not None and status >= 500):
             code = "target-infrastructure"

@@ -37,6 +37,7 @@ from riverhog_protocol import (
     ArchiveStoreSort,
     CollectionId,
     CollectionSort,
+    CollectionUploadCustodyMode,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
     CollectionUploadRegistrationConstraintsDocument,
@@ -863,6 +864,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         event_context: Mapping[str, Any] | None = None,
         provenance_mode: ProvenanceMode = "captured",
         provenance_omission_reason: str | None = None,
+        custody_mode: CollectionUploadCustodyMode = "producer-retained",
     ) -> dict[str, Any]:
         provenance_mode, provenance_omission_reason = _provenance_choice(
             provenance_mode,
@@ -873,6 +875,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "tags": _canonical_tags(tags),
             "provenance_mode": provenance_mode,
         }
+        normalized_custody_mode = _one_of(
+            custody_mode,
+            frozenset({"producer-retained", "custody-transfer"}),
+            "collection upload custody mode",
+        )
+        if normalized_custody_mode != "producer-retained":
+            payload["custody_mode"] = normalized_custody_mode
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
         if archive_store is not None:
@@ -1021,7 +1030,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if state:
             params["state"] = _one_of(
                 state,
-                frozenset({"open", "uploading", "finalizing", "failed"}),
+                frozenset({"open", "uploading", "finalizing", "failed", "orphaned", "discarding"}),
                 "collection-upload state",
             )
         if tag is not None:
@@ -1058,6 +1067,31 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def get_collection_upload_session(self, collection_id: CollectionId) -> dict[str, Any]:
         return self._json(
             "GET", f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}"
+        )
+
+    def heartbeat_collection_upload_session(self, collection_id: CollectionId) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/heartbeat",
+        )
+
+    def plan_collection_upload_discard(self, collection_id: CollectionId) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/discard-plan",
+        )
+
+    def discard_collection_upload(
+        self,
+        collection_id: CollectionId,
+        *,
+        challenge: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "POST",
+            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/discard",
+            json={"challenge": challenge},
+            timeout=_CANCEL_TIMEOUT_SECONDS,
         )
 
     def list_collection_upload_session_volumes(self, collection_id: CollectionId) -> dict[str, Any]:

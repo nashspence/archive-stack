@@ -17,13 +17,20 @@ from riverhog_protocol.paths import CanonicalTag
 from riverhog_provenance_contracts import ProvenanceJournalId
 from starlette.concurrency import run_in_threadpool
 
-from riverhog_api.auth import CatalogReader, CollectionCreator, CollectionDeleter
+from riverhog_api.auth import (
+    CatalogReader,
+    CollectionCreator,
+    CollectionDeleter,
+    CollectionUploadReader,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_collection, map_collection_list_page
 from riverhog_api.schemas.collections import (
     CollectionDeletionPlanOut,
     CollectionDeletionResultOut,
     CollectionSummaryOut,
+    CollectionUploadDiscardPlanOut,
+    CollectionUploadDiscardResultOut,
     CollectionUploadProvenanceJournalOut,
     CollectionUploadSessionFilesRegistrationOut,
     CollectionUploadSessionOut,
@@ -33,6 +40,7 @@ from riverhog_api.schemas.collections import (
     CreateOrResumeCollectionUploadSessionOut,
     CreateOrResumeCollectionUploadSessionRequest,
     DeleteCollectionRequest,
+    DiscardCollectionUploadRequest,
     ListCollectionsResponse,
     ListCollectionUploadSessionFilesResponse,
     ListCollectionUploadSessionsResponse,
@@ -78,7 +86,7 @@ def list_collections(
 )
 def list_collection_upload_sessions(
     container: ContainerDep,
-    principal: CollectionCreator,
+    principal: CollectionUploadReader,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
@@ -122,6 +130,7 @@ def create_or_resume_collection_upload_session(
         event_context=request.event_context,
         provenance_mode=request.provenance_mode,
         provenance_omission_reason=request.provenance_omission_reason,
+        custody_mode=request.custody_mode,
     )
     return CreateOrResumeCollectionUploadSessionOut.model_validate(payload)
 
@@ -209,17 +218,16 @@ def export_collection_upload_session_provenance_journal(
 @router.get(
     "/collection-upload-sessions/{collection_id}/files",
     response_model=ListCollectionUploadSessionFilesResponse,
-    openapi_extra=operation_interface("client-only-primitive"),
 )
 def list_collection_upload_session_files(
     collection_id: CollectionIdParameter,
     container: ContainerDep,
-    principal: CollectionCreator,
+    principal: CollectionUploadReader,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     all_items: bool = Query(False, alias="all"),
 ) -> ListCollectionUploadSessionFilesResponse:
-    container.collection_uploads.require_access(collection_id, principal)
+    container.collection_uploads.require_read_access(collection_id, principal)
     payload = container.collection_uploads.list_files(
         collection_id,
         page=page,
@@ -270,11 +278,61 @@ def cancel_collection_upload_session(
 def get_collection_upload_session(
     collection_id: CollectionIdParameter,
     container: ContainerDep,
+    principal: CollectionUploadReader,
+) -> CollectionUploadSessionOut:
+    container.collection_uploads.require_read_access(collection_id, principal)
+    payload = container.collection_uploads.get(collection_id)
+    return CollectionUploadSessionOut.model_validate(payload)
+
+
+@router.post(
+    "/collection-upload-sessions/{collection_id}/heartbeat",
+    response_model=CollectionUploadSessionOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def heartbeat_collection_upload_session(
+    collection_id: CollectionIdParameter,
+    container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
     container.collection_uploads.require_access(collection_id, principal)
-    payload = container.collection_uploads.get(collection_id)
-    return CollectionUploadSessionOut.model_validate(payload)
+    return CollectionUploadSessionOut.model_validate(
+        container.collection_uploads.heartbeat(collection_id)
+    )
+
+
+@router.post(
+    "/collection-upload-sessions/{collection_id}/discard-plan",
+    response_model=CollectionUploadDiscardPlanOut,
+)
+def plan_collection_upload_discard(
+    collection_id: CollectionIdParameter,
+    container: ContainerDep,
+    principal: CollectionDeleter,
+) -> CollectionUploadDiscardPlanOut:
+    container.collection_uploads.require_discard_access(collection_id, principal)
+    return CollectionUploadDiscardPlanOut.model_validate(
+        container.collection_uploads.plan_orphan_discard(collection_id)
+    )
+
+
+@router.post(
+    "/collection-upload-sessions/{collection_id}/discard",
+    response_model=CollectionUploadDiscardResultOut,
+)
+def discard_collection_upload(
+    collection_id: CollectionIdParameter,
+    request: DiscardCollectionUploadRequest,
+    container: ContainerDep,
+    principal: CollectionDeleter,
+) -> CollectionUploadDiscardResultOut:
+    container.collection_uploads.require_discard_access(collection_id, principal)
+    return CollectionUploadDiscardResultOut.model_validate(
+        container.collection_uploads.discard_orphan(
+            collection_id,
+            challenge=request.challenge,
+        )
+    )
 
 
 @router.get(

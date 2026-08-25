@@ -170,21 +170,20 @@ class OpusTargetService(PersistentTargetService):
             workspace = execution.open_workspace(self.workspace_root)
             try:
                 resolved = execution.inputs()
+                resolved_by_id = {
+                    artifact.id: (artifact, claimed) for artifact, claimed in resolved
+                }
                 outputs: list[OutputArtifact] = []
-                sources: dict[str, ProducerFile] = {}
-                materialized: dict[str, Path] = {}
-                with execution.prepare_inputs(
-                    tuple(item for item, _claimed in resolved)
-                ) as retrieval:
-                    for artifact, claimed in resolved:
-                        check()
-                        suffix = PurePosixPath(artifact.path).suffix[:32]
-                        source = workspace.resolve(f"input/{artifact.id}{suffix}")
-                        source.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                publication = execution.open_collection_publication()
+                for item in projection.items:
+                    check()
+                    artifact, claimed = resolved_by_id[item.input_artifact_id]
+                    suffix = PurePosixPath(artifact.path).suffix[:32]
+                    source = workspace.resolve(f"input/{artifact.id}{suffix}")
+                    source.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    with execution.prepare_inputs((artifact,)) as retrieval:
                         retrieval.download(claimed, source)
-                        materialized[artifact.id] = source
-                    for item in projection.items:
-                        check()
+                    try:
                         relative = item.archive_path
                         destination = workspace.resolve(f"output/{relative}")
                         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -197,7 +196,7 @@ class OpusTargetService(PersistentTargetService):
                                     "-nostdin",
                                     "-y",
                                     "-i",
-                                    str(materialized[item.input_artifact_id]),
+                                    str(source),
                                     "-vn",
                                     "-c:a",
                                     "libopus",
@@ -226,7 +225,7 @@ class OpusTargetService(PersistentTargetService):
                             derived_from=item.derived_from,
                         )
                         outputs.append(output)
-                        sources[output.id] = ProducerFile(destination, relative)
+                        publication.append(ProducerFile(destination, relative), output)
                         xmp = workspace.resolve(f"output/{item.xmp_path}")
                         xmp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                         xmp.write_bytes(
@@ -243,9 +242,17 @@ class OpusTargetService(PersistentTargetService):
                             derived_from=item.derived_from,
                         )
                         outputs.append(xmp_output)
-                        sources[xmp_output.id] = ProducerFile(xmp, item.xmp_path)
-                    for retained in projection.retained_xmp_sidecars:
-                        source = materialized[retained.input_artifact_id]
+                        publication.append(ProducerFile(xmp, item.xmp_path), xmp_output)
+                    finally:
+                        source.unlink(missing_ok=True)
+                for retained in projection.retained_xmp_sidecars:
+                    artifact, claimed = resolved_by_id[retained.input_artifact_id]
+                    suffix = PurePosixPath(artifact.path).suffix[:32]
+                    source = workspace.resolve(f"input/{artifact.id}{suffix}")
+                    source.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    with execution.prepare_inputs((artifact,)) as retrieval:
+                        retrieval.download(claimed, source)
+                    try:
                         destination = workspace.resolve(f"output/{retained.output_path}")
                         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                         shutil.copyfile(source, destination)
@@ -260,10 +267,12 @@ class OpusTargetService(PersistentTargetService):
                             derived_from=(retained.input_artifact_id,),
                         )
                         outputs.append(retained_output)
-                        sources[retained_output.id] = ProducerFile(
-                            destination,
-                            retained.output_path,
+                        publication.append(
+                            ProducerFile(destination, retained.output_path),
+                            retained_output,
                         )
+                    finally:
+                        source.unlink(missing_ok=True)
                 declared = tuple(sorted(outputs, key=lambda item: item.id))
                 dispositions = tuple(
                     ArtifactDisposition(
@@ -282,9 +291,7 @@ class OpusTargetService(PersistentTargetService):
                     self.image_digest,
                     declared,
                 )
-                return execution.publish_success(
-                    sources,
-                    artifacts=declared,
+                return publication.finish_success(
                     operation=AUDIO_ARCHIVE_OPERATION,
                     execution_sha256=execution_sha256,
                     dispositions=dispositions,

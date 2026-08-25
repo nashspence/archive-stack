@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import time
@@ -12,7 +13,14 @@ from http_api_contracts import http_operation_for_request, operation_openapi
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
-from riverhog_protocol import Conflict, Unauthorized
+from riverhog_api_client import ProducerArtifactCustody, ProducerArtifactIdentity, ProducerFile
+from riverhog_protocol import (
+    CollectionUploadArtifactCustodyReceiptDocument,
+    CollectionUploadCustodyObjectDocument,
+    Conflict,
+    DownloadAllowanceExceeded,
+    Unauthorized,
+)
 from riverhog_protocol.collection_workflows import (
     ArtifactDisposition,
     CollectionDerivation,
@@ -57,6 +65,7 @@ from stove0_target_support import (
     OutputArtifactContract,
     OutputCollectionRef,
     PersistentTargetService,
+    TargetCollectionPublication,
     TargetContract,
     TargetContractPayload,
     TargetEffectCommitUncertain,
@@ -612,6 +621,72 @@ def test_target_runtime_builds_complete_success_status(
     )
     assert result == expected
     assert session.completed_status == expected
+
+
+def test_incremental_publication_releases_local_output_only_after_exact_custody(
+    tmp_path: Path,
+) -> None:
+    content = b"completed target output"
+    local = tmp_path / "result.bin"
+    local.write_bytes(content)
+    output = OutputArtifact(
+        id="output",
+        role="fixture.output/v1",
+        path="output/result.bin",
+        bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        derived_from=("source",),
+    )
+
+    class Writer:
+        custody_receipts: dict[str, ProducerArtifactCustody] = {}
+
+    writer = Writer()
+
+    class Runtime:
+        def append_incremental_output(
+            self,
+            _writer: object,
+            _source: object,
+            *,
+            identity: ProducerArtifactIdentity,
+            sources: object,
+        ) -> tuple[ProducerArtifactCustody, ...]:
+            assert sources
+            assert local.exists()
+            receipt = ProducerArtifactCustody(
+                identity,
+                CollectionUploadArtifactCustodyReceiptDocument.seal(
+                    collection_id=7,
+                    path=identity.path,
+                    bytes=identity.bytes,
+                    sha256=identity.sha256,
+                    archive_objects=(
+                        CollectionUploadCustodyObjectDocument(
+                            volume_id="pack-000000000000",
+                            sealed_receipt_sha256=_sha("a"),
+                        ),
+                    ),
+                ),
+            )
+            writer.custody_receipts[identity.path] = receipt
+            return (receipt,)
+
+    class Execution:
+        runtime = Runtime()
+
+        def inputs(self) -> tuple[tuple[InputArtifact, object], ...]:
+            return ((_input(), object()),)
+
+    publication = TargetCollectionPublication(Execution(), writer)  # type: ignore[arg-type]
+    custody = publication.append(ProducerFile(local, output.path), output)
+
+    assert custody[0].artifact == ProducerArtifactIdentity(
+        output.path,
+        output.bytes,
+        output.sha256,
+    )
+    assert not local.exists()
 
 
 class FixtureTargetClient:
@@ -1514,6 +1589,12 @@ def test_published_success_wins_late_cancel_and_cleanup_failure(tmp_path: Path) 
             Conflict("stale fence", observed_status=409),
             "failed",
             "target-conflict",
+            True,
+        ),
+        (
+            DownloadAllowanceExceeded("quota resets later", observed_status=429),
+            "failed",
+            "target-download-allowance",
             True,
         ),
         (OSError("storage unavailable"), "failed", "target-infrastructure", True),

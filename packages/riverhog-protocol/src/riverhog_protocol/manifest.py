@@ -4,9 +4,13 @@ import hashlib
 import json
 from collections.abc import Iterable
 
+from riverhog_protocol.collection_upload_transport import collection_upload_path_order_key
+
 
 def collection_content_identity(files: Iterable[tuple[str, int, str]]) -> str:
-    return collection_content_identity_ordered(sorted(files))
+    return collection_content_identity_ordered(
+        sorted(files, key=lambda item: collection_upload_path_order_key(item[0]))
+    )
 
 
 def collection_content_identity_ordered(files: Iterable[tuple[str, int, str]]) -> str:
