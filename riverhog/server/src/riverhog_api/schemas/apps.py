@@ -5,16 +5,24 @@ from typing import Literal
 from application_access import (
     ApplicationAccessGrant,
     ApplicationAccessGrantSet,
+    ApplicationKeyId,
+    ApplicationName,
     ApplicationPermission,
     ApplicationResource,
 )
 from pydantic import Field
+from riverhog_protocol import (
+    ApplicationAccessSort,
+    ApplicationKeySort,
+    ApplicationSort,
+    SortOrder,
+)
 
 from riverhog_api.schemas.common import RiverhogModel
 
 
 class AppSummaryOut(RiverhogModel):
-    name: str
+    name: ApplicationName
     keys: int
     active_keys: int
     last_used_at: str | None
@@ -25,8 +33,8 @@ class AppListOut(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: ApplicationSort
+    order: SortOrder
     query: str | None
     active: bool | None
     apps: list[AppSummaryOut]
@@ -41,23 +49,23 @@ class AppAccessOut(AppAccessIn):
 
 
 class AppAccessListItemOut(AppAccessOut):
-    app: str
-    key_id: str
+    app: ApplicationName
+    key_id: ApplicationKeyId
     key_status: Literal["active", "expired", "revoked"]
     created_at: str
 
 
 class AppAccessListFiltersOut(RiverhogModel):
-    app: str | None
-    key_id: str | None
+    app: ApplicationName | None
+    key_id: ApplicationKeyId | None
     permission: ApplicationPermission | None
     resource: ApplicationResource | None
     active: bool | None
 
 
 class AppKeyOut(RiverhogModel):
-    id: str
-    app: str
+    id: ApplicationKeyId
+    app: ApplicationName
     access: list[AppAccessOut]
     monthly_download_quota_bytes: int | None
     status: Literal["active", "expired", "revoked"]
@@ -76,11 +84,11 @@ class AppKeyListOut(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: ApplicationKeySort
+    order: SortOrder
     query: str | None
     active: bool | None
-    app: str
+    app: ApplicationName
     keys: list[AppKeyOut]
 
 
@@ -102,14 +110,14 @@ class AppAccessListOut(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: ApplicationAccessSort
+    order: SortOrder
     query: str | None
     filters: AppAccessListFiltersOut
     access: list[AppAccessListItemOut]
 
 
 class AppAccessSetOut(RiverhogModel):
-    app: str
-    key_id: str
+    app: ApplicationName
+    key_id: ApplicationKeyId
     access: list[AppAccessOut]

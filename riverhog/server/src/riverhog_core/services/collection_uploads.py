@@ -14,12 +14,19 @@ from typing import Any, TypedDict
 
 from riverhog_age import encrypt_age_scrypt
 from riverhog_archive_contracts import CollectionEncryptionBinding
+from riverhog_protocol import (
+    CapturedFileProvenanceBinding,
+    CollectionUploadFileBatchDocument,
+    CollectionUploadFileIn,
+    CollectionUploadLayoutDocument,
+    OmittedFileProvenanceBinding,
+    collection_upload_raw_digest_manifest,
+    validate_collection_upload_batch_against_layout,
+)
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.paths import (
-    PathNormalizationError,
     normalize_collection_id,
-    normalize_relpath,
 )
 from riverhog_protocol.raw_ingress import RawSourceDigestManifest, raw_volume_part_sha256s
 from riverhog_protocol.transport import COLLECTION_UPLOAD_FILE_BATCH_MAX
@@ -349,17 +356,36 @@ class SqlAlchemyCollectionUploadService:
             if upload.state != "open":
                 raise Conflict(f"collection upload session is not open: {normalized_id}")
             checkpoint = _planner_checkpoint(upload)
+            request_files: list[dict[str, object]] = []
+            for value in files:
+                current_payload = dict(value)
+                if "provenance" not in current_payload and upload.provenance_mode == "omitted":
+                    current_payload["provenance"] = {
+                        "status": "omitted",
+                        "omission_reason": upload.provenance_omission_reason,
+                    }
+                request_files.append(current_payload)
+            try:
+                batch_document = CollectionUploadFileBatchDocument.model_validate(
+                    {"files": request_files}
+                )
+                layout_document = CollectionUploadLayoutDocument.model_validate(
+                    _layout_payload(checkpoint.policy)
+                )
+                validate_collection_upload_batch_against_layout(
+                    batch_document,
+                    layout_document,
+                )
+            except ValueError as exc:
+                raise BadRequest(str(exc)) from exc
             normalized_files = tuple(
                 _normalize_file(
                     value,
-                    policy=checkpoint.policy,
                     provenance_mode=upload.provenance_mode,
-                    collection_omission_reason=upload.provenance_omission_reason,
+                    layout=layout_document,
                 )
-                for value in files
+                for value in batch_document.files
             )
-            if list(normalized_files) != sorted(normalized_files, key=lambda item: item["path"]):
-                raise BadRequest("collection upload files must be in canonical path order")
             existing = {
                 row.path: row
                 for row in session.scalars(
@@ -1860,82 +1886,31 @@ def _require_tags(session: Session, tags: Sequence[str]) -> None:
 
 
 def _normalize_file(
-    value: Mapping[str, object],
+    value: CollectionUploadFileIn,
     *,
-    policy: CollectionVolumePolicy,
     provenance_mode: str,
-    collection_omission_reason: str | None,
+    layout: CollectionUploadLayoutDocument,
 ) -> _RegisteredFile:
-    try:
-        path = normalize_relpath(str(value.get("path", "")))
-    except PathNormalizationError as exc:
-        raise BadRequest(str(exc)) from exc
-    byte_count = value.get("bytes")
-    sha256 = str(value.get("sha256", ""))
-    if (
-        isinstance(byte_count, bool)
-        or not isinstance(byte_count, int)
-        or byte_count < 0
-        or _SHA256_RE.fullmatch(sha256) is None
-    ):
-        raise BadRequest(f"collection upload file identity is invalid: {path}")
-    raw = value.get("raw_parts")
-    raw_json: str | None = None
-    if byte_count >= policy.pack_member_bytes:
-        if not isinstance(raw, Mapping):
-            raise BadRequest(f"raw part digests are required for large file: {path}")
-        part_bytes = raw.get("part_plaintext_bytes")
-        digests = raw.get("sha256s")
-        if part_bytes != policy.raw_part_plaintext_bytes or not isinstance(digests, list):
-            raise BadRequest(f"raw part digest policy does not match the session: {path}")
-        try:
-            raw_json = (
-                RawSourceDigestManifest(
-                    path=path,
-                    bytes=byte_count,
-                    sha256=sha256,
-                    part_plaintext_bytes=part_bytes,
-                    part_sha256s=tuple(str(current) for current in digests),
-                )
-                .to_json_bytes()
-                .decode("utf-8")
-            )
-        except ValueError as exc:
-            raise BadRequest(str(exc)) from exc
-    elif raw is not None:
-        raise BadRequest(f"raw part digests are only valid for large files: {path}")
-    raw_provenance = value.get("provenance")
-    if raw_provenance is None and provenance_mode == "omitted":
-        raw_provenance = {
-            "status": "omitted",
-            "omission_reason": collection_omission_reason,
-        }
-    if not isinstance(raw_provenance, Mapping):
-        raise BadRequest(f"collection upload file provenance is required: {path}")
-    status = raw_provenance.get("status")
+    path = value.path
+    byte_count = value.bytes
+    sha256 = value.sha256
+    raw_manifest = collection_upload_raw_digest_manifest(value, layout)
+    raw_json = raw_manifest.to_json_bytes().decode("utf-8") if raw_manifest is not None else None
+    raw_provenance = value.provenance
     provenance_journal_id: str | None = None
     provenance_current_state_id: str | None = None
     provenance_omission_reason: str | None = None
-    if status == "captured":
+    if isinstance(raw_provenance, CapturedFileProvenanceBinding):
         if provenance_mode == "omitted":
             raise BadRequest("collection-wide provenance omission cannot contain journals")
-        if set(raw_provenance) != {"status", "journal_id", "current_state_id"}:
-            raise BadRequest(f"captured file provenance is invalid: {path}")
-        provenance_journal_id = str(raw_provenance.get("journal_id", ""))
-        provenance_current_state_id = str(raw_provenance.get("current_state_id", ""))
-        if not provenance_journal_id or not provenance_current_state_id:
-            raise BadRequest(f"captured file provenance identity is invalid: {path}")
-    elif status == "omitted":
-        if set(raw_provenance) != {"status", "omission_reason"}:
-            raise BadRequest(f"omitted file provenance is invalid: {path}")
-        provenance_omission_reason = str(raw_provenance.get("omission_reason", ""))
-        if (
-            not provenance_omission_reason
-            or provenance_omission_reason != provenance_omission_reason.strip()
-        ):
-            raise BadRequest(f"file provenance omission requires a visible reason: {path}")
-    else:
-        raise BadRequest(f"collection upload file provenance status is invalid: {path}")
+        provenance_journal_id = raw_provenance.journal_id
+        provenance_current_state_id = raw_provenance.current_state_id
+        status = "captured"
+    elif isinstance(raw_provenance, OmittedFileProvenanceBinding):
+        provenance_omission_reason = raw_provenance.omission_reason
+        status = "omitted"
+    else:  # pragma: no cover - the discriminated public model is exhaustive
+        raise TypeError("collection upload file provenance model is unknown")
     return {
         "path": path,
         "bytes": byte_count,

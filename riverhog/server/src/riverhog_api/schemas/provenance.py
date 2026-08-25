@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import Field
-from riverhog_protocol import FileProvenanceBinding
+from riverhog_protocol import FileProvenanceBinding, ProvenanceSort, ProvenanceStatus, SortOrder
 
 from riverhog_api.schemas.common import RiverhogModel
 
@@ -52,10 +52,10 @@ class ListCollectionFileProvenanceResponse(RiverhogModel):
     per_page: int = Field(ge=0)
     total: int = Field(ge=0)
     pages: int = Field(ge=0)
-    sort: Literal["path", "bytes", "status"]
-    order: Literal["asc", "desc"]
+    sort: ProvenanceSort
+    order: SortOrder
     query: str | None
-    status: Literal["captured", "omitted"] | None
+    status: ProvenanceStatus | None
     collection_id: int
     provenance_mode: Literal["captured", "mixed", "omitted"]
     provenance_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Literal
 
+from riverhog_protocol import ArchiveStoreName, ArchiveStoreSort, SortOrder
+
 from riverhog_api.schemas.common import RiverhogModel
 
 
 class ArchiveDownloadAllowanceOut(RiverhogModel):
-    store: str
+    store: ArchiveStoreName
     state: Literal["open", "closed"]
     month_started_at: str
     resets_at: str
@@ -19,7 +21,7 @@ class ArchiveDownloadAllowanceOut(RiverhogModel):
 
 
 class ArchiveStoreOut(RiverhogModel):
-    store: str
+    store: ArchiveStoreName
     read_mode: Literal["immediate", "restore_required"]
     read_priority: int
     write_target: bool
@@ -34,7 +36,7 @@ class ArchiveStoreListOut(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: ArchiveStoreSort
+    order: SortOrder
     query: str | None
     stores: list[ArchiveStoreOut]

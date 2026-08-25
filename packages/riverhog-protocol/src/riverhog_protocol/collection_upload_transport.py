@@ -6,8 +6,14 @@ from typing import Annotated, Literal, Self
 
 from http_api_contracts import CanonicalVisibleText
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from riverhog_provenance_contracts import (
+    ProvenanceJournalId,
+    ProvenanceJournalStateReference,
+    ProvenanceStateId,
+)
 
 from riverhog_protocol.paths import CanonicalRelPath
+from riverhog_protocol.raw_ingress import RawSourceDigestManifest
 from riverhog_protocol.transport import COLLECTION_UPLOAD_FILE_BATCH_MAX
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -17,10 +23,10 @@ class CollectionUploadDocument(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class CapturedFileProvenanceBinding(CollectionUploadDocument):
+class CapturedFileProvenanceBinding(ProvenanceJournalStateReference):
     status: Literal["captured"]
-    journal_id: str = Field(min_length=1)
-    current_state_id: str = Field(min_length=1)
+    journal_id: ProvenanceJournalId
+    current_state_id: ProvenanceStateId
 
 
 class OmittedFileProvenanceBinding(CollectionUploadDocument):
@@ -37,6 +43,17 @@ FileProvenanceBinding = Annotated[
 class CollectionUploadRawPartsIn(CollectionUploadDocument):
     part_plaintext_bytes: int = Field(ge=65536)
     sha256s: list[Sha256] = Field(min_length=1)
+
+
+class CollectionUploadLayoutDocument(CollectionUploadDocument):
+    """The exact immutable planning layout issued for one upload session."""
+
+    pack_source_bytes: int = Field(ge=1)
+    pack_files: int = Field(ge=1)
+    pack_member_bytes: int = Field(ge=1)
+    pack_part_plaintext_bytes: int = Field(ge=1)
+    raw_volume_plaintext_bytes: int = Field(ge=1)
+    raw_part_plaintext_bytes: int = Field(ge=1)
 
 
 class CollectionUploadFileIn(CollectionUploadDocument):
@@ -57,14 +74,55 @@ class CollectionUploadFileBatchDocument(CollectionUploadDocument):
     def validate_canonical_file_order(self) -> Self:
         if self.files != sorted(self.files, key=lambda item: item.path):
             raise ValueError("collection upload files must be in canonical path order")
+        paths = [item.path for item in self.files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("collection upload file paths must be unique")
         return self
+
+
+def validate_collection_upload_batch_against_layout(
+    batch: CollectionUploadFileBatchDocument,
+    layout: CollectionUploadLayoutDocument,
+) -> CollectionUploadFileBatchDocument:
+    """Validate registration identities against the exact server-issued layout."""
+
+    for item in batch.files:
+        collection_upload_raw_digest_manifest(item, layout)
+    return batch
+
+
+def collection_upload_raw_digest_manifest(
+    item: CollectionUploadFileIn,
+    layout: CollectionUploadLayoutDocument,
+) -> RawSourceDigestManifest | None:
+    """Return the exact raw manifest required by the session layout for one file."""
+
+    raw = item.raw_parts
+    if item.bytes < layout.pack_member_bytes:
+        if raw is not None:
+            raise ValueError(f"raw part digests are only valid for large file: {item.path}")
+        return None
+    if raw is None:
+        raise ValueError(f"raw part digests are required for large file: {item.path}")
+    if raw.part_plaintext_bytes != layout.raw_part_plaintext_bytes:
+        raise ValueError(f"raw part digest policy does not match the session: {item.path}")
+    return RawSourceDigestManifest(
+        path=item.path,
+        bytes=item.bytes,
+        sha256=item.sha256,
+        part_plaintext_bytes=raw.part_plaintext_bytes,
+        part_sha256s=tuple(raw.sha256s),
+    )
 
 
 __all__ = [
     "CapturedFileProvenanceBinding",
     "CollectionUploadFileBatchDocument",
     "CollectionUploadFileIn",
+    "CollectionUploadLayoutDocument",
     "CollectionUploadRawPartsIn",
     "FileProvenanceBinding",
     "OmittedFileProvenanceBinding",
+    "collection_upload_raw_digest_manifest",
+    "validate_collection_upload_batch_against_layout",
 ]

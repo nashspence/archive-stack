@@ -15,6 +15,15 @@ from riverhog_protocol.errors import (
     Unauthorized,
 )
 
+UPLOAD_LAYOUT = {
+    "pack_source_bytes": 1024,
+    "pack_files": 16,
+    "pack_member_bytes": 1024,
+    "pack_part_plaintext_bytes": 65536,
+    "raw_volume_plaintext_bytes": 262144,
+    "raw_part_plaintext_bytes": 65536,
+}
+
 
 class RecordingClient(ApiClient):
     def __init__(self) -> None:
@@ -138,6 +147,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
                 },
             }
         ],
+        layout=UPLOAD_LAYOUT,
     )
     client.complete_collection_upload_session(
         1,
@@ -201,6 +211,7 @@ def test_client_rejects_invalid_upload_provenance_before_transport() -> None:
                     },
                 }
             ],
+            layout=UPLOAD_LAYOUT,
         )
     with pytest.raises(BadRequest, match="provenance_mode"):
         client.create_or_resume_collection_upload_session(
@@ -293,6 +304,27 @@ def test_client_rejects_unknown_restore_policy_before_transport() -> None:
             plan_etag="a" * 64,
             restore_policy="sometimes",  # type: ignore[arg-type]
         )
+
+    assert client.calls == []
+
+
+def test_client_rejects_noncanonical_resource_identities_before_transport() -> None:
+    client = RecordingClient()
+
+    with pytest.raises(BadRequest, match="application"):
+        client.create_app_key("Media Indexer", access=[])
+    with pytest.raises(BadRequest, match="application"):
+        client.revoke_app_key("media-indexer", "ABCDEF0123456789")
+    with pytest.raises(BadRequest, match="archive store"):
+        client.get_archive_store("Deep Archive")
+    with pytest.raises(BadRequest, match="must differ"):
+        client.create_or_resume_archive_copy(
+            1,
+            destination_store="archive",
+            source_store="archive",
+        )
+    with pytest.raises(BadRequest, match="unique"):
+        client.plan_retrieval([(1, "a.txt"), (1, "a.txt")])
 
     assert client.calls == []
 

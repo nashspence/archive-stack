@@ -11,12 +11,15 @@ from application_access import (
     ApplicationAccessError,
     ApplicationAccessGrant,
     ApplicationAccessGrantSet,
+    ApplicationKeyId,
+    ApplicationName,
     collection_resource,
     normalize_access,
     permission_resources,
     tag_resource,
 )
 from jsonschema import Draft202012Validator
+from pydantic import TypeAdapter, ValidationError
 
 
 def test_public_access_contract_normalizes_and_covers_grants() -> None:
@@ -78,3 +81,23 @@ def test_access_grant_set_schema_projects_relational_rules() -> None:
             ]
         )
     )
+
+
+@pytest.mark.parametrize("value", ("indexer", "media-indexer", "app42"))
+def test_application_public_identities_accept_only_canonical_values(value: str) -> None:
+    assert TypeAdapter(ApplicationName).validate_python(value, strict=True) == value
+    assert TypeAdapter(ApplicationKeyId).validate_python("0123456789abcdef", strict=True) == (
+        "0123456789abcdef"
+    )
+
+
+@pytest.mark.parametrize("value", ("Indexer", " indexer", "media_indexer", "media--indexer"))
+def test_application_name_rejects_aliases(value: str) -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(ApplicationName).validate_python(value, strict=True)
+
+
+@pytest.mark.parametrize("value", ("ABCDEF0123456789", "short", " 0123456789abcdef"))
+def test_application_key_id_rejects_aliases(value: str) -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(ApplicationKeyId).validate_python(value, strict=True)

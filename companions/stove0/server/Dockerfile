@@ -29,6 +29,7 @@ COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
+COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contracts
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/stove0-observer-client packages/stove0-observer-client
 COPY packages/stove0-observer-protocol packages/stove0-observer-protocol

@@ -260,7 +260,11 @@ class UploadApi:
             "resumed": self.session_calls > 1,
             "state": "open",
             "layout": {
+                "pack_source_bytes": 1024,
+                "pack_files": 16,
                 "pack_member_bytes": 1024,
+                "pack_part_plaintext_bytes": 65536,
+                "raw_volume_plaintext_bytes": 262144,
                 "raw_part_plaintext_bytes": 65536,
             },
         }
@@ -269,7 +273,10 @@ class UploadApi:
         self,
         _collection_id: int,
         files: Sequence[Mapping[str, Any]],
+        *,
+        layout: object,
     ) -> dict[str, Any]:
+        assert layout.raw_part_plaintext_bytes == 65536
         batch = [dict(item) for item in files]
         self.registration_batches.append(batch)
         existing = {str(item["path"]): item for item in self.registered}
@@ -463,11 +470,17 @@ class ProvenanceTransformApi(UploadApi):
         self,
         collection_id: int,
         files: Sequence[Mapping[str, Any]],
+        *,
+        layout: object,
     ) -> dict[str, Any]:
         if self.fail_registration_once:
             self.fail_registration_once = False
             raise RuntimeError("simulated lost producer progress after journal staging")
-        return super().register_collection_upload_session_files(collection_id, files)
+        return super().register_collection_upload_session_files(
+            collection_id,
+            files,
+            layout=layout,
+        )
 
 
 def test_producer_stream_has_no_shared_filesystem_and_is_snapshot_verified(

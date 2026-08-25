@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from riverhog_protocol.collection_upload_transport import CollectionUploadLayoutDocument
 from riverhog_protocol.collection_workflows import (
     PRODUCER_EVIDENCE_PATH,
     JsonValue,
@@ -18,6 +19,7 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.paths import normalize_relpath
 from riverhog_protocol.raw_ingress import hash_raw_source
+from riverhog_protocol.storage_names import ArchiveStoreName
 from riverhog_provenance import FileProvenanceBinding, build_provenance_archive
 
 from riverhog_api_client.client import ApiClient
@@ -158,7 +160,7 @@ class CollectionProducer:
         adapter_version: str,
         ingest_source: str,
         tags: Sequence[str],
-        archive_store: str | None = None,
+        archive_store: ArchiveStoreName | None = None,
         provenance_omission_reason: str = (
             "Producer did not receive host provenance; immutable producer evidence records "
             "the source boundary."
@@ -266,8 +268,9 @@ class CollectionProducer:
         layout = session.get("layout")
         if not isinstance(layout, Mapping):
             raise RuntimeError("Riverhog upload session did not return a layout")
-        pack_member_bytes = int(layout["pack_member_bytes"])
-        raw_part_bytes = int(layout["raw_part_plaintext_bytes"])
+        layout_document = CollectionUploadLayoutDocument.model_validate(dict(layout))
+        pack_member_bytes = layout_document.pack_member_bytes
+        raw_part_bytes = layout_document.raw_part_plaintext_bytes
 
         sources: dict[str, _Source] = {}
         evidence_bytes = evidence.to_json_bytes()
@@ -372,6 +375,7 @@ class CollectionProducer:
             self.api.register_collection_upload_session_files(
                 collection_id,
                 registration[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES],
+                layout=layout_document,
             )
 
         def content_for_unit(unit: Mapping[str, object]) -> bytes:

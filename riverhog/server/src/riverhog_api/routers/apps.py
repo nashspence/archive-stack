@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Annotated, Literal
+from typing import Annotated
 
-from application_access import ApplicationPermission, ApplicationResource
+from application_access import (
+    ApplicationKeyId,
+    ApplicationName,
+    ApplicationPermission,
+    ApplicationResource,
+)
 from fastapi import APIRouter, Query
+from riverhog_protocol import (
+    ApplicationAccessSort,
+    ApplicationKeySort,
+    ApplicationSort,
+    SortOrder,
+)
 
 from riverhog_api.auth import KeyManager
 from riverhog_api.deps import ContainerDep
@@ -29,8 +40,8 @@ def list_apps(
     _principal: KeyManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: Literal["name", "keys", "active_keys", "last_used_at"] = Query("name"),
-    order: Literal["asc", "desc"] = Query("asc"),
+    sort: Annotated[ApplicationSort, Query()] = "name",
+    order: Annotated[SortOrder, Query()] = "asc",
     q: str | None = Query(None),
     active: bool | None = Query(None),
     all_items: bool = Query(False, alias="all"),
@@ -50,7 +61,7 @@ def list_apps(
 
 @router.post("/apps/{app}/keys", response_model=AppKeyCreatedOut)
 def create_app_key(
-    app: str,
+    app: ApplicationName,
     request: CreateAppKeyRequest,
     container: ContainerDep,
     principal: KeyManager,
@@ -71,8 +82,8 @@ def create_app_key(
 
 @router.post("/apps/{app}/keys/{key_id}/rotate", response_model=AppKeyCreatedOut)
 def rotate_app_key(
-    app: str,
-    key_id: str,
+    app: ApplicationName,
+    key_id: ApplicationKeyId,
     container: ContainerDep,
     principal: KeyManager,
 ) -> AppKeyCreatedOut:
@@ -87,11 +98,11 @@ def list_app_key_access(
     _principal: KeyManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: Literal["app", "key_id", "permission", "resource", "created_at"] = Query("permission"),
-    order: Literal["asc", "desc"] = Query("asc"),
+    sort: Annotated[ApplicationAccessSort, Query()] = "permission",
+    order: Annotated[SortOrder, Query()] = "asc",
     q: str | None = Query(None),
-    app: str | None = Query(None),
-    key_id: str | None = Query(None, alias="key"),
+    app: Annotated[ApplicationName | None, Query()] = None,
+    key_id: Annotated[ApplicationKeyId | None, Query(alias="key")] = None,
     permission: Annotated[ApplicationPermission | None, Query()] = None,
     resource: Annotated[ApplicationResource | None, Query()] = None,
     active: bool | None = Query(None),
@@ -119,8 +130,8 @@ def list_app_key_access(
     response_model=AppAccessSetOut,
 )
 def replace_app_key_access(
-    app: str,
-    key_id: str,
+    app: ApplicationName,
+    key_id: ApplicationKeyId,
     request: ReplaceAppAccessRequest,
     container: ContainerDep,
     principal: KeyManager,
@@ -140,8 +151,8 @@ def replace_app_key_access(
     response_model=AppAccessSetOut,
 )
 def add_app_key_access(
-    app: str,
-    key_id: str,
+    app: ApplicationName,
+    key_id: ApplicationKeyId,
     request: MutateAppAccessRequest,
     container: ContainerDep,
     principal: KeyManager,
@@ -161,8 +172,8 @@ def add_app_key_access(
     response_model=AppAccessSetOut,
 )
 def remove_app_key_access(
-    app: str,
-    key_id: str,
+    app: ApplicationName,
+    key_id: ApplicationKeyId,
     request: MutateAppAccessRequest,
     container: ContainerDep,
     _principal: KeyManager,
@@ -178,13 +189,13 @@ def remove_app_key_access(
 
 @router.get("/apps/{app}/keys", response_model=AppKeyListOut)
 def list_app_keys(
-    app: str,
+    app: ApplicationName,
     container: ContainerDep,
     _principal: KeyManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: Literal["id", "created_at", "expires_at", "last_used_at"] = Query("created_at"),
-    order: Literal["asc", "desc"] = Query("desc"),
+    sort: Annotated[ApplicationKeySort, Query()] = "created_at",
+    order: Annotated[SortOrder, Query()] = "desc",
     q: str | None = Query(None),
     active: bool | None = Query(None),
     all_items: bool = Query(False, alias="all"),
@@ -205,8 +216,8 @@ def list_app_keys(
 
 @router.post("/apps/{app}/keys/{key_id}/revoke", response_model=AppKeyOut)
 def revoke_app_key(
-    app: str,
-    key_id: str,
+    app: ApplicationName,
+    key_id: ApplicationKeyId,
     container: ContainerDep,
     _principal: KeyManager,
 ) -> AppKeyOut:

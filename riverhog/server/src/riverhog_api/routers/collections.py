@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Response
 from http_api_contracts import operation_interface
 from riverhog_core.app_permissions import COLLECTIONS_DELETE
+from riverhog_protocol import (
+    CollectionSort,
+    CollectionUploadSort,
+    CollectionUploadState,
+    SortOrder,
+)
 from riverhog_protocol.paths import CanonicalTag
+from riverhog_provenance_contracts import ProvenanceJournalId
 from starlette.concurrency import run_in_threadpool
 
 from riverhog_api.auth import CatalogReader, CollectionCreator, CollectionDeleter
@@ -41,8 +48,8 @@ def list_collections(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    sort: Literal["id", "created_at", "bytes", "files"] = Query("id"),
-    order: Literal["asc", "desc"] = Query("asc"),
+    sort: Annotated[CollectionSort, Query()] = "id",
+    order: Annotated[SortOrder, Query()] = "asc",
     all_items: bool = Query(False, alias="all"),
     tag: Annotated[CanonicalTag | None, Query()] = None,
     encryption_format: str | None = Query(None),
@@ -74,9 +81,9 @@ def list_collection_upload_sessions(
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
     tag: Annotated[CanonicalTag | None, Query()] = None,
-    state: Literal["open", "uploading", "finalizing", "failed"] | None = Query(None),
-    sort: Literal["id", "created_at", "state", "bytes", "files"] = Query("created_at"),
-    order: Literal["asc", "desc"] = Query("desc"),
+    state: Annotated[CollectionUploadState | None, Query()] = None,
+    sort: Annotated[CollectionUploadSort, Query()] = "created_at",
+    order: Annotated[SortOrder, Query()] = "desc",
     all_items: bool = Query(False, alias="all"),
 ) -> ListCollectionUploadSessionsResponse:
     return ListCollectionUploadSessionsResponse.model_validate(
@@ -143,7 +150,7 @@ def register_collection_upload_session_files(
 )
 async def put_collection_upload_session_provenance_journal(
     collection_id: int,
-    journal_id: str,
+    journal_id: ProvenanceJournalId,
     request: Request,
     content: Annotated[
         bytes,
@@ -178,7 +185,7 @@ async def put_collection_upload_session_provenance_journal(
 )
 def export_collection_upload_session_provenance_journal(
     collection_id: int,
-    journal_id: str,
+    journal_id: ProvenanceJournalId,
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> Response:

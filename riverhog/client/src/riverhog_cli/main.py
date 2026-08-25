@@ -38,6 +38,7 @@ from riverhog_cli_support.output import (
     format_lifecycle_events,
     format_list_ids,
 )
+from riverhog_protocol.collection_upload_transport import CollectionUploadLayoutDocument
 from riverhog_protocol.errors import Conflict, RiverhogError, ServiceUnavailable
 from riverhog_protocol.manifest import collection_content_identity
 from riverhog_protocol.paths import (
@@ -984,6 +985,8 @@ def _register_collection_upload_session_files(
     api: ApiClient,
     collection_id: int,
     file_payloads: list[CollectionManifestEntry],
+    *,
+    layout: CollectionUploadLayoutDocument,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         f"Upload session register {len(file_payloads)} file(s)",
@@ -993,6 +996,7 @@ def _register_collection_upload_session_files(
                 {key: value for key, value in item.items() if key != "provenance_journals"}
                 for item in file_payloads
             ],
+            layout=layout,
         ),
     )
 
@@ -1063,22 +1067,14 @@ def _collection_upload_dry_run_plan(
     }
 
 
-def _session_layout(payload: Mapping[str, object]) -> tuple[int, int]:
+def _session_layout(payload: Mapping[str, object]) -> CollectionUploadLayoutDocument:
     layout = payload.get("layout")
     if not isinstance(layout, Mapping):
         raise RuntimeError("open upload session is missing its immutable layout")
-    pack_member_bytes = layout.get("pack_member_bytes")
-    raw_part_plaintext_bytes = layout.get("raw_part_plaintext_bytes")
-    if (
-        isinstance(pack_member_bytes, bool)
-        or not isinstance(pack_member_bytes, int)
-        or pack_member_bytes < 1
-        or isinstance(raw_part_plaintext_bytes, bool)
-        or not isinstance(raw_part_plaintext_bytes, int)
-        or raw_part_plaintext_bytes < 1
-    ):
-        raise RuntimeError("upload session returned an invalid immutable layout")
-    return pack_member_bytes, raw_part_plaintext_bytes
+    try:
+        return CollectionUploadLayoutDocument.model_validate(dict(layout))
+    except ValueError as exc:
+        raise RuntimeError("upload session returned an invalid immutable layout") from exc
 
 
 def _hash_collection_source(
@@ -1405,7 +1401,9 @@ def _upload_collection_via_session(
         _log_upload(f"Collection {collection_id} already finalized for this retry key")
         return session_payload
 
-    pack_member_bytes, raw_part_plaintext_bytes = _session_layout(session_payload)
+    layout = _session_layout(session_payload)
+    pack_member_bytes = layout.pack_member_bytes
+    raw_part_plaintext_bytes = layout.raw_part_plaintext_bytes
     paths = [
         path
         for path in sorted(resolved_root.rglob("*"))
@@ -1452,7 +1450,12 @@ def _upload_collection_via_session(
             progress.notice("Registering the canonical file manifest", phase="registering")
             for start in range(0, len(manifest), COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES):
                 batch = manifest[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES]
-                _register_collection_upload_session_files(api, collection_id, batch)
+                _register_collection_upload_session_files(
+                    api,
+                    collection_id,
+                    batch,
+                    layout=layout,
+                )
                 for _ in batch:
                     progress.registered_file()
         else:

@@ -36,6 +36,7 @@ MYPY_SOURCES = \
 	packages/riverhog-api-client/src \
 	packages/riverhog-cli-support/src \
 	packages/riverhog-protocol/src \
+	packages/riverhog-provenance-contracts/src \
 	packages/riverhog-transform-sdk/src \
 	packages/riverhog-storage-adapter-asgi-support/src \
 	packages/riverhog-storage-adapter-protocol/src \

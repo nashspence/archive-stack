@@ -160,6 +160,7 @@ reusable_library = [
   "packages/riverhog-api-client",
   "packages/riverhog-protocol",
   "packages/riverhog-provenance",
+  "packages/riverhog-provenance-contracts",
   "packages/riverhog-storage-adapter-asgi-support",
   "packages/riverhog-storage-adapter-protocol",
   "packages/riverhog-storage-adapter-s3-support",

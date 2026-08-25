@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from typing import Literal
 
+from application_access import ApplicationKeyId, ApplicationName
+from riverhog_protocol import DownloadQuotaSort, SortOrder
+
 from riverhog_api.schemas.common import RiverhogModel
 
 
 class KeyDownloadQuotaOut(RiverhogModel):
     id: str
-    app: str
-    key_id: str
+    app: ApplicationName
+    key_id: ApplicationKeyId
     key_status: Literal["active", "expired", "revoked"]
     monthly_bytes: int | None
     month_started_at: str
@@ -23,10 +26,10 @@ class KeyDownloadQuotaListOut(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: DownloadQuotaSort
+    order: SortOrder
     query: str | None
-    app: str | None
+    app: ApplicationName | None
     active: bool | None
     quotas: list[KeyDownloadQuotaOut]
 

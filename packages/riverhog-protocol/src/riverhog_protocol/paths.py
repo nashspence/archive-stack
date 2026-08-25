@@ -39,7 +39,18 @@ def validate_canonical_relpath(value: str) -> str:
 
 type CanonicalRelPath = Annotated[
     str,
-    Field(max_length=4096, pattern=CANONICAL_RELPATH_PATTERN),
+    Field(
+        min_length=1,
+        max_length=4096,
+        pattern=CANONICAL_RELPATH_PATTERN,
+        json_schema_extra={
+            "format": "riverhog-canonical-relpath-v1",
+            "allOf": [
+                {"not": {"pattern": r"(?:^|/)\.{1,2}(?:/|$)"}},
+                {"not": {"pattern": r"^\s|\s$"}},
+            ],
+        },
+    ),
     AfterValidator(validate_canonical_relpath),
 ]
 

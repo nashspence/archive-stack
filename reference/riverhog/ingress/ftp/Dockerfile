@@ -29,6 +29,7 @@ COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/riverhog-ftp-adapter-api-client packages/riverhog-ftp-adapter-api-client
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
+COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contracts
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/time-formats packages/time-formats
 RUN uv sync --frozen --package riverhog-ftp-adapter --no-dev --no-editable

@@ -1,20 +1,26 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import Field
-from riverhog_protocol import RETRIEVAL_FILE_BATCH_MAX
+from pydantic import ConfigDict, Field, model_validator
+from riverhog_protocol import (
+    ArchiveStoreName,
+    RetrievalCacheProtection,
+    RetrievalCacheSort,
+    RetrievalCacheState,
+    RetrievalFileReferenceDocument,
+    RetrievalFileReferenceSetDocument,
+    SortOrder,
+)
 
 from riverhog_api.schemas.common import RiverhogModel
 
 
-class RetrievalFileIn(RiverhogModel):
-    collection_id: int
-    path: str
+class RetrievalFileIn(RetrievalFileReferenceDocument):
+    pass
 
 
-class RetrievalPlanRequest(RiverhogModel):
-    files: list[RetrievalFileIn] = Field(min_length=1, max_length=RETRIEVAL_FILE_BATCH_MAX)
+class RetrievalPlanRequest(RetrievalFileReferenceSetDocument):
     lease_seconds: int | None = Field(default=None, ge=1)
     restore_policy: Literal["allow", "never"] = "allow"
 
@@ -35,7 +41,7 @@ class RetrievalPlanObjectPlacementOut(RiverhogModel):
 
 class RetrievalPlanObjectOut(RiverhogModel):
     collection_id: int
-    source_store: str
+    source_store: ArchiveStoreName
     object_id: str
     kind: Literal["pack", "segment"]
     plaintext_bytes: int
@@ -65,6 +71,25 @@ class RenewRetrievalJobRequest(RiverhogModel):
 
 
 class RetrievalJobOut(RiverhogModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"state": {"const": "completed"}}},
+                    "then": {"properties": {"completed_at": {"type": "string"}}},
+                },
+                {
+                    "if": {"properties": {"state": {"const": "canceled"}}},
+                    "then": {"properties": {"canceled_at": {"type": "string"}}},
+                },
+                {
+                    "if": {"properties": {"state": {"const": "failed"}}},
+                    "then": {"properties": {"failure": {"type": "string", "minLength": 1}}},
+                },
+            ]
+        }
+    )
+
     id: str
     state: Literal["requested", "ready", "completed", "expired", "failed", "canceled"]
     plan_etag: str
@@ -81,6 +106,16 @@ class RetrievalJobOut(RiverhogModel):
     requires_restore: bool
     files: list[RetrievalPlanFileOut]
     objects: list[RetrievalPlanObjectOut]
+
+    @model_validator(mode="after")
+    def validate_terminal_evidence(self) -> Self:
+        if self.state == "completed" and self.completed_at is None:
+            raise ValueError("completed retrieval jobs require completed_at")
+        if self.state == "canceled" and self.canceled_at is None:
+            raise ValueError("canceled retrieval jobs require canceled_at")
+        if self.state == "failed" and not self.failure:
+            raise ValueError("failed retrieval jobs require failure evidence")
+        return self
 
 
 class RetrievalCachePolicyOut(RiverhogModel):
@@ -104,9 +139,9 @@ class RetrievalCacheStatusOut(RiverhogModel):
 
 class RetrievalCacheObjectOut(RiverhogModel):
     collection_id: int
-    source_store: str
+    source_store: ArchiveStoreName
     object_id: str
-    state: Literal["ready", "delete_pending", "deleting"]
+    state: RetrievalCacheState
     stored_bytes: int
     stored_sha256: str
     cached_at: str
@@ -118,13 +153,23 @@ class RetrievalCacheObjectOut(RiverhogModel):
     tags: list[str]
 
 
+class RetrievalCacheObjectListFiltersOut(RiverhogModel):
+    tag: str | None
+    collection_id: int | None
+    source_store: ArchiveStoreName | None
+    state: RetrievalCacheState | None
+    protection: RetrievalCacheProtection | None
+    expires_before: str | None
+    expires_after: str | None
+
+
 class RetrievalCacheObjectListOut(RiverhogModel):
     page: int
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: RetrievalCacheSort
+    order: SortOrder
     query: str | None
-    filters: dict[str, str | None]
+    filters: RetrievalCacheObjectListFiltersOut
     objects: list[RetrievalCacheObjectOut]

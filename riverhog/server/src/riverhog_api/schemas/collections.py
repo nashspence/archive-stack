@@ -5,14 +5,21 @@ from typing import Any, Literal
 from http_api_contracts import CanonicalVisibleText
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from riverhog_protocol import (
+    ArchiveStoreName,
+    CollectionSort,
     CollectionUploadFileBatchDocument,
+    CollectionUploadLayoutDocument,
+    CollectionUploadSort,
+    CollectionUploadState,
     FileProvenanceBinding,
     RetirementClaimReferenceDocument,
+    SortOrder,
 )
 from riverhog_protocol import (
     CollectionUploadFileIn as CollectionUploadFileIn,
 )
-from riverhog_protocol.paths import CanonicalTag
+from riverhog_protocol.paths import CanonicalRelPath, CanonicalTag
+from riverhog_provenance_contracts import ProvenanceJournalId, ProvenanceStateId
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
@@ -42,7 +49,7 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     idempotency_key: CanonicalVisibleText = Field(max_length=200)
     tags: list[CanonicalTag]
     ingest_source: str | None = None
-    archive_store: str | None = None
+    archive_store: ArchiveStoreName | None = None
     event_context: dict[str, Any] | None = None
     provenance_mode: Literal["captured", "omitted"] = "captured"
     provenance_omission_reason: CanonicalVisibleText | None = None
@@ -95,8 +102,8 @@ class ListCollectionsResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: CollectionSort
+    order: SortOrder
     query: str | None
     tag: CanonicalTag | None
     encryption_format: str | None
@@ -105,12 +112,33 @@ class ListCollectionsResponse(RiverhogModel):
 
 
 class CollectionDeletionArchiveCopyOut(RiverhogModel):
-    store: str
+    store: ArchiveStoreName
     objects: int
     stored_bytes: int
 
 
 class CollectionDeletionPlanOut(RiverhogModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "status": {"const": "blocked"},
+                        "challenge": {"type": "null"},
+                        "blockers": {"minItems": 1},
+                    }
+                },
+                {
+                    "properties": {
+                        "status": {"enum": ["ready", "deleting"]},
+                        "challenge": {"type": "string", "minLength": 1},
+                        "blockers": {"maxItems": 0},
+                    }
+                },
+            ]
+        }
+    )
+
     status: Literal["ready", "blocked", "deleting"]
     collection_id: int
     warning: str
@@ -128,6 +156,15 @@ class CollectionDeletionPlanOut(RiverhogModel):
     blockers: list[str]
     billing_note: str
 
+    @model_validator(mode="after")
+    def validate_plan_state(self) -> CollectionDeletionPlanOut:
+        if self.status == "blocked":
+            if self.challenge is not None or not self.blockers:
+                raise ValueError("blocked collection deletion requires blockers and no challenge")
+        elif not self.challenge or self.blockers:
+            raise ValueError("ready collection deletion requires a challenge and no blockers")
+        return self
+
 
 class DeleteCollectionRequest(RiverhogModel):
     challenge: str
@@ -144,7 +181,7 @@ class CollectionDeletionResultOut(RiverhogModel):
 
 
 class CollectionUploadFileOut(RiverhogModel):
-    path: str
+    path: CanonicalRelPath
     bytes: int
     sha256: str
     upload_state: str
@@ -154,10 +191,10 @@ class CollectionUploadFileOut(RiverhogModel):
 
 
 class CollectionUploadProvenanceJournalOut(RiverhogModel):
-    journal_id: str
+    journal_id: ProvenanceJournalId
     bytes: int
     sha256: str
-    current_state_id: str
+    current_state_id: ProvenanceStateId
     current_path: str
     current_bytes: int
     current_sha256: str
@@ -166,7 +203,7 @@ class CollectionUploadProvenanceJournalOut(RiverhogModel):
 class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
     collection_id: int
     ingest_source: str | None
-    archive_store: str
+    archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     state: Literal["open", "uploading"]
@@ -193,7 +230,7 @@ class CollectionUploadListItemOut(RiverhogModel):
     created_at: str | None
     tags: list[CanonicalTag]
     ingest_source: str | None
-    archive_store: str
+    archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     state: Literal["open", "uploading", "finalizing", "failed"]
@@ -204,7 +241,7 @@ class CollectionUploadListItemOut(RiverhogModel):
 
 class CollectionUploadListFiltersOut(RiverhogModel):
     tag: CanonicalTag | None
-    state: str | None
+    state: CollectionUploadState | None
 
 
 class ListCollectionUploadSessionsResponse(RiverhogModel):
@@ -212,23 +249,40 @@ class ListCollectionUploadSessionsResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: CollectionUploadSort
+    order: SortOrder
     query: str | None
     filters: CollectionUploadListFiltersOut
     uploads: list[CollectionUploadListItemOut]
 
 
-class CollectionUploadLayoutOut(RiverhogModel):
-    pack_source_bytes: int
-    pack_files: int
-    pack_member_bytes: int
-    pack_part_plaintext_bytes: int
-    raw_volume_plaintext_bytes: int
-    raw_part_plaintext_bytes: int
+class CollectionUploadLayoutOut(CollectionUploadLayoutDocument):
+    pass
 
 
 class CollectionUploadSessionOut(RiverhogModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"state": {"const": "finalized"}}},
+                    "then": {
+                        "properties": {
+                            "content_identity": {"type": "string"},
+                            "archive_root_sha256": {"type": "string"},
+                            "layout": {"type": "null"},
+                            "collection": {"type": "object"},
+                        }
+                    },
+                },
+                {
+                    "if": {"properties": {"state": {"const": "failed"}}},
+                    "then": {"properties": {"latest_failure": {"type": "string", "minLength": 1}}},
+                },
+            ]
+        }
+    )
+
     collection_id: int
     created_at: str
     tags: list[CanonicalTag]
@@ -237,7 +291,7 @@ class CollectionUploadSessionOut(RiverhogModel):
     provenance_identity: str | None
     content_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     archive_root_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    archive_store: str
+    archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     state: Literal["open", "uploading", "finalizing", "finalized", "failed", "canceled"]
@@ -259,6 +313,19 @@ class CollectionUploadSessionOut(RiverhogModel):
     archive_uploaded_parts: int | None = None
     archive_total_parts: int | None = None
     collection: CollectionSummaryOut | None
+
+    @model_validator(mode="after")
+    def validate_terminal_evidence(self) -> CollectionUploadSessionOut:
+        if self.state == "finalized" and (
+            self.content_identity is None
+            or self.archive_root_sha256 is None
+            or self.layout is not None
+            or self.collection is None
+        ):
+            raise ValueError("finalized upload sessions require immutable collection evidence")
+        if self.state == "failed" and not self.latest_failure:
+            raise ValueError("failed upload sessions require failure evidence")
+        return self
 
 
 class CreateOrResumeCollectionUploadSessionOut(CollectionUploadSessionOut):

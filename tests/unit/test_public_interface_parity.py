@@ -106,7 +106,12 @@ def public_operations(app: FastAPI) -> list[tuple[str, str]]:
     return operations
 
 
-def _parameter_enum(schema: dict[str, Any]) -> set[str]:
+def _parameter_enum(
+    schema: dict[str, Any],
+    components: dict[str, Any],
+) -> set[str]:
+    if "$ref" in schema:
+        schema = components[str(schema["$ref"]).rsplit("/", 1)[-1]]
     if "enum" in schema:
         return {str(value) for value in schema["enum"]}
     variants = schema.get("anyOf", [])
@@ -114,7 +119,7 @@ def _parameter_enum(schema: dict[str, Any]) -> set[str]:
         str(value)
         for variant in variants
         if variant.get("type") != "null"
-        for value in variant.get("enum", [])
+        for value in _parameter_enum(variant, components)
     }
 
 
@@ -298,9 +303,11 @@ def test_paged_lists_use_the_shared_parameter_and_response_envelope(
 
 
 def test_archive_copy_wire_states_match_the_service_state_machine() -> None:
-    schema = create_riverhog_app().openapi()["components"]["schemas"]["ArchiveCopyJobOut"]
+    openapi = create_riverhog_app().openapi()
+    schemas = openapi["components"]["schemas"]
+    state_schema = schemas["ArchiveCopyJobOut"]["properties"]["state"]
 
-    assert set(schema["properties"]["state"]["enum"]) == ARCHIVE_COPY_STATES
+    assert _parameter_enum(state_schema, schemas) == ARCHIVE_COPY_STATES
 
 
 @pytest.mark.parametrize(
@@ -310,6 +317,7 @@ def test_archive_copy_wire_states_match_the_service_state_machine() -> None:
 def test_public_crud_control_parameters_have_closed_vocabularies(
     app_factory: Callable[[], FastAPI],
 ) -> None:
+    components = app_factory().openapi()["components"]["schemas"]
     found = 0
     for path_item in app_factory().openapi()["paths"].values():
         for method, operation in path_item.items():
@@ -326,7 +334,7 @@ def test_public_crud_control_parameters_have_closed_vocabularies(
                 }:
                     continue
                 found += 1
-                assert _parameter_enum(parameter["schema"]), parameter
+                assert _parameter_enum(parameter["schema"], components), parameter
     if app_factory is not create_adapter_contract_app:
         assert found > 0
 
@@ -352,7 +360,7 @@ def test_official_clients_reject_invalid_crud_controls_and_noncanonical_tags() -
         with pytest.raises(BadRequest, match="does not accept a scoped resource"):
             riverhog.add_app_key_access(
                 "example",
-                "key",
+                "0" * 16,
                 permission="keys:manage",
                 resource="tag:incoming",
             )

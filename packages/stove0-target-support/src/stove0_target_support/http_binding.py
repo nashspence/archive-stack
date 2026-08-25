@@ -5,9 +5,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 
-from http_api_contracts import HttpOperationContract, HttpPathParameterContract
+from http_api_contracts import (
+    HttpErrorContract,
+    HttpOperationContract,
+    HttpPathParameterContract,
+    http_operation_for_request,
+)
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ValidationError
 from stove0_target_protocol import (
@@ -27,15 +32,69 @@ _JOB_ID_PARAMETER = (HttpPathParameterContract("job_id", Sha256),)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
+type TargetHttpErrorCode = Literal[
+    "bad_request",
+    "invalid_target_request",
+    "job_identity_mismatch",
+    "job_not_found",
+    "job_request_mismatch",
+    "method_not_allowed",
+    "not_found",
+    "operation_contract_mismatch",
+    "request_too_large",
+    "target_contract_mismatch",
+    "target_failed",
+    "target_protocol_mismatch",
+    "target_runtime_mismatch",
+    "unauthorized",
+    "unsupported_operation",
+]
+
+_TARGET_HTTP_ERROR_STATUS: dict[str, int] = {
+    "bad_request": 400,
+    "invalid_target_request": 400,
+    "job_identity_mismatch": 409,
+    "job_not_found": 404,
+    "job_request_mismatch": 409,
+    "method_not_allowed": 405,
+    "not_found": 404,
+    "operation_contract_mismatch": 409,
+    "request_too_large": 413,
+    "target_contract_mismatch": 409,
+    "target_failed": 500,
+    "target_protocol_mismatch": 409,
+    "target_runtime_mismatch": 409,
+    "unauthorized": 401,
+    "unsupported_operation": 400,
+}
+
+
+def _target_errors(*codes: TargetHttpErrorCode) -> tuple[HttpErrorContract, ...]:
+    return tuple(HttpErrorContract(code, _TARGET_HTTP_ERROR_STATUS[code]) for code in codes)
+
+
 TARGET_HTTP_OPERATIONS = (
-    HttpOperationContract("GET", "/v1/target", response_type=TargetContract),
+    HttpOperationContract(
+        "GET",
+        "/v1/target",
+        response_type=TargetContract,
+        errors=_target_errors("bad_request", "unauthorized", "target_failed"),
+    ),
     HttpOperationContract(
         "POST",
         "/v1/preflight",
         TargetPreflightRequest,
         TargetPreflightResponse,
         "json",
-        error_statuses=(400, 401, 409, 413, 500),
+        errors=_target_errors(
+            "invalid_target_request",
+            "unauthorized",
+            "request_too_large",
+            "target_protocol_mismatch",
+            "operation_contract_mismatch",
+            "unsupported_operation",
+            "target_failed",
+        ),
     ),
     HttpOperationContract(
         "PUT",
@@ -43,21 +102,32 @@ TARGET_HTTP_OPERATIONS = (
         TargetJobRequest,
         TargetJobStatus,
         "json",
-        error_statuses=(400, 401, 409, 413, 500),
+        errors=_target_errors(
+            "invalid_target_request",
+            "unauthorized",
+            "request_too_large",
+            "job_identity_mismatch",
+            "target_contract_mismatch",
+            "operation_contract_mismatch",
+            "job_request_mismatch",
+            "target_runtime_mismatch",
+            "unsupported_operation",
+            "target_failed",
+        ),
         path_parameters=_JOB_ID_PARAMETER,
     ),
     HttpOperationContract(
         "GET",
         "/v1/jobs/{job_id}",
         response_type=TargetJobStatus,
-        error_statuses=(400, 401, 404, 500),
+        errors=_target_errors("bad_request", "unauthorized", "job_not_found", "target_failed"),
         path_parameters=_JOB_ID_PARAMETER,
     ),
     HttpOperationContract(
         "POST",
         "/v1/jobs/{job_id}/cancel",
         response_type=TargetJobStatus,
-        error_statuses=(400, 401, 404, 500),
+        errors=_target_errors("bad_request", "unauthorized", "job_not_found", "target_failed"),
         path_parameters=_JOB_ID_PARAMETER,
     ),
 )
@@ -80,10 +150,10 @@ class TargetService(Protocol):
 class TargetServiceError(RuntimeError):
     """Expected target-service rejection rendered as a stable HTTP error."""
 
-    def __init__(self, status: int, code: str, message: str) -> None:
+    def __init__(self, status: int, code: TargetHttpErrorCode, message: str) -> None:
         super().__init__(message)
-        if status < 400 or status > 599:
-            raise ValueError("target service error status must be 4xx or 5xx")
+        if _TARGET_HTTP_ERROR_STATUS[code] != status:
+            raise ValueError("target service error code does not match its HTTP status")
         self.status = status
         self.code = code
         self.message = message
@@ -112,6 +182,7 @@ class TargetHttpBinding:
 
     def handle(self, method: str, path: str, body: bytes = b"") -> TargetHttpResponse:
         normalized_method = method.upper()
+        operation = http_operation_for_request(TARGET_HTTP_OPERATIONS, normalized_method, path)
         try:
             if normalized_method == "GET" and path == "/v1/target":
                 if body:
@@ -144,9 +215,16 @@ class TargetHttpBinding:
                 return _error(405, "method_not_allowed", "target endpoint method is not allowed")
             return _error(404, "not_found", "target endpoint not found")
         except TargetServiceError as exc:
+            if operation is None or not operation.accepts_error(status=exc.status, code=exc.code):
+                return _error(500, "target_failed", "target execution failed")
             return _error(exc.status, exc.code, exc.message)
         except (JsonSchemaValidationError, ValidationError, ValueError) as exc:
-            return _error(400, "invalid_target_request", str(exc))
+            if operation is not None and operation.accepts_error(
+                status=400,
+                code="invalid_target_request",
+            ):
+                return _error(400, "invalid_target_request", str(exc))
+            return _error(500, "target_failed", "target execution failed")
         except Exception:
             return _error(500, "target_failed", "target execution failed")
 
@@ -169,6 +247,8 @@ def _model_response(model: BaseModel) -> TargetHttpResponse:
 
 
 def _error(status: int, code: str, message: str) -> TargetHttpResponse:
+    if _TARGET_HTTP_ERROR_STATUS.get(code) != status:
+        raise ValueError("target HTTP binding emitted an undeclared error code/status")
     body = json.dumps(
         {"error": {"code": code, "message": message}},
         ensure_ascii=False,
