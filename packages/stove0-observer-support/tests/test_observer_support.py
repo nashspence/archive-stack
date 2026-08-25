@@ -475,6 +475,41 @@ def test_observer_descriptor_failure_uses_the_public_error_envelope() -> None:
     }
 
 
+def test_observer_implementation_value_error_is_a_server_fault() -> None:
+    api = RetrievalApi()
+    contract = _contract()
+    descriptor = _descriptor(contract)
+    request = _request(contract, descriptor, api)
+    invocation = ObservationInvocation(
+        request=request,
+        claim_id="claim-1",
+        fence=3,
+        runtime=ObserverRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="secret-capability",
+            workspace_assurance="ephemeral",
+        ),
+    )
+
+    class FaultingObserver(BindingObserver):
+        def observe(
+            self,
+            _request: ObservationRequest,
+            _runtime: ObservationRuntime,
+        ) -> ObservationResult:
+            raise ValueError("private observer defect")
+
+    response = ObserverHttpBinding(FaultingObserver(descriptor)).handle(
+        "POST",
+        "/v1/observe",
+        invocation.model_dump_json(exclude_none=True).encode(),
+    )
+
+    assert response.status == 500
+    assert json.loads(response.body)["error"]["code"] == "observer_failed"
+    assert b"private observer defect" not in response.body
+
+
 def test_observer_binding_serializes_workspace_execution_by_default() -> None:
     api = RetrievalApi()
     contract = _contract()

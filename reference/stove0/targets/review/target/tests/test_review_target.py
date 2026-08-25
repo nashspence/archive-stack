@@ -59,6 +59,7 @@ from stove0_target_support import (
     TargetJobStatus,
     TargetPreflightRequest,
     TargetRuntimeAuthority,
+    TargetServiceError,
 )
 
 
@@ -175,7 +176,7 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
             "sampler_descriptor_sha256": registration.descriptor_sha256,
             "sampler_image_digest": registration.image_digest,
         }
-        with pytest.raises(ValueError, match="sampler_image_digest"):
+        with pytest.raises(TargetServiceError, match="sampler_image_digest") as exc_info:
             target.preflight(
                 request.model_copy(
                     update={
@@ -186,6 +187,7 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
                     }
                 )
             )
+        assert exc_info.value.status == 400
     finally:
         target.close()
     assert sampler_client.closed

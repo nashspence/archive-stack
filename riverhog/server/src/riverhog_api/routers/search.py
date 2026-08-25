@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Query
-from riverhog_protocol import SearchSort, SortOrder
+from riverhog_protocol import CollectionIdParameter, SearchSort, SortOrder
 
 from riverhog_api.auth import CatalogReader
 from riverhog_api.deps import ContainerDep
@@ -21,7 +21,7 @@ def search(
     per_page: int = Query(25, ge=1, le=100),
     sort: Annotated[SearchSort, Query()] = "file_ref",
     order: Annotated[SortOrder, Query()] = "asc",
-    collection: int | None = Query(None, ge=1),
+    collection: Annotated[CollectionIdParameter | None, Query()] = None,
     all_items: bool = Query(False, alias="all"),
 ) -> SearchResponse:
     payload = container.search.search(

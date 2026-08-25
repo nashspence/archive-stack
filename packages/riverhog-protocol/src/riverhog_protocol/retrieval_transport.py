@@ -6,7 +6,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from riverhog_protocol.paths import CanonicalRelPath
+from riverhog_protocol.paths import CanonicalRelPath, CollectionId
 from riverhog_protocol.transport import RETRIEVAL_FILE_BATCH_MAX
 
 
@@ -15,7 +15,7 @@ class RetrievalTransportDocument(BaseModel):
 
 
 class RetrievalFileReferenceDocument(RetrievalTransportDocument):
-    collection_id: int = Field(ge=1)
+    collection_id: CollectionId
     path: CanonicalRelPath
 
 

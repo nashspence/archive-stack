@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 ARCHIVE_STORE_NAME_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+_ARCHIVE_STORE_NAME_RE = re.compile(ARCHIVE_STORE_NAME_PATTERN)
 
 
 def validate_archive_store_name(value: str) -> str:
-    if not value or value.strip().casefold() != value:
+    if not value or _ARCHIVE_STORE_NAME_RE.fullmatch(value) is None:
         raise ValueError("archive store name must use lowercase letters, digits, and single dashes")
     return value
 

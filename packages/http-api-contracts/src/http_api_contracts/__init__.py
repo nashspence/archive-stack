@@ -8,7 +8,7 @@ from ipaddress import ip_address
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
 
 CANONICAL_VISIBLE_TEXT_PATTERN = r"^\S(?:[\s\S]*\S)?$"
 CanonicalVisibleText = Annotated[
@@ -49,6 +49,7 @@ class HttpPathParameterContract:
     def __post_init__(self) -> None:
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", self.name) is None:
             raise ValueError("HTTP path parameter name is invalid")
+        TypeAdapter(self.value_type)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,12 +111,19 @@ class HttpOperationContract:
         actual = path.split("/")
         if len(expected) != len(actual):
             return False
-        return all(
-            bool(actual_part)
-            if expected_part.startswith("{") and expected_part.endswith("}")
-            else expected_part == actual_part
-            for expected_part, actual_part in zip(expected, actual, strict=True)
-        )
+        parameters = {parameter.name: parameter for parameter in self.path_parameters}
+        for expected_part, actual_part in zip(expected, actual, strict=True):
+            if expected_part.startswith("{") and expected_part.endswith("}"):
+                if not actual_part:
+                    return False
+                parameter = parameters[expected_part[1:-1]]
+                try:
+                    TypeAdapter(parameter.value_type).validate_python(actual_part)
+                except ValidationError:
+                    return False
+            elif expected_part != actual_part:
+                return False
+        return True
 
 
 def http_operation_for_request(

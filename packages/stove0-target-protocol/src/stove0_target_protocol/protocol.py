@@ -20,6 +20,7 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
+from riverhog_protocol.paths import CollectionId
 from stove0_protocol import (
     RIVERHOG_CAPABILITY_TRANSPORT,
     CollectionRootRef,
@@ -543,7 +544,7 @@ class TargetExecutionEvidence(TargetProtocolModel):
 
 
 class OutputCollectionRef(TargetProtocolModel):
-    collection_id: int = Field(ge=1)
+    collection_id: CollectionId
     archive_root_sha256: Sha256
     content_identity: Sha256
     derivation_sha256: Sha256

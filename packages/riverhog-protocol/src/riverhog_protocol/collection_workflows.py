@@ -14,7 +14,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
+from riverhog_protocol.paths import (
+    CollectionId,
+    normalize_relpath,
+    normalize_tag,
+    validate_collection_id,
+)
 
 PRODUCER_EVIDENCE_FORMAT: Literal["riverhog-collection-producer/v1"] = (
     "riverhog-collection-producer/v1"
@@ -122,12 +127,12 @@ def _canonical_tags(values: Sequence[object]) -> tuple[str, ...]:
 class CollectionRootIdentity:
     """Immutable identity used by collection workflow contracts."""
 
-    collection_id: int
+    collection_id: CollectionId
     archive_root_sha256: str
     content_identity: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "collection_id", int(normalize_collection_id(self.collection_id)))
+        object.__setattr__(self, "collection_id", validate_collection_id(self.collection_id))
         object.__setattr__(
             self,
             "archive_root_sha256",
@@ -526,7 +531,7 @@ class TransformIntent:
 
 @dataclass(frozen=True, order=True, slots=True)
 class ArtifactDisposition:
-    input_collection_id: int
+    input_collection_id: CollectionId
     input_archive_root_sha256: str
     input_path: str
     status: DispositionState
@@ -538,7 +543,7 @@ class ArtifactDisposition:
         object.__setattr__(
             self,
             "input_collection_id",
-            int(normalize_collection_id(self.input_collection_id)),
+            validate_collection_id(self.input_collection_id),
         )
         object.__setattr__(
             self,

@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal, Self
 from lifecycle_events.models import CloudEvent, normalize_event_context
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from riverhog_protocol.paths import normalize_collection_id, normalize_tag
+from riverhog_protocol.paths import CollectionId, normalize_collection_id, normalize_tag
 from riverhog_protocol.storage_names import ArchiveStoreName
 
 RIVERHOG_EVENT_TYPE_PREFIX = "io.riverhog.riverhog."
@@ -84,7 +84,7 @@ class RiverhogEventData(RiverhogEventModel):
 
 
 class CollectionEventData(RiverhogEventData):
-    collection_id: int = Field(ge=1)
+    collection_id: CollectionId
     collection_created_at: str = Field(min_length=1, max_length=64)
     collection_tags: list[str]
 
@@ -129,8 +129,21 @@ class ArchiveCopyEventData(CollectionEventData):
     state: ArchiveCopyState
 
 
+class ArchiveCopyRequestedData(ArchiveCopyEventData):
+    state: Literal["requested"]
+
+
+class ArchiveCopyCompletedData(ArchiveCopyEventData):
+    state: Literal["completed"]
+
+
 class ArchiveCopyIssueData(ArchiveCopyEventData):
+    state: Literal["failed"]
     error: str = Field(min_length=1, max_length=16384)
+
+
+class ArchiveCopyCanceledData(ArchiveCopyEventData):
+    state: Literal["canceled"]
 
 
 RetrievalState = Literal["requested", "ready", "completed", "canceled", "expired", "failed"]
@@ -138,9 +151,9 @@ RetrievalState = Literal["requested", "ready", "completed", "canceled", "expired
 
 class RetrievalEventData(RiverhogEventData):
     retrieval_id: str = Field(min_length=1, max_length=300)
-    collection_ids: list[int] = Field(min_length=1)
+    collection_ids: list[CollectionId] = Field(min_length=1)
     state: RetrievalState
-    collection_id: int | None = Field(default=None, ge=1)
+    collection_id: CollectionId | None = None
     collection_created_at: str | None = Field(default=None, min_length=1, max_length=64)
     collection_tags: list[str] | None = None
 
@@ -234,12 +247,12 @@ class CollectionDeletedEvent(RiverhogCloudEvent):
 
 class ArchiveCopyRequestedEvent(RiverhogCloudEvent):
     type: Literal["io.riverhog.riverhog.archive_copy.requested"]
-    data: ArchiveCopyEventData
+    data: ArchiveCopyRequestedData
 
 
 class ArchiveCopyCompletedEvent(RiverhogCloudEvent):
     type: Literal["io.riverhog.riverhog.archive_copy.completed"]
-    data: ArchiveCopyEventData
+    data: ArchiveCopyCompletedData
 
 
 class ArchiveCopyIssueEvent(RiverhogCloudEvent):
@@ -249,7 +262,7 @@ class ArchiveCopyIssueEvent(RiverhogCloudEvent):
 
 class ArchiveCopyCanceledEvent(RiverhogCloudEvent):
     type: Literal["io.riverhog.riverhog.archive_copy.canceled"]
-    data: ArchiveCopyEventData
+    data: ArchiveCopyCanceledData
 
 
 class RetrievalRequestedEvent(RiverhogCloudEvent):

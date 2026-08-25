@@ -10,10 +10,14 @@ from typing import Protocol
 from http_api_contracts import (
     HttpErrorContract,
     HttpOperationContract,
-    http_operation_for_request,
 )
 from pydantic import ValidationError
-from stove0_review_sampler_protocol import SamplerDescriptor, SamplerRequest, SamplerResult
+from stove0_review_sampler_protocol import (
+    SamplerDescriptor,
+    SamplerRequest,
+    SamplerResult,
+    validate_result,
+)
 
 SAMPLER_HTTP_OPERATIONS = (
     HttpOperationContract(
@@ -86,7 +90,6 @@ class SamplerHttpBinding:
 
     def handle(self, method: str, path: str, body: bytes = b"") -> SamplerHttpResponse:
         method = method.upper()
-        operation = http_operation_for_request(SAMPLER_HTTP_OPERATIONS, method, path)
         try:
             if method == "GET" and path == "/v1/sampler":
                 if body:
@@ -95,21 +98,20 @@ class SamplerHttpBinding:
             if method == "POST" and path == "/v1/sample":
                 if len(body) > self.maximum_request_bytes:
                     return _error(413, "request_too_large", "sampler request is too large")
-                request = SamplerRequest.model_validate_json(body)
-                if request.sampler_descriptor_sha256 != self.sampler.descriptor().descriptor_sha256:
+                try:
+                    request = SamplerRequest.model_validate_json(body)
+                except (ValidationError, ValueError) as exc:
+                    return _error(400, "invalid_sampler_request", str(exc))
+                descriptor = SamplerDescriptor.model_validate(self.sampler.descriptor())
+                if request.sampler_descriptor_sha256 != descriptor.descriptor_sha256:
                     return _error(409, "sampler_changed", "sampler descriptor changed")
                 with self._execution_slots:
-                    return _model(self.sampler.sample(request))
+                    result = self.sampler.sample(request)
+                validate_result(result, request, descriptor)
+                return _model(result)
             if path in {"/v1/sampler", "/v1/sample"}:
                 return _error(405, "method_not_allowed", "sampler endpoint method is not allowed")
             return _error(404, "not_found", "sampler endpoint not found")
-        except (ValidationError, ValueError) as exc:
-            if operation is not None and operation.accepts_error(
-                status=400,
-                code="invalid_sampler_request",
-            ):
-                return _error(400, "invalid_sampler_request", str(exc))
-            return _error(500, "sampler_failed", "review sampler execution failed")
         except Exception:
             return _error(500, "sampler_failed", "review sampler execution failed")
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Query
-from riverhog_protocol import SortOrder, TagSort
+from riverhog_protocol import CollectionIdParameter, SortOrder, TagSort
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, CollectionTagManager, TagCreator, TagDeleter
@@ -88,7 +88,7 @@ def delete_tag(
 
 @router.get("/collections/{collection_id}/tags", response_model=CollectionTagsOut)
 def get_collection_tags(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CatalogReader,
 ) -> CollectionTagsOut:
@@ -99,7 +99,7 @@ def get_collection_tags(
 
 @router.put("/collections/{collection_id}/tags", response_model=CollectionTagsOut)
 def replace_collection_tags(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     request: ReplaceCollectionTagsRequest,
     container: ContainerDep,
     principal: CollectionTagManager,
@@ -116,7 +116,7 @@ def replace_collection_tags(
 
 @router.post("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagsOut)
 def add_collection_tag(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     tag: CanonicalTag,
     request: MutateCollectionTagRequest,
     container: ContainerDep,
@@ -134,7 +134,7 @@ def add_collection_tag(
 
 @router.delete("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagsOut)
 def remove_collection_tag(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     tag: CanonicalTag,
     request: MutateCollectionTagRequest,
     container: ContainerDep,

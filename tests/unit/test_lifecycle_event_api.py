@@ -6,7 +6,10 @@ from types import SimpleNamespace
 
 import anyio
 import httpx
+import pytest
 from fastapi import FastAPI
+from lifecycle_events import cloud_event
+from pydantic import ValidationError
 from riverhog_api.deps import get_container
 from riverhog_api.routers.events import router as events_router
 from riverhog_core.app_permissions import (
@@ -20,7 +23,14 @@ from riverhog_core.catalog_models import LifecycleEventRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
-from riverhog_protocol.lifecycle_events import RIVERHOG_EVENT_TYPES
+from riverhog_protocol.lifecycle_events import (
+    ARCHIVE_COPY_CANCELED,
+    ARCHIVE_COPY_COMPLETED,
+    ARCHIVE_COPY_ISSUE,
+    ARCHIVE_COPY_REQUESTED,
+    RIVERHOG_EVENT_TYPES,
+    validate_riverhog_event,
+)
 from time_formats import utc_timestamp_now
 
 from tests.unit.db_helpers import sqlite_url
@@ -56,6 +66,39 @@ def test_every_emitted_riverhog_event_type_has_one_public_contract() -> None:
                     emitted.add("io.riverhog.riverhog." + keyword.value.value)
 
     assert emitted == RIVERHOG_EVENT_TYPES
+
+
+@pytest.mark.parametrize(
+    ("event_type", "state", "extra"),
+    (
+        (ARCHIVE_COPY_REQUESTED, "requested", {}),
+        (ARCHIVE_COPY_COMPLETED, "completed", {}),
+        (ARCHIVE_COPY_ISSUE, "failed", {"error": "provider unavailable"}),
+        (ARCHIVE_COPY_CANCELED, "canceled", {}),
+    ),
+)
+def test_archive_copy_event_type_binds_its_exact_lifecycle_state(
+    event_type: str,
+    state: str,
+    extra: dict[str, str],
+) -> None:
+    data = {
+        **_tag_event_data(1, "operator"),
+        "source_store": "source",
+        "destination_store": "destination",
+        "state": state,
+        **extra,
+    }
+    event = cloud_event(
+        source="https://riverhog.invalid/events",
+        type=event_type,
+        subject="1",
+        data=data,
+    )
+
+    assert validate_riverhog_event(event).data.state == state
+    with pytest.raises(ValidationError):
+        validate_riverhog_event(event.model_copy(update={"data": {**data, "state": "waiting"}}))
 
 
 def test_context_expiry_targets_owner_and_subject_in_sql(tmp_path: Path) -> None:

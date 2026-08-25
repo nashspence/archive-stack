@@ -13,7 +13,6 @@ from http_api_contracts import (
     HttpPathParameterContract,
     http_operation_for_request,
 )
-from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import BaseModel, ValidationError
 from stove0_target_protocol import (
     Sha256,
@@ -218,13 +217,6 @@ class TargetHttpBinding:
             if operation is None or not operation.accepts_error(status=exc.status, code=exc.code):
                 return _error(500, "target_failed", "target execution failed")
             return _error(exc.status, exc.code, exc.message)
-        except (JsonSchemaValidationError, ValidationError, ValueError) as exc:
-            if operation is not None and operation.accepts_error(
-                status=400,
-                code="invalid_target_request",
-            ):
-                return _error(400, "invalid_target_request", str(exc))
-            return _error(500, "target_failed", "target execution failed")
         except Exception:
             return _error(500, "target_failed", "target execution failed")
 
@@ -235,7 +227,14 @@ class TargetHttpBinding:
                 "request_too_large",
                 "target request exceeds its size limit",
             )
-        return model.model_validate_json(body)
+        try:
+            return model.model_validate_json(body)
+        except (ValidationError, ValueError) as exc:
+            raise TargetServiceError(
+                400,
+                "invalid_target_request",
+                str(exc),
+            ) from exc
 
 
 def _model_response(model: BaseModel) -> TargetHttpResponse:

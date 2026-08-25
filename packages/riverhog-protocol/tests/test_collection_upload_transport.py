@@ -5,8 +5,8 @@ from pydantic import ValidationError
 from riverhog_protocol import (
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
-    CollectionUploadLayoutDocument,
-    validate_collection_upload_batch_against_layout,
+    CollectionUploadRegistrationConstraintsDocument,
+    validate_collection_upload_batch_against_registration_constraints,
 )
 
 
@@ -22,13 +22,9 @@ def _file(path: str) -> dict[str, object]:
     }
 
 
-def _layout(*, pack_member_bytes: int = 1024, raw_part_bytes: int = 65536) -> dict[str, int]:
+def _constraints(*, pack_member_bytes: int = 1024, raw_part_bytes: int = 65536) -> dict[str, int]:
     return {
-        "pack_source_bytes": 1024,
-        "pack_files": 16,
         "pack_member_bytes": pack_member_bytes,
-        "pack_part_plaintext_bytes": 65536,
-        "raw_volume_plaintext_bytes": raw_part_bytes * 4,
         "raw_part_plaintext_bytes": raw_part_bytes,
     }
 
@@ -66,7 +62,7 @@ def test_direct_ingress_batch_rejects_duplicate_file_paths() -> None:
         )
 
 
-def test_direct_ingress_layout_binds_raw_part_declarations() -> None:
+def test_direct_ingress_registration_constraints_bind_raw_part_declarations() -> None:
     raw = {
         **_file("video.bin"),
         "bytes": 65537,
@@ -76,9 +72,34 @@ def test_direct_ingress_layout_binds_raw_part_declarations() -> None:
         },
     }
     batch = CollectionUploadFileBatchDocument.model_validate({"files": [raw]})
-    layout = CollectionUploadLayoutDocument.model_validate(_layout(pack_member_bytes=1))
+    constraints = CollectionUploadRegistrationConstraintsDocument.model_validate(
+        _constraints(pack_member_bytes=1)
+    )
 
-    assert validate_collection_upload_batch_against_layout(batch, layout) is batch
+    assert (
+        validate_collection_upload_batch_against_registration_constraints(batch, constraints)
+        is batch
+    )
+
+
+def test_direct_ingress_registration_constraints_expose_only_producer_policy() -> None:
+    schema = CollectionUploadRegistrationConstraintsDocument.model_json_schema()
+
+    assert set(schema["properties"]) == {
+        "pack_member_bytes",
+        "raw_part_plaintext_bytes",
+    }
+    assert schema["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("raw_part_bytes", (1, 65535, 65537, 131071))
+def test_direct_ingress_rejects_unsatisfiable_raw_part_constraints(
+    raw_part_bytes: int,
+) -> None:
+    with pytest.raises(ValidationError):
+        CollectionUploadRegistrationConstraintsDocument.model_validate(
+            _constraints(raw_part_bytes=raw_part_bytes)
+        )
 
 
 @pytest.mark.parametrize(
@@ -98,14 +119,14 @@ def test_direct_ingress_layout_binds_raw_part_declarations() -> None:
         },
     ),
 )
-def test_direct_ingress_layout_rejects_inconsistent_raw_parts(
+def test_direct_ingress_constraints_reject_inconsistent_raw_parts(
     file_payload: dict[str, object],
 ) -> None:
     batch = CollectionUploadFileBatchDocument.model_validate({"files": [file_payload]})
-    layout = CollectionUploadLayoutDocument.model_validate(_layout())
+    constraints = CollectionUploadRegistrationConstraintsDocument.model_validate(_constraints())
 
     with pytest.raises(ValueError):
-        validate_collection_upload_batch_against_layout(batch, layout)
+        validate_collection_upload_batch_against_registration_constraints(batch, constraints)
 
 
 def test_direct_ingress_captured_provenance_uses_canonical_reference_ids() -> None:

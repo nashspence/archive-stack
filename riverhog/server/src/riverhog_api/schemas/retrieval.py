@@ -5,6 +5,7 @@ from typing import Any, Literal, Self
 from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import (
     ArchiveStoreName,
+    CollectionId,
     RetrievalCacheProtection,
     RetrievalCacheSort,
     RetrievalCacheState,
@@ -40,7 +41,7 @@ class RetrievalPlanObjectPlacementOut(RiverhogModel):
 
 
 class RetrievalPlanObjectOut(RiverhogModel):
-    collection_id: int
+    collection_id: CollectionId
     source_store: ArchiveStoreName
     object_id: str
     kind: Literal["pack", "segment"]
@@ -77,14 +78,20 @@ class RetrievalJobOut(RiverhogModel):
                 {
                     "if": {"properties": {"state": {"const": "completed"}}},
                     "then": {"properties": {"completed_at": {"type": "string"}}},
+                    "else": {"properties": {"completed_at": {"type": "null"}}},
                 },
                 {
                     "if": {"properties": {"state": {"const": "canceled"}}},
                     "then": {"properties": {"canceled_at": {"type": "string"}}},
+                    "else": {"properties": {"canceled_at": {"type": "null"}}},
                 },
                 {
                     "if": {"properties": {"state": {"const": "failed"}}},
                     "then": {"properties": {"failure": {"type": "string", "minLength": 1}}},
+                },
+                {
+                    "if": {"properties": {"state": {"enum": ["requested", "failed"]}}},
+                    "else": {"properties": {"failure": {"type": "null"}}},
                 },
             ]
         }
@@ -100,7 +107,7 @@ class RetrievalJobOut(RiverhogModel):
     expires_at: str | None
     completed_at: str | None
     canceled_at: str | None
-    failure: str | None
+    failure: str | None = Field(min_length=1)
     lease_seconds: int
     restore_policy: Literal["allow", "never"]
     requires_restore: bool
@@ -109,12 +116,14 @@ class RetrievalJobOut(RiverhogModel):
 
     @model_validator(mode="after")
     def validate_terminal_evidence(self) -> Self:
-        if self.state == "completed" and self.completed_at is None:
-            raise ValueError("completed retrieval jobs require completed_at")
-        if self.state == "canceled" and self.canceled_at is None:
-            raise ValueError("canceled retrieval jobs require canceled_at")
+        if (self.completed_at is not None) != (self.state == "completed"):
+            raise ValueError("retrieval completed_at must match completed state")
+        if (self.canceled_at is not None) != (self.state == "canceled"):
+            raise ValueError("retrieval canceled_at must match canceled state")
         if self.state == "failed" and not self.failure:
             raise ValueError("failed retrieval jobs require failure evidence")
+        if self.state not in {"requested", "failed"} and self.failure is not None:
+            raise ValueError("retrieval failure evidence is only valid while requested or failed")
         return self
 
 
@@ -138,7 +147,7 @@ class RetrievalCacheStatusOut(RiverhogModel):
 
 
 class RetrievalCacheObjectOut(RiverhogModel):
-    collection_id: int
+    collection_id: CollectionId
     source_store: ArchiveStoreName
     object_id: str
     state: RetrievalCacheState
@@ -155,7 +164,7 @@ class RetrievalCacheObjectOut(RiverhogModel):
 
 class RetrievalCacheObjectListFiltersOut(RiverhogModel):
     tag: str | None
-    collection_id: int | None
+    collection_id: CollectionId | None
     source_store: ArchiveStoreName | None
     state: RetrievalCacheState | None
     protection: RetrievalCacheProtection | None

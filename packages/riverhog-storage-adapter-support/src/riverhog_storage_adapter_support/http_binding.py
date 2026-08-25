@@ -112,7 +112,7 @@ class StorageAdapterHttpBinding:
                     self.adapter.create_multipart_upload(self._parse(body, MultipartCreateRequest))
                 )
             if normalized_method == "POST" and path == "/v1/multipart/part":
-                part_request, content = parse_framed_request(body, MultipartPartWriteRequest)
+                part_request, content = self._parse_framed(body, MultipartPartWriteRequest)
                 descriptor = self.adapter.descriptor()
                 if part_request.number > descriptor.maximum_part_count:
                     raise StorageAdapterServiceError(
@@ -183,7 +183,7 @@ class StorageAdapterHttpBinding:
                 self.adapter.abort_multipart_upload(self._parse(body, MultipartUpload))
                 return _empty_response()
             if normalized_method == "POST" and path == "/v1/objects/put":
-                small_request, content = parse_framed_request(body, SmallObjectWriteRequest)
+                small_request, content = self._parse_framed(body, SmallObjectWriteRequest)
                 if hashlib.sha256(content).hexdigest() != small_request.stored_sha256:
                     return _error(409, "integrity_failure", "small object digest differs")
                 small_receipt = self.adapter.put_small_object(small_request, content)
@@ -266,8 +266,6 @@ class StorageAdapterHttpBinding:
             if operation is None or not operation.accepts_error(status=status, code=exc.code):
                 return _error(500, "internal_failure", "storage adapter operation failed")
             return _error(status, exc.code, exc.message)
-        except (ValidationError, ValueError):
-            return _error(400, "invalid_request", "adapter request is invalid")
         except Exception:
             return _error(500, "internal_failure", "storage adapter operation failed")
 
@@ -278,7 +276,28 @@ class StorageAdapterHttpBinding:
                 "request_too_large",
                 "adapter control request exceeds its size limit",
             )
-        return model.model_validate_json(body)
+        try:
+            return model.model_validate_json(body)
+        except (ValidationError, ValueError) as exc:
+            raise StorageAdapterServiceError(
+                400,
+                "invalid_request",
+                "adapter request is invalid",
+            ) from exc
+
+    def _parse_framed(
+        self,
+        body: bytes,
+        model: type[ModelT],
+    ) -> tuple[ModelT, bytes]:
+        try:
+            return parse_framed_request(body, model)
+        except (ValidationError, ValueError) as exc:
+            raise StorageAdapterServiceError(
+                400,
+                "invalid_request",
+                "adapter request is invalid",
+            ) from exc
 
 
 _ERROR_STATUS: dict[StorageAdapterErrorCode, int] = {

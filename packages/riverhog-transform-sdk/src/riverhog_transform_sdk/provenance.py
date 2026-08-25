@@ -15,12 +15,14 @@ from riverhog_api_client.producer import (
 )
 from riverhog_protocol.collection_workflows import ArtifactDisposition
 from riverhog_protocol.errors import NotFound
+from riverhog_protocol.paths import CollectionId
 from riverhog_provenance import (
     create_derivative_journal_from_identity,
     current_state_reference,
     validate_journal,
     verify_payload_binding,
 )
+from riverhog_provenance_contracts import ProvenanceJournalId
 
 from riverhog_transform_sdk.models import ClaimedArtifact
 
@@ -30,21 +32,21 @@ _JOURNAL_NAMESPACE = uuid.UUID("d3581958-1067-433c-80a6-a2c60250ba70")
 class _TransformProvenanceApi(Protocol):
     def list_collection_provenance(
         self,
-        collection_id: int,
+        collection_id: CollectionId,
         *,
         all_items: bool = False,
     ) -> dict[str, Any]: ...
 
     def export_collection_provenance_journal(
         self,
-        collection_id: int,
-        journal_id: str,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
     ) -> bytes: ...
 
     def export_collection_upload_session_provenance_journal(
         self,
-        collection_id: int,
-        journal_id: str,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
     ) -> bytes: ...
 
 
@@ -162,7 +164,7 @@ class _TransformProvenanceBuilder:
 
     def __call__(
         self,
-        collection_id: int,
+        collection_id: CollectionId,
         resumed: bool,
         artifacts: tuple[ProducerArtifactIdentity, ...],
     ) -> ProducerProvenance:
@@ -253,8 +255,8 @@ class _TransformProvenanceBuilder:
 def _load_journal_closure(
     api: _TransformProvenanceApi,
     *,
-    collection_id: int,
-    journal_id: str,
+    collection_id: CollectionId,
+    journal_id: ProvenanceJournalId,
     journals: dict[str, bytes],
     loaded_journals: set[tuple[int, str]],
     heartbeat: Callable[[], None] | None,

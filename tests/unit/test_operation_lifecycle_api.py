@@ -340,7 +340,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
                 },
             }
         ],
-        layout=opened["layout"],
+        registration_constraints=opened["registration_constraints"],
     )
     assert (
         operator.list_collection_upload_session_files(collection_id, all_items=True)["total"] == 1
@@ -375,7 +375,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert operator.get_collection_upload_session(collection_id)["state"] == "finalized"
     assert operator.get_collection(collection_id)["id"] == collection_id
     assert operator.list_collections(tag="docs", all_items=True)["total"] == 1
-    assert operator.search("document", collection=str(collection_id), all_items=True)["total"] == 1
+    assert operator.search("document", collection=collection_id, all_items=True)["total"] == 1
     assert operator.get_collection_tags(collection_id)["tags"] == ["docs"]
     operator.create_tag("reviewed")
     operator.add_collection_tag(collection_id, "reviewed")
@@ -809,7 +809,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
             }
             for path, byte_count, sha256 in sorted(output_entries)
         ],
-        layout=target_session["layout"],
+        registration_constraints=target_session["registration_constraints"],
     )
     target.complete_collection_upload_session(
         output_collection_id,

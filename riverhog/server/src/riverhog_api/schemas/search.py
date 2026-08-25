@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from riverhog_protocol import SearchSort, SortOrder
+from riverhog_protocol import CollectionId, SearchSort, SortOrder
 
 from riverhog_api.schemas.common import RiverhogModel
 
 
 class SearchFileOut(RiverhogModel):
     file_ref: str
-    collection_id: int
+    collection_id: CollectionId
     path: str
     bytes: int
     sha256: str
@@ -15,7 +15,7 @@ class SearchFileOut(RiverhogModel):
 
 class SearchResponse(RiverhogModel):
     query: str | None
-    collection: int | None
+    collection: CollectionId | None
     page: int
     per_page: int
     total: int

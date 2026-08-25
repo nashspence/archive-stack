@@ -39,6 +39,7 @@ from stove0_target_support import (
     TargetOperationSupport,
     TargetPreflightRequest,
     TargetPreflightResponse,
+    TargetServiceError,
 )
 
 from stove0_nvenc_av1_opus_target.common import (
@@ -116,17 +117,25 @@ class NvencAv1OpusTargetService(PersistentTargetService):
         )
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
-        intent = Av1OpusArchiveIntent.model_validate(request.intent)
-        projection = resolve_media_archive_projection(
-            inputs=request.inputs,
-            observations=request.observations,
-            policy=intent.metadata_projection,
-            archive_directory="video",
-            archive_suffix=".mkv",
-        )
-        supplied = request.target_options.get("media_projection")
-        if supplied is not None and MediaArchiveProjection.model_validate(supplied) != projection:
-            raise ValueError("configured media projection differs from exact observation evidence")
+        try:
+            intent = Av1OpusArchiveIntent.model_validate(request.intent)
+            projection = resolve_media_archive_projection(
+                inputs=request.inputs,
+                observations=request.observations,
+                policy=intent.metadata_projection,
+                archive_directory="video",
+                archive_suffix=".mkv",
+            )
+            supplied = request.target_options.get("media_projection")
+            if (
+                supplied is not None
+                and MediaArchiveProjection.model_validate(supplied) != projection
+            ):
+                raise ValueError(
+                    "configured media projection differs from exact observation evidence"
+                )
+        except (KeyError, ValueError) as exc:
+            raise TargetServiceError(400, "invalid_target_request", str(exc)) from exc
         effective = request.model_copy(
             update={
                 "target_options": {

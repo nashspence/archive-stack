@@ -10,6 +10,7 @@ from riverhog_protocol import (
     ArchiveCopyState,
     ArchiveStoreName,
     ArchiveStoreSort,
+    CollectionIdParameter,
     SortOrder,
 )
 
@@ -79,7 +80,7 @@ def list_archive_copy_jobs(
     response_model=ArchiveCopyJobOut,
 )
 def cancel_archive_copy_job(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     destination_store: ArchiveStoreName,
     container: ContainerDep,
     principal: ArchiveManager,
@@ -99,7 +100,7 @@ def cancel_archive_copy_job(
     response_model=ArchiveCopyJobOut,
 )
 def get_archive_copy_job(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     destination_store: ArchiveStoreName,
     container: ContainerDep,
     principal: ArchiveManager,

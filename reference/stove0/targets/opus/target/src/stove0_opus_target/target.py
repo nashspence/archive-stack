@@ -38,6 +38,7 @@ from stove0_target_support import (
     TargetOperationSupport,
     TargetPreflightRequest,
     TargetPreflightResponse,
+    TargetServiceError,
 )
 
 from stove0_opus_target.common import OpusContentError, file_identity, run_ffmpeg, tool_version
@@ -107,17 +108,25 @@ class OpusTargetService(PersistentTargetService):
         )
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
-        intent = AudioArchiveIntent.model_validate(request.intent)
-        projection = resolve_media_archive_projection(
-            inputs=request.inputs,
-            observations=request.observations,
-            policy=intent.metadata_projection,
-            archive_directory="audio",
-            archive_suffix=".opus",
-        )
-        supplied = request.target_options.get("media_projection")
-        if supplied is not None and MediaArchiveProjection.model_validate(supplied) != projection:
-            raise ValueError("configured media projection differs from exact observation evidence")
+        try:
+            intent = AudioArchiveIntent.model_validate(request.intent)
+            projection = resolve_media_archive_projection(
+                inputs=request.inputs,
+                observations=request.observations,
+                policy=intent.metadata_projection,
+                archive_directory="audio",
+                archive_suffix=".opus",
+            )
+            supplied = request.target_options.get("media_projection")
+            if (
+                supplied is not None
+                and MediaArchiveProjection.model_validate(supplied) != projection
+            ):
+                raise ValueError(
+                    "configured media projection differs from exact observation evidence"
+                )
+        except (KeyError, ValueError) as exc:
+            raise TargetServiceError(400, "invalid_target_request", str(exc)) from exc
         effective = request.model_copy(
             update={
                 "target_options": {

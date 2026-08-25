@@ -6,6 +6,8 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import quote
 
+from pydantic import TypeAdapter, ValidationError
+from riverhog_protocol import CollectionId
 from riverhog_protocol.collection_workflow_transport import (
     CapabilityAction,
     ClaimState,
@@ -40,6 +42,7 @@ type _ClaimSort = Literal[
     "created_at", "updated_at", "expires_at", "state", "work_id", "execution_id"
 ]
 type _SortOrder = Literal["asc", "desc"]
+_COLLECTION_ID: TypeAdapter[int] = TypeAdapter(CollectionId)
 
 
 def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
@@ -222,7 +225,7 @@ class CollectionWorkflowMethods:
         claim_id: str,
         *,
         fence: int,
-        output_collection_id: int,
+        output_collection_id: CollectionId,
         derivation: DerivationInput,
         outcome_claim_id: str | None = None,
         outcome_fence: int | None = None,
@@ -288,10 +291,14 @@ class CollectionWorkflowMethods:
 
     def get_collection_derivation(
         self,
-        collection_id: int,
+        collection_id: CollectionId,
     ) -> CollectionDerivationResponseDocument:
+        try:
+            normalized_id = _COLLECTION_ID.validate_python(collection_id)
+        except ValidationError as exc:
+            raise BadRequest("collection id must be a positive integer") from exc
         return CollectionDerivationResponseDocument.model_validate(
-            self._json("GET", f"/v1/collections/{collection_id}/derivation")
+            self._json("GET", f"/v1/collections/{normalized_id}/derivation")
         )
 
     def _claim_response(

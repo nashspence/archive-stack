@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from riverhog_protocol import RiverhogError, ServiceUnavailable
 from riverhog_transform_sdk import ClaimedCollectionRuntimeRegistry
 from stove0_target_protocol import (
@@ -23,10 +24,12 @@ from stove0_target_protocol import (
     EffectPlanPayload,
     OperationContract,
     TargetContract,
+    TargetDeclaration,
     TargetFailure,
     TargetInapplicable,
     TargetJobRequest,
     TargetJobStatus,
+    TargetOperationSupport,
     TargetPreflightRequest,
     TargetPreflightResponse,
     TargetProgress,
@@ -152,9 +155,7 @@ class PersistentTargetService:
             or operation.contract_sha256 != support.operation_contract_sha256
         ):
             raise TargetServiceError(409, "operation_contract_mismatch", "operation changed")
-        validate_declaration_against_operation(request, operation)
-        Draft202012Validator(operation.intent_schema.document).validate(request.intent)
-        Draft202012Validator(support.options_schema.document).validate(request.target_options)
+        self._validate_operation_request(request, operation, support)
         plan_fields: dict[str, object] = {
             "operation_id": request.operation_id,
             "operation_contract_sha256": request.operation_contract_sha256,
@@ -194,9 +195,7 @@ class PersistentTargetService:
             or operation.contract_sha256 != support.operation_contract_sha256
         ):
             raise TargetServiceError(409, "operation_contract_mismatch", "operation changed")
-        validate_declaration_against_operation(plan, operation)
-        Draft202012Validator(operation.intent_schema.document).validate(plan.intent)
-        Draft202012Validator(support.options_schema.document).validate(plan.target_options)
+        self._validate_operation_request(plan, operation, support)
         with self._lock:
             existing = self._load_accepted(job_id)
             if existing is not None and not secrets.compare_digest(
@@ -346,6 +345,25 @@ class PersistentTargetService:
                 400,
                 "unsupported_operation",
                 f"target does not support operation: {operation_id}",
+            ) from exc
+
+    @staticmethod
+    def _validate_operation_request(
+        declaration: TargetDeclaration,
+        operation: OperationContract,
+        support: TargetOperationSupport,
+    ) -> None:
+        try:
+            validate_declaration_against_operation(declaration, operation)
+            Draft202012Validator(operation.intent_schema.document).validate(declaration.intent)
+            Draft202012Validator(support.options_schema.document).validate(
+                declaration.target_options
+            )
+        except (JsonSchemaValidationError, ValueError) as exc:
+            raise TargetServiceError(
+                400,
+                "invalid_target_request",
+                str(exc),
             ) from exc
 
     def _submit(self, request: TargetJobRequest, attempt: int) -> None:

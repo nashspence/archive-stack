@@ -6,9 +6,10 @@ from http_api_contracts import CanonicalVisibleText
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from riverhog_protocol import (
     ArchiveStoreName,
+    CollectionId,
     CollectionSort,
     CollectionUploadFileBatchDocument,
-    CollectionUploadLayoutDocument,
+    CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadSort,
     CollectionUploadState,
     FileProvenanceBinding,
@@ -84,7 +85,7 @@ class CompleteCollectionUploadSessionRequest(RiverhogModel):
 
 
 class CollectionSummaryOut(RiverhogModel):
-    id: int
+    id: CollectionId
     created_at: str
     tags: list[CanonicalTag]
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -140,7 +141,7 @@ class CollectionDeletionPlanOut(RiverhogModel):
     )
 
     status: Literal["ready", "blocked", "deleting"]
-    collection_id: int
+    collection_id: CollectionId
     warning: str
     expires_at: str
     challenge: str | None
@@ -174,7 +175,7 @@ class DeleteCollectionRequest(RiverhogModel):
 
 class CollectionDeletionResultOut(RiverhogModel):
     status: Literal["deleted", "already_absent"]
-    collection_id: int
+    collection_id: CollectionId
     files: int
     bytes: int
     remote_storage_bytes: int
@@ -201,7 +202,7 @@ class CollectionUploadProvenanceJournalOut(RiverhogModel):
 
 
 class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
-    collection_id: int
+    collection_id: CollectionId
     ingest_source: str | None
     archive_store: ArchiveStoreName
     encryption_format: str
@@ -226,7 +227,7 @@ class ListCollectionUploadSessionFilesResponse(RiverhogModel):
 
 
 class CollectionUploadListItemOut(RiverhogModel):
-    collection_id: int
+    collection_id: CollectionId
     created_at: str | None
     tags: list[CanonicalTag]
     ingest_source: str | None
@@ -256,7 +257,7 @@ class ListCollectionUploadSessionsResponse(RiverhogModel):
     uploads: list[CollectionUploadListItemOut]
 
 
-class CollectionUploadLayoutOut(CollectionUploadLayoutDocument):
+class CollectionUploadRegistrationConstraintsOut(CollectionUploadRegistrationConstraintsDocument):
     pass
 
 
@@ -270,8 +271,16 @@ class CollectionUploadSessionOut(RiverhogModel):
                         "properties": {
                             "content_identity": {"type": "string"},
                             "archive_root_sha256": {"type": "string"},
-                            "layout": {"type": "null"},
+                            "registration_constraints": {"type": "null"},
                             "collection": {"type": "object"},
+                        }
+                    },
+                    "else": {
+                        "properties": {
+                            "content_identity": {"type": "null"},
+                            "archive_root_sha256": {"type": "null"},
+                            "registration_constraints": {"type": "object"},
+                            "collection": {"type": "null"},
                         }
                     },
                 },
@@ -283,7 +292,7 @@ class CollectionUploadSessionOut(RiverhogModel):
         }
     )
 
-    collection_id: int
+    collection_id: CollectionId
     created_at: str
     tags: list[CanonicalTag]
     ingest_source: str | None
@@ -295,7 +304,7 @@ class CollectionUploadSessionOut(RiverhogModel):
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     state: Literal["open", "uploading", "finalizing", "finalized", "failed", "canceled"]
-    layout: CollectionUploadLayoutOut | None
+    registration_constraints: CollectionUploadRegistrationConstraintsOut | None
     files_total: int
     files_pending: int
     files_partial: int
@@ -319,10 +328,17 @@ class CollectionUploadSessionOut(RiverhogModel):
         if self.state == "finalized" and (
             self.content_identity is None
             or self.archive_root_sha256 is None
-            or self.layout is not None
+            or self.registration_constraints is not None
             or self.collection is None
         ):
             raise ValueError("finalized upload sessions require immutable collection evidence")
+        if self.state != "finalized" and (
+            self.content_identity is not None
+            or self.archive_root_sha256 is not None
+            or self.registration_constraints is None
+            or self.collection is not None
+        ):
+            raise ValueError("nonfinal upload sessions require only registration constraints")
         if self.state == "failed" and not self.latest_failure:
             raise ValueError("failed upload sessions require failure evidence")
         return self
@@ -359,5 +375,5 @@ class CollectionUploadVolumeOut(RiverhogModel):
 
 
 class ListCollectionUploadVolumesResponse(RiverhogModel):
-    collection_id: int
+    collection_id: CollectionId
     volumes: list[CollectionUploadVolumeOut]

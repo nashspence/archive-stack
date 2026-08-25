@@ -19,7 +19,7 @@ from http_api_contracts import (
 from http_api_contracts import (
     HealthResponse as CanonicalHealthResponse,
 )
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from riverhog_api.app import create_app as create_riverhog_app
 from riverhog_api_client import (
     ApplicationPermission,
@@ -41,9 +41,16 @@ from riverhog_ftp_adapter_api_client import (
 from riverhog_ftp_adapter_api_client import (
     RiverhogFtpAdapterClient,
 )
+from riverhog_protocol import (
+    CollectionRootIdentity,
+    CollectionRootIdentityDocument,
+    RetrievalFileReferenceDocument,
+)
 from riverhog_protocol.errors import BadRequest
 from stove0_api_client import HealthResponse as Stove0HealthResponse
 from stove0_api_client import Stove0ApiClient
+from stove0_protocol import CollectionRootRef
+from stove0_target_protocol import OutputCollectionRef
 
 from scripts.operation_qualification import (
     create_adapter_contract_app,
@@ -76,6 +83,57 @@ SUPPORTED_CLIENT_HELPERS = {
         "ftp_adapter_health_ready",
     },
 }
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    (
+        (
+            CollectionRootIdentityDocument,
+            {
+                "collection_id": "1",
+                "archive_root_sha256": "a" * 64,
+                "content_identity": "b" * 64,
+            },
+        ),
+        (
+            RetrievalFileReferenceDocument,
+            {"collection_id": "1", "path": "camera/clip.mp4"},
+        ),
+        (
+            CollectionRootRef,
+            {
+                "collection_id": "1",
+                "archive_root_sha256": "a" * 64,
+                "content_identity": "b" * 64,
+            },
+        ),
+        (
+            OutputCollectionRef,
+            {
+                "collection_id": "1",
+                "archive_root_sha256": "a" * 64,
+                "content_identity": "b" * 64,
+                "derivation_sha256": "c" * 64,
+            },
+        ),
+    ),
+)
+def test_public_collection_identity_mirrors_use_the_canonical_scalar(
+    model: type[Any],
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
+def test_public_collection_identity_dataclass_uses_the_canonical_scalar() -> None:
+    with pytest.raises(ValueError):
+        CollectionRootIdentity(
+            collection_id="1",  # type: ignore[arg-type]
+            archive_root_sha256="a" * 64,
+            content_identity="b" * 64,
+        )
 
 
 def test_riverhog_client_exports_the_complete_public_error_hierarchy() -> None:

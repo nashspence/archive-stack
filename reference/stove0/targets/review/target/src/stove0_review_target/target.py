@@ -51,6 +51,7 @@ from stove0_target_support import (
     TargetPreflightRequest,
     TargetPreflightResponse,
     TargetProtocol,
+    TargetServiceError,
 )
 
 _SAMPLER_OPTION_PROPERTIES: dict[str, JsonValue] = {
@@ -252,11 +253,22 @@ class ReviewTargetService(PersistentTargetService):
         )
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
-        sampler_id = str(request.target_options["sampler_registration_id"])
+        try:
+            sampler_id = str(request.target_options["sampler_registration_id"])
+        except (KeyError, ValueError) as exc:
+            raise TargetServiceError(
+                400,
+                "invalid_target_request",
+                "review target requires a sampler registration",
+            ) from exc
         try:
             registration = self.samplers[sampler_id]
         except KeyError as exc:
-            raise ValueError(f"Review sampler is not configured: {sampler_id}") from exc
+            raise TargetServiceError(
+                400,
+                "invalid_target_request",
+                f"review sampler is not configured: {sampler_id}",
+            ) from exc
         descriptor = registration.descriptor()
         expected = {
             "sampler_descriptor_sha256": descriptor.descriptor_sha256,
@@ -267,7 +279,11 @@ class ReviewTargetService(PersistentTargetService):
         for key, value in expected.items():
             supplied = request.target_options.get(key)
             if supplied is not None and supplied != value:
-                raise ValueError(f"configured review {key} differs from the requested value")
+                raise TargetServiceError(
+                    400,
+                    "invalid_target_request",
+                    f"configured review {key} differs from the requested value",
+                )
         effective = request.model_copy(
             update={"target_options": {**request.target_options, **expected}}
         )

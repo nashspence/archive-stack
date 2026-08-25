@@ -5,19 +5,22 @@ import unicodedata
 from pathlib import PurePosixPath
 from typing import Annotated
 
-from pydantic import AfterValidator, Field
+from pydantic import AfterValidator, BeforeValidator, Field
 
 __all__ = [
     "CANONICAL_RELPATH_PATTERN",
     "MAX_TAG_LENGTH",
     "CanonicalRelPath",
     "CanonicalTag",
+    "CollectionId",
+    "CollectionIdParameter",
     "PathNormalizationError",
     "normalize_collection_id",
     "normalize_relpath",
     "normalize_tag",
     "validate_canonical_relpath",
     "validate_canonical_tag",
+    "validate_collection_id",
 ]
 
 
@@ -112,3 +115,31 @@ def normalize_collection_id(raw: str | int) -> int:
     if value < 1 or text != str(value):
         raise PathNormalizationError("collection id must be a canonical positive integer")
     return value
+
+
+def validate_collection_id(value: object) -> int:
+    """Validate a JSON/Python collection identity without coercing its type."""
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise PathNormalizationError("collection id must be a positive integer")
+    return value
+
+
+def parse_collection_id_parameter(value: object) -> int:
+    """Parse one canonical positive collection identity from URL text."""
+
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        raise PathNormalizationError("collection id must be a positive integer")
+    return normalize_collection_id(value)
+
+
+type CollectionId = Annotated[
+    int,
+    Field(ge=1),
+    BeforeValidator(validate_collection_id),
+]
+type CollectionIdParameter = Annotated[
+    int,
+    Field(ge=1),
+    BeforeValidator(parse_collection_id_parameter),
+]

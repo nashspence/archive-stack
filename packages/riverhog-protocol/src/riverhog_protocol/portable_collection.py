@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
+from riverhog_protocol.paths import (
+    CollectionId,
+    normalize_relpath,
+    normalize_tag,
+    validate_collection_id,
+)
 
 PORTABLE_COLLECTION_FORMAT = "riverhog-collection/v1"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -97,7 +102,7 @@ class PortableCollectionFile:
 
 @dataclass(frozen=True, slots=True)
 class PortableCollectionRecord:
-    collection: int
+    collection: CollectionId
     content_identity: str
     encryption_format: str
     passphrase_id: str
@@ -110,7 +115,7 @@ class PortableCollectionRecord:
 
     def __post_init__(self) -> None:
         try:
-            collection = normalize_collection_id(self.collection)
+            collection = validate_collection_id(self.collection)
         except ValueError as exc:
             raise PortableCollectionError("portable collection id is invalid") from exc
         if collection != self.collection:
@@ -166,7 +171,7 @@ class PortableCollectionRecord:
     def create(
         cls,
         *,
-        collection: int,
+        collection: CollectionId,
         content_identity: str,
         encryption_format: str,
         passphrase_id: str,

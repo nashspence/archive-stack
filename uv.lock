@@ -1887,6 +1887,7 @@ dependencies = [
     { name = "riverhog-api-client" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
+    { name = "riverhog-provenance-contracts" },
 ]
 
 [package.metadata]
@@ -1894,6 +1895,7 @@ requires-dist = [
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" },
 ]
 
 [[package]]

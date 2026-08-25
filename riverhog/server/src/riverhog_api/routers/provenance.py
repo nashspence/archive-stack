@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Response
-from riverhog_protocol import ProvenanceSort, ProvenanceStatus, SortOrder
+from riverhog_protocol import CollectionIdParameter, ProvenanceSort, ProvenanceStatus, SortOrder
+from riverhog_protocol.paths import CanonicalRelPath
+from riverhog_provenance_contracts import ProvenanceJournalId
 
 from riverhog_api.auth import ProvenanceExporter, ProvenanceReader
 from riverhog_api.deps import ContainerDep
@@ -22,7 +24,7 @@ router = APIRouter(tags=["provenance"])
     response_model=ListCollectionFileProvenanceResponse,
 )
 def list_collection_provenance(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     principal: ProvenanceReader,
     container: ContainerDep,
     page: Annotated[int, Query(ge=1)] = 1,
@@ -52,8 +54,8 @@ def list_collection_provenance(
     response_model_exclude_unset=True,
 )
 def get_collection_file_provenance(
-    collection_id: int,
-    path: str,
+    collection_id: CollectionIdParameter,
+    path: CanonicalRelPath,
     principal: ProvenanceReader,
     container: ContainerDep,
 ) -> dict[str, Any]:
@@ -66,8 +68,8 @@ def get_collection_file_provenance(
     response_model_exclude_unset=True,
 )
 def trace_collection_file_provenance(
-    collection_id: int,
-    path: str,
+    collection_id: CollectionIdParameter,
+    path: CanonicalRelPath,
     principal: ProvenanceReader,
     container: ContainerDep,
 ) -> dict[str, Any]:
@@ -76,8 +78,8 @@ def trace_collection_file_provenance(
 
 @router.get("/collections/{collection_id}/provenance/journals/{journal_id}")
 def export_collection_provenance_journal(
-    collection_id: int,
-    journal_id: str,
+    collection_id: CollectionIdParameter,
+    journal_id: ProvenanceJournalId,
     principal: ProvenanceExporter,
     container: ContainerDep,
 ) -> Response:
@@ -102,7 +104,7 @@ def export_collection_provenance_journal(
     response_model=CollectionProvenanceVerificationOut,
 )
 def verify_collection_provenance(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     principal: ProvenanceReader,
     container: ContainerDep,
 ) -> dict[str, Any]:

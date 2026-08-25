@@ -10,14 +10,16 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from riverhog_protocol.collection_upload_transport import CollectionUploadLayoutDocument
+from riverhog_protocol.collection_upload_transport import (
+    CollectionUploadRegistrationConstraintsDocument,
+)
 from riverhog_protocol.collection_workflows import (
     PRODUCER_EVIDENCE_PATH,
     JsonValue,
     ProducerEvidence,
 )
 from riverhog_protocol.manifest import collection_content_identity_ordered
-from riverhog_protocol.paths import normalize_relpath
+from riverhog_protocol.paths import CollectionId, normalize_relpath, validate_collection_id
 from riverhog_protocol.raw_ingress import hash_raw_source
 from riverhog_protocol.storage_names import ArchiveStoreName
 from riverhog_provenance import FileProvenanceBinding, build_provenance_archive
@@ -107,14 +109,14 @@ class ProducerProvenance:
 
 
 ProvenanceBuilder = Callable[
-    [int, bool, tuple[ProducerArtifactIdentity, ...]],
+    [CollectionId, bool, tuple[ProducerArtifactIdentity, ...]],
     ProducerProvenance,
 ]
 
 
 @dataclass(frozen=True, slots=True)
 class ProducedCollection:
-    collection_id: int
+    collection_id: CollectionId
     archive_root_sha256: str
     content_identity: str
     receipt: dict[str, Any]
@@ -262,15 +264,17 @@ class CollectionProducer:
             provenance_mode="captured" if captured else "omitted",
             provenance_omission_reason=None if captured else self.provenance_omission_reason,
         )
-        collection_id = int(session["collection_id"])
+        collection_id = validate_collection_id(session.get("collection_id"))
         if str(session.get("state") or "") == "finalized":
             return _finalized_receipt(session)
-        layout = session.get("layout")
-        if not isinstance(layout, Mapping):
-            raise RuntimeError("Riverhog upload session did not return a layout")
-        layout_document = CollectionUploadLayoutDocument.model_validate(dict(layout))
-        pack_member_bytes = layout_document.pack_member_bytes
-        raw_part_bytes = layout_document.raw_part_plaintext_bytes
+        constraints = session.get("registration_constraints")
+        if not isinstance(constraints, Mapping):
+            raise RuntimeError("Riverhog upload session did not return registration constraints")
+        constraints_document = CollectionUploadRegistrationConstraintsDocument.model_validate(
+            dict(constraints)
+        )
+        pack_member_bytes = constraints_document.pack_member_bytes
+        raw_part_bytes = constraints_document.raw_part_plaintext_bytes
 
         sources: dict[str, _Source] = {}
         evidence_bytes = evidence.to_json_bytes()
@@ -375,7 +379,7 @@ class CollectionProducer:
             self.api.register_collection_upload_session_files(
                 collection_id,
                 registration[start : start + COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES],
-                layout=layout_document,
+                registration_constraints=constraints_document,
             )
 
         def content_for_unit(unit: Mapping[str, object]) -> bytes:

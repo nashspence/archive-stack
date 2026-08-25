@@ -38,7 +38,9 @@ from riverhog_cli_support.output import (
     format_lifecycle_events,
     format_list_ids,
 )
-from riverhog_protocol.collection_upload_transport import CollectionUploadLayoutDocument
+from riverhog_protocol.collection_upload_transport import (
+    CollectionUploadRegistrationConstraintsDocument,
+)
 from riverhog_protocol.errors import Conflict, RiverhogError, ServiceUnavailable
 from riverhog_protocol.manifest import collection_content_identity
 from riverhog_protocol.paths import (
@@ -986,7 +988,7 @@ def _register_collection_upload_session_files(
     collection_id: int,
     file_payloads: list[CollectionManifestEntry],
     *,
-    layout: CollectionUploadLayoutDocument,
+    registration_constraints: CollectionUploadRegistrationConstraintsDocument,
 ) -> dict[str, Any]:
     return _retry_transient_upload_operation(
         f"Upload session register {len(file_payloads)} file(s)",
@@ -996,7 +998,7 @@ def _register_collection_upload_session_files(
                 {key: value for key, value in item.items() if key != "provenance_journals"}
                 for item in file_payloads
             ],
-            layout=layout,
+            registration_constraints=registration_constraints,
         ),
     )
 
@@ -1067,14 +1069,16 @@ def _collection_upload_dry_run_plan(
     }
 
 
-def _session_layout(payload: Mapping[str, object]) -> CollectionUploadLayoutDocument:
-    layout = payload.get("layout")
-    if not isinstance(layout, Mapping):
-        raise RuntimeError("open upload session is missing its immutable layout")
+def _session_registration_constraints(
+    payload: Mapping[str, object],
+) -> CollectionUploadRegistrationConstraintsDocument:
+    constraints = payload.get("registration_constraints")
+    if not isinstance(constraints, Mapping):
+        raise RuntimeError("open upload session is missing registration constraints")
     try:
-        return CollectionUploadLayoutDocument.model_validate(dict(layout))
+        return CollectionUploadRegistrationConstraintsDocument.model_validate(dict(constraints))
     except ValueError as exc:
-        raise RuntimeError("upload session returned an invalid immutable layout") from exc
+        raise RuntimeError("upload session returned invalid registration constraints") from exc
 
 
 def _hash_collection_source(
@@ -1401,9 +1405,9 @@ def _upload_collection_via_session(
         _log_upload(f"Collection {collection_id} already finalized for this retry key")
         return session_payload
 
-    layout = _session_layout(session_payload)
-    pack_member_bytes = layout.pack_member_bytes
-    raw_part_plaintext_bytes = layout.raw_part_plaintext_bytes
+    registration_constraints = _session_registration_constraints(session_payload)
+    pack_member_bytes = registration_constraints.pack_member_bytes
+    raw_part_plaintext_bytes = registration_constraints.raw_part_plaintext_bytes
     paths = [
         path
         for path in sorted(resolved_root.rglob("*"))
@@ -1454,7 +1458,7 @@ def _upload_collection_via_session(
                     api,
                     collection_id,
                     batch,
-                    layout=layout,
+                    registration_constraints=registration_constraints,
                 )
                 for _ in batch:
                     progress.registered_file()

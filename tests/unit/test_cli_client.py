@@ -15,12 +15,8 @@ from riverhog_protocol.errors import (
     Unauthorized,
 )
 
-UPLOAD_LAYOUT = {
-    "pack_source_bytes": 1024,
-    "pack_files": 16,
+UPLOAD_REGISTRATION_CONSTRAINTS = {
     "pack_member_bytes": 1024,
-    "pack_part_plaintext_bytes": 65536,
-    "raw_volume_plaintext_bytes": 262144,
     "raw_part_plaintext_bytes": 65536,
 }
 
@@ -99,7 +95,7 @@ def test_search_uses_current_collection_filters() -> None:
     client = RecordingClient()
     client.search(
         "tax",
-        collection="1",
+        collection=1,
         sort="path",
         order="desc",
         all_items=True,
@@ -116,7 +112,7 @@ def test_search_uses_current_collection_filters() -> None:
                     "sort": "path",
                     "order": "desc",
                     "q": "tax",
-                    "collection": "1",
+                    "collection": 1,
                     "all": True,
                 }
             },
@@ -147,7 +143,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
                 },
             }
         ],
-        layout=UPLOAD_LAYOUT,
+        registration_constraints=UPLOAD_REGISTRATION_CONSTRAINTS,
     )
     client.complete_collection_upload_session(
         1,
@@ -211,7 +207,7 @@ def test_client_rejects_invalid_upload_provenance_before_transport() -> None:
                     },
                 }
             ],
-            layout=UPLOAD_LAYOUT,
+            registration_constraints=UPLOAD_REGISTRATION_CONSTRAINTS,
         )
     with pytest.raises(BadRequest, match="provenance_mode"):
         client.create_or_resume_collection_upload_session(
@@ -615,6 +611,37 @@ def test_provenance_client_methods_use_the_collection_scoped_contract() -> None:
         ("GET", "/v1/collections/42/provenance/trace/media/movie.mov", {}),
         ("POST", "/v1/collections/42/provenance/verify", {}),
     ]
+
+
+@pytest.mark.parametrize("collection_id", (0, -1, True))
+def test_client_rejects_nonpositive_collection_identities(collection_id: object) -> None:
+    client = RecordingClient()
+
+    with pytest.raises(BadRequest):
+        client.get_collection(collection_id)  # type: ignore[arg-type]
+    assert client.calls == []
+
+
+def test_provenance_client_rejects_noncanonical_read_identities() -> None:
+    client = RecordingClient()
+
+    with pytest.raises(BadRequest):
+        client.get_collection_file_provenance(42, "media/../movie.mov")
+    with pytest.raises(BadRequest):
+        client.export_collection_provenance_journal(42, "journal-1")
+    assert client.calls == []
+
+
+def test_quota_client_rejects_negative_limits() -> None:
+    client = RecordingClient()
+
+    with pytest.raises(BadRequest):
+        client.set_app_key_download_quota(
+            "reader",
+            "0123456789abcdef",
+            monthly_bytes=-1,
+        )
+    assert client.calls == []
 
 
 def test_collection_upload_unit_uses_its_dedicated_timeout(
