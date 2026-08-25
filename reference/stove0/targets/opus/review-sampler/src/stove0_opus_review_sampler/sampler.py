@@ -6,8 +6,7 @@ import importlib.metadata
 import os
 from pathlib import Path
 
-from stove0_media_archive_contracts import AUDIO_ARCHIVE_OPERATION, AudioArchiveIntent
-from stove0_review_contracts import REVIEW_AUDIO_ROLE
+from stove0_media_archive_target_contracts import AUDIO_ARCHIVE_OPERATION, AudioArchiveIntent
 from stove0_review_sampler_protocol import (
     SamplerDescriptor,
     SamplerDescriptorPayload,
@@ -19,6 +18,7 @@ from stove0_review_sampler_protocol import (
     SamplerResultPayload,
 )
 from stove0_review_sampler_support import SamplerWorkspace
+from stove0_review_target_contracts import REVIEW_AUDIO_ROLE
 
 from stove0_opus_review_sampler.common import (
     OpusContentError,

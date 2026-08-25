@@ -35,8 +35,7 @@ COPY packages/stove0-observer-client packages/stove0-observer-client
 COPY packages/stove0-observer-protocol packages/stove0-observer-protocol
 COPY packages/stove0-observer-support packages/stove0-observer-support
 COPY packages/stove0-protocol packages/stove0-protocol
-COPY packages/stove0-review-contracts packages/stove0-review-contracts
-COPY packages/stove0-target-protocol packages/stove0-target-protocol
+COPY packages/stove0-media-sampling-observer-contracts packages/stove0-media-sampling-observer-contracts
 COPY packages/time-formats packages/time-formats
 RUN uv sync --frozen --package stove0-ffprobe-sampling-observer --no-dev --no-editable
 

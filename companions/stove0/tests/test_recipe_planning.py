@@ -24,12 +24,14 @@ from stove0_core.recipes import (
     RecipeJoinMember,
     RecipeRoute,
 )
-from stove0_media_archive_contracts import (
+from stove0_media_archive_target_contracts import (
     AUDIO_ARCHIVE_OPERATION,
     AV1_OPUS_ARCHIVE_OPERATION,
-    MEDIA_METADATA_OBSERVER_CONTRACT,
     SOURCE_ROLE,
     XMP_SOURCE_ROLE,
+)
+from stove0_media_metadata_observer_contracts import (
+    MEDIA_METADATA_OBSERVER_CONTRACT,
     MediaArtifactFacts,
     MediaFactEvidence,
     MediaMetadataFact,
@@ -52,15 +54,14 @@ from stove0_protocol import (
     JsonSchemaDocument,
     resolve_join_plan,
 )
-from stove0_review_contracts import (
+from stove0_review_planning import ReviewVariant, review_evaluation_definition
+from stove0_review_target_contracts import (
     REVIEW_MATERIALIZE_OPERATION,
     REVIEW_RCLONE_DELIVER_OPERATION,
     REVIEW_SOURCE_ROLE,
     ReviewSamplePlan,
     ReviewSamplePlanPayload,
     ReviewSampleWindow,
-    ReviewVariant,
-    review_evaluation_definition,
 )
 from stove0_target_support import (
     InputArtifactContract,

@@ -9,6 +9,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from stove0_media_sampling_observer_contracts import (
+    MEDIA_SAMPLING_OBSERVER_CONTRACT,
+    MediaSamplingArtifactFacts,
+    MediaSamplingFacts,
+    SampleableRange,
+)
 from stove0_observer_protocol import (
     ObservationRequest,
     ObservationResult,
@@ -17,12 +23,6 @@ from stove0_observer_protocol import (
     ObserverDescriptorPayload,
 )
 from stove0_observer_support import ObservationResultBuilder, ObservationRuntime
-from stove0_review_contracts import (
-    MEDIA_SAMPLING_OBSERVER_CONTRACT,
-    MediaSamplingArtifactFacts,
-    MediaSamplingFacts,
-    SampleableRange,
-)
 
 
 def _version() -> str:

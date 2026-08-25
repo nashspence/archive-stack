@@ -18,12 +18,6 @@ from riverhog_api_client import ProducerFile
 from riverhog_protocol import ArtifactDisposition, canonical_json_bytes, canonical_json_sha256
 from riverhog_transform_sdk import TransformWorkspace
 from stove0_protocol import JsonSchemaDocument
-from stove0_review_contracts import (
-    REVIEW_INDEX_ROLE,
-    REVIEW_MATERIALIZE_OPERATION,
-    REVIEW_RCLONE_DELIVER_OPERATION,
-    ReviewSamplePlan,
-)
 from stove0_review_sampler_client import ReviewSamplerClient
 from stove0_review_sampler_protocol import (
     SamplerDescriptor,
@@ -32,6 +26,12 @@ from stove0_review_sampler_protocol import (
     SamplerRequestPayload,
     SamplerResult,
     SamplerWindow,
+)
+from stove0_review_target_contracts import (
+    REVIEW_INDEX_ROLE,
+    REVIEW_MATERIALIZE_OPERATION,
+    REVIEW_RCLONE_DELIVER_OPERATION,
+    ReviewSamplePlan,
 )
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,

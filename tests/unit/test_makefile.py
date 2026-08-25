@@ -485,10 +485,16 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
         "reference/stove0/targets/opus/target/src",
         "reference/stove0/targets/review/target/src",
         "companions/stove0/server/src",
+        "packages/stove0-media-archive-target-contracts/src",
+        "packages/stove0-media-archive-target-support/src",
+        "packages/stove0-media-metadata-observer-contracts/src",
+        "packages/stove0-media-sampling-observer-contracts/src",
         "packages/stove0-observer-client/src",
+        "packages/stove0-review-planning/src",
         "packages/stove0-review-sampler-protocol/src",
         "packages/stove0-review-sampler-support/src",
         "packages/stove0-review-sampler-client/src",
+        "packages/stove0-review-target-contracts/src",
         "packages/stove0-target-client/src",
     ):
         assert source in uv_log_lines[0]

@@ -427,12 +427,56 @@ def test_stove0_server_has_only_protocol_and_caller_side_extension_dependencies(
     assert {"stove0-observer-client", "stove0-target-client"} <= closure
     assert not closure & {
         "riverhog-transform-sdk",
-        "stove0-media-archive-contracts",
+        "stove0-media-archive-target-contracts",
+        "stove0-media-archive-target-support",
+        "stove0-media-metadata-observer-contracts",
+        "stove0-media-sampling-observer-contracts",
         "stove0-observer-support",
-        "stove0-review-contracts",
+        "stove0-review-planning",
+        "stove0-review-target-contracts",
         "stove0-review-sampler-support",
         "stove0-target-support",
     }
+
+
+def test_maintained_observer_distributions_do_not_pull_target_authority() -> None:
+    _projects, graph = workspace_project_graph()
+    expected = {
+        "stove0-exiftool-observer": "stove0-media-metadata-observer-contracts",
+        "stove0-ffprobe-sampling-observer": "stove0-media-sampling-observer-contracts",
+    }
+    forbidden = {
+        "stove0-media-archive-target-contracts",
+        "stove0-media-archive-target-support",
+        "stove0-review-planning",
+        "stove0-review-target-contracts",
+        "stove0-target-client",
+        "stove0-target-protocol",
+        "stove0-target-support",
+    }
+    for distribution, observer_contract in expected.items():
+        closure = dependency_closure(distribution, graph)
+        assert observer_contract in closure
+        assert not closure & forbidden
+
+
+def test_semantic_contract_distributions_do_not_pull_runtime_support() -> None:
+    _projects, graph = workspace_project_graph()
+    for distribution in (
+        "stove0-media-metadata-observer-contracts",
+        "stove0-media-sampling-observer-contracts",
+        "stove0-media-archive-target-contracts",
+        "stove0-review-target-contracts",
+        "stove0-media-archive-target-support",
+        "stove0-review-planning",
+    ):
+        closure = dependency_closure(distribution, graph)
+        assert not closure & {
+            "stove0-observer-client",
+            "stove0-observer-support",
+            "stove0-target-client",
+            "stove0-target-support",
+        }
 
 
 def test_paired_target_and_review_sampler_distributions_do_not_import_each_other() -> None:

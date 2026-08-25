@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from riverhog_protocol import canonical_json_sha256
-from stove0_media_archive_contracts import (
+from stove0_media_archive_target_contracts import (
     AUDIO_ARCHIVE_OPERATION,
     METADATA_XMP_ROLE,
     SOURCE_ARTIFACT_ROLE,
+)
+from stove0_media_archive_target_support import (
     MediaArchiveProjection,
 )
 from stove0_opus_review_sampler import OpusReviewSampler
