@@ -24,7 +24,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_bytes,
     canonical_json_sha256,
 )
-from riverhog_protocol.paths import normalize_tag
+from riverhog_protocol.paths import CollectionId, normalize_tag
 
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 SemanticId = Annotated[
@@ -66,7 +66,7 @@ def _validate_opaque_document(
 
 
 class CollectionRootIdentityDocument(RiverhogWorkflowDocument):
-    collection_id: int = Field(ge=1)
+    collection_id: CollectionId
     archive_root_sha256: SHA256
     content_identity: SHA256
 
@@ -122,7 +122,7 @@ class ProcessingOutcomeIdentityDocument(RiverhogWorkflowDocument):
 
 
 class ArtifactDispositionInputDocument(RiverhogWorkflowDocument):
-    collection_id: int = Field(ge=1)
+    collection_id: CollectionId
     archive_root_sha256: SHA256
     path: str = Field(min_length=1, max_length=4096)
 
@@ -287,7 +287,7 @@ class ProcessingOutcomeBindingDocument(RiverhogWorkflowDocument):
 
 class ProcessingClaimSettleDocument(RiverhogWorkflowDocument):
     fence: int = Field(ge=1)
-    output_collection_id: int = Field(ge=1)
+    output_collection_id: CollectionId
     derivation: CollectionDerivationDocument
     outcome: ProcessingOutcomeBindingDocument | None = None
 
@@ -375,7 +375,7 @@ class RetirementClaimReferenceDocument(RiverhogWorkflowDocument):
     fence: int = Field(ge=1)
     work_id: SHA256
     execution_id: SHA256 | None = None
-    output_collection_id: int | None = Field(default=None, ge=1)
+    output_collection_id: CollectionId | None = None
     outcomes_sha256: SHA256 | None = None
 
     @model_validator(mode="after")
@@ -406,7 +406,7 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
     abandoned_at: Timestamp | None = None
     abandonment_reason: str | None = Field(default=None, min_length=1, max_length=1000)
     released_at: Timestamp | None = None
-    output_collection_id: int | None = Field(default=None, ge=1)
+    output_collection_id: CollectionId | None = None
     work_document: dict[str, Any]
     work_document_sha256: SHA256
     inputs: list[CollectionRootIdentityDocument] = Field(min_length=1)
@@ -502,7 +502,7 @@ class TransformCapabilityDocument(RiverhogWorkflowDocument):
 
 
 class CollectionDerivationResponseDocument(RiverhogWorkflowDocument):
-    collection_id: int = Field(ge=1)
+    collection_id: CollectionId
     document_sha256: SHA256
     derivation: CollectionDerivationDocument
 

@@ -45,15 +45,11 @@ class CollectionUploadRawPartsIn(CollectionUploadDocument):
     sha256s: list[Sha256] = Field(min_length=1)
 
 
-class CollectionUploadLayoutDocument(CollectionUploadDocument):
-    """The exact immutable planning layout issued for one upload session."""
+class CollectionUploadRegistrationConstraintsDocument(CollectionUploadDocument):
+    """Producer constraints issued by Riverhog for one upload session."""
 
-    pack_source_bytes: int = Field(ge=1)
-    pack_files: int = Field(ge=1)
     pack_member_bytes: int = Field(ge=1)
-    pack_part_plaintext_bytes: int = Field(ge=1)
-    raw_volume_plaintext_bytes: int = Field(ge=1)
-    raw_part_plaintext_bytes: int = Field(ge=1)
+    raw_part_plaintext_bytes: int = Field(ge=65536, multiple_of=65536)
 
 
 class CollectionUploadFileIn(CollectionUploadDocument):
@@ -80,31 +76,31 @@ class CollectionUploadFileBatchDocument(CollectionUploadDocument):
         return self
 
 
-def validate_collection_upload_batch_against_layout(
+def validate_collection_upload_batch_against_registration_constraints(
     batch: CollectionUploadFileBatchDocument,
-    layout: CollectionUploadLayoutDocument,
+    constraints: CollectionUploadRegistrationConstraintsDocument,
 ) -> CollectionUploadFileBatchDocument:
-    """Validate registration identities against the exact server-issued layout."""
+    """Validate registration identities against server-issued constraints."""
 
     for item in batch.files:
-        collection_upload_raw_digest_manifest(item, layout)
+        collection_upload_raw_digest_manifest(item, constraints)
     return batch
 
 
 def collection_upload_raw_digest_manifest(
     item: CollectionUploadFileIn,
-    layout: CollectionUploadLayoutDocument,
+    constraints: CollectionUploadRegistrationConstraintsDocument,
 ) -> RawSourceDigestManifest | None:
-    """Return the exact raw manifest required by the session layout for one file."""
+    """Return the raw manifest required by the session constraints for one file."""
 
     raw = item.raw_parts
-    if item.bytes < layout.pack_member_bytes:
+    if item.bytes < constraints.pack_member_bytes:
         if raw is not None:
             raise ValueError(f"raw part digests are only valid for large file: {item.path}")
         return None
     if raw is None:
         raise ValueError(f"raw part digests are required for large file: {item.path}")
-    if raw.part_plaintext_bytes != layout.raw_part_plaintext_bytes:
+    if raw.part_plaintext_bytes != constraints.raw_part_plaintext_bytes:
         raise ValueError(f"raw part digest policy does not match the session: {item.path}")
     return RawSourceDigestManifest(
         path=item.path,
@@ -119,10 +115,10 @@ __all__ = [
     "CapturedFileProvenanceBinding",
     "CollectionUploadFileBatchDocument",
     "CollectionUploadFileIn",
-    "CollectionUploadLayoutDocument",
+    "CollectionUploadRegistrationConstraintsDocument",
     "CollectionUploadRawPartsIn",
     "FileProvenanceBinding",
     "OmittedFileProvenanceBinding",
     "collection_upload_raw_digest_manifest",
-    "validate_collection_upload_batch_against_layout",
+    "validate_collection_upload_batch_against_registration_constraints",
 ]

@@ -18,10 +18,10 @@ from riverhog_protocol import (
     CapturedFileProvenanceBinding,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
-    CollectionUploadLayoutDocument,
+    CollectionUploadRegistrationConstraintsDocument,
     OmittedFileProvenanceBinding,
     collection_upload_raw_digest_manifest,
-    validate_collection_upload_batch_against_layout,
+    validate_collection_upload_batch_against_registration_constraints,
 )
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from riverhog_protocol.manifest import collection_content_identity_ordered
@@ -369,12 +369,14 @@ class SqlAlchemyCollectionUploadService:
                 batch_document = CollectionUploadFileBatchDocument.model_validate(
                     {"files": request_files}
                 )
-                layout_document = CollectionUploadLayoutDocument.model_validate(
-                    _layout_payload(checkpoint.policy)
+                constraints_document = (
+                    CollectionUploadRegistrationConstraintsDocument.model_validate(
+                        _registration_constraints_payload(checkpoint.policy)
+                    )
                 )
-                validate_collection_upload_batch_against_layout(
+                validate_collection_upload_batch_against_registration_constraints(
                     batch_document,
-                    layout_document,
+                    constraints_document,
                 )
             except ValueError as exc:
                 raise BadRequest(str(exc)) from exc
@@ -382,7 +384,7 @@ class SqlAlchemyCollectionUploadService:
                 _normalize_file(
                     value,
                     provenance_mode=upload.provenance_mode,
-                    layout=layout_document,
+                    constraints=constraints_document,
                 )
                 for value in batch_document.files
             )
@@ -1889,12 +1891,12 @@ def _normalize_file(
     value: CollectionUploadFileIn,
     *,
     provenance_mode: str,
-    layout: CollectionUploadLayoutDocument,
+    constraints: CollectionUploadRegistrationConstraintsDocument,
 ) -> _RegisteredFile:
     path = value.path
     byte_count = value.bytes
     sha256 = value.sha256
-    raw_manifest = collection_upload_raw_digest_manifest(value, layout)
+    raw_manifest = collection_upload_raw_digest_manifest(value, constraints)
     raw_json = raw_manifest.to_json_bytes().decode("utf-8") if raw_manifest is not None else None
     raw_provenance = value.provenance
     provenance_journal_id: str | None = None
@@ -2066,13 +2068,9 @@ def _mark_finalization_ready(upload: CollectionUploadRecord, *, now: str) -> Non
     upload.archive_next_attempt_at = now
 
 
-def _layout_payload(policy: CollectionVolumePolicy) -> dict[str, int]:
+def _registration_constraints_payload(policy: CollectionVolumePolicy) -> dict[str, int]:
     return {
-        "pack_source_bytes": policy.pack_source_bytes,
-        "pack_files": policy.pack_files,
         "pack_member_bytes": policy.pack_member_bytes,
-        "pack_part_plaintext_bytes": policy.pack_part_plaintext_bytes,
-        "raw_volume_plaintext_bytes": policy.raw_volume_plaintext_bytes,
         "raw_part_plaintext_bytes": policy.raw_part_plaintext_bytes,
     }
 
@@ -2344,7 +2342,9 @@ def _upload_payload(
         "encryption_format": upload.encryption_format,
         "passphrase_id": upload.passphrase_id,
         "state": state or upload.state,
-        "layout": _layout_payload(_planner_checkpoint(upload).policy),
+        "registration_constraints": _registration_constraints_payload(
+            _planner_checkpoint(upload).policy
+        ),
         "files_total": int(files_total),
         "files_pending": int(files_total) if uploaded_bytes == 0 else 0,
         "files_partial": 0,
@@ -2414,7 +2414,7 @@ def _finalized_payload(
         "encryption_format": collection.encryption_format,
         "passphrase_id": collection.passphrase_id,
         "state": "finalized",
-        "layout": None,
+        "registration_constraints": None,
         "files_total": summary["files"],
         "files_pending": 0,
         "files_partial": 0,

@@ -101,17 +101,24 @@ class ObserverHttpBinding:
                 return _error(413, "request_too_large", "observer request exceeds its size limit")
             try:
                 invocation = ObservationInvocation.model_validate_json(body)
-                descriptor = self.observer.descriptor()
+            except (ValidationError, ValueError) as exc:
+                return _error(400, "invalid_observation_request", str(exc))
+            try:
+                descriptor = ObserverDescriptor.model_validate(self.observer.descriptor())
+            except Exception:
+                return _error(500, "observer_failed", "content observer descriptor failed")
+            try:
                 _validate_descriptor(invocation, descriptor)
+            except ValueError as exc:
+                return _error(400, "invalid_observation_request", str(exc))
+            try:
                 with self._execution_slots:
                     with ObservationRuntime.from_invocation(invocation) as runtime:
                         result = self.observer.observe(invocation.request, runtime)
                 validate_observation_result(result, invocation.request, descriptor)
-            except (ValidationError, ValueError) as exc:
-                return _error(400, "invalid_observation_request", str(exc))
+                return _model_response(result)
             except Exception:
                 return _error(500, "observer_failed", "content observer execution failed")
-            return _model_response(result)
         if path in {"/v1/observer", "/v1/observe"}:
             return _error(405, "method_not_allowed", "observer endpoint method is not allowed")
         return _error(404, "not_found", "observer endpoint not found")

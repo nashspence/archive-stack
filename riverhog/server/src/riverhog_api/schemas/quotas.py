@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-from application_access import ApplicationKeyId, ApplicationName
+from application_access import ApplicationKeyId, ApplicationName, MonthlyDownloadQuotaBytes
+from pydantic import Field
 from riverhog_protocol import DownloadQuotaSort, SortOrder
 
 from riverhog_api.schemas.common import RiverhogModel
@@ -13,12 +14,12 @@ class KeyDownloadQuotaOut(RiverhogModel):
     app: ApplicationName
     key_id: ApplicationKeyId
     key_status: Literal["active", "expired", "revoked"]
-    monthly_bytes: int | None
+    monthly_bytes: MonthlyDownloadQuotaBytes | None
     month_started_at: str
     resets_at: str
-    accounted_bytes: int
-    reserved_bytes: int
-    remaining_bytes: int | None
+    accounted_bytes: int = Field(ge=0)
+    reserved_bytes: int = Field(ge=0)
+    remaining_bytes: int | None = Field(ge=0)
 
 
 class KeyDownloadQuotaListOut(RiverhogModel):
@@ -35,4 +36,4 @@ class KeyDownloadQuotaListOut(RiverhogModel):
 
 
 class SetKeyDownloadQuotaRequest(RiverhogModel):
-    monthly_bytes: int | None
+    monthly_bytes: MonthlyDownloadQuotaBytes | None

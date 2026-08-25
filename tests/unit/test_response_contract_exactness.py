@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 from riverhog_api.app import create_app
+from riverhog_api.schemas.apps import AppKeyOut
 from riverhog_api.schemas.archive import ArchiveCopyJobOut, ArchiveCopyRetirementPlanOut
 from riverhog_api.schemas.collections import CollectionDeletionPlanOut, CollectionUploadSessionOut
 from riverhog_api.schemas.retrieval import RetrievalJobOut
@@ -124,10 +125,76 @@ def test_terminal_job_responses_require_their_evidence() -> None:
         "objects": [],
     }
 
-    with pytest.raises(ValidationError, match="completion evidence"):
+    with pytest.raises(ValidationError, match="completed_at"):
         ArchiveCopyJobOut.model_validate(archive_job)
     with pytest.raises(ValidationError, match="failure evidence"):
         RetrievalJobOut.model_validate(retrieval_job)
+
+
+def test_operational_responses_reject_contradictory_state_evidence() -> None:
+    archive_job = {
+        "collection_id": 1,
+        "source_store": "archive",
+        "destination_store": "replica",
+        "initiated_by_app": "operator",
+        "initiated_by_key_id": None,
+        "state": "requested",
+        "requested_at": "2026-08-25T00:00:00.000000Z",
+        "ready_at": None,
+        "expires_at": None,
+        "completed_at": "2026-08-25T00:00:01.000000Z",
+        "failure": None,
+    }
+    with pytest.raises(ValidationError, match="completed_at"):
+        ArchiveCopyJobOut.model_validate(archive_job)
+
+    retrieval_job = {
+        "id": "job",
+        "state": "ready",
+        "plan_etag": "etag",
+        "created_at": "2026-08-25T00:00:00.000000Z",
+        "requested_at": "2026-08-25T00:00:00.000000Z",
+        "restore_requested_at": None,
+        "ready_at": "2026-08-25T00:00:01.000000Z",
+        "expires_at": "2026-08-25T01:00:00.000000Z",
+        "completed_at": None,
+        "canceled_at": "2026-08-25T00:00:02.000000Z",
+        "failure": None,
+        "lease_seconds": 3600,
+        "restore_policy": "allow",
+        "requires_restore": False,
+        "files": [],
+        "objects": [],
+    }
+    with pytest.raises(ValidationError, match="canceled_at"):
+        RetrievalJobOut.model_validate(retrieval_job)
+
+    retryable = deepcopy(retrieval_job)
+    retryable.update(
+        {
+            "state": "requested",
+            "ready_at": None,
+            "expires_at": None,
+            "canceled_at": None,
+            "failure": "restore provider is temporarily unavailable",
+        }
+    )
+    assert RetrievalJobOut.model_validate(retryable).failure is not None
+
+    with pytest.raises(ValidationError, match="revoked_at"):
+        AppKeyOut.model_validate(
+            {
+                "id": "0123456789abcdef",
+                "app": "review",
+                "access": [],
+                "monthly_download_quota_bytes": None,
+                "status": "active",
+                "created_at": "2026-08-25T00:00:00.000000Z",
+                "expires_at": None,
+                "revoked_at": "2026-08-25T00:00:01.000000Z",
+                "last_used_at": None,
+            }
+        )
 
 
 def test_finalized_and_failed_upload_sessions_require_terminal_evidence() -> None:
@@ -144,7 +211,7 @@ def test_finalized_and_failed_upload_sessions_require_terminal_evidence() -> Non
         "encryption_format": "age-x25519/v1",
         "passphrase_id": "0123456789abcdef",
         "state": "finalized",
-        "layout": None,
+        "registration_constraints": None,
         "files_total": 0,
         "files_pending": 0,
         "files_partial": 0,
@@ -162,18 +229,25 @@ def test_finalized_and_failed_upload_sessions_require_terminal_evidence() -> Non
     failed.update(
         {
             "state": "failed",
-            "layout": {
-                "pack_source_bytes": 1,
-                "pack_files": 1,
+            "registration_constraints": {
                 "pack_member_bytes": 1,
-                "pack_part_plaintext_bytes": 1,
-                "raw_volume_plaintext_bytes": 1,
-                "raw_part_plaintext_bytes": 1,
+                "raw_part_plaintext_bytes": 65536,
             },
         }
     )
     with pytest.raises(ValidationError, match="failure evidence"):
         CollectionUploadSessionOut.model_validate(failed)
+
+    open_with_final_identity = deepcopy(failed)
+    open_with_final_identity.update(
+        {
+            "state": "open",
+            "content_identity": "a" * 64,
+            "latest_failure": None,
+        }
+    )
+    with pytest.raises(ValidationError, match="nonfinal"):
+        CollectionUploadSessionOut.model_validate(open_with_final_identity)
 
 
 def test_list_responses_expose_only_closed_sort_and_filter_contracts() -> None:

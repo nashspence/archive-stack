@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import Any, Literal, Self
 
 from application_access import ApplicationKeyId, ApplicationName
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import (
     ArchiveCopySort,
     ArchiveCopyState,
     ArchiveCopyStoreSelectionDocument,
     ArchiveStoreName,
+    CollectionId,
     SortOrder,
 )
 
@@ -36,7 +37,7 @@ class ArchiveRootPublicationOut(RiverhogModel):
 
 
 class CreateArchiveCopyRequest(ArchiveCopyStoreSelectionDocument):
-    collection_id: int
+    collection_id: CollectionId
     event_context: dict[str, Any] | None = None
 
 
@@ -45,27 +46,20 @@ class ArchiveCopyJobOut(RiverhogModel):
         json_schema_extra={
             "allOf": [
                 {
-                    "if": {"properties": {"state": {"const": "completed"}}},
-                    "then": {
-                        "properties": {
-                            "completed_at": {"type": "string"},
-                            "failure": {"type": "null"},
-                        }
-                    },
-                },
-                {
-                    "if": {"properties": {"state": {"const": "canceled"}}},
+                    "if": {"properties": {"state": {"enum": ["completed", "canceled"]}}},
                     "then": {"properties": {"completed_at": {"type": "string"}}},
+                    "else": {"properties": {"completed_at": {"type": "null"}}},
                 },
                 {
                     "if": {"properties": {"state": {"const": "failed"}}},
                     "then": {"properties": {"failure": {"type": "string", "minLength": 1}}},
+                    "else": {"properties": {"failure": {"type": "null"}}},
                 },
             ]
         }
     )
 
-    collection_id: int
+    collection_id: CollectionId
     source_store: ArchiveStoreName | None
     destination_store: ArchiveStoreName
     initiated_by_app: ApplicationName | None
@@ -75,16 +69,15 @@ class ArchiveCopyJobOut(RiverhogModel):
     ready_at: str | None
     expires_at: str | None
     completed_at: str | None
-    failure: str | None
+    failure: str | None = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_terminal_evidence(self) -> Self:
-        if self.state == "completed" and (self.completed_at is None or self.failure is not None):
-            raise ValueError("completed archive-copy jobs require completion evidence")
-        if self.state == "canceled" and self.completed_at is None:
-            raise ValueError("canceled archive-copy jobs require completed_at")
-        if self.state == "failed" and not self.failure:
-            raise ValueError("failed archive-copy jobs require failure evidence")
+        completed = self.state in {"completed", "canceled"}
+        if (self.completed_at is not None) != completed:
+            raise ValueError("archive-copy completed_at must match completed or canceled state")
+        if (self.failure is not None) != (self.state == "failed"):
+            raise ValueError("archive-copy failure evidence must match failed state")
         return self
 
 
@@ -105,7 +98,7 @@ class ArchiveCopyJobListOut(RiverhogModel):
 
 
 class ArchiveCopyRetirementRequest(RiverhogModel):
-    collection_id: int
+    collection_id: CollectionId
     store: ArchiveStoreName
 
 
@@ -149,7 +142,7 @@ class ArchiveCopyRetirementPlanOut(RiverhogModel):
     )
 
     status: Literal["ready", "blocked", "retiring"]
-    collection_id: int
+    collection_id: CollectionId
     store: ArchiveStoreName
     warning: str
     expires_at: str
@@ -175,7 +168,7 @@ class ArchiveCopyRetirementPlanOut(RiverhogModel):
 
 class ArchiveCopyRetirementResultOut(RiverhogModel):
     status: Literal["retired", "already_absent"]
-    collection_id: int
+    collection_id: CollectionId
     store: ArchiveStoreName
     remote_storage_bytes: int
     verified_store: ArchiveStoreName | None

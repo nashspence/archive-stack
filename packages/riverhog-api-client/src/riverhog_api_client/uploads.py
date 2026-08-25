@@ -9,6 +9,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Protocol, cast
 
 import httpx
+from riverhog_protocol import CollectionId
 from riverhog_protocol.errors import Conflict, ServiceUnavailable
 
 DEFAULT_UPLOAD_CONCURRENCY = 8
@@ -23,18 +24,20 @@ RetryNotice = Callable[[str], None]
 
 
 class CollectionUnitApi(Protocol):
-    def list_collection_upload_session_volumes(self, collection_id: int) -> dict[str, Any]: ...
+    def list_collection_upload_session_volumes(
+        self, collection_id: CollectionId
+    ) -> dict[str, Any]: ...
 
     def get_collection_upload_session_unit(
         self,
-        collection_id: int,
+        collection_id: CollectionId,
         volume_id: str,
         unit: int,
     ) -> dict[str, Any]: ...
 
     def put_collection_upload_session_unit(
         self,
-        collection_id: int,
+        collection_id: CollectionId,
         volume_id: str,
         unit: int,
         *,
@@ -87,7 +90,7 @@ def configured_upload_window(
 
 def put_collection_upload_unit(
     api: CollectionUnitApi,
-    collection_id: int,
+    collection_id: CollectionId,
     volume: Mapping[str, object],
     unit: Mapping[str, object],
     *,
@@ -152,7 +155,7 @@ def put_collection_upload_unit(
 
 def upload_collection_units(
     api: CollectionUnitApi,
-    collection_id: int,
+    collection_id: CollectionId,
     *,
     content_for_unit: UnitContent,
     concurrency: int,
@@ -211,7 +214,7 @@ def upload_collection_units(
 
 def _upload_work(
     api: CollectionUnitApi,
-    collection_id: int,
+    collection_id: CollectionId,
     *,
     initial: Sequence[tuple[dict[str, object], dict[str, object]]],
     deferred: dict[str, list[tuple[dict[str, object], dict[str, object]]]],

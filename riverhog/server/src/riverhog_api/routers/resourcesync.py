@@ -5,7 +5,11 @@ from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import APIRouter, Path, Query, Request, Response
 from http_api_contracts import operation_interface
-from riverhog_protocol import PortableCollectionRecord, portable_collection_json_schema
+from riverhog_protocol import (
+    CollectionIdParameter,
+    PortableCollectionRecord,
+    portable_collection_json_schema,
+)
 
 from riverhog_api.auth import CatalogReader
 from riverhog_api.deps import ContainerDep
@@ -195,7 +199,7 @@ def resourcesync_change_list(
     openapi_extra=operation_interface("standard-tool/protocol"),
 )
 def get_portable_collection_manifest(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     principal: CatalogReader,
     container: ContainerDep,
     response: Response,

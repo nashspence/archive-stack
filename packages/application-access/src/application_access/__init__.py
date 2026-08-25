@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Annotated
 
-from pydantic import AfterValidator, Field
+from pydantic import AfterValidator, BeforeValidator, Field
 
 from application_access.access import *  # noqa: F403
 from application_access.access import __all__ as _access_exports
@@ -26,6 +26,12 @@ def validate_application_key_id(value: str) -> str:
     return value
 
 
+def validate_monthly_download_quota_bytes(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("monthly download quota bytes must be a non-negative integer")
+    return value
+
+
 type ApplicationName = Annotated[
     str,
     Field(pattern=APPLICATION_NAME_PATTERN),
@@ -36,6 +42,11 @@ type ApplicationKeyId = Annotated[
     Field(pattern=APPLICATION_KEY_ID_PATTERN),
     AfterValidator(validate_application_key_id),
 ]
+type MonthlyDownloadQuotaBytes = Annotated[
+    int,
+    BeforeValidator(validate_monthly_download_quota_bytes),
+    Field(ge=0),
+]
 
 
 __all__ = [
@@ -43,7 +54,9 @@ __all__ = [
     "APPLICATION_NAME_PATTERN",
     "ApplicationKeyId",
     "ApplicationName",
+    "MonthlyDownloadQuotaBytes",
     "validate_application_key_id",
     "validate_application_name",
+    "validate_monthly_download_quota_bytes",
     *_access_exports,
 ]

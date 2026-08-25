@@ -4,6 +4,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 from http_api_contracts import operation_interface
+from riverhog_protocol import CollectionIdParameter
 from riverhog_protocol.collection_workflow_transport import ClaimState
 from riverhog_protocol.collection_workflows import (
     CollectionArtifactIdentity,
@@ -335,7 +336,7 @@ def release_processing_claim(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def get_collection_derivation(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CollectionTransformController,
 ) -> CollectionDerivationOut:

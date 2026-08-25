@@ -182,6 +182,18 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             )
             assert assigned_quota.status_code == 200
             assert assigned_quota.json()["remaining_bytes"] == 1_048_576
+            invalid_quota = await client.put(
+                f"/v1/apps/reader/keys/{delegated_key['id']}/download-quota",
+                json={"monthly_bytes": -1},
+                headers=quota_headers,
+            )
+            assert invalid_quota.status_code == 422
+            string_quota = await client.put(
+                f"/v1/apps/reader/keys/{delegated_key['id']}/download-quota",
+                json={"monthly_bytes": "1048576"},
+                headers=quota_headers,
+            )
+            assert string_quota.status_code == 422
             quotas = (
                 await client.get(
                     "/v1/download-quotas?app=reader&all=true",

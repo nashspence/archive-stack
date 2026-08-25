@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Resp
 from http_api_contracts import operation_interface
 from riverhog_core.app_permissions import COLLECTIONS_DELETE
 from riverhog_protocol import (
+    CollectionIdParameter,
     CollectionSort,
     CollectionUploadSort,
     CollectionUploadState,
@@ -130,7 +131,7 @@ def create_or_resume_collection_upload_session(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def register_collection_upload_session_files(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     request: RegisterCollectionUploadSessionFilesRequest,
     container: ContainerDep,
     principal: CollectionCreator,
@@ -149,7 +150,7 @@ def register_collection_upload_session_files(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 async def put_collection_upload_session_provenance_journal(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     journal_id: ProvenanceJournalId,
     request: Request,
     content: Annotated[
@@ -184,7 +185,7 @@ async def put_collection_upload_session_provenance_journal(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def export_collection_upload_session_provenance_journal(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     journal_id: ProvenanceJournalId,
     container: ContainerDep,
     principal: CollectionCreator,
@@ -210,7 +211,7 @@ def export_collection_upload_session_provenance_journal(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def list_collection_upload_session_files(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CollectionCreator,
     page: int = Query(1, ge=1),
@@ -233,7 +234,7 @@ def list_collection_upload_session_files(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def complete_collection_upload_session(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     request: CompleteCollectionUploadSessionRequest,
     container: ContainerDep,
     principal: CollectionCreator,
@@ -253,7 +254,7 @@ def complete_collection_upload_session(
     response_model=CollectionUploadSessionOut,
 )
 def cancel_collection_upload_session(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
@@ -266,7 +267,7 @@ def cancel_collection_upload_session(
     "/collection-upload-sessions/{collection_id}", response_model=CollectionUploadSessionOut
 )
 def get_collection_upload_session(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadSessionOut:
@@ -281,7 +282,7 @@ def get_collection_upload_session(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def list_collection_upload_session_volumes(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> ListCollectionUploadVolumesResponse:
@@ -297,7 +298,7 @@ def list_collection_upload_session_volumes(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def get_collection_upload_session_volume(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     volume_id: str,
     container: ContainerDep,
     principal: CollectionCreator,
@@ -314,7 +315,7 @@ def get_collection_upload_session_volume(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def get_collection_upload_session_unit(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     volume_id: str,
     unit: int,
     container: ContainerDep,
@@ -332,7 +333,7 @@ def get_collection_upload_session_unit(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 async def put_collection_upload_session_unit(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     volume_id: str,
     unit: int,
     request: Request,
@@ -370,7 +371,7 @@ async def put_collection_upload_session_unit(
 
 @router.get("/collections/{collection_id}", response_model=CollectionSummaryOut)
 def get_collection(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CatalogReader,
 ) -> CollectionSummaryOut:
@@ -384,7 +385,7 @@ def get_collection(
     response_model=CollectionDeletionPlanOut,
 )
 def plan_collection_deletion(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CollectionDeleter,
     retirement_claim_id: str | None = None,
@@ -404,7 +405,7 @@ def plan_collection_deletion(
     response_model=CollectionDeletionResultOut,
 )
 def delete_collection(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     request: DeleteCollectionRequest,
     container: ContainerDep,
     principal: CollectionDeleter,

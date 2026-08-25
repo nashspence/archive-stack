@@ -12,12 +12,8 @@ from typer.testing import CliRunner
 
 RUNNER = CliRunner()
 COLLECTION_ID = 1
-LAYOUT = {
-    "pack_source_bytes": 1024,
-    "pack_files": 100,
+REGISTRATION_CONSTRAINTS = {
     "pack_member_bytes": 8,
-    "pack_part_plaintext_bytes": 5 * 1024 * 1024,
-    "raw_volume_plaintext_bytes": 10 * 1024 * 1024,
     "raw_part_plaintext_bytes": 5 * 1024 * 1024,
 }
 
@@ -231,7 +227,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             return {
                 "collection_id": COLLECTION_ID,
                 "state": "open",
-                "layout": LAYOUT,
+                "registration_constraints": REGISTRATION_CONSTRAINTS,
             }
 
         def register_collection_upload_session_files(
@@ -239,10 +235,10 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             collection_id: int,
             files: list[dict[str, object]],
             *,
-            layout: object,
+            registration_constraints: object,
         ) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
-            assert layout.model_dump() == LAYOUT
+            assert registration_constraints.model_dump() == REGISTRATION_CONSTRAINTS
             registered.extend(files)
             return {"files": files}
 
@@ -329,7 +325,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
                 "state": "finalized",
                 "files_total": 2,
                 "bytes_total": 10,
-                "layout": None,
+                "registration_constraints": None,
             }
 
     monkeypatch.setenv("RIVERHOG_CLI_PLAIN", "1")
@@ -363,7 +359,7 @@ def test_upload_retry_returns_an_already_finalized_collection(
         "files_uploaded": 1,
         "bytes_total": 5,
         "uploaded_bytes": 5,
-        "layout": None,
+        "registration_constraints": None,
     }
 
     class Api:

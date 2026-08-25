@@ -36,6 +36,10 @@ def _state_id(value: str) -> str:
     return require_canonical_uuid_urn(value, "current_state_id")
 
 
+def _entry_id(value: str) -> str:
+    return require_canonical_uuid_urn(value, "entry_id")
+
+
 type ProvenanceJournalId = Annotated[
     str,
     Field(pattern=CANONICAL_UUID_URN_PATTERN),
@@ -45,6 +49,11 @@ type ProvenanceStateId = Annotated[
     str,
     Field(pattern=CANONICAL_UUID_URN_PATTERN),
     AfterValidator(_state_id),
+]
+type ProvenanceEntryId = Annotated[
+    str,
+    Field(pattern=CANONICAL_UUID_URN_PATTERN),
+    AfterValidator(_entry_id),
 ]
 
 
@@ -60,6 +69,7 @@ class ProvenanceJournalStateReference(BaseModel):
 __all__ = [
     "CANONICAL_UUID_URN_PATTERN",
     "ProvenanceJournalId",
+    "ProvenanceEntryId",
     "ProvenanceJournalStateReference",
     "ProvenanceStateId",
     "require_canonical_uuid_urn",

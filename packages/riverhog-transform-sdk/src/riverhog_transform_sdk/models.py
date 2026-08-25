@@ -11,7 +11,12 @@ from riverhog_protocol.collection_workflows import (
     OperationIdentity,
     RecipeIdentity,
 )
-from riverhog_protocol.paths import normalize_relpath, normalize_tag
+from riverhog_protocol.paths import (
+    CollectionId,
+    normalize_relpath,
+    normalize_tag,
+    validate_collection_id,
+)
 
 
 def _sha256(value: str, label: str) -> str:
@@ -81,14 +86,13 @@ class ClaimedArtifact:
 class DerivedCollectionReceipt:
     """Finalized output identity returned by a transform target."""
 
-    collection_id: int
+    collection_id: CollectionId
     archive_root_sha256: str
     content_identity: str
     derivation: CollectionDerivation
 
     def __post_init__(self) -> None:
-        if isinstance(self.collection_id, bool) or self.collection_id < 1:
-            raise ValueError("derived collection id must be positive")
+        object.__setattr__(self, "collection_id", validate_collection_id(self.collection_id))
         object.__setattr__(
             self,
             "archive_root_sha256",

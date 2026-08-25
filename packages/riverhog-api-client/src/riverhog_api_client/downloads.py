@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
+from riverhog_protocol import CollectionId
+
 DEFAULT_DOWNLOAD_CONCURRENCY = 4
 DEFAULT_DOWNLOAD_WINDOW = 8
 MAX_DOWNLOAD_CONCURRENCY = 64
@@ -21,7 +23,7 @@ DownloadHeartbeat = Callable[[], None]
 
 @dataclass(frozen=True, slots=True)
 class RetrievalDownload:
-    collection_id: int
+    collection_id: CollectionId
     path: str
     output: Path
     expected_bytes: int
@@ -33,7 +35,7 @@ class RetrievalDownloadApi(Protocol):
         self,
         job_id: str,
         *,
-        collection_id: int,
+        collection_id: CollectionId,
         path: str,
         output: Path,
         expected_bytes: int,

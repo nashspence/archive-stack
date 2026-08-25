@@ -397,6 +397,32 @@ def test_binding_closes_errors_without_exposing_provider_exception_text() -> Non
     assert b"internal_failure" in body
 
 
+def test_adapter_implementation_value_error_is_a_server_fault() -> None:
+    class FaultingAdapter(MemoryAdapter):
+        def create_multipart_upload(
+            self,
+            _request: MultipartCreateRequest,
+        ) -> MultipartUpload:
+            raise ValueError("private adapter defect")
+
+    request = MultipartCreateRequest(
+        object_path="archives/id/object",
+        content_type="application/octet-stream",
+        identity_metadata={"riverhog-format": "fixture/v1"},
+        placement="archive",
+    )
+    response = StorageAdapterHttpBinding(FaultingAdapter()).handle(
+        "POST",
+        "/v1/multipart/create",
+        request.model_dump_json(exclude_none=True).encode(),
+    )
+
+    assert response.status == 500
+    assert isinstance(response.body, bytes)
+    assert b'"code":"internal_failure"' in response.body
+    assert b"private adapter defect" not in response.body
+
+
 def test_binding_enforces_advertised_multipart_limits() -> None:
     class LimitedAdapter(MemoryAdapter):
         def descriptor(self) -> AdapterDescriptor:

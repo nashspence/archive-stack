@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 import pytest
-from http_api_contracts import operation_openapi
+from http_api_contracts import http_operation_for_request, operation_openapi
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 from riverhog_protocol import Conflict, Unauthorized
@@ -806,7 +806,7 @@ def test_framework_neutral_target_http_binding() -> None:
     assert binding.handle("PATCH", "/v1/target").status == 405
 
 
-def test_target_http_binding_maps_operation_schema_rejections_to_a_client_error() -> None:
+def test_target_http_binding_treats_untyped_service_schema_faults_as_server_faults() -> None:
     operation, target, request = _request()
     status = _success_status(operation, request)
 
@@ -830,8 +830,31 @@ def test_target_http_binding_maps_operation_schema_rejections_to_a_client_error(
         preflight_request.model_dump_json(exclude_none=True).encode(),
     )
 
-    assert response.status == 400
-    assert b'"code":"invalid_target_request"' in response.body
+    assert response.status == 500
+    assert b'"code":"target_failed"' in response.body
+
+
+def test_target_operation_matching_enforces_the_declared_job_identity() -> None:
+    valid_path = "/v1/jobs/" + _sha("a")
+
+    assert http_operation_for_request(TARGET_HTTP_OPERATIONS, "GET", valid_path) is not None
+    assert (
+        http_operation_for_request(
+            TARGET_HTTP_OPERATIONS,
+            "GET",
+            "/v1/jobs/not-a-sha",
+        )
+        is None
+    )
+
+    operation, target, request = _request()
+    status = _success_status(operation, request)
+    response = TargetHttpBinding(BindingTargetService(target, request, status)).handle(
+        "GET",
+        "/v1/jobs/not-a-sha",
+    )
+    assert response.status == 404
+    assert b'"code":"not_found"' in response.body
 
 
 def test_persistent_target_service_uses_canonical_public_error_codes(tmp_path: Path) -> None:
@@ -857,6 +880,8 @@ def test_persistent_target_service_uses_canonical_public_error_codes(tmp_path: P
             service.preflight(preflight.model_copy(update={"operation_contract_sha256": _sha("0")}))
         with pytest.raises(TargetServiceError) as operation_error:
             service.preflight(preflight.model_copy(update={"operation_id": "unknown/v1"}))
+        with pytest.raises(TargetServiceError) as request_error:
+            service.preflight(preflight.model_copy(update={"intent": {}}))
         with pytest.raises(TargetServiceError) as absence_error:
             service.get_job(_sha("0"))
     finally:
@@ -866,12 +891,14 @@ def test_persistent_target_service_uses_canonical_public_error_codes(tmp_path: P
         protocol_error.value.code,
         contract_error.value.code,
         operation_error.value.code,
+        request_error.value.code,
         absence_error.value.code,
     } == {
         "target_protocol_mismatch",
         "operation_contract_mismatch",
         "unsupported_operation",
         "job_not_found",
+        "invalid_target_request",
     }
 
 

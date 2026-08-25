@@ -283,6 +283,25 @@ def test_protocol_identities_reject_undeclared_or_ambiguous_results() -> None:
     assert error.status == 400
 
 
+def test_sampler_implementation_value_error_is_a_server_fault() -> None:
+    descriptor = _descriptor()
+    request = _request(descriptor)
+
+    class FaultingSampler(FixtureSampler):
+        def sample(self, _request: SamplerRequest) -> SamplerResult:
+            raise ValueError("private sampler defect")
+
+    response = SamplerHttpBinding(FaultingSampler()).handle(
+        "POST",
+        "/v1/sample",
+        request.model_dump_json(exclude_none=True).encode(),
+    )
+
+    assert response.status == 500
+    assert json.loads(response.body)["error"]["code"] == "sampler_failed"
+    assert b"private sampler defect" not in response.body
+
+
 def test_sampler_terminal_outcomes_keep_inapplicability_and_failure_distinct() -> None:
     descriptor = _descriptor()
     request = _request(descriptor)

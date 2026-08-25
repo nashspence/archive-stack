@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from http_api_contracts import error_responses, operation_interface
 from riverhog_protocol import (
     ArchiveStoreName,
+    CollectionIdParameter,
     RetrievalCacheProtection,
     RetrievalCacheSort,
     RetrievalCacheState,
@@ -55,7 +56,7 @@ def list_retrieval_cache_objects(
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
     tag: Annotated[CanonicalTag | None, Query()] = None,
-    collection_id: int | None = Query(None, ge=1),
+    collection_id: Annotated[CollectionIdParameter | None, Query()] = None,
     source_store: Annotated[ArchiveStoreName | None, Query()] = None,
     state: Annotated[RetrievalCacheState | None, Query()] = None,
     protection: Annotated[RetrievalCacheProtection | None, Query()] = None,
@@ -90,7 +91,7 @@ def list_retrieval_cache_objects(
     response_model=RetrievalCacheObjectOut,
 )
 def get_retrieval_cache_object(
-    collection_id: int,
+    collection_id: CollectionIdParameter,
     source_store: ArchiveStoreName,
     object_id: str,
     principal: CatalogReader,
@@ -246,7 +247,7 @@ def download_retrieval_file(
     principal: RetrievalManager,
     container: ContainerDep,
     http_request: Request,
-    collection_id: int = Query(),
+    collection_id: Annotated[CollectionIdParameter, Query()],
     path: str = Query(),
     range_header: Annotated[str | None, Header(alias="Range")] = None,
     if_none_match: Annotated[str | None, Header(alias="If-None-Match")] = None,

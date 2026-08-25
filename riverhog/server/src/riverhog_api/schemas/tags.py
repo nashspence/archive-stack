@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import ConfigDict, field_validator, model_validator
-from riverhog_protocol import SortOrder, TagSort
+from riverhog_protocol import CollectionId, SortOrder, TagSort
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.schemas.common import RiverhogModel
@@ -45,7 +45,7 @@ class ReplaceCollectionTagsRequest(RiverhogModel):
 
 
 class CollectionTagsOut(RiverhogModel):
-    collection_id: int
+    collection_id: CollectionId
     metadata_revision: int
     record_etag: str
     tags: list[CanonicalTag]

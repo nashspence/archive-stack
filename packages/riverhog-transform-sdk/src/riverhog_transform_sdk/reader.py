@@ -13,6 +13,7 @@ from riverhog_protocol.collection_workflows import (
     PRODUCER_EVIDENCE_PATH,
     CollectionRootIdentity,
 )
+from riverhog_protocol.paths import CollectionId
 
 from riverhog_transform_sdk.models import ClaimedArtifact
 
@@ -23,7 +24,7 @@ RetrievalPolicy = Literal["available-only", "allow"]
 
 
 class ClaimedCollectionApi(Protocol):
-    def get_collection(self, collection_id: int) -> dict[str, Any]: ...
+    def get_collection(self, collection_id: CollectionId) -> dict[str, Any]: ...
 
     def search(
         self,
@@ -33,13 +34,13 @@ class ClaimedCollectionApi(Protocol):
         per_page: int = 25,
         sort: str = "file_ref",
         order: str = "asc",
-        collection: int | None = None,
+        collection: CollectionId | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]: ...
 
     def plan_retrieval(
         self,
-        files: Sequence[tuple[int, str]],
+        files: Sequence[tuple[CollectionId, str]],
         *,
         lease_seconds: int | None = None,
         restore_policy: RetrievalPolicy = "available-only",
@@ -47,7 +48,7 @@ class ClaimedCollectionApi(Protocol):
 
     def create_retrieval_job(
         self,
-        files: Sequence[tuple[int, str]],
+        files: Sequence[tuple[CollectionId, str]],
         *,
         plan_etag: str,
         lease_seconds: int | None = None,
@@ -67,7 +68,7 @@ class ClaimedCollectionApi(Protocol):
         self,
         job_id: str,
         *,
-        collection_id: int,
+        collection_id: CollectionId,
         path: str,
         output: Path,
         expected_bytes: int,
@@ -78,7 +79,7 @@ class ClaimedCollectionApi(Protocol):
         self,
         job_id: str,
         *,
-        collection_id: int,
+        collection_id: CollectionId,
         path: str,
         expected_bytes: int,
         expected_sha256: str,

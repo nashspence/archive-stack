@@ -5,6 +5,7 @@ from pydantic import TypeAdapter, ValidationError
 from riverhog_protocol import (
     ArchiveStoreName,
     RetrievalFileReferenceSetDocument,
+    validate_archive_store_name,
 )
 from riverhog_protocol.paths import CanonicalRelPath
 
@@ -66,3 +67,5 @@ def test_archive_store_name_is_provider_agnostic_and_canonical(value: str) -> No
 def test_archive_store_name_rejects_aliases(value: str) -> None:
     with pytest.raises(ValidationError):
         TypeAdapter(ArchiveStoreName).validate_python(value, strict=True)
+    with pytest.raises(ValueError):
+        validate_archive_store_name(value)

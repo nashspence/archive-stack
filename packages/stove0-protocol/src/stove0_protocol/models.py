@@ -23,7 +23,7 @@ from riverhog_protocol.collection_workflows import (
     OperationIdentity,
     RecipeIdentity,
 )
-from riverhog_protocol.paths import normalize_relpath, normalize_tag
+from riverhog_protocol.paths import CollectionId, normalize_relpath, normalize_tag
 
 from stove0_protocol.jcs import canonical_json_bytes, canonical_json_sha256
 
@@ -99,7 +99,7 @@ class JsonSchemaDocument(Stove0ProtocolModel):
 
 
 class CollectionRootRef(Stove0ProtocolModel):
-    collection_id: int = Field(ge=1)
+    collection_id: CollectionId
     archive_root_sha256: Sha256
     content_identity: Sha256
 

@@ -259,12 +259,8 @@ class UploadApi:
             "collection_id": 7,
             "resumed": self.session_calls > 1,
             "state": "open",
-            "layout": {
-                "pack_source_bytes": 1024,
-                "pack_files": 16,
+            "registration_constraints": {
                 "pack_member_bytes": 1024,
-                "pack_part_plaintext_bytes": 65536,
-                "raw_volume_plaintext_bytes": 262144,
                 "raw_part_plaintext_bytes": 65536,
             },
         }
@@ -274,9 +270,9 @@ class UploadApi:
         _collection_id: int,
         files: Sequence[Mapping[str, Any]],
         *,
-        layout: object,
+        registration_constraints: object,
     ) -> dict[str, Any]:
-        assert layout.raw_part_plaintext_bytes == 65536
+        assert registration_constraints.raw_part_plaintext_bytes == 65536
         batch = [dict(item) for item in files]
         self.registration_batches.append(batch)
         existing = {str(item["path"]): item for item in self.registered}
@@ -471,7 +467,7 @@ class ProvenanceTransformApi(UploadApi):
         collection_id: int,
         files: Sequence[Mapping[str, Any]],
         *,
-        layout: object,
+        registration_constraints: object,
     ) -> dict[str, Any]:
         if self.fail_registration_once:
             self.fail_registration_once = False
@@ -479,7 +475,7 @@ class ProvenanceTransformApi(UploadApi):
         return super().register_collection_upload_session_files(
             collection_id,
             files,
-            layout=layout,
+            registration_constraints=registration_constraints,
         )
 
 
