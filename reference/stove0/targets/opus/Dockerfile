@@ -32,10 +32,12 @@ COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contracts
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/riverhog-transform-sdk packages/riverhog-transform-sdk
-COPY packages/stove0-media-archive-contracts packages/stove0-media-archive-contracts
+COPY packages/stove0-media-archive-target-contracts packages/stove0-media-archive-target-contracts
+COPY packages/stove0-media-archive-target-support packages/stove0-media-archive-target-support
+COPY packages/stove0-media-metadata-observer-contracts packages/stove0-media-metadata-observer-contracts
 COPY packages/stove0-observer-protocol packages/stove0-observer-protocol
 COPY packages/stove0-protocol packages/stove0-protocol
-COPY packages/stove0-review-contracts packages/stove0-review-contracts
+COPY packages/stove0-review-target-contracts packages/stove0-review-target-contracts
 COPY packages/stove0-review-sampler-client packages/stove0-review-sampler-client
 COPY packages/stove0-review-sampler-protocol packages/stove0-review-sampler-protocol
 COPY packages/stove0-review-sampler-support packages/stove0-review-sampler-support

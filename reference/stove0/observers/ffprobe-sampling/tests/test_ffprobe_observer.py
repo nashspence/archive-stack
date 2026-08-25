@@ -9,13 +9,13 @@ from fastapi.testclient import TestClient
 from stove0_ffprobe_sampling_observer import FfprobeSamplingObserver
 from stove0_ffprobe_sampling_observer import app as observer_app
 from stove0_ffprobe_sampling_observer.app import create_app
+from stove0_media_sampling_observer_contracts import MEDIA_SAMPLING_OBSERVER_CONTRACT
 from stove0_observer_protocol import ObservationRequest, ObservationRequestPayload
 from stove0_observer_support import ObservationRuntime
 from stove0_protocol import (
     ArtifactSubject,
     CollectionRootRef,
 )
-from stove0_review_contracts import MEDIA_SAMPLING_OBSERVER_CONTRACT
 
 
 def _sha(character: str) -> str:

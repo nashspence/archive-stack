@@ -25,14 +25,6 @@ from stove0_protocol import (
     WorkIdentity,
     WorkPayload,
 )
-from stove0_review_contracts import (
-    REVIEW_MATERIALIZE_OPERATION,
-    REVIEW_RCLONE_DELIVER_OPERATION,
-    REVIEW_SOURCE_ROLE,
-    ReviewSamplePlan,
-    ReviewSamplePlanPayload,
-    ReviewSampleWindow,
-)
 from stove0_review_sampler_client import ReviewSamplerClient
 from stove0_review_sampler_protocol import (
     SamplerDescriptor,
@@ -47,6 +39,14 @@ from stove0_review_target import RcloneReviewDestination, ReviewTargetService, S
 from stove0_review_target import app as review_app
 from stove0_review_target import target as review_target
 from stove0_review_target.app import ReviewTargetConfig, SamplerConfig, create_app
+from stove0_review_target_contracts import (
+    REVIEW_MATERIALIZE_OPERATION,
+    REVIEW_RCLONE_DELIVER_OPERATION,
+    REVIEW_SOURCE_ROLE,
+    ReviewSamplePlan,
+    ReviewSamplePlanPayload,
+    ReviewSampleWindow,
+)
 from stove0_target_support import (
     InputArtifact,
     OutputArtifact,

@@ -18,8 +18,20 @@ OBSERVER_PROTOCOL_ROOT = REPO_ROOT / "packages" / "stove0-observer-protocol" / "
 OBSERVER_ROOT = REPO_ROOT / "packages" / "stove0-observer-support" / "src"
 TARGET_PROTOCOL_ROOT = REPO_ROOT / "packages" / "stove0-target-protocol" / "src"
 TARGET_ROOT = REPO_ROOT / "packages" / "stove0-target-support" / "src"
-REVIEW_CONTRACT_ROOT = REPO_ROOT / "packages" / "stove0-review-contracts" / "src"
-MEDIA_ARCHIVE_CONTRACT_ROOT = REPO_ROOT / "packages" / "stove0-media-archive-contracts" / "src"
+MEDIA_METADATA_OBSERVER_CONTRACT_ROOT = (
+    REPO_ROOT / "packages" / "stove0-media-metadata-observer-contracts" / "src"
+)
+MEDIA_SAMPLING_OBSERVER_CONTRACT_ROOT = (
+    REPO_ROOT / "packages" / "stove0-media-sampling-observer-contracts" / "src"
+)
+MEDIA_ARCHIVE_TARGET_CONTRACT_ROOT = (
+    REPO_ROOT / "packages" / "stove0-media-archive-target-contracts" / "src"
+)
+MEDIA_ARCHIVE_TARGET_SUPPORT_ROOT = (
+    REPO_ROOT / "packages" / "stove0-media-archive-target-support" / "src"
+)
+REVIEW_TARGET_CONTRACT_ROOT = REPO_ROOT / "packages" / "stove0-review-target-contracts" / "src"
+REVIEW_PLANNING_ROOT = REPO_ROOT / "packages" / "stove0-review-planning" / "src"
 CALLER_ROOTS = (
     REPO_ROOT / "packages" / "stove0-observer-client" / "src",
     REPO_ROOT / "packages" / "stove0-target-client" / "src",
@@ -54,7 +66,12 @@ EXTENSION_ROOTS = (
     OBSERVER_ROOT,
     TARGET_PROTOCOL_ROOT,
     TARGET_ROOT,
-    REVIEW_CONTRACT_ROOT,
+    MEDIA_METADATA_OBSERVER_CONTRACT_ROOT,
+    MEDIA_SAMPLING_OBSERVER_CONTRACT_ROOT,
+    MEDIA_ARCHIVE_TARGET_CONTRACT_ROOT,
+    MEDIA_ARCHIVE_TARGET_SUPPORT_ROOT,
+    REVIEW_TARGET_CONTRACT_ROOT,
+    REVIEW_PLANNING_ROOT,
 )
 FORBIDDEN_CORE_IMPORTS = {
     "PIL",
@@ -123,16 +140,61 @@ def test_extension_surfaces_do_not_depend_on_each_other() -> None:
     }
 
 
-def test_semantic_contract_packs_depend_on_protocols_not_runtime_support() -> None:
-    review_imports = {
-        root for path in REVIEW_CONTRACT_ROOT.rglob("*.py") for root in _import_roots(path)
+def test_observer_owned_semantics_do_not_depend_on_target_authority() -> None:
+    forbidden = {
+        "stove0_media_archive_target_contracts",
+        "stove0_media_archive_target_support",
+        "stove0_review_planning",
+        "stove0_review_target_contracts",
+        "stove0_target_protocol",
+        "stove0_target_support",
     }
+    for root in (
+        MEDIA_METADATA_OBSERVER_CONTRACT_ROOT,
+        MEDIA_SAMPLING_OBSERVER_CONTRACT_ROOT,
+    ):
+        imports = {item for path in root.rglob("*.py") for item in _import_roots(path)}
+        assert "stove0_observer_protocol" in imports
+        assert not imports & forbidden
+
+
+def test_target_owned_semantics_do_not_depend_on_observer_runtime() -> None:
     media_imports = {
-        root for path in MEDIA_ARCHIVE_CONTRACT_ROOT.rglob("*.py") for root in _import_roots(path)
+        item
+        for path in MEDIA_ARCHIVE_TARGET_CONTRACT_ROOT.rglob("*.py")
+        for item in _import_roots(path)
     }
-    assert {"stove0_observer_protocol", "stove0_target_protocol"} <= review_imports
+    review_imports = {
+        item for path in REVIEW_TARGET_CONTRACT_ROOT.rglob("*.py") for item in _import_roots(path)
+    }
     assert "stove0_target_protocol" in media_imports
-    for imports in (review_imports, media_imports):
+    assert "stove0_media_metadata_observer_contracts" in media_imports
+    assert "stove0_target_protocol" in review_imports
+    assert "stove0_media_sampling_observer_contracts" not in review_imports
+    for imports in (media_imports, review_imports):
+        assert "stove0_observer_support" not in imports
+        assert "stove0_target_support" not in imports
+
+
+def test_only_explicit_support_bridges_join_observer_and_target_semantics() -> None:
+    media_imports = {
+        item
+        for path in MEDIA_ARCHIVE_TARGET_SUPPORT_ROOT.rglob("*.py")
+        for item in _import_roots(path)
+    }
+    review_imports = {
+        item for path in REVIEW_PLANNING_ROOT.rglob("*.py") for item in _import_roots(path)
+    }
+    assert {
+        "stove0_media_archive_target_contracts",
+        "stove0_media_metadata_observer_contracts",
+    } <= media_imports
+    assert {
+        "stove0_media_sampling_observer_contracts",
+        "stove0_review_target_contracts",
+    } <= review_imports
+    for imports in (media_imports, review_imports):
+        assert "stove0_core" not in imports
         assert "stove0_observer_support" not in imports
         assert "stove0_target_support" not in imports
 
@@ -142,8 +204,13 @@ def test_protocol_package_is_independent_of_implementations_and_stove0_core() ->
         "stove0_core",
         "stove0_observer_support",
         "stove0_target_support",
-        "stove0_review_contracts",
+        "stove0_media_archive_target_contracts",
+        "stove0_media_archive_target_support",
+        "stove0_media_metadata_observer_contracts",
+        "stove0_media_sampling_observer_contracts",
         "stove0_observer_protocol",
+        "stove0_review_planning",
+        "stove0_review_target_contracts",
         "stove0_target_protocol",
     }
     imports = {root for path in PROTOCOL_ROOT.rglob("*.py") for root in _import_roots(path)}
@@ -167,16 +234,21 @@ def test_durable_stove0_work_schema_contains_no_bearer_material() -> None:
 
 def test_stove0_core_does_not_import_maintained_review_semantics() -> None:
     imports = {root for path in STOVE0_CORE.rglob("*.py") for root in _import_roots(path)}
-    assert "stove0_review_contracts" not in imports
+    assert "stove0_review_planning" not in imports
+    assert "stove0_review_target_contracts" not in imports
 
 
 def test_stove0_server_consumes_component_boundaries_only_as_protocols_and_callers() -> None:
     imports = {root for path in STOVE0_SERVER.rglob("*.py") for root in _import_roots(path)}
     assert not imports & {
         "riverhog_transform_sdk",
-        "stove0_media_archive_contracts",
+        "stove0_media_archive_target_contracts",
+        "stove0_media_archive_target_support",
+        "stove0_media_metadata_observer_contracts",
+        "stove0_media_sampling_observer_contracts",
         "stove0_observer_support",
-        "stove0_review_contracts",
+        "stove0_review_planning",
+        "stove0_review_target_contracts",
         "stove0_review_sampler_support",
         "stove0_target_support",
         "stove0_ffprobe_sampling_observer",
@@ -198,9 +270,13 @@ def test_caller_packages_do_not_pull_in_author_or_implementation_dependencies() 
     assert not imports & {
         "riverhog_transform_sdk",
         "stove0_core",
-        "stove0_media_archive_contracts",
+        "stove0_media_archive_target_contracts",
+        "stove0_media_archive_target_support",
+        "stove0_media_metadata_observer_contracts",
+        "stove0_media_sampling_observer_contracts",
         "stove0_observer_support",
-        "stove0_review_contracts",
+        "stove0_review_planning",
+        "stove0_review_target_contracts",
         "stove0_review_sampler_support",
         "stove0_target_support",
     }
@@ -229,11 +305,11 @@ def test_maintained_targets_publish_exact_dispositions_through_shared_runtime() 
         assert "stove0_target_support" in _import_roots(path)
 
 
-def test_review_contract_pack_is_not_a_stove0_product_plugin() -> None:
+def test_review_planning_bridge_is_not_a_stove0_product_plugin() -> None:
     forbidden = {
         "stove0_core",
         "riverhog_api",
         "riverhog_core",
     }
-    imports = {root for path in REVIEW_CONTRACT_ROOT.rglob("*.py") for root in _import_roots(path)}
+    imports = {root for path in REVIEW_PLANNING_ROOT.rglob("*.py") for root in _import_roots(path)}
     assert not (imports & forbidden)

@@ -19,7 +19,8 @@ dependencies = [
   "http-api-contracts>=0.1,<0.2",
   "riverhog-api-client>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
-  "stove0-media-archive-contracts>=0.1,<0.2",
+  "stove0-media-archive-target-contracts>=0.1,<0.2",
+  "stove0-media-archive-target-support>=0.1,<0.2",
   "stove0-protocol>=0.1,<0.2",
   "stove0-target-support>=0.1,<0.2",
   "uvicorn[standard]>=0.30,<1.0",
@@ -32,7 +33,8 @@ stove0-opus-target = "stove0_opus_target.app:target_main"
 http-api-contracts = { workspace = true }
 riverhog-api-client = { workspace = true }
 riverhog-protocol = { workspace = true }
-stove0-media-archive-contracts = { workspace = true }
+stove0-media-archive-target-contracts = { workspace = true }
+stove0-media-archive-target-support = { workspace = true }
 stove0-protocol = { workspace = true }
 stove0-target-support = { workspace = true }
 

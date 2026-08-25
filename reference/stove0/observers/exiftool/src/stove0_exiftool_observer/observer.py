@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from pydantic import JsonValue
-from stove0_media_archive_contracts import (
+from stove0_media_metadata_observer_contracts import (
     MEDIA_METADATA_OBSERVER_CONTRACT,
     MediaArtifactFacts,
     MediaFactEvidence,

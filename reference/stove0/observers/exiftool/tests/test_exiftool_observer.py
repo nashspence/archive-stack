@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from stove0_exiftool_observer import ExiftoolObserver
 from stove0_exiftool_observer import app as observer_app
 from stove0_exiftool_observer.app import create_app
-from stove0_media_archive_contracts import (
+from stove0_media_metadata_observer_contracts import (
     MEDIA_METADATA_OBSERVER_CONTRACT,
     MediaMetadataFacts,
 )

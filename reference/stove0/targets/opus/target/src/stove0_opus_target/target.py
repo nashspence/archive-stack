@@ -11,12 +11,14 @@ from pathlib import Path, PurePosixPath
 
 from riverhog_api_client import ProducerFile
 from riverhog_protocol import ArtifactDisposition, canonical_json_sha256
-from stove0_media_archive_contracts import (
+from stove0_media_archive_target_contracts import (
     AUDIO_ARCHIVE_OPERATION,
     AUDIO_ARCHIVE_ROLE,
     METADATA_XMP_ROLE,
     SOURCE_ARTIFACT_ROLE,
     AudioArchiveIntent,
+)
+from stove0_media_archive_target_support import (
     MediaArchiveProjection,
     ffmpeg_container_metadata_args,
     render_projection_xmp,

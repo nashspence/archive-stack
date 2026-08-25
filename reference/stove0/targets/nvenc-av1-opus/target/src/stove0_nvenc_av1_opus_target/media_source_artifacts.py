@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from pydantic import JsonValue
-from stove0_media_archive_contracts import Av1OpusArchiveIntent
+from stove0_media_archive_target_contracts import Av1OpusArchiveIntent
 
 from stove0_nvenc_av1_opus_target import source_artifacts
 

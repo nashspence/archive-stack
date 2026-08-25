@@ -47,10 +47,14 @@ MYPY_SOURCES = \
 	packages/stove0-observer-protocol/src \
 	packages/stove0-observer-support/src \
 	packages/stove0-operator-contracts/src \
-	packages/stove0-media-archive-contracts/src \
+	packages/stove0-media-archive-target-contracts/src \
+	packages/stove0-media-archive-target-support/src \
+	packages/stove0-media-metadata-observer-contracts/src \
+	packages/stove0-media-sampling-observer-contracts/src \
 	packages/stove0-protocol/src \
 	packages/stove0-recipe-config/src \
-	packages/stove0-review-contracts/src \
+	packages/stove0-review-planning/src \
+	packages/stove0-review-target-contracts/src \
 	packages/stove0-review-sampler-client/src \
 	packages/stove0-review-sampler-protocol/src \
 	packages/stove0-review-sampler-support/src \

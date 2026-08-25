@@ -23,7 +23,7 @@ dependencies = [
   "riverhog-protocol>=0.1,<0.2",
   "riverhog-transform-sdk>=0.1,<0.2",
   "stove0-protocol>=0.1,<0.2",
-  "stove0-review-contracts>=0.1,<0.2",
+  "stove0-review-target-contracts>=0.1,<0.2",
   "stove0-review-sampler-client>=0.1,<0.2",
   "stove0-review-sampler-protocol>=0.1,<0.2",
   "stove0-target-support>=0.1,<0.2",
@@ -39,7 +39,7 @@ riverhog-api-client = { workspace = true }
 riverhog-protocol = { workspace = true }
 riverhog-transform-sdk = { workspace = true }
 stove0-protocol = { workspace = true }
-stove0-review-contracts = { workspace = true }
+stove0-review-target-contracts = { workspace = true }
 stove0-review-sampler-client = { workspace = true }
 stove0-review-sampler-protocol = { workspace = true }
 stove0-target-support = { workspace = true }
