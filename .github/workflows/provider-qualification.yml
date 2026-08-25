@@ -27,7 +27,7 @@ on:
         type: choice
         options:
           - regular
-          - multipart
+          - resumable
 
 permissions:
   actions: read
@@ -128,9 +128,9 @@ jobs:
             source_ref="${REQUESTED_REF:-release/v1}"
             profile="${REQUESTED_PROFILE:-regular}"
             if [[ "$EVENT_NAME" == schedule && "$(date -u +%d)" == 15 ]]; then
-              profile=multipart
+              profile=resumable
             fi
-            if [[ "$profile" != regular && "$profile" != multipart ]]; then
+            if [[ "$profile" != regular && "$profile" != resumable ]]; then
               printf 'Unsupported provider qualification corpus: %s\n' "$profile" >&2
               exit 2
             fi

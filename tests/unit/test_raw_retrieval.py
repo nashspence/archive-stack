@@ -4,14 +4,16 @@ import hashlib
 import threading
 import time
 
-from riverhog_age import PORTABLE_MULTIPART_MIN_PART_BYTES, ResumableAgeScryptSession
-from riverhog_core.domain.archive import RawVolumePlan, StoredPartReceipt
+from riverhog_age import ResumableAgeScryptSession
+from riverhog_core.domain.archive import RawVolumePlan, StoredArchivePart
 from riverhog_core.raw_retrieval import (
     RawFileRangeReader,
     RawVolumeRangeReader,
     RawVolumeRetrievalSource,
 )
-from riverhog_core.raw_volume import raw_multipart_part_plans
+from riverhog_core.raw_volume import raw_age_aligned_unit_plans
+
+TEST_ARCHIVE_PART_BYTES = 5 * 1024 * 1024
 
 
 class SlowRangeStore:
@@ -25,12 +27,12 @@ class SlowRangeStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
     ):
-        del object_path, version_id
+        del object_path, revision
         assert expected_bytes == len(self.content)
         with self.lock:
             self.active += 1
@@ -58,10 +60,10 @@ def _source(content: bytes):
     )
     receipts = []
     stored = []
-    for part in raw_multipart_part_plans(
+    for part in raw_age_aligned_unit_plans(
         plan,
         session,
-        target_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
+        target_plaintext_bytes=TEST_ARCHIVE_PART_BYTES,
     ):
         plaintext = content[part.plaintext_start : part.plaintext_end]
         ciphertext = session.encrypt_part(
@@ -71,21 +73,20 @@ def _source(content: bytes):
         )
         stored.append(ciphertext)
         receipts.append(
-            StoredPartReceipt(
-                number=part.part_number,
+            StoredArchivePart(
+                number=part.unit_number,
                 plaintext_start=part.plaintext_start,
                 plaintext_bytes=part.plaintext_len,
                 plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
                 stored_bytes=len(ciphertext),
                 stored_sha256=hashlib.sha256(ciphertext).hexdigest(),
-                etag=f"part-{part.part_number}",
             )
         )
     state = session.export_state(plaintext_size=len(content)).to_json_bytes().decode("utf-8")
     source = RawVolumeRetrievalSource(
         volume_id=plan.volume_id,
         object_path="archives/x/volumes/segment-000000000000.bin.age",
-        version_id="v1",
+        revision="v1",
         source_path=plan.source_path,
         file_offset=0,
         plaintext_bytes=len(content),

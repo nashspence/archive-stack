@@ -189,8 +189,8 @@ def test_storage_adapter_declares_only_operation_applicable_error_vocabularies()
     }
 
     assert by_operation[("GET", "/v1/adapter")] == common
-    assert by_operation[("POST", "/v1/multipart/create")] == common | request
-    assert by_operation[("POST", "/v1/multipart/complete")] == common | request | {
+    assert by_operation[("POST", "/v1/writes/begin")] == common | request
+    assert by_operation[("POST", "/v1/writes/complete")] == common | request | {
         "not_found",
         "identity_conflict",
         "integrity_failure",
@@ -206,4 +206,4 @@ def test_storage_adapter_declares_only_operation_applicable_error_vocabularies()
         "read_expired",
         "integrity_failure",
     }
-    assert by_operation[("POST", "/v1/maintenance/abort-incomplete")] == common | request
+    assert by_operation[("POST", "/v1/maintenance/abort-incomplete-writes")] == common | request

@@ -13,7 +13,7 @@ from riverhog_core.age_range import (
     iter_decrypt_age_plaintext_range,
     plan_age_plaintext_range,
 )
-from riverhog_core.domain.archive import StoredPartReceipt
+from riverhog_core.domain.archive import StoredArchivePart
 from riverhog_core.ports.archive_objects import ArchiveObjectRangeStore
 from riverhog_core.streaming_age import ResumableAgeSessionCache
 from riverhog_core.throughput import (
@@ -34,14 +34,14 @@ TransferTimingObserver = Callable[[TransferTiming], None]
 class RawVolumeRetrievalSource:
     volume_id: str
     object_path: str
-    version_id: str | None
+    revision: str | None
     source_path: str
     file_offset: int
     plaintext_bytes: int
     file_bytes: int
     file_sha256: str
     age_state_json: str
-    parts: tuple[StoredPartReceipt, ...]
+    parts: tuple[StoredArchivePart, ...]
 
     def __post_init__(self) -> None:
         if not self.volume_id.startswith("segment-") or not self.object_path:
@@ -77,7 +77,7 @@ class _RetrievedRawPart:
 
 
 class RawVolumeRangeReader:
-    """Parallel, ordered retrieval of independently authenticated age multipart ranges."""
+    """Parallel, ordered retrieval of independently authenticated age archive-part ranges."""
 
     def __init__(
         self,
@@ -239,7 +239,7 @@ class RawVolumeRangeReader:
         source: RawVolumeRetrievalSource,
         state: UploadState,
         session: ResumableAgeScryptSession,
-        part: StoredPartReceipt,
+        part: StoredArchivePart,
         stored_offset: int,
         queue_wait_seconds: float,
     ) -> _RetrievedRawPart:
@@ -253,7 +253,7 @@ class RawVolumeRangeReader:
                 request_wait_seconds = waited
                 yield from self._store.iter_object_range(
                     object_path=source.object_path,
-                    version_id=source.version_id,
+                    revision=source.revision,
                     expected_bytes=sum(part.stored_bytes for part in source.parts),
                     offset=stored_offset,
                     size=part.stored_bytes,

@@ -11,7 +11,7 @@ authority.
   and workflows but is unnecessary to recover a known copy.
 - Collection ingress writes server-encrypted units directly to immutable final archive keys in
   its selected store; ingress is not a storage tier. Checkpoints, unsealed membership, and
-  multipart uploads are operational state. Sealed objects and published immutable roots alone
+  open resumable writes are operational state. Sealed objects and published immutable roots alone
   are archive authority; retrieval caches are rebuildable.
 - Riverhog's host is the trusted plaintext and encryption boundary. Each collection freezes
   v1 format and opaque passphrase ID before ingress. Configuration holds secrets; plaintext

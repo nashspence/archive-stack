@@ -7,7 +7,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from riverhog_age import CHUNK_SIZE, MultipartPartPlan, ResumableAgeScryptSession, UploadState
+from riverhog_age import CHUNK_SIZE, AgeAlignedUnitPlan, ResumableAgeScryptSession, UploadState
 
 from riverhog_core.throughput import (
     DEFAULT_AGE_DERIVATION_CONCURRENCY,
@@ -17,7 +17,7 @@ from riverhog_core.throughput import (
 
 @dataclass(frozen=True, slots=True)
 class PreparedAgePart:
-    part_number: int
+    unit_number: int
     plaintext_bytes: int
     plaintext_sha256: str
     ciphertext: bytes
@@ -40,7 +40,7 @@ class _PendingSession:
 class ResumableAgeSessionCache:
     """Bounded single-flight cache for the expensive scrypt-derived age session.
 
-    Standard age passphrase files intentionally perform scrypt once per object. Multipart
+    Standard age passphrase files intentionally perform scrypt once per object. Resumable
     workers must not repeat that derivation for every part. This cache permits independent
     objects to derive concurrently while ensuring that concurrent workers for one object
     share one immutable session. The cached object contains only derived encryption state;
@@ -141,16 +141,16 @@ class ResumableAgeSessionCache:
 def prepare_age_part(
     *,
     session: ResumableAgeScryptSession,
-    plan: MultipartPartPlan,
+    plan: AgeAlignedUnitPlan,
     total_plaintext_bytes: int,
     plaintext_chunks: Iterable[bytes],
 ) -> PreparedAgePart:
-    """Encrypt one age-aligned multipart unit without materializing its complete plaintext.
+    """Encrypt one age-aligned archive unit without materializing its complete plaintext.
 
-    Only the final ciphertext body is buffered because portable multipart part-upload APIs
+    Only the final ciphertext body is buffered because resumable segmented-write APIs
     needs a replayable body. Plaintext is consumed, hashed, and encrypted in 64 KiB age
     chunks. The source iterator may contribute one configured read chunk of additional
-    transient plaintext buffering, but a complete multipart part is never retained in
+    transient plaintext buffering, but a complete archive part is never retained in
     plaintext.
     """
 
@@ -236,7 +236,7 @@ def prepare_age_part(
         raise RuntimeError("prepared age part ciphertext byte count mismatch")
     result = bytes(ciphertext)
     return PreparedAgePart(
-        part_number=plan.part_number,
+        unit_number=plan.unit_number,
         plaintext_bytes=consumed,
         plaintext_sha256=plaintext_hasher.hexdigest(),
         ciphertext=result,

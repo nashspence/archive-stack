@@ -137,7 +137,7 @@ class BlockingArchiveStore:
         self.published_metadata.append(manifest)
         return MutableManifestReceipt(
             object_path=f"{archive_storage_prefix}/metadata.json.age",
-            version_id="metadata-version",
+            revision="metadata-version",
             stored_bytes=len(manifest),
             stored_sha256=hashlib.sha256(manifest).hexdigest(),
             published_at="2026-07-18T00:00:00.000000Z",

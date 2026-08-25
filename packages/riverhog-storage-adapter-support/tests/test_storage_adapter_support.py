@@ -8,17 +8,13 @@ from pathlib import Path
 import httpx
 import pytest
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
     ImmutableObjectReceipt,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
-    MultipartPartReceipt,
-    MultipartUpload,
     ObjectHeadRequest,
     ObjectLocator,
     ObjectMetadataReceipt,
@@ -27,6 +23,10 @@ from riverhog_storage_adapter_protocol import (
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterRejection,
+    WriteCompleteRequest,
+    WriteSegmentReceipt,
+    WriteSession,
+    WriteStartRequest,
 )
 from riverhog_storage_adapter_support import (
     StorageAdapterClient,
@@ -40,8 +40,8 @@ from riverhog_storage_adapter_support import (
 
 class MemoryAdapter:
     def __init__(self) -> None:
-        self.created: dict[str, MultipartCreateRequest] = {}
-        self.parts: dict[tuple[str, int], bytes] = {}
+        self.created: dict[str, WriteStartRequest] = {}
+        self.segments: dict[tuple[str, int], bytes] = {}
         self.objects: dict[str, tuple[bytes, dict[str, str], str | None, str]] = {}
         self.small_objects: set[str] = set()
         self.read_requests: list[ReadPreparationRequest] = []
@@ -51,69 +51,69 @@ class MemoryAdapter:
             implementation_id="fixture.storage/v1",
             implementation_version="1.0.0",
             read_mode="immediate",
-            minimum_nonfinal_part_bytes=1,
-            maximum_part_bytes=1024 * 1024,
-            maximum_part_count=10_000,
+            minimum_nonfinal_segment_bytes=1,
+            maximum_segment_bytes=1024 * 1024,
+            maximum_segment_count=10_000,
         )
 
-    def create_multipart_upload(self, request: MultipartCreateRequest) -> MultipartUpload:
-        upload = MultipartUpload(
+    def begin_write(self, request: WriteStartRequest) -> WriteSession:
+        session = WriteSession(
             object_path=request.object_path,
-            upload_id=f"upload-{len(self.created) + 1}",
+            write_token=f"upload-{len(self.created) + 1}",
         )
-        self.created[upload.upload_id] = request
-        return upload
+        self.created[session.write_token] = request
+        return session
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        session: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt:
-        self.parts[(upload.upload_id, number)] = content
-        return MultipartPartReceipt(
+    ) -> WriteSegmentReceipt:
+        self.segments[(session.write_token, number)] = content
+        return WriteSegmentReceipt(
             number=number,
-            part_token=f"part-{number}",
+            segment_token=f"part-{number}",
             stored_bytes=len(content),
         )
 
-    def list_parts(self, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
+    def list_segments(self, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
         return tuple(
-            MultipartPartReceipt(
+            WriteSegmentReceipt(
                 number=number,
-                part_token=f"part-{number}",
+                segment_token=f"part-{number}",
                 stored_bytes=len(content),
             )
-            for (upload_id, number), content in sorted(self.parts.items())
-            if upload_id == upload.upload_id
+            for (write_token, number), content in sorted(self.segments.items())
+            if write_token == session.write_token
         )
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
-        request: MultipartCompleteRequest,
+        request: WriteCompleteRequest,
     ) -> CompletedObjectReceipt:
-        created = self.created[request.upload.upload_id]
+        created = self.created[request.session.write_token]
         content = b"".join(
-            self.parts[(request.upload.upload_id, part.number)] for part in request.parts
+            self.segments[(request.session.write_token, part.number)] for part in request.segments
         )
-        self.objects[request.upload.object_path] = (
+        self.objects[request.session.object_path] = (
             content,
             created.identity_metadata,
             "version-1",
             created.placement,
         )
         return CompletedObjectReceipt(
-            object_path=request.upload.object_path,
+            object_path=request.session.object_path,
             revision="version-1",
             entity_token="completed-token",
             stored_bytes=len(content),
             completed_at="2026-08-21T00:00:00Z",
         )
 
-    def head_completed_object(
+    def find_completed_write(
         self,
-        request: MultipartHeadRequest,
+        request: CompletedWriteLookupRequest,
     ) -> CompletedObjectReceipt | None:
         stored = self.objects.get(request.object_path)
         if stored is None:
@@ -129,8 +129,8 @@ class MemoryAdapter:
             completed_at="2026-08-21T00:00:00Z",
         )
 
-    def abort_multipart_upload(self, upload: MultipartUpload) -> None:
-        self.created.pop(upload.upload_id, None)
+    def abort_write(self, session: WriteSession) -> None:
+        self.created.pop(session.write_token, None)
 
     def put_small_object(
         self,
@@ -218,7 +218,7 @@ class MemoryAdapter:
     def cleanup_read(self, request: ReadPreparationRequest) -> None:
         self.read_requests.append(request)
 
-    def abort_incomplete_uploads(self, request: AbortIncompleteUploadsRequest) -> int:
+    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
         _ = request
         return 0
 
@@ -255,34 +255,34 @@ def _client(
     )
 
 
-def test_client_preserves_multipart_unit_receipts_and_declares_body_lengths() -> None:
+def test_client_preserves_write_segment_receipts_and_declares_body_lengths() -> None:
     adapter = MemoryAdapter()
     requests: list[httpx.Request] = []
     client, http = _client(adapter, requests=requests)
     try:
-        created = client.create_multipart_upload(
-            MultipartCreateRequest(
+        created = client.begin_write(
+            WriteStartRequest(
                 object_path="archives/id/volumes/pack.tar.age",
                 content_type="application/octet-stream",
                 identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
                 placement="archive",
             )
         )
-        first = client.upload_part(upload=created, number=1, content=b"first")
-        second = client.upload_part(upload=created, number=2, content=b"second")
+        first = client.write_segment(session=created, number=1, content=b"first")
+        second = client.write_segment(session=created, number=2, content=b"second")
 
-        assert client.list_parts(created) == (first, second)
-        completed = client.complete_multipart_upload(
-            MultipartCompleteRequest(
-                upload=created,
-                parts=(first, second),
+        assert client.list_segments(created) == (first, second)
+        completed = client.complete_write(
+            WriteCompleteRequest(
+                session=created,
+                segments=(first, second),
                 expected_bytes=11,
                 expected_identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
                 expected_placement="archive",
             )
         )
-        recovered = client.head_completed_object(
-            MultipartHeadRequest(
+        recovered = client.find_completed_write(
+            CompletedWriteLookupRequest(
                 object_path=created.object_path,
                 expected_identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
                 expected_placement="archive",
@@ -292,15 +292,15 @@ def test_client_preserves_multipart_unit_receipts_and_declares_body_lengths() ->
         assert completed == recovered
         assert completed.stored_bytes == 11
         assert adapter.objects[created.object_path][0] == b"firstsecond"
-        part_requests = [
-            request for request in requests if request.url.path == "/v1/multipart/part"
+        segment_requests = [
+            request for request in requests if request.url.path == "/v1/writes/segment"
         ]
-        assert len(part_requests) == 2
+        assert len(segment_requests) == 2
         assert all(
             int(request.headers["Content-Length"]) == len(request.content)
-            for request in part_requests
+            for request in segment_requests
         )
-        assert all("Transfer-Encoding" not in request.headers for request in part_requests)
+        assert all("Transfer-Encoding" not in request.headers for request in segment_requests)
     finally:
         client.close()
         http.close()
@@ -399,13 +399,13 @@ def test_binding_closes_errors_without_exposing_provider_exception_text() -> Non
 
 def test_adapter_implementation_value_error_is_a_server_fault() -> None:
     class FaultingAdapter(MemoryAdapter):
-        def create_multipart_upload(
+        def begin_write(
             self,
-            _request: MultipartCreateRequest,
-        ) -> MultipartUpload:
+            _request: WriteStartRequest,
+        ) -> WriteSession:
             raise ValueError("private adapter defect")
 
-    request = MultipartCreateRequest(
+    request = WriteStartRequest(
         object_path="archives/id/object",
         content_type="application/octet-stream",
         identity_metadata={"riverhog-format": "fixture/v1"},
@@ -413,7 +413,7 @@ def test_adapter_implementation_value_error_is_a_server_fault() -> None:
     )
     response = StorageAdapterHttpBinding(FaultingAdapter()).handle(
         "POST",
-        "/v1/multipart/create",
+        "/v1/writes/begin",
         request.model_dump_json(exclude_none=True).encode(),
     )
 
@@ -423,23 +423,23 @@ def test_adapter_implementation_value_error_is_a_server_fault() -> None:
     assert b"private adapter defect" not in response.body
 
 
-def test_binding_enforces_advertised_multipart_limits() -> None:
+def test_binding_enforces_advertised_write_segment_limits() -> None:
     class LimitedAdapter(MemoryAdapter):
         def descriptor(self) -> AdapterDescriptor:
             return AdapterDescriptor(
                 implementation_id="fixture.storage/v1",
                 implementation_version="1.0.0",
                 read_mode="immediate",
-                minimum_nonfinal_part_bytes=4,
-                maximum_part_bytes=5,
-                maximum_part_count=2,
+                minimum_nonfinal_segment_bytes=4,
+                maximum_segment_bytes=5,
+                maximum_segment_count=2,
             )
 
     adapter = LimitedAdapter()
     client, http = _client(adapter)
     try:
-        upload = client.create_multipart_upload(
-            MultipartCreateRequest(
+        upload = client.begin_write(
+            WriteStartRequest(
                 object_path="archives/id/object",
                 content_type="application/octet-stream",
                 identity_metadata={"riverhog-format": "fixture/v1"},
@@ -447,9 +447,9 @@ def test_binding_enforces_advertised_multipart_limits() -> None:
             )
         )
         with pytest.raises(StorageAdapterProtocolError, match="byte limit"):
-            client.upload_part(upload=upload, number=1, content=b"123456")
-        with pytest.raises(StorageAdapterProtocolError, match="part number"):
-            client.upload_part(upload=upload, number=3, content=b"1234")
+            client.write_segment(session=upload, number=1, content=b"123456")
+        with pytest.raises(StorageAdapterProtocolError, match="segment number"):
+            client.write_segment(session=upload, number=3, content=b"1234")
     finally:
         client.close()
         http.close()
@@ -539,11 +539,11 @@ def test_consumer_runnable_conformance_uses_only_the_public_http_contract() -> N
             "exact-metadata",
             "exact-range",
             "identity-conflict",
-            "multipart-reconciliation",
-            "multipart-completion-recovery",
-            "multipart-stream",
+            "write-reconciliation",
+            "write-completion-recovery",
+            "write-stream",
             "read-preparation",
-            "multipart-abort",
+            "write-abort",
             "exact-deletion",
             "version-aware-prefix-cleanup",
         )

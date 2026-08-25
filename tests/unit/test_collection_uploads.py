@@ -57,7 +57,7 @@ from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
 from tests.unit.test_archive_root import MemoryImmutableStore
-from tests.unit.test_pack_upload import MemoryMultipartStore
+from tests.unit.test_pack_upload import MemoryResumableStore
 
 _CREATOR = ApplicationPrincipal(
     app="uploader",
@@ -82,25 +82,25 @@ class _FailOnceProofStamper:
         return FixtureProofStamper().stamp(manifest_path)
 
 
-class _MemoryMultipartCache:
+class _MemoryResumableCache:
     def __init__(self) -> None:
-        self.multipart = MemoryMultipartStore()
+        self.resumable = MemoryResumableStore()
 
-    def multipart_object_store(self, **_: object) -> MemoryMultipartStore:
-        return self.multipart
+    def resumable_object_store(self, **_: object) -> MemoryResumableStore:
+        return self.resumable
 
-    def verify_multipart_object(
+    def verify_resumable_object(
         self,
         *,
         completed: CompletedObjectReceipt,
-        parts: tuple[object, ...] = (),
+        segments: tuple[object, ...] = (),
     ) -> RetrievalCacheReceipt:
-        assert parts
-        content = self.multipart.objects[completed.object_path][0]
+        assert segments
+        content = self.resumable.objects[completed.object_path][0]
         assert len(content) == completed.bytes
         return RetrievalCacheReceipt(
             object_path=completed.object_path,
-            version_id=completed.version_id,
+            revision=completed.revision,
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
             cached_at=completed.completed_at,
@@ -113,7 +113,7 @@ def _service(
     *,
     proof_stamper: ProofStamper | None = None,
 ) -> tuple[SqlAlchemyCollectionUploadService, RuntimeConfig]:
-    service, config, _multipart, _root = _service_with_archive_objects(
+    service, config, _resumable, _root = _service_with_archive_objects(
         tmp_path,
         proof_stamper=proof_stamper,
     )
@@ -129,7 +129,7 @@ def _service_with_archive_objects(
 ) -> tuple[
     SqlAlchemyCollectionUploadService,
     RuntimeConfig,
-    MemoryMultipartStore,
+    MemoryResumableStore,
     MemoryImmutableStore,
 ]:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
@@ -144,11 +144,11 @@ def _service_with_archive_objects(
             )
         )
     archive_store = MemoryArchiveStore()
-    multipart = MemoryMultipartStore()
+    resumable = MemoryResumableStore()
     root = MemoryImmutableStore()
     binding = replace(
         archive_store_binding(archive_store),
-        multipart_objects=multipart,
+        resumable_objects=resumable,
         immutable_objects=root,
         object_ranges=_UnusedRangeStore(),
     )
@@ -161,7 +161,7 @@ def _service_with_archive_objects(
             throughput_tuning=throughput_tuning,
         ),
         config,
-        multipart,
+        resumable,
         root,
     )
 
@@ -170,17 +170,17 @@ def test_collection_ingress_uses_the_configured_source_read_chunk(
     tmp_path: Path,
 ) -> None:
     tuning = ArchiveThroughputTuning(source_read_chunk_bytes=256 * 1024)
-    service, _config, multipart, _root = _service_with_archive_objects(
+    service, _config, resumable, _root = _service_with_archive_objects(
         tmp_path,
         throughput_tuning=tuning,
     )
 
     pack_uploader = service._pack_uploader(
-        multipart,
+        resumable,
         passphrase_id=_config.archive_active_passphrase_id,
     )
     raw_uploader = service._raw_uploader(
-        multipart,
+        resumable,
         passphrase_id=_config.archive_active_passphrase_id,
     )
     assert pack_uploader._source_read_chunk_bytes == 256 * 1024
@@ -205,11 +205,11 @@ def test_upload_resume_keeps_its_frozen_key_generation_after_rotation(tmp_path: 
         "collection-test-key-v2": "second archive secret",
     }
     archive_store = MemoryArchiveStore()
-    multipart = MemoryMultipartStore()
+    resumable = MemoryResumableStore()
     root = MemoryImmutableStore()
     binding = replace(
         archive_store_binding(archive_store),
-        multipart_objects=multipart,
+        resumable_objects=resumable,
         immutable_objects=root,
         object_ranges=_UnusedRangeStore(),
     )
@@ -343,11 +343,11 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
                 created_at="2026-08-08T00:00:00.000000Z",
             )
         )
-    archive_multipart = MemoryMultipartStore()
-    cache = _MemoryMultipartCache()
+    archive_resumable = MemoryResumableStore()
+    cache = _MemoryResumableCache()
     binding = replace(
         archive_store_binding(MemoryArchiveStore(read_mode="restore_required")),
-        multipart_objects=archive_multipart,
+        resumable_objects=archive_resumable,
         immutable_objects=MemoryImmutableStore(),
         object_ranges=_UnusedRangeStore(),
     )
@@ -414,8 +414,8 @@ def test_restore_required_ingress_commits_verified_encrypted_cache_with_initial_
             (collection_id, "archive", str(volume["volume_id"])),
         )
         assert archive_object is not None
-        archive_ciphertext = archive_multipart.objects[archive_object.object_path][0]
-        cache_ciphertext = cache.multipart.objects[cached.object_path][0]
+        archive_ciphertext = archive_resumable.objects[archive_object.object_path][0]
+        cache_ciphertext = cache.resumable.objects[cached.object_path][0]
         assert cache_ciphertext == archive_ciphertext
         assert cache_ciphertext != content
         assert cached.stored_sha256 == hashlib.sha256(cache_ciphertext).hexdigest()
@@ -434,16 +434,16 @@ def test_restore_required_ingress_uses_archive_only_when_new_archive_cache_is_di
         archive_stores={"archive": archive},
         retrieval_cache_new_archive_enabled=False,
     )
-    archive_multipart = MemoryMultipartStore()
+    archive_resumable = MemoryResumableStore()
     binding = replace(
         archive_store_binding(MemoryArchiveStore(read_mode="restore_required")),
-        multipart_objects=archive_multipart,
+        resumable_objects=archive_resumable,
     )
     service = SqlAlchemyCollectionUploadService(
         config,
         ArchiveStoreRegistry({"archive": binding}),
         proof_stamper=FixtureProofStamper(),
-        retrieval_cache=_MemoryMultipartCache(),  # type: ignore[arg-type]
+        retrieval_cache=_MemoryResumableCache(),  # type: ignore[arg-type]
     )
 
     selected = service._volume_object_store(
@@ -452,13 +452,13 @@ def test_restore_required_ingress_uses_archive_only_when_new_archive_cache_is_di
         object_id="pack-000000000000",
     )
 
-    assert selected is archive_multipart
+    assert selected is archive_resumable
 
 
 def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     tmp_path: Path,
 ) -> None:
-    service, config, _multipart, root = _service_with_archive_objects(tmp_path)
+    service, config, _resumable, root = _service_with_archive_objects(tmp_path)
     contents = {
         "captured.bin": b"captured payload\n",
         "operator-note.txt": b"explicitly omitted provenance\n",
@@ -884,7 +884,7 @@ def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) 
         raw_volume_plaintext_bytes=part_bytes,
         raw_part_plaintext_bytes=part_bytes,
     )
-    service, _config, _multipart, _root = _service_with_archive_objects(tmp_path, policy=policy)
+    service, _config, _resumable, _root = _service_with_archive_objects(tmp_path, policy=policy)
     content = b"raw payload"
     sha256 = hashlib.sha256(content).hexdigest()
     opened = service.create_or_resume(

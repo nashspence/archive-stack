@@ -4,8 +4,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from riverhog_core.ports.archive_objects import (
-    ArchiveMultipartObjectStore,
     ArchiveObjectRangeStore,
+    ArchiveResumableObjectStore,
     ImmutableArchiveObjectStore,
 )
 from riverhog_core.ports.archive_store import ArchiveStore
@@ -16,7 +16,7 @@ class ArchiveStoreBinding:
     """All capabilities of one configured archive store."""
 
     store: ArchiveStore
-    multipart_objects: ArchiveMultipartObjectStore
+    resumable_objects: ArchiveResumableObjectStore
     immutable_objects: ImmutableArchiveObjectStore
     object_ranges: ArchiveObjectRangeStore
 

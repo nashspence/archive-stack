@@ -10,17 +10,13 @@ from typing import Any, Protocol, cast
 
 from botocore.exceptions import ClientError, ConnectionClosedError
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
     ImmutableObjectReceipt,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
-    MultipartPartReceipt,
-    MultipartUpload,
     ObjectHeadRequest,
     ObjectMetadataReceipt,
     ObjectPlacement,
@@ -30,6 +26,10 @@ from riverhog_storage_adapter_protocol import (
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterRejection,
+    WriteCompleteRequest,
+    WriteSegmentReceipt,
+    WriteSession,
+    WriteStartRequest,
 )
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
@@ -136,12 +136,12 @@ class S3StorageAdapter:
             implementation_id=self._config.implementation_id,
             implementation_version=self._config.implementation_version,
             read_mode=self._config.read_mode,
-            minimum_nonfinal_part_bytes=_MINIMUM_NONFINAL_PART_BYTES,
-            maximum_part_bytes=_MAXIMUM_PART_BYTES,
-            maximum_part_count=_MAXIMUM_PART_COUNT,
+            minimum_nonfinal_segment_bytes=_MINIMUM_NONFINAL_PART_BYTES,
+            maximum_segment_bytes=_MAXIMUM_PART_BYTES,
+            maximum_segment_count=_MAXIMUM_PART_COUNT,
         )
 
-    def create_multipart_upload(self, request: MultipartCreateRequest) -> MultipartUpload:
+    def begin_write(self, request: WriteStartRequest) -> WriteSession:
         metadata = self._stored_metadata(
             request.identity_metadata,
             placement=request.placement,
@@ -158,31 +158,31 @@ class S3StorageAdapter:
         upload_id = str(response.get("UploadId", ""))
         if not upload_id:
             raise RuntimeError("S3 did not return a multipart upload id")
-        return MultipartUpload(object_path=request.object_path, upload_id=upload_id)
+        return WriteSession(object_path=request.object_path, write_token=upload_id)
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        session: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt:
+    ) -> WriteSegmentReceipt:
         if number < 1 or number > _MAXIMUM_PART_COUNT:
             raise StorageAdapterRejection(
                 "invalid_request",
-                "multipart part number is outside the adapter limit",
+                "write segment number is outside the adapter limit",
             )
         if not content or len(content) > _MAXIMUM_PART_BYTES:
             raise StorageAdapterRejection(
                 "invalid_request",
-                "multipart part size is outside the adapter limit",
+                "write segment size is outside the adapter limit",
             )
         response = cast(
             dict[str, Any],
             self._client.upload_part(
                 Bucket=self._config.bucket,
-                Key=self._key(upload.object_path),
-                UploadId=upload.upload_id,
+                Key=self._key(session.object_path),
+                UploadId=session.write_token,
                 PartNumber=number,
                 Body=content,
                 ContentLength=len(content),
@@ -191,28 +191,28 @@ class S3StorageAdapter:
         token = str(response.get("ETag", ""))
         if not token:
             raise RuntimeError("S3 did not return a multipart part token")
-        return MultipartPartReceipt(
+        return WriteSegmentReceipt(
             number=number,
-            part_token=token,
+            segment_token=token,
             stored_bytes=len(content),
         )
 
-    def list_parts(self, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
+    def list_segments(self, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
         request: dict[str, Any] = {
             "Bucket": self._config.bucket,
-            "Key": self._key(upload.object_path),
-            "UploadId": upload.upload_id,
+            "Key": self._key(session.object_path),
+            "UploadId": session.write_token,
         }
-        parts: list[MultipartPartReceipt] = []
+        parts: list[WriteSegmentReceipt] = []
         while True:
             response = cast(dict[str, Any], self._client.list_parts(**request))
             for raw in response.get("Parts") or ():
                 if not isinstance(raw, dict):
                     continue
                 parts.append(
-                    MultipartPartReceipt(
+                    WriteSegmentReceipt(
                         number=int(str(raw["PartNumber"])),
-                        part_token=str(raw["ETag"]),
+                        segment_token=str(raw["ETag"]),
                         stored_bytes=int(str(raw["Size"])),
                     )
                 )
@@ -225,29 +225,30 @@ class S3StorageAdapter:
         parts.sort(key=lambda current: current.number)
         return tuple(parts)
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
-        request: MultipartCompleteRequest,
+        request: WriteCompleteRequest,
     ) -> CompletedObjectReceipt:
-        if len(request.parts) > _MAXIMUM_PART_COUNT or any(
-            part.stored_bytes > _MAXIMUM_PART_BYTES for part in request.parts
+        if len(request.segments) > _MAXIMUM_PART_COUNT or any(
+            part.stored_bytes > _MAXIMUM_PART_BYTES for part in request.segments
         ):
             raise StorageAdapterRejection(
                 "invalid_request",
                 "multipart completion exceeds the S3 adapter limits",
             )
-        if any(part.stored_bytes < _MINIMUM_NONFINAL_PART_BYTES for part in request.parts[:-1]):
+        if any(part.stored_bytes < _MINIMUM_NONFINAL_PART_BYTES for part in request.segments[:-1]):
             raise StorageAdapterRejection(
                 "invalid_request",
                 "multipart completion contains an undersized non-final part",
             )
         provider_request = {
             "Bucket": self._config.bucket,
-            "Key": self._key(request.upload.object_path),
-            "UploadId": request.upload.upload_id,
+            "Key": self._key(request.session.object_path),
+            "UploadId": request.session.write_token,
             "MultipartUpload": {
                 "Parts": [
-                    {"PartNumber": part.number, "ETag": part.part_token} for part in request.parts
+                    {"PartNumber": part.number, "ETag": part.segment_token}
+                    for part in request.segments
                 ]
             },
             "IfNoneMatch": "*",
@@ -266,9 +267,9 @@ class S3StorageAdapter:
                 "PreconditionFailed",
             }:
                 raise
-            recovered = self.head_completed_object(
-                MultipartHeadRequest(
-                    object_path=request.upload.object_path,
+            recovered = self.find_completed_write(
+                CompletedWriteLookupRequest(
+                    object_path=request.session.object_path,
                     expected_identity_metadata=request.expected_identity_metadata,
                     expected_placement=request.expected_placement,
                 )
@@ -283,9 +284,9 @@ class S3StorageAdapter:
                     "completed object byte count differs from the upload checkpoint",
                 ) from exc
             return recovered
-        completed = self.head_completed_object(
-            MultipartHeadRequest(
-                object_path=request.upload.object_path,
+        completed = self.find_completed_write(
+            CompletedWriteLookupRequest(
+                object_path=request.session.object_path,
                 expected_identity_metadata=request.expected_identity_metadata,
                 expected_placement=request.expected_placement,
             )
@@ -296,9 +297,9 @@ class S3StorageAdapter:
             raise RuntimeError("completed S3 object length differs from its parts")
         return completed
 
-    def head_completed_object(
+    def find_completed_write(
         self,
-        request: MultipartHeadRequest,
+        request: CompletedWriteLookupRequest,
     ) -> CompletedObjectReceipt | None:
         head = self._head(request.object_path)
         if head is None:
@@ -314,12 +315,12 @@ class S3StorageAdapter:
         self._validate_placement(head, request.expected_placement)
         return self._completed_receipt(request.object_path, head)
 
-    def abort_multipart_upload(self, upload: MultipartUpload) -> None:
+    def abort_write(self, session: WriteSession) -> None:
         try:
             self._client.abort_multipart_upload(
                 Bucket=self._config.bucket,
-                Key=self._key(upload.object_path),
-                UploadId=upload.upload_id,
+                Key=self._key(session.object_path),
+                UploadId=session.write_token,
             )
         except ClientError as exc:
             status, code = _client_error_identity(exc)
@@ -484,7 +485,7 @@ class S3StorageAdapter:
                 objects=self._provider_objects(request),
             )
 
-    def abort_incomplete_uploads(self, request: AbortIncompleteUploadsRequest) -> int:
+    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
         cutoff = parse_utc_timestamp(request.initiated_before).astimezone(UTC)
         provider_request: dict[str, Any] = {
             "Bucket": self._config.bucket,

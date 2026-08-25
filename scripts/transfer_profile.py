@@ -16,10 +16,10 @@ NETWORK_TARGET = 0.90
 
 SCENARIO_OPERATIONS: Mapping[str, frozenset[str]] = {
     "riverhog-ingress": frozenset(
-        {"pack_upload_open", "pack_upload_part", "raw_upload_open", "raw_upload_part"}
+        {"pack_upload_open", "pack_write_segment", "raw_upload_open", "raw_write_segment"}
     ),
     "stove0-derived-publication": frozenset(
-        {"pack_upload_open", "pack_upload_part", "raw_upload_open", "raw_upload_part"}
+        {"pack_upload_open", "pack_write_segment", "raw_upload_open", "raw_write_segment"}
     ),
     "stove0-input-read": frozenset(
         {"pack_retrieval_member", "pack_retrieval_range", "raw_retrieval_part"}
@@ -29,7 +29,7 @@ SCENARIO_OPERATIONS: Mapping[str, frozenset[str]] = {
     ),
     "reference-recovery": frozenset(),
     "archive-upload": frozenset(
-        {"pack_upload_open", "pack_upload_part", "raw_upload_open", "raw_upload_part"}
+        {"pack_upload_open", "pack_write_segment", "raw_upload_open", "raw_write_segment"}
     ),
     "archive-retrieval": frozenset(
         {
@@ -39,7 +39,7 @@ SCENARIO_OPERATIONS: Mapping[str, frozenset[str]] = {
             "retrieval_cache_hydration",
         }
     ),
-    "archive-replication": frozenset({"archive_copy_part", "archive_copy_object"}),
+    "archive-replication": frozenset({"archive_copy_segment", "archive_copy_object"}),
 }
 NETWORK_SCENARIOS = frozenset(SCENARIO_OPERATIONS) - {"reference-recovery"}
 WORKLOADS = ("large-file", "many-small-files", "resume")

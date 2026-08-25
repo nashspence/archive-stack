@@ -22,7 +22,7 @@ from riverhog_core.domain.archive import (
     SealedPackVolume,
     SealedProvenanceObject,
     SealedRawVolume,
-    StoredPartReceipt,
+    StoredArchivePart,
     VerifiedRawFile,
 )
 from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
@@ -60,16 +60,15 @@ def _file(path: str, content: bytes) -> ArchiveFile:
     return ArchiveFile(path=path, bytes=len(content), sha256=_sha256(content))
 
 
-def _part(plaintext: bytes, ciphertext: bytes) -> tuple[StoredPartReceipt, ...]:
+def _part(plaintext: bytes, ciphertext: bytes) -> tuple[StoredArchivePart, ...]:
     return (
-        StoredPartReceipt(
+        StoredArchivePart(
             number=1,
             plaintext_start=0,
             plaintext_bytes=len(plaintext),
             plaintext_sha256=_sha256(plaintext),
             stored_bytes=len(ciphertext),
             stored_sha256=_sha256(ciphertext),
-            etag="fixture-etag",
         ),
     )
 
@@ -133,7 +132,7 @@ def _write_archive(
         index_sha256=pack_plan.index_sha256,
         plan_sha256=pack_plan.plan_sha256,
         parts=_part(pack_plaintext, pack_ciphertext),
-        version_id="pack-version",
+        revision="pack-version",
         completed_at="2026-08-08T00:00:00Z",
     )
 
@@ -158,7 +157,7 @@ def _write_archive(
                 file_sha256=raw_file.sha256,
                 age_state_json=age_state_json(len(plaintext)),
                 parts=_part(plaintext, ciphertext),
-                version_id=f"segment-version-{sequence}",
+                revision=f"segment-version-{sequence}",
                 completed_at="2026-08-08T00:00:00Z",
             )
         )
@@ -245,7 +244,7 @@ def _write_archive(
                     plaintext_sha256=_sha256(plaintext),
                     stored_bytes=len(ciphertext),
                     stored_sha256=_sha256(ciphertext),
-                    version_id=f"{object_id}-version",
+                    revision=f"{object_id}-version",
                     completed_at="2026-08-08T00:00:00Z",
                 )
             )

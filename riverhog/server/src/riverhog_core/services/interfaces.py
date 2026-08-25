@@ -162,7 +162,7 @@ class CollectionDeletionService(Protocol):
 
 
 class RetrievalService(Protocol):
-    def abort_incomplete_cache_multipart_uploads(
+    def abort_incomplete_cache_writes(
         self,
         *,
         initiated_before: datetime,
@@ -400,7 +400,7 @@ class SearchService(Protocol):
 class ArchiveMaintenanceService(Protocol):
     def requeue_interrupted_metadata_publications_for_startup(self) -> int: ...
     def process_due_metadata_publications(self, *, limit: int = 10) -> int: ...
-    def abort_incomplete_multipart_uploads(
+    def abort_incomplete_writes(
         self,
         *,
         initiated_before: datetime,

@@ -8,14 +8,14 @@ from riverhog_core.domain.retrieval_cache import RetrievalCacheReceipt as Retrie
 
 if TYPE_CHECKING:
     from riverhog_core.ports.archive_objects import (
-        ArchiveMultipartObjectStore,
+        ArchiveResumableObjectStore,
         CompletedObjectReceipt,
-        MultipartPartReceipt,
+        WriteSegmentReceipt,
     )
 
 
 class RetrievalCache(Protocol):
-    def abort_incomplete_multipart_uploads(
+    def abort_incomplete_writes(
         self,
         *,
         initiated_before: datetime,
@@ -35,7 +35,7 @@ class RetrievalCache(Protocol):
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         expected_sha256: str,
     ) -> Iterator[bytes]: ...
@@ -44,25 +44,25 @@ class RetrievalCache(Protocol):
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]: ...
 
-    def delete(self, *, object_path: str, version_id: str | None) -> None: ...
+    def delete(self, *, object_path: str, revision: str | None) -> None: ...
 
-    def multipart_object_store(
+    def resumable_object_store(
         self,
         *,
         source_store: str,
         collection_id: int,
         object_id: str,
-    ) -> ArchiveMultipartObjectStore: ...
+    ) -> ArchiveResumableObjectStore: ...
 
-    def verify_multipart_object(
+    def verify_resumable_object(
         self,
         *,
         completed: CompletedObjectReceipt,
-        parts: tuple[MultipartPartReceipt, ...] = (),
+        segments: tuple[WriteSegmentReceipt, ...] = (),
     ) -> RetrievalCacheReceipt: ...

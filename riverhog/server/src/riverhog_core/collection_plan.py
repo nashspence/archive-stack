@@ -53,24 +53,10 @@ class CollectionVolumePolicy:
             raise ValueError("pack part plaintext target must align to age chunks")
         if self.raw_part_plaintext_bytes % CHUNK_SIZE:
             raise ValueError("raw part plaintext target must align to age chunks")
-        portable_min_part_bytes = 5 * 1024 * 1024
-        if self.pack_part_plaintext_bytes < portable_min_part_bytes:
-            raise ValueError("pack part plaintext target is below the portable multipart minimum")
-        if self.raw_part_plaintext_bytes < portable_min_part_bytes:
-            raise ValueError("raw part plaintext target is below the portable multipart minimum")
         if self.raw_volume_plaintext_bytes < self.raw_part_plaintext_bytes:
             raise ValueError("raw volume must contain at least one configured raw part")
         if self.raw_volume_plaintext_bytes % self.raw_part_plaintext_bytes:
             raise ValueError("raw volume size must be a multiple of the raw part size")
-        maximum_part_bytes = 4 * 1024**3
-        if max(self.pack_part_plaintext_bytes, self.raw_part_plaintext_bytes) > (
-            maximum_part_bytes
-        ):
-            raise ValueError("archive part plaintext target exceeds the portable bound")
-        if self.raw_volume_plaintext_bytes > 4 * 1024**4:
-            raise ValueError("raw volume plaintext target exceeds the portable object bound")
-        if self.raw_volume_plaintext_bytes // self.raw_part_plaintext_bytes > 10_000:
-            raise ValueError("raw volume policy would exceed the portable multipart part limit")
 
     @classmethod
     def from_env(cls, values: Mapping[str, str]) -> CollectionVolumePolicy:
@@ -78,7 +64,7 @@ class CollectionVolumePolicy:
 
         common_part_bytes = _env_bytes(
             values,
-            "RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
+            "RIVERHOG_ARCHIVE_PART_PLAINTEXT_BYTES",
             DEFAULT_PART_PLAINTEXT_BYTES,
         )
         return cls(
@@ -97,21 +83,13 @@ class CollectionVolumePolicy:
                 "RIVERHOG_PACK_MEMBER_BYTES",
                 DEFAULT_PACK_MEMBER_BYTES,
             ),
-            pack_part_plaintext_bytes=_env_bytes(
-                values,
-                "RIVERHOG_PACK_PART_PLAINTEXT_BYTES",
-                common_part_bytes,
-            ),
+            pack_part_plaintext_bytes=common_part_bytes,
             raw_volume_plaintext_bytes=_env_bytes(
                 values,
                 "RIVERHOG_RAW_VOLUME_PLAINTEXT_BYTES",
                 DEFAULT_RAW_VOLUME_PLAINTEXT_BYTES,
             ),
-            raw_part_plaintext_bytes=_env_bytes(
-                values,
-                "RIVERHOG_RAW_PART_PLAINTEXT_BYTES",
-                common_part_bytes,
-            ),
+            raw_part_plaintext_bytes=common_part_bytes,
         )
 
 

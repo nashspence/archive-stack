@@ -37,7 +37,7 @@ from riverhog_core.catalog_models import (
 )
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.collection_metadata import collection_record_manifest
-from riverhog_core.domain.archive import StoredPartReceipt
+from riverhog_core.domain.archive import StoredArchivePart
 from riverhog_core.pack_retrieval import (
     PackMemberRangeReader,
     PackMemberRetrievalSource,
@@ -115,14 +115,14 @@ class SqlAlchemyRetrievalService:
             session_factory=self._session_factory,
         )
 
-    def abort_incomplete_cache_multipart_uploads(
+    def abort_incomplete_cache_writes(
         self,
         *,
         initiated_before: datetime,
     ) -> int:
         if self._cache is None:
             return 0
-        return self._cache.abort_incomplete_multipart_uploads(initiated_before=initiated_before)
+        return self._cache.abort_incomplete_writes(initiated_before=initiated_before)
 
     def collection_manifest(
         self,
@@ -925,7 +925,7 @@ class SqlAlchemyRetrievalService:
             source = PackVolumeRetrievalSource(
                 volume_id=record.object_id,
                 object_path=record.object_path,
-                version_id=record.version_id,
+                revision=record.revision,
                 plaintext_bytes=record.plaintext_bytes,
                 stored_bytes=record.stored_bytes,
                 age_state_json=record.age_state_json,
@@ -959,20 +959,20 @@ class SqlAlchemyRetrievalService:
             sources: list[RawVolumeRetrievalSource] = []
             range_stores: dict[str, ArchiveObjectRangeStore] = {}
             for placement, record, cached in records:
-                if not record.age_state_json or not record.part_receipts_json:
+                if not record.age_state_json or not record.archive_parts_json:
                     raise InvalidState("raw volume is missing its retrieval state")
                 sources.append(
                     RawVolumeRetrievalSource(
                         volume_id=record.object_id,
                         object_path=record.object_path,
-                        version_id=record.version_id,
+                        revision=record.revision,
                         source_path=path,
                         file_offset=placement.file_offset,
                         plaintext_bytes=placement.bytes,
                         file_bytes=expected_bytes,
                         file_sha256=expected_sha256,
                         age_state_json=record.age_state_json,
-                        parts=_stored_parts(record.part_receipts_json),
+                        parts=_stored_parts(record.archive_parts_json),
                     )
                 )
                 range_stores[record.object_path] = self._range_store(
@@ -1014,7 +1014,7 @@ class SqlAlchemyRetrievalService:
                 self._cache,
                 archive_object_path=object_record.object_path,
                 cache_object_path=cached.object_path,
-                cache_version_id=cached.version_id,
+                cache_revision=cached.revision,
             )
             tracked_store = "retrieval-cache"
         if self._download_allowance is None:
@@ -1151,7 +1151,7 @@ class SqlAlchemyRetrievalService:
                     cached.collection_id,
                     cached.object_id,
                     cached.object_path,
-                    cached.version_id,
+                    cached.revision,
                 )
                 for cached in candidates
             ]
@@ -1159,11 +1159,11 @@ class SqlAlchemyRetrievalService:
                 cached.state = "deleting"
 
         removed = 0
-        for source_store, collection_id, object_id, object_path, version_id in cleanup:
+        for source_store, collection_id, object_id, object_path, revision in cleanup:
             try:
                 self._cache.delete(
                     object_path=object_path,
-                    version_id=version_id,
+                    revision=revision,
                 )
             except Exception:
                 with session_scope(self._session_factory) as session:
@@ -1175,7 +1175,7 @@ class SqlAlchemyRetrievalService:
                         cache_record is not None
                         and cache_record.state == "deleting"
                         and cache_record.object_path == object_path
-                        and cache_record.version_id == version_id
+                        and cache_record.revision == revision
                     ):
                         cache_record.state = "delete_pending"
                 continue
@@ -1188,7 +1188,7 @@ class SqlAlchemyRetrievalService:
                     cache_record is not None
                     and cache_record.state == "deleting"
                     and cache_record.object_path == object_path
-                    and cache_record.version_id == version_id
+                    and cache_record.revision == revision
                 ):
                     session.delete(cache_record)
                     removed += 1
@@ -1328,7 +1328,7 @@ class SqlAlchemyRetrievalService:
         source = PackVolumeRetrievalSource(
             volume_id=object_record.object_id,
             object_path=object_record.object_path,
-            version_id=object_record.version_id,
+            revision=object_record.revision,
             plaintext_bytes=object_record.plaintext_bytes,
             stored_bytes=object_record.stored_bytes,
             age_state_json=object_record.age_state_json,
@@ -1478,7 +1478,7 @@ class SqlAlchemyRetrievalService:
                         try:
                             self._cache.delete(
                                 object_path=receipt.object_path,
-                                version_id=receipt.version_id,
+                                revision=receipt.revision,
                             )
                         except Exception as cleanup_error:
                             raise RuntimeError(
@@ -1493,7 +1493,7 @@ class SqlAlchemyRetrievalService:
                                 collection_id=collection_id,
                                 object_id=object_identity.object_id,
                                 object_path=receipt.object_path,
-                                version_id=receipt.version_id,
+                                revision=receipt.revision,
                                 stored_bytes=receipt.stored_bytes,
                                 stored_sha256=receipt.stored_sha256,
                                 cached_at=receipt.cached_at,
@@ -1695,28 +1695,28 @@ class _CachedArchiveRangeStore:
         *,
         archive_object_path: str,
         cache_object_path: str,
-        cache_version_id: str | None,
+        cache_revision: str | None,
     ) -> None:
         self._cache = cache
         self._archive_object_path = archive_object_path
         self._cache_object_path = cache_object_path
-        self._cache_version_id = cache_version_id
+        self._cache_revision = cache_revision
 
     def iter_object_range(
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
-        _ = version_id
+        _ = revision
         if object_path != self._archive_object_path:
             raise ValueError("retrieval cache archive object identity changed")
         return self._cache.iter_object_range(
             object_path=self._cache_object_path,
-            version_id=self._cache_version_id,
+            revision=self._cache_revision,
             expected_bytes=expected_bytes,
             offset=offset,
             size=size,
@@ -1741,14 +1741,14 @@ class _TrackedArchiveRangeStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
         content = self._store.iter_object_range(
             object_path=object_path,
-            version_id=version_id,
+            revision=revision,
             expected_bytes=expected_bytes,
             offset=offset,
             size=size,
@@ -1769,7 +1769,7 @@ class _DispatchArchiveRangeStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
@@ -1780,14 +1780,14 @@ class _DispatchArchiveRangeStore:
             raise ValueError("raw retrieval object range store is missing") from exc
         return store.iter_object_range(
             object_path=object_path,
-            version_id=version_id,
+            revision=revision,
             expected_bytes=expected_bytes,
             offset=offset,
             size=size,
         )
 
 
-def _stored_parts(content: str) -> tuple[StoredPartReceipt, ...]:
+def _stored_parts(content: str) -> tuple[StoredArchivePart, ...]:
     try:
         values = json.loads(content)
     except json.JSONDecodeError as exc:
@@ -1796,14 +1796,13 @@ def _stored_parts(content: str) -> tuple[StoredPartReceipt, ...]:
         raise InvalidState("archive part receipts are not a list")
     try:
         return tuple(
-            StoredPartReceipt(
+            StoredArchivePart(
                 number=int(value["number"]),
                 plaintext_start=int(value["plaintext_start"]),
                 plaintext_bytes=int(value["plaintext_bytes"]),
                 plaintext_sha256=str(value["plaintext_sha256"]),
                 stored_bytes=int(value["stored_bytes"]),
                 stored_sha256=str(value["stored_sha256"]),
-                etag=str(value["etag"]),
             )
             for value in values
             if isinstance(value, dict)
@@ -1935,7 +1934,7 @@ def _object_identity(row: CollectionArchiveObjectRecord) -> ArchiveObjectIdentit
         stored_bytes=row.stored_bytes,
         sha256=row.sha256,
         stored_sha256=row.stored_sha256,
-        version_id=row.version_id,
+        revision=row.revision,
     )
 
 

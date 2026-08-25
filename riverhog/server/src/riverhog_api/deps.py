@@ -66,8 +66,8 @@ from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
 from riverhog_core.stores.storage_adapter_archive_objects import (
-    StorageAdapterArchiveMultipartObjectStore,
     StorageAdapterArchiveObjectRangeStore,
+    StorageAdapterArchiveResumableObjectStore,
     StorageAdapterImmutableArchiveObjectStore,
 )
 from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArchiveStore
@@ -121,7 +121,7 @@ def _archive_store_registry(
                     adapter=adapters[name],
                     download_allowance=download_allowance,
                 ),
-                multipart_objects=StorageAdapterArchiveMultipartObjectStore(adapters[name]),
+                resumable_objects=StorageAdapterArchiveResumableObjectStore(adapters[name]),
                 immutable_objects=StorageAdapterImmutableArchiveObjectStore(adapters[name]),
                 object_ranges=StorageAdapterArchiveObjectRangeStore(adapters[name]),
             )
@@ -140,21 +140,6 @@ def _adapter_client(registration: StorageAdapterRegistration) -> StorageAdapterC
     )
 
 
-def _require_compatible_part_size(
-    config: RuntimeConfig,
-    *,
-    name: str,
-    client: StorageAdapterClient,
-) -> None:
-    descriptor = client.descriptor()
-    if not (
-        descriptor.minimum_nonfinal_part_bytes
-        <= config.archive_multipart_part_bytes
-        <= descriptor.maximum_part_bytes
-    ):
-        raise ValueError(f"storage adapter {name} does not accept the configured multipart size")
-
-
 def _build_default_container(
     config: RuntimeConfig,
     *,
@@ -169,9 +154,8 @@ def _build_default_container(
         client = _adapter_client(store)
         startup_cleanup.callback(client.close)
         adapters[name] = client
-    for name, client in adapters.items():
+    for client in adapters.values():
         client.check_readiness()
-        _require_compatible_part_size(config, name=name, client=client)
     cache_client = (
         _adapter_client(config.retrieval_cache) if config.retrieval_cache is not None else None
     )
@@ -181,7 +165,7 @@ def _build_default_container(
     retrieval_cache = (
         StorageAdapterRetrievalCache(
             cache_client,
-            multipart_part_bytes=config.archive_multipart_part_bytes,
+            write_segment_bytes=config.retrieval_cache_write_segment_bytes,
             throughput_tuning=throughput_tuning,
             transfer_resources=transfer_resources,
         )

@@ -384,17 +384,17 @@ def test_corpus_is_deterministic_and_manifest_is_not_an_uploaded_member(
     assert (first_root / "empty.txt").read_bytes() == b""
 
 
-def test_corpus_profiles_exercise_pack_and_direct_multipart_boundaries() -> None:
+def test_corpus_profiles_exercise_pack_and_direct_resumable_boundaries() -> None:
     module = load_script()
 
     regular = module._corpus_layout("regular")
-    multipart = module._corpus_layout("multipart")
+    resumable = module._corpus_layout("resumable")
 
     assert any(byte_count == 0 for _path, byte_count in regular)
     assert any(len(path.encode()) > 100 for path, _byte_count in regular)
     assert any(path.startswith("packed/") for path, _byte_count in regular)
     assert any(path.startswith("direct/") for path, _byte_count in regular)
-    assert sum(size for _path, size in multipart) > 128 * module.MIB
+    assert sum(size for _path, size in resumable) > 128 * module.MIB
 
 
 def test_checkpoint_is_restartable_tamper_evident_and_emits_bounded_evidence(
@@ -1027,22 +1027,22 @@ def test_runtime_environment_rejects_mismatched_cloudfront_signing_keys(
 
 
 @pytest.mark.parametrize(
-    ("profile", "expected_processes", "multipart_observations"),
+    ("profile", "expected_processes", "resumable_observations"),
     (
         ("regular", 1, ()),
         (
-            "multipart",
+            "resumable",
             2,
-            ("multipart-client-interrupted", "multipart-client-restarted"),
+            ("resumable-client-interrupted", "resumable-client-restarted"),
         ),
     ),
 )
-def test_official_upload_client_writes_directly_and_resumes_multipart(
+def test_official_upload_client_writes_directly_and_resumes_after_interruption(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     profile: str,
     expected_processes: int,
-    multipart_observations: tuple[str, ...],
+    resumable_observations: tuple[str, ...],
 ) -> None:
     module = load_script()
     captured: dict[str, object] = {"commands": []}
@@ -1085,7 +1085,7 @@ def test_official_upload_client_writes_directly_and_resumes_multipart(
         assert isinstance(commands, list)
         commands.append(command)
         captured["environment"] = kwargs["env"]
-        return _Process(interruptible=profile == "multipart" and len(commands) == 1)
+        return _Process(interruptible=profile == "resumable" and len(commands) == 1)
 
     root = tmp_path / "corpus"
     root.mkdir()
@@ -1144,7 +1144,7 @@ def test_official_upload_client_writes_directly_and_resumes_multipart(
     assert collection_id == 42
     assert set(observations) == {
         "committed-unit-readback",
-        *multipart_observations,
+        *resumable_observations,
         "registered-file-list",
         "session-show",
         "unit-readback",

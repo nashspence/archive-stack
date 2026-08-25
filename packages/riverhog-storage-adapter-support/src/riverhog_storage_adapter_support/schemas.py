@@ -11,19 +11,14 @@ from typing import Any
 from pydantic import BaseModel
 from riverhog_storage_adapter_protocol import (
     STORAGE_ADAPTER_PROTOCOL,
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
     ImmutableObjectReceipt,
     MaintenanceResult,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
-    MultipartPartReceipt,
-    MultipartPartWriteRequest,
-    MultipartUpload,
     ObjectHeadRequest,
     ObjectLocator,
     ObjectMetadataReceipt,
@@ -32,24 +27,29 @@ from riverhog_storage_adapter_protocol import (
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterError,
+    WriteCompleteRequest,
+    WriteSegmentReceipt,
+    WriteSegmentRequest,
+    WriteSession,
+    WriteStartRequest,
 )
 
 STORAGE_ADAPTER_SCHEMA_BUNDLE_FORMAT = "riverhog-storage-adapter-schema-bundle/v1"
 
 _SCHEMA_MODELS: tuple[type[BaseModel], ...] = (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
     DeleteObjectRequest,
     DeletePrefixRequest,
     ImmutableObjectReceipt,
     MaintenanceResult,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
-    MultipartPartReceipt,
-    MultipartPartWriteRequest,
-    MultipartUpload,
+    WriteCompleteRequest,
+    WriteStartRequest,
+    CompletedWriteLookupRequest,
+    WriteSegmentReceipt,
+    WriteSegmentRequest,
+    WriteSession,
     ObjectLocator,
     ObjectHeadRequest,
     ObjectMetadataReceipt,
@@ -71,14 +71,16 @@ def storage_adapter_schema_bundle() -> dict[str, Any]:
         },
         "http_binding": {
             "GET /v1/adapter": "AdapterDescriptor",
-            "POST /v1/multipart/create": "MultipartCreateRequest -> MultipartUpload",
-            "POST /v1/multipart/part": (
-                "framed MultipartPartWriteRequest + bytes -> MultipartPartReceipt"
+            "POST /v1/writes/begin": "WriteStartRequest -> WriteSession",
+            "POST /v1/writes/segment": (
+                "framed WriteSegmentRequest + bytes -> WriteSegmentReceipt"
             ),
-            "POST /v1/multipart/list": "MultipartUpload -> MultipartPartReceipt[]",
-            "POST /v1/multipart/complete": ("MultipartCompleteRequest -> CompletedObjectReceipt"),
-            "POST /v1/multipart/head": "MultipartHeadRequest -> CompletedObjectReceipt|404",
-            "POST /v1/multipart/abort": "MultipartUpload -> 204",
+            "POST /v1/writes/segments": "WriteSession -> WriteSegmentReceipt[]",
+            "POST /v1/writes/complete": ("WriteCompleteRequest -> CompletedObjectReceipt"),
+            "POST /v1/writes/completed": (
+                "CompletedWriteLookupRequest -> CompletedObjectReceipt|404"
+            ),
+            "POST /v1/writes/abort": "WriteSession -> 204",
             "POST /v1/objects/put": (
                 "framed SmallObjectWriteRequest + bytes -> ImmutableObjectReceipt"
             ),
@@ -89,8 +91,8 @@ def storage_adapter_schema_bundle() -> dict[str, Any]:
             "POST /v1/reads/prepare": "ReadPreparationRequest -> ReadStatus",
             "POST /v1/reads/status": "ReadPreparationRequest -> ReadStatus",
             "POST /v1/reads/cleanup": "ReadPreparationRequest -> 204",
-            "POST /v1/maintenance/abort-incomplete": (
-                "AbortIncompleteUploadsRequest -> MaintenanceResult"
+            "POST /v1/maintenance/abort-incomplete-writes": (
+                "AbortIncompleteWritesRequest -> MaintenanceResult"
             ),
         },
         "schemas": {

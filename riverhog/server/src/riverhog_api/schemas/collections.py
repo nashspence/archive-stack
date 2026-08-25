@@ -315,8 +315,8 @@ class CollectionUploadSessionOut(RiverhogModel):
     archive_storage_prefix: str | None = None
     archive_uploaded_bytes: int | None = None
     archive_total_bytes: int | None = None
-    archive_uploaded_parts: int | None = None
-    archive_total_parts: int | None = None
+    archive_uploaded_units: int | None = None
+    archive_total_units: int | None = None
     collection: CollectionSummaryOut | None
 
     @model_validator(mode="after")

@@ -175,7 +175,7 @@ class PreV1EncryptionCutover:
                         stored_bytes=receipt.stored_bytes,
                         sha256=receipt.stored_sha256,
                         stored_sha256=receipt.stored_sha256,
-                        version_id=receipt.version_id,
+                        revision=receipt.revision,
                         uploaded_at=receipt.completed_at,
                         verified_at=now,
                     )

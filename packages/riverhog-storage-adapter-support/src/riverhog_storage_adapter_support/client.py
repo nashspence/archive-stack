@@ -10,19 +10,14 @@ import httpx
 from http_api_contracts import safe_http_base_url
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
     ImmutableObjectReceipt,
     MaintenanceResult,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
-    MultipartPartReceipt,
-    MultipartPartWriteRequest,
-    MultipartUpload,
     ObjectHeadRequest,
     ObjectMetadataReceipt,
     ObjectReadRequest,
@@ -32,12 +27,17 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterError,
     StorageAdapterErrorCode,
     StorageAdapterRejection,
+    WriteCompleteRequest,
+    WriteSegmentReceipt,
+    WriteSegmentRequest,
+    WriteSession,
+    WriteStartRequest,
 )
 
 from riverhog_storage_adapter_support.framing import framed_request, framed_request_length
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
-_PARTS = TypeAdapter(tuple[MultipartPartReceipt, ...])
+_SEGMENTS = TypeAdapter(tuple[WriteSegmentReceipt, ...])
 
 
 class StorageAdapterProtocolError(StorageAdapterRejection):
@@ -121,61 +121,61 @@ class StorageAdapterClient:
     def check_readiness(self) -> None:
         self._require_success(self._request("GET", "/health/ready"))
 
-    def create_multipart_upload(self, request: MultipartCreateRequest) -> MultipartUpload:
-        return self._model("POST", "/v1/multipart/create", MultipartUpload, request)
+    def begin_write(self, request: WriteStartRequest) -> WriteSession:
+        return self._model("POST", "/v1/writes/begin", WriteSession, request)
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        session: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt:
-        request = MultipartPartWriteRequest(
-            upload=upload,
+    ) -> WriteSegmentReceipt:
+        request = WriteSegmentRequest(
+            session=session,
             number=number,
             stored_bytes=len(content),
         )
         return self._model(
             "POST",
-            "/v1/multipart/part",
-            MultipartPartReceipt,
+            "/v1/writes/segment",
+            WriteSegmentReceipt,
             content=framed_request(request, content),
             headers={"Content-Length": str(framed_request_length(request, content))},
         )
 
-    def list_parts(self, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
-        response = self._request("POST", "/v1/multipart/list", payload=upload)
+    def list_segments(self, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
+        response = self._request("POST", "/v1/writes/segments", payload=session)
         self._require_success(response)
         try:
-            return _PARTS.validate_json(response.content)
+            return _SEGMENTS.validate_json(response.content)
         except ValidationError as exc:
-            raise StorageAdapterProtocolError("adapter returned invalid multipart parts") from exc
+            raise StorageAdapterProtocolError("adapter returned invalid write segments") from exc
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
-        request: MultipartCompleteRequest,
+        request: WriteCompleteRequest,
     ) -> CompletedObjectReceipt:
         return self._model(
             "POST",
-            "/v1/multipart/complete",
+            "/v1/writes/complete",
             CompletedObjectReceipt,
             request,
         )
 
-    def head_completed_object(
+    def find_completed_write(
         self,
-        request: MultipartHeadRequest,
+        request: CompletedWriteLookupRequest,
     ) -> CompletedObjectReceipt | None:
         return self._optional_model(
             "POST",
-            "/v1/multipart/head",
+            "/v1/writes/completed",
             CompletedObjectReceipt,
             request,
         )
 
-    def abort_multipart_upload(self, upload: MultipartUpload) -> None:
-        self._empty("POST", "/v1/multipart/abort", upload)
+    def abort_write(self, session: WriteSession) -> None:
+        self._empty("POST", "/v1/writes/abort", session)
 
     def put_small_object(
         self,
@@ -263,10 +263,10 @@ class StorageAdapterClient:
     def cleanup_read(self, request: ReadPreparationRequest) -> None:
         self._empty("POST", "/v1/reads/cleanup", request)
 
-    def abort_incomplete_uploads(self, request: AbortIncompleteUploadsRequest) -> int:
+    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
         return self._model(
             "POST",
-            "/v1/maintenance/abort-incomplete",
+            "/v1/maintenance/abort-incomplete-writes",
             MaintenanceResult,
             request,
         ).affected

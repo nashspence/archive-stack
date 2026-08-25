@@ -24,7 +24,7 @@ from riverhog_core.domain.archive import (
     SealedPackVolume,
     SealedProvenanceObject,
     SealedRawVolume,
-    StoredPartReceipt,
+    StoredArchivePart,
     VerifiedRawFile,
 )
 from riverhog_core.raw_verification import raw_file_volume_set_sha256
@@ -292,7 +292,7 @@ def _stored_int(value: object, label: str) -> int:
     return value
 
 
-def _part_row(current: StoredPartReceipt) -> dict[str, object]:
+def _part_row(current: StoredArchivePart) -> dict[str, object]:
     return {
         "number": current.number,
         "plaintext_start": current.plaintext_start,
@@ -322,7 +322,7 @@ def _validate_pack_receipt(plan: PackVolumePlan, receipt: SealedPackVolume) -> N
 
 
 def _validate_part_receipts(
-    parts: Sequence[StoredPartReceipt],
+    parts: Sequence[StoredArchivePart],
     *,
     plaintext_bytes: int,
 ) -> None:
@@ -334,7 +334,7 @@ def _validate_part_receipts(
             raise ValueError("sealed archive volume part order is invalid")
         if current.plaintext_start != expected_plaintext_start or current.plaintext_bytes < 0:
             raise ValueError("sealed archive volume plaintext ranges are not contiguous")
-        if current.stored_bytes <= 0 or not current.etag:
+        if current.stored_bytes <= 0:
             raise ValueError("sealed archive volume stored part must not be empty")
         if _SHA256_RE.fullmatch(current.plaintext_sha256) is None:
             raise ValueError("sealed archive volume plaintext part sha256 is invalid")

@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import CollectionArchiveObjectUploadRecord
-from riverhog_core.domain.archive import StoredPartReceipt
+from riverhog_core.domain.archive import StoredArchivePart
 from riverhog_core.pack_upload import PackUploadCheckpoint, merge_pack_upload_checkpoints
 from riverhog_core.raw_upload import RawUploadCheckpoint, merge_raw_upload_checkpoints
 from riverhog_core.runtime_config import RuntimeConfig
@@ -15,7 +15,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 
 class _ArchiveUploadCheckpoint(Protocol):
     @property
-    def parts(self) -> Sequence[StoredPartReceipt]: ...
+    def archive_parts(self) -> Sequence[StoredArchivePart]: ...
 
     @property
     def completed(self) -> object | None: ...
@@ -27,7 +27,7 @@ _CheckpointT = TypeVar("_CheckpointT", bound=_ArchiveUploadCheckpoint)
 
 
 class SqlAlchemyArchiveUploadCheckpointStore:
-    """Persist multipart progress in the upload row that owns an immutable volume plan."""
+    """Persist resumable-write progress in the upload row that owns an immutable volume plan."""
 
     def __init__(
         self,
@@ -109,8 +109,8 @@ class SqlAlchemyArchiveUploadCheckpointStore:
             merged = merge(current, incoming)
             encoded = merged.to_json()
             record.checkpoint_json = encoded
-            record.uploaded_bytes = sum(item.stored_bytes for item in merged.parts)
-            record.uploaded_parts = len(merged.parts)
+            record.uploaded_bytes = sum(item.stored_bytes for item in merged.archive_parts)
+            record.uploaded_units = len(merged.archive_parts)
             record.state = "sealed" if merged.completed is not None else "uploading"
             return encoded
 
@@ -123,5 +123,5 @@ class SqlAlchemyArchiveUploadCheckpointStore:
             if record is not None and record.kind == kind:
                 record.checkpoint_json = None
                 record.uploaded_bytes = 0
-                record.uploaded_parts = 0
+                record.uploaded_units = 0
                 record.state = "planned"

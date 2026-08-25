@@ -146,17 +146,15 @@ def _process_proof_maturations(
     container.archive_attestations.process_due(limit=100)
 
 
-def _abort_incomplete_archive_multipart_uploads(
+def _abort_incomplete_archive_writes(
     container: ServiceContainer,
     *,
     max_age: timedelta,
 ) -> int:
     initiated_before = utc_now() - max_age
-    return container.archive_maintenance.abort_incomplete_multipart_uploads(
+    return container.archive_maintenance.abort_incomplete_writes(
         initiated_before=initiated_before
-    ) + container.retrieval.abort_incomplete_cache_multipart_uploads(
-        initiated_before=initiated_before
-    )
+    ) + container.retrieval.abort_incomplete_cache_writes(initiated_before=initiated_before)
 
 
 async def _run_archive_upload_reaper(
@@ -190,7 +188,7 @@ async def _run_archive_upload_reaper(
             _LOG.exception("archive maintenance reaper sweep failed")
 
 
-async def _run_archive_multipart_reaper(
+async def _run_archive_write_reaper(
     container_provider: Callable[[], ServiceContainer | None],
     *,
     sweep_interval: timedelta,
@@ -211,14 +209,14 @@ async def _run_archive_multipart_reaper(
                 continue
             async with operation_lock:
                 await asyncio.to_thread(
-                    _abort_incomplete_archive_multipart_uploads,
+                    _abort_incomplete_archive_writes,
                     container,
                     max_age=max_age,
                 )
         except asyncio.CancelledError:
             raise
         except Exception:  # pragma: no cover - defensive background task logging
-            _LOG.exception("archive multipart upload reaper sweep failed")
+            _LOG.exception("incomplete archive write reaper sweep failed")
 
 
 async def _run_retrieval_restore_reaper(
@@ -313,7 +311,7 @@ def create_app(
     container: ServiceContainer | None = None,
     container_provider: Callable[[], ServiceContainer] | None = None,
     archive_upload_reaper_interval: float | None = None,
-    archive_multipart_reaper_interval: float | None = None,
+    archive_write_reaper_interval: float | None = None,
     retrieval_restore_poll_interval: float | None = None,
     retrieval_cache_reaper_interval: float | None = None,
     proof_maturation_reaper_interval: float | None = None,
@@ -331,10 +329,10 @@ def create_app(
         if archive_upload_reaper_interval is not None
         else config.archive_upload_sweep_interval
     )
-    archive_multipart_sweep_interval = (
-        timedelta(seconds=archive_multipart_reaper_interval)
-        if archive_multipart_reaper_interval is not None
-        else config.archive_multipart_sweep_interval
+    archive_incomplete_write_sweep_interval = (
+        timedelta(seconds=archive_write_reaper_interval)
+        if archive_write_reaper_interval is not None
+        else config.archive_incomplete_write_sweep_interval
     )
     retrieval_poll_interval = (
         timedelta(seconds=retrieval_restore_poll_interval)
@@ -374,11 +372,11 @@ def create_app(
                 operation_lock=archive_operation_lock,
             )
         )
-        archive_multipart_task = asyncio.create_task(
-            _run_archive_multipart_reaper(
+        archive_write_task = asyncio.create_task(
+            _run_archive_write_reaper(
                 get_or_create_container,
-                sweep_interval=archive_multipart_sweep_interval,
-                max_age=config.archive_multipart_max_age,
+                sweep_interval=archive_incomplete_write_sweep_interval,
+                max_age=config.archive_incomplete_write_max_age,
                 operation_lock=archive_operation_lock,
             )
         )
@@ -404,14 +402,14 @@ def create_app(
             yield
         finally:
             archive_task.cancel()
-            archive_multipart_task.cancel()
+            archive_write_task.cancel()
             retrieval_restore_task.cancel()
             retrieval_cache_task.cancel()
             proof_maturation_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await archive_task
             with contextlib.suppress(asyncio.CancelledError):
-                await archive_multipart_task
+                await archive_write_task
             with contextlib.suppress(asyncio.CancelledError):
                 await retrieval_restore_task
             with contextlib.suppress(asyncio.CancelledError):

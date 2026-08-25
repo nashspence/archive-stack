@@ -4,34 +4,35 @@ import hashlib
 from collections.abc import Iterator
 
 from riverhog_storage_adapter_protocol import (
-    MultipartCompleteRequest as AdapterMultipartCompleteRequest,
-)
-from riverhog_storage_adapter_protocol import (
-    MultipartCreateRequest as AdapterMultipartCreateRequest,
-)
-from riverhog_storage_adapter_protocol import MultipartHeadRequest as AdapterMultipartHeadRequest
-from riverhog_storage_adapter_protocol import MultipartPartReceipt as AdapterMultipartPartReceipt
-from riverhog_storage_adapter_protocol import MultipartUpload as AdapterMultipartUpload
-from riverhog_storage_adapter_protocol import (
+    CompletedWriteLookupRequest,
     ObjectLocator,
     ObjectPlacement,
     ObjectReadRequest,
     SmallObjectWriteRequest,
     StorageAdapterPort,
     StorageAdapterRejection,
+    WriteCompleteRequest,
+    WriteStartRequest,
+)
+from riverhog_storage_adapter_protocol import (
+    WriteSegmentReceipt as AdapterWriteSegmentReceipt,
+)
+from riverhog_storage_adapter_protocol import (
+    WriteSession as AdapterWriteSession,
 )
 
 from riverhog_core.ports.archive_objects import (
     ArchiveObjectIdentityConflict,
     CompletedObjectReceipt,
     ImmutableObjectReceipt,
-    MultipartPartReceipt,
-    MultipartUpload,
+    ResumableWriteConstraints,
+    WriteSegmentReceipt,
+    WriteSession,
 )
 
 
-class StorageAdapterArchiveMultipartObjectStore:
-    """Riverhog's existing multipart port over one opaque-object adapter."""
+class StorageAdapterArchiveResumableObjectStore:
+    """Riverhog's resumable-write port over one opaque-object adapter."""
 
     def __init__(
         self,
@@ -42,56 +43,64 @@ class StorageAdapterArchiveMultipartObjectStore:
         self._adapter = adapter
         self._placement = placement
 
-    def create_multipart_upload(
+    def write_constraints(self) -> ResumableWriteConstraints:
+        descriptor = self._adapter.descriptor()
+        return ResumableWriteConstraints(
+            minimum_nonfinal_segment_bytes=descriptor.minimum_nonfinal_segment_bytes,
+            maximum_segment_bytes=descriptor.maximum_segment_bytes,
+            maximum_segment_count=descriptor.maximum_segment_count,
+        )
+
+    def begin_write(
         self,
         *,
         object_path: str,
         content_type: str,
         metadata: dict[str, str],
-    ) -> MultipartUpload:
-        upload = self._adapter.create_multipart_upload(
-            AdapterMultipartCreateRequest(
+    ) -> WriteSession:
+        session = self._adapter.begin_write(
+            WriteStartRequest(
                 object_path=object_path,
                 content_type=content_type,
                 identity_metadata=metadata,
                 placement=self._placement,
             )
         )
-        return _multipart_upload(upload)
+        return _write_session(session)
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        session: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt:
-        receipt = self._adapter.upload_part(
-            upload=_adapter_upload(upload),
+    ) -> WriteSegmentReceipt:
+        receipt = self._adapter.write_segment(
+            session=_adapter_session(session),
             number=number,
             content=content,
         )
-        return _multipart_part(receipt)
+        return _write_segment(receipt)
 
-    def list_parts(self, *, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
+    def list_segments(self, *, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
         return tuple(
-            _multipart_part(current)
-            for current in self._adapter.list_parts(_adapter_upload(upload))
+            _write_segment(current)
+            for current in self._adapter.list_segments(_adapter_session(session))
         )
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
         *,
-        upload: MultipartUpload,
-        parts: tuple[MultipartPartReceipt, ...],
+        session: WriteSession,
+        segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
         try:
-            receipt = self._adapter.complete_multipart_upload(
-                AdapterMultipartCompleteRequest(
-                    upload=_adapter_upload(upload),
-                    parts=tuple(_adapter_part(current) for current in parts),
+            receipt = self._adapter.complete_write(
+                WriteCompleteRequest(
+                    session=_adapter_session(session),
+                    segments=tuple(_adapter_segment(current) for current in segments),
                     expected_bytes=expected_bytes,
                     expected_identity_metadata=expected_metadata,
                     expected_placement=self._placement,
@@ -102,21 +111,21 @@ class StorageAdapterArchiveMultipartObjectStore:
             raise
         return CompletedObjectReceipt(
             object_path=receipt.object_path,
-            version_id=receipt.revision,
-            etag=receipt.entity_token,
+            revision=receipt.revision,
+            entity_token=receipt.entity_token,
             bytes=receipt.stored_bytes,
             completed_at=receipt.completed_at,
         )
 
-    def head_completed_object(
+    def find_completed_write(
         self,
         *,
         object_path: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         try:
-            receipt = self._adapter.head_completed_object(
-                AdapterMultipartHeadRequest(
+            receipt = self._adapter.find_completed_write(
+                CompletedWriteLookupRequest(
                     object_path=object_path,
                     expected_identity_metadata=expected_metadata,
                     expected_placement=self._placement,
@@ -129,14 +138,14 @@ class StorageAdapterArchiveMultipartObjectStore:
             return None
         return CompletedObjectReceipt(
             object_path=receipt.object_path,
-            version_id=receipt.revision,
-            etag=receipt.entity_token,
+            revision=receipt.revision,
+            entity_token=receipt.entity_token,
             bytes=receipt.stored_bytes,
             completed_at=receipt.completed_at,
         )
 
-    def abort_multipart_upload(self, *, upload: MultipartUpload) -> None:
-        self._adapter.abort_multipart_upload(_adapter_upload(upload))
+    def abort_write(self, *, session: WriteSession) -> None:
+        self._adapter.abort_write(_adapter_session(session))
 
 
 class StorageAdapterImmutableArchiveObjectStore:
@@ -174,8 +183,8 @@ class StorageAdapterImmutableArchiveObjectStore:
             raise
         return ImmutableObjectReceipt(
             object_path=receipt.object_path,
-            version_id=receipt.revision,
-            etag=receipt.entity_token,
+            revision=receipt.revision,
+            entity_token=receipt.entity_token,
             stored_bytes=receipt.stored_bytes,
             stored_sha256=receipt.stored_sha256,
             completed_at=receipt.completed_at,
@@ -192,14 +201,14 @@ class StorageAdapterArchiveObjectRangeStore:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
         return self._adapter.iter_object(
             ObjectReadRequest(
-                object=ObjectLocator(object_path=object_path, revision=version_id),
+                object=ObjectLocator(object_path=object_path, revision=revision),
                 expected_bytes=expected_bytes,
                 offset=offset,
                 size=size,
@@ -207,29 +216,32 @@ class StorageAdapterArchiveObjectRangeStore:
         )
 
 
-def _adapter_upload(upload: MultipartUpload) -> AdapterMultipartUpload:
-    return AdapterMultipartUpload(object_path=upload.object_path, upload_id=upload.upload_id)
-
-
-def _multipart_upload(upload: AdapterMultipartUpload) -> MultipartUpload:
-    return MultipartUpload(object_path=upload.object_path, upload_id=upload.upload_id)
-
-
-def _adapter_part(part: MultipartPartReceipt) -> AdapterMultipartPartReceipt:
-    return AdapterMultipartPartReceipt(
-        number=part.number,
-        part_token=part.etag,
-        stored_bytes=part.bytes,
-        stored_sha256=part.sha256,
+def _adapter_session(session: WriteSession) -> AdapterWriteSession:
+    return AdapterWriteSession(
+        object_path=session.object_path,
+        write_token=session.write_token,
     )
 
 
-def _multipart_part(part: AdapterMultipartPartReceipt) -> MultipartPartReceipt:
-    return MultipartPartReceipt(
-        number=part.number,
-        etag=part.part_token,
-        bytes=part.stored_bytes,
-        sha256=part.stored_sha256,
+def _write_session(session: AdapterWriteSession) -> WriteSession:
+    return WriteSession(object_path=session.object_path, write_token=session.write_token)
+
+
+def _adapter_segment(segment: WriteSegmentReceipt) -> AdapterWriteSegmentReceipt:
+    return AdapterWriteSegmentReceipt(
+        number=segment.number,
+        segment_token=segment.segment_token,
+        stored_bytes=segment.bytes,
+        stored_sha256=segment.sha256,
+    )
+
+
+def _write_segment(segment: AdapterWriteSegmentReceipt) -> WriteSegmentReceipt:
+    return WriteSegmentReceipt(
+        number=segment.number,
+        segment_token=segment.segment_token,
+        bytes=segment.stored_bytes,
+        sha256=segment.stored_sha256,
     )
 
 
@@ -239,7 +251,7 @@ def _raise_identity_conflict(exc: StorageAdapterRejection) -> None:
 
 
 __all__ = [
-    "StorageAdapterArchiveMultipartObjectStore",
+    "StorageAdapterArchiveResumableObjectStore",
     "StorageAdapterArchiveObjectRangeStore",
     "StorageAdapterImmutableArchiveObjectStore",
 ]

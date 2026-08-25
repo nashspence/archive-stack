@@ -18,7 +18,7 @@ def test_archive_throughput_tuning_exposes_only_effective_runtime_controls() -> 
     tuning = ArchiveThroughputTuning.from_env({})
 
     assert tuning.upload_prepare_concurrency == 8
-    assert tuning.multipart_concurrency == 4
+    assert tuning.write_concurrency == 4
     assert tuning.upload_request_concurrency == 4
     assert tuning.upload_max_inflight_bytes == 1280 * 1024 * 1024
     assert tuning.source_read_chunk_bytes == 8 * 1024 * 1024
@@ -31,7 +31,7 @@ def test_archive_throughput_tuning_exposes_only_effective_runtime_controls() -> 
     customized = ArchiveThroughputTuning.from_env(
         {
             "RIVERHOG_ARCHIVE_PREPARE_CONCURRENCY": "12",
-            "RIVERHOG_ARCHIVE_MULTIPART_CONCURRENCY": "8",
+            "RIVERHOG_ARCHIVE_WRITE_CONCURRENCY": "8",
             "RIVERHOG_ARCHIVE_UPLOAD_REQUEST_CONCURRENCY": "16",
             "RIVERHOG_INGRESS_MAX_INFLIGHT_BYTES": "2GiB",
             "RIVERHOG_INGRESS_SOURCE_READ_CHUNK_BYTES": "16MiB",
@@ -44,7 +44,7 @@ def test_archive_throughput_tuning_exposes_only_effective_runtime_controls() -> 
     )
 
     assert customized.upload_prepare_concurrency == 12
-    assert customized.multipart_concurrency == 8
+    assert customized.write_concurrency == 8
     assert customized.upload_request_concurrency == 16
     assert customized.upload_max_inflight_bytes == 2 * 1024**3
     assert customized.source_read_chunk_bytes == 16 * 1024**2
@@ -74,7 +74,7 @@ def test_transfer_timing_log_separates_phases_without_raw_identity(
 
     log_transfer_timing(
         TransferTiming(
-            operation="pack_upload_part",
+            operation="pack_write_segment",
             identity="private/path.bin",
             plaintext_bytes=1024,
             stored_bytes=1056,
@@ -91,7 +91,7 @@ def test_transfer_timing_log_separates_phases_without_raw_identity(
     )
 
     message = caplog.messages[-1]
-    assert "operation=pack_upload_part" in message
+    assert "operation=pack_write_segment" in message
     assert "identity_sha256=" in message
     assert "source_seconds=0.200000" in message
     assert "integrity_seconds=0.700000" in message

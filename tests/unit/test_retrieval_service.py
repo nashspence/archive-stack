@@ -32,40 +32,40 @@ from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import MemoryArchiveStore
 from tests.unit.db_helpers import sqlite_url
 from tests.unit.test_archive_root import MemoryImmutableStore
-from tests.unit.test_pack_upload import MemoryMultipartStore
+from tests.unit.test_pack_upload import MemoryResumableStore
 
 MIB = 1024 * 1024
 
 
 class MemoryArchiveRangeStore:
-    def __init__(self, multipart: MemoryMultipartStore) -> None:
-        self._multipart = multipart
+    def __init__(self, resumable: MemoryResumableStore) -> None:
+        self._resumable = resumable
         self.requests: list[tuple[str, int, int]] = []
 
     def iter_object_range(
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
-        _ = version_id
-        assert expected_bytes == len(self._multipart.objects[object_path][0])
+        _ = revision
+        assert expected_bytes == len(self._resumable.objects[object_path][0])
         self.requests.append((object_path, offset, size))
-        yield self._multipart.objects[object_path][0][offset : offset + size]
+        yield self._resumable.objects[object_path][0][offset : offset + size]
 
 
 class DirectArchiveStore(MemoryArchiveStore):
     def __init__(
         self,
-        multipart: MemoryMultipartStore,
+        resumable: MemoryResumableStore,
         *,
         read_mode: str = "immediate",
     ) -> None:
         super().__init__(read_mode=read_mode)
-        self._multipart = multipart
+        self._resumable = resumable
         self.prepare_calls = 0
 
     def prepare_archive_objects_read(
@@ -83,7 +83,7 @@ class DirectArchiveStore(MemoryArchiveStore):
         attribution: DownloadAttribution | None = None,
     ) -> Iterator[bytes]:
         _ = collection_id, attribution
-        yield self._multipart.objects[object.object_path][0]
+        yield self._resumable.objects[object.object_path][0]
 
 
 class MemoryRetrievalCache:
@@ -108,7 +108,7 @@ class MemoryRetrievalCache:
         self.objects[(path, version)] = payload
         return RetrievalCacheReceipt(
             object_path=path,
-            version_id=version,
+            revision=version,
             stored_bytes=len(payload),
             stored_sha256=hashlib.sha256(payload).hexdigest(),
             cached_at="2026-08-08T00:00:00.000000Z",
@@ -119,11 +119,11 @@ class MemoryRetrievalCache:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         expected_sha256: str,
     ) -> Iterator[bytes]:
-        payload = self.objects[(object_path, version_id)]
+        payload = self.objects[(object_path, revision)]
         assert len(payload) == expected_bytes
         assert hashlib.sha256(payload).hexdigest() == expected_sha256
         yield payload
@@ -132,19 +132,19 @@ class MemoryRetrievalCache:
         self,
         *,
         object_path: str,
-        version_id: str | None,
+        revision: str | None,
         expected_bytes: int,
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
-        payload = self.objects[(object_path, version_id)]
+        payload = self.objects[(object_path, revision)]
         assert expected_bytes == len(payload)
         self.range_requests.append((object_path, offset, size))
         yield payload[offset : offset + size]
 
-    def delete(self, *, object_path: str, version_id: str | None) -> None:
-        self.deleted.append((object_path, version_id))
-        del self.objects[(object_path, version_id)]
+    def delete(self, *, object_path: str, revision: str | None) -> None:
+        self.deleted.append((object_path, revision))
+        del self.objects[(object_path, revision)]
 
 
 class RecordingDownloadAllowance:
@@ -221,15 +221,15 @@ def _seed_collection(
             )
         )
 
-    multipart = MemoryMultipartStore()
-    ranges = MemoryArchiveRangeStore(multipart)
+    resumable = MemoryResumableStore()
+    ranges = MemoryArchiveRangeStore(resumable)
     root_store = MemoryImmutableStore()
-    archive_store = DirectArchiveStore(multipart, read_mode=read_mode)
+    archive_store = DirectArchiveStore(resumable, read_mode=read_mode)
     archive_registry = ArchiveStoreRegistry(
         {
             "archive": ArchiveStoreBinding(
                 store=cast(ArchiveStore, archive_store),
-                multipart_objects=multipart,
+                resumable_objects=resumable,
                 immutable_objects=root_store,
                 object_ranges=ranges,
             )

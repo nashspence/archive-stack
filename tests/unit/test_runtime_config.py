@@ -177,23 +177,23 @@ def test_archive_key_generations_have_one_explicit_active_binding(tmp_path: Path
         )
 
 
-def test_load_runtime_config_parses_archive_multipart_safeguards(
+def test_load_runtime_config_parses_incomplete_archive_write_safeguards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE", "96h")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL", "2h")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_MAX_AGE", "96h")
+    monkeypatch.setenv("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_SWEEP_INTERVAL", "2h")
 
     config = load_runtime_config()
 
-    assert config.archive_multipart_max_age == timedelta(hours=96)
-    assert config.archive_multipart_sweep_interval == timedelta(hours=2)
+    assert config.archive_incomplete_write_max_age == timedelta(hours=96)
+    assert config.archive_incomplete_write_sweep_interval == timedelta(hours=2)
 
 
 def test_load_runtime_config_connects_archive_sweep_and_proof_verifier_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "17s")
-    monkeypatch.setenv("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES", "7MiB")
+    monkeypatch.setenv("RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES", "7MiB")
     monkeypatch.setenv("RIVERHOG_LOG_LEVEL", "debug")
     monkeypatch.setenv("RIVERHOG_OTS_STAMP_COMMAND", "custom-ots --calendar example")
     monkeypatch.setenv("RIVERHOG_OTS_VERIFY_COMMAND", "custom-ots --verify-policy strict")
@@ -201,7 +201,7 @@ def test_load_runtime_config_connects_archive_sweep_and_proof_verifier_settings(
     config = load_runtime_config()
 
     assert config.archive_upload_sweep_interval == timedelta(seconds=17)
-    assert config.archive_multipart_part_bytes == 7 * 1024 * 1024
+    assert config.retrieval_cache_write_segment_bytes == 7 * 1024 * 1024
     assert config.log_level == "DEBUG"
     assert config.ots_stamp_command == ("custom-ots", "--calendar", "example")
     assert config.ots_verify_command == ("custom-ots", "--verify-policy", "strict")

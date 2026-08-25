@@ -4,7 +4,6 @@ import hashlib
 from dataclasses import dataclass
 
 import pytest
-from riverhog_age import PORTABLE_MULTIPART_MIN_PART_BYTES
 from riverhog_core.domain.archive import ArchiveFile
 from riverhog_core.pack_upload import (
     PackUploadCheckpoint,
@@ -14,9 +13,12 @@ from riverhog_core.pack_upload import (
 from riverhog_core.pack_volume import pack_unit_descriptors, plan_pack_volume
 from riverhog_core.ports.archive_objects import (
     CompletedObjectReceipt,
-    MultipartPartReceipt,
-    MultipartUpload,
+    ResumableWriteConstraints,
+    WriteSegmentReceipt,
+    WriteSession,
 )
+
+ARCHIVE_UNIT_BYTES = 5 * 1024 * 1024
 
 
 def _file(path: str, content: bytes) -> ArchiveFile:
@@ -50,10 +52,10 @@ class _UploadRow:
     content_type: str
     metadata: dict[str, str]
     parts: dict[int, bytes]
-    etags: dict[int, str]
+    segment_tokens: dict[int, str]
 
 
-class MemoryMultipartStore:
+class MemoryResumableStore:
     def __init__(self) -> None:
         self.uploads: dict[str, _UploadRow] = {}
         self.objects: dict[str, tuple[bytes, dict[str, str], CompletedObjectReceipt]] = {}
@@ -61,66 +63,69 @@ class MemoryMultipartStore:
         self.complete_calls = 0
         self.lose_complete_response = False
 
-    def create_multipart_upload(
+    def write_constraints(self) -> ResumableWriteConstraints:
+        return ResumableWriteConstraints(1, None, None)
+
+    def begin_write(
         self,
         *,
         object_path: str,
         content_type: str,
         metadata: dict[str, str],
-    ) -> MultipartUpload:
-        upload_id = f"upload-{self.next_id}"
+    ) -> WriteSession:
+        write_token = f"upload-{self.next_id}"
         self.next_id += 1
-        self.uploads[upload_id] = _UploadRow(object_path, content_type, dict(metadata), {}, {})
-        return MultipartUpload(object_path, upload_id)
+        self.uploads[write_token] = _UploadRow(object_path, content_type, dict(metadata), {}, {})
+        return WriteSession(object_path, write_token)
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        session: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt:
-        row = self.uploads[upload.upload_id]
-        etag = f'"{hashlib.md5(content, usedforsecurity=False).hexdigest()}"'
+    ) -> WriteSegmentReceipt:
+        row = self.uploads[session.write_token]
+        segment_token = f'"{hashlib.md5(content, usedforsecurity=False).hexdigest()}"'
         row.parts[number] = content
-        row.etags[number] = etag
-        return MultipartPartReceipt(number=number, etag=etag, bytes=len(content))
+        row.segment_tokens[number] = segment_token
+        return WriteSegmentReceipt(number=number, segment_token=segment_token, bytes=len(content))
 
-    def list_parts(self, *, upload: MultipartUpload) -> tuple[MultipartPartReceipt, ...]:
-        row = self.uploads[upload.upload_id]
+    def list_segments(self, *, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
+        row = self.uploads[session.write_token]
         return tuple(
-            MultipartPartReceipt(number, row.etags[number], len(row.parts[number]))
+            WriteSegmentReceipt(number, row.segment_tokens[number], len(row.parts[number]))
             for number in sorted(row.parts)
         )
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
         *,
-        upload: MultipartUpload,
-        parts: tuple[MultipartPartReceipt, ...],
+        session: WriteSession,
+        segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
         self.complete_calls += 1
-        row = self.uploads[upload.upload_id]
+        row = self.uploads[session.write_token]
         assert all(row.metadata.get(key) == value for key, value in expected_metadata.items())
-        content = b"".join(row.parts[current.number] for current in parts)
+        content = b"".join(row.parts[current.number] for current in segments)
         assert len(content) == expected_bytes
         receipt = CompletedObjectReceipt(
-            object_path=upload.object_path,
-            version_id="version-1",
-            etag='"completed"',
+            object_path=session.object_path,
+            revision="version-1",
+            entity_token='"completed"',
             bytes=len(content),
             completed_at="2026-08-03T00:00:00Z",
         )
-        self.objects[upload.object_path] = (content, row.metadata, receipt)
-        del self.uploads[upload.upload_id]
+        self.objects[session.object_path] = (content, row.metadata, receipt)
+        del self.uploads[session.write_token]
         if self.lose_complete_response:
             self.lose_complete_response = False
             raise ConnectionError("completion response lost")
         return receipt
 
-    def head_completed_object(
+    def find_completed_write(
         self,
         *,
         object_path: str,
@@ -133,12 +138,12 @@ class MemoryMultipartStore:
             return None
         return found[2]
 
-    def abort_multipart_upload(self, *, upload: MultipartUpload) -> None:
-        self.uploads.pop(upload.upload_id, None)
+    def abort_write(self, *, session: WriteSession) -> None:
+        self.uploads.pop(session.write_token, None)
 
 
 def _uploader(
-    store: MemoryMultipartStore,
+    store: MemoryResumableStore,
     checkpoints: MemoryCheckpointStore,
 ) -> PackVolumeUploader:
     return PackVolumeUploader(
@@ -154,10 +159,10 @@ def _payload(plan, unit, contents: dict[str, bytes]) -> bytes:
     return b"".join(contents[source.path] for source in descriptor.sources)
 
 
-def test_pack_is_acknowledged_only_after_final_multipart_completion() -> None:
+def test_pack_is_acknowledged_only_after_final_resumable_write_completion() -> None:
     contents = {"a.txt": b"alpha", "b.txt": b"beta"}
     plan = plan_pack_volume([_file(path, value) for path, value in contents.items()], sequence=0)
-    store = MemoryMultipartStore()
+    store = MemoryResumableStore()
     checkpoints = MemoryCheckpointStore()
     uploader = _uploader(store, checkpoints)
     checkpoint = uploader.open(
@@ -180,12 +185,14 @@ def test_pack_is_acknowledged_only_after_final_multipart_completion() -> None:
     assert receipt.volume_id == plan.volume_id
     assert receipt.parts[0].plaintext_bytes == plan.plaintext_bytes
     assert receipt.stored_bytes == checkpoint.completed.bytes
+    assert checkpoint.write_segments
+    assert all(current.sha256 is not None for current in checkpoint.write_segments)
 
 
 def test_pack_upload_revalidates_the_registered_source_identity() -> None:
     content = b"registered content"
     plan = plan_pack_volume([_file("only.txt", content)], sequence=0)
-    store = MemoryMultipartStore()
+    store = MemoryResumableStore()
     checkpoints = MemoryCheckpointStore()
     uploader = _uploader(store, checkpoints)
     checkpoint = uploader.open(
@@ -208,10 +215,10 @@ def test_checkpoint_resumes_between_whole_file_units() -> None:
     plan = plan_pack_volume(
         [_file(path, value) for path, value in contents.items()],
         sequence=0,
-        part_plaintext_bytes=PORTABLE_MULTIPART_MIN_PART_BYTES,
+        part_plaintext_bytes=ARCHIVE_UNIT_BYTES,
     )
     assert len(plan.units) >= 2
-    store = MemoryMultipartStore()
+    store = MemoryResumableStore()
     checkpoints = MemoryCheckpointStore()
     first_process = _uploader(store, checkpoints)
     checkpoint = first_process.open(
@@ -241,14 +248,14 @@ def test_checkpoint_resumes_between_whole_file_units() -> None:
             payload_chunks=(_payload(plan, resumed.next_unit, contents),),
         )
 
-    assert len(resumed.parts) == len(plan.units)
+    assert len(resumed.archive_parts) == len(plan.units)
     assert store.complete_calls == 1
 
 
 def test_lost_complete_response_is_recovered_from_final_object_metadata() -> None:
     contents = {"only.txt": b"content"}
     plan = plan_pack_volume([_file("only.txt", contents["only.txt"])], sequence=0)
-    store = MemoryMultipartStore()
+    store = MemoryResumableStore()
     checkpoints = MemoryCheckpointStore()
     uploader = _uploader(store, checkpoints)
     checkpoint = uploader.open(
@@ -279,7 +286,7 @@ def test_lost_complete_response_is_recovered_from_final_object_metadata() -> Non
 def test_checkpoint_round_trips() -> None:
     contents = {"only.txt": b"content"}
     plan = plan_pack_volume([_file("only.txt", contents["only.txt"])], sequence=0)
-    store = MemoryMultipartStore()
+    store = MemoryResumableStore()
     checkpoints = MemoryCheckpointStore()
     uploader = _uploader(store, checkpoints)
     checkpoint = uploader.open(
@@ -296,19 +303,19 @@ def test_checkpoint_round_trips() -> None:
     assert PackUploadCheckpoint.from_json(checkpoint.to_json()) == checkpoint
 
 
-class LoseFirstPartResponseStore(MemoryMultipartStore):
+class LoseFirstPartResponseStore(MemoryResumableStore):
     def __init__(self) -> None:
         super().__init__()
         self.lose_part_response = True
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: MultipartUpload,
+        session: WriteSession,
         number: int,
         content: bytes,
-    ) -> MultipartPartReceipt:
-        receipt = super().upload_part(upload=upload, number=number, content=content)
+    ) -> WriteSegmentReceipt:
+        receipt = super().write_segment(session=session, number=number, content=content)
         if self.lose_part_response:
             self.lose_part_response = False
             raise ConnectionError("part response lost")
@@ -336,8 +343,8 @@ def test_lost_part_response_is_retried_at_the_same_deterministic_part_number() -
         )
 
     persisted = PackUploadCheckpoint.from_json(checkpoints.rows[(1, plan.volume_id)])
-    assert persisted.parts == ()
-    assert store.uploads[persisted.upload_id].parts.keys() == {1}
+    assert persisted.archive_parts == ()
+    assert store.uploads[persisted.write_token].parts.keys() == {1}
 
     resumed_uploader = _uploader(store, checkpoints)
     resumed = resumed_uploader.open(
@@ -353,5 +360,5 @@ def test_lost_part_response_is_retried_at_the_same_deterministic_part_number() -
     )
 
     assert completed.completed is not None
-    assert [part.number for part in completed.parts] == [1]
+    assert [part.number for part in completed.archive_parts] == [1]
     assert store.complete_calls == 1

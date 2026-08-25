@@ -12,22 +12,22 @@ from riverhog_core.archive_formats import (
     RAW_VOLUME_STORAGE_FORMAT,
     ROOT_MANIFEST_STORAGE_FORMAT,
 )
-from riverhog_core.ports.archive_objects import MultipartPartReceipt
+from riverhog_core.ports.archive_objects import WriteSegmentReceipt
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity
 from riverhog_core.runtime_config import StorageAdapterRegistration, load_runtime_config
-from riverhog_core.stores.mirrored_archive_multipart_object_store import (
-    MirroredArchiveMultipartObjectStore,
+from riverhog_core.stores.mirrored_archive_resumable_object_store import (
+    MirroredArchiveResumableObjectStore,
 )
 from riverhog_core.stores.storage_adapter_archive_objects import (
-    StorageAdapterArchiveMultipartObjectStore,
     StorageAdapterArchiveObjectRangeStore,
+    StorageAdapterArchiveResumableObjectStore,
     StorageAdapterImmutableArchiveObjectStore,
 )
 from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArchiveStore
 from riverhog_core.stores.storage_adapter_retrieval_cache import StorageAdapterRetrievalCache
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     DeletePrefixRequest,
 )
 from riverhog_storage_adapter_support import StorageAdapterClient
@@ -69,7 +69,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
     cache_client = _client(cache_registration)
     archive_client.check_readiness()
     cache_client.check_readiness()
-    multipart = StorageAdapterArchiveMultipartObjectStore(archive_client)
+    resumable = StorageAdapterArchiveResumableObjectStore(archive_client)
     immutable = StorageAdapterImmutableArchiveObjectStore(archive_client)
     ranges = StorageAdapterArchiveObjectRangeStore(archive_client)
     archive = StorageAdapterArchiveStore(
@@ -80,7 +80,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
     throughput_tuning = ArchiveThroughputTuning.from_env(os.environ)
     cache = StorageAdapterRetrievalCache(
         cache_client,
-        multipart_part_bytes=config.archive_multipart_part_bytes,
+        write_segment_bytes=config.retrieval_cache_write_segment_bytes,
         throughput_tuning=throughput_tuning,
         transfer_resources=ArchiveTransferResources.from_tuning(throughput_tuning),
     )
@@ -103,45 +103,45 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
     }
 
     try:
-        upload = multipart.create_multipart_upload(
+        session = resumable.begin_write(
             object_path=volume_path,
             content_type="application/vnd.riverhog.raw-volume+age",
             metadata=metadata,
         )
-        part = multipart.upload_part(upload=upload, number=1, content=ciphertext)
-        completed = multipart.complete_multipart_upload(
-            upload=upload,
-            parts=(part,),
+        segment = resumable.write_segment(session=session, number=1, content=ciphertext)
+        completed = resumable.complete_write(
+            session=session,
+            segments=(segment,),
             expected_bytes=len(ciphertext),
             expected_metadata=metadata,
         )
         assert completed.object_path == volume_path
 
         mirrored_path = f"{archive_prefix}/volumes/segment-000000000001.bin.age"
-        mirrored = MirroredArchiveMultipartObjectStore(
-            archive=multipart,
+        mirrored = MirroredArchiveResumableObjectStore(
+            archive=resumable,
             cache=cache,
             source_store=config.archive_write_store,
             collection_id=1,
             object_id="segment-000000000001",
         )
-        mirrored_upload = mirrored.create_multipart_upload(
+        mirrored_session = mirrored.begin_write(
             object_path=mirrored_path,
             content_type="application/vnd.riverhog.raw-volume+age",
             metadata=metadata,
         )
-        mirrored_part = mirrored.upload_part(
-            upload=mirrored_upload,
+        mirrored_segment = mirrored.write_segment(
+            session=mirrored_session,
             number=1,
             content=ciphertext,
         )
-        mirrored_completed = mirrored.complete_multipart_upload(
-            upload=mirrored_upload,
-            parts=(
-                MultipartPartReceipt(
-                    number=mirrored_part.number,
-                    etag=mirrored_part.etag,
-                    bytes=mirrored_part.bytes,
+        mirrored_completed = mirrored.complete_write(
+            session=mirrored_session,
+            segments=(
+                WriteSegmentReceipt(
+                    number=mirrored_segment.number,
+                    segment_token=mirrored_segment.segment_token,
+                    bytes=mirrored_segment.bytes,
                     sha256=stored_sha256,
                 ),
             ),
@@ -155,7 +155,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
             b"".join(
                 cache.iter_object(
                     object_path=cache_receipt.object_path,
-                    version_id=cache_receipt.version_id,
+                    revision=cache_receipt.revision,
                     expected_bytes=cache_receipt.stored_bytes,
                     expected_sha256=cache_receipt.stored_sha256,
                 )
@@ -166,7 +166,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
             b"".join(
                 ranges.iter_object_range(
                     object_path=mirrored_path,
-                    version_id=mirrored_completed.version_id,
+                    revision=mirrored_completed.revision,
                     expected_bytes=len(ciphertext),
                     offset=0,
                     size=len(ciphertext),
@@ -216,7 +216,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
             stored_bytes=len(ciphertext),
             sha256=None,
             stored_sha256=stored_sha256,
-            version_id=completed.version_id,
+            revision=completed.revision,
         )
         assert (
             b"".join(
@@ -231,8 +231,8 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
     finally:
         cutoff = format_utc_timestamp(datetime.now(UTC) + timedelta(seconds=1))
         for client in (archive_client, cache_client):
-            client.abort_incomplete_uploads(
-                AbortIncompleteUploadsRequest(
+            client.abort_incomplete_writes(
+                AbortIncompleteWritesRequest(
                     object_prefix=f"archives/{prefix}/",
                     initiated_before=cutoff,
                 )

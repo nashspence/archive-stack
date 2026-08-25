@@ -10,16 +10,16 @@ from riverhog_storage_adapter_protocol import (
     AdapterDescriptor,
     DeleteObjectRequest,
     DeletePrefixRequest,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartPartReceipt,
-    MultipartUpload,
     ObjectLocator,
     ObjectMetadataReceipt,
     ObjectReadRequest,
     ReadPreparationRequest,
     SmallObjectWriteRequest,
     StorageAdapterPort,
+    WriteCompleteRequest,
+    WriteSegmentReceipt,
+    WriteSession,
+    WriteStartRequest,
     normalize_object_path,
 )
 
@@ -30,38 +30,38 @@ def test_protocol_matches_the_existing_capability_port_inventory() -> None:
         for name, value in StorageAdapterPort.__dict__.items()
         if not name.startswith("_") and inspect.isfunction(value)
     } == {
-        "abort_incomplete_uploads",
-        "abort_multipart_upload",
+        "abort_incomplete_writes",
+        "abort_write",
         "cleanup_read",
-        "complete_multipart_upload",
-        "create_multipart_upload",
+        "complete_write",
+        "begin_write",
         "delete_object",
         "delete_prefix",
         "descriptor",
-        "head_completed_object",
+        "find_completed_write",
         "head_object",
         "iter_object",
-        "list_parts",
+        "list_segments",
         "prepare_read",
         "put_small_object",
         "read_status",
-        "upload_part",
+        "write_segment",
     }
 
 
-def test_multipart_completion_preserves_optional_digests_and_repeated_provider_tokens() -> None:
-    upload = MultipartUpload(object_path="archives/id/volumes/pack.tar.age", upload_id="opaque")
-    request = MultipartCompleteRequest(
-        upload=upload,
-        parts=(
-            MultipartPartReceipt(
+def test_write_completion_preserves_optional_digests_and_repeated_provider_tokens() -> None:
+    session = WriteSession(object_path="archives/id/volumes/pack.tar.age", write_token="opaque")
+    request = WriteCompleteRequest(
+        session=session,
+        segments=(
+            WriteSegmentReceipt(
                 number=1,
-                part_token="provider-part-1",
+                segment_token="provider-part-1",
                 stored_bytes=5,
             ),
-            MultipartPartReceipt(
+            WriteSegmentReceipt(
                 number=2,
-                part_token="provider-part-1",
+                segment_token="provider-part-1",
                 stored_bytes=7,
                 stored_sha256="a" * 64,
             ),
@@ -72,12 +72,12 @@ def test_multipart_completion_preserves_optional_digests_and_repeated_provider_t
     )
 
     assert request.expected_identity_metadata == {"riverhog-format": "riverhog-pack-volume/v1"}
-    assert request.parts[0].part_token == request.parts[1].part_token
-    assert request.parts[0].stored_sha256 is None
-    assert "stored_sha256" not in MultipartCompleteRequest.model_fields
+    assert request.segments[0].segment_token == request.segments[1].segment_token
+    assert request.segments[0].stored_sha256 is None
+    assert "stored_sha256" not in WriteCompleteRequest.model_fields
 
 
-def test_small_object_digest_does_not_apply_to_multipart_objects() -> None:
+def test_small_object_digest_does_not_apply_to_resumable_writes() -> None:
     request = SmallObjectWriteRequest(
         object_path="README.md",
         content_type="text/markdown",
@@ -93,7 +93,7 @@ def test_small_object_digest_does_not_apply_to_multipart_objects() -> None:
 
 
 def test_identity_metadata_is_bounded_canonical_and_opaque() -> None:
-    request = MultipartCreateRequest(
+    request = WriteStartRequest(
         object_path="archives/id/volumes/segment.bin.age",
         content_type="application/octet-stream",
         identity_metadata={
@@ -108,7 +108,7 @@ def test_identity_metadata_is_bounded_canonical_and_opaque() -> None:
         "riverhog-plan-sha256",
     ]
     with pytest.raises(ValidationError, match="encoded-size bound"):
-        MultipartCreateRequest(
+        WriteStartRequest(
             object_path="archives/id/object",
             content_type="application/octet-stream",
             identity_metadata={"identity": "x" * (16 * 1024 + 1)},
@@ -170,9 +170,9 @@ def test_descriptor_exposes_only_runtime_facts_needed_by_riverhog() -> None:
         implementation_id="fixture.storage/v1",
         implementation_version="1.0.0",
         read_mode="restore_required",
-        minimum_nonfinal_part_bytes=5,
-        maximum_part_bytes=10,
-        maximum_part_count=10_000,
+        minimum_nonfinal_segment_bytes=5,
+        maximum_segment_bytes=10,
+        maximum_segment_count=10_000,
     )
     schema = str(AdapterDescriptor.model_json_schema()).casefold()
 

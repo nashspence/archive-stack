@@ -88,7 +88,7 @@ from riverhog_core.domain.archive import (
     RawVolumePlan,
     SealedPackVolume,
     SealedRawVolume,
-    StoredPartReceipt,
+    StoredArchivePart,
 )
 from riverhog_core.incremental_plan import (
     OrderedArchiveFile,
@@ -103,7 +103,7 @@ from riverhog_core.pack_volume import (
     pack_volume_plan_bytes,
     parse_pack_volume_plan,
 )
-from riverhog_core.ports.archive_objects import ArchiveMultipartObjectStore
+from riverhog_core.ports.archive_objects import ArchiveResumableObjectStore
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.proofs import ProofStamper
 from riverhog_core.provenance_projection import (
@@ -122,8 +122,8 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
-from riverhog_core.stores.mirrored_archive_multipart_object_store import (
-    MirroredArchiveMultipartObjectStore,
+from riverhog_core.stores.mirrored_archive_resumable_object_store import (
+    MirroredArchiveResumableObjectStore,
 )
 from riverhog_core.stores.sqlalchemy_archive_upload_checkpoints import (
     SqlAlchemyArchiveUploadCheckpointStore,
@@ -792,10 +792,10 @@ class SqlAlchemyCollectionUploadService:
                     target_part_plaintext_bytes=unit_plaintext_bytes,
                     expected_part_sha256s=expected,
                 )
-                raw_checkpoint = raw_uploader.upload_part(
+                raw_checkpoint = raw_uploader.upload_unit(
                     plan=raw_plan,
                     checkpoint=raw_checkpoint,
-                    part_number=unit + 1,
+                    unit_number=unit + 1,
                     plaintext=content,
                 )
                 receipt = (
@@ -1005,7 +1005,7 @@ class SqlAlchemyCollectionUploadService:
 
     def _pack_uploader(
         self,
-        object_store: ArchiveMultipartObjectStore,
+        object_store: ArchiveResumableObjectStore,
         *,
         passphrase_id: str,
     ) -> PackVolumeUploader:
@@ -1027,16 +1027,16 @@ class SqlAlchemyCollectionUploadService:
         store_name: str,
         collection_id: int,
         object_id: str,
-    ) -> ArchiveMultipartObjectStore:
+    ) -> ArchiveResumableObjectStore:
         binding = self._archive_stores.require(store_name)
-        archive = binding.multipart_objects
+        archive = binding.resumable_objects
         if (
             not self._config.retrieval_cache_new_archive_enabled
             or self._retrieval_cache is None
             or binding.store.read_mode() != "restore_required"
         ):
             return archive
-        return MirroredArchiveMultipartObjectStore(
+        return MirroredArchiveResumableObjectStore(
             archive=archive,
             cache=self._retrieval_cache,
             source_store=store_name,
@@ -1046,7 +1046,7 @@ class SqlAlchemyCollectionUploadService:
 
     def _raw_uploader(
         self,
-        object_store: ArchiveMultipartObjectStore,
+        object_store: ArchiveResumableObjectStore,
         *,
         passphrase_id: str,
     ) -> RawVolumeUploader:
@@ -1098,7 +1098,7 @@ class SqlAlchemyCollectionUploadService:
             record.state = "sealed"
             record.sealed_at = receipt.completed_at
             record.updated_at = now
-            record.uploaded_parts = len(receipt.parts)
+            record.uploaded_units = len(receipt.parts)
             record.uploaded_bytes = receipt.stored_bytes
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is not None:
@@ -1612,9 +1612,9 @@ class SqlAlchemyCollectionUploadService:
                         stored_bytes=volume.stored_bytes,
                         sha256=None,
                         stored_sha256=None,
-                        version_id=volume.version_id,
+                        revision=volume.revision,
                         age_state_json=volume.age_state_json,
-                        part_receipts_json=volume.part_receipts_json,
+                        archive_parts_json=volume.archive_parts_json,
                         plan_sha256=volume.plan_sha256,
                         index_sha256=volume.index_sha256,
                         uploaded_at=volume.completed_at,
@@ -1639,7 +1639,7 @@ class SqlAlchemyCollectionUploadService:
                         collection_id=collection_id,
                         object_id=volume.volume_id,
                         object_path=receipt.object_path,
-                        version_id=receipt.version_id,
+                        revision=receipt.revision,
                         stored_bytes=receipt.stored_bytes,
                         stored_sha256=receipt.stored_sha256,
                         cached_at=receipt.cached_at,
@@ -1675,7 +1675,7 @@ class SqlAlchemyCollectionUploadService:
                             stored_bytes=current.stored_bytes,
                             sha256=current.plaintext_sha256,
                             stored_sha256=current.stored_sha256,
-                            version_id=current.version_id,
+                            revision=current.revision,
                             uploaded_at=current.completed_at,
                             verified_at=now,
                         )
@@ -1694,7 +1694,7 @@ class SqlAlchemyCollectionUploadService:
                         stored_bytes=root.stored_bytes,
                         sha256=root.plaintext_sha256,
                         stored_sha256=root.stored_sha256,
-                        version_id=root.version_id,
+                        revision=root.revision,
                         uploaded_at=root.completed_at,
                         verified_at=now,
                     ),
@@ -1709,7 +1709,7 @@ class SqlAlchemyCollectionUploadService:
                         stored_bytes=recovery_descriptor.bytes,
                         sha256=recovery_descriptor.sha256,
                         stored_sha256=recovery_descriptor.sha256,
-                        version_id=recovery_descriptor.version_id,
+                        revision=recovery_descriptor.revision,
                         uploaded_at=recovery_descriptor.completed_at,
                         verified_at=now,
                     ),
@@ -1724,7 +1724,7 @@ class SqlAlchemyCollectionUploadService:
                         stored_bytes=proof_receipt.stored_bytes,
                         sha256=hashlib.sha256(proof_bytes).hexdigest(),
                         stored_sha256=proof_receipt.stored_sha256,
-                        version_id=proof_receipt.version_id,
+                        revision=proof_receipt.revision,
                         uploaded_at=proof_receipt.completed_at,
                         verified_at=now,
                     ),
@@ -2013,8 +2013,8 @@ def _persist_plan_batch(session: Session, *, upload: CollectionUploadRecord, bat
                 plan_sha256=plan.plan_sha256,
                 state="planned",
                 uploaded_bytes=0,
-                uploaded_parts=0,
-                total_parts=len(plan.units),
+                uploaded_units=0,
+                total_units=len(plan.units),
                 updated_at=now,
             )
         )
@@ -2036,8 +2036,8 @@ def _persist_plan_batch(session: Session, *, upload: CollectionUploadRecord, bat
                 plan_sha256=hashlib.sha256(plan_json.encode()).hexdigest(),
                 state="planned",
                 uploaded_bytes=0,
-                uploaded_parts=0,
-                total_parts=max(
+                uploaded_units=0,
+                total_units=max(
                     1,
                     (plan.plaintext_bytes + batch.checkpoint.policy.raw_part_plaintext_bytes - 1)
                     // batch.checkpoint.policy.raw_part_plaintext_bytes,
@@ -2117,7 +2117,7 @@ def _volume_summary(plan: PackVolumePlan | RawVolumePlan) -> dict[str, object]:
     }
 
 
-def _part_payload(part: StoredPartReceipt) -> dict[str, object]:
+def _part_payload(part: StoredArchivePart) -> dict[str, object]:
     return {
         "number": part.number,
         "plaintext_start": part.plaintext_start,
@@ -2125,7 +2125,6 @@ def _part_payload(part: StoredPartReceipt) -> dict[str, object]:
         "plaintext_sha256": part.plaintext_sha256,
         "stored_bytes": part.stored_bytes,
         "stored_sha256": part.stored_sha256,
-        "etag": part.etag,
     }
 
 
@@ -2137,7 +2136,7 @@ def _unit_states(record: CollectionArchiveObjectUploadRecord) -> set[int]:
         if record.kind == "pack"
         else RawUploadCheckpoint.from_json(record.checkpoint_json)
     )
-    return {current.number - 1 for current in checkpoint.parts}
+    return {current.number - 1 for current in checkpoint.archive_parts}
 
 
 def _volume_work_payload(record: CollectionArchiveObjectUploadRecord) -> dict[str, object]:
@@ -2166,7 +2165,7 @@ def _volume_work_payload(record: CollectionArchiveObjectUploadRecord) -> dict[st
         raw_plan = parse_raw_volume_plan(record.plan_json)
         raw_part_bytes = record.unit_plaintext_bytes
         units = []
-        for unit in range(record.total_parts):
+        for unit in range(record.total_units):
             byte_count = min(
                 raw_part_bytes,
                 raw_plan.plaintext_bytes - unit * raw_part_bytes,
@@ -2207,7 +2206,7 @@ def _sealed_volume_json(receipt: SealedPackVolume | SealedRawVolume) -> str:
         "plaintext_bytes": receipt.plaintext_bytes,
         "age_state": json.loads(receipt.age_state_json),
         "parts": [_part_payload(current) for current in receipt.parts],
-        "version_id": receipt.version_id,
+        "revision": receipt.revision,
         "completed_at": receipt.completed_at,
         "retrieval_cache": retrieval_cache_receipt_payload(receipt.retrieval_cache),
     }
@@ -2234,16 +2233,15 @@ def _sealed_volume_json(receipt: SealedPackVolume | SealedRawVolume) -> str:
     return json.dumps(common, sort_keys=True, separators=(",", ":"))
 
 
-def _parse_parts(values: Sequence[Mapping[str, object]]) -> tuple[StoredPartReceipt, ...]:
+def _parse_parts(values: Sequence[Mapping[str, object]]) -> tuple[StoredArchivePart, ...]:
     return tuple(
-        StoredPartReceipt(
+        StoredArchivePart(
             number=_stored_int(value["number"], "part number"),
             plaintext_start=_stored_int(value["plaintext_start"], "part plaintext start"),
             plaintext_bytes=_stored_int(value["plaintext_bytes"], "part plaintext bytes"),
             plaintext_sha256=str(value["plaintext_sha256"]),
             stored_bytes=_stored_int(value["stored_bytes"], "part stored bytes"),
             stored_sha256=str(value["stored_sha256"]),
-            etag=str(value["etag"]),
         )
         for value in values
     )
@@ -2268,7 +2266,7 @@ def _parse_sealed_pack(content: str) -> SealedPackVolume:
         index_sha256=str(value["index_sha256"]),
         plan_sha256=str(value["plan_sha256"]),
         parts=_parse_parts(value["parts"]),
-        version_id=str(value["version_id"]) if value["version_id"] is not None else None,
+        revision=str(value["revision"]) if value["revision"] is not None else None,
         completed_at=str(value["completed_at"]),
         retrieval_cache=parse_retrieval_cache_receipt(value.get("retrieval_cache")),
     )
@@ -2287,7 +2285,7 @@ def _parse_sealed_raw(content: str) -> SealedRawVolume:
         file_sha256=str(value["file_sha256"]),
         age_state_json=json.dumps(value["age_state"], sort_keys=True, separators=(",", ":")),
         parts=_parse_parts(value["parts"]),
-        version_id=str(value["version_id"]) if value["version_id"] is not None else None,
+        revision=str(value["revision"]) if value["revision"] is not None else None,
         completed_at=str(value["completed_at"]),
         retrieval_cache=parse_retrieval_cache_receipt(value.get("retrieval_cache")),
     )
@@ -2324,8 +2322,8 @@ def _upload_payload(
     archive_progress = session.execute(
         select(
             func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.uploaded_bytes), 0),
-            func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.uploaded_parts), 0),
-            func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.total_parts), 0),
+            func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.uploaded_units), 0),
+            func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.total_units), 0),
         ).where(CollectionArchiveObjectUploadRecord.collection_id == upload.collection_id)
     ).one()
     payload: dict[str, object] = {
@@ -2356,8 +2354,8 @@ def _upload_payload(
         "archive_storage_prefix": upload.archive_storage_prefix,
         "archive_uploaded_bytes": int(archive_progress[0]),
         "archive_total_bytes": None,
-        "archive_uploaded_parts": int(archive_progress[1]),
-        "archive_total_parts": int(archive_progress[2]),
+        "archive_uploaded_units": int(archive_progress[1]),
+        "archive_total_units": int(archive_progress[2]),
         "collection": None,
     }
     if resumed is not None:
@@ -2426,8 +2424,8 @@ def _finalized_payload(
         "archive_storage_prefix": copy.archive_storage_prefix if copy else None,
         "archive_uploaded_bytes": stored_bytes,
         "archive_total_bytes": stored_bytes,
-        "archive_uploaded_parts": None,
-        "archive_total_parts": None,
+        "archive_uploaded_units": None,
+        "archive_total_units": None,
         "collection": summary,
     }
     if resumed is not None:

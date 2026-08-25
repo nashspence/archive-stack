@@ -10,19 +10,14 @@ from typing import TypeVar
 from http_api_contracts import HttpErrorContract, HttpOperationContract, http_operation_for_request
 from pydantic import BaseModel, ValidationError
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
     ImmutableObjectReceipt,
     MaintenanceResult,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
-    MultipartPartReceipt,
-    MultipartPartWriteRequest,
-    MultipartUpload,
     ObjectHeadRequest,
     ObjectMetadataReceipt,
     ObjectReadRequest,
@@ -34,6 +29,11 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterErrorCode,
     StorageAdapterPort,
     StorageAdapterRejection,
+    WriteCompleteRequest,
+    WriteSegmentReceipt,
+    WriteSegmentRequest,
+    WriteSession,
+    WriteStartRequest,
 )
 
 from riverhog_storage_adapter_support.framing import parse_framed_request
@@ -41,7 +41,7 @@ from riverhog_storage_adapter_support.framing import parse_framed_request
 _JSON_CONTENT_TYPE = "application/json"
 _BINARY_CONTENT_TYPE = "application/octet-stream"
 # This is an operational parser bound, not a semantic object/member limit. It
-# accommodates the protocol's maximum multipart receipt set even when provider
+# accommodates a large write-segment receipt set even when provider
 # tokens are unusually large.
 _DEFAULT_MAXIMUM_CONTROL_BYTES = 64 * 1024 * 1024
 
@@ -107,80 +107,91 @@ class StorageAdapterHttpBinding:
                         "adapter descriptor request must not contain a body",
                     )
                 return _model_response(self.adapter.descriptor())
-            if normalized_method == "POST" and path == "/v1/multipart/create":
+            if normalized_method == "POST" and path == "/v1/writes/begin":
                 return _model_response(
-                    self.adapter.create_multipart_upload(self._parse(body, MultipartCreateRequest))
+                    self.adapter.begin_write(self._parse(body, WriteStartRequest))
                 )
-            if normalized_method == "POST" and path == "/v1/multipart/part":
-                part_request, content = self._parse_framed(body, MultipartPartWriteRequest)
+            if normalized_method == "POST" and path == "/v1/writes/segment":
+                segment_request, content = self._parse_framed(body, WriteSegmentRequest)
                 descriptor = self.adapter.descriptor()
-                if part_request.number > descriptor.maximum_part_count:
+                if (
+                    descriptor.maximum_segment_count is not None
+                    and segment_request.number > descriptor.maximum_segment_count
+                ):
                     raise StorageAdapterServiceError(
                         400,
                         "invalid_request",
-                        "multipart part number exceeds the adapter limit",
+                        "write segment number exceeds the adapter limit",
                     )
-                if len(content) > descriptor.maximum_part_bytes:
+                if (
+                    descriptor.maximum_segment_bytes is not None
+                    and len(content) > descriptor.maximum_segment_bytes
+                ):
                     raise StorageAdapterServiceError(
                         413,
                         "request_too_large",
-                        "multipart part exceeds the adapter byte limit",
+                        "write segment exceeds the adapter byte limit",
                     )
-                part_receipt = self.adapter.upload_part(
-                    upload=part_request.upload,
-                    number=part_request.number,
+                segment_receipt = self.adapter.write_segment(
+                    session=segment_request.session,
+                    number=segment_request.number,
                     content=content,
                 )
-                if part_receipt.number != part_request.number or part_receipt.stored_bytes != len(
-                    content
-                ):
-                    raise RuntimeError("adapter part receipt differs from its request")
-                return _model_response(part_receipt)
-            if normalized_method == "POST" and path == "/v1/multipart/list":
-                return _models_response(self.adapter.list_parts(self._parse(body, MultipartUpload)))
-            if normalized_method == "POST" and path == "/v1/multipart/complete":
-                complete_request = self._parse(body, MultipartCompleteRequest)
-                descriptor = self.adapter.descriptor()
-                if len(complete_request.parts) > descriptor.maximum_part_count:
-                    raise StorageAdapterServiceError(
-                        400,
-                        "invalid_request",
-                        "multipart completion exceeds the adapter part-count limit",
-                    )
-                if any(
-                    part.stored_bytes > descriptor.maximum_part_bytes
-                    for part in complete_request.parts
-                ):
-                    raise StorageAdapterServiceError(
-                        400,
-                        "invalid_request",
-                        "multipart completion contains an oversized part",
-                    )
-                if any(
-                    part.stored_bytes < descriptor.minimum_nonfinal_part_bytes
-                    for part in complete_request.parts[:-1]
-                ):
-                    raise StorageAdapterServiceError(
-                        400,
-                        "invalid_request",
-                        "multipart completion contains an undersized non-final part",
-                    )
-                completed_receipt = self.adapter.complete_multipart_upload(complete_request)
                 if (
-                    completed_receipt.object_path != complete_request.upload.object_path
+                    segment_receipt.number != segment_request.number
+                    or segment_receipt.stored_bytes != len(content)
+                ):
+                    raise RuntimeError("adapter segment receipt differs from its request")
+                return _model_response(segment_receipt)
+            if normalized_method == "POST" and path == "/v1/writes/segments":
+                return _models_response(self.adapter.list_segments(self._parse(body, WriteSession)))
+            if normalized_method == "POST" and path == "/v1/writes/complete":
+                complete_request = self._parse(body, WriteCompleteRequest)
+                descriptor = self.adapter.descriptor()
+                if (
+                    descriptor.maximum_segment_count is not None
+                    and len(complete_request.segments) > descriptor.maximum_segment_count
+                ):
+                    raise StorageAdapterServiceError(
+                        400,
+                        "invalid_request",
+                        "write completion exceeds the adapter segment-count limit",
+                    )
+                if any(
+                    segment.stored_bytes > descriptor.maximum_segment_bytes
+                    for segment in complete_request.segments
+                    if descriptor.maximum_segment_bytes is not None
+                ):
+                    raise StorageAdapterServiceError(
+                        400,
+                        "invalid_request",
+                        "write completion contains an oversized segment",
+                    )
+                if any(
+                    segment.stored_bytes < descriptor.minimum_nonfinal_segment_bytes
+                    for segment in complete_request.segments[:-1]
+                ):
+                    raise StorageAdapterServiceError(
+                        400,
+                        "invalid_request",
+                        "write completion contains an undersized non-final segment",
+                    )
+                completed_receipt = self.adapter.complete_write(complete_request)
+                if (
+                    completed_receipt.object_path != complete_request.session.object_path
                     or completed_receipt.stored_bytes != complete_request.expected_bytes
                 ):
                     raise RuntimeError("adapter completion receipt differs from its request")
                 return _model_response(completed_receipt)
-            if normalized_method == "POST" and path == "/v1/multipart/head":
-                head_receipt = self.adapter.head_completed_object(
-                    self._parse(body, MultipartHeadRequest)
+            if normalized_method == "POST" and path == "/v1/writes/completed":
+                head_receipt = self.adapter.find_completed_write(
+                    self._parse(body, CompletedWriteLookupRequest)
                 )
                 if head_receipt is None:
                     return _error(404, "not_found", "completed object was not found")
                 return _model_response(head_receipt)
-            if normalized_method == "POST" and path == "/v1/multipart/abort":
-                self.adapter.abort_multipart_upload(self._parse(body, MultipartUpload))
+            if normalized_method == "POST" and path == "/v1/writes/abort":
+                self.adapter.abort_write(self._parse(body, WriteSession))
                 return _empty_response()
             if normalized_method == "POST" and path == "/v1/objects/put":
                 small_request, content = self._parse_framed(body, SmallObjectWriteRequest)
@@ -249,9 +260,9 @@ class StorageAdapterHttpBinding:
             if normalized_method == "POST" and path == "/v1/reads/cleanup":
                 self.adapter.cleanup_read(self._parse(body, ReadPreparationRequest))
                 return _empty_response()
-            if normalized_method == "POST" and path == "/v1/maintenance/abort-incomplete":
-                affected = self.adapter.abort_incomplete_uploads(
-                    self._parse(body, AbortIncompleteUploadsRequest)
+            if normalized_method == "POST" and path == "/v1/maintenance/abort-incomplete-writes":
+                affected = self.adapter.abort_incomplete_writes(
+                    self._parse(body, AbortIncompleteWritesRequest)
                 )
                 return _model_response(MaintenanceResult(affected=affected))
             if path in STORAGE_ADAPTER_HTTP_PATHS:
@@ -339,32 +350,32 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
     ),
     HttpOperationContract(
         "POST",
-        "/v1/multipart/create",
-        MultipartCreateRequest,
-        MultipartUpload,
+        "/v1/writes/begin",
+        WriteStartRequest,
+        WriteSession,
         "json",
         errors=_adapter_errors("request_too_large", "invalid_path"),
     ),
     HttpOperationContract(
         "POST",
-        "/v1/multipart/part",
-        MultipartPartWriteRequest,
-        MultipartPartReceipt,
+        "/v1/writes/segment",
+        WriteSegmentRequest,
+        WriteSegmentReceipt,
         "framed",
         errors=_adapter_errors("request_too_large", "invalid_path", "not_found"),
     ),
     HttpOperationContract(
         "POST",
-        "/v1/multipart/list",
-        MultipartUpload,
-        list[MultipartPartReceipt],
+        "/v1/writes/segments",
+        WriteSession,
+        list[WriteSegmentReceipt],
         "json",
         errors=_adapter_errors("request_too_large", "invalid_path", "not_found"),
     ),
     HttpOperationContract(
         "POST",
-        "/v1/multipart/complete",
-        MultipartCompleteRequest,
+        "/v1/writes/complete",
+        WriteCompleteRequest,
         CompletedObjectReceipt,
         "json",
         errors=_adapter_errors(
@@ -377,8 +388,8 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
     ),
     HttpOperationContract(
         "POST",
-        "/v1/multipart/head",
-        MultipartHeadRequest,
+        "/v1/writes/completed",
+        CompletedWriteLookupRequest,
         CompletedObjectReceipt,
         "json",
         errors=_adapter_errors(
@@ -391,8 +402,8 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
     ),
     HttpOperationContract(
         "POST",
-        "/v1/multipart/abort",
-        MultipartUpload,
+        "/v1/writes/abort",
+        WriteSession,
         None,
         "json",
         "none",
@@ -508,8 +519,8 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
     ),
     HttpOperationContract(
         "POST",
-        "/v1/maintenance/abort-incomplete",
-        AbortIncompleteUploadsRequest,
+        "/v1/maintenance/abort-incomplete-writes",
+        AbortIncompleteWritesRequest,
         MaintenanceResult,
         "json",
         errors=_adapter_errors("request_too_large", "invalid_path"),

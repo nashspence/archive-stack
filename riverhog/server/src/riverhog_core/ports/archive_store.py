@@ -18,7 +18,7 @@ class ArchiveObjectUploadReceipt:
     stored_bytes: int
     sha256: str | None
     stored_sha256: str | None
-    version_id: str | None
+    revision: str | None
     uploaded_at: str
     verified_at: str | None = None
     retrieval_cache: RetrievalCacheReceipt | None = None
@@ -44,7 +44,7 @@ class ArchiveArtifactRead:
 @dataclass(frozen=True, slots=True)
 class MutableManifestReceipt:
     object_path: str
-    version_id: str | None
+    revision: str | None
     stored_bytes: int
     stored_sha256: str
     published_at: str
@@ -59,7 +59,7 @@ class ArchiveObjectIdentity:
     stored_bytes: int
     sha256: str | None
     stored_sha256: str | None
-    version_id: str | None
+    revision: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +93,7 @@ class ArchiveStore(Protocol):
     def read_mode(self) -> str: ...
     def new_collection_archive_storage_prefix(self) -> str: ...
 
-    def abort_incomplete_multipart_uploads(
+    def abort_incomplete_writes(
         self,
         *,
         initiated_before: datetime,

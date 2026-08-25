@@ -70,7 +70,7 @@ def test_postgres_catalog_schema_is_current_and_stays_operator_controlled(
 
     after = {index["name"] for index in inspect(engine).get_indexes("retrieval_jobs")}
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0007"
+    assert upgraded.current_revision == validated.current_revision == "v1_0008"
     assert after == before
     engine.dispose()
 
@@ -110,7 +110,7 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
     with engine.connect() as connection:
         archive_identity = connection.execute(
             text(
-                "SELECT object_path, kind, age_state_json, part_receipts_json, plan_sha256 "
+                "SELECT object_path, kind, age_state_json, archive_parts_json, plan_sha256 "
                 "FROM collection_archive_objects WHERE collection_id = 1"
             )
         ).one()
@@ -146,7 +146,7 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
         metadata_publication = connection.execute(
             text(
                 "SELECT desired_revision, published_revision, state, attempt_count, "
-                "next_attempt_at, last_attempt_at, failure, object_path, version_id, "
+                "next_attempt_at, last_attempt_at, failure, object_path, revision, "
                 "stored_bytes, stored_sha256, published_at "
                 "FROM collection_metadata_publications "
                 "WHERE collection_id = 1 AND store = 'fixture-archive'"
@@ -169,7 +169,7 @@ def test_postgres_v1_fixture_reaches_head_with_archive_identity_leases_and_autho
     )
     assert archive_identity.kind == "segment"
     assert json.loads(archive_identity.age_state_json)["format"] == "age-v1-scrypt-resumable"
-    assert len(json.loads(archive_identity.part_receipts_json)) == 1
+    assert len(json.loads(archive_identity.archive_parts_json)) == 1
     assert len(archive_identity.plan_sha256) == 64
     assert tuple(lease) == (
         "fixture-job",

@@ -120,9 +120,9 @@ def pack_upload_plan_sha256(
 class PackUnitPayloadReader:
     """Split one complete unit payload into its declared source byte streams.
 
-    The transport handler should pass one complete unit body. A unit is the durability
-    boundary and maps to exactly one multipart part, so partial unit offsets are never
-    committed as custody.
+    The transport handler should pass one complete unit body. A unit is an archive-layout
+    boundary; partial unit offsets are never committed as custody. Operational write
+    segmentation is selected later by the storage adapter boundary.
     """
 
     def __init__(self, descriptor: PackUnitDescriptor, chunks: Iterable[bytes]) -> None:

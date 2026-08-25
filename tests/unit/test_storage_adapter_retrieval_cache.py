@@ -6,28 +6,28 @@ import threading
 from collections.abc import Iterator
 
 import pytest
-from riverhog_core.ports.archive_objects import CompletedObjectReceipt, MultipartPartReceipt
+from riverhog_core.ports.archive_objects import CompletedObjectReceipt, WriteSegmentReceipt
 from riverhog_core.stores.storage_adapter_retrieval_cache import StorageAdapterRetrievalCache
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
 from riverhog_storage_adapter_protocol import (
-    AbortIncompleteUploadsRequest,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     ImmutableObjectReceipt,
-    MultipartCompleteRequest,
-    MultipartCreateRequest,
-    MultipartHeadRequest,
     ObjectReadRequest,
     SmallObjectWriteRequest,
+    WriteCompleteRequest,
+    WriteStartRequest,
 )
 from riverhog_storage_adapter_protocol import (
     CompletedObjectReceipt as AdapterCompletedObjectReceipt,
 )
 from riverhog_storage_adapter_protocol import (
-    MultipartPartReceipt as AdapterMultipartPartReceipt,
+    WriteSegmentReceipt as AdapterWriteSegmentReceipt,
 )
 from riverhog_storage_adapter_protocol import (
-    MultipartUpload as AdapterMultipartUpload,
+    WriteSession as AdapterWriteSession,
 )
 
 _PART_BYTES = 5 * 1024 * 1024
@@ -36,13 +36,13 @@ _PART_BYTES = 5 * 1024 * 1024
 class _Adapter:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._two_parts_active = threading.Event()
-        self._parts: dict[int, bytes] = {}
+        self._two_segments_active = threading.Event()
+        self._segments: dict[int, bytes] = {}
         self.objects: dict[str, bytes] = {}
         self.revisions: dict[str, str] = {}
         self.active = 0
         self.maximum_active = 0
-        self.created: MultipartCreateRequest | None = None
+        self.created: WriteStartRequest | None = None
         self.deleted: list[DeleteObjectRequest] = []
         self.reads = 0
 
@@ -51,78 +51,78 @@ class _Adapter:
             implementation_id="fixture.cache/v1",
             implementation_version="1.0.0",
             read_mode="immediate",
-            minimum_nonfinal_part_bytes=_PART_BYTES,
-            maximum_part_bytes=32 * 1024 * 1024,
-            maximum_part_count=10_000,
+            minimum_nonfinal_segment_bytes=_PART_BYTES,
+            maximum_segment_bytes=32 * 1024 * 1024,
+            maximum_segment_count=10_000,
         )
 
-    def create_multipart_upload(
+    def begin_write(
         self,
-        request: MultipartCreateRequest,
-    ) -> AdapterMultipartUpload:
+        request: WriteStartRequest,
+    ) -> AdapterWriteSession:
         self.created = request
-        return AdapterMultipartUpload(object_path=request.object_path, upload_id="upload-1")
+        return AdapterWriteSession(object_path=request.object_path, write_token="write-1")
 
-    def upload_part(
+    def write_segment(
         self,
         *,
-        upload: AdapterMultipartUpload,
+        session: AdapterWriteSession,
         number: int,
         content: bytes,
-    ) -> AdapterMultipartPartReceipt:
-        assert upload.upload_id == "upload-1"
+    ) -> AdapterWriteSegmentReceipt:
+        assert session.write_token == "write-1"
         with self._lock:
             self.active += 1
             self.maximum_active = max(self.maximum_active, self.active)
             if self.active >= 2:
-                self._two_parts_active.set()
+                self._two_segments_active.set()
         if number <= 2:
-            assert self._two_parts_active.wait(timeout=5)
-        self._parts[number] = content
+            assert self._two_segments_active.wait(timeout=5)
+        self._segments[number] = content
         with self._lock:
             self.active -= 1
-        return AdapterMultipartPartReceipt(
+        return AdapterWriteSegmentReceipt(
             number=number,
-            part_token=f"part-{number}",
+            segment_token=f"segment-{number}",
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
         )
 
-    def list_parts(
+    def list_segments(
         self,
-        upload: AdapterMultipartUpload,
-    ) -> tuple[AdapterMultipartPartReceipt, ...]:
-        assert upload.upload_id == "upload-1"
+        session: AdapterWriteSession,
+    ) -> tuple[AdapterWriteSegmentReceipt, ...]:
+        assert session.write_token == "write-1"
         return tuple(
-            AdapterMultipartPartReceipt(
+            AdapterWriteSegmentReceipt(
                 number=number,
-                part_token=f"part-{number}",
+                segment_token=f"segment-{number}",
                 stored_bytes=len(content),
                 stored_sha256=hashlib.sha256(content).hexdigest(),
             )
-            for number, content in sorted(self._parts.items())
+            for number, content in sorted(self._segments.items())
         )
 
-    def complete_multipart_upload(
+    def complete_write(
         self,
-        request: MultipartCompleteRequest,
+        request: WriteCompleteRequest,
     ) -> AdapterCompletedObjectReceipt:
-        content = b"".join(self._parts[current.number] for current in request.parts)
+        content = b"".join(self._segments[current.number] for current in request.segments)
         assert len(content) == request.expected_bytes
-        self.objects[request.upload.object_path] = content
-        self.revisions[request.upload.object_path] = "version-1"
-        return self._completed(request.upload.object_path)
+        self.objects[request.session.object_path] = content
+        self.revisions[request.session.object_path] = "version-1"
+        return self._completed(request.session.object_path)
 
-    def head_completed_object(
+    def find_completed_write(
         self,
-        request: MultipartHeadRequest,
+        request: CompletedWriteLookupRequest,
     ) -> AdapterCompletedObjectReceipt | None:
         if request.object_path not in self.objects:
             return None
         return self._completed(request.object_path)
 
-    def abort_multipart_upload(self, upload: AdapterMultipartUpload) -> None:
-        assert upload.upload_id == "upload-1"
+    def abort_write(self, session: AdapterWriteSession) -> None:
+        assert session.write_token == "write-1"
 
     def put_small_object(
         self,
@@ -155,7 +155,7 @@ class _Adapter:
         self.deleted.append(request)
         self.objects.pop(request.object.object_path, None)
 
-    def abort_incomplete_uploads(self, request: AbortIncompleteUploadsRequest) -> int:
+    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
         assert request.object_prefix == "objects/"
         return 2
 
@@ -171,13 +171,13 @@ class _Adapter:
 
 def _cache(adapter: _Adapter) -> StorageAdapterRetrievalCache:
     tuning = ArchiveThroughputTuning(
-        multipart_concurrency=2,
+        write_concurrency=2,
         upload_request_concurrency=2,
         upload_max_inflight_bytes=3 * _PART_BYTES,
     )
     return StorageAdapterRetrievalCache(
         adapter,  # type: ignore[arg-type]
-        multipart_part_bytes=_PART_BYTES,
+        write_segment_bytes=_PART_BYTES,
         throughput_tuning=tuning,
         transfer_resources=ArchiveTransferResources.from_tuning(tuning),
     )
@@ -219,24 +219,24 @@ def test_cache_verification_and_reads_keep_exact_integrity_and_range_contracts()
     adapter.revisions[path] = "version-1"
     completed = CompletedObjectReceipt(
         object_path=path,
-        version_id="version-1",
-        etag="entity",
+        revision="version-1",
+        entity_token="entity",
         bytes=len(content),
         completed_at="2026-08-21T00:00:00Z",
     )
-    parts = (
-        MultipartPartReceipt(1, "one", 10, hashlib.sha256(b"first-part").hexdigest()),
-        MultipartPartReceipt(2, "two", 11, hashlib.sha256(b"second-part").hexdigest()),
+    segments = (
+        WriteSegmentReceipt(1, "one", 10, hashlib.sha256(b"first-part").hexdigest()),
+        WriteSegmentReceipt(2, "two", 11, hashlib.sha256(b"second-part").hexdigest()),
     )
 
-    receipt = cache.verify_multipart_object(completed=completed, parts=parts)
+    receipt = cache.verify_resumable_object(completed=completed, segments=segments)
 
     assert receipt.stored_sha256 == hashlib.sha256(content).hexdigest()
     assert (
         b"".join(
             cache.iter_object(
                 object_path=path,
-                version_id="version-1",
+                revision="version-1",
                 expected_bytes=len(content),
                 expected_sha256=receipt.stored_sha256,
             )
@@ -247,7 +247,7 @@ def test_cache_verification_and_reads_keep_exact_integrity_and_range_contracts()
         b"".join(
             cache.iter_object_range(
                 object_path=path,
-                version_id="version-1",
+                revision="version-1",
                 expected_bytes=len(content),
                 offset=10,
                 size=11,
@@ -256,32 +256,32 @@ def test_cache_verification_and_reads_keep_exact_integrity_and_range_contracts()
         == b"second-part"
     )
 
-    corrupted = (parts[0], MultipartPartReceipt(2, "two", 11, "0" * 64))
-    with pytest.raises(RuntimeError, match="part failed integrity"):
-        cache.verify_multipart_object(completed=completed, parts=corrupted)
+    corrupted = (segments[0], WriteSegmentReceipt(2, "two", 11, "0" * 64))
+    with pytest.raises(RuntimeError, match="segment failed integrity"):
+        cache.verify_resumable_object(completed=completed, segments=corrupted)
 
 
 def test_cache_mirror_uses_deterministic_immediate_object_and_exact_deletion() -> None:
     adapter = _Adapter()
     cache = _cache(adapter)
-    objects = cache.multipart_object_store(
+    objects = cache.resumable_object_store(
         source_store="deep",
         collection_id=17,
         object_id="pack-000000000000",
     )
-    upload = objects.create_multipart_upload(
+    session = objects.begin_write(
         object_path="archives/opaque/volumes/pack-000000000000.tar.age",
         content_type="application/octet-stream",
         metadata={"riverhog-format": "riverhog-pack-volume/v1"},
     )
 
-    assert upload.object_path.startswith("objects/")
+    assert session.object_path.startswith("objects/")
     assert adapter.created is not None and adapter.created.placement == "immediate"
     assert adapter.created.identity_metadata["riverhog-source-store"] == "deep"
 
-    adapter.objects[upload.object_path] = b"cached"
-    adapter.revisions[upload.object_path] = "version-1"
-    cache.delete(object_path=upload.object_path, version_id="version-1")
+    adapter.objects[session.object_path] = b"cached"
+    adapter.revisions[session.object_path] = "version-1"
+    cache.delete(object_path=session.object_path, revision="version-1")
 
     assert adapter.deleted[0].mode == "exact_revision"
     assert adapter.deleted[0].object.revision == "version-1"

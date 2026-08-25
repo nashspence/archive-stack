@@ -10,7 +10,7 @@ from riverhog_core.domain.archive import (
     ArchiveFile,
     SealedPackVolume,
     SealedRawVolume,
-    StoredPartReceipt,
+    StoredArchivePart,
     VerifiedRawFile,
 )
 from riverhog_core.pack_volume import iter_render_pack_upload_unit, plan_pack_volume
@@ -30,14 +30,13 @@ def _pack_receipt(plan, contents: dict[str, bytes]) -> SealedPackVolume:
             iter_render_pack_upload_unit(plan, unit.unit, lambda path: (contents[path],))
         )
         parts.append(
-            StoredPartReceipt(
+            StoredArchivePart(
                 number=unit.unit + 1,
                 plaintext_start=unit.plaintext_start,
                 plaintext_bytes=len(plaintext),
                 plaintext_sha256=hashlib.sha256(plaintext).hexdigest(),
                 stored_bytes=len(plaintext) + 100,
                 stored_sha256=hashlib.sha256(b"stored" + plaintext).hexdigest(),
-                etag=f'"etag-{unit.unit + 1}"',
             )
         )
     return SealedPackVolume(
@@ -51,7 +50,7 @@ def _pack_receipt(plan, contents: dict[str, bytes]) -> SealedPackVolume:
         index_sha256=plan.index_sha256,
         plan_sha256=plan.plan_sha256,
         parts=tuple(parts),
-        version_id="v1",
+        revision="v1",
         completed_at="2026-08-03T00:00:00Z",
     )
 
@@ -71,6 +70,33 @@ def test_manifest_is_small_immutable_volume_index_not_a_file_listing() -> None:
     assert "files" not in payload or isinstance(payload.get("files"), int)
     assert {"a.txt", "b.txt"}.isdisjoint(payload["volumes"][0])
     assert CollectionArchiveManifest.from_json_bytes(manifest).to_mapping() == payload
+
+
+def test_v1_construction_vector_fixes_pack_manifest_and_root_identities() -> None:
+    contents = {"a.txt": b"alpha", "b.txt": b"beta"}
+    files = [_file(path, content) for path, content in contents.items()]
+    plan = plan_pack_volume(files, sequence=0)
+    plaintext = b"".join(
+        chunk
+        for unit in plan.units
+        for chunk in iter_render_pack_upload_unit(
+            plan,
+            unit.unit,
+            lambda path: (contents[path],),
+        )
+    )
+    manifest = build_collection_archive_manifest(
+        files=files,
+        packs=((plan, _pack_receipt(plan, contents)),),
+    )
+
+    assert plan.plan_sha256 == "3f3160f21b2499d0bc375ab4fe35094e85729e83ce4822825b020997ca7326f0"
+    assert hashlib.sha256(plaintext).hexdigest() == (
+        "0089080eb161c4ba23be3e8cc1dc80fa475f6449bf43c64c4685e42504f4b159"
+    )
+    assert hashlib.sha256(manifest).hexdigest() == (
+        "5d25368f0ef142d34c77268450a8812634621a84a651494eeb7df48b2f444717"
+    )
 
 
 def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() -> None:
@@ -94,17 +120,16 @@ def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() 
             file_bytes=large.bytes,
             file_sha256=large.sha256,
             parts=(
-                StoredPartReceipt(
+                StoredArchivePart(
                     number=1,
                     plaintext_start=0,
                     plaintext_bytes=len(first),
                     plaintext_sha256=hashlib.sha256(first).hexdigest(),
                     stored_bytes=10,
                     stored_sha256=hashlib.sha256(b"first").hexdigest(),
-                    etag="first",
                 ),
             ),
-            version_id=None,
+            revision=None,
             completed_at="2026-08-03T00:00:00Z",
         ),
         SealedRawVolume(
@@ -118,17 +143,16 @@ def test_manifest_validates_raw_segment_coverage_without_repeating_pack_files() 
             file_bytes=large.bytes,
             file_sha256=large.sha256,
             parts=(
-                StoredPartReceipt(
+                StoredArchivePart(
                     number=1,
                     plaintext_start=0,
                     plaintext_bytes=len(second),
                     plaintext_sha256=hashlib.sha256(second).hexdigest(),
                     stored_bytes=11,
                     stored_sha256=hashlib.sha256(b"second").hexdigest(),
-                    etag="second",
                 ),
             ),
-            version_id=None,
+            revision=None,
             completed_at="2026-08-03T00:00:00Z",
         ),
     )
@@ -168,17 +192,16 @@ def test_manifest_rejects_gapped_raw_segments() -> None:
         file_bytes=file.bytes,
         file_sha256=file.sha256,
         parts=(
-            StoredPartReceipt(
+            StoredArchivePart(
                 number=1,
                 plaintext_start=0,
                 plaintext_bytes=6,
                 plaintext_sha256=hashlib.sha256(content[2:]).hexdigest(),
                 stored_bytes=7,
                 stored_sha256=hashlib.sha256(b"stored").hexdigest(),
-                etag="etag",
             ),
         ),
-        version_id=None,
+        revision=None,
         completed_at="2026-08-03T00:00:00Z",
     )
 

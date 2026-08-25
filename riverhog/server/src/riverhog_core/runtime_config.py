@@ -23,7 +23,7 @@ _BYTES_RE = re.compile(r"^(\d+(?:_\d+)*)([kmgt]i?b?|b)?$", re.IGNORECASE)
 DEV_ARCHIVE_PASSPHRASE = "riverhog-dev-archive-passphrase"
 DEV_ARCHIVE_PASSPHRASE_ID = "riverhog-dev-key-v1"
 DEFAULT_DATABASE_URL = "postgresql+psycopg://riverhog:riverhog@127.0.0.1:5432/riverhog"
-DEFAULT_ARCHIVE_MULTIPART_PART_BYTES = 64 * 1024 * 1024
+DEFAULT_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES = 64 * 1024 * 1024
 DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS = 32
 DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS = 300.0
 DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR = 18
@@ -132,9 +132,11 @@ class RuntimeConfig:
             )
         }
     )
-    archive_multipart_part_bytes: int = DEFAULT_ARCHIVE_MULTIPART_PART_BYTES
-    archive_multipart_max_age: timedelta = field(default_factory=lambda: timedelta(days=3))
-    archive_multipart_sweep_interval: timedelta = field(default_factory=lambda: timedelta(hours=6))
+    retrieval_cache_write_segment_bytes: int = DEFAULT_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES
+    archive_incomplete_write_max_age: timedelta = field(default_factory=lambda: timedelta(days=3))
+    archive_incomplete_write_sweep_interval: timedelta = field(
+        default_factory=lambda: timedelta(hours=6)
+    )
     retrieval_cache: StorageAdapterRegistration | None = None
     retrieval_cache_new_archive_enabled: bool = True
     retrieval_cache_new_archive_lease: timedelta = field(
@@ -302,12 +304,12 @@ class RuntimeConfig:
             ):
                 raise ValueError("retrieval cache adapter does not accept archive allowances")
             object.__setattr__(self, "retrieval_cache", cache)
-        if self.archive_multipart_part_bytes < 1:
-            raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES must be >= 1")
-        if self.archive_multipart_max_age.total_seconds() <= 0.0:
-            raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE must be > 0")
-        if self.archive_multipart_sweep_interval.total_seconds() <= 0.0:
-            raise ValueError("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL must be > 0")
+        if self.retrieval_cache_write_segment_bytes < 1:
+            raise ValueError("RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES must be >= 1")
+        if self.archive_incomplete_write_max_age.total_seconds() <= 0.0:
+            raise ValueError("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_MAX_AGE must be > 0")
+        if self.archive_incomplete_write_sweep_interval.total_seconds() <= 0.0:
+            raise ValueError("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_SWEEP_INTERVAL must be > 0")
         if self.retrieval_cache_new_archive_lease.total_seconds() <= 0:
             raise ValueError("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE must be > 0")
         if self.retrieval_default_lease.total_seconds() <= 0:
@@ -471,16 +473,16 @@ def load_runtime_config() -> RuntimeConfig:
     database_url = database_url_raw or DEFAULT_DATABASE_URL
     if _database_url_driver(database_url) != "postgresql":
         raise ValueError("RIVERHOG_DATABASE_URL must use postgresql")
-    archive_multipart_part_bytes = _parse_bytes(
-        os.getenv("RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES", "64MiB"),
-        name="RIVERHOG_ARCHIVE_MULTIPART_PART_BYTES",
+    retrieval_cache_write_segment_bytes = _parse_bytes(
+        os.getenv("RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES", "64MiB"),
+        name="RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES",
         minimum=1,
     )
-    archive_multipart_max_age = parse_duration(
-        os.getenv("RIVERHOG_ARCHIVE_MULTIPART_MAX_AGE", "72h")
+    archive_incomplete_write_max_age = parse_duration(
+        os.getenv("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_MAX_AGE", "72h")
     )
-    archive_multipart_sweep_interval = parse_duration(
-        os.getenv("RIVERHOG_ARCHIVE_MULTIPART_SWEEP_INTERVAL", "6h")
+    archive_incomplete_write_sweep_interval = parse_duration(
+        os.getenv("RIVERHOG_ARCHIVE_INCOMPLETE_WRITE_SWEEP_INTERVAL", "6h")
     )
     archive_upload_sweep_interval = parse_duration(
         os.getenv("RIVERHOG_ARCHIVE_UPLOAD_SWEEP_INTERVAL", "30s")
@@ -598,9 +600,9 @@ def load_runtime_config() -> RuntimeConfig:
         archive_write_store=archive_write_store,
         archive_read_order=archive_read_order,
         archive_stores=archive_stores,
-        archive_multipart_part_bytes=archive_multipart_part_bytes,
-        archive_multipart_max_age=archive_multipart_max_age,
-        archive_multipart_sweep_interval=archive_multipart_sweep_interval,
+        retrieval_cache_write_segment_bytes=retrieval_cache_write_segment_bytes,
+        archive_incomplete_write_max_age=archive_incomplete_write_max_age,
+        archive_incomplete_write_sweep_interval=archive_incomplete_write_sweep_interval,
         retrieval_cache=retrieval_cache,
         retrieval_cache_new_archive_enabled=_parse_bool(
             os.getenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED", "true")

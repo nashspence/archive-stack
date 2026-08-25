@@ -150,7 +150,7 @@ def test_publishes_from_upload_evidence_and_matures_exact_archive_root(tmp_path)
             "signature-proof",
         }
         assert all(
-            current.version_id is not None
+            current.revision is not None
             for current in objects
             if current.object_id in {"checksums", "signature", "signature-proof"}
         )
