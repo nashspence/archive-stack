@@ -348,6 +348,43 @@ def test_result_builder_binds_schema_identity_and_size_limits() -> None:
     assert inapplicable.inapplicable is not None
     assert inapplicable.inapplicable.code == "unsupported-input"
 
+    with pytest.raises(ValueError, match="facts violate their advertised schema"):
+        builder.observed({"bytes": "not-an-integer"})
+
+
+def test_observer_binding_executes_advertised_request_options_schema() -> None:
+    api = RetrievalApi()
+    contract = _contract()
+    descriptor = _descriptor(contract)
+    request = _request(contract, descriptor, api)
+    invalid_request = ObservationRequest.seal(
+        ObservationRequestPayload.model_validate(
+            {
+                **request.model_dump(mode="python", exclude={"request_id"}),
+                "options": {"undeclared": True},
+            }
+        )
+    )
+    invocation = ObservationInvocation(
+        request=invalid_request,
+        claim_id="claim-1",
+        fence=3,
+        runtime=ObserverRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="secret-capability",
+            workspace_assurance="ephemeral",
+        ),
+    )
+
+    response = ObserverHttpBinding(BindingObserver(descriptor)).handle(
+        "POST",
+        "/v1/observe",
+        invocation.model_dump_json(exclude_none=True).encode(),
+    )
+
+    assert response.status == 400
+    assert json.loads(response.body)["error"]["code"] == "invalid_observation_request"
+
 
 def test_subject_batch_preference_is_not_a_request_limit() -> None:
     api = RetrievalApi()

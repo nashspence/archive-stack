@@ -1688,7 +1688,7 @@ class SqlAlchemyCollectionUploadService:
             object_path=f"{prefix}/{_PROOF_RELATIVE_PATH}",
             content=proof_ciphertext,
             content_type=_PROOF_CONTENT_TYPE,
-            identity_metadata={
+            required_identity_assertions={
                 "riverhog-format": ROOT_PROOF_STORAGE_FORMAT,
                 "riverhog-plaintext-bytes": str(len(proof_bytes)),
                 "riverhog-plaintext-sha256": hashlib.sha256(proof_bytes).hexdigest(),

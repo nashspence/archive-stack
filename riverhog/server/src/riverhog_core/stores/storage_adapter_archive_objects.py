@@ -62,7 +62,7 @@ class StorageAdapterArchiveResumableObjectStore:
             WriteStartRequest(
                 object_path=object_path,
                 content_type=content_type,
-                identity_metadata=metadata,
+                required_identity_assertions=metadata,
                 placement=self._placement,
             )
         )
@@ -78,6 +78,7 @@ class StorageAdapterArchiveResumableObjectStore:
         receipt = self._adapter.write_segment(
             session=_adapter_session(session),
             number=number,
+            stored_bytes=len(content),
             content=content,
         )
         return _write_segment(receipt)
@@ -85,7 +86,7 @@ class StorageAdapterArchiveResumableObjectStore:
     def list_segments(self, *, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
         return tuple(
             _write_segment(current)
-            for current in self._adapter.list_segments(_adapter_session(session))
+            for current in self._adapter.list_segments(_adapter_session(session)).segments
         )
 
     def complete_write(
@@ -102,7 +103,7 @@ class StorageAdapterArchiveResumableObjectStore:
                     session=_adapter_session(session),
                     segments=tuple(_adapter_segment(current) for current in segments),
                     expected_bytes=expected_bytes,
-                    expected_identity_metadata=expected_metadata,
+                    required_identity_assertions=expected_metadata,
                     expected_placement=self._placement,
                 )
             )
@@ -127,7 +128,7 @@ class StorageAdapterArchiveResumableObjectStore:
             receipt = self._adapter.find_completed_write(
                 CompletedWriteLookupRequest(
                     object_path=object_path,
-                    expected_identity_metadata=expected_metadata,
+                    required_identity_assertions=expected_metadata,
                     expected_placement=self._placement,
                 )
             )
@@ -160,7 +161,7 @@ class StorageAdapterImmutableArchiveObjectStore:
         object_path: str,
         content: bytes,
         content_type: str,
-        identity_metadata: dict[str, str],
+        required_identity_assertions: dict[str, str],
         placement: ObjectPlacement,
     ) -> ImmutableObjectReceipt:
         if not object_path or not content or not content_type:
@@ -170,7 +171,7 @@ class StorageAdapterImmutableArchiveObjectStore:
                 SmallObjectWriteRequest(
                     object_path=object_path,
                     content_type=content_type,
-                    identity_metadata=identity_metadata,
+                    required_identity_assertions=required_identity_assertions,
                     placement=placement,
                     mode="create_only",
                     stored_bytes=len(content),

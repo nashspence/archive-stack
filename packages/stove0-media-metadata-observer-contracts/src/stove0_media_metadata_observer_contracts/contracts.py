@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from typing import Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from stove0_observer_protocol import (
     JsonSchemaDocument,
     ObserverContract,
     ObserverContractPayload,
-    canonical_json_bytes,
 )
 
 MEDIA_METADATA_OBSERVATION_ID: Final = "stove0.media.metadata/v1"
@@ -46,6 +45,21 @@ class MediaMetadataFact(MediaObservationModel):
 
 
 class MediaArtifactFacts(MediaObservationModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"state": {"const": "unsupported"}},
+                        "required": ["state"],
+                    },
+                    "then": {"properties": {"facts": {"maxItems": 0}}},
+                }
+            ]
+        },
+    )
     artifact_id: str = Field(min_length=1, max_length=160)
     state: MediaArtifactState
     facts: tuple[MediaMetadataFact, ...] = ()
@@ -54,35 +68,11 @@ class MediaArtifactFacts(MediaObservationModel):
     def valid_state(self) -> Self:
         if self.state == "unsupported" and self.facts:
             raise ValueError("unsupported media artifacts cannot report metadata facts")
-        keys = [
-            (
-                fact.name,
-                fact.evidence.artifact_id,
-                fact.evidence.field,
-                canonical_json_bytes(fact.value),
-            )
-            for fact in self.facts
-        ]
-        if keys != sorted(keys) or len(keys) != len(set(keys)):
-            raise ValueError("media metadata facts must be unique and canonically ordered")
-        if any(fact.evidence.artifact_id != self.artifact_id for fact in self.facts):
-            raise ValueError("media metadata facts must bind their exact observed artifact")
         return self
 
 
 class MediaMetadataFacts(MediaObservationModel):
     artifacts: tuple[MediaArtifactFacts, ...] = Field(min_length=1)
-
-    @field_validator("artifacts")
-    @classmethod
-    def canonical_artifacts(
-        cls,
-        value: tuple[MediaArtifactFacts, ...],
-    ) -> tuple[MediaArtifactFacts, ...]:
-        ids = [item.artifact_id for item in value]
-        if ids != sorted(ids) or len(ids) != len(set(ids)):
-            raise ValueError("media artifact facts must be unique and ordered by artifact ID")
-        return value
 
 
 MEDIA_METADATA_OPTIONS_SCHEMA = JsonSchemaDocument.from_schema(

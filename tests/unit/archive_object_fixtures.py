@@ -710,18 +710,19 @@ class MemoryArchiveStore:
         object_path: str,
         content: bytes,
         content_type: str,
-        identity_metadata: dict[str, str],
+        required_identity_assertions: dict[str, str],
         placement: ObjectPlacement,
     ) -> ImmutableObjectReceipt:
         _ = content_type
         assert placement == "immediate"
         existing = self.objects.get(object_path)
         if existing is not None and (
-            existing != content or self.object_metadata.get(object_path) != identity_metadata
+            existing != content
+            or self.object_metadata.get(object_path) != required_identity_assertions
         ):
             raise ArchiveObjectIdentityConflict(object_path)
         self.objects[object_path] = content
-        self.object_metadata[object_path] = dict(identity_metadata)
+        self.object_metadata[object_path] = dict(required_identity_assertions)
         return ImmutableObjectReceipt(
             object_path=object_path,
             revision=self._version(content),

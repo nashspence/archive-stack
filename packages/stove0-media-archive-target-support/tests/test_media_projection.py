@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from typing import get_args
 
 from stove0_media_archive_target_contracts import (
     AUDIO_ARCHIVE_OPERATION,
@@ -12,9 +13,11 @@ from stove0_media_archive_target_contracts import (
     Av1OpusArchiveIntent,
     MediaFieldPreference,
     MediaGps,
+    MediaProjectionFieldName,
     MediaProjectionPolicy,
 )
 from stove0_media_archive_target_support import (
+    MEDIA_FACT_PROJECTION_FIELDS,
     ffmpeg_container_metadata_args,
     render_projection_xmp,
     resolve_media_archive_projection,
@@ -24,6 +27,7 @@ from stove0_media_metadata_observer_contracts import (
     MEDIA_METADATA_OBSERVER_CONTRACT,
     MediaArtifactFacts,
     MediaFactEvidence,
+    MediaFactName,
     MediaMetadataFact,
     MediaMetadataFacts,
 )
@@ -114,6 +118,13 @@ def _evidence(
 
 def test_audio_only_archive_cannot_retire_its_richer_source_collection() -> None:
     assert AUDIO_ARCHIVE_OPERATION.source_retirement_permitted is False
+
+
+def test_projection_bridge_exhaustively_maps_independent_contract_vocabularies() -> None:
+    assert set(MEDIA_FACT_PROJECTION_FIELDS) == set(get_args(MediaFactName))
+    projected = {field for field in MEDIA_FACT_PROJECTION_FIELDS.values() if field is not None}
+    assert projected == set(get_args(MediaProjectionFieldName))
+    assert MEDIA_FACT_PROJECTION_FIELDS["container-format"] is None
 
 
 def test_archive_video_retirement_always_requires_reconstructive_source_artifacts() -> None:

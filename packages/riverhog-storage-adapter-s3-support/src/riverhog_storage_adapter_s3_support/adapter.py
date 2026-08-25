@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
-from botocore.exceptions import ClientError, ConnectionClosedError
+from botocore.exceptions import ClientError
 from riverhog_storage_adapter_protocol import (
+    ADAPTER_PRIVATE_ASSERTION_PREFIX,
     AbortIncompleteWritesRequest,
     AdapterDescriptor,
+    BinaryContent,
     CompletedObjectReceipt,
     CompletedWriteLookupRequest,
     DeleteObjectRequest,
@@ -23,11 +25,14 @@ from riverhog_storage_adapter_protocol import (
     ObjectReadRequest,
     ReadMode,
     ReadPreparationRequest,
+    ReadReadiness,
+    ReadReady,
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterRejection,
     WriteCompleteRequest,
     WriteSegmentReceipt,
+    WriteSegmentSet,
     WriteSession,
     WriteStartRequest,
 )
@@ -37,8 +42,9 @@ _MINIMUM_NONFINAL_PART_BYTES = 5 * 1024 * 1024
 _MAXIMUM_PART_BYTES = 5 * 1024 * 1024 * 1024
 _MAXIMUM_PART_COUNT = 10_000
 _DEFAULT_READ_CHUNK_BYTES = 8 * 1024 * 1024
-_STORED_SHA256_METADATA = "riverhog-stored-sha256"
-_PLACEMENT_METADATA = "riverhog-adapter-placement"
+_DEFAULT_WRITE_CHUNK_BYTES = 1024 * 1024
+_STORED_SHA256_METADATA = f"{ADAPTER_PRIVATE_ASSERTION_PREFIX}stored-sha256"
+_PLACEMENT_METADATA = f"{ADAPTER_PRIVATE_ASSERTION_PREFIX}placement"
 _RESERVED_METADATA = frozenset({_STORED_SHA256_METADATA, _PLACEMENT_METADATA})
 
 
@@ -74,7 +80,7 @@ class S3ReadPreparation(Protocol):
         client: Any,
         bucket: str,
         objects: tuple[tuple[str, str | None], ...],
-    ) -> ReadStatus: ...
+    ) -> ReadReadiness: ...
 
     def status(
         self,
@@ -82,7 +88,7 @@ class S3ReadPreparation(Protocol):
         client: Any,
         bucket: str,
         objects: tuple[tuple[str, str | None], ...],
-    ) -> ReadStatus: ...
+    ) -> ReadReadiness: ...
 
     def cleanup(
         self,
@@ -129,7 +135,6 @@ class S3StorageAdapter:
         self._config = config
         self._read_preparation = read_preparation
         self._object_reader = object_reader or _DirectS3ObjectReader()
-        self._conditional_put_supported: bool | None = None
 
     def descriptor(self) -> AdapterDescriptor:
         return AdapterDescriptor(
@@ -143,7 +148,7 @@ class S3StorageAdapter:
 
     def begin_write(self, request: WriteStartRequest) -> WriteSession:
         metadata = self._stored_metadata(
-            request.identity_metadata,
+            request.required_identity_assertions,
             placement=request.placement,
         )
         provider_request: dict[str, Any] = {
@@ -165,18 +170,20 @@ class S3StorageAdapter:
         *,
         session: WriteSession,
         number: int,
-        content: bytes,
+        stored_bytes: int,
+        content: BinaryContent,
     ) -> WriteSegmentReceipt:
         if number < 1 or number > _MAXIMUM_PART_COUNT:
             raise StorageAdapterRejection(
                 "invalid_request",
                 "write segment number is outside the adapter limit",
             )
-        if not content or len(content) > _MAXIMUM_PART_BYTES:
+        if stored_bytes < 1 or stored_bytes > _MAXIMUM_PART_BYTES:
             raise StorageAdapterRejection(
                 "invalid_request",
                 "write segment size is outside the adapter limit",
             )
+        observed = _ObservedContentReader(content, expected_bytes=stored_bytes)
         response = cast(
             dict[str, Any],
             self._client.upload_part(
@@ -184,20 +191,21 @@ class S3StorageAdapter:
                 Key=self._key(session.object_path),
                 UploadId=session.write_token,
                 PartNumber=number,
-                Body=content,
-                ContentLength=len(content),
+                Body=observed,
+                ContentLength=stored_bytes,
             ),
         )
+        observed.require_consumed()
         token = str(response.get("ETag", ""))
         if not token:
             raise RuntimeError("S3 did not return a multipart part token")
         return WriteSegmentReceipt(
             number=number,
             segment_token=token,
-            stored_bytes=len(content),
+            stored_bytes=stored_bytes,
         )
 
-    def list_segments(self, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
+    def list_segments(self, session: WriteSession) -> WriteSegmentSet:
         request: dict[str, Any] = {
             "Bucket": self._config.bucket,
             "Key": self._key(session.object_path),
@@ -223,7 +231,7 @@ class S3StorageAdapter:
                 raise RuntimeError("S3 multipart listing omitted its next marker")
             request["PartNumberMarker"] = int(str(marker))
         parts.sort(key=lambda current: current.number)
-        return tuple(parts)
+        return WriteSegmentSet(session=session, segments=tuple(parts))
 
     def complete_write(
         self,
@@ -270,7 +278,7 @@ class S3StorageAdapter:
             recovered = self.find_completed_write(
                 CompletedWriteLookupRequest(
                     object_path=request.session.object_path,
-                    expected_identity_metadata=request.expected_identity_metadata,
+                    required_identity_assertions=request.required_identity_assertions,
                     expected_placement=request.expected_placement,
                 )
             )
@@ -287,7 +295,7 @@ class S3StorageAdapter:
         completed = self.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=request.session.object_path,
-                expected_identity_metadata=request.expected_identity_metadata,
+                required_identity_assertions=request.required_identity_assertions,
                 expected_placement=request.expected_placement,
             )
         )
@@ -306,11 +314,12 @@ class S3StorageAdapter:
             return None
         metadata = _normalized_metadata(head)
         if any(
-            metadata.get(key) != value for key, value in request.expected_identity_metadata.items()
+            metadata.get(key) != value
+            for key, value in request.required_identity_assertions.items()
         ):
             raise StorageAdapterRejection(
                 "identity_conflict",
-                "object already exists with different identity metadata",
+                "object already exists with different required identity assertions",
             )
         self._validate_placement(head, request.expected_placement)
         return self._completed_receipt(request.object_path, head)
@@ -331,22 +340,18 @@ class S3StorageAdapter:
     def put_small_object(
         self,
         request: SmallObjectWriteRequest,
-        content: bytes,
+        content: BinaryContent,
     ) -> ImmutableObjectReceipt:
-        if len(content) != request.stored_bytes:
-            raise StorageAdapterRejection(
-                "integrity_failure",
-                "small object length differs from its declaration",
-            )
-        if hashlib.sha256(content).hexdigest() != request.stored_sha256:
-            raise StorageAdapterRejection(
-                "integrity_failure",
-                "small object digest differs from its declaration",
-            )
+        observed = _ObservedContentReader(
+            content,
+            expected_bytes=request.stored_bytes,
+            expected_sha256=request.stored_sha256,
+        )
         existing = self._head(request.object_path)
         if existing is not None:
             recovered = self._matching_small_receipt(request, existing)
             if recovered is not None:
+                observed.drain_and_verify()
                 return recovered
             if request.mode == "create_only":
                 raise StorageAdapterRejection(
@@ -354,27 +359,25 @@ class S3StorageAdapter:
                     "object already exists with a different identity",
                 )
         metadata = self._stored_metadata(
-            request.identity_metadata,
+            request.required_identity_assertions,
             placement=request.placement,
             stored_sha256=request.stored_sha256,
         )
         provider_request: dict[str, Any] = {
             "Bucket": self._config.bucket,
             "Key": self._key(request.object_path),
-            "Body": content,
-            "ContentLength": len(content),
+            "Body": observed,
+            "ContentLength": request.stored_bytes,
             "ContentType": request.content_type,
             "Metadata": metadata,
         }
         if storage_class := self._storage_class(request.placement):
             provider_request["StorageClass"] = storage_class
-        if request.mode == "create_only":
-            provider_request["IfNoneMatch"] = "*"
         try:
-            if request.mode == "create_only":
-                self._put_create_only(provider_request)
-            else:
-                self._client.put_object(**provider_request)
+            self._put_small_multipart(
+                provider_request,
+                create_only=request.mode == "create_only",
+            )
         except ClientError as exc:
             status, code = _client_error_identity(exc)
             if status not in {409, 412} and code not in {
@@ -393,6 +396,7 @@ class S3StorageAdapter:
                     "identity_conflict",
                     "object already exists with a different identity",
                 ) from exc
+            observed.drain_and_verify()
             return recovered
         persisted = self._head(request.object_path)
         if persisted is None:
@@ -424,7 +428,7 @@ class S3StorageAdapter:
             ),
             stored_bytes=int(str(head["ContentLength"])),
             stored_sha256=stored_sha256,
-            identity_metadata={
+            required_identity_assertions={
                 key: value for key, value in metadata.items() if key not in _RESERVED_METADATA
             },
             completed_at=_provider_timestamp(head),
@@ -461,20 +465,30 @@ class S3StorageAdapter:
 
     def prepare_read(self, request: ReadPreparationRequest) -> ReadStatus:
         if self._read_preparation is None:
-            return ReadStatus(state="ready")
-        return self._read_preparation.prepare(
-            client=self._client,
-            bucket=self._config.bucket,
-            objects=self._provider_objects(request),
+            readiness: ReadReadiness = ReadReady()
+        else:
+            readiness = self._read_preparation.prepare(
+                client=self._client,
+                bucket=self._config.bucket,
+                objects=self._provider_objects(request),
+            )
+        return ReadStatus(
+            objects=request.objects,
+            readiness=readiness,
         )
 
     def read_status(self, request: ReadPreparationRequest) -> ReadStatus:
         if self._read_preparation is None:
-            return ReadStatus(state="ready")
-        return self._read_preparation.status(
-            client=self._client,
-            bucket=self._config.bucket,
-            objects=self._provider_objects(request),
+            readiness: ReadReadiness = ReadReady()
+        else:
+            readiness = self._read_preparation.status(
+                client=self._client,
+                bucket=self._config.bucket,
+                objects=self._provider_objects(request),
+            )
+        return ReadStatus(
+            objects=request.objects,
+            readiness=readiness,
         )
 
     def cleanup_read(self, request: ReadPreparationRequest) -> None:
@@ -548,11 +562,6 @@ class S3StorageAdapter:
         placement: ObjectPlacement,
         stored_sha256: str | None = None,
     ) -> dict[str, str]:
-        if _RESERVED_METADATA.intersection(identity):
-            raise StorageAdapterRejection(
-                "invalid_request",
-                "identity metadata uses an adapter-reserved key",
-            )
         metadata = {**identity, _PLACEMENT_METADATA: placement}
         if stored_sha256 is not None:
             metadata[_STORED_SHA256_METADATA] = stored_sha256
@@ -575,30 +584,26 @@ class S3StorageAdapter:
         head: dict[str, Any],
     ) -> ImmutableObjectReceipt | None:
         metadata = _normalized_metadata(head)
-        if any(metadata.get(key) != value for key, value in request.identity_metadata.items()):
+        if any(
+            metadata.get(key) != value
+            for key, value in request.required_identity_assertions.items()
+        ):
             return None
         self._validate_placement(head, request.placement)
-        return self._immutable_receipt(request.object_path, head)
+        receipt = self._immutable_receipt(request.object_path, head)
+        if (
+            receipt.stored_bytes != request.stored_bytes
+            or receipt.stored_sha256 != request.stored_sha256
+        ):
+            return None
+        return receipt
 
-    def _put_create_only(self, request: dict[str, Any]) -> None:
-        if self._conditional_put_supported is False:
-            self._put_create_only_multipart(request)
-            return
-        try:
-            self._client.put_object(**request)
-        except ConnectionClosedError:
-            self._conditional_put_supported = False
-            self._put_create_only_multipart(request)
-        except ClientError as exc:
-            status, code = _client_error_identity(exc)
-            if status != 501 and code not in {"NotImplemented", "UnsupportedHeader"}:
-                raise
-            self._conditional_put_supported = False
-            self._put_create_only_multipart(request)
-        else:
-            self._conditional_put_supported = True
-
-    def _put_create_only_multipart(self, request: dict[str, Any]) -> None:
+    def _put_small_multipart(
+        self,
+        request: dict[str, Any],
+        *,
+        create_only: bool,
+    ) -> None:
         create_request = {
             key: request[key]
             for key in ("Bucket", "Key", "ContentType", "Metadata", "StorageClass")
@@ -626,11 +631,17 @@ class S3StorageAdapter:
             token = str(part.get("ETag", ""))
             if not token:
                 raise RuntimeError("S3 did not return a multipart part token")
-            self._client.complete_multipart_upload(
+            body = request["Body"]
+            if not isinstance(body, _ObservedContentReader):
+                raise TypeError("small-object upload body is not observable")
+            body.require_consumed()
+            completion_request: dict[str, Any] = {
                 **upload_request,
-                MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": token}]},
-                IfNoneMatch="*",
-            )
+                "MultipartUpload": {"Parts": [{"PartNumber": 1, "ETag": token}]},
+            }
+            if create_only:
+                completion_request["IfNoneMatch"] = "*"
+            self._client.complete_multipart_upload(**completion_request)
         except Exception:
             try:
                 self._client.abort_multipart_upload(**upload_request)
@@ -689,6 +700,104 @@ class S3StorageAdapter:
             stored_sha256=stored_sha256,
             completed_at=_provider_timestamp(head),
         )
+
+
+class _ObservedContentReader:
+    """Expose one bounded, non-seekable stream while verifying exact custody."""
+
+    def __init__(
+        self,
+        content: BinaryContent,
+        *,
+        expected_bytes: int,
+        expected_sha256: str | None = None,
+    ) -> None:
+        self._chunks = iter((content,) if isinstance(content, bytes) else content)
+        self._pending = memoryview(b"")
+        self._expected_bytes = expected_bytes
+        self._expected_sha256 = expected_sha256
+        self._observed_bytes = 0
+        self._digest = hashlib.sha256()
+        self._ended = False
+
+    def read(self, size: int | None = -1) -> bytes:
+        if size == 0 or self._ended:
+            return b""
+        maximum = (
+            _DEFAULT_WRITE_CHUNK_BYTES
+            if size is None or size < 0
+            else min(
+                size,
+                _DEFAULT_WRITE_CHUNK_BYTES,
+            )
+        )
+        if maximum < 1:
+            return b""
+        result = bytearray()
+        while len(result) < maximum:
+            if not self._pending:
+                try:
+                    chunk = next(self._chunks)
+                except StopIteration:
+                    self._ended = True
+                    break
+                if not isinstance(chunk, bytes):
+                    raise StorageAdapterRejection(
+                        "integrity_failure",
+                        "opaque upload content contains a non-byte chunk",
+                    )
+                if not chunk:
+                    continue
+                self._pending = memoryview(chunk)
+            remaining = self._expected_bytes - self._observed_bytes - len(result)
+            if remaining <= 0:
+                raise StorageAdapterRejection(
+                    "integrity_failure",
+                    "opaque upload content exceeds its declaration",
+                )
+            count = min(maximum - len(result), len(self._pending), remaining)
+            result.extend(self._pending[:count])
+            self._pending = self._pending[count:]
+        emitted = bytes(result)
+        self._observed_bytes += len(emitted)
+        self._digest.update(emitted)
+        return emitted
+
+    def tell(self) -> int:
+        return self._observed_bytes
+
+    def __len__(self) -> int:
+        return self._expected_bytes
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def drain_and_verify(self) -> None:
+        while self.read(_DEFAULT_WRITE_CHUNK_BYTES):
+            pass
+        self.require_consumed()
+
+    def require_consumed(self) -> None:
+        if self._observed_bytes != self._expected_bytes:
+            raise StorageAdapterRejection(
+                "integrity_failure",
+                "opaque upload content ended before its declaration",
+            )
+        if not self._ended:
+            self.read(1)
+        if not self._ended:
+            raise StorageAdapterRejection(
+                "integrity_failure",
+                "opaque upload content exceeds its declaration",
+            )
+        if self._expected_sha256 is not None and self._digest.hexdigest() != self._expected_sha256:
+            raise StorageAdapterRejection(
+                "integrity_failure",
+                "opaque upload digest differs from its declaration",
+            )
 
 
 class _DirectS3ObjectReader:

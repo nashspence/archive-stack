@@ -101,7 +101,7 @@ class ImmutableArchiveObjectStore(Protocol):
         object_path: str,
         content: bytes,
         content_type: str,
-        identity_metadata: dict[str, str],
+        required_identity_assertions: dict[str, str],
         placement: ObjectPlacement,
     ) -> ImmutableObjectReceipt: ...
 

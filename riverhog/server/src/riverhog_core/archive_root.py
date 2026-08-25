@@ -98,7 +98,7 @@ class ArchiveRootPublisher:
             object_path=object_path,
             content=ciphertext,
             content_type=ROOT_MANIFEST_CONTENT_TYPE,
-            identity_metadata={
+            required_identity_assertions={
                 "riverhog-format": ROOT_MANIFEST_STORAGE_FORMAT,
                 "riverhog-plaintext-bytes": str(len(manifest)),
                 "riverhog-plaintext-sha256": plaintext_sha256,

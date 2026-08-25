@@ -76,7 +76,7 @@ class ArchiveRecoveryDescriptorPublisher:
             object_path=object_path,
             content=content,
             content_type=RECOVERY_DESCRIPTOR_CONTENT_TYPE,
-            identity_metadata={
+            required_identity_assertions={
                 "riverhog-format": RECOVERY_DESCRIPTOR_STORAGE_FORMAT,
                 "riverhog-sha256": sha256,
                 "riverhog-root-stored-sha256": root.stored_sha256,

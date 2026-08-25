@@ -15,7 +15,12 @@ from botocore.exceptions import ClientError
 from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from riverhog_storage_adapter_protocol import ReadStatus
+from riverhog_storage_adapter_protocol import (
+    ReadExpired,
+    ReadReadiness,
+    ReadReady,
+    ReadRequested,
+)
 from time_formats import format_utc_timestamp, utc_now
 
 _ARCHIVE_STORAGE_CLASSES = frozenset({"DEEP_ARCHIVE", "GLACIER"})
@@ -41,7 +46,7 @@ class AwsDeepArchiveReadPreparation:
         client: Any,
         bucket: str,
         objects: tuple[tuple[str, str | None], ...],
-    ) -> ReadStatus:
+    ) -> ReadReadiness:
         for key, revision in objects:
             current = _object_status(client, bucket=bucket, key=key, revision=revision)
             if current.state == "ready" or current.state == "requested":
@@ -72,22 +77,23 @@ class AwsDeepArchiveReadPreparation:
         client: Any,
         bucket: str,
         objects: tuple[tuple[str, str | None], ...],
-    ) -> ReadStatus:
+    ) -> ReadReadiness:
         statuses = tuple(
             _object_status(client, bucket=bucket, key=key, revision=revision)
             for key, revision in objects
         )
         if any(current.state == "expired" for current in statuses):
-            return ReadStatus(state="expired")
+            return ReadExpired()
         if all(current.state == "ready" for current in statuses):
             expirations = sorted(
-                current.expires_at for current in statuses if current.expires_at is not None
+                current.available_until
+                for current in statuses
+                if isinstance(current, ReadReady) and current.available_until is not None
             )
-            return ReadStatus(
-                state="ready",
-                expires_at=expirations[0] if expirations else None,
+            return ReadReady(
+                available_until=expirations[0] if expirations else None,
             )
-        return ReadStatus(state="requested")
+        return ReadRequested()
 
     def cleanup(
         self,
@@ -219,25 +225,24 @@ def _object_status(
     bucket: str,
     key: str,
     revision: str | None,
-) -> ReadStatus:
+) -> ReadReadiness:
     request: dict[str, Any] = {"Bucket": bucket, "Key": key}
     if revision is not None:
         request["VersionId"] = revision
     head = cast(dict[str, Any], client.head_object(**request))
     storage_class = str(head.get("StorageClass") or "STANDARD").upper()
     if storage_class not in _ARCHIVE_STORAGE_CLASSES:
-        return ReadStatus(state="ready")
+        return ReadReady()
     restore = _parse_restore_header(head.get("Restore"))
     if restore is None:
-        return ReadStatus(state="expired")
+        return ReadExpired()
     if restore["ongoing"]:
-        return ReadStatus(state="requested")
+        return ReadRequested()
     expires = restore["expires_at"]
     if expires is not None and expires <= utc_now():
-        return ReadStatus(state="expired", expires_at=format_utc_timestamp(expires))
-    return ReadStatus(
-        state="ready",
-        expires_at=format_utc_timestamp(expires) if expires is not None else None,
+        return ReadExpired()
+    return ReadReady(
+        available_until=format_utc_timestamp(expires) if expires is not None else None,
     )
 
 

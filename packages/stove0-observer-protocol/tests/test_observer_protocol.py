@@ -11,6 +11,7 @@ from stove0_observer_protocol import (
     ObservationRequest,
     ObserverContract,
     ObserverContractPayload,
+    validate_observation_request,
 )
 from stove0_protocol import models as shared_models
 
@@ -32,6 +33,7 @@ _OBSERVER_AUTHOR_SYMBOLS = frozenset(
         "ObserverDescriptorPayload",
         "ObserverImplementation",
         "ObserverRuntimeAuthority",
+        "validate_observation_request",
         "validate_observation_result",
     }
 )
@@ -52,6 +54,7 @@ def test_observer_contract_models_are_importable_without_runtime_support() -> No
         )
     )
     assert contract.contract_sha256
+    assert callable(validate_observation_request)
 
     forbidden = {
         "httpx",

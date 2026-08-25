@@ -65,11 +65,23 @@ def create_s3_client(
             connect_timeout=effective.connect_timeout_seconds,
             read_timeout=effective.read_timeout_seconds,
             tcp_keepalive=effective.tcp_keepalive,
+            # Riverhog observes the declared byte count and digest while the
+            # provider consumes the one-pass body.  Botocore's optional
+            # checksum mode pre-reads and rewinds file-like bodies, which is
+            # incompatible with that custody boundary.  Required provider
+            # checksums remain enabled.
+            request_checksum_calculation="when_required",
             retries={
                 "mode": effective.retry_mode,
                 "max_attempts": effective.max_attempts,
             },
-            s3={"addressing_style": "path" if config.force_path_style else "virtual"},
+            s3={
+                "addressing_style": "path" if config.force_path_style else "virtual",
+                # A signed payload hash would likewise require a complete
+                # pre-read.  Provider transport security and Riverhog's inline
+                # custody verification protect the one-pass body instead.
+                "payload_signing_enabled": False,
+            },
         ),
     )
 

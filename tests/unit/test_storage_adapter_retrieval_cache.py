@@ -68,9 +68,11 @@ class _Adapter:
         *,
         session: AdapterWriteSession,
         number: int,
+        stored_bytes: int,
         content: bytes,
     ) -> AdapterWriteSegmentReceipt:
         assert session.write_token == "write-1"
+        assert len(content) == stored_bytes
         with self._lock:
             self.active += 1
             self.maximum_active = max(self.maximum_active, self.active)
@@ -277,7 +279,7 @@ def test_cache_mirror_uses_deterministic_immediate_object_and_exact_deletion() -
 
     assert session.object_path.startswith("objects/")
     assert adapter.created is not None and adapter.created.placement == "immediate"
-    assert adapter.created.identity_metadata["riverhog-source-store"] == "deep"
+    assert adapter.created.required_identity_assertions["riverhog-source-store"] == "deep"
 
     adapter.objects[session.object_path] = b"cached"
     adapter.revisions[session.object_path] = "version-1"

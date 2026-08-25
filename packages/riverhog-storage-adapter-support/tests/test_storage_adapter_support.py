@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import struct
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -20,19 +21,26 @@ from riverhog_storage_adapter_protocol import (
     ObjectMetadataReceipt,
     ObjectReadRequest,
     ReadPreparationRequest,
+    ReadReady,
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterRejection,
     WriteCompleteRequest,
     WriteSegmentReceipt,
+    WriteSegmentRequest,
+    WriteSegmentSet,
     WriteSession,
     WriteStartRequest,
 )
 from riverhog_storage_adapter_support import (
+    FRAMED_REQUEST_FORMAT,
+    FRAMED_REQUEST_MEDIA_TYPE,
     StorageAdapterClient,
     StorageAdapterConformanceResult,
     StorageAdapterHttpBinding,
     StorageAdapterProtocolError,
+    framed_request,
+    parse_framed_stream,
     run_storage_adapter_conformance,
     storage_adapter_schema_bundle,
 )
@@ -69,8 +77,11 @@ class MemoryAdapter:
         *,
         session: WriteSession,
         number: int,
-        content: bytes,
+        stored_bytes: int,
+        content: bytes | Iterator[bytes],
     ) -> WriteSegmentReceipt:
+        content = content if isinstance(content, bytes) else b"".join(content)
+        assert len(content) == stored_bytes
         self.segments[(session.write_token, number)] = content
         return WriteSegmentReceipt(
             number=number,
@@ -78,15 +89,18 @@ class MemoryAdapter:
             stored_bytes=len(content),
         )
 
-    def list_segments(self, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
-        return tuple(
-            WriteSegmentReceipt(
-                number=number,
-                segment_token=f"part-{number}",
-                stored_bytes=len(content),
-            )
-            for (write_token, number), content in sorted(self.segments.items())
-            if write_token == session.write_token
+    def list_segments(self, session: WriteSession) -> WriteSegmentSet:
+        return WriteSegmentSet(
+            session=session,
+            segments=tuple(
+                WriteSegmentReceipt(
+                    number=number,
+                    segment_token=f"part-{number}",
+                    stored_bytes=len(content),
+                )
+                for (write_token, number), content in sorted(self.segments.items())
+                if write_token == session.write_token
+            ),
         )
 
     def complete_write(
@@ -99,7 +113,7 @@ class MemoryAdapter:
         )
         self.objects[request.session.object_path] = (
             content,
-            created.identity_metadata,
+            created.required_identity_assertions,
             "version-1",
             created.placement,
         )
@@ -119,7 +133,7 @@ class MemoryAdapter:
         if stored is None:
             return None
         content, metadata, revision, _placement = stored
-        if metadata != request.expected_identity_metadata:
+        if metadata != request.required_identity_assertions:
             raise RuntimeError("different identity")
         return CompletedObjectReceipt(
             object_path=request.object_path,
@@ -135,12 +149,13 @@ class MemoryAdapter:
     def put_small_object(
         self,
         request: SmallObjectWriteRequest,
-        content: bytes,
+        content: bytes | Iterator[bytes],
     ) -> ImmutableObjectReceipt:
+        content = content if isinstance(content, bytes) else b"".join(content)
         existing = self.objects.get(request.object_path)
         if existing is not None and request.mode == "create_only":
             existing_content, existing_metadata, _revision, _placement = existing
-            if existing_metadata != request.identity_metadata:
+            if existing_metadata != request.required_identity_assertions:
                 raise StorageAdapterRejection(
                     "identity_conflict",
                     "object already exists with a different identity",
@@ -155,7 +170,7 @@ class MemoryAdapter:
             )
         self.objects[request.object_path] = (
             content,
-            request.identity_metadata,
+            request.required_identity_assertions,
             "small-version",
             request.placement,
         )
@@ -186,7 +201,7 @@ class MemoryAdapter:
                 if request.object.object_path in self.small_objects
                 else None
             ),
-            identity_metadata=metadata,
+            required_identity_assertions=metadata,
             completed_at="2026-08-21T00:00:00Z",
         )
 
@@ -209,11 +224,11 @@ class MemoryAdapter:
 
     def prepare_read(self, request: ReadPreparationRequest) -> ReadStatus:
         self.read_requests.append(request)
-        return ReadStatus(state="ready")
+        return ReadStatus(objects=request.objects, readiness=ReadReady())
 
     def read_status(self, request: ReadPreparationRequest) -> ReadStatus:
         self.read_requests.append(request)
-        return ReadStatus(state="ready")
+        return ReadStatus(objects=request.objects, readiness=ReadReady())
 
     def cleanup_read(self, request: ReadPreparationRequest) -> None:
         self.read_requests.append(request)
@@ -264,27 +279,27 @@ def test_client_preserves_write_segment_receipts_and_declares_body_lengths() -> 
             WriteStartRequest(
                 object_path="archives/id/volumes/pack.tar.age",
                 content_type="application/octet-stream",
-                identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
+                required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
                 placement="archive",
             )
         )
-        first = client.write_segment(session=created, number=1, content=b"first")
-        second = client.write_segment(session=created, number=2, content=b"second")
+        first = client.write_segment(session=created, number=1, stored_bytes=5, content=b"first")
+        second = client.write_segment(session=created, number=2, stored_bytes=6, content=b"second")
 
-        assert client.list_segments(created) == (first, second)
+        assert client.list_segments(created).segments == (first, second)
         completed = client.complete_write(
             WriteCompleteRequest(
                 session=created,
                 segments=(first, second),
                 expected_bytes=11,
-                expected_identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
+                required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
                 expected_placement="archive",
             )
         )
         recovered = client.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=created.object_path,
-                expected_identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
+                required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
                 expected_placement="archive",
             )
         )
@@ -301,6 +316,145 @@ def test_client_preserves_write_segment_receipts_and_declares_body_lengths() -> 
             for request in segment_requests
         )
         assert all("Transfer-Encoding" not in request.headers for request in segment_requests)
+        assert all(
+            request.headers["Content-Type"] == FRAMED_REQUEST_MEDIA_TYPE
+            for request in segment_requests
+        )
+    finally:
+        client.close()
+        http.close()
+
+
+def test_named_framing_parses_split_declaration_and_streams_exact_payload() -> None:
+    request = WriteSegmentRequest(
+        session=WriteSession(object_path="archives/id/object", write_token="upload-1"),
+        number=1,
+        stored_bytes=9,
+    )
+    wire = b"".join(framed_request(request, (b"opa", b"que", b"123")))
+    chunks = (wire[:1], wire[1:4], wire[4:17], wire[17:-2], wire[-2:])
+
+    declaration, content = parse_framed_stream(
+        chunks,
+        WriteSegmentRequest,
+        content_length=len(wire),
+    )
+
+    assert FRAMED_REQUEST_FORMAT == "riverhog-json-opaque-framing/v1"
+    assert declaration == request
+    assert b"".join(content) == b"opaque123"
+    content.require_consumed()
+
+
+def test_named_framing_rejects_a_body_length_different_from_its_declaration() -> None:
+    request = WriteSegmentRequest(
+        session=WriteSession(object_path="archives/id/object", write_token="upload-1"),
+        number=1,
+        stored_bytes=3,
+    )
+    wire = b"".join(framed_request(request, b"abc"))
+
+    with pytest.raises(ValueError, match="content length"):
+        parse_framed_stream(
+            (wire,),
+            WriteSegmentRequest,
+            content_length=len(wire) + 1,
+        )
+
+
+def test_named_framing_rejects_truncated_and_trailing_content() -> None:
+    request = WriteSegmentRequest(
+        session=WriteSession(object_path="archives/id/object", write_token="upload-1"),
+        number=1,
+        stored_bytes=3,
+    )
+    wire = b"".join(framed_request(request, b"abc"))
+
+    with pytest.raises(ValueError, match="declaration is truncated"):
+        parse_framed_stream(
+            (wire[:2],),
+            WriteSegmentRequest,
+            content_length=len(wire),
+        )
+    _, truncated = parse_framed_stream(
+        (wire[:-1],),
+        WriteSegmentRequest,
+        content_length=len(wire),
+    )
+    with pytest.raises(ValueError, match="ended before"):
+        b"".join(truncated)
+    _, trailing = parse_framed_stream(
+        (wire, b"trailing"),
+        WriteSegmentRequest,
+        content_length=len(wire),
+    )
+    with pytest.raises(ValueError, match="exceeds"):
+        b"".join(trailing)
+
+
+def test_named_framing_rejects_an_oversized_declaration_before_reading_it() -> None:
+    oversized = 32 * 1024 + 1
+
+    with pytest.raises(ValueError, match="declaration length"):
+        parse_framed_stream(
+            (struct.pack(">I", oversized),),
+            WriteSegmentRequest,
+            content_length=4 + oversized,
+        )
+
+
+def test_framed_binding_requires_length_and_reports_trailing_input_as_invalid() -> None:
+    adapter = MemoryAdapter()
+    binding = StorageAdapterHttpBinding(adapter)
+    request = WriteSegmentRequest(
+        session=WriteSession(object_path="archives/id/object", write_token="upload-1"),
+        number=1,
+        stored_bytes=3,
+    )
+    wire = b"".join(framed_request(request, b"abc"))
+
+    missing = binding.handle_framed(
+        "POST",
+        "/v1/writes/segment",
+        (wire,),
+        content_length=None,
+    )
+    trailing = binding.handle_framed(
+        "POST",
+        "/v1/writes/segment",
+        (wire, b"trailing"),
+        content_length=len(wire),
+    )
+
+    assert missing.status == 411
+    assert trailing.status == 400
+
+
+def test_client_streams_declared_segment_chunks_without_transfer_encoding() -> None:
+    adapter = MemoryAdapter()
+    requests: list[httpx.Request] = []
+    client, http = _client(adapter, requests=requests)
+    try:
+        session = client.begin_write(
+            WriteStartRequest(
+                object_path="archives/id/object",
+                content_type="application/octet-stream",
+                required_identity_assertions={"riverhog-format": "fixture/v1"},
+                placement="archive",
+            )
+        )
+        receipt = client.write_segment(
+            session=session,
+            number=1,
+            stored_bytes=9,
+            content=(chunk for chunk in (b"opa", b"que", b"123")),
+        )
+
+        request = next(current for current in requests if current.url.path == "/v1/writes/segment")
+        assert receipt.stored_bytes == 9
+        assert adapter.segments[(session.write_token, 1)] == b"opaque123"
+        assert int(request.headers["Content-Length"]) == len(request.content)
+        assert "Transfer-Encoding" not in request.headers
     finally:
         client.close()
         http.close()
@@ -316,7 +470,9 @@ def test_small_object_and_exact_range_round_trip() -> None:
             SmallObjectWriteRequest(
                 object_path="README.md",
                 content_type="text/markdown",
-                identity_metadata={"archive-guidance-format": "encrypted-archive-readme-v1"},
+                required_identity_assertions={
+                    "archive-guidance-format": "encrypted-archive-readme-v1"
+                },
                 placement="immediate",
                 mode="create_only",
                 stored_bytes=len(content),
@@ -362,8 +518,8 @@ def test_read_preparation_sends_no_provider_restore_mechanics() -> None:
         objects=(ObjectLocator(object_path="archives/id/object", revision="version-1"),)
     )
     try:
-        assert client.prepare_read(request).state == "ready"
-        assert client.read_status(request).state == "ready"
+        assert client.prepare_read(request).readiness.state == "ready"
+        assert client.read_status(request).readiness.state == "ready"
         client.cleanup_read(request)
         assert adapter.read_requests == [request, request, request]
     finally:
@@ -408,7 +564,7 @@ def test_adapter_implementation_value_error_is_a_server_fault() -> None:
     request = WriteStartRequest(
         object_path="archives/id/object",
         content_type="application/octet-stream",
-        identity_metadata={"riverhog-format": "fixture/v1"},
+        required_identity_assertions={"riverhog-format": "fixture/v1"},
         placement="archive",
     )
     response = StorageAdapterHttpBinding(FaultingAdapter()).handle(
@@ -442,14 +598,14 @@ def test_binding_enforces_advertised_write_segment_limits() -> None:
             WriteStartRequest(
                 object_path="archives/id/object",
                 content_type="application/octet-stream",
-                identity_metadata={"riverhog-format": "fixture/v1"},
+                required_identity_assertions={"riverhog-format": "fixture/v1"},
                 placement="archive",
             )
         )
         with pytest.raises(StorageAdapterProtocolError, match="byte limit"):
-            client.write_segment(session=upload, number=1, content=b"123456")
+            client.write_segment(session=upload, number=1, stored_bytes=6, content=b"123456")
         with pytest.raises(StorageAdapterProtocolError, match="segment number"):
-            client.write_segment(session=upload, number=3, content=b"1234")
+            client.write_segment(session=upload, number=3, stored_bytes=4, content=b"1234")
     finally:
         client.close()
         http.close()

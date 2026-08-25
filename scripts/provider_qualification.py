@@ -32,6 +32,7 @@ CHECKPOINT_SCHEMA = "riverhog-provider-qualification-checkpoint/v1"
 EVIDENCE_SCHEMA = "riverhog-provider-qualification-evidence/v1"
 QUALIFICATION_MARKER = "riverhog-provider-qualification"
 QUALIFICATION_PASSPHRASE_ID = "qualification-key-v1"
+ADAPTER_STORED_SHA256_ASSERTION = "riverhog-adapter-stored-sha256"
 AWS_DEEP_ARCHIVE_MINIMUM_DAYS = 180
 DEFAULT_AWS_EXPIRATION_DAYS = 185
 DEFAULT_B2_DELETE_DAYS = 1
@@ -3357,7 +3358,9 @@ def _verify_cloudfront_egress(
         expected_bytes = int(head.get("ContentLength", -1))
         metadata = head.get("Metadata")
         expected_sha = (
-            str(metadata.get("riverhog-stored-sha256", "")) if isinstance(metadata, dict) else ""
+            str(metadata.get(ADAPTER_STORED_SHA256_ASSERTION, ""))
+            if isinstance(metadata, dict)
+            else ""
         )
         if _SHA256_RE.fullmatch(expected_sha) is None:
             raise QualificationError("Deep Archive object has no Riverhog ciphertext identity")

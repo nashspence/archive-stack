@@ -1187,7 +1187,7 @@ class SqlAlchemyArchiveCopyService:
                     object_path=destination_path,
                     content=content,
                     content_type=content_type,
-                    identity_metadata={
+                    required_identity_assertions={
                         "riverhog-format": archive_object_storage_format(source.kind),
                         "riverhog-plaintext-bytes": str(source.plaintext_bytes),
                         "riverhog-plaintext-sha256": source.sha256 or "",

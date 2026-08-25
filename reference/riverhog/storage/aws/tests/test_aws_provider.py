@@ -58,7 +58,7 @@ def test_aws_restore_mechanics_are_adapter_configuration() -> None:
     client.head["Restore"] = 'ongoing-request="false", expiry-date="Tue, 01 Jan 2030 00:00:00 GMT"'
     ready = preparation.status(client=client, bucket="archive-bucket", objects=objects)
     assert ready.state == "ready"
-    assert ready.expires_at == "2030-01-01T00:00:00.000000Z"
+    assert ready.available_until == "2030-01-01T00:00:00.000000Z"
 
 
 def test_aws_immediate_object_never_requests_restore() -> None:

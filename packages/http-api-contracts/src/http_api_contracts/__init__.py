@@ -16,6 +16,11 @@ CanonicalVisibleText = Annotated[
     StringConstraints(min_length=1, pattern=CANONICAL_VISIBLE_TEXT_PATTERN),
 ]
 
+FRAMED_REQUEST_FORMAT = "riverhog-json-opaque-framing/v1"
+FRAMED_REQUEST_MEDIA_TYPE = "application/vnd.riverhog.json-opaque-framing"
+FRAMED_REQUEST_DECLARATION_LENGTH_BYTES = 4
+FRAMED_REQUEST_MAXIMUM_DECLARATION_BYTES = 32 * 1024
+
 
 class HttpApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -207,9 +212,16 @@ def operation_openapi(
         extra["requestBody"] = {
             "required": True,
             "content": {
-                "application/octet-stream": {
+                FRAMED_REQUEST_MEDIA_TYPE: {
                     "schema": {"type": "string", "format": "binary"},
                     "x-riverhog-framing-declaration": inline_type_schema(contract.request_type),
+                    "x-riverhog-framing": {
+                        "format": FRAMED_REQUEST_FORMAT,
+                        "declaration_length_bytes": (FRAMED_REQUEST_DECLARATION_LENGTH_BYTES),
+                        "declaration_length_byte_order": "big-endian",
+                        "maximum_declaration_bytes": (FRAMED_REQUEST_MAXIMUM_DECLARATION_BYTES),
+                        "body": "length || UTF-8 JSON declaration || opaque payload",
+                    },
                 }
             },
         }
@@ -455,6 +467,10 @@ def parse_error_payload(
 __all__ = [
     "CANONICAL_VISIBLE_TEXT_PATTERN",
     "ERROR_STATUS_BY_CODE",
+    "FRAMED_REQUEST_DECLARATION_LENGTH_BYTES",
+    "FRAMED_REQUEST_FORMAT",
+    "FRAMED_REQUEST_MAXIMUM_DECLARATION_BYTES",
+    "FRAMED_REQUEST_MEDIA_TYPE",
     "PUBLIC_ERROR_CODES",
     "CanonicalVisibleText",
     "ErrorBody",

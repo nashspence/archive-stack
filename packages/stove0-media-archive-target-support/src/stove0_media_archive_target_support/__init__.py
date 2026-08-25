@@ -1,6 +1,7 @@
 """Pure projection support bridging observation evidence into media archive target plans."""
 
 from stove0_media_archive_target_support.projection import (
+    MEDIA_FACT_PROJECTION_FIELDS,
     MEDIA_PROJECTION_FORMAT,
     MediaArchiveProjection,
     MediaArchiveProjectionPayload,
@@ -13,6 +14,7 @@ from stove0_media_archive_target_support.projection import (
 )
 
 __all__ = [
+    "MEDIA_FACT_PROJECTION_FIELDS",
     "MEDIA_PROJECTION_FORMAT",
     "MediaArchiveProjection",
     "MediaArchiveProjectionPayload",

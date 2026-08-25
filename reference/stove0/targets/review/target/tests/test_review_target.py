@@ -67,6 +67,22 @@ def _sha(character: str) -> str:
     return character * 64
 
 
+def _sample_plan() -> ReviewSamplePlan:
+    return ReviewSamplePlan.seal(
+        ReviewSamplePlanPayload(
+            samples_per_artifact=1,
+            window_duration_ms=1000,
+            windows=(
+                ReviewSampleWindow(
+                    artifact_id="source",
+                    start_ms=0,
+                    duration_ms=1000,
+                ),
+            ),
+        )
+    )
+
+
 class FixtureSamplerClient:
     def __init__(self, descriptor: SamplerDescriptor) -> None:
         self.value = descriptor
@@ -144,20 +160,7 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
                 ),
             ),
             intent={
-                "sample_plan": {
-                    "format": "stove0-review-sample-plan/v1",
-                    "selection_method": "evenly-spaced/v1",
-                    "samples_per_artifact": 1,
-                    "window_duration_ms": 1000,
-                    "windows": [
-                        {
-                            "artifact_id": "source",
-                            "start_ms": 0,
-                            "duration_ms": 1000,
-                        }
-                    ],
-                    "sample_plan_sha256": _sha("4"),
-                },
+                "sample_plan": _sample_plan().model_dump(mode="json"),
                 "variant": {
                     "id": "opus-96",
                     "portable_intent": {"bitrate_kbps": 96},
@@ -176,6 +179,12 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
             "sampler_descriptor_sha256": registration.descriptor_sha256,
             "sampler_image_digest": registration.image_digest,
         }
+        invalid_intent = request.intent.copy()
+        invalid_plan = dict(invalid_intent["sample_plan"])
+        invalid_plan["sample_plan_sha256"] = _sha("4")
+        invalid_intent["sample_plan"] = invalid_plan
+        with pytest.raises(TargetServiceError, match="intent is invalid"):
+            target.preflight(request.model_copy(update={"intent": invalid_intent}))
         with pytest.raises(TargetServiceError, match="sampler_image_digest") as exc_info:
             target.preflight(
                 request.model_copy(
@@ -403,14 +412,7 @@ def test_review_effect_deployment_has_one_fixed_effect_contract(tmp_path: Path) 
                 ),
             ),
             intent={
-                "sample_plan": {
-                    "format": "stove0-review-sample-plan/v1",
-                    "selection_method": "evenly-spaced/v1",
-                    "samples_per_artifact": 1,
-                    "window_duration_ms": 1000,
-                    "windows": [{"artifact_id": "source", "start_ms": 0, "duration_ms": 1000}],
-                    "sample_plan_sha256": _sha("4"),
-                },
+                "sample_plan": _sample_plan().model_dump(mode="json"),
                 "variant": {"id": "opus-96", "portable_intent": {"bitrate_kbps": 96}},
             },
             target_options={"sampler_registration_id": "opus"},

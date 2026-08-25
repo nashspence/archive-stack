@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
-from collections.abc import Iterator
+import logging
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -32,11 +32,23 @@ from riverhog_storage_adapter_protocol import (
     WriteCompleteRequest,
     WriteSegmentReceipt,
     WriteSegmentRequest,
+    WriteSegmentSet,
     WriteSession,
     WriteStartRequest,
+    validate_completed_write_response,
+    validate_object_metadata_response,
+    validate_read_status_response,
+    validate_small_object_response,
+    validate_write_segment_response,
+    validate_write_segment_set_response,
+    validate_write_session_response,
 )
 
-from riverhog_storage_adapter_support.framing import parse_framed_request
+from riverhog_storage_adapter_support.framing import (
+    FramedContent,
+    FramedRequestError,
+    parse_framed_stream,
+)
 
 _JSON_CONTENT_TYPE = "application/json"
 _BINARY_CONTENT_TYPE = "application/octet-stream"
@@ -46,6 +58,7 @@ _BINARY_CONTENT_TYPE = "application/octet-stream"
 _DEFAULT_MAXIMUM_CONTROL_BYTES = 64 * 1024 * 1024
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+_LOGGER = logging.getLogger("riverhog.storage_adapter")
 
 
 class StorageAdapterServiceError(RuntimeError):
@@ -93,6 +106,13 @@ class StorageAdapterHttpBinding:
         body: bytes = b"",
     ) -> StorageAdapterHttpResponse:
         normalized_method = method.upper()
+        if normalized_method == "POST" and path in FRAMED_STORAGE_ADAPTER_HTTP_PATHS:
+            return self.handle_framed(
+                normalized_method,
+                path,
+                (body,),
+                content_length=len(body),
+            )
         operation = http_operation_for_request(
             STORAGE_ADAPTER_HTTP_OPERATIONS,
             normalized_method,
@@ -108,43 +128,15 @@ class StorageAdapterHttpBinding:
                     )
                 return _model_response(self.adapter.descriptor())
             if normalized_method == "POST" and path == "/v1/writes/begin":
-                return _model_response(
-                    self.adapter.begin_write(self._parse(body, WriteStartRequest))
-                )
-            if normalized_method == "POST" and path == "/v1/writes/segment":
-                segment_request, content = self._parse_framed(body, WriteSegmentRequest)
-                descriptor = self.adapter.descriptor()
-                if (
-                    descriptor.maximum_segment_count is not None
-                    and segment_request.number > descriptor.maximum_segment_count
-                ):
-                    raise StorageAdapterServiceError(
-                        400,
-                        "invalid_request",
-                        "write segment number exceeds the adapter limit",
-                    )
-                if (
-                    descriptor.maximum_segment_bytes is not None
-                    and len(content) > descriptor.maximum_segment_bytes
-                ):
-                    raise StorageAdapterServiceError(
-                        413,
-                        "request_too_large",
-                        "write segment exceeds the adapter byte limit",
-                    )
-                segment_receipt = self.adapter.write_segment(
-                    session=segment_request.session,
-                    number=segment_request.number,
-                    content=content,
-                )
-                if (
-                    segment_receipt.number != segment_request.number
-                    or segment_receipt.stored_bytes != len(content)
-                ):
-                    raise RuntimeError("adapter segment receipt differs from its request")
-                return _model_response(segment_receipt)
+                start_request = self._parse(body, WriteStartRequest)
+                session = self.adapter.begin_write(start_request)
+                validate_write_session_response(start_request, session)
+                return _model_response(session)
             if normalized_method == "POST" and path == "/v1/writes/segments":
-                return _models_response(self.adapter.list_segments(self._parse(body, WriteSession)))
+                session = self._parse(body, WriteSession)
+                segment_set = self.adapter.list_segments(session)
+                validate_write_segment_set_response(session, segment_set)
+                return _model_response(segment_set)
             if normalized_method == "POST" and path == "/v1/writes/complete":
                 complete_request = self._parse(body, WriteCompleteRequest)
                 descriptor = self.adapter.descriptor()
@@ -177,39 +169,24 @@ class StorageAdapterHttpBinding:
                         "write completion contains an undersized non-final segment",
                     )
                 completed_receipt = self.adapter.complete_write(complete_request)
-                if (
-                    completed_receipt.object_path != complete_request.session.object_path
-                    or completed_receipt.stored_bytes != complete_request.expected_bytes
-                ):
-                    raise RuntimeError("adapter completion receipt differs from its request")
+                validate_completed_write_response(complete_request, completed_receipt)
                 return _model_response(completed_receipt)
             if normalized_method == "POST" and path == "/v1/writes/completed":
-                head_receipt = self.adapter.find_completed_write(
-                    self._parse(body, CompletedWriteLookupRequest)
-                )
+                lookup_request = self._parse(body, CompletedWriteLookupRequest)
+                head_receipt = self.adapter.find_completed_write(lookup_request)
                 if head_receipt is None:
                     return _error(404, "not_found", "completed object was not found")
+                validate_completed_write_response(lookup_request, head_receipt)
                 return _model_response(head_receipt)
             if normalized_method == "POST" and path == "/v1/writes/abort":
                 self.adapter.abort_write(self._parse(body, WriteSession))
                 return _empty_response()
-            if normalized_method == "POST" and path == "/v1/objects/put":
-                small_request, content = self._parse_framed(body, SmallObjectWriteRequest)
-                if hashlib.sha256(content).hexdigest() != small_request.stored_sha256:
-                    return _error(409, "integrity_failure", "small object digest differs")
-                small_receipt = self.adapter.put_small_object(small_request, content)
-                if small_receipt.object_path != small_request.object_path:
-                    raise RuntimeError("adapter small-object receipt differs from its request")
-                if small_request.mode == "replace_current" and (
-                    small_receipt.stored_bytes != small_request.stored_bytes
-                    or small_receipt.stored_sha256 != small_request.stored_sha256
-                ):
-                    raise RuntimeError("adapter replacement receipt differs from its request")
-                return _model_response(small_receipt)
             if normalized_method == "POST" and path == "/v1/objects/head":
-                metadata_receipt = self.adapter.head_object(self._parse(body, ObjectHeadRequest))
+                head_request = self._parse(body, ObjectHeadRequest)
+                metadata_receipt = self.adapter.head_object(head_request)
                 if metadata_receipt is None:
                     return _error(404, "not_found", "object was not found")
+                validate_object_metadata_response(head_request, metadata_receipt)
                 return _model_response(metadata_receipt)
             if normalized_method == "POST" and path == "/v1/objects/read":
                 read_request = self._parse(body, ObjectReadRequest)
@@ -250,13 +227,15 @@ class StorageAdapterHttpBinding:
                 affected = self.adapter.delete_prefix(self._parse(body, DeletePrefixRequest))
                 return _model_response(MaintenanceResult(affected=affected))
             if normalized_method == "POST" and path == "/v1/reads/prepare":
-                return _model_response(
-                    self.adapter.prepare_read(self._parse(body, ReadPreparationRequest))
-                )
+                preparation_request = self._parse(body, ReadPreparationRequest)
+                read_status = self.adapter.prepare_read(preparation_request)
+                validate_read_status_response(preparation_request, read_status)
+                return _model_response(read_status)
             if normalized_method == "POST" and path == "/v1/reads/status":
-                return _model_response(
-                    self.adapter.read_status(self._parse(body, ReadPreparationRequest))
-                )
+                preparation_request = self._parse(body, ReadPreparationRequest)
+                read_status = self.adapter.read_status(preparation_request)
+                validate_read_status_response(preparation_request, read_status)
+                return _model_response(read_status)
             if normalized_method == "POST" and path == "/v1/reads/cleanup":
                 self.adapter.cleanup_read(self._parse(body, ReadPreparationRequest))
                 return _empty_response()
@@ -278,6 +257,112 @@ class StorageAdapterHttpBinding:
                 return _error(500, "internal_failure", "storage adapter operation failed")
             return _error(status, exc.code, exc.message)
         except Exception:
+            _LOGGER.exception(
+                "storage adapter capability failed",
+                extra={"method": normalized_method, "path": path},
+            )
+            return _error(500, "internal_failure", "storage adapter operation failed")
+
+    def handle_framed(
+        self,
+        method: str,
+        path: str,
+        chunks: Iterable[bytes],
+        *,
+        content_length: int | None,
+    ) -> StorageAdapterHttpResponse:
+        """Dispatch one authenticated single-pass declaration/payload request."""
+
+        normalized_method = method.upper()
+        operation = http_operation_for_request(
+            STORAGE_ADAPTER_HTTP_OPERATIONS,
+            normalized_method,
+            path,
+        )
+        try:
+            if content_length is None:
+                raise StorageAdapterServiceError(
+                    411,
+                    "length_required",
+                    "framed adapter requests require Content-Length",
+                )
+            if content_length < 0:
+                raise StorageAdapterServiceError(
+                    400,
+                    "invalid_request",
+                    "adapter request Content-Length is invalid",
+                )
+            if normalized_method == "POST" and path == "/v1/writes/segment":
+                segment_request, content = self._parse_framed_stream(
+                    chunks,
+                    WriteSegmentRequest,
+                    content_length=content_length,
+                )
+                descriptor = self.adapter.descriptor()
+                if (
+                    descriptor.maximum_segment_count is not None
+                    and segment_request.number > descriptor.maximum_segment_count
+                ):
+                    raise StorageAdapterServiceError(
+                        400,
+                        "invalid_request",
+                        "write segment number exceeds the adapter limit",
+                    )
+                if (
+                    descriptor.maximum_segment_bytes is not None
+                    and segment_request.stored_bytes > descriptor.maximum_segment_bytes
+                ):
+                    raise StorageAdapterServiceError(
+                        413,
+                        "request_too_large",
+                        "write segment exceeds the adapter byte limit",
+                    )
+                segment_receipt = self.adapter.write_segment(
+                    session=segment_request.session,
+                    number=segment_request.number,
+                    stored_bytes=segment_request.stored_bytes,
+                    content=content,
+                )
+                content.require_consumed()
+                validate_write_segment_response(segment_request, segment_receipt)
+                return _model_response(segment_receipt)
+            if normalized_method == "POST" and path == "/v1/objects/put":
+                small_request, content = self._parse_framed_stream(
+                    chunks,
+                    SmallObjectWriteRequest,
+                    content_length=content_length,
+                )
+                small_receipt = self.adapter.put_small_object(small_request, content)
+                content.require_consumed()
+                validate_small_object_response(small_request, small_receipt)
+                return _model_response(small_receipt)
+            if path in STORAGE_ADAPTER_HTTP_PATHS:
+                return _error(405, "method_not_allowed", "adapter method is not allowed")
+            return _error(404, "not_found", "adapter endpoint was not found")
+        except StorageAdapterServiceError as exc:
+            if operation is None or not operation.accepts_error(
+                status=exc.status,
+                code=exc.code,
+            ):
+                return _error(500, "internal_failure", "storage adapter operation failed")
+            return _error(exc.status, exc.code, exc.message)
+        except FramedRequestError:
+            if operation is None or not operation.accepts_error(
+                status=400,
+                code="invalid_request",
+            ):
+                return _error(500, "internal_failure", "storage adapter operation failed")
+            return _error(400, "invalid_request", "adapter request is invalid")
+        except StorageAdapterRejection as exc:
+            status = _ERROR_STATUS[exc.code]
+            if operation is None or not operation.accepts_error(status=status, code=exc.code):
+                return _error(500, "internal_failure", "storage adapter operation failed")
+            return _error(status, exc.code, exc.message)
+        except Exception:
+            _LOGGER.exception(
+                "storage adapter capability failed",
+                extra={"method": normalized_method, "path": path},
+            )
             return _error(500, "internal_failure", "storage adapter operation failed")
 
     def _parse(self, body: bytes, model: type[ModelT]) -> ModelT:
@@ -296,14 +381,20 @@ class StorageAdapterHttpBinding:
                 "adapter request is invalid",
             ) from exc
 
-    def _parse_framed(
+    def _parse_framed_stream(
         self,
-        body: bytes,
+        chunks: Iterable[bytes],
         model: type[ModelT],
-    ) -> tuple[ModelT, bytes]:
+        *,
+        content_length: int,
+    ) -> tuple[ModelT, FramedContent]:
         try:
-            return parse_framed_request(body, model)
-        except (ValidationError, ValueError) as exc:
+            return parse_framed_stream(
+                chunks,
+                model,
+                content_length=content_length,
+            )
+        except (TypeError, ValidationError, ValueError) as exc:
             raise StorageAdapterServiceError(
                 400,
                 "invalid_request",
@@ -316,6 +407,7 @@ _ERROR_STATUS: dict[StorageAdapterErrorCode, int] = {
     "invalid_request": 400,
     "not_found": 404,
     "method_not_allowed": 405,
+    "length_required": 411,
     "request_too_large": 413,
     "identity_conflict": 409,
     "invalid_path": 400,
@@ -362,13 +454,13 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         WriteSegmentRequest,
         WriteSegmentReceipt,
         "framed",
-        errors=_adapter_errors("request_too_large", "invalid_path", "not_found"),
+        errors=_adapter_errors("length_required", "request_too_large", "invalid_path", "not_found"),
     ),
     HttpOperationContract(
         "POST",
         "/v1/writes/segments",
         WriteSession,
-        list[WriteSegmentReceipt],
+        WriteSegmentSet,
         "json",
         errors=_adapter_errors("request_too_large", "invalid_path", "not_found"),
     ),
@@ -417,6 +509,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         ImmutableObjectReceipt,
         "framed",
         errors=_adapter_errors(
+            "length_required",
             "request_too_large",
             "invalid_path",
             "identity_conflict",
@@ -529,6 +622,11 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
 STORAGE_ADAPTER_HTTP_PATHS = frozenset(
     operation.path for operation in STORAGE_ADAPTER_HTTP_OPERATIONS
 )
+FRAMED_STORAGE_ADAPTER_HTTP_PATHS = frozenset(
+    operation.path
+    for operation in STORAGE_ADAPTER_HTTP_OPERATIONS
+    if operation.request_kind == "framed"
+)
 
 
 def _model_response(model: BaseModel) -> StorageAdapterHttpResponse:
@@ -536,15 +634,6 @@ def _model_response(model: BaseModel) -> StorageAdapterHttpResponse:
         status=200,
         headers=(("Content-Type", _JSON_CONTENT_TYPE),),
         body=model.model_dump_json(exclude_none=True).encode("utf-8"),
-    )
-
-
-def _models_response(models: tuple[BaseModel, ...]) -> StorageAdapterHttpResponse:
-    body = "[" + ",".join(model.model_dump_json(exclude_none=True) for model in models) + "]"
-    return StorageAdapterHttpResponse(
-        status=200,
-        headers=(("Content-Type", _JSON_CONTENT_TYPE),),
-        body=body.encode("utf-8"),
     )
 
 
@@ -583,6 +672,7 @@ def _validated_stream(content: Iterator[bytes], expected_bytes: int) -> Iterator
 __all__ = [
     "STORAGE_ADAPTER_HTTP_PATHS",
     "STORAGE_ADAPTER_HTTP_OPERATIONS",
+    "FRAMED_STORAGE_ADAPTER_HTTP_PATHS",
     "StorageAdapterHttpBinding",
     "StorageAdapterHttpResponse",
     "StorageAdapterServiceError",

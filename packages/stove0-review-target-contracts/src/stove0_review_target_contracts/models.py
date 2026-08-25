@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from stove0_target_protocol import canonical_json_sha256
 
 
@@ -36,6 +36,17 @@ class ReviewSamplePlanPayload(ReviewTargetModel):
             raise ValueError("review sample windows must be unique and canonically ordered")
         return value
 
+    @model_validator(mode="after")
+    def exact_declared_shape(self) -> Self:
+        counts: dict[str, int] = {}
+        for window in self.windows:
+            if window.duration_ms != self.window_duration_ms:
+                raise ValueError("review sample window duration differs from its plan")
+            counts[window.artifact_id] = counts.get(window.artifact_id, 0) + 1
+        if any(count != self.samples_per_artifact for count in counts.values()):
+            raise ValueError("review sample count differs from its per-artifact declaration")
+        return self
+
 
 class ReviewSamplePlan(ReviewSamplePlanPayload):
     sample_plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -57,4 +68,20 @@ class ReviewSamplePlan(ReviewSamplePlanPayload):
         return cls(**document, sample_plan_sha256=canonical_json_sha256(document))
 
 
-__all__ = ["ReviewSamplePlan", "ReviewSamplePlanPayload", "ReviewSampleWindow"]
+class ReviewVariantIntent(ReviewTargetModel):
+    id: str = Field(pattern=r"^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$")
+    portable_intent: dict[str, JsonValue]
+
+
+class ReviewMaterializeIntent(ReviewTargetModel):
+    sample_plan: ReviewSamplePlan
+    variant: ReviewVariantIntent
+
+
+__all__ = [
+    "ReviewMaterializeIntent",
+    "ReviewSamplePlan",
+    "ReviewSamplePlanPayload",
+    "ReviewSampleWindow",
+    "ReviewVariantIntent",
+]

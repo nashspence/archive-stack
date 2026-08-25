@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 from stove0_media_metadata_observer_contracts import (
     MEDIA_METADATA_OBSERVER_CONTRACT,
     MediaArtifactFacts,
@@ -9,7 +12,7 @@ from stove0_media_metadata_observer_contracts import (
 )
 
 
-def test_media_metadata_contract_binds_facts_to_exact_artifacts_without_a_ceiling() -> None:
+def test_media_metadata_contract_carries_exact_evidence_without_a_ceiling() -> None:
     facts = MediaMetadataFacts(
         artifacts=(
             MediaArtifactFacts(
@@ -32,7 +35,7 @@ def test_media_metadata_contract_binds_facts_to_exact_artifacts_without_a_ceilin
     assert MEDIA_METADATA_OBSERVER_CONTRACT.id == "stove0.media.metadata/v1"
     assert (
         MEDIA_METADATA_OBSERVER_CONTRACT.contract_sha256
-        == "527ff1ef0a62e8705d29dca2d35574659d983b67e5fb5a353992ee81745f5c1c"
+        == "c58f17cb8503ad730684d7fb00c374d5bbe1a346e44befb02bf5fa496c3e958e"
     )
     assert facts.artifacts[0].artifact_id == "primary"
     assert (
@@ -41,3 +44,28 @@ def test_media_metadata_contract_binds_facts_to_exact_artifacts_without_a_ceilin
         )
         is None
     )
+
+
+def test_media_fact_model_and_published_schema_share_state_acceptance() -> None:
+    document = {
+        "artifacts": [
+            {
+                "artifact_id": "primary",
+                "state": "unsupported",
+                "facts": [
+                    {
+                        "name": "creator",
+                        "value": "Example",
+                        "evidence": {"artifact_id": "primary", "field": "Artist"},
+                    }
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(ValidationError, match="unsupported"):
+        MediaMetadataFacts.model_validate(document)
+    with pytest.raises(Exception, match="expected to be empty"):
+        Draft202012Validator(MEDIA_METADATA_OBSERVER_CONTRACT.facts_schema.document).validate(
+            document
+        )

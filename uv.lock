@@ -2239,7 +2239,6 @@ version = "0.1.0"
 source = { editable = "packages/stove0-media-archive-target-contracts" }
 dependencies = [
     { name = "pydantic" },
-    { name = "stove0-media-metadata-observer-contracts" },
     { name = "stove0-protocol" },
     { name = "stove0-target-protocol" },
 ]
@@ -2247,7 +2246,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
-    { name = "stove0-media-metadata-observer-contracts", editable = "packages/stove0-media-metadata-observer-contracts" },
     { name = "stove0-protocol", editable = "packages/stove0-protocol" },
     { name = "stove0-target-protocol", editable = "packages/stove0-target-protocol" },
 ]
@@ -2387,11 +2385,15 @@ name = "stove0-observer-protocol"
 version = "0.1.0"
 source = { editable = "packages/stove0-observer-protocol" }
 dependencies = [
+    { name = "jsonschema" },
     { name = "stove0-protocol" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "stove0-protocol", editable = "packages/stove0-protocol" }]
+requires-dist = [
+    { name = "jsonschema", specifier = ">=4.25,<5.0" },
+    { name = "stove0-protocol", editable = "packages/stove0-protocol" },
+]
 
 [[package]]
 name = "stove0-observer-support"

@@ -256,7 +256,9 @@ class StorageAdapterArchiveStore:
             _PLAINTEXT_SHA256_METADATA: plaintext_sha256,
         }
         if existing is not None and (
-            archive_root_sha256 := existing.identity_metadata.get("riverhog-archive-root-sha256")
+            archive_root_sha256 := existing.required_identity_assertions.get(
+                "riverhog-archive-root-sha256"
+            )
         ):
             identity["riverhog-archive-root-sha256"] = archive_root_sha256
         ciphertext = encrypt_age_scrypt(
@@ -359,10 +361,11 @@ class StorageAdapterArchiveStore:
     ) -> ArchiveReadStatus:
         _ = collection_id
         status = self._adapter.prepare_read(_read_request(objects))
+        readiness = status.readiness
         return ArchiveReadStatus(
-            state=status.state,
-            ready_at=status.ready_at,
-            expires_at=status.expires_at,
+            state=readiness.state,
+            ready_at=(readiness.estimated_ready_at if readiness.state == "requested" else None),
+            expires_at=(readiness.available_until if readiness.state == "ready" else None),
         )
 
     def get_archive_objects_read_status(
@@ -373,10 +376,11 @@ class StorageAdapterArchiveStore:
     ) -> ArchiveReadStatus:
         _ = collection_id
         status = self._adapter.read_status(_read_request(objects))
+        readiness = status.readiness
         return ArchiveReadStatus(
-            state=status.state,
-            ready_at=status.ready_at,
-            expires_at=status.expires_at,
+            state=readiness.state,
+            ready_at=(readiness.estimated_ready_at if readiness.state == "requested" else None),
+            expires_at=(readiness.available_until if readiness.state == "ready" else None),
         )
 
     def iter_archive_object(
@@ -407,7 +411,7 @@ class StorageAdapterArchiveStore:
         metadata = self._metadata(object)
         _verify_metadata(object, metadata)
         status = self._adapter.read_status(_read_request((object,)))
-        if status.state != "ready":
+        if status.readiness.state != "ready":
             raise RuntimeError(f"Archive object is not readable yet: {object.object_path}")
         content = self._adapter.iter_object(
             ObjectReadRequest(
@@ -473,7 +477,7 @@ class StorageAdapterArchiveStore:
             SmallObjectWriteRequest(
                 object_path=object_path,
                 content_type=content_type,
-                identity_metadata=identity,
+                required_identity_assertions=identity,
                 placement="immediate",
                 mode=mode,
                 stored_bytes=len(content),
@@ -508,12 +512,12 @@ class StorageAdapterArchiveStore:
                     object_id=object_id,
                     kind=object_id,
                     plaintext_bytes=int(
-                        existing.identity_metadata.get(
+                        existing.required_identity_assertions.get(
                             _PLAINTEXT_BYTES_METADATA,
                             existing.stored_bytes,
                         )
                     ),
-                    plaintext_sha256=existing.identity_metadata.get(
+                    plaintext_sha256=existing.required_identity_assertions.get(
                         _PLAINTEXT_SHA256_METADATA,
                         _required_stored_sha256(existing, object_path=object_path),
                     ),
@@ -622,9 +626,7 @@ class StorageAdapterArchiveStore:
             plaintext_bytes=plaintext_bytes,
             stored_bytes=metadata.stored_bytes,
             sha256=plaintext_sha256,
-            stored_sha256=(
-                metadata.stored_sha256 or metadata.identity_metadata.get("riverhog-stored-sha256")
-            ),
+            stored_sha256=(metadata.stored_sha256),
             revision=metadata.revision,
             uploaded_at=metadata.completed_at,
             verified_at=utc_timestamp_now() if verified else None,
@@ -671,15 +673,19 @@ def _verify_metadata(
     if expected.sha256 is not None:
         required[_PLAINTEXT_SHA256_METADATA] = expected.sha256
     if not _metadata_contains(actual, required):
-        raise RuntimeError("archive object identity metadata differs from its durable identity")
+        raise RuntimeError(
+            "archive object required identity assertions differs from its durable identity"
+        )
 
 
 def _metadata_contains(receipt: ObjectMetadataReceipt, expected: dict[str, str]) -> bool:
-    return all(receipt.identity_metadata.get(key) == value for key, value in expected.items())
+    return all(
+        receipt.required_identity_assertions.get(key) == value for key, value in expected.items()
+    )
 
 
 def _required_stored_sha256(receipt: ObjectMetadataReceipt, *, object_path: str) -> str:
-    value = receipt.stored_sha256 or receipt.identity_metadata.get("riverhog-stored-sha256")
+    value = receipt.stored_sha256
     if (
         value is None
         or len(value) != 64

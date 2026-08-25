@@ -4,7 +4,7 @@ operations:
   result_kind: collection
   intent_schema:
     id: stove0.media.audio-archive-intent/v1
-    sha256: 7f49832949e43b0f22ca57b9cd334178dd1f688bcd3bc0ca61b0eb00087ca068
+    sha256: ca8f0aa963958b27701a2b5a59429d23e242d2315c6d5361a9177c5a69d52456
     document:
       $defs:
         MediaFieldPreference:
@@ -13,7 +13,6 @@ operations:
             name:
               enum:
               - capture-time
-              - container-format
               - creator
               - device-make
               - device-model
@@ -139,12 +138,12 @@ operations:
     derived_from_roles:
     - stove0.media.xmp-source/v1
   source_retirement_permitted: false
-  contract_sha256: 7f778baa583e426e985ea4806bd447cf8b029bcb6b78e528a039a59426a8e0e1
+  contract_sha256: 9809e2591b4c73f8e792def9dc5b23339045231bd5177034dc7324fd2b89f818
 - id: stove0.media.av1-opus-archive/v1
   result_kind: collection
   intent_schema:
     id: stove0.media.av1-opus-archive-intent/v1
-    sha256: 0c50c1d7bbef98370fd940fc9d5b8a8930e18dec0080c263540368a5ecb807a3
+    sha256: 3f8fff646a6b9081f6724972b146e71d8f20995d9a96c6da30e53b9bcb18094e
     document:
       $defs:
         MediaFieldPreference:
@@ -153,7 +152,6 @@ operations:
             name:
               enum:
               - capture-time
-              - container-format
               - creator
               - device-make
               - device-model
@@ -301,76 +299,103 @@ operations:
     - stove0.media.source/v1
     - stove0.media.xmp-source/v1
   source_retirement_permitted: true
-  contract_sha256: a455d6a2525da3a3355758b9307fa31c2fdda664d515f1635b6bdf9dc9c3ec31
+  contract_sha256: d4596612f4f55652ec5fc75dbd30333ac092cff6b204e6639cefdea6cd8ff769
 - id: stove0.review.materialize/v1
   result_kind: collection
   intent_schema:
     id: stove0.review.materialize-intent/v1
-    sha256: f38621476c23845144af1222566aafa8031d6487e082860c66f7b559be17aeed
+    sha256: 4f40aec33b76e3333c7c3860975aebee92e0f66bf1eb7310b9f734a9b497b706
     document:
-      $schema: https://json-schema.org/draft/2020-12/schema
-      type: object
-      required:
-      - sample_plan
-      - variant
-      properties:
-        sample_plan:
-          type: object
+      $defs:
+        JsonValue: {}
+        ReviewSamplePlan:
+          additionalProperties: false
+          properties:
+            format:
+              const: stove0-review-sample-plan/v1
+              default: stove0-review-sample-plan/v1
+              title: Format
+              type: string
+            selection_method:
+              const: evenly-spaced/v1
+              default: evenly-spaced/v1
+              title: Selection Method
+              type: string
+            samples_per_artifact:
+              minimum: 1
+              title: Samples Per Artifact
+              type: integer
+            window_duration_ms:
+              minimum: 1
+              title: Window Duration Ms
+              type: integer
+            windows:
+              items:
+                $ref: '#/$defs/ReviewSampleWindow'
+              minItems: 1
+              title: Windows
+              type: array
+            sample_plan_sha256:
+              pattern: ^[0-9a-f]{64}$
+              title: Sample Plan Sha256
+              type: string
           required:
-          - format
-          - selection_method
           - samples_per_artifact
           - window_duration_ms
           - windows
           - sample_plan_sha256
-          properties:
-            format:
-              const: stove0-review-sample-plan/v1
-            selection_method:
-              const: evenly-spaced/v1
-            samples_per_artifact:
-              type: integer
-              minimum: 1
-            window_duration_ms:
-              type: integer
-              minimum: 1
-            windows:
-              type: array
-              minItems: 1
-              items:
-                type: object
-                required:
-                - artifact_id
-                - start_ms
-                - duration_ms
-                properties:
-                  artifact_id:
-                    type: string
-                    minLength: 1
-                  start_ms:
-                    type: integer
-                    minimum: 0
-                  duration_ms:
-                    type: integer
-                    minimum: 1
-                additionalProperties: false
-            sample_plan_sha256:
-              type: string
-              pattern: ^[0-9a-f]{64}$
-          additionalProperties: false
-        variant:
+          title: ReviewSamplePlan
           type: object
+        ReviewSampleWindow:
+          additionalProperties: false
+          properties:
+            artifact_id:
+              maxLength: 160
+              minLength: 1
+              title: Artifact Id
+              type: string
+            start_ms:
+              minimum: 0
+              title: Start Ms
+              type: integer
+            duration_ms:
+              minimum: 1
+              title: Duration Ms
+              type: integer
+          required:
+          - artifact_id
+          - start_ms
+          - duration_ms
+          title: ReviewSampleWindow
+          type: object
+        ReviewVariantIntent:
+          additionalProperties: false
+          properties:
+            id:
+              pattern: ^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$
+              title: Id
+              type: string
+            portable_intent:
+              additionalProperties:
+                $ref: '#/$defs/JsonValue'
+              title: Portable Intent
+              type: object
           required:
           - id
           - portable_intent
-          properties:
-            id:
-              type: string
-              pattern: ^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$
-            portable_intent:
-              type: object
-          additionalProperties: false
+          title: ReviewVariantIntent
+          type: object
       additionalProperties: false
+      properties:
+        sample_plan:
+          $ref: '#/$defs/ReviewSamplePlan'
+        variant:
+          $ref: '#/$defs/ReviewVariantIntent'
+      required:
+      - sample_plan
+      - variant
+      title: ReviewMaterializeIntent
+      type: object
   inputs:
   - role: stove0.review.source/v1
     minimum: 1
@@ -392,76 +417,103 @@ operations:
     derived_from_roles:
     - stove0.review.source/v1
   source_retirement_permitted: false
-  contract_sha256: bebe78213213ede359338aa1b4eadde2c66646a53250e443d395cddb8cdd991c
+  contract_sha256: ff0157d80d1bf97e73c983ae6edb64da86570305f41ade031fda4671e0dd2532
 - id: stove0.review.rclone-deliver/v1
   result_kind: external-effect
   intent_schema:
     id: stove0.review.materialize-intent/v1
-    sha256: f38621476c23845144af1222566aafa8031d6487e082860c66f7b559be17aeed
+    sha256: 4f40aec33b76e3333c7c3860975aebee92e0f66bf1eb7310b9f734a9b497b706
     document:
-      $schema: https://json-schema.org/draft/2020-12/schema
-      type: object
-      required:
-      - sample_plan
-      - variant
-      properties:
-        sample_plan:
-          type: object
+      $defs:
+        JsonValue: {}
+        ReviewSamplePlan:
+          additionalProperties: false
+          properties:
+            format:
+              const: stove0-review-sample-plan/v1
+              default: stove0-review-sample-plan/v1
+              title: Format
+              type: string
+            selection_method:
+              const: evenly-spaced/v1
+              default: evenly-spaced/v1
+              title: Selection Method
+              type: string
+            samples_per_artifact:
+              minimum: 1
+              title: Samples Per Artifact
+              type: integer
+            window_duration_ms:
+              minimum: 1
+              title: Window Duration Ms
+              type: integer
+            windows:
+              items:
+                $ref: '#/$defs/ReviewSampleWindow'
+              minItems: 1
+              title: Windows
+              type: array
+            sample_plan_sha256:
+              pattern: ^[0-9a-f]{64}$
+              title: Sample Plan Sha256
+              type: string
           required:
-          - format
-          - selection_method
           - samples_per_artifact
           - window_duration_ms
           - windows
           - sample_plan_sha256
-          properties:
-            format:
-              const: stove0-review-sample-plan/v1
-            selection_method:
-              const: evenly-spaced/v1
-            samples_per_artifact:
-              type: integer
-              minimum: 1
-            window_duration_ms:
-              type: integer
-              minimum: 1
-            windows:
-              type: array
-              minItems: 1
-              items:
-                type: object
-                required:
-                - artifact_id
-                - start_ms
-                - duration_ms
-                properties:
-                  artifact_id:
-                    type: string
-                    minLength: 1
-                  start_ms:
-                    type: integer
-                    minimum: 0
-                  duration_ms:
-                    type: integer
-                    minimum: 1
-                additionalProperties: false
-            sample_plan_sha256:
-              type: string
-              pattern: ^[0-9a-f]{64}$
-          additionalProperties: false
-        variant:
+          title: ReviewSamplePlan
           type: object
+        ReviewSampleWindow:
+          additionalProperties: false
+          properties:
+            artifact_id:
+              maxLength: 160
+              minLength: 1
+              title: Artifact Id
+              type: string
+            start_ms:
+              minimum: 0
+              title: Start Ms
+              type: integer
+            duration_ms:
+              minimum: 1
+              title: Duration Ms
+              type: integer
+          required:
+          - artifact_id
+          - start_ms
+          - duration_ms
+          title: ReviewSampleWindow
+          type: object
+        ReviewVariantIntent:
+          additionalProperties: false
+          properties:
+            id:
+              pattern: ^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$
+              title: Id
+              type: string
+            portable_intent:
+              additionalProperties:
+                $ref: '#/$defs/JsonValue'
+              title: Portable Intent
+              type: object
           required:
           - id
           - portable_intent
-          properties:
-            id:
-              type: string
-              pattern: ^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$
-            portable_intent:
-              type: object
-          additionalProperties: false
+          title: ReviewVariantIntent
+          type: object
       additionalProperties: false
+      properties:
+        sample_plan:
+          $ref: '#/$defs/ReviewSamplePlan'
+        variant:
+          $ref: '#/$defs/ReviewVariantIntent'
+      required:
+      - sample_plan
+      - variant
+      title: ReviewMaterializeIntent
+      type: object
   inputs:
   - role: stove0.review.source/v1
     minimum: 1
@@ -499,7 +551,7 @@ operations:
           minimum: 0
       additionalProperties: false
   source_retirement_permitted: false
-  contract_sha256: 7ff2c8c93f9ea1c06019a987de31242b1c72b5108ba646cf1a829b1b678a9f71
+  contract_sha256: df33cea0d93fd8ecfff758bfeb952cb923997acbb03fec5f89908067abd35cf7
 recipes:
 - id: stove0.audio-archive/v1
   revision: 1
@@ -512,7 +564,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: 527ff1ef0a62e8705d29dca2d35574659d983b67e5fb5a353992ee81745f5c1c
+    contract_sha256: c58f17cb8503ad730684d7fb00c374d5bbe1a346e44befb02bf5fa496c3e958e
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1
@@ -560,7 +612,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: 527ff1ef0a62e8705d29dca2d35574659d983b67e5fb5a353992ee81745f5c1c
+    contract_sha256: c58f17cb8503ad730684d7fb00c374d5bbe1a346e44befb02bf5fa496c3e958e
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1
@@ -813,7 +865,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: 527ff1ef0a62e8705d29dca2d35574659d983b67e5fb5a353992ee81745f5c1c
+    contract_sha256: c58f17cb8503ad730684d7fb00c374d5bbe1a346e44befb02bf5fa496c3e958e
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1

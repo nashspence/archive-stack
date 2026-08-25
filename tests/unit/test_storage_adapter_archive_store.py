@@ -24,11 +24,14 @@ from riverhog_storage_adapter_protocol import (
     ObjectMetadataReceipt,
     ObjectReadRequest,
     ReadPreparationRequest,
+    ReadReady,
+    ReadRequested,
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterRejection,
     WriteCompleteRequest,
     WriteSegmentReceipt,
+    WriteSegmentSet,
     WriteSession,
     WriteStartRequest,
 )
@@ -68,14 +71,14 @@ class _MemoryAdapter:
         content: bytes,
     ) -> ImmutableObjectReceipt:
         existing = self.objects.get(request.object_path)
-        if existing is not None and existing.identity == request.identity_metadata:
+        if existing is not None and existing.identity == request.required_identity_assertions:
             return self._immutable(request.object_path, existing)
         if existing is not None and request.mode == "create_only":
             raise StorageAdapterRejection("identity_conflict", "different identity")
         revision = f"revision-{len(self.objects) + 1}"
         stored = _Stored(
             content=content,
-            identity=dict(request.identity_metadata),
+            identity=dict(request.required_identity_assertions),
             placement=request.placement,
             revision=revision,
         )
@@ -96,7 +99,7 @@ class _MemoryAdapter:
             content_type="application/octet-stream",
             stored_bytes=len(stored.content),
             stored_sha256=hashlib.sha256(stored.content).hexdigest(),
-            identity_metadata=stored.identity,
+            required_identity_assertions=stored.identity,
             completed_at=stored.completed_at,
         )
 
@@ -111,11 +114,12 @@ class _MemoryAdapter:
 
     def prepare_read(self, request: ReadPreparationRequest) -> ReadStatus:
         self.preparations.append(request)
-        return ReadStatus(state="requested" if self.read_mode == "restore_required" else "ready")
+        readiness = ReadRequested() if self.read_mode == "restore_required" else ReadReady()
+        return ReadStatus(objects=request.objects, readiness=readiness)
 
     def read_status(self, request: ReadPreparationRequest) -> ReadStatus:
         self.preparations.append(request)
-        return ReadStatus(state="ready")
+        return ReadStatus(objects=request.objects, readiness=ReadReady())
 
     def cleanup_read(self, request: ReadPreparationRequest) -> None:
         self.preparations.append(request)
@@ -146,7 +150,7 @@ class _MemoryAdapter:
     ) -> WriteSegmentReceipt:
         raise NotImplementedError(upload, number, content)
 
-    def list_segments(self, upload: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
+    def list_segments(self, upload: WriteSession) -> WriteSegmentSet:
         raise NotImplementedError(upload)
 
     def complete_write(

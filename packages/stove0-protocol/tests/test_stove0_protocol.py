@@ -49,7 +49,6 @@ from stove0_protocol.models import (
     ObserverDescriptorPayload,
     ObserverImplementation,
     ObserverRuntimeAuthority,
-    validate_observation_result,
 )
 
 
@@ -191,7 +190,6 @@ def test_observer_contract_descriptor_and_result_are_self_verifying() -> None:
     request = _request(work, contract, descriptor)
     result = _result(request, contract, descriptor)
 
-    validate_observation_result(result, request, descriptor)
     assert result.result_sha256 == canonical_json_sha256(
         result.model_dump(
             mode="json",

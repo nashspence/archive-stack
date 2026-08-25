@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from botocore.exceptions import ClientError, ConnectionClosedError
+from botocore.exceptions import ClientError
 from riverhog_storage_adapter_protocol import (
     AbortIncompleteWritesRequest,
     CompletedWriteLookupRequest,
@@ -18,16 +18,20 @@ from riverhog_storage_adapter_protocol import (
     ObjectLocator,
     ObjectReadRequest,
     ReadPreparationRequest,
-    ReadStatus,
+    ReadReadiness,
+    ReadReady,
+    ReadRequested,
     SmallObjectWriteRequest,
     StorageAdapterRejection,
     WriteCompleteRequest,
     WriteStartRequest,
 )
 from riverhog_storage_adapter_s3_support import (
+    S3ClientConfig,
     S3StorageAdapter,
     S3StorageAdapterConfig,
     S3TransportTuning,
+    create_s3_client,
 )
 
 
@@ -48,6 +52,18 @@ class _Body(BytesIO):
     def iter_chunks(self, *, chunk_size: int) -> Any:
         while chunk := self.read(chunk_size):
             yield chunk
+
+
+def _read_request_body(body: object) -> bytes:
+    if isinstance(body, bytes):
+        return body
+    read = getattr(body, "read", None)
+    if not callable(read):
+        raise TypeError("request body is not readable")
+    chunks: list[bytes] = []
+    while chunk := read(64 * 1024):
+        chunks.append(bytes(chunk))
+    return b"".join(chunks)
 
 
 class _Paginator:
@@ -82,22 +98,12 @@ class _Paginator:
 
 
 class _FakeS3Client:
-    def __init__(
-        self,
-        *,
-        conditional_put_supported: bool = True,
-        conditional_put_closes: bool = False,
-        commit_before_close: bool = False,
-    ) -> None:
+    def __init__(self) -> None:
         self.current: dict[str, str] = {}
         self.versions: dict[tuple[str, str], dict[str, Any]] = {}
         self.uploads: dict[str, dict[str, Any]] = {}
         self.next_upload = 1
         self.next_version = 1
-        self.conditional_put_supported = conditional_put_supported
-        self.conditional_put_closes = conditional_put_closes
-        self.commit_before_close = commit_before_close
-        self.put_attempts = 0
         self.get_attempts = 0
         self.deleted: list[dict[str, object]] = []
 
@@ -132,7 +138,9 @@ class _FakeS3Client:
     def upload_part(self, **request: Any) -> dict[str, str]:
         upload = self.uploads[str(request["UploadId"])]
         number = int(request["PartNumber"])
-        upload["parts"][number] = bytes(request["Body"])
+        content = _read_request_body(request["Body"])
+        assert len(content) == int(request["ContentLength"])
+        upload["parts"][number] = content
         return {"ETag": f'"part-{number}"'}
 
     def list_parts(self, **request: Any) -> dict[str, object]:
@@ -147,9 +155,7 @@ class _FakeS3Client:
 
     def complete_multipart_upload(self, **request: Any) -> dict[str, str]:
         key = str(request["Key"])
-        if request.get("IfNoneMatch") != "*":
-            raise AssertionError("multipart completion must remain create-only")
-        if key in self.current:
+        if request.get("IfNoneMatch") == "*" and key in self.current:
             raise _client_error("PreconditionFailed", 412, "CompleteWriteSession")
         upload_id = str(request["UploadId"])
         if upload_id not in self.uploads:
@@ -175,20 +181,6 @@ class _FakeS3Client:
                 if str(upload["request"]["Key"]).startswith(prefix)
             ],
         }
-
-    def put_object(self, **request: Any) -> dict[str, str]:
-        self.put_attempts += 1
-        key = str(request["Key"])
-        if request.get("IfNoneMatch") == "*":
-            if self.conditional_put_closes:
-                if self.commit_before_close:
-                    self._store(request, bytes(request["Body"]))
-                raise ConnectionClosedError(endpoint_url="https://object-store.invalid")
-            if not self.conditional_put_supported:
-                raise _client_error("NotImplemented", 501, "PutObject")
-            if key in self.current:
-                raise _client_error("PreconditionFailed", 412, "PutObject")
-        return self._store(request, bytes(request["Body"]))
 
     def head_object(self, **request: Any) -> dict[str, object]:
         key = str(request["Key"])
@@ -262,7 +254,7 @@ def _small_request(
     return SmallObjectWriteRequest(
         object_path="archives/collection/manifest.age",
         content_type="application/octet-stream",
-        identity_metadata={"riverhog-logical-identity": identity},
+        required_identity_assertions={"riverhog-logical-identity": identity},
         placement="immediate",
         mode="create_only",
         stored_bytes=len(content),
@@ -270,14 +262,13 @@ def _small_request(
     )
 
 
-def test_small_object_retry_uses_logical_identity_without_rereading_ciphertext() -> None:
+def test_small_object_retry_uses_exact_identity_without_rereading_ciphertext() -> None:
     client = _FakeS3Client()
     adapter = S3StorageAdapter(client, _config())
     first_content = b"first randomized ciphertext"
-    second_content = b"different randomized ciphertext"
 
     first = adapter.put_small_object(_small_request(first_content), first_content)
-    second = adapter.put_small_object(_small_request(second_content), second_content)
+    second = adapter.put_small_object(_small_request(first_content), first_content)
 
     assert second == first
     assert client.get_attempts == 0
@@ -300,26 +291,21 @@ def test_small_object_rejects_a_changed_logical_identity() -> None:
     assert raised.value.code == "identity_conflict"
 
 
-@pytest.mark.parametrize(
-    ("supported", "closes", "commits"),
-    [(False, False, False), (True, True, False), (True, True, True)],
-)
-def test_small_object_preserves_conditional_multipart_fallback(
-    supported: bool,
-    closes: bool,
-    commits: bool,
-) -> None:
-    client = _FakeS3Client(
-        conditional_put_supported=supported,
-        conditional_put_closes=closes,
-        commit_before_close=commits,
-    )
+def test_small_object_streams_once_before_atomic_conditional_publication() -> None:
+    client = _FakeS3Client()
     adapter = S3StorageAdapter(client, _config())
+    consumed: list[bytes] = []
 
-    receipt = adapter.put_small_object(_small_request(b"ciphertext"), b"ciphertext")
+    def content() -> Any:
+        for chunk in (b"cipher", b"text"):
+            consumed.append(chunk)
+            yield chunk
+
+    receipt = adapter.put_small_object(_small_request(b"ciphertext"), content())
 
     assert receipt.stored_bytes == 10
-    assert client.put_attempts == 1
+    assert consumed == [b"cipher", b"text"]
+    assert client.get_attempts == 0
     assert not client.uploads
 
 
@@ -329,21 +315,31 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
     create = WriteStartRequest(
         object_path="archives/collection/volume.age",
         content_type="application/octet-stream",
-        identity_metadata={"riverhog-plan-sha256": "a" * 64},
+        required_identity_assertions={"riverhog-plan-sha256": "a" * 64},
         placement="archive",
     )
     session = adapter.begin_write(create)
     first_content = b"f" * adapter.descriptor().minimum_nonfinal_segment_bytes
     segments = (
-        adapter.write_segment(session=session, number=1, content=first_content),
-        adapter.write_segment(session=session, number=2, content=b"second"),
+        adapter.write_segment(
+            session=session,
+            number=1,
+            stored_bytes=len(first_content),
+            content=first_content,
+        ),
+        adapter.write_segment(
+            session=session,
+            number=2,
+            stored_bytes=6,
+            content=b"second",
+        ),
     )
-    assert adapter.list_segments(session) == segments
+    assert adapter.list_segments(session).segments == segments
     completion = WriteCompleteRequest(
         session=session,
         segments=segments,
         expected_bytes=len(first_content) + 6,
-        expected_identity_metadata=create.identity_metadata,
+        required_identity_assertions=create.required_identity_assertions,
         expected_placement=create.placement,
     )
 
@@ -356,7 +352,7 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
         adapter.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=first.object_path,
-                expected_identity_metadata=create.identity_metadata,
+                required_identity_assertions=create.required_identity_assertions,
                 expected_placement=create.placement,
             )
         )
@@ -364,6 +360,10 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
     )
     head = client.versions[("owned/archives/collection/volume.age", first.revision or "")]
     assert head["StorageClass"] == "DEEP_ARCHIVE"
+    assert head["Metadata"] == {
+        "riverhog-adapter-placement": "archive",
+        "riverhog-plan-sha256": "a" * 64,
+    }
 
 
 def test_full_and_exact_range_reads_preserve_version_and_length() -> None:
@@ -414,7 +414,7 @@ def test_metadata_head_hides_adapter_markers_but_keeps_opaque_identity() -> None
     )
 
     assert head is not None
-    assert head.identity_metadata == {"riverhog-logical-identity": "logical/v1"}
+    assert head.required_identity_assertions == {"riverhog-logical-identity": "logical/v1"}
     assert head.stored_sha256 == hashlib.sha256(content).hexdigest()
 
 
@@ -453,13 +453,13 @@ def test_read_preparation_mechanics_remain_adapter_private() -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[str, tuple[tuple[str, str | None], ...]]] = []
 
-        def prepare(self, **kwargs: Any) -> ReadStatus:
+        def prepare(self, **kwargs: Any) -> ReadReadiness:
             self.calls.append(("prepare", kwargs["objects"]))
-            return ReadStatus(state="requested", ready_at="2026-01-03T00:00:00Z")
+            return ReadRequested(estimated_ready_at="2026-01-03T00:00:00Z")
 
-        def status(self, **kwargs: Any) -> ReadStatus:
+        def status(self, **kwargs: Any) -> ReadReadiness:
             self.calls.append(("status", kwargs["objects"]))
-            return ReadStatus(state="ready", expires_at="2026-01-04T00:00:00Z")
+            return ReadReady(available_until="2026-01-04T00:00:00Z")
 
         def cleanup(self, **kwargs: Any) -> None:
             self.calls.append(("cleanup", kwargs["objects"]))
@@ -474,8 +474,8 @@ def test_read_preparation_mechanics_remain_adapter_private() -> None:
         objects=(ObjectLocator(object_path="archives/collection/volume.age", revision="v1"),)
     )
 
-    assert adapter.prepare_read(request).state == "requested"
-    assert adapter.read_status(request).state == "ready"
+    assert adapter.prepare_read(request).readiness.state == "requested"
+    assert adapter.read_status(request).readiness.state == "ready"
     adapter.cleanup_read(request)
 
     assert preparation.calls == [
@@ -496,7 +496,7 @@ def test_incomplete_upload_cleanup_is_prefix_and_cutoff_scoped() -> None:
         WriteStartRequest(
             object_path="archives/collection/volume.age",
             content_type="application/octet-stream",
-            identity_metadata={"riverhog-plan-sha256": "a" * 64},
+            required_identity_assertions={"riverhog-plan-sha256": "a" * 64},
             placement="archive",
         )
     )
@@ -527,3 +527,17 @@ def test_s3_transport_and_source_boundary_are_adapter_owned() -> None:
                 imported.add(node.module)
     assert all(not name.startswith("riverhog_core") for name in imported)
     assert all(not name.startswith("riverhog_storage_adapter_support") for name in imported)
+
+
+def test_s3_client_preserves_one_pass_request_bodies() -> None:
+    client = create_s3_client(
+        S3ClientConfig(
+            endpoint_url="https://s3.example.test",
+            region="example-1",
+            access_key_id="example-access-key",
+            secret_access_key="example-secret-key",
+        )
+    )
+
+    assert client.meta.config.request_checksum_calculation == "when_required"
+    assert client.meta.config.s3["payload_signing_enabled"] is False

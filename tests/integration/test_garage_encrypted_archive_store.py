@@ -186,7 +186,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
             object_path=f"{archive_prefix}/manifest.json.age",
             content=manifest_content,
             content_type="application/vnd.riverhog.collection-manifest+age",
-            identity_metadata={
+            required_identity_assertions={
                 "riverhog-format": ROOT_MANIFEST_STORAGE_FORMAT,
                 "riverhog-plaintext-bytes": str(len(manifest_plaintext)),
                 "riverhog-plaintext-sha256": archive_root_sha256,
@@ -196,9 +196,9 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
         assert (
             immutable.put_immutable_object(
                 object_path=root.object_path,
-                content=b"randomized retry ciphertext",
+                content=manifest_content,
                 content_type="application/vnd.riverhog.collection-manifest+age",
-                identity_metadata={
+                required_identity_assertions={
                     "riverhog-format": ROOT_MANIFEST_STORAGE_FORMAT,
                     "riverhog-plaintext-bytes": str(len(manifest_plaintext)),
                     "riverhog-plaintext-sha256": archive_root_sha256,

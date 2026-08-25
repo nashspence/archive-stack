@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import httpx
 from http_api_contracts import safe_http_base_url
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, ValidationError
 from riverhog_storage_adapter_protocol import (
     AbortIncompleteWritesRequest,
     AdapterDescriptor,
+    BinaryContent,
     CompletedObjectReceipt,
     CompletedWriteLookupRequest,
     DeleteObjectRequest,
@@ -30,14 +31,25 @@ from riverhog_storage_adapter_protocol import (
     WriteCompleteRequest,
     WriteSegmentReceipt,
     WriteSegmentRequest,
+    WriteSegmentSet,
     WriteSession,
     WriteStartRequest,
+    validate_completed_write_response,
+    validate_object_metadata_response,
+    validate_read_status_response,
+    validate_small_object_response,
+    validate_write_segment_response,
+    validate_write_segment_set_response,
+    validate_write_session_response,
 )
 
-from riverhog_storage_adapter_support.framing import framed_request, framed_request_length
+from riverhog_storage_adapter_support.framing import (
+    FRAMED_REQUEST_MEDIA_TYPE,
+    framed_request,
+    framed_request_length,
+)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
-_SEGMENTS = TypeAdapter(tuple[WriteSegmentReceipt, ...])
 
 
 class StorageAdapterProtocolError(StorageAdapterRejection):
@@ -122,57 +134,67 @@ class StorageAdapterClient:
         self._require_success(self._request("GET", "/health/ready"))
 
     def begin_write(self, request: WriteStartRequest) -> WriteSession:
-        return self._model("POST", "/v1/writes/begin", WriteSession, request)
+        response = self._model("POST", "/v1/writes/begin", WriteSession, request)
+        self._validate(validate_write_session_response, request, response)
+        return response
 
     def write_segment(
         self,
         *,
         session: WriteSession,
         number: int,
-        content: bytes,
+        stored_bytes: int,
+        content: BinaryContent,
     ) -> WriteSegmentReceipt:
         request = WriteSegmentRequest(
             session=session,
             number=number,
-            stored_bytes=len(content),
+            stored_bytes=stored_bytes,
         )
-        return self._model(
+        response = self._model(
             "POST",
             "/v1/writes/segment",
             WriteSegmentReceipt,
             content=framed_request(request, content),
-            headers={"Content-Length": str(framed_request_length(request, content))},
+            headers={
+                "Content-Length": str(framed_request_length(request)),
+                "Content-Type": FRAMED_REQUEST_MEDIA_TYPE,
+            },
         )
+        self._validate(validate_write_segment_response, request, response)
+        return response
 
-    def list_segments(self, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
-        response = self._request("POST", "/v1/writes/segments", payload=session)
-        self._require_success(response)
-        try:
-            return _SEGMENTS.validate_json(response.content)
-        except ValidationError as exc:
-            raise StorageAdapterProtocolError("adapter returned invalid write segments") from exc
+    def list_segments(self, session: WriteSession) -> WriteSegmentSet:
+        response = self._model("POST", "/v1/writes/segments", WriteSegmentSet, session)
+        self._validate(validate_write_segment_set_response, session, response)
+        return response
 
     def complete_write(
         self,
         request: WriteCompleteRequest,
     ) -> CompletedObjectReceipt:
-        return self._model(
+        response = self._model(
             "POST",
             "/v1/writes/complete",
             CompletedObjectReceipt,
             request,
         )
+        self._validate(validate_completed_write_response, request, response)
+        return response
 
     def find_completed_write(
         self,
         request: CompletedWriteLookupRequest,
     ) -> CompletedObjectReceipt | None:
-        return self._optional_model(
+        response = self._optional_model(
             "POST",
             "/v1/writes/completed",
             CompletedObjectReceipt,
             request,
         )
+        if response is not None:
+            self._validate(validate_completed_write_response, request, response)
+        return response
 
     def abort_write(self, session: WriteSession) -> None:
         self._empty("POST", "/v1/writes/abort", session)
@@ -180,23 +202,31 @@ class StorageAdapterClient:
     def put_small_object(
         self,
         request: SmallObjectWriteRequest,
-        content: bytes,
+        content: BinaryContent,
     ) -> ImmutableObjectReceipt:
-        return self._model(
+        response = self._model(
             "POST",
             "/v1/objects/put",
             ImmutableObjectReceipt,
             content=framed_request(request, content),
-            headers={"Content-Length": str(framed_request_length(request, content))},
+            headers={
+                "Content-Length": str(framed_request_length(request)),
+                "Content-Type": FRAMED_REQUEST_MEDIA_TYPE,
+            },
         )
+        self._validate(validate_small_object_response, request, response)
+        return response
 
     def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None:
-        return self._optional_model(
+        response = self._optional_model(
             "POST",
             "/v1/objects/head",
             ObjectMetadataReceipt,
             request,
         )
+        if response is not None:
+            self._validate(validate_object_metadata_response, request, response)
+        return response
 
     def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
         if request.size == 0:
@@ -255,10 +285,14 @@ class StorageAdapterClient:
         ).affected
 
     def prepare_read(self, request: ReadPreparationRequest) -> ReadStatus:
-        return self._model("POST", "/v1/reads/prepare", ReadStatus, request)
+        response = self._model("POST", "/v1/reads/prepare", ReadStatus, request)
+        self._validate(validate_read_status_response, request, response)
+        return response
 
     def read_status(self, request: ReadPreparationRequest) -> ReadStatus:
-        return self._model("POST", "/v1/reads/status", ReadStatus, request)
+        response = self._model("POST", "/v1/reads/status", ReadStatus, request)
+        self._validate(validate_read_status_response, request, response)
+        return response
 
     def cleanup_read(self, request: ReadPreparationRequest) -> None:
         self._empty("POST", "/v1/reads/cleanup", request)
@@ -318,6 +352,19 @@ class StorageAdapterClient:
         response = self._request(method, path, payload=payload)
         if response.status_code != 204:
             self._raise_response(response)
+
+    @staticmethod
+    def _validate(
+        validator: Callable[[Any, Any], None],
+        request: object,
+        response: object,
+    ) -> None:
+        try:
+            validator(request, response)
+        except ValueError as exc:
+            raise StorageAdapterProtocolError(
+                "adapter returned a response inconsistent with its request"
+            ) from exc
 
     def _request(
         self,

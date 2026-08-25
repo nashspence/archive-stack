@@ -8,7 +8,7 @@ configuration model.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Annotated, Literal, Protocol, Self
 
 from pydantic import (
@@ -21,22 +21,23 @@ from pydantic import (
 )
 
 STORAGE_ADAPTER_PROTOCOL: Literal["riverhog-storage-adapter/v1"] = "riverhog-storage-adapter/v1"
+ADAPTER_PRIVATE_ASSERTION_PREFIX = "riverhog-adapter-"
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _SEMANTIC_ID_PATTERN = r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$"
 _METADATA_KEY_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$")
-_MAX_IDENTITY_METADATA_ITEMS = 64
-_MAX_IDENTITY_METADATA_BYTES = 16 * 1024
+_MAX_IDENTITY_ASSERTIONS_ITEMS = 64
+_MAX_IDENTITY_ASSERTIONS_BYTES = 16 * 1024
 
 Sha256 = Annotated[str, StringConstraints(pattern=_SHA256_PATTERN)]
 SemanticId = Annotated[str, StringConstraints(pattern=_SEMANTIC_ID_PATTERN)]
 ObjectPlacement = Literal["archive", "immediate"]
 ReadMode = Literal["immediate", "restore_required"]
-ReadState = Literal["ready", "requested", "expired"]
 StorageAdapterErrorCode = Literal[
     "unauthorized",
     "invalid_request",
     "not_found",
     "method_not_allowed",
+    "length_required",
     "request_too_large",
     "identity_conflict",
     "invalid_path",
@@ -47,7 +48,16 @@ StorageAdapterErrorCode = Literal[
     "provider_unavailable",
     "internal_failure",
 ]
-OpaqueIdentityMetadata = dict[str, str]
+RequiredIdentityAssertions = Annotated[
+    dict[str, str],
+    Field(
+        description=(
+            "Public identity assertions that an existing object must contain during "
+            "reconciliation; adapters may retain additional adapter-private assertions."
+        )
+    ),
+]
+BinaryContent = bytes | Iterable[bytes]
 
 
 def normalize_object_path(value: str, *, allow_prefix: bool = False) -> str:
@@ -70,24 +80,26 @@ def normalize_object_path(value: str, *, allow_prefix: bool = False) -> str:
     return value
 
 
-def _canonical_metadata(value: dict[str, str]) -> dict[str, str]:
-    if len(value) > _MAX_IDENTITY_METADATA_ITEMS:
-        raise ValueError("identity metadata has too many entries")
+def _canonical_identity_assertions(value: dict[str, str]) -> dict[str, str]:
+    if len(value) > _MAX_IDENTITY_ASSERTIONS_ITEMS:
+        raise ValueError("required identity assertions have too many entries")
     normalized: dict[str, str] = {}
     for raw_key, raw_value in value.items():
         key = str(raw_key).casefold()
         item = str(raw_value)
         if _METADATA_KEY_PATTERN.fullmatch(key) is None:
-            raise ValueError("identity metadata contains an invalid key")
+            raise ValueError("required identity assertions contain an invalid key")
+        if key.startswith(ADAPTER_PRIVATE_ASSERTION_PREFIX):
+            raise ValueError("required identity assertions use the adapter-private namespace")
         if not item or "\x00" in item:
-            raise ValueError("identity metadata values must be nonempty and NUL-free")
+            raise ValueError("required identity assertion values must be nonempty and NUL-free")
         if key in normalized:
-            raise ValueError("identity metadata keys collide after case folding")
+            raise ValueError("required identity assertion keys collide after case folding")
         normalized[key] = item
     if sum(len(key.encode()) + len(item.encode()) for key, item in normalized.items()) > (
-        _MAX_IDENTITY_METADATA_BYTES
+        _MAX_IDENTITY_ASSERTIONS_BYTES
     ):
-        raise ValueError("identity metadata exceeds its encoded-size bound")
+        raise ValueError("required identity assertions exceed their encoded-size bound")
     return dict(sorted(normalized.items()))
 
 
@@ -137,7 +149,7 @@ class WriteSession(StorageAdapterModel):
 class WriteStartRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
     content_type: str = Field(min_length=1, max_length=255)
-    identity_metadata: OpaqueIdentityMetadata
+    required_identity_assertions: RequiredIdentityAssertions
     placement: ObjectPlacement
 
     @field_validator("object_path")
@@ -145,10 +157,10 @@ class WriteStartRequest(StorageAdapterModel):
     def canonical_path(cls, value: str) -> str:
         return normalize_object_path(value)
 
-    @field_validator("identity_metadata")
+    @field_validator("required_identity_assertions")
     @classmethod
     def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
-        return _canonical_metadata(value)
+        return _canonical_identity_assertions(value)
 
 
 class WriteSegmentReceipt(StorageAdapterModel):
@@ -156,6 +168,27 @@ class WriteSegmentReceipt(StorageAdapterModel):
     segment_token: str = Field(min_length=1, max_length=4000)
     stored_bytes: int = Field(ge=1)
     stored_sha256: Sha256 | None = None
+
+
+def _canonical_segments(
+    value: tuple[WriteSegmentReceipt, ...],
+) -> tuple[WriteSegmentReceipt, ...]:
+    if [segment.number for segment in value] != list(range(1, len(value) + 1)):
+        raise ValueError("write segments must be contiguous and ordered from one")
+    return value
+
+
+class WriteSegmentSet(StorageAdapterModel):
+    session: WriteSession
+    segments: tuple[WriteSegmentReceipt, ...] = ()
+
+    @field_validator("segments")
+    @classmethod
+    def canonical_segments(
+        cls,
+        value: tuple[WriteSegmentReceipt, ...],
+    ) -> tuple[WriteSegmentReceipt, ...]:
+        return _canonical_segments(value)
 
 
 class WriteSegmentRequest(StorageAdapterModel):
@@ -168,7 +201,7 @@ class WriteCompleteRequest(StorageAdapterModel):
     session: WriteSession
     segments: tuple[WriteSegmentReceipt, ...] = Field(min_length=1)
     expected_bytes: int = Field(ge=1)
-    expected_identity_metadata: OpaqueIdentityMetadata
+    required_identity_assertions: RequiredIdentityAssertions
     expected_placement: ObjectPlacement
 
     @field_validator("segments")
@@ -177,14 +210,12 @@ class WriteCompleteRequest(StorageAdapterModel):
         cls,
         value: tuple[WriteSegmentReceipt, ...],
     ) -> tuple[WriteSegmentReceipt, ...]:
-        if [segment.number for segment in value] != list(range(1, len(value) + 1)):
-            raise ValueError("write segments must be contiguous and ordered from one")
-        return value
+        return _canonical_segments(value)
 
-    @field_validator("expected_identity_metadata")
+    @field_validator("required_identity_assertions")
     @classmethod
     def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
-        return _canonical_metadata(value)
+        return _canonical_identity_assertions(value)
 
     @model_validator(mode="after")
     def validate_bytes(self) -> Self:
@@ -195,7 +226,7 @@ class WriteCompleteRequest(StorageAdapterModel):
 
 class CompletedWriteLookupRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
-    expected_identity_metadata: OpaqueIdentityMetadata
+    required_identity_assertions: RequiredIdentityAssertions
     expected_placement: ObjectPlacement
 
     @field_validator("object_path")
@@ -203,10 +234,10 @@ class CompletedWriteLookupRequest(StorageAdapterModel):
     def canonical_path(cls, value: str) -> str:
         return normalize_object_path(value)
 
-    @field_validator("expected_identity_metadata")
+    @field_validator("required_identity_assertions")
     @classmethod
     def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
-        return _canonical_metadata(value)
+        return _canonical_identity_assertions(value)
 
 
 class CompletedObjectReceipt(StorageAdapterModel):
@@ -225,7 +256,7 @@ class CompletedObjectReceipt(StorageAdapterModel):
 class SmallObjectWriteRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
     content_type: str = Field(min_length=1, max_length=255)
-    identity_metadata: OpaqueIdentityMetadata
+    required_identity_assertions: RequiredIdentityAssertions
     placement: ObjectPlacement
     mode: Literal["create_only", "replace_current"]
     stored_bytes: int = Field(ge=0)
@@ -236,10 +267,10 @@ class SmallObjectWriteRequest(StorageAdapterModel):
     def canonical_path(cls, value: str) -> str:
         return normalize_object_path(value)
 
-    @field_validator("identity_metadata")
+    @field_validator("required_identity_assertions")
     @classmethod
     def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
-        return _canonical_metadata(value)
+        return _canonical_identity_assertions(value)
 
 
 class ImmutableObjectReceipt(StorageAdapterModel):
@@ -263,7 +294,7 @@ class ObjectMetadataReceipt(StorageAdapterModel):
     content_type: str | None = Field(default=None, min_length=1, max_length=255)
     stored_bytes: int = Field(ge=0)
     stored_sha256: Sha256 | None = None
-    identity_metadata: OpaqueIdentityMetadata
+    required_identity_assertions: RequiredIdentityAssertions
     completed_at: str = Field(min_length=1, max_length=100)
 
     @field_validator("object_path")
@@ -271,10 +302,10 @@ class ObjectMetadataReceipt(StorageAdapterModel):
     def canonical_path(cls, value: str) -> str:
         return normalize_object_path(value)
 
-    @field_validator("identity_metadata")
+    @field_validator("required_identity_assertions")
     @classmethod
     def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
-        return _canonical_metadata(value)
+        return _canonical_identity_assertions(value)
 
 
 class ObjectHeadRequest(StorageAdapterModel):
@@ -333,10 +364,34 @@ class ReadPreparationRequest(StorageAdapterModel):
         return value
 
 
+class ReadRequested(StorageAdapterModel):
+    state: Literal["requested"] = "requested"
+    estimated_ready_at: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class ReadReady(StorageAdapterModel):
+    state: Literal["ready"] = "ready"
+    available_until: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class ReadExpired(StorageAdapterModel):
+    state: Literal["expired"] = "expired"
+
+
+ReadReadiness = Annotated[
+    ReadRequested | ReadReady | ReadExpired,
+    Field(discriminator="state"),
+]
+
+
 class ReadStatus(StorageAdapterModel):
-    state: ReadState
-    ready_at: str | None = Field(default=None, max_length=100)
-    expires_at: str | None = Field(default=None, max_length=100)
+    objects: tuple[ObjectLocator, ...] = Field(min_length=1)
+    readiness: ReadReadiness
+
+    @field_validator("objects")
+    @classmethod
+    def canonical_objects(cls, value: tuple[ObjectLocator, ...]) -> tuple[ObjectLocator, ...]:
+        return ReadPreparationRequest(objects=value).objects
 
 
 class AbortIncompleteWritesRequest(StorageAdapterModel):
@@ -371,6 +426,78 @@ class MaintenanceResult(StorageAdapterModel):
     affected: int = Field(ge=0)
 
 
+def validate_write_session_response(
+    request: WriteStartRequest,
+    response: WriteSession,
+) -> None:
+    if response.object_path != request.object_path:
+        raise ValueError("adapter write session differs from its request")
+
+
+def validate_write_segment_response(
+    request: WriteSegmentRequest,
+    response: WriteSegmentReceipt,
+) -> None:
+    if response.number != request.number or response.stored_bytes != request.stored_bytes:
+        raise ValueError("adapter segment receipt differs from its request")
+
+
+def validate_write_segment_set_response(
+    request: WriteSession,
+    response: WriteSegmentSet,
+) -> None:
+    if response.session != request:
+        raise ValueError("adapter segment set differs from its write session")
+
+
+def validate_completed_write_response(
+    request: WriteCompleteRequest | CompletedWriteLookupRequest,
+    response: CompletedObjectReceipt,
+) -> None:
+    expected_path = (
+        request.session.object_path
+        if isinstance(request, WriteCompleteRequest)
+        else request.object_path
+    )
+    if response.object_path != expected_path:
+        raise ValueError("adapter completed-object receipt differs from its request")
+    if (
+        isinstance(request, WriteCompleteRequest)
+        and response.stored_bytes != request.expected_bytes
+    ):
+        raise ValueError("adapter completed-object bytes differ from their request")
+
+
+def validate_small_object_response(
+    request: SmallObjectWriteRequest,
+    response: ImmutableObjectReceipt,
+) -> None:
+    if (
+        response.object_path != request.object_path
+        or response.stored_bytes != request.stored_bytes
+        or response.stored_sha256 != request.stored_sha256
+    ):
+        raise ValueError("adapter immutable-object receipt differs from its request")
+
+
+def validate_object_metadata_response(
+    request: ObjectHeadRequest,
+    response: ObjectMetadataReceipt,
+) -> None:
+    if response.object_path != request.object.object_path:
+        raise ValueError("adapter object metadata differs from its request")
+    if request.object.revision is not None and response.revision != request.object.revision:
+        raise ValueError("adapter object metadata revision differs from its request")
+
+
+def validate_read_status_response(
+    request: ReadPreparationRequest,
+    response: ReadStatus,
+) -> None:
+    if response.objects != request.objects:
+        raise ValueError("adapter read status differs from its request")
+
+
 class StorageAdapterPort(Protocol):
     """Transport-neutral effects required from one configured adapter target."""
 
@@ -383,10 +510,11 @@ class StorageAdapterPort(Protocol):
         *,
         session: WriteSession,
         number: int,
-        content: bytes,
+        stored_bytes: int,
+        content: BinaryContent,
     ) -> WriteSegmentReceipt: ...
 
-    def list_segments(self, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]: ...
+    def list_segments(self, session: WriteSession) -> WriteSegmentSet: ...
 
     def complete_write(
         self,
@@ -403,7 +531,7 @@ class StorageAdapterPort(Protocol):
     def put_small_object(
         self,
         request: SmallObjectWriteRequest,
-        content: bytes,
+        content: BinaryContent,
     ) -> ImmutableObjectReceipt: ...
 
     def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None: ...
@@ -424,9 +552,11 @@ class StorageAdapterPort(Protocol):
 
 
 __all__ = [
+    "ADAPTER_PRIVATE_ASSERTION_PREFIX",
     "STORAGE_ADAPTER_PROTOCOL",
     "AbortIncompleteWritesRequest",
     "AdapterDescriptor",
+    "BinaryContent",
     "CompletedObjectReceipt",
     "DeleteObjectRequest",
     "DeletePrefixRequest",
@@ -436,6 +566,7 @@ __all__ = [
     "WriteStartRequest",
     "CompletedWriteLookupRequest",
     "WriteSegmentReceipt",
+    "WriteSegmentSet",
     "WriteSegmentRequest",
     "WriteSession",
     "ObjectLocator",
@@ -443,10 +574,13 @@ __all__ = [
     "ObjectMetadataReceipt",
     "ObjectPlacement",
     "ObjectReadRequest",
-    "OpaqueIdentityMetadata",
+    "RequiredIdentityAssertions",
     "ReadPreparationRequest",
     "ReadMode",
-    "ReadState",
+    "ReadExpired",
+    "ReadReadiness",
+    "ReadReady",
+    "ReadRequested",
     "ReadStatus",
     "SemanticId",
     "Sha256",
@@ -458,4 +592,11 @@ __all__ = [
     "StorageAdapterPort",
     "StorageAdapterRejection",
     "normalize_object_path",
+    "validate_completed_write_response",
+    "validate_object_metadata_response",
+    "validate_read_status_response",
+    "validate_small_object_response",
+    "validate_write_segment_response",
+    "validate_write_segment_set_response",
+    "validate_write_session_response",
 ]

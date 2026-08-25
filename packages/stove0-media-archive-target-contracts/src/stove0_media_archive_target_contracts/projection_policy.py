@@ -6,7 +6,15 @@ import math
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from stove0_media_metadata_observer_contracts import MediaFactName
+
+MediaProjectionFieldName = Literal[
+    "capture-time",
+    "creator",
+    "device-make",
+    "device-model",
+    "gps-latitude",
+    "gps-longitude",
+]
 
 
 class ProjectionPolicyModel(BaseModel):
@@ -30,7 +38,7 @@ class MediaGps(ProjectionPolicyModel):
 
 
 class MediaFieldPreference(ProjectionPolicyModel):
-    name: MediaFactName
+    name: MediaProjectionFieldName
     fields: tuple[str, ...] = Field(min_length=1)
 
     @field_validator("fields")
@@ -91,4 +99,9 @@ class MediaProjectionPolicy(ProjectionPolicyModel):
         return value
 
 
-__all__ = ["MediaFieldPreference", "MediaGps", "MediaProjectionPolicy"]
+__all__ = [
+    "MediaFieldPreference",
+    "MediaGps",
+    "MediaProjectionFieldName",
+    "MediaProjectionPolicy",
+]
