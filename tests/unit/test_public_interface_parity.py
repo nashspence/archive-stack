@@ -21,6 +21,7 @@ from http_api_contracts import (
 )
 from pydantic import TypeAdapter, ValidationError
 from riverhog_api.app import create_app as create_riverhog_app
+from riverhog_api.error_contracts import RIVERHOG_OPERATION_ERROR_CODES
 from riverhog_api_client import (
     ApplicationPermission,
     ApplicationResource,
@@ -47,6 +48,7 @@ from riverhog_protocol import (
     RetrievalFileReferenceDocument,
 )
 from riverhog_protocol.errors import BadRequest
+from stove0_api.error_contracts import STOVE0_OPERATION_ERROR_CODES
 from stove0_api_client import HealthResponse as Stove0HealthResponse
 from stove0_api_client import Stove0ApiClient
 from stove0_protocol import CollectionRootRef
@@ -59,11 +61,8 @@ from scripts.operation_qualification import (
 
 HTTP_METHODS = {"delete", "get", "patch", "post", "put"}
 OPERATION_ERROR_CODES = {
-    "riverhog": {
-        "create_retrieval_job": {"download_allowance_exceeded"},
-        "download_retrieval_file": {"download_allowance_exceeded"},
-        "retire_archive_copy": {"service_unavailable"},
-    },
+    "riverhog": RIVERHOG_OPERATION_ERROR_CODES,
+    "stove0": STOVE0_OPERATION_ERROR_CODES,
 }
 SUPPORTED_CLIENT_HELPERS = {
     "riverhog": {
@@ -286,12 +285,7 @@ def test_public_http_health_and_error_schemas_are_conventional(
     for route, operation in operations.items():
         responses = operation["responses"]
         operation_id = str(operation["operationId"])
-        method, path = route.split(" ", 1)
         expected_codes = {"bad_request", "unauthorized", "forbidden", "internal_error"}
-        if "{" in path:
-            expected_codes.add("not_found")
-        if method.casefold() in {"delete", "patch", "post", "put"}:
-            expected_codes.add("conflict")
         expected_codes |= OPERATION_ERROR_CODES.get(application, {}).get(operation_id, set())
         actual_codes = {
             code
@@ -422,6 +416,8 @@ def test_official_clients_reject_invalid_crud_controls_and_noncanonical_tags() -
                 permission="keys:manage",
                 resource="tag:incoming",
             )
+        with pytest.raises(BadRequest, match="lowercase SHA-256"):
+            riverhog.get_processing_claim("not-a-claim")  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="evaluation sort must be one of"):
             stove0.list_evaluations(sort="newest")  # type: ignore[arg-type]
     finally:

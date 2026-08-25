@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
-from urllib.parse import quote
 
 from pydantic import TypeAdapter, ValidationError
-from riverhog_protocol import CollectionId
+from riverhog_protocol import CollectionId, ProcessingClaimId
 from riverhog_protocol.collection_workflow_transport import (
     CapabilityAction,
     ClaimState,
@@ -43,6 +42,7 @@ type _ClaimSort = Literal[
 ]
 type _SortOrder = Literal["asc", "desc"]
 _COLLECTION_ID: TypeAdapter[int] = TypeAdapter(CollectionId)
+_PROCESSING_CLAIM_ID: TypeAdapter[str] = TypeAdapter(ProcessingClaimId)
 
 
 def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
@@ -54,6 +54,13 @@ def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
 
 def _dump(value: object) -> dict[str, Any]:
     return value.model_dump(mode="json", exclude_none=True)  # type: ignore[attr-defined,no-any-return]
+
+
+def _claim_id(value: str) -> str:
+    try:
+        return _PROCESSING_CLAIM_ID.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest("processing claim id must be a lowercase SHA-256") from exc
 
 
 class CollectionWorkflowMethods:
@@ -85,11 +92,11 @@ class CollectionWorkflowMethods:
             self._json("POST", "/v1/collection-processing-claims", json=_dump(request))
         )
 
-    def get_processing_claim(self, claim_id: str) -> ProcessingClaimDocument:
+    def get_processing_claim(self, claim_id: ProcessingClaimId) -> ProcessingClaimDocument:
         return ProcessingClaimDocument.model_validate(
             self._json(
                 "GET",
-                f"/v1/collection-processing-claims/{quote(claim_id, safe='')}",
+                f"/v1/collection-processing-claims/{_claim_id(claim_id)}",
             )
         )
 
@@ -132,7 +139,7 @@ class CollectionWorkflowMethods:
 
     def renew_processing_claim(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         *,
         fence: int,
         lease_seconds: int = 1800,
@@ -142,7 +149,7 @@ class CollectionWorkflowMethods:
 
     def restart_processing_claim(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         *,
         fence: int,
         lease_seconds: int = 1800,
@@ -152,7 +159,7 @@ class CollectionWorkflowMethods:
 
     def abandon_processing_claim(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         *,
         fence: int,
         reason: str,
@@ -165,7 +172,7 @@ class CollectionWorkflowMethods:
 
     def seal_processing_claim_plan(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         *,
         fence: int,
         execution_id: str,
@@ -195,7 +202,7 @@ class CollectionWorkflowMethods:
 
     def create_transform_capability(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         *,
         fence: int,
         audience: str,
@@ -215,19 +222,19 @@ class CollectionWorkflowMethods:
         return TransformCapabilityDocument.model_validate(
             self._json(
                 "POST",
-                f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/capabilities",
+                f"/v1/collection-processing-claims/{_claim_id(claim_id)}/capabilities",
                 json=_dump(request),
             )
         )
 
     def settle_processing_claim(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         *,
         fence: int,
         output_collection_id: CollectionId,
         derivation: DerivationInput,
-        outcome_claim_id: str | None = None,
+        outcome_claim_id: ProcessingClaimId | None = None,
         outcome_fence: int | None = None,
         outcome_id: str | None = None,
     ) -> ProcessingClaimDocument:
@@ -250,7 +257,7 @@ class CollectionWorkflowMethods:
 
     def settle_processing_claim_outcomes(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         *,
         fence: int,
         outcomes: Sequence[OutcomeInput],
@@ -267,7 +274,7 @@ class CollectionWorkflowMethods:
 
     def begin_processing_claim_retirement(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         *,
         fence: int,
     ) -> ProcessingClaimDocument:
@@ -279,7 +286,7 @@ class CollectionWorkflowMethods:
 
     def release_processing_claim(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         *,
         fence: int,
     ) -> ProcessingClaimDocument:
@@ -303,14 +310,14 @@ class CollectionWorkflowMethods:
 
     def _claim_response(
         self,
-        claim_id: str,
+        claim_id: ProcessingClaimId,
         suffix: str,
         request: object,
     ) -> ProcessingClaimDocument:
         return ProcessingClaimDocument.model_validate(
             self._json(
                 "POST",
-                f"/v1/collection-processing-claims/{quote(claim_id, safe='')}/{suffix}",
+                f"/v1/collection-processing-claims/{_claim_id(claim_id)}/{suffix}",
                 json=_dump(request),
             )
         )

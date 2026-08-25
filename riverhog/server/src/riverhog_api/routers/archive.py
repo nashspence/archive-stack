@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Query
-from http_api_contracts import error_responses
 from riverhog_core.app_permissions import ARCHIVES_MANAGE
 from riverhog_protocol import (
     ArchiveCopySort,
@@ -136,7 +135,6 @@ def plan_archive_copy_retirement(
 @router.post(
     "/archive/copies/retire",
     response_model=ArchiveCopyRetirementResultOut,
-    responses=error_responses("service_unavailable"),
 )
 def retire_archive_copy(
     request: RetireArchiveCopyRequest,

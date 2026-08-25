@@ -44,6 +44,7 @@ from riverhog_protocol import (
     CollectionUploadState,
     DownloadQuotaSort,
     PortableCollectionRecord,
+    ProcessingClaimId,
     ProvenanceSort,
     ProvenanceStatus,
     RetrievalCacheProtection,
@@ -94,6 +95,7 @@ _ARCHIVE_STORE_NAME: TypeAdapter[str] = TypeAdapter(ArchiveStoreName)
 _COLLECTION_ID: TypeAdapter[int] = TypeAdapter(CollectionId)
 _CANONICAL_RELPATH: TypeAdapter[str] = TypeAdapter(CanonicalRelPath)
 _MONTHLY_DOWNLOAD_QUOTA_BYTES: TypeAdapter[int] = TypeAdapter(MonthlyDownloadQuotaBytes)
+_PROCESSING_CLAIM_ID: TypeAdapter[str] = TypeAdapter(ProcessingClaimId)
 
 _COLLECTION_UPLOAD_IDEMPOTENCY_KEY: TypeAdapter[CollectionUploadIdempotencyKey] = TypeAdapter(
     CollectionUploadIdempotencyKey
@@ -126,6 +128,13 @@ def _application_key_id(value: str) -> str:
         return _APPLICATION_KEY_ID.validate_python(value, strict=True)
     except ValidationError as exc:
         raise BadRequest(str(exc)) from exc
+
+
+def _processing_claim_id(value: str) -> str:
+    try:
+        return _PROCESSING_CLAIM_ID.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest("processing claim id must be a lowercase SHA-256") from exc
 
 
 def _archive_store_name(value: str) -> str:
@@ -1229,10 +1238,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         collection_id: CollectionId,
         *,
-        retirement_claim_id: str | None = None,
+        retirement_claim_id: ProcessingClaimId | None = None,
     ) -> dict[str, Any]:
         params = (
-            {"retirement_claim_id": retirement_claim_id}
+            {"retirement_claim_id": _processing_claim_id(retirement_claim_id)}
             if retirement_claim_id is not None
             else None
         )
@@ -1247,12 +1256,12 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         collection_id: CollectionId,
         *,
         challenge: str,
-        retirement_claim_id: str | None = None,
+        retirement_claim_id: ProcessingClaimId | None = None,
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"challenge": challenge}
         if retirement_claim_id is not None:
-            payload["retirement_claim_id"] = retirement_claim_id
+            payload["retirement_claim_id"] = _processing_claim_id(retirement_claim_id)
         if event_context is not None:
             payload["event_context"] = dict(event_context)
         return self._json(

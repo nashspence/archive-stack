@@ -63,6 +63,7 @@ from stove0_protocol import (
     canonical_json_sha256,
 )
 from stove0_target_support import (
+    AcceptedTargetJob,
     InputArtifact,
     InputArtifactContract,
     OperationContract,
@@ -658,11 +659,14 @@ class FixtureObservers:
         self,
         registration_id: str,
         invocation: object,
+        *,
+        descriptor: ObserverDescriptor,
     ) -> ObservationResult:
         assert registration_id == "fixture-observer"
         assert self.observer is not None
         invocation = ObservationInvocation.model_validate(invocation)
-        contract, descriptor = self.observer
+        contract, expected_descriptor = self.observer
+        assert descriptor == expected_descriptor
         facts = {"kind": "fixture"}
         return ObservationResult.seal(
             ObservationResultPayload(
@@ -721,8 +725,11 @@ class FixtureTarget:
         self,
         registration_id: str,
         request: TargetJobRequest,
+        *,
+        operation: OperationContract,
     ) -> TargetJobStatus:
         assert registration_id == "fixture-target"
+        assert operation.id == request.declaration.plan.operation_id
         job_id = request.declaration.job_id
         existing = self.jobs.get(job_id)
         if existing is None:
@@ -739,11 +746,20 @@ class FixtureTarget:
         assert request.accepted() == existing.accepted()
         self.jobs[job_id] = request
         self.accepted = request
-        return self.get_job(registration_id, job_id)
+        return self.get_job(registration_id, request, operation=operation)
 
-    def cancel_job(self, registration_id: str, job_id: str) -> TargetJobStatus:
+    def cancel_job(
+        self,
+        registration_id: str,
+        request: TargetJobRequest | AcceptedTargetJob,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
         assert registration_id == "fixture-target"
-        request = self.jobs[job_id]
+        assert operation.id == request.declaration.plan.operation_id
+        job_id = request.declaration.job_id
+        accepted = request.accepted() if isinstance(request, TargetJobRequest) else request
+        assert self.jobs[job_id].accepted() == accepted
         return TargetJobStatus(
             job_id=job_id,
             state="canceled",
@@ -753,9 +769,18 @@ class FixtureTarget:
             progress=TargetProgress(phase="canceled", completed=0, total=1),
         )
 
-    def get_job(self, registration_id: str, job_id: str) -> TargetJobStatus:
+    def get_job(
+        self,
+        registration_id: str,
+        request: TargetJobRequest | AcceptedTargetJob,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
         assert registration_id == "fixture-target"
-        request = self.jobs[job_id]
+        assert operation.id == request.declaration.plan.operation_id
+        job_id = request.declaration.job_id
+        accepted = request.accepted() if isinstance(request, TargetJobRequest) else request
+        assert self.jobs[job_id].accepted() == accepted
         output = OutputArtifact(
             id="output",
             role="fixture.output/v1",
@@ -848,9 +873,18 @@ class ForkJoinTarget(FixtureTarget):
         super().__init__(operations[0], target)
         self.operations = {operation.id: operation for operation in operations}
 
-    def get_job(self, registration_id: str, job_id: str) -> TargetJobStatus:
+    def get_job(
+        self,
+        registration_id: str,
+        request: TargetJobRequest | AcceptedTargetJob,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
         assert registration_id == "fixture-target"
-        request = self.jobs[job_id]
+        assert operation.id == request.declaration.plan.operation_id
+        job_id = request.declaration.job_id
+        accepted = request.accepted() if isinstance(request, TargetJobRequest) else request
+        assert self.jobs[job_id].accepted() == accepted
         declaration = request.declaration
         workflow = declaration.controller_evidence.execution_envelope.workflow_plan
         operation = self.operations[workflow.operation.id]

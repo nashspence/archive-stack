@@ -76,6 +76,7 @@ from stove0_protocol import (
 from stove0_target_client import TargetClient
 from time_formats import utc_timestamp_now
 
+from stove0_api.error_contracts import STOVE0_OPERATION_ERROR_CODES
 from stove0_api.schemas import (
     ErrorResponse,
     EvaluationReviewIn,
@@ -633,7 +634,10 @@ def create_app(
             )
         )
 
-    app.openapi_schema = apply_openapi_error_contract(app.openapi())
+    app.openapi_schema = apply_openapi_error_contract(
+        app.openapi(),
+        operation_error_codes=STOVE0_OPERATION_ERROR_CODES,
+    )
     return app
 
 

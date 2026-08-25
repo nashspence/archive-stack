@@ -24,9 +24,10 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_bytes,
     canonical_json_sha256,
 )
-from riverhog_protocol.paths import CollectionId, normalize_tag
+from riverhog_protocol.paths import CanonicalRelPath, CanonicalTag, CollectionId, normalize_tag
 
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+ProcessingClaimId = SHA256
 SemanticId = Annotated[
     str,
     Field(pattern=r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$"),
@@ -78,7 +79,7 @@ class CollectionRootIdentityDocument(RiverhogWorkflowDocument):
 
 class CollectionArtifactIdentityDocument(RiverhogWorkflowDocument):
     collection: CollectionRootIdentityDocument
-    path: str = Field(min_length=1, max_length=4096)
+    path: CanonicalRelPath
     bytes: int = Field(ge=0)
     sha256: SHA256
 
@@ -111,7 +112,7 @@ class RecipeIdentityDocument(RiverhogWorkflowDocument):
 
 class ProcessingOutcomeIdentityDocument(RiverhogWorkflowDocument):
     outcome_id: SemanticId
-    source_claim_id: SHA256
+    source_claim_id: ProcessingClaimId
     output_collection: CollectionRootIdentityDocument
     derivation_sha256: SHA256
 
@@ -124,7 +125,7 @@ class ProcessingOutcomeIdentityDocument(RiverhogWorkflowDocument):
 class ArtifactDispositionInputDocument(RiverhogWorkflowDocument):
     collection_id: CollectionId
     archive_root_sha256: SHA256
-    path: str = Field(min_length=1, max_length=4096)
+    path: CanonicalRelPath
 
 
 class ArtifactDispositionFailureDocument(RiverhogWorkflowDocument):
@@ -133,9 +134,42 @@ class ArtifactDispositionFailureDocument(RiverhogWorkflowDocument):
 
 
 class ArtifactDispositionDocument(RiverhogWorkflowDocument):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "status": {"const": "transformed"},
+                        "outputs": {"minItems": 1},
+                        "failure": {"type": "null"},
+                    },
+                    "required": ["outputs"],
+                },
+                {
+                    "properties": {
+                        "status": {"const": "preserved"},
+                        "outputs": {"maxItems": 0},
+                        "failure": {"type": "null"},
+                    }
+                },
+                {
+                    "properties": {
+                        "status": {"enum": ["omitted", "rejected"]},
+                        "outputs": {"maxItems": 0},
+                        "failure": {"type": "object"},
+                    },
+                    "required": ["failure"],
+                },
+            ]
+        }
+    )
+
     input: ArtifactDispositionInputDocument
     status: Literal["transformed", "preserved", "omitted", "rejected"]
-    outputs: list[str] = Field(default_factory=list)
+    outputs: list[CanonicalRelPath] = Field(
+        default_factory=list,
+        json_schema_extra={"uniqueItems": True},
+    )
     failure: ArtifactDispositionFailureDocument | None = None
 
     @model_validator(mode="after")
@@ -145,7 +179,7 @@ class ArtifactDispositionDocument(RiverhogWorkflowDocument):
 
 
 class ClaimFenceDocument(RiverhogWorkflowDocument):
-    id: str = Field(min_length=1, max_length=160)
+    id: ProcessingClaimId
     fence: int = Field(ge=1)
 
 
@@ -155,13 +189,22 @@ class CollectionDerivationDocument(RiverhogWorkflowDocument):
     claim: ClaimFenceDocument
     recipe: RecipeIdentityDocument
     operation: OperationIdentityDocument
-    inputs: list[CollectionRootIdentityDocument] = Field(min_length=1)
-    output_tags: list[str] = Field(min_length=1)
+    inputs: list[CollectionRootIdentityDocument] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
+    output_tags: list[CanonicalTag] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
     execution_envelope_sha256: SHA256
     execution_sha256: SHA256
     controller_evidence: dict[str, Any]
     controller_evidence_sha256: SHA256
-    dispositions: list[ArtifactDispositionDocument] = Field(min_length=1)
+    dispositions: list[ArtifactDispositionDocument] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
 
     @model_validator(mode="after")
     def validate_derivation(self) -> Self:
@@ -179,7 +222,10 @@ class ProcessingClaimCreateDocument(RiverhogWorkflowDocument):
     work_id: SHA256
     work_document: dict[str, Any]
     work_document_sha256: SHA256
-    inputs: list[CollectionRootIdentityDocument] = Field(min_length=1)
+    inputs: list[CollectionRootIdentityDocument] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
     lease_seconds: int = Field(default=1800, ge=30, le=86400)
     purpose: str = Field(default="collection-work/v1", min_length=1, max_length=160)
 
@@ -212,13 +258,26 @@ class ProcessingClaimRestartDocument(ProcessingClaimRenewDocument):
 
 
 class ProcessingClaimPlanSealDocument(RiverhogWorkflowDocument):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {"properties": {"retirement_policy": {"const": "retain"}}},
+            "then": {"properties": {"retirement_grace_seconds": {"const": 0}}},
+        }
+    )
+
     fence: int = Field(ge=1)
     execution_id: SHA256
     controller_evidence: dict[str, Any]
     controller_evidence_sha256: SHA256
     operation: OperationIdentityDocument
-    input_artifacts: list[CollectionArtifactIdentityDocument] = Field(min_length=1)
-    output_tags: list[str] = Field(min_length=1)
+    input_artifacts: list[CollectionArtifactIdentityDocument] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
+    output_tags: list[CanonicalTag] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
     retirement_policy: RetirementPolicy = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
 
@@ -257,8 +316,17 @@ class TransformCapabilityCreateDocument(RiverhogWorkflowDocument):
     actions: list[CapabilityAction] = Field(
         default_factory=_default_capability_actions,
         min_length=1,
+        json_schema_extra={
+            "oneOf": [
+                {"const": ["read-inputs"]},
+                {"const": ["read-inputs", "write-output"]},
+            ]
+        },
     )
-    artifacts: list[CollectionArtifactIdentityDocument] = Field(min_length=1)
+    artifacts: list[CollectionArtifactIdentityDocument] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
     ttl_seconds: int = Field(default=900, ge=30, le=86400)
 
     @model_validator(mode="after")
@@ -280,7 +348,7 @@ class TransformCapabilityCreateDocument(RiverhogWorkflowDocument):
 
 
 class ProcessingOutcomeBindingDocument(RiverhogWorkflowDocument):
-    claim_id: SHA256
+    claim_id: ProcessingClaimId
     fence: int = Field(ge=1)
     outcome_id: SemanticId
 
@@ -293,8 +361,18 @@ class ProcessingClaimSettleDocument(RiverhogWorkflowDocument):
 
 
 class ProcessingClaimOutcomesSettleDocument(RiverhogWorkflowDocument):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {"properties": {"retirement_policy": {"const": "retain"}}},
+            "then": {"properties": {"retirement_grace_seconds": {"const": 0}}},
+        }
+    )
+
     fence: int = Field(ge=1)
-    outcomes: list[ProcessingOutcomeIdentityDocument] = Field(min_length=1)
+    outcomes: list[ProcessingOutcomeIdentityDocument] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
     retirement_policy: RetirementPolicy = "retain"
     retirement_grace_seconds: int = Field(default=0, ge=0)
 
@@ -330,12 +408,25 @@ class ProcessingClaimConsumerDocument(RiverhogWorkflowDocument):
 
 
 class ProcessingClaimPlanDocument(RiverhogWorkflowDocument):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {"properties": {"retirement_policy": {"const": "retain"}}},
+            "then": {"properties": {"retirement_grace_seconds": {"const": 0}}},
+        }
+    )
+
     execution_id: SHA256
     controller_evidence: dict[str, Any]
     controller_evidence_sha256: SHA256
     operation: OperationIdentityDocument
-    input_artifacts: list[CollectionArtifactIdentityDocument] = Field(min_length=1)
-    output_tags: list[str] = Field(min_length=1)
+    input_artifacts: list[CollectionArtifactIdentityDocument] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
+    output_tags: list[CanonicalTag] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
     retirement_policy: RetirementPolicy
     retirement_grace_seconds: int = Field(ge=0)
     sealed_at: Timestamp
@@ -357,6 +448,13 @@ class ProcessingClaimPlanDocument(RiverhogWorkflowDocument):
 
 
 class ProcessingClaimOutcomeSettlementDocument(RiverhogWorkflowDocument):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "if": {"properties": {"retirement_policy": {"const": "retain"}}},
+            "then": {"properties": {"retirement_grace_seconds": {"const": 0}}},
+        }
+    )
+
     outcomes_sha256: SHA256
     retirement_policy: RetirementPolicy
     retirement_grace_seconds: int = Field(ge=0)
@@ -371,7 +469,30 @@ class ProcessingClaimOutcomeSettlementDocument(RiverhogWorkflowDocument):
 class RetirementClaimReferenceDocument(RiverhogWorkflowDocument):
     """Exact claim evidence authorizing one retirement deletion plan."""
 
-    claim_id: SHA256
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "execution_id": {"type": "string"},
+                        "output_collection_id": {"type": "integer"},
+                        "outcomes_sha256": {"type": "null"},
+                    },
+                    "required": ["execution_id", "output_collection_id"],
+                },
+                {
+                    "properties": {
+                        "execution_id": {"type": "null"},
+                        "output_collection_id": {"type": "null"},
+                        "outcomes_sha256": {"type": "string"},
+                    },
+                    "required": ["outcomes_sha256"],
+                },
+            ]
+        }
+    )
+
+    claim_id: ProcessingClaimId
     fence: int = Field(ge=1)
     work_id: SHA256
     execution_id: SHA256 | None = None
@@ -392,8 +513,75 @@ class RetirementClaimReferenceDocument(RiverhogWorkflowDocument):
 
 
 class ProcessingClaimDocument(RiverhogWorkflowDocument):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"state": {"enum": ["settled", "retiring", "released"]}}},
+                    "then": {
+                        "properties": {"settled_at": {"type": "string"}},
+                        "oneOf": [
+                            {
+                                "properties": {
+                                    "plan": {"type": "object"},
+                                    "output_collection_id": {"type": "integer"},
+                                    "outcomes": {"maxItems": 0},
+                                    "outcome_settlement": {"type": "null"},
+                                }
+                            },
+                            {
+                                "properties": {
+                                    "plan": {"type": "null"},
+                                    "output_collection_id": {"type": "null"},
+                                    "outcomes": {"minItems": 1},
+                                    "outcome_settlement": {"type": "object"},
+                                }
+                            },
+                        ],
+                    },
+                    "else": {
+                        "properties": {
+                            "settled_at": {"type": "null"},
+                            "output_collection_id": {"type": "null"},
+                            "outcome_settlement": {"type": "null"},
+                        }
+                    },
+                },
+                {
+                    "if": {"properties": {"state": {"const": "abandoned"}}},
+                    "then": {
+                        "properties": {
+                            "abandoned_at": {"type": "string"},
+                            "abandonment_reason": {"type": "string"},
+                        }
+                    },
+                    "else": {
+                        "properties": {
+                            "abandoned_at": {"type": "null"},
+                            "abandonment_reason": {"type": "null"},
+                        }
+                    },
+                },
+                {
+                    "if": {"properties": {"state": {"const": "released"}}},
+                    "then": {"properties": {"released_at": {"type": "string"}}},
+                    "else": {"properties": {"released_at": {"type": "null"}}},
+                },
+                {
+                    "not": {
+                        "properties": {
+                            "plan": {"type": "object"},
+                            "outcomes": {"minItems": 1},
+                        },
+                        "required": ["plan", "outcomes"],
+                    }
+                },
+            ]
+        }
+    )
+
     format: Literal["riverhog-processing-claim/v1"]
-    id: SHA256
+    id: ProcessingClaimId
     work_id: SHA256
     consumer: ProcessingClaimConsumerDocument
     purpose: str = Field(min_length=1, max_length=160)
@@ -409,9 +597,15 @@ class ProcessingClaimDocument(RiverhogWorkflowDocument):
     output_collection_id: CollectionId | None = None
     work_document: dict[str, Any]
     work_document_sha256: SHA256
-    inputs: list[CollectionRootIdentityDocument] = Field(min_length=1)
+    inputs: list[CollectionRootIdentityDocument] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
     plan: ProcessingClaimPlanDocument | None = None
-    outcomes: list[ProcessingOutcomeIdentityDocument] = Field(default_factory=list)
+    outcomes: list[ProcessingOutcomeIdentityDocument] = Field(
+        default_factory=list,
+        json_schema_extra={"uniqueItems": True},
+    )
     outcome_settlement: ProcessingClaimOutcomeSettlementDocument | None = None
 
     @model_validator(mode="after")
@@ -481,13 +675,24 @@ class ProcessingClaimPageDocument(RiverhogWorkflowDocument):
 class TransformCapabilityDocument(RiverhogWorkflowDocument):
     format: Literal["riverhog-transform-capability/v1"]
     id: str = Field(min_length=1, max_length=160)
-    claim_id: SHA256
+    claim_id: ProcessingClaimId
     fence: int = Field(ge=1)
     audience: str = Field(pattern=r"^[a-z0-9][a-z0-9._:/-]{0,299}$")
-    actions: list[CapabilityAction] = Field(min_length=1)
+    actions: list[CapabilityAction] = Field(
+        min_length=1,
+        json_schema_extra={
+            "oneOf": [
+                {"const": ["read-inputs"]},
+                {"const": ["read-inputs", "write-output"]},
+            ]
+        },
+    )
     principal_app: str = Field(min_length=1, max_length=300)
     expires_at: Timestamp
-    artifacts: list[CollectionArtifactIdentityDocument] = Field(min_length=1)
+    artifacts: list[CollectionArtifactIdentityDocument] = Field(
+        min_length=1,
+        json_schema_extra={"uniqueItems": True},
+    )
     token: str = Field(pattern=r"^rhc_[A-Za-z0-9_-]+$")
 
     @model_validator(mode="after")
@@ -528,6 +733,7 @@ __all__ = [
     "ProcessingClaimDocument",
     "ProcessingClaimFenceDocument",
     "ProcessingClaimOutcomesSettleDocument",
+    "ProcessingClaimId",
     "ProcessingClaimPageDocument",
     "ProcessingClaimPlanSealDocument",
     "ProcessingClaimRenewDocument",

@@ -12,7 +12,7 @@ from riverhog_provenance_contracts import (
     ProvenanceStateId,
 )
 
-from riverhog_protocol.paths import CanonicalRelPath
+from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
 from riverhog_protocol.raw_ingress import RawSourceDigestManifest
 from riverhog_protocol.transport import COLLECTION_UPLOAD_FILE_BATCH_MAX
 
@@ -52,10 +52,7 @@ class CollectionUploadRegistrationConstraintsDocument(CollectionUploadDocument):
     raw_part_plaintext_bytes: int = Field(ge=65536, multiple_of=65536)
 
 
-class CollectionUploadFileIn(CollectionUploadDocument):
-    path: CanonicalRelPath
-    bytes: int = Field(ge=0)
-    sha256: Sha256
+class CollectionUploadFileIn(ImmutableFileIdentityDocument):
     raw_parts: CollectionUploadRawPartsIn | None = None
     provenance: FileProvenanceBinding
 

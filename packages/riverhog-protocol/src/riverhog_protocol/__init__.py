@@ -53,6 +53,7 @@ from riverhog_protocol.collection_workflow_transport import (
     ProcessingClaimCreateDocument,
     ProcessingClaimDocument,
     ProcessingClaimFenceDocument,
+    ProcessingClaimId,
     ProcessingClaimOutcomesSettleDocument,
     ProcessingClaimPageDocument,
     ProcessingClaimPlanSealDocument,
@@ -81,6 +82,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_bytes,
     canonical_json_sha256,
 )
+from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
 from riverhog_protocol.lifecycle_events import (
     COLLECTION_FINALIZED,
     COLLECTION_TAGS_CHANGED,
@@ -149,6 +151,7 @@ __all__ += [
     "DERIVATION_EVIDENCE_PATH",
     "OperationIdentity",
     "FileProvenanceBinding",
+    "ImmutableFileIdentityDocument",
     "OmittedFileProvenanceBinding",
     "PRODUCER_EVIDENCE_PATH",
     "ProducerEvidence",
@@ -182,6 +185,7 @@ __all__ += [
     "ProcessingClaimCreateDocument",
     "ProcessingClaimDocument",
     "ProcessingClaimFenceDocument",
+    "ProcessingClaimId",
     "ProcessingClaimOutcomesSettleDocument",
     "ProcessingClaimPageDocument",
     "ProcessingClaimPlanSealDocument",

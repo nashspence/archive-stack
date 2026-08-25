@@ -1,16 +1,25 @@
 from __future__ import annotations
 
-from riverhog_protocol import CollectionId, SearchSort, SortOrder
+from pydantic import model_validator
+from riverhog_protocol import (
+    CollectionId,
+    ImmutableFileIdentityDocument,
+    SearchSort,
+    SortOrder,
+)
 
 from riverhog_api.schemas.common import RiverhogModel
 
 
-class SearchFileOut(RiverhogModel):
+class SearchFileOut(ImmutableFileIdentityDocument):
     file_ref: str
     collection_id: CollectionId
-    path: str
-    bytes: int
-    sha256: str
+
+    @model_validator(mode="after")
+    def validate_file_ref(self) -> SearchFileOut:
+        if self.file_ref != f"{self.collection_id}/{self.path}":
+            raise ValueError("file_ref must match the exact collection file identity")
+        return self
 
 
 class SearchResponse(RiverhogModel):

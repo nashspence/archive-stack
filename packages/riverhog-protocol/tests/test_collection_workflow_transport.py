@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import pytest
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 from riverhog_protocol.collection_workflow_transport import (
+    ArtifactDispositionDocument,
     CollectionArtifactIdentityDocument,
     CollectionRootIdentityDocument,
     ProcessingClaimCreateDocument,
     ProcessingClaimDocument,
+    ProcessingClaimPlanSealDocument,
     RetirementClaimReferenceDocument,
     TransformCapabilityCreateDocument,
 )
@@ -99,15 +103,78 @@ def test_transform_capability_actions_are_the_exact_read_contract() -> None:
             artifacts=[artifact],
         )
         assert capability.actions == actions
+        Draft202012Validator(TransformCapabilityCreateDocument.model_json_schema()).validate(
+            capability.model_dump(mode="json")
+        )
 
     for actions in (["write-output"], ["read-inputs", "manage-output-tags"]):
+        invalid = {
+            "fence": 1,
+            "audience": "transform:test",
+            "actions": actions,
+            "artifacts": [artifact],
+            "ttl_seconds": 900,
+        }
         with pytest.raises(ValidationError, match="read-inputs"):
-            TransformCapabilityCreateDocument(
-                fence=1,
-                audience="transform:test",
-                actions=actions,
-                artifacts=[artifact],
+            TransformCapabilityCreateDocument.model_validate(invalid)
+        with pytest.raises(JsonSchemaValidationError):
+            Draft202012Validator(TransformCapabilityCreateDocument.model_json_schema()).validate(
+                invalid
             )
+
+
+def test_structural_workflow_relationships_match_their_published_schema() -> None:
+    input_identity = {
+        "collection_id": 17,
+        "archive_root_sha256": "1" * 64,
+        "path": "camera/clip.mp4",
+    }
+    transformed = {
+        "input": input_identity,
+        "status": "transformed",
+        "outputs": ["archive/clip.mkv"],
+        "failure": None,
+    }
+    disposition_validator = Draft202012Validator(ArtifactDispositionDocument.model_json_schema())
+    assert ArtifactDispositionDocument.model_validate(transformed).status == "transformed"
+    disposition_validator.validate(transformed)
+
+    impossible_disposition = {**transformed, "outputs": []}
+    with pytest.raises(ValidationError, match="requires output paths"):
+        ArtifactDispositionDocument.model_validate(impossible_disposition)
+    with pytest.raises(JsonSchemaValidationError):
+        disposition_validator.validate(impossible_disposition)
+
+    artifact = {
+        "collection": {
+            "collection_id": 17,
+            "archive_root_sha256": "1" * 64,
+            "content_identity": "2" * 64,
+        },
+        "path": "camera/clip.mp4",
+        "bytes": 42,
+        "sha256": "3" * 64,
+    }
+    plan = {
+        "fence": 1,
+        "execution_id": "4" * 64,
+        "controller_evidence": {},
+        "controller_evidence_sha256": canonical_json_sha256({}),
+        "operation": {"id": "fixture.operation/v1", "sha256": "5" * 64},
+        "input_artifacts": [artifact],
+        "output_tags": ["archive"],
+        "retirement_policy": "retain",
+        "retirement_grace_seconds": 0,
+    }
+    plan_validator = Draft202012Validator(ProcessingClaimPlanSealDocument.model_json_schema())
+    assert ProcessingClaimPlanSealDocument.model_validate(plan).retirement_policy == "retain"
+    plan_validator.validate(plan)
+
+    impossible_plan = {**plan, "retirement_grace_seconds": 60}
+    with pytest.raises(ValidationError, match="cannot declare retirement grace"):
+        ProcessingClaimPlanSealDocument.model_validate(impossible_plan)
+    with pytest.raises(JsonSchemaValidationError):
+        plan_validator.validate(impossible_plan)
 
 
 def test_processing_claim_projection_rejects_impossible_state_evidence() -> None:
@@ -134,7 +201,9 @@ def test_processing_claim_projection_rejects_impossible_state_evidence() -> None
         ],
     }
 
+    schema_validator = Draft202012Validator(ProcessingClaimDocument.model_json_schema())
     assert ProcessingClaimDocument.model_validate(active).state == "active"
+    schema_validator.validate(active)
     abandoned = {
         **active,
         "state": "abandoned",
@@ -142,9 +211,12 @@ def test_processing_claim_projection_rejects_impossible_state_evidence() -> None
         "abandonment_reason": "target reported inapplicable",
     }
     assert ProcessingClaimDocument.model_validate(abandoned).state == "abandoned"
+    schema_validator.validate(abandoned)
 
     with pytest.raises(ValidationError, match="settlement timestamp"):
         ProcessingClaimDocument.model_validate({**active, "state": "settled"})
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate({**active, "state": "settled"})
     with pytest.raises(ValidationError, match="unsettled claim"):
         ProcessingClaimDocument.model_validate({**active, "output_collection_id": 19})
     with pytest.raises(ValidationError, match="abandonment reason"):
@@ -173,12 +245,18 @@ def test_retirement_reference_identifies_one_exact_settlement_form() -> None:
 
     assert direct.output_collection_id == 42
     assert delegated.outcomes_sha256 == "6" * 64
+    validator = Draft202012Validator(RetirementClaimReferenceDocument.model_json_schema())
+    validator.validate(direct.model_dump(mode="json"))
+    validator.validate(delegated.model_dump(mode="json"))
+    invalid = {
+        "claim_id": "1" * 64,
+        "fence": 1,
+        "work_id": "2" * 64,
+    }
     with pytest.raises(ValidationError, match="direct or delegated"):
-        RetirementClaimReferenceDocument(
-            claim_id="1" * 64,
-            fence=1,
-            work_id="2" * 64,
-        )
+        RetirementClaimReferenceDocument.model_validate(invalid)
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(invalid)
     with pytest.raises(ValidationError, match="direct or delegated"):
         RetirementClaimReferenceDocument(
             claim_id="1" * 64,

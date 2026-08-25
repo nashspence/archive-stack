@@ -13,13 +13,15 @@ from riverhog_protocol import (
     CollectionUploadSort,
     CollectionUploadState,
     FileProvenanceBinding,
+    ImmutableFileIdentityDocument,
+    ProcessingClaimId,
     RetirementClaimReferenceDocument,
     SortOrder,
 )
 from riverhog_protocol import (
     CollectionUploadFileIn as CollectionUploadFileIn,
 )
-from riverhog_protocol.paths import CanonicalRelPath, CanonicalTag
+from riverhog_protocol.paths import CanonicalTag
 from riverhog_provenance_contracts import ProvenanceJournalId, ProvenanceStateId
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
@@ -169,7 +171,7 @@ class CollectionDeletionPlanOut(RiverhogModel):
 
 class DeleteCollectionRequest(RiverhogModel):
     challenge: str
-    retirement_claim_id: str | None = Field(default=None, min_length=1, max_length=64)
+    retirement_claim_id: ProcessingClaimId | None = None
     event_context: dict[str, Any] | None = None
 
 
@@ -181,13 +183,7 @@ class CollectionDeletionResultOut(RiverhogModel):
     remote_storage_bytes: int
 
 
-class CollectionUploadFileOut(RiverhogModel):
-    path: CanonicalRelPath
-    bytes: int
-    sha256: str
-    upload_state: str
-    uploaded_bytes: int
-    upload_state_expires_at: str | None
+class CollectionUploadFileOut(ImmutableFileIdentityDocument):
     provenance: FileProvenanceBinding
 
 

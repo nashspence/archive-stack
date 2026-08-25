@@ -9,10 +9,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 from jsonschema import Draft202012Validator
 from riverhog_protocol.collection_workflows import PRODUCER_EVIDENCE_PATH
-from stove0_observer_client import ContentObserverClient
+from stove0_observer_client import ContentObserverClient, ObserverProtocolError
 from stove0_observer_protocol import (
     ObservationInvocation,
     ObservationRequest,
@@ -281,7 +282,13 @@ class FixtureObserverClient:
     def descriptor(self) -> ObserverDescriptor:
         return self._descriptor
 
-    def observe(self, _invocation: ObservationInvocation) -> ObservationResult:
+    def observe(
+        self,
+        _invocation: ObservationInvocation,
+        *,
+        descriptor: ObserverDescriptor,
+    ) -> ObservationResult:
+        assert descriptor == self._descriptor
         return self._result
 
 
@@ -397,6 +404,50 @@ def test_observer_client_rejects_remote_plain_http_by_default() -> None:
     with pytest.raises(ValueError, match="must use HTTPS"):
         ContentObserverClient("http://observer.example")
     assert ContentObserverClient("http://127.0.0.1:8000").base_url.startswith("http://")
+
+
+def test_observer_client_rejects_a_well_formed_result_for_different_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = RetrievalApi()
+    contract = _contract()
+    descriptor = _descriptor(contract)
+    request = _request(contract, descriptor, api)
+    other_request_payload = request.model_dump(
+        mode="python",
+        exclude={"request_id"},
+    )
+    other_request_payload["work_id"] = _sha("b")
+    other_request = ObservationRequest.seal(
+        ObservationRequestPayload.model_validate(other_request_payload)
+    )
+    result = _result(other_request, contract, descriptor, len(api.data))
+    invocation = ObservationInvocation(
+        request=request,
+        claim_id="claim-1",
+        fence=3,
+        runtime=ObserverRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="secret-capability",
+            workspace_assurance="ephemeral",
+        ),
+    )
+    real_client = httpx.Client
+
+    def respond(_received: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=result.model_dump(mode="json"))
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **_kwargs: real_client(transport=httpx.MockTransport(respond)),
+    )
+
+    with pytest.raises(ObserverProtocolError, match="inconsistent with the invocation"):
+        ContentObserverClient("https://observer.example").observe(
+            invocation,
+            descriptor=descriptor,
+        )
 
 
 class BindingObserver:

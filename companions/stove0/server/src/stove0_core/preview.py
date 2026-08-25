@@ -208,6 +208,7 @@ class WorkflowPreviewService:
                     fence=claim.fence,
                     runtime=authority,
                 ),
+                descriptor=descriptor,
             )
             validate_observation_result(result, observation_request, descriptor)
             if result.state == "inapplicable":

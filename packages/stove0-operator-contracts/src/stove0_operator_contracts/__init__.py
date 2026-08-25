@@ -327,12 +327,14 @@ class WorkUpdatedEventData(Stove0EventData):
 
 
 class BranchSetAdmittedEventData(WorkUpdatedEventData):
+    phase: Literal["coordinating"]
     branch_set_sha256: Sha256
     branch_count: int = Field(ge=1)
     admitted_work_count: int = Field(ge=1)
 
 
 class JoinAdmittedEventData(WorkUpdatedEventData):
+    phase: Literal["coordinating"]
     branch_set_sha256: Sha256
     join_plan_sha256: Sha256
     join_work_id: Sha256

@@ -4,12 +4,29 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 from riverhog_api.app import create_app
-from riverhog_api.schemas.apps import AppKeyOut
-from riverhog_api.schemas.archive import ArchiveCopyJobOut, ArchiveCopyRetirementPlanOut
-from riverhog_api.schemas.collections import CollectionDeletionPlanOut, CollectionUploadSessionOut
-from riverhog_api.schemas.retrieval import RetrievalJobOut
+from riverhog_api.schemas.apps import AppAccessSetOut, AppKeyOut
+from riverhog_api.schemas.archive import (
+    ArchiveCopyJobOut,
+    ArchiveCopyOut,
+    ArchiveCopyRetirementPlanOut,
+)
+from riverhog_api.schemas.collections import (
+    CollectionDeletionPlanOut,
+    CollectionUploadFileOut,
+    CollectionUploadSessionOut,
+)
+from riverhog_api.schemas.provenance import (
+    CollectionFileProvenanceDetailOut,
+    CollectionFileProvenanceTraceOut,
+    CollectionProvenanceVerificationOut,
+    ListCollectionFileProvenanceResponse,
+)
+from riverhog_api.schemas.retrieval import RetrievalJobOut, RetrievalPlanFileOut
+from riverhog_api.schemas.search import SearchFileOut
 from riverhog_api.schemas.tags import TagDeletionPlanOut
 
 
@@ -186,7 +203,7 @@ def test_operational_responses_reject_contradictory_state_evidence() -> None:
             {
                 "id": "0123456789abcdef",
                 "app": "review",
-                "access": [],
+                "access": [{"permission": "catalog:read", "resource": "*"}],
                 "monthly_download_quota_bytes": None,
                 "status": "active",
                 "created_at": "2026-08-25T00:00:00.000000Z",
@@ -263,3 +280,225 @@ def test_list_responses_expose_only_closed_sort_and_filter_contracts() -> None:
         filters = schema["properties"].get("filters")
         if filters is not None:
             assert filters.get("additionalProperties") is not True, name
+
+
+def test_archive_copy_projection_accepts_each_reachable_evidence_state() -> None:
+    root = {
+        "object_path": "collections/1/archive-root.json",
+        "sha256": "a" * 64,
+        "proof_object_path": None,
+        "proof_sha256": None,
+        "proof_state": "pending",
+    }
+    copies = (
+        {
+            "store": "archive",
+            "state": "uploading",
+            "storage_prefix": "collections/1",
+            "object_count": 1,
+            "stored_bytes": 42,
+            "last_uploaded_at": None,
+            "last_verified_at": None,
+            "failure": None,
+            "archive_root": root,
+        },
+        {
+            "store": "archive",
+            "state": "uploaded",
+            "storage_prefix": "collections/1",
+            "object_count": 2,
+            "stored_bytes": 84,
+            "last_uploaded_at": "2026-08-25T00:00:00.000000Z",
+            "last_verified_at": "2026-08-25T00:00:01.000000Z",
+            "failure": None,
+            "archive_root": {
+                **root,
+                "proof_object_path": "collections/1/archive-root.proof.json",
+                "proof_sha256": "b" * 64,
+                "proof_state": "uploaded",
+            },
+        },
+        {
+            "store": "archive",
+            "state": "failed",
+            "storage_prefix": "collections/1",
+            "object_count": 1,
+            "stored_bytes": 42,
+            "last_uploaded_at": "2026-08-25T00:00:00.000000Z",
+            "last_verified_at": None,
+            "failure": "proof publication failed",
+            "archive_root": {**root, "proof_state": "failed"},
+        },
+    )
+    validator = Draft202012Validator(ArchiveCopyOut.model_json_schema())
+
+    for payload in copies:
+        assert ArchiveCopyOut.model_validate(payload).root.state == payload["state"]
+        validator.validate(payload)
+
+    impossible = {**copies[1], "archive_root": root}
+    with pytest.raises(ValidationError):
+        ArchiveCopyOut.model_validate(impossible)
+    with pytest.raises(JsonSchemaValidationError):
+        validator.validate(impossible)
+
+
+def test_provenance_read_projections_preserve_captured_mixed_and_omitted_truth() -> None:
+    journal_id = "urn:uuid:00000000-0000-4000-8000-000000000001"
+    state_id = "urn:uuid:00000000-0000-4000-8000-000000000002"
+    file_identity = {"collection_id": 1, "path": "camera/clip.mp4", "bytes": 42, "sha256": "a" * 64}
+    captured = {
+        **file_identity,
+        "provenance": {
+            "status": "captured",
+            "journal_id": journal_id,
+            "current_state_id": state_id,
+        },
+    }
+    omitted = {
+        **file_identity,
+        "path": "camera/omitted.mp4",
+        "provenance": {"status": "omitted", "omission_reason": "device did not provide it"},
+    }
+    page_base = {
+        "page": 1,
+        "per_page": 2,
+        "total": 2,
+        "pages": 1,
+        "sort": "path",
+        "order": "asc",
+        "query": None,
+        "status": None,
+        "collection_id": 1,
+    }
+    pages = (
+        {
+            **page_base,
+            "provenance_mode": "captured",
+            "provenance_identity": "b" * 64,
+            "files": [captured],
+        },
+        {
+            **page_base,
+            "provenance_mode": "mixed",
+            "provenance_identity": "b" * 64,
+            "files": [captured, omitted],
+        },
+        {
+            **page_base,
+            "provenance_mode": "omitted",
+            "provenance_identity": None,
+            "files": [omitted],
+        },
+    )
+
+    for payload in pages:
+        assert (
+            ListCollectionFileProvenanceResponse.model_validate(payload).root.provenance_mode
+            == payload["provenance_mode"]
+        )
+
+    journal = {
+        "journal_id": journal_id,
+        "bytes": 128,
+        "sha256": "c" * 64,
+        "entries": 1,
+        "current_state_id": state_id,
+        "current_path": "camera/clip.mp4",
+        "current_bytes": 42,
+        "current_sha256": "a" * 64,
+        "agent_ids": ["fixture"],
+        "ancestor_journal_ids": [],
+        "entity_counts": {"file": 1},
+    }
+    assert (
+        CollectionFileProvenanceDetailOut.model_validate(
+            {**captured, "journal": journal}
+        ).root.provenance.status
+        == "captured"
+    )
+    assert (
+        CollectionFileProvenanceTraceOut.model_validate(
+            {
+                **captured,
+                "journal": journal,
+                "journals": [journal],
+                "external_state_references": [],
+            }
+        ).root.provenance.status
+        == "captured"
+    )
+    omitted_detail = {**omitted, "journal": None}
+    assert CollectionFileProvenanceDetailOut.model_validate(omitted_detail).root.journal is None
+    assert (
+        CollectionFileProvenanceTraceOut.model_validate(
+            {**omitted_detail, "journals": [], "external_state_references": []}
+        ).root.provenance.status
+        == "omitted"
+    )
+    assert (
+        CollectionProvenanceVerificationOut.model_validate(
+            {
+                "collection_id": 1,
+                "valid": True,
+                "provenance_mode": "omitted",
+                "provenance_identity": None,
+                "files": 1,
+                "journals": 0,
+                "entities": 0,
+            }
+        ).root.valid
+        is True
+    )
+    assert (
+        CollectionProvenanceVerificationOut.model_validate(
+            {
+                "collection_id": 1,
+                "valid": True,
+                "provenance_mode": "mixed",
+                "provenance_identity": "b" * 64,
+                "files": 2,
+                "journals": 1,
+                "entities": 1,
+            }
+        ).root.valid
+        is True
+    )
+
+
+def test_file_and_access_set_responses_reuse_their_canonical_owners() -> None:
+    identity = {"path": "camera/clip.mp4", "bytes": 42, "sha256": "a" * 64}
+    assert (
+        CollectionUploadFileOut.model_validate(
+            {
+                **identity,
+                "provenance": {
+                    "status": "omitted",
+                    "omission_reason": "device did not provide it",
+                },
+            }
+        ).path
+        == identity["path"]
+    )
+    assert RetrievalPlanFileOut.model_validate({**identity, "collection_id": 1}).bytes == 42
+    assert (
+        SearchFileOut.model_validate(
+            {**identity, "collection_id": 1, "file_ref": "1/camera/clip.mp4"}
+        ).sha256
+        == identity["sha256"]
+    )
+    assert (
+        AppAccessSetOut.model_validate(
+            {
+                "app": "indexer",
+                "key_id": "0123456789abcdef",
+                "access": [{"permission": "catalog:read", "resource": "*"}],
+            }
+        )
+        .access.root[0]
+        .permission
+        == "catalog:read"
+    )
+
+    upload_file_schema = create_app().openapi()["components"]["schemas"]["CollectionUploadFileOut"]
+    assert set(upload_file_schema["properties"]) == {"path", "bytes", "sha256", "provenance"}
