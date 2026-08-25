@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import riverhog_ftp_adapter.landing as landing
 from riverhog_api_client.producer import ProducedCollection
 from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 from riverhog_ftp_adapter.landing import FtpAdapter
@@ -138,6 +139,57 @@ def test_explicit_flush_is_the_same_bounded_claim_and_receipt_path(
             },
         )
     ]
+
+
+def test_explicit_flush_marker_and_pass_are_one_serialized_operation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    base = _config(tmp_path)
+    source = base.sources[0].model_copy(update={"close_mode": "explicit-flush"})
+    config = base.model_copy(update={"sources": (source,)})
+    payload = source.root / "current.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"current")
+    _Producer.calls = []
+    monkeypatch.setattr(landing, "CollectionProducer", _Producer)
+    adapter = FtpAdapter(object(), config)  # type: ignore[arg-type]
+
+    marker_written = threading.Event()
+    release_marker_write = threading.Event()
+    polling_pass_entered = threading.Event()
+    original_write_atomic = landing._write_atomic
+    original_pass = adapter._run_once
+
+    def blocking_marker_write(path: Path, content: bytes) -> None:
+        original_write_atomic(path, content)
+        if path.name == ".riverhog-ftp-flush":
+            marker_written.set()
+            assert release_marker_write.wait(timeout=2)
+
+    def observed_pass(source_ids: object = None) -> dict[str, object]:
+        if threading.current_thread().name == "polling-pass":
+            polling_pass_entered.set()
+        return original_pass(source_ids)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(landing, "_write_atomic", blocking_marker_write)
+    monkeypatch.setattr(adapter, "_run_once", observed_pass)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        flush = executor.submit(adapter.flush, source.id)
+        try:
+            assert marker_written.wait(timeout=2)
+            poll = executor.submit(adapter.run_once)
+            polling_stole_marker = polling_pass_entered.wait(timeout=0.25)
+        finally:
+            release_marker_write.set()
+        flush_result = flush.result(timeout=5)
+        poll_result = poll.result(timeout=5)
+
+    assert polling_stole_marker is False
+    assert flush_result["completed"] == 1
+    assert flush_result["failed"] == []
+    assert poll_result["completed"] == 0
 
 
 def test_captured_provenance_is_identity_checked_and_projected_for_the_producer(

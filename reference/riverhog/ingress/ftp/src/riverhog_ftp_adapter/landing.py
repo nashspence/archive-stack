@@ -96,10 +96,11 @@ class FtpAdapter:
 
     def flush(self, source_id: str) -> dict[str, object]:
         source = self.config.source(source_id)
-        marker = source.root / _FLUSH_MARKER
-        marker.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        _write_atomic(marker, b"riverhog-ftp-adapter-flush/v1\n")
-        return self.run_once((source_id,))
+        with self._custody_pass_lock:
+            marker = source.root / _FLUSH_MARKER
+            marker.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _write_atomic(marker, b"riverhog-ftp-adapter-flush/v1\n")
+            return self._run_once((source_id,))
 
     def status(self) -> dict[str, object]:
         rows: list[dict[str, object]] = []
