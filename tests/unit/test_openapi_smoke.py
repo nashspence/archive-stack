@@ -108,8 +108,18 @@ def test_provenance_reads_publish_typed_captured_or_omitted_contracts() -> None:
         "status",
         "omission_reason",
     }
-    assert "external_state_references" in schemas["CollectionFileProvenanceTraceOut"]["required"]
-    assert "provenance_identity" in schemas["CollectionProvenanceVerificationOut"]["properties"]
+    assert schemas["CollectionFileProvenanceTraceOut"]["anyOf"] == [
+        {"$ref": "#/components/schemas/CapturedCollectionFileProvenanceTraceOut"},
+        {"$ref": "#/components/schemas/OmittedCollectionFileProvenanceTraceOut"},
+    ]
+    verification = schemas["CollectionProvenanceVerificationOut"]
+    assert verification["discriminator"]["propertyName"] == "provenance_mode"
+    assert {item["$ref"] for item in verification["oneOf"]} == {
+        "#/components/schemas/CapturedCollectionProvenanceVerification",
+        "#/components/schemas/OmittedCollectionProvenanceVerification",
+    }
+    listing = schemas["ListCollectionFileProvenanceResponse"]
+    assert listing["discriminator"]["propertyName"] == "provenance_mode"
     assert (
         paths["/v1/collections/{collection_id}/provenance/files"]["get"]["responses"]["200"][
             "content"

@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
 import httpx
 from http_api_contracts import parse_error_payload, safe_http_base_url
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from stove0_target_protocol import (
+    AcceptedTargetJob,
+    OperationContract,
     Sha256,
     TargetContract,
     TargetJobRequest,
     TargetJobStatus,
     TargetPreflightRequest,
     TargetPreflightResponse,
+    validate_preflight_response_against_request,
+    validate_status_against_request,
 )
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -60,25 +64,66 @@ class TargetClient:
         return self._request("GET", "/v1/target", TargetContract)
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
-        return self._request("POST", "/v1/preflight", TargetPreflightResponse, request)
+        response = self._request("POST", "/v1/preflight", TargetPreflightResponse, request)
+        self._validate(lambda: validate_preflight_response_against_request(response, request))
+        return response
 
-    def put_job(self, request: TargetJobRequest) -> TargetJobStatus:
-        return self._request(
+    def put_job(
+        self,
+        request: TargetJobRequest,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
+        status = self._request(
             "PUT",
             f"/v1/jobs/{request.declaration.job_id}",
             TargetJobStatus,
             request,
         )
+        self._validate(lambda: validate_status_against_request(status, request, operation))
+        return status
 
-    def status(self, job_id: Sha256) -> TargetJobStatus:
-        return self._request("GET", f"/v1/jobs/{_job_id(job_id)}", TargetJobStatus)
-
-    def cancel(self, job_id: Sha256) -> TargetJobStatus:
-        return self._request(
-            "POST",
-            f"/v1/jobs/{_job_id(job_id)}/cancel",
+    def status(
+        self,
+        request: TargetJobRequest | AcceptedTargetJob,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
+        if not isinstance(request, (TargetJobRequest, AcceptedTargetJob)):
+            raise ValueError("target status requires exact accepted-request context")
+        status = self._request(
+            "GET",
+            f"/v1/jobs/{_job_id(request.declaration.job_id)}",
             TargetJobStatus,
         )
+        self._validate(lambda: validate_status_against_request(status, request, operation))
+        return status
+
+    def cancel(
+        self,
+        request: TargetJobRequest | AcceptedTargetJob,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
+        if not isinstance(request, (TargetJobRequest, AcceptedTargetJob)):
+            raise ValueError("target cancellation requires exact accepted-request context")
+        status = self._request(
+            "POST",
+            f"/v1/jobs/{_job_id(request.declaration.job_id)}/cancel",
+            TargetJobStatus,
+        )
+        self._validate(lambda: validate_status_against_request(status, request, operation))
+        return status
+
+    @staticmethod
+    def _validate(validation: Callable[[], None]) -> None:
+        try:
+            validation()
+        except (TypeError, ValueError) as exc:
+            raise TargetProtocolError(
+                "target returned a response inconsistent with the request",
+                code="invalid_target_response",
+            ) from exc
 
     def _request(
         self,

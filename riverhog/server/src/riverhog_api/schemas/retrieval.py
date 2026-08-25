@@ -6,6 +6,7 @@ from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import (
     ArchiveStoreName,
     CollectionId,
+    ImmutableFileIdentityDocument,
     RetrievalCacheProtection,
     RetrievalCacheSort,
     RetrievalCacheState,
@@ -26,9 +27,8 @@ class RetrievalPlanRequest(RetrievalFileReferenceSetDocument):
     restore_policy: Literal["allow", "never"] = "allow"
 
 
-class RetrievalPlanFileOut(RetrievalFileIn):
-    bytes: int
-    sha256: str
+class RetrievalPlanFileOut(ImmutableFileIdentityDocument):
+    collection_id: CollectionId
 
 
 class RetrievalPlanObjectPlacementOut(RiverhogModel):

@@ -83,7 +83,7 @@ class AppKeyOut(RiverhogModel):
 
     id: ApplicationKeyId
     app: ApplicationName
-    access: list[AppAccessOut]
+    access: ApplicationAccessGrantSet
     monthly_download_quota_bytes: MonthlyDownloadQuotaBytes | None
     status: Literal["active", "expired", "revoked"]
     created_at: str
@@ -145,4 +145,4 @@ class AppAccessListOut(RiverhogModel):
 class AppAccessSetOut(RiverhogModel):
     app: ApplicationName
     key_id: ApplicationKeyId
-    access: list[AppAccessOut]
+    access: ApplicationAccessGrantSet

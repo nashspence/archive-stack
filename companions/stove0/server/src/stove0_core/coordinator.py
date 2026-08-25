@@ -37,6 +37,7 @@ from stove0_protocol import (
 )
 from stove0_target_client import TargetClient
 from stove0_target_protocol import (
+    AcceptedTargetJob,
     OperationContract,
     OutputCollectionRef,
     TargetContract,
@@ -159,6 +160,8 @@ class ObserverPort(Protocol):
         self,
         registration_id: str,
         invocation: ObservationInvocation,
+        *,
+        descriptor: ObserverDescriptor,
     ) -> ObservationResult: ...
 
 
@@ -175,11 +178,25 @@ class TargetPort(Protocol):
         self,
         registration_id: str,
         request: TargetJobRequest,
+        *,
+        operation: OperationContract,
     ) -> TargetJobStatus: ...
 
-    def get_job(self, registration_id: str, job_id: str) -> TargetJobStatus: ...
+    def get_job(
+        self,
+        registration_id: str,
+        request: TargetJobRequest | AcceptedTargetJob,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus: ...
 
-    def cancel_job(self, registration_id: str, job_id: str) -> TargetJobStatus: ...
+    def cancel_job(
+        self,
+        registration_id: str,
+        request: TargetJobRequest | AcceptedTargetJob,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus: ...
 
 
 class PlanningObservationTerminal(RuntimeError):
@@ -213,8 +230,10 @@ class HttpObserverPort:
         self,
         registration_id: str,
         invocation: ObservationInvocation,
+        *,
+        descriptor: ObserverDescriptor,
     ) -> ObservationResult:
-        return self._client(registration_id).observe(invocation)
+        return self._client(registration_id).observe(invocation, descriptor=descriptor)
 
     def _client(self, registration_id: str) -> ContentObserverClient:
         try:
@@ -243,14 +262,28 @@ class HttpTargetPort:
         self,
         registration_id: str,
         request: TargetJobRequest,
+        *,
+        operation: OperationContract,
     ) -> TargetJobStatus:
-        return self._client(registration_id).put_job(request)
+        return self._client(registration_id).put_job(request, operation=operation)
 
-    def get_job(self, registration_id: str, job_id: str) -> TargetJobStatus:
-        return self._client(registration_id).status(job_id)
+    def get_job(
+        self,
+        registration_id: str,
+        request: TargetJobRequest | AcceptedTargetJob,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
+        return self._client(registration_id).status(request, operation=operation)
 
-    def cancel_job(self, registration_id: str, job_id: str) -> TargetJobStatus:
-        return self._client(registration_id).cancel(job_id)
+    def cancel_job(
+        self,
+        registration_id: str,
+        request: TargetJobRequest | AcceptedTargetJob,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
+        return self._client(registration_id).cancel(request, operation=operation)
 
     def _client(self, registration_id: str) -> TargetClient:
         try:
@@ -527,11 +560,12 @@ class Stove0Coordinator:
             )
         if record.target_request is None or record.workflow_plan is None:
             return self.work.cancel(work_id, expected_revision=record.revision)
+        operation = self.planning.operation_contract(record.workflow_plan.operation)
         status = self.targets.cancel_job(
             record.workflow_plan.target_registration_id,
-            record.target_request.declaration.job_id,
+            record.target_request,
+            operation=operation,
         )
-        operation = self.planning.operation_contract(record.workflow_plan.operation)
         return self.work.record_target_status(
             work_id,
             status,
@@ -560,6 +594,7 @@ class Stove0Coordinator:
                 fence=record.claim.fence,
                 runtime=authority,
             ),
+            descriptor=descriptor,
         )
         return self.work.record_observation(
             record.work_id,
@@ -593,6 +628,7 @@ class Stove0Coordinator:
                     fence=parent.claim.fence,
                     runtime=authority,
                 ),
+                descriptor=descriptor,
             )
             validate_observation_result(result, request, descriptor)
             if result.state == "inapplicable":
@@ -690,11 +726,12 @@ class Stove0Coordinator:
             invocation,
             expected_revision=record.revision,
         )
+        operation = self.planning.operation_contract(record.workflow_plan.operation)
         status = self.targets.put_job(
             record.workflow_plan.target_registration_id,
             invocation,
+            operation=operation,
         )
-        operation = self.planning.operation_contract(record.workflow_plan.operation)
         return self.work.record_target_status(
             record.work_id,
             status,
@@ -721,11 +758,12 @@ class Stove0Coordinator:
             runtime=authority.runtime,
             request_sha256=record.target_request.request_sha256,
         )
+        operation = self.planning.operation_contract(record.workflow_plan.operation)
         status = self.targets.put_job(
             record.workflow_plan.target_registration_id,
             refreshed,
+            operation=operation,
         )
-        operation = self.planning.operation_contract(record.workflow_plan.operation)
         return self.work.record_target_status(
             record.work_id,
             status,

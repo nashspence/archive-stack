@@ -229,6 +229,24 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     operator_headers = {"Authorization": f"Bearer {operator_token}"}
     operator = _api(transport, operator_token, observer=observer)
 
+    missing_archive_source = transport.post(
+        "/v1/archive/copies",
+        headers=operator_headers,
+        json={"collection_id": 999, "destination_store": "secondary"},
+    )
+    assert missing_archive_source.status_code == 404
+    assert missing_archive_source.json()["error"]["code"] == "not_found"
+    archive_copy_errors = application.openapi()["paths"]["/v1/archive/copies"]["post"]["responses"]
+    assert "not_found" in archive_copy_errors["404"]["x-riverhog-error-codes"]
+    provenance_verify_errors = application.openapi()["paths"][
+        "/v1/collections/{collection_id}/provenance/verify"
+    ]["post"]["responses"]
+    assert "conflict" not in {
+        code
+        for response in provenance_verify_errors.values()
+        for code in response.get("x-riverhog-error-codes", [])
+    }
+
     assert transport.get("/health/live").json() == {"service": "riverhog", "status": "ok"}
     assert transport.get("/health/ready").json() == {"service": "riverhog", "status": "ok"}
 

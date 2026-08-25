@@ -10,6 +10,7 @@ from riverhog_protocol import (
     CollectionSort,
     CollectionUploadSort,
     CollectionUploadState,
+    ProcessingClaimId,
     SortOrder,
 )
 from riverhog_protocol.paths import CanonicalTag
@@ -388,7 +389,7 @@ def plan_collection_deletion(
     collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CollectionDeleter,
-    retirement_claim_id: str | None = None,
+    retirement_claim_id: ProcessingClaimId | None = None,
 ) -> CollectionDeletionPlanOut:
     container.collection_access.require(principal, COLLECTIONS_DELETE, collection_id)
     return CollectionDeletionPlanOut.model_validate(

@@ -2080,9 +2080,6 @@ def _file_payload(record: CollectionUploadFileRecord) -> dict[str, object]:
         "path": record.path,
         "bytes": record.bytes,
         "sha256": record.sha256,
-        "upload_state": "registered",
-        "uploaded_bytes": 0,
-        "upload_state_expires_at": None,
         "provenance": (
             {
                 "status": "captured",

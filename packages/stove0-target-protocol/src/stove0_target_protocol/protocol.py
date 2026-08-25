@@ -583,6 +583,21 @@ class ExternalEffectReceipt(ExternalEffectReceiptPayload):
 
 
 class TargetJobStatus(TargetProtocolModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"state": {"const": "failed"}}},
+                    "then": {
+                        "required": ["failure"],
+                        "properties": {"failure": {"type": "object"}},
+                    },
+                    "else": {"properties": {"failure": {"type": "null"}}},
+                }
+            ]
+        },
+    )
+
     protocol: TargetProtocol = TRANSFORM_TARGET_PROTOCOL
     job_id: Sha256
     state: TargetJobState
@@ -675,6 +690,8 @@ class TargetJobStatus(TargetProtocolModel):
                 or self.effect_receipt is not None
             ):
                 raise ValueError("canceled target status cannot publish a result")
+            if self.failure is not None:
+                raise ValueError("canceled target status cannot include failure details")
         elif (
             self.outputs
             or self.output_collection is not None
@@ -683,6 +700,8 @@ class TargetJobStatus(TargetProtocolModel):
             or self.effect_receipt is not None
         ):
             raise ValueError("nonterminal target status cannot publish terminal evidence")
+        elif self.failure is not None:
+            raise ValueError("nonterminal target status cannot include failure details")
         if self.state != "inapplicable" and self.inapplicable is not None:
             raise ValueError("only inapplicable target status may include an outcome")
         return self

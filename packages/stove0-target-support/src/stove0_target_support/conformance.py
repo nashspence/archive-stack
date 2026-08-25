@@ -28,9 +28,19 @@ class TargetClient(Protocol):
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse: ...
 
-    def put_job(self, request: TargetJobRequest) -> TargetJobStatus: ...
+    def put_job(
+        self,
+        request: TargetJobRequest,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus: ...
 
-    def status(self, job_id: str) -> TargetJobStatus: ...
+    def status(
+        self,
+        request: TargetJobRequest,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus: ...
 
 
 def conformance_report(
@@ -85,9 +95,9 @@ def conformance_report(
     validate_preflight_response_against_request(preflight, preflight_request)
     if preflight.plan != declaration.plan:
         raise RuntimeError("target preflight did not reproduce the submitted plan")
-    first = client.put_job(job_request)
-    second = client.put_job(job_request)
-    observed = client.status(job_request.declaration.job_id)
+    first = client.put_job(job_request, operation=operation)
+    second = client.put_job(job_request, operation=operation)
+    observed = client.status(job_request, operation=operation)
     validate_status_against_request(first, job_request, operation)
     validate_status_against_request(second, job_request, operation)
     validate_status_against_request(observed, job_request, operation)

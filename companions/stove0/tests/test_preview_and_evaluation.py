@@ -385,8 +385,11 @@ class PreviewObserver:
         self,
         registration_id: str,
         invocation: ObservationInvocation,
+        *,
+        descriptor: ObserverDescriptor,
     ) -> ObservationResult:
         assert registration_id == "fixture-observer"
+        assert descriptor == self.value
         self.invocations.append(invocation)
         facts = {"kind": "fixture"}
         return ObservationResult.seal(
@@ -675,8 +678,14 @@ def test_workflow_preview_rejects_observer_result_that_does_not_bind_request() -
             self,
             registration_id: str,
             invocation: ObservationInvocation,
+            *,
+            descriptor: ObserverDescriptor,
         ) -> ObservationResult:
-            result = super().observe(registration_id, invocation)
+            result = super().observe(
+                registration_id,
+                invocation,
+                descriptor=descriptor,
+            )
             wrong_subject = ArtifactSubject(
                 id="other",
                 role="fixture.source/v1",
@@ -741,8 +750,14 @@ def test_workflow_preview_surfaces_each_terminal_observer_result(
             self,
             registration_id: str,
             invocation: ObservationInvocation,
+            *,
+            descriptor: ObserverDescriptor,
         ) -> ObservationResult:
-            observed = super().observe(registration_id, invocation)
+            observed = super().observe(
+                registration_id,
+                invocation,
+                descriptor=descriptor,
+            )
             return ObservationResult.seal(
                 ObservationResultPayload(
                     **observed.model_dump(

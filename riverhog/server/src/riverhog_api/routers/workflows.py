@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
 from http_api_contracts import operation_interface
-from riverhog_protocol import CollectionIdParameter
+from riverhog_protocol import CollectionIdParameter, ProcessingClaimId
 from riverhog_protocol.collection_workflow_transport import ClaimState
 from riverhog_protocol.collection_workflows import (
     CollectionArtifactIdentity,
@@ -108,7 +108,7 @@ def list_processing_claims(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def get_processing_claim(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     container: ContainerDep,
     principal: CollectionTransformController,
 ) -> ProcessingClaimOut:
@@ -123,7 +123,7 @@ def get_processing_claim(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def renew_processing_claim(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     request: ProcessingClaimRenewIn,
     container: ContainerDep,
     principal: CollectionTransformLeaseManager,
@@ -144,7 +144,7 @@ def renew_processing_claim(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def restart_processing_claim(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     request: ProcessingClaimRestartIn,
     container: ContainerDep,
     principal: CollectionTransformController,
@@ -165,7 +165,7 @@ def restart_processing_claim(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def abandon_processing_claim(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     request: ProcessingClaimAbandonIn,
     container: ContainerDep,
     principal: CollectionTransformController,
@@ -186,7 +186,7 @@ def abandon_processing_claim(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def seal_processing_claim_plan(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     request: ProcessingClaimPlanSealIn,
     container: ContainerDep,
     principal: CollectionTransformExecutor,
@@ -218,7 +218,7 @@ def seal_processing_claim_plan(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def create_transform_capability(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     request: TransformCapabilityCreateIn,
     container: ContainerDep,
     principal: CollectionTransformExecutor,
@@ -245,7 +245,7 @@ def create_transform_capability(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def settle_processing_claim(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     request: ProcessingClaimSettleIn,
     container: ContainerDep,
     principal: CollectionTransformController,
@@ -270,7 +270,7 @@ def settle_processing_claim(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def settle_processing_claim_outcomes(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     request: ProcessingClaimOutcomesSettleIn,
     container: ContainerDep,
     principal: CollectionTransformController,
@@ -296,7 +296,7 @@ def settle_processing_claim_outcomes(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def begin_processing_claim_retirement(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     request: ProcessingClaimFenceIn,
     container: ContainerDep,
     principal: CollectionTransformController,
@@ -316,7 +316,7 @@ def begin_processing_claim_retirement(
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def release_processing_claim(
-    claim_id: str,
+    claim_id: ProcessingClaimId,
     request: ProcessingClaimFenceIn,
     container: ContainerDep,
     principal: CollectionTransformController,

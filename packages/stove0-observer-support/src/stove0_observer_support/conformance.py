@@ -21,7 +21,12 @@ from stove0_observer_protocol import (
 class ObserverClient(Protocol):
     def descriptor(self) -> ObserverDescriptor: ...
 
-    def observe(self, invocation: ObservationInvocation) -> Any: ...
+    def observe(
+        self,
+        invocation: ObservationInvocation,
+        *,
+        descriptor: ObserverDescriptor,
+    ) -> Any: ...
 
 
 def conformance_report(
@@ -57,7 +62,7 @@ def conformance_report(
     if request.observer_contract_sha256 != support.contract_sha256:
         raise RuntimeError("invocation does not bind the observer's published contract")
     Draft202012Validator(support.options_schema.document).validate(request.options)
-    result = client.observe(invocation)
+    result = client.observe(invocation, descriptor=descriptor)
     validate_observation_result(result, request, descriptor)
     if result.state == "observed":
         Draft202012Validator(support.facts_schema.document).validate(result.facts)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from http import HTTPStatus
 from ipaddress import ip_address
@@ -343,13 +343,9 @@ def status_for_error_code(code: str, *, fallback: int = 500) -> int:
     return ERROR_STATUS_BY_CODE.get(code, fallback)
 
 
-def _default_operation_error_codes(path: str, method: str) -> set[str]:
-    codes = {"bad_request", "unauthorized", "forbidden", "internal_error"}
-    if "{" in path:
-        codes.add("not_found")
-    if method in {"delete", "patch", "post", "put"}:
-        codes.add("conflict")
-    return codes
+_BASE_OPERATION_ERROR_CODES = frozenset(
+    {"bad_request", "unauthorized", "forbidden", "internal_error"}
+)
 
 
 def error_payload(
@@ -367,7 +363,15 @@ def error_payload(
     ).model_dump(exclude_none=True)
 
 
-def apply_openapi_error_contract(schema: dict[str, Any]) -> dict[str, Any]:
+def apply_openapi_error_contract(
+    schema: dict[str, Any],
+    *,
+    operation_error_codes: Mapping[str, Collection[str]] | None = None,
+) -> dict[str, Any]:
+    """Project exact application-owned error vocabularies into OpenAPI."""
+
+    declared_by_operation = operation_error_codes or {}
+    observed_operations: set[str] = set()
     error_schema = ErrorResponse.model_json_schema(ref_template="#/components/schemas/{model}")
     definitions = error_schema.pop("$defs", {})
     components = schema.setdefault("components", {}).setdefault("schemas", {})
@@ -387,7 +391,12 @@ def apply_openapi_error_contract(schema: dict[str, Any]) -> dict[str, Any]:
                 continue
             responses = operation.setdefault("responses", {})
             responses.pop("422", None)
-            codes = _default_operation_error_codes(path, method)
+            operation_id = operation.get("operationId")
+            if not isinstance(operation_id, str) or not operation_id:
+                raise ValueError(f"OpenAPI operation {method.upper()} {path} has no operationId")
+            observed_operations.add(operation_id)
+            codes = set(_BASE_OPERATION_ERROR_CODES)
+            codes.update(declared_by_operation.get(operation_id, ()))
             for response in responses.values():
                 if not isinstance(response, Mapping):
                     continue
@@ -419,6 +428,12 @@ def apply_openapi_error_contract(schema: dict[str, Any]) -> dict[str, Any]:
                         }
                     },
                 }
+    unknown_operations = set(declared_by_operation) - observed_operations
+    if unknown_operations:
+        raise ValueError(
+            "error contracts name unknown OpenAPI operations: "
+            + ", ".join(sorted(unknown_operations))
+        )
     return schema
 
 

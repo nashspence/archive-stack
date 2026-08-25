@@ -12,6 +12,7 @@ from stove0_observer_protocol import (
     ObservationInvocation,
     ObservationResult,
     ObserverDescriptor,
+    validate_observation_result,
 )
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -57,13 +58,26 @@ class ContentObserverClient:
     def descriptor(self) -> ObserverDescriptor:
         return self._request("GET", "/v1/observer", ObserverDescriptor)
 
-    def observe(self, invocation: ObservationInvocation) -> ObservationResult:
-        return self._request(
+    def observe(
+        self,
+        invocation: ObservationInvocation,
+        *,
+        descriptor: ObserverDescriptor,
+    ) -> ObservationResult:
+        result = self._request(
             "POST",
             "/v1/observe",
             ObservationResult,
             invocation,
         )
+        try:
+            validate_observation_result(result, invocation.request, descriptor)
+        except (TypeError, ValueError) as exc:
+            raise ObserverProtocolError(
+                "observer returned a response inconsistent with the invocation",
+                code="invalid_observer_response",
+            ) from exc
+        return result
 
     def _request(
         self,

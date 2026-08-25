@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
 from application_access import ApplicationKeyId, ApplicationName
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, RootModel, model_validator
 from riverhog_protocol import (
     ArchiveCopySort,
     ArchiveCopyState,
@@ -15,25 +15,104 @@ from riverhog_protocol import (
 
 from riverhog_api.schemas.common import RiverhogModel
 
+Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+ObjectPath = Annotated[str, Field(min_length=1)]
 
-class ArchiveCopyOut(RiverhogModel):
+
+class PendingArchiveRootPublicationOut(RiverhogModel):
+    object_path: ObjectPath | None = None
+    sha256: Sha256 | None = None
+    proof_object_path: None = None
+    proof_sha256: None = None
+    proof_state: Literal["pending"] = "pending"
+
+    @model_validator(mode="after")
+    def validate_manifest_pair(self) -> Self:
+        if (self.object_path is None) != (self.sha256 is None):
+            raise ValueError("archive-root manifest path and identity must appear together")
+        return self
+
+
+class UploadedArchiveRootPublicationOut(RiverhogModel):
+    object_path: ObjectPath
+    sha256: Sha256
+    proof_object_path: ObjectPath
+    proof_sha256: Sha256
+    proof_state: Literal["uploaded"]
+
+
+class FailedArchiveRootPublicationOut(RiverhogModel):
+    object_path: ObjectPath | None = None
+    sha256: Sha256 | None = None
+    proof_object_path: ObjectPath | None = None
+    proof_sha256: Sha256 | None = None
+    proof_state: Literal["failed"]
+
+    @model_validator(mode="after")
+    def validate_object_pairs(self) -> Self:
+        if (self.object_path is None) != (self.sha256 is None):
+            raise ValueError("archive-root manifest path and identity must appear together")
+        if (self.proof_object_path is None) != (self.proof_sha256 is None):
+            raise ValueError("archive-root proof path and identity must appear together")
+        if self.proof_object_path is not None and self.object_path is None:
+            raise ValueError("archive-root proof requires its manifest identity")
+        return self
+
+
+type _ArchiveRootPublication = Annotated[
+    PendingArchiveRootPublicationOut
+    | UploadedArchiveRootPublicationOut
+    | FailedArchiveRootPublicationOut,
+    Field(discriminator="proof_state"),
+]
+
+
+class ArchiveRootPublicationOut(RootModel[_ArchiveRootPublication]):
+    pass
+
+
+class _ArchiveCopyBase(RiverhogModel):
     store: ArchiveStoreName
-    state: Literal["pending", "uploading", "uploaded", "retrying", "failed"]
-    storage_prefix: str | None
-    object_count: int
-    stored_bytes: int | None
+    storage_prefix: ObjectPath | None
+    object_count: int = Field(ge=0)
+    stored_bytes: int = Field(ge=0)
     last_uploaded_at: str | None
     last_verified_at: str | None
-    failure: str | None
-    archive_root: ArchiveRootPublicationOut | None = None
+    archive_root: _ArchiveRootPublication
 
 
-class ArchiveRootPublicationOut(RiverhogModel):
-    object_path: str | None = None
-    sha256: str | None = None
-    proof_object_path: str | None = None
-    proof_sha256: str | None = None
-    proof_state: Literal["pending", "uploaded", "failed"] = "pending"
+class IncompleteArchiveCopyOut(_ArchiveCopyBase):
+    state: Literal["pending", "uploading", "retrying"]
+    failure: None
+    archive_root: PendingArchiveRootPublicationOut | UploadedArchiveRootPublicationOut
+
+
+class UploadedArchiveCopyOut(_ArchiveCopyBase):
+    state: Literal["uploaded"]
+    storage_prefix: ObjectPath
+    object_count: int = Field(ge=1)
+    stored_bytes: int = Field(ge=1)
+    last_uploaded_at: str
+    last_verified_at: str
+    failure: None
+    archive_root: UploadedArchiveRootPublicationOut
+
+
+class FailedArchiveCopyOut(_ArchiveCopyBase):
+    state: Literal["failed"]
+    failure: str = Field(min_length=1)
+    archive_root: FailedArchiveRootPublicationOut
+
+
+class ArchiveCopyOut(
+    RootModel[
+        Annotated[
+            IncompleteArchiveCopyOut | UploadedArchiveCopyOut | FailedArchiveCopyOut,
+            Field(discriminator="state"),
+        ]
+    ]
+):
+    pass
 
 
 class CreateArchiveCopyRequest(ArchiveCopyStoreSelectionDocument):

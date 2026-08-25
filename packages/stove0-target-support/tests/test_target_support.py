@@ -10,6 +10,7 @@ import httpx
 import pytest
 from http_api_contracts import http_operation_for_request, operation_openapi
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
 from riverhog_protocol import Conflict, Unauthorized
 from riverhog_protocol.collection_workflows import (
@@ -40,7 +41,7 @@ from stove0_protocol import (
     WorkIdentity,
     WorkPayload,
 )
-from stove0_target_client import TargetClient
+from stove0_target_client import TargetClient, TargetProtocolError
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     EFFECT_TARGET_PROTOCOL,
@@ -491,6 +492,20 @@ def test_success_status_is_operation_checked_and_failure_cannot_publish() -> Non
             failure={"code": "fixture.failure/v1", "message": "failed", "retryable": False},
         )
 
+    running_with_failure = {
+        "job_id": request.declaration.job_id,
+        "state": "running",
+        "attempt": 1,
+        "request_sha256": request.request_sha256,
+        "plan_sha256": request.declaration.plan.plan_sha256,
+        "progress": {"phase": "running", "completed": 0},
+        "failure": {"code": "fixture.failure/v1", "message": "failed", "retryable": False},
+    }
+    with pytest.raises(ValidationError, match="nonterminal target status"):
+        TargetJobStatus.model_validate(running_with_failure)
+    with pytest.raises(JsonSchemaValidationError):
+        Draft202012Validator(TargetJobStatus.model_json_schema()).validate(running_with_failure)
+
 
 def test_effect_success_is_canonical_bound_and_collection_free() -> None:
     operation, target, request = _effect_request()
@@ -616,10 +631,23 @@ class FixtureTargetClient:
     def preflight(self, _request: TargetPreflightRequest) -> TargetPreflightResponse:
         return TargetPreflightResponse(target=self.target, plan=self.request.declaration.plan)
 
-    def put_job(self, _request: TargetJobRequest) -> TargetJobStatus:
+    def put_job(
+        self,
+        _request: TargetJobRequest,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
+        assert operation.id == self.request.declaration.plan.operation_id
         return self.status_value
 
-    def status(self, _job_id: str) -> TargetJobStatus:
+    def status(
+        self,
+        request: TargetJobRequest,
+        *,
+        operation: OperationContract,
+    ) -> TargetJobStatus:
+        assert request == self.request
+        assert operation.id == self.request.declaration.plan.operation_id
         return self.status_value
 
 
@@ -642,11 +670,12 @@ def test_target_client_rejects_remote_plain_http_by_default() -> None:
 
 
 def test_target_client_rejects_noncanonical_job_ids_before_transport() -> None:
+    operation, _target, _job_request = _request()
     client = TargetClient("https://target.example")
-    with pytest.raises(ValueError, match="lowercase SHA-256"):
-        client.status("not-a-job-id")  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="lowercase SHA-256"):
-        client.cancel("A" * 64)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="accepted-request context"):
+        client.status("not-a-job-id", operation=operation)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="accepted-request context"):
+        client.cancel("A" * 64, operation=operation)  # type: ignore[arg-type]
 
 
 def test_target_client_sends_cancellation_without_a_request_body(
@@ -668,7 +697,30 @@ def test_target_client_sends_cancellation_without_a_request_body(
         lambda **_kwargs: real_client(transport=httpx.MockTransport(respond)),
     )
 
-    assert TargetClient("https://target.example").cancel(request.declaration.job_id) == expected
+    assert TargetClient("https://target.example").cancel(request, operation=operation) == expected
+
+
+def test_target_client_rejects_a_well_formed_status_for_different_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation, _target, request = _request()
+    mismatched = {
+        **_success_status(operation, request).model_dump(mode="json"),
+        "request_sha256": _sha("f"),
+    }
+    real_client = httpx.Client
+
+    def respond(_received: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=mismatched)
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **_kwargs: real_client(transport=httpx.MockTransport(respond)),
+    )
+
+    with pytest.raises(TargetProtocolError, match="inconsistent with the request"):
+        TargetClient("https://target.example").put_job(request, operation=operation)
 
 
 def test_target_http_operations_publish_exact_job_paths_and_empty_cancel() -> None:

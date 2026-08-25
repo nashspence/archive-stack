@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from http_api_contracts import error_responses, operation_interface
+from http_api_contracts import operation_interface
 from riverhog_protocol import (
     ArchiveStoreName,
     CollectionIdParameter,
@@ -131,7 +131,6 @@ def plan_retrieval(
 @router.post(
     "/retrieval-jobs",
     response_model=RetrievalJobOut,
-    responses=error_responses("download_allowance_exceeded"),
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def create_retrieval_job(
@@ -239,7 +238,6 @@ def acknowledge_retrieval_job(
 @router.get(
     "/retrieval-jobs/{job_id}/content",
     response_class=StreamingResponse,
-    responses=error_responses("download_allowance_exceeded"),
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def download_retrieval_file(
