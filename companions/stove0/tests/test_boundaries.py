@@ -287,7 +287,7 @@ def test_maintained_reference_implementations_do_not_import_product_internals() 
     assert not imports & {"riverhog_api", "riverhog_core", "stove0_api", "stove0_core"}
 
 
-def test_maintained_targets_publish_exact_dispositions_through_shared_runtime() -> None:
+def test_maintained_targets_finish_exact_dispositions_through_shared_runtime() -> None:
     for path in MAINTAINED_TARGETS:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         calls = [
@@ -295,13 +295,13 @@ def test_maintained_targets_publish_exact_dispositions_through_shared_runtime() 
             for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "publish_success"
+            and node.func.attr in {"publish_success", "finish_success"}
         ]
         assert len(calls) == 1, path
         keyword_names = {item.arg for item in calls[0].keywords}
-        assert {"artifacts", "dispositions", "execution_sha256", "operation"} <= (keyword_names), (
-            path
-        )
+        assert {"dispositions", "execution_sha256", "operation"} <= keyword_names, path
+        if calls[0].func.attr == "publish_success":
+            assert "artifacts" in keyword_names, path
         assert "stove0_target_support" in _import_roots(path)
 
 

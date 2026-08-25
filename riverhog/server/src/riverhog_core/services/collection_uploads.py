@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
@@ -16,10 +17,13 @@ from riverhog_age import encrypt_age_scrypt
 from riverhog_archive_contracts import CollectionEncryptionBinding
 from riverhog_protocol import (
     CapturedFileProvenanceBinding,
+    CollectionUploadArtifactCustodyReceiptDocument,
+    CollectionUploadCustodyObjectDocument,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
     CollectionUploadRegistrationConstraintsDocument,
     OmittedFileProvenanceBinding,
+    collection_upload_path_order_key,
     collection_upload_raw_digest_manifest,
     validate_collection_upload_batch_against_registration_constraints,
 )
@@ -37,11 +41,16 @@ from riverhog_provenance import (
     build_provenance_archive,
     validate_journal,
 )
-from sqlalchemy import asc, desc, exists, func, or_, select
+from sqlalchemy import asc, desc, exists, func, or_, select, true
 from sqlalchemy.orm import Session, selectinload
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc_timestamp_now
 
-from riverhog_core.app_permissions import COLLECTIONS_CREATE, ApplicationPrincipal
+from riverhog_core.app_permissions import (
+    ALL_RESOURCES,
+    COLLECTIONS_CREATE,
+    COLLECTIONS_DELETE,
+    ApplicationPrincipal,
+)
 from riverhog_core.archive_catalog import ArchiveVolumeProjection, build_archive_catalog_projection
 from riverhog_core.archive_formats import ROOT_PROOF_STORAGE_FORMAT
 from riverhog_core.archive_manifest import validate_collection_archive_plan
@@ -79,7 +88,12 @@ from riverhog_core.catalog_models import (
     TagRecord,
 )
 from riverhog_core.catalog_workflow_models import CollectionProcessingClaimRecord
-from riverhog_core.collection_access import require_collection_create_access
+from riverhog_core.collection_access import (
+    collection_ids,
+    permission_resources,
+    require_collection_create_access,
+    tag_ids,
+)
 from riverhog_core.collection_metadata import collection_record_manifest
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.domain.archive import (
@@ -122,6 +136,12 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
+from riverhog_core.services.operation_plans import (
+    PLAN_TTL,
+    challenge_expiry,
+    challenge_has_shape,
+    plan_challenge,
+)
 from riverhog_core.stores.mirrored_archive_resumable_object_store import (
     MirroredArchiveResumableObjectStore,
 )
@@ -139,6 +159,10 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _PROOF_RELATIVE_PATH = "manifest.json.ots.age"
 _PROOF_CONTENT_TYPE = "application/vnd.riverhog.collection-manifest-proof+age"
 _LOG = logging.getLogger("riverhog_core.collection_uploads")
+_DISCARD_CHALLENGE_PREFIX = "discard-upload"
+_CUSTODY_LOSS_WARNING = (
+    "This permanently destroys Riverhog-custodied artifacts from an incomplete upload session."
+)
 
 
 class _RegisteredFile(TypedDict):
@@ -204,6 +228,7 @@ class SqlAlchemyCollectionUploadService:
         event_context: Mapping[str, object] | None,
         provenance_mode: str = "captured",
         provenance_omission_reason: str | None = None,
+        custody_mode: str = "producer-retained",
     ) -> dict[str, object]:
         key = _normalize_idempotency_key(idempotency_key)
         normalized_tags = _normalize_tags(tags)
@@ -218,6 +243,7 @@ class SqlAlchemyCollectionUploadService:
             provenance_mode,
             provenance_omission_reason,
         )
+        normalized_custody_mode = _normalize_custody_mode(custody_mode)
 
         with session_scope(self._session_factory) as session:
             _require_transform_output_intent(
@@ -269,8 +295,15 @@ class SqlAlchemyCollectionUploadService:
                     or upload.event_context_json != context_json
                     or upload.provenance_mode != normalized_provenance_mode
                     or upload.provenance_omission_reason != normalized_omission_reason
+                    or upload.custody_mode != normalized_custody_mode
                 ):
                     raise Conflict("collection upload idempotency identity changed")
+                if upload.state == "orphaned":
+                    upload.state = "open"
+                    upload.orphaned_at = None
+                    _touch_upload(upload, config=self._config)
+                elif upload.state == "discarding":
+                    raise Conflict("collection upload discard is in progress")
                 return _upload_payload(session, upload, resumed=True)
 
             _require_tags(session, normalized_tags)
@@ -287,6 +320,12 @@ class SqlAlchemyCollectionUploadService:
                 initiated_by_key_id=initiator.key_id,
                 event_context_json=context_json,
                 state="open",
+                custody_mode=normalized_custody_mode,
+                lease_expires_at=(
+                    _custody_lease_expiry(self._config)
+                    if normalized_custody_mode == "custody-transfer"
+                    else None
+                ),
                 archive_store=store_name,
                 opened_at=now,
                 last_activity_at=now,
@@ -332,6 +371,49 @@ class SqlAlchemyCollectionUploadService:
                 )
             )
             require_collection_create_access(principal, COLLECTIONS_CREATE, tags)
+
+    def require_read_access(self, collection_id: int, principal: ApplicationPrincipal) -> None:
+        """Allow the owning producer or a collection-scoped deletion operator to inspect."""
+
+        normalized = _collection_id(collection_id)
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized)
+            if upload is not None:
+                if upload.initiated_by_app == principal.app:
+                    require_collection_create_access(
+                        principal,
+                        COLLECTIONS_CREATE,
+                        _upload_tags(upload),
+                    )
+                    return
+                if _upload_visible_to_deleter(upload, principal):
+                    return
+                raise NotFound(f"collection upload not found: {normalized}")
+            collection = session.get(CollectionRecord, normalized)
+            if collection is None:
+                raise NotFound(f"collection upload not found: {normalized}")
+            tags = tuple(current.tag_id for current in collection.tags)
+            if collection.created_by_app == principal.app:
+                require_collection_create_access(principal, COLLECTIONS_CREATE, tags)
+                return
+            if principal.allows_collection(COLLECTIONS_DELETE, normalized) or any(
+                principal.allows_tag(COLLECTIONS_DELETE, tag) for tag in tags
+            ):
+                return
+            raise NotFound(f"collection upload not found: {normalized}")
+
+    def require_discard_access(
+        self,
+        collection_id: int,
+        principal: ApplicationPrincipal,
+    ) -> None:
+        """Require deletion authority scoped to this upload identity or one of its tags."""
+
+        normalized = _collection_id(collection_id)
+        with session_scope(self._session_factory) as session:
+            upload = session.get(CollectionUploadRecord, normalized)
+            if upload is None or not _upload_visible_to_deleter(upload, principal):
+                raise NotFound(f"collection upload not found: {normalized}")
 
     def register_files(
         self,
@@ -408,8 +490,12 @@ class SqlAlchemyCollectionUploadService:
                     continue
                 new_files.append(current)
             if new_files:
-                last_path = max(existing) if existing else None
-                if last_path is not None and new_files[0]["path"].encode() <= last_path.encode():
+                last_path = (
+                    max(existing, key=collection_upload_path_order_key) if existing else None
+                )
+                if last_path is not None and collection_upload_path_order_key(
+                    new_files[0]["path"]
+                ) <= collection_upload_path_order_key(last_path):
                     raise Conflict("collection upload file registration is not append-only")
             ordered: list[OrderedArchiveFile] = []
             next_order = checkpoint.next_file_order
@@ -449,7 +535,7 @@ class SqlAlchemyCollectionUploadService:
             upload.planner_checkpoint_json = incremental_volume_planner_checkpoint_bytes(
                 batch.checkpoint
             ).decode("utf-8")
-            upload.last_activity_at = utc_timestamp_now()
+            _touch_upload(upload, config=self._config)
             upload.archive_phase = "uploading" if upload.archive_objects else "planning"
             upload.archive_phase_updated_at = upload.last_activity_at
             session.flush()
@@ -517,7 +603,7 @@ class SqlAlchemyCollectionUploadService:
                 current_sha256=summary.current_sha256,
             )
             session.add(record)
-            upload.last_activity_at = utc_timestamp_now()
+            _touch_upload(upload, config=self._config)
             session.flush()
             return _journal_payload(record)
 
@@ -620,6 +706,7 @@ class SqlAlchemyCollectionUploadService:
                     "collection upload volume plans differ from registered files"
                 ) from exc
             upload.state = "uploading"
+            upload.lease_expires_at = None
             upload.provenance_identity = actual_provenance_identity
             upload.closed_at = utc_timestamp_now()
             upload.last_activity_at = upload.closed_at
@@ -840,6 +927,58 @@ class SqlAlchemyCollectionUploadService:
                 store_name=self._config.archive_write_store,
             )
 
+    def heartbeat(self, collection_id: int) -> dict[str, object]:
+        """Renew one active custody-transfer construction lease."""
+
+        normalized_id = _collection_id(collection_id)
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == normalized_id)
+                .with_for_update()
+            )
+            if upload is None:
+                raise NotFound(f"collection upload session not found: {normalized_id}")
+            if upload.custody_mode != "custody-transfer":
+                raise Conflict("collection upload does not have a custody-transfer lease")
+            if upload.state != "open":
+                raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
+            _touch_upload(upload, config=self._config)
+            return _upload_payload(session, upload)
+
+    def reap_expired_custody_transfers(self, *, limit: int = 100) -> int:
+        """Retain expired transferred custody as visible, resumable orphan state."""
+
+        if limit < 1:
+            return 0
+        now = utc_timestamp_now()
+        with session_scope(self._session_factory) as session:
+            uploads = list(
+                session.scalars(
+                    select(CollectionUploadRecord)
+                    .where(
+                        CollectionUploadRecord.custody_mode == "custody-transfer",
+                        CollectionUploadRecord.state == "open",
+                        CollectionUploadRecord.lease_expires_at.is_not(None),
+                        CollectionUploadRecord.lease_expires_at <= now,
+                    )
+                    .order_by(
+                        CollectionUploadRecord.lease_expires_at,
+                        CollectionUploadRecord.collection_id,
+                    )
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            for upload in uploads:
+                upload.state = "orphaned"
+                upload.orphaned_at = now
+                upload.lease_expires_at = None
+                upload.last_activity_at = now
+                upload.archive_phase = "orphaned"
+                upload.archive_phase_updated_at = now
+            return len(uploads)
+
     def list(
         self,
         *,
@@ -860,7 +999,7 @@ class SqlAlchemyCollectionUploadService:
         if order not in {"asc", "desc"}:
             raise BadRequest("collection upload order must be asc or desc")
         with session_scope(self._session_factory) as session:
-            filters: list[Any] = [CollectionUploadRecord.initiated_by_app == principal.app]
+            filters: list[Any] = [_upload_read_filter(principal)]
             if q:
                 pattern = f"%{q.casefold()}%"
                 filters.append(
@@ -932,19 +1071,12 @@ class SqlAlchemyCollectionUploadService:
                 "query": q,
                 "filters": {"tag": tag, "state": state},
                 "uploads": [
-                    {
-                        "collection_id": upload.collection_id,
-                        "created_at": upload.opened_at,
-                        "tags": list(_upload_tags(upload)),
-                        "ingest_source": upload.ingest_source,
-                        "archive_store": upload.archive_store,
-                        "encryption_format": upload.encryption_format,
-                        "passphrase_id": upload.passphrase_id,
-                        "state": upload.state,
-                        "files": int(files or 0),
-                        "bytes": int(byte_count or 0),
-                        "uploaded_bytes": _custodied_bytes(session, upload.collection_id),
-                    }
+                    _upload_list_payload(
+                        session,
+                        upload,
+                        files=int(files or 0),
+                        byte_count=int(byte_count or 0),
+                    )
                     for upload, files, byte_count in rows
                 ],
             }
@@ -1002,6 +1134,142 @@ class SqlAlchemyCollectionUploadService:
                 archive_storage_prefix=prefix
             )
         return payload
+
+    def plan_orphan_discard(self, collection_id: int) -> dict[str, object]:
+        normalized_id = _collection_id(collection_id)
+        expires = (utc_now() + PLAN_TTL).replace(microsecond=0)
+        with session_scope(self._session_factory) as session:
+            plan = _orphan_discard_plan(
+                session,
+                collection_id=normalized_id,
+                expires_at=format_utc_timestamp(expires),
+            )
+        plan["challenge"] = (
+            None if plan["blockers"] else plan_challenge(_DISCARD_CHALLENGE_PREFIX, plan, expires)
+        )
+        return plan
+
+    def discard_orphan(self, collection_id: int, *, challenge: str) -> dict[str, object]:
+        normalized_id = _collection_id(collection_id)
+        supplied = challenge.strip()
+        if not supplied:
+            raise BadRequest("collection upload discard challenge is required")
+        expires = challenge_expiry(
+            supplied,
+            prefix=_DISCARD_CHALLENGE_PREFIX,
+            operation="collection upload discard",
+        )
+        if utc_now() > expires:
+            raise Conflict("collection upload discard plan has expired; request a new plan")
+        checkpoints: list[tuple[str, str]] = []
+        store_name = ""
+        prefix = ""
+        passphrase_id = ""
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == normalized_id)
+                .with_for_update()
+            )
+            if upload is None:
+                if not challenge_has_shape(supplied, prefix=_DISCARD_CHALLENGE_PREFIX):
+                    raise NotFound(f"collection upload session not found: {normalized_id}")
+                return {
+                    "status": "already_absent",
+                    "collection_id": normalized_id,
+                    "files": 0,
+                    "bytes": 0,
+                    "custodied_files": 0,
+                    "custodied_bytes": 0,
+                    "archive_objects": 0,
+                }
+            plan = _orphan_discard_plan(
+                session,
+                collection_id=normalized_id,
+                expires_at=format_utc_timestamp(expires),
+            )
+            if not secrets.compare_digest(
+                plan_challenge(_DISCARD_CHALLENGE_PREFIX, plan, expires),
+                supplied,
+            ):
+                raise Conflict("collection upload discard plan changed; request a new plan")
+            blockers_value = plan["blockers"]
+            if not isinstance(blockers_value, list):
+                raise RuntimeError("collection upload discard plan blockers are invalid")
+            blockers = [str(value) for value in blockers_value]
+            if blockers:
+                raise Conflict("collection upload discard is blocked: " + "; ".join(blockers))
+            checkpoints = [
+                (current.kind, current.checkpoint_json)
+                for current in upload.archive_objects
+                if current.checkpoint_json is not None
+            ]
+            store_name = upload.archive_store
+            prefix = upload.archive_storage_prefix
+            passphrase_id = upload.passphrase_id
+            result = {
+                "status": "discarded",
+                "collection_id": normalized_id,
+                "files": plan["files"],
+                "bytes": plan["bytes"],
+                "custodied_files": plan["custodied_files"],
+                "custodied_bytes": plan["custodied_bytes"],
+                "archive_objects": plan["archive_objects"],
+            }
+            now = utc_timestamp_now()
+            upload.state = "discarding"
+            upload.archive_phase = "discarding"
+            upload.archive_phase_updated_at = now
+            upload.last_activity_at = now
+        try:
+            for kind, checkpoint_json in checkpoints:
+                if kind == "pack":
+                    pack_checkpoint = PackUploadCheckpoint.from_json(checkpoint_json)
+                    if pack_checkpoint.completed is None:
+                        self._pack_uploader(
+                            self._volume_object_store(
+                                store_name=store_name,
+                                collection_id=normalized_id,
+                                object_id=pack_checkpoint.volume_id,
+                            ),
+                            passphrase_id=passphrase_id,
+                        ).abort(pack_checkpoint)
+                else:
+                    raw_checkpoint = RawUploadCheckpoint.from_json(checkpoint_json)
+                    if raw_checkpoint.completed is None:
+                        self._raw_uploader(
+                            self._volume_object_store(
+                                store_name=store_name,
+                                collection_id=normalized_id,
+                                object_id=raw_checkpoint.volume_id,
+                            ),
+                            passphrase_id=passphrase_id,
+                        ).abort(raw_checkpoint)
+            self._archive_stores.require(store_name).store.discard_collection_archive_upload(
+                archive_storage_prefix=prefix
+            )
+        except Exception as exc:
+            with session_scope(self._session_factory) as session:
+                upload = session.get(CollectionUploadRecord, normalized_id)
+                if upload is not None and upload.state == "discarding":
+                    now = utc_timestamp_now()
+                    upload.state = "orphaned"
+                    upload.orphaned_at = now
+                    upload.archive_phase = "orphaned"
+                    upload.archive_phase_updated_at = now
+                    upload.archive_failure = str(exc)
+            raise
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == normalized_id)
+                .with_for_update()
+            )
+            if upload is not None:
+                if upload.state != "discarding":
+                    raise RuntimeError("collection upload discard state changed unexpectedly")
+                session.delete(upload)
+        return result
 
     def _pack_uploader(
         self,
@@ -1102,8 +1370,9 @@ class SqlAlchemyCollectionUploadService:
             record.uploaded_bytes = receipt.stored_bytes
             upload = session.get(CollectionUploadRecord, collection_id)
             if upload is not None:
-                upload.last_activity_at = now
+                _touch_upload(upload, config=self._config, now=now)
                 upload.archive_phase_updated_at = now
+                _record_artifact_custody_receipts(session, upload, now=now)
 
     def requeue_interrupted_finalizations_for_startup(self, *, limit: int = 100) -> int:
         if limit < 1:
@@ -1135,6 +1404,30 @@ class SqlAlchemyCollectionUploadService:
                     upload.archive_failure = "archive finalization interrupted before completion"
                 requeued += 1
         return requeued
+
+    def requeue_interrupted_orphan_discards_for_startup(self, *, limit: int = 100) -> int:
+        """Return interrupted guarded cleanup to visible, retryable orphan state."""
+
+        if limit < 1:
+            return 0
+        now = utc_timestamp_now()
+        with session_scope(self._session_factory) as session:
+            uploads = list(
+                session.scalars(
+                    select(CollectionUploadRecord)
+                    .where(CollectionUploadRecord.state == "discarding")
+                    .order_by(CollectionUploadRecord.collection_id)
+                    .with_for_update(skip_locked=True)
+                    .limit(limit)
+                )
+            )
+            for upload in uploads:
+                upload.state = "orphaned"
+                upload.orphaned_at = now
+                upload.archive_phase = "orphaned"
+                upload.archive_phase_updated_at = now
+                upload.archive_failure = "orphan discard interrupted before cleanup completed"
+            return len(uploads)
 
     def process_due_finalizations(self, *, limit: int = 1) -> int:
         if limit < 1:
@@ -2092,6 +2385,13 @@ def _file_payload(record: CollectionUploadFileRecord) -> dict[str, object]:
                 "omission_reason": record.provenance_omission_reason,
             }
         ),
+        "custody_receipt": (
+            CollectionUploadArtifactCustodyReceiptDocument.model_validate_json(
+                record.custody_receipt_json
+            )
+            if record.custody_receipt_json is not None
+            else None
+        ),
     }
 
 
@@ -2291,18 +2591,205 @@ def _parse_sealed_raw(content: str) -> SealedRawVolume:
     )
 
 
-def _custodied_bytes(session: Session, collection_id: int) -> int:
-    return int(
+def _custody_stats(session: Session, collection_id: int) -> tuple[int, int]:
+    files, byte_count = session.execute(
+        select(
+            func.count(CollectionUploadFileRecord.path),
+            func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0),
+        ).where(
+            CollectionUploadFileRecord.collection_id == collection_id,
+            CollectionUploadFileRecord.custody_receipt_json.is_not(None),
+        )
+    ).one()
+    return int(files), int(byte_count)
+
+
+def _upload_list_payload(
+    session: Session,
+    upload: CollectionUploadRecord,
+    *,
+    files: int,
+    byte_count: int,
+) -> dict[str, object]:
+    custodied_files, custodied_bytes = _custody_stats(session, upload.collection_id)
+    return {
+        "collection_id": upload.collection_id,
+        "created_at": upload.opened_at,
+        "tags": list(_upload_tags(upload)),
+        "ingest_source": upload.ingest_source,
+        "archive_store": upload.archive_store,
+        "encryption_format": upload.encryption_format,
+        "passphrase_id": upload.passphrase_id,
+        "state": upload.state,
+        "custody_mode": upload.custody_mode,
+        "files": files,
+        "bytes": byte_count,
+        "uploaded_bytes": custodied_bytes,
+        "custodied_files": custodied_files,
+        "custodied_bytes": custodied_bytes,
+        "upload_state_expires_at": upload.lease_expires_at,
+        "orphaned_at": upload.orphaned_at,
+    }
+
+
+def _normalize_custody_mode(value: str) -> str:
+    normalized = str(value or "")
+    if normalized not in {"producer-retained", "custody-transfer"}:
+        raise BadRequest("collection upload custody mode is invalid")
+    return normalized
+
+
+def _upload_visible_to_deleter(
+    upload: CollectionUploadRecord,
+    principal: ApplicationPrincipal,
+) -> bool:
+    return principal.allows_collection(COLLECTIONS_DELETE, upload.collection_id) or any(
+        principal.allows_tag(COLLECTIONS_DELETE, tag) for tag in _upload_tags(upload)
+    )
+
+
+def _upload_read_filter(principal: ApplicationPrincipal) -> Any:
+    owner = CollectionUploadRecord.initiated_by_app == principal.app
+    resources = permission_resources(principal, COLLECTIONS_DELETE)
+    if ALL_RESOURCES in resources:
+        return true()
+    filters = [owner]
+    allowed_collections = collection_ids(resources)
+    if allowed_collections:
+        filters.append(CollectionUploadRecord.collection_id.in_(allowed_collections))
+    allowed_tags = tag_ids(resources)
+    if allowed_tags:
+        filters.append(
+            exists(
+                select(1).where(
+                    CollectionUploadTagRecord.collection_id == CollectionUploadRecord.collection_id,
+                    CollectionUploadTagRecord.tag_id.in_(allowed_tags),
+                )
+            )
+        )
+    return or_(*filters)
+
+
+def _orphan_discard_plan(
+    session: Session,
+    *,
+    collection_id: int,
+    expires_at: str,
+) -> dict[str, object]:
+    upload = session.get(CollectionUploadRecord, collection_id)
+    if upload is None:
+        raise NotFound(f"collection upload session not found: {collection_id}")
+    files, byte_count = session.execute(
+        select(
+            func.count(CollectionUploadFileRecord.path),
+            func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0),
+        ).where(CollectionUploadFileRecord.collection_id == collection_id)
+    ).one()
+    custodied_files, custodied_bytes = _custody_stats(session, collection_id)
+    archive_objects = int(
         session.scalar(
-            select(
-                func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.source_bytes), 0)
-            ).where(
-                CollectionArchiveObjectUploadRecord.collection_id == collection_id,
-                CollectionArchiveObjectUploadRecord.state == "sealed",
+            select(func.count(CollectionArchiveObjectUploadRecord.object_id)).where(
+                CollectionArchiveObjectUploadRecord.collection_id == collection_id
             )
         )
         or 0
     )
+    blockers = [] if upload.state == "orphaned" else [f"upload session is {upload.state}"]
+    transform_prefix = "transform:"
+    if upload.initiated_by_app.startswith(transform_prefix):
+        execution_id = upload.initiated_by_app.removeprefix(transform_prefix)
+        claim = session.scalar(
+            select(CollectionProcessingClaimRecord).where(
+                CollectionProcessingClaimRecord.execution_id == execution_id
+            )
+        )
+        if (
+            claim is not None
+            and claim.state == "active"
+            and parse_utc_timestamp(claim.expires_at) > utc_now()
+        ):
+            blockers.append("owning processing claim remains active until " + claim.expires_at)
+    return {
+        "status": "blocked" if blockers else "ready",
+        "collection_id": collection_id,
+        "warning": _CUSTODY_LOSS_WARNING,
+        "expires_at": expires_at,
+        "state": upload.state,
+        "files": int(files),
+        "bytes": int(byte_count),
+        "custodied_files": custodied_files,
+        "custodied_bytes": custodied_bytes,
+        "archive_objects": archive_objects,
+        "blockers": blockers,
+    }
+
+
+def _custody_lease_expiry(config: RuntimeConfig, *, now: str | None = None) -> str:
+    current = parse_utc_timestamp(now) if now is not None else utc_now()
+    return format_utc_timestamp(current + config.collection_upload_custody_lease)
+
+
+def _touch_upload(
+    upload: CollectionUploadRecord,
+    *,
+    config: RuntimeConfig,
+    now: str | None = None,
+) -> None:
+    current = now or utc_timestamp_now()
+    upload.last_activity_at = current
+    if upload.custody_mode == "custody-transfer" and upload.state == "open":
+        upload.lease_expires_at = _custody_lease_expiry(config, now=current)
+
+
+def _archive_object_source_paths(record: CollectionArchiveObjectUploadRecord) -> tuple[str, ...]:
+    if record.kind == "pack":
+        return tuple(member.path for member in parse_pack_volume_plan(record.plan_json).members)
+    if record.kind == "segment":
+        return (parse_raw_volume_plan(record.plan_json).source_path,)
+    raise RuntimeError(f"unsupported archive volume kind: {record.kind}")
+
+
+def _record_artifact_custody_receipts(
+    session: Session,
+    upload: CollectionUploadRecord,
+    *,
+    now: str,
+) -> None:
+    """Persist exact safe-release evidence once every covering object is sealed."""
+
+    volumes_by_path: dict[str, list[CollectionArchiveObjectUploadRecord]] = {}
+    for volume in upload.archive_objects:
+        for path in _archive_object_source_paths(volume):
+            volumes_by_path.setdefault(path, []).append(volume)
+    for artifact in upload.files:
+        if artifact.custody_receipt_json is not None:
+            continue
+        volumes = volumes_by_path.get(artifact.path, [])
+        if not volumes or any(
+            volume.state != "sealed" or volume.sealed_receipt_json is None for volume in volumes
+        ):
+            continue
+        objects = tuple(
+            CollectionUploadCustodyObjectDocument(
+                volume_id=volume.object_id,
+                sealed_receipt_sha256=hashlib.sha256(
+                    str(volume.sealed_receipt_json).encode("utf-8")
+                ).hexdigest(),
+            )
+            for volume in sorted(volumes, key=lambda current: current.object_id)
+        )
+        receipt = CollectionUploadArtifactCustodyReceiptDocument.seal(
+            collection_id=upload.collection_id,
+            path=artifact.path,
+            bytes=artifact.bytes,
+            sha256=artifact.sha256,
+            archive_objects=objects,
+        )
+        artifact.custodied_at = now
+        artifact.custody_receipt_json = receipt.model_dump_json(
+            exclude_none=True,
+            by_alias=True,
+        )
 
 
 def _upload_payload(
@@ -2318,7 +2805,7 @@ def _upload_payload(
             func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0),
         ).where(CollectionUploadFileRecord.collection_id == upload.collection_id)
     ).one()
-    uploaded_bytes = _custodied_bytes(session, upload.collection_id)
+    custodied_files, uploaded_bytes = _custody_stats(session, upload.collection_id)
     archive_progress = session.execute(
         select(
             func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.uploaded_bytes), 0),
@@ -2337,17 +2824,21 @@ def _upload_payload(
         "encryption_format": upload.encryption_format,
         "passphrase_id": upload.passphrase_id,
         "state": state or upload.state,
+        "custody_mode": upload.custody_mode,
         "registration_constraints": _registration_constraints_payload(
             _planner_checkpoint(upload).policy
         ),
         "files_total": int(files_total),
-        "files_pending": int(files_total) if uploaded_bytes == 0 else 0,
+        "files_pending": max(0, int(files_total) - custodied_files),
         "files_partial": 0,
-        "files_uploaded": int(files_total) if upload.state == "finalized" else 0,
+        "files_uploaded": custodied_files,
         "bytes_total": int(bytes_total),
         "uploaded_bytes": min(int(bytes_total), uploaded_bytes),
         "missing_bytes": max(0, int(bytes_total) - uploaded_bytes),
-        "upload_state_expires_at": None,
+        "upload_state_expires_at": upload.lease_expires_at,
+        "custodied_files": custodied_files,
+        "custodied_bytes": uploaded_bytes,
+        "orphaned_at": upload.orphaned_at,
         "latest_failure": upload.archive_failure,
         "archive_phase": upload.archive_phase,
         "archive_phase_updated_at": upload.archive_phase_updated_at,
@@ -2370,6 +2861,7 @@ def _finalized_payload(
     store_name: str,
     resumed: bool | None = None,
 ) -> dict[str, object]:
+    upload = session.get(CollectionUploadRecord, collection.id)
     copy = next(
         (current for current in collection.archive_copies if current.store == store_name),
         collection.archive_copies[0] if collection.archive_copies else None,
@@ -2409,6 +2901,7 @@ def _finalized_payload(
         "encryption_format": collection.encryption_format,
         "passphrase_id": collection.passphrase_id,
         "state": "finalized",
+        "custody_mode": upload.custody_mode if upload is not None else "producer-retained",
         "registration_constraints": None,
         "files_total": summary["files"],
         "files_pending": 0,
@@ -2418,6 +2911,9 @@ def _finalized_payload(
         "uploaded_bytes": summary["bytes"],
         "missing_bytes": 0,
         "upload_state_expires_at": None,
+        "custodied_files": summary["files"],
+        "custodied_bytes": summary["bytes"],
+        "orphaned_at": None,
         "latest_failure": None,
         "archive_phase": "completed",
         "archive_phase_updated_at": copy.last_verified_at if copy else None,

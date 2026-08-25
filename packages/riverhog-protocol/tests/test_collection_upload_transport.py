@@ -3,11 +3,15 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 from riverhog_protocol import (
+    CollectionUploadArtifactCustodyReceiptDocument,
+    CollectionUploadCustodyObjectDocument,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
     CollectionUploadRegistrationConstraintsDocument,
     validate_collection_upload_batch_against_registration_constraints,
 )
+from riverhog_protocol.collection_workflows import DERIVATION_EVIDENCE_PATH
+from riverhog_protocol.manifest import collection_content_identity
 
 
 def _file(path: str) -> dict[str, object]:
@@ -53,6 +57,61 @@ def test_direct_ingress_batch_preserves_the_server_order_contract() -> None:
         CollectionUploadFileBatchDocument.model_validate(
             {"files": [_file("z.txt"), _file("a.txt")]}
         )
+
+
+def test_terminal_derivation_evidence_is_the_only_nonlexical_upload_member() -> None:
+    files = [
+        _file("riverhog/producer-evidence.json"),
+        _file(DERIVATION_EVIDENCE_PATH),
+        _file("video/source/archive.mkv"),
+    ]
+    batch = CollectionUploadFileBatchDocument.model_validate(
+        {"files": [files[0], files[2], files[1]]}
+    )
+
+    assert [item.path for item in batch.files] == [
+        "riverhog/producer-evidence.json",
+        "video/source/archive.mkv",
+        DERIVATION_EVIDENCE_PATH,
+    ]
+    identity = collection_content_identity(
+        (str(item["path"]), int(item["bytes"]), str(item["sha256"])) for item in files
+    )
+    reordered = collection_content_identity(
+        (str(item["path"]), int(item["bytes"]), str(item["sha256"])) for item in reversed(files)
+    )
+    assert identity == reordered
+
+
+def test_artifact_custody_receipt_seals_exact_recovering_objects() -> None:
+    receipt = CollectionUploadArtifactCustodyReceiptDocument.seal(
+        collection_id=42,
+        path="video/source/archive.mkv",
+        bytes=123,
+        sha256="a" * 64,
+        archive_objects=(
+            CollectionUploadCustodyObjectDocument(
+                volume_id="raw-000000000001",
+                sealed_receipt_sha256="b" * 64,
+            ),
+            CollectionUploadCustodyObjectDocument(
+                volume_id="raw-000000000002",
+                sealed_receipt_sha256="c" * 64,
+            ),
+        ),
+    )
+
+    assert receipt.path == "video/source/archive.mkv"
+    assert [item.volume_id for item in receipt.archive_objects] == [
+        "raw-000000000001",
+        "raw-000000000002",
+    ]
+    assert (
+        CollectionUploadArtifactCustodyReceiptDocument.model_validate_json(
+            receipt.model_dump_json()
+        )
+        == receipt
+    )
 
 
 def test_direct_ingress_batch_rejects_duplicate_file_paths() -> None:

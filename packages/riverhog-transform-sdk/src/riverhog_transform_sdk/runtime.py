@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 from riverhog_api_client import ApiClient
-from riverhog_api_client.producer import ProducerInput
+from riverhog_api_client.producer import ProducerArtifactIdentity, ProducerInput
 from riverhog_protocol.collection_workflows import ArtifactDisposition, CollectionRootIdentity
 
 from riverhog_transform_sdk.capability import CapabilityApiClient
@@ -17,10 +17,16 @@ from riverhog_transform_sdk.models import (
     DerivedCollectionReceipt,
     DerivedCollectionSpec,
 )
-from riverhog_transform_sdk.provenance import prepare_transform_provenance
+from riverhog_transform_sdk.provenance import (
+    prepare_incremental_transform_provenance,
+    prepare_transform_provenance,
+)
 from riverhog_transform_sdk.reader import ClaimedCollectionReader, ClaimedRetrieval
 from riverhog_transform_sdk.workspace import TransformWorkspace, WorkspaceAssurance
-from riverhog_transform_sdk.writer import DerivedCollectionWriter
+from riverhog_transform_sdk.writer import (
+    DerivedCollectionWriter,
+    IncrementalDerivedCollectionWriter,
+)
 
 CancellationCheck = Callable[[], None]
 
@@ -214,6 +220,7 @@ class CollectionTransformRuntime:
         self._closed = False
         self._published_receipt: DerivedCollectionReceipt | None = None
         self._retrievals: list[ClaimedRetrieval] = []
+        self._incremental_writer: IncrementalDerivedCollectionWriter | None = None
         self.reader = ClaimedCollectionReader(
             self.api,
             inputs=spec.inputs,
@@ -278,6 +285,8 @@ class CollectionTransformRuntime:
         if self._closed:
             return
         self._closed = True
+        if self._incremental_writer is not None:
+            self._incremental_writer.stop()
         failures: list[Exception] = []
         for retrieval in self._retrievals:
             if retrieval.closed:
@@ -295,6 +304,8 @@ class CollectionTransformRuntime:
             raise RuntimeError("collection transform runtime is closed")
         if self.cancellation_check is not None:
             self.cancellation_check()
+        if self._incremental_writer is not None:
+            self._incremental_writer.heartbeat()
 
     def refresh_capability(self, capability_token: str) -> None:
         """Replace an expiring token without changing claim/fence identity."""
@@ -387,6 +398,94 @@ class CollectionTransformRuntime:
             dispositions=normalized_dispositions,
             provenance_builder=provenance_builder,
             source_context=source_context,
+            **kwargs,
+        )
+        self._published_receipt = receipt
+        return receipt
+
+    def open_incremental_publication(
+        self,
+        *,
+        execution_envelope_sha256: str,
+        source_context: Mapping[str, object] | None = None,
+    ) -> IncrementalDerivedCollectionWriter:
+        """Open the one claim-bound incremental output construction session."""
+
+        if self._published_receipt is not None:
+            raise RuntimeError("transform output collection is already finalized")
+        if self._incremental_writer is not None:
+            return self._incremental_writer
+        inventory = self.inventory()
+        provenance = prepare_incremental_transform_provenance(
+            self.api,
+            inventory=inventory,
+            execution_id=self.execution_id,
+            operation_id=self.spec.operation.id,
+            producer_app=self.producer_app,
+            producer_version=self.producer_version,
+            started_at=self.started_at,
+            heartbeat=self.heartbeat,
+        )
+        writer = IncrementalDerivedCollectionWriter(
+            self.api,
+            spec=self.spec,
+            work_id=self.work_id,
+            claim_id=self.claim_id,
+            fence=self.fence,
+            execution_id=self.execution_id,
+            controller_evidence=self.controller_evidence,
+            producer_app=self.producer_app,
+            producer_version=self.producer_version,
+            provenance=provenance,
+            execution_envelope_sha256=execution_envelope_sha256,
+            source_context=source_context,
+        )
+        self._incremental_writer = writer
+        return writer
+
+    def append_incremental_output(
+        self,
+        writer: IncrementalDerivedCollectionWriter,
+        source: ProducerInput,
+        *,
+        identity: ProducerArtifactIdentity,
+        sources: Sequence[ClaimedArtifact],
+    ) -> tuple[object, ...]:
+        if writer is not self._incremental_writer:
+            raise ValueError("incremental writer does not belong to this transform runtime")
+        return writer.append(source, identity=identity, sources=sources)
+
+    def finish_incremental_publication(
+        self,
+        writer: IncrementalDerivedCollectionWriter,
+        *,
+        execution_sha256: str,
+        dispositions: Sequence[ArtifactDisposition],
+        **kwargs: Any,
+    ) -> DerivedCollectionReceipt:
+        if writer is not self._incremental_writer:
+            raise ValueError("incremental writer does not belong to this transform runtime")
+        normalized_dispositions = tuple(dispositions)
+        inventory = self.inventory()
+        expected = {
+            (current.root.collection_id, current.root.archive_root_sha256, current.path)
+            for current in inventory
+        }
+        actual = {
+            (
+                current.input_collection_id,
+                current.input_archive_root_sha256,
+                current.input_path,
+            )
+            for current in normalized_dispositions
+        }
+        if actual != expected or len(actual) != len(normalized_dispositions):
+            raise ValueError(
+                "artifact dispositions must account for every claimed input exactly once"
+            )
+        receipt = writer.finish(
+            execution_sha256=execution_sha256,
+            dispositions=normalized_dispositions,
             **kwargs,
         )
         self._published_receipt = receipt

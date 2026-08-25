@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any, Self, cast
 
 from pydantic import JsonValue
-from riverhog_api_client.producer import ProducerFile, ProducerInput, ProducerStream
+from riverhog_api_client.producer import (
+    ProducerArtifactCustody,
+    ProducerArtifactIdentity,
+    ProducerFile,
+    ProducerInput,
+    ProducerStream,
+)
 from riverhog_protocol.collection_workflows import (
     ArtifactDisposition,
     OperationIdentity,
@@ -21,6 +27,7 @@ from riverhog_transform_sdk import (
     CollectionTransformRuntime,
     DerivedCollectionReceipt,
     DerivedCollectionSpec,
+    IncrementalDerivedCollectionWriter,
     TransformWorkspace,
 )
 from stove0_target_protocol import (
@@ -43,6 +50,127 @@ from stove0_target_support.execution import TargetExecutionSession
 CancellationCheck = Callable[[], None]
 
 
+class TargetCollectionPublication:
+    """Target-protocol view of one generic Riverhog incremental construction."""
+
+    def __init__(
+        self,
+        execution: TargetExecutionRuntime,
+        writer: IncrementalDerivedCollectionWriter,
+    ) -> None:
+        self.execution = execution
+        self.writer = writer
+        self._inputs = {item.id: claimed for item, claimed in execution.inputs()}
+        self._artifacts: dict[str, OutputArtifact] = {}
+        self._local_files: dict[str, Path] = {}
+
+    @property
+    def custody_receipts(self) -> Mapping[str, ProducerArtifactCustody]:
+        return self.writer.custody_receipts
+
+    def append(
+        self,
+        source: ProducerInput,
+        artifact: OutputArtifact,
+    ) -> tuple[ProducerArtifactCustody, ...]:
+        if source.path != artifact.path:
+            raise ValueError(f"target output path does not match its source: {artifact.id}")
+        source_artifacts: list[ClaimedArtifact] = []
+        for input_id in artifact.derived_from:
+            resolved = self._inputs.get(input_id)
+            if resolved is None:
+                raise ValueError(f"target output references an unknown input: {input_id}")
+            source_artifacts.append(resolved)
+        existing = self._artifacts.get(artifact.id)
+        if existing is not None and existing != artifact:
+            raise ValueError(f"target output artifact identity changed: {artifact.id}")
+        if any(
+            current.id != artifact.id and current.path == artifact.path
+            for current in self._artifacts.values()
+        ):
+            raise ValueError(f"target output path is repeated: {artifact.path}")
+        if isinstance(source, ProducerFile):
+            self._local_files[artifact.path] = source.source
+        runtime = cast(CollectionTransformRuntime, self.execution.runtime)
+        receipts = runtime.append_incremental_output(
+            self.writer,
+            source,
+            identity=ProducerArtifactIdentity(
+                path=artifact.path,
+                bytes=artifact.bytes,
+                sha256=artifact.sha256,
+            ),
+            sources=source_artifacts,
+        )
+        self._artifacts[artifact.id] = artifact
+        self._release_custodied_files()
+        return cast(tuple[ProducerArtifactCustody, ...], receipts)
+
+    def finish_success(
+        self,
+        *,
+        operation: OperationContract,
+        execution_sha256: str,
+        dispositions: Sequence[ArtifactDisposition],
+        attempt: int = 1,
+        runtime_evidence: Mapping[str, object] | None = None,
+        **kwargs: Any,
+    ) -> TargetJobStatus:
+        declared = tuple(sorted(self._artifacts.values(), key=lambda item: item.id))
+        runtime = cast(CollectionTransformRuntime, self.execution.runtime)
+        receipt = runtime.finish_incremental_publication(
+            self.writer,
+            execution_sha256=execution_sha256,
+            dispositions=dispositions,
+            **kwargs,
+        )
+        self._release_custodied_files()
+        output_collection = OutputCollectionRef(
+            collection_id=receipt.collection_id,
+            archive_root_sha256=receipt.archive_root_sha256,
+            content_identity=receipt.content_identity,
+            derivation_sha256=receipt.derivation.sha256,
+        )
+        plan = self.execution.request.declaration.plan
+        status = TargetJobStatus(
+            protocol=plan.protocol,
+            job_id=self.execution.request.declaration.job_id,
+            state="succeeded",
+            attempt=attempt,
+            request_sha256=self.execution.request.request_sha256,
+            plan_sha256=plan.plan_sha256,
+            progress=TargetProgress(
+                phase="done",
+                completed=len(declared),
+                total=len(declared),
+                unit="artifacts",
+            ),
+            outputs=declared,
+            output_collection=output_collection,
+            execution_evidence=TargetExecutionEvidence(
+                target_contract_sha256=plan.target_contract_sha256,
+                operation_contract_sha256=plan.operation_contract_sha256,
+                plan_sha256=plan.plan_sha256,
+                execution_sha256=execution_sha256,
+                runtime=cast(dict[str, JsonValue], dict(runtime_evidence or {})),
+            ),
+            derivation=receipt.derivation.as_dict(),
+        )
+        validate_status_against_request(status, self.execution.request, operation)
+        self.execution._completed = True
+        if self.execution.session is not None:
+            self.execution.session.record_completed(status)
+        return status
+
+    def _release_custodied_files(self) -> None:
+        for path in set(self.writer.custody_receipts) & set(self._local_files):
+            local = self._local_files.pop(path)
+            try:
+                local.unlink()
+            except FileNotFoundError:
+                pass
+
+
 class TargetExecutionRuntime:
     """One target job bound to a sealed stove0 execution envelope."""
 
@@ -58,6 +186,7 @@ class TargetExecutionRuntime:
         self.session = session
         self._runtime_binding: Any = None
         self._workspaces: list[TransformWorkspace] = []
+        self._resolved_inputs: tuple[tuple[InputArtifact, ClaimedArtifact], ...] | None = None
         self._completed = False
 
     @classmethod
@@ -165,6 +294,8 @@ class TargetExecutionRuntime:
         return self._completed
 
     def inputs(self) -> tuple[tuple[InputArtifact, ClaimedArtifact], ...]:
+        if self._resolved_inputs is not None:
+            return self._resolved_inputs
         inventory = {item.key: item for item in self.runtime.inventory()}
         resolved: list[tuple[InputArtifact, ClaimedArtifact]] = []
         for expected in self.request.declaration.plan.inputs:
@@ -180,7 +311,8 @@ class TargetExecutionRuntime:
                     "target input is not the current claimed artifact: " + expected.id
                 )
             resolved.append((expected, actual))
-        return tuple(resolved)
+        self._resolved_inputs = tuple(resolved)
+        return self._resolved_inputs
 
     def prepare_inputs(
         self,
@@ -252,6 +384,25 @@ class TargetExecutionRuntime:
             content_identity=receipt.content_identity,
             derivation_sha256=receipt.derivation.sha256,
         )
+
+    def open_collection_publication(
+        self,
+        *,
+        source_context: Mapping[str, object] | None = None,
+    ) -> TargetCollectionPublication:
+        if not isinstance(self.runtime, CollectionTransformRuntime):
+            raise RuntimeError("external-effect execution cannot publish a Riverhog collection")
+        writer = self.runtime.open_incremental_publication(
+            execution_envelope_sha256=(
+                self.request.declaration.controller_evidence.execution_envelope.execution_envelope_sha256
+            ),
+            source_context={
+                **dict(source_context or {}),
+                "target_plan_sha256": self.request.declaration.plan.plan_sha256,
+                "target_request_sha256": self.request.request_sha256,
+            },
+        )
+        return TargetCollectionPublication(self, writer)
 
     def publish_success(
         self,
@@ -380,4 +531,4 @@ def _producer_identity(source: ProducerInput) -> tuple[str, int, str]:
     return source.path, byte_count, digest.hexdigest()
 
 
-__all__ = ["CancellationCheck", "TargetExecutionRuntime"]
+__all__ = ["CancellationCheck", "TargetCollectionPublication", "TargetExecutionRuntime"]

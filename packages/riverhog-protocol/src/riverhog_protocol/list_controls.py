@@ -6,7 +6,9 @@ from typing import Literal
 
 type SortOrder = Literal["asc", "desc"]
 type CollectionSort = Literal["id", "created_at", "bytes", "files"]
-type CollectionUploadState = Literal["open", "uploading", "finalizing", "failed"]
+type CollectionUploadState = Literal[
+    "open", "uploading", "finalizing", "failed", "orphaned", "discarding"
+]
 type CollectionUploadSort = Literal["id", "created_at", "state", "bytes", "files"]
 type RetrievalCacheState = Literal["ready", "delete_pending", "deleting"]
 type RetrievalCacheProtection = Literal["protected", "unleased"]

@@ -12,7 +12,8 @@ from riverhog_api.app import create_app
 from riverhog_api.deps import ServiceContainer
 from riverhog_api_client.client import ApiClient
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import initialize_db, make_session_factory
+from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
+from riverhog_core.catalog_models import CollectionUploadRecord
 from riverhog_core.collection_access import SqlAlchemyCollectionAccessService
 from riverhog_core.proofs import ProofUpgradeResult
 from riverhog_core.runtime_config import RuntimeConfig
@@ -497,6 +498,30 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert (
         operator.cancel_collection_upload_session(int(canceled_upload["collection_id"]))["state"]
         == "canceled"
+    )
+
+    orphaned_upload = operator.create_or_resume_collection_upload_session(
+        "qualification-orphaned-upload",
+        ["docs"],
+        provenance_mode="omitted",
+        provenance_omission_reason="qualification orphan discard",
+        custody_mode="custody-transfer",
+    )
+    orphaned_id = int(orphaned_upload["collection_id"])
+    assert operator.heartbeat_collection_upload_session(orphaned_id)["state"] == "open"
+    with session_scope(container.session_factory) as database:
+        record = database.get(CollectionUploadRecord, orphaned_id)
+        assert record is not None
+        record.lease_expires_at = "2020-01-01T00:00:00.000000Z"
+    assert container.collection_uploads.reap_expired_custody_transfers() == 1
+    discard_plan = operator.plan_collection_upload_discard(orphaned_id)
+    assert discard_plan["status"] == "ready"
+    assert (
+        operator.discard_collection_upload(
+            orphaned_id,
+            challenge=str(discard_plan["challenge"]),
+        )["status"]
+        == "discarded"
     )
 
     copy = operator.create_or_resume_archive_copy(

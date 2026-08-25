@@ -284,6 +284,16 @@ class UploadApi:
             self.registered.append(item)
         return {"state": "uploading"}
 
+    def list_collection_upload_session_files(
+        self,
+        _collection_id: int,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        return {"files": [dict(item) for item in self.registered]}
+
+    def heartbeat_collection_upload_session(self, _collection_id: int) -> dict[str, Any]:
+        return {"state": "open"}
+
     def list_collection_upload_session_volumes(self, _collection_id: int) -> dict[str, Any]:
         self.volume_list_calls += 1
         if not self.discovery_closed:
@@ -365,6 +375,9 @@ class UploadApi:
 
     def spawn(self) -> UploadApi:
         return self
+
+    def close(self) -> None:
+        pass
 
 
 class ProvenanceTransformApi(UploadApi):
@@ -770,6 +783,71 @@ def test_transform_provenance_fans_out_fans_in_and_recovers_staged_journals(
     assert len(outputs_by_path["derived/joined.bin"].external_states) == 2
     registered = {item["path"]: item for item in api.registered}
     assert all(registered[path]["provenance"]["status"] == "captured" for path in output_contents)
+
+
+def test_incremental_transform_recovers_journal_staged_before_registration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("RIVERHOG_UPLOAD_FILE_CONCURRENCY", "1")
+    source = tmp_path / "source-a.mov"
+    source.write_bytes(b"source a")
+    source_journal = create_observation_journal(
+        source,
+        relative_path="camera/a.mov",
+        host_id="urn:uuid:00000000-0000-4000-8000-000000000567",
+        agent_name="riverhog-client",
+        agent_version="1.0.0",
+    )
+    api = ProvenanceTransformApi({validate_journal(source_journal).journal_id: source_journal})
+    api.source_contents = {"camera/a.mov": b"source a"}
+    content = b"incremental derivative"
+    identity = ProducerArtifactIdentity(
+        path="derived/a.bin",
+        bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+    stream = ProducerStream(
+        path=identity.path,
+        bytes=identity.bytes,
+        sha256=identity.sha256,
+        read_range=lambda offset, size: content[offset : offset + size],
+    )
+
+    def runtime() -> CollectionTransformRuntime:
+        return CollectionTransformRuntime(
+            api,  # type: ignore[arg-type]
+            spec=_spec(),
+            claim_id="claim-1",
+            fence=1,
+            work_id=WORK_ID,
+            execution_id=EXECUTION_ID,
+            controller_evidence=CONTROLLER_EVIDENCE,
+            producer_app="fixture-transform",
+            producer_version="1.0.0",
+        )
+
+    first = runtime()
+    try:
+        writer = first.open_incremental_publication(execution_envelope_sha256="c" * 64)
+        claimed = next(item for item in first.inventory() if item.path == "camera/a.mov")
+        with pytest.raises(RuntimeError, match="simulated lost producer progress"):
+            writer.append(stream, identity=identity, sources=(claimed,))
+    finally:
+        first.close()
+    staged = dict(api.staged_journals)
+    assert staged
+
+    resumed = runtime()
+    try:
+        writer = resumed.open_incremental_publication(execution_envelope_sha256="c" * 64)
+        claimed = next(item for item in resumed.inventory() if item.path == "camera/a.mov")
+        writer.append(stream, identity=identity, sources=(claimed,))
+    finally:
+        resumed.close()
+
+    assert api.staged_journals == staged
+    assert api.staged_export_calls == 1
 
 
 def test_producer_stream_rejects_mutation_between_hash_and_upload(

@@ -153,6 +153,7 @@ class RuntimeConfig:
     archive_require_explicit_passphrases: bool = False
     archive_scrypt_work_factor: int = DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR
     archive_upload_sweep_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    collection_upload_custody_lease: timedelta = field(default_factory=lambda: timedelta(hours=1))
     retrieval_restore_poll_interval: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     retrieval_estimated_latency: timedelta = field(default_factory=lambda: timedelta(hours=48))
     ots_stamp_command: tuple[str, ...] = ("ots",)
@@ -179,6 +180,8 @@ class RuntimeConfig:
             raise ValueError("RIVERHOG_PROOF_MATURATION_RETRY_DELAY must be > 0")
         if self.proof_maturation_sweep_interval.total_seconds() <= 0:
             raise ValueError("RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL must be > 0")
+        if self.collection_upload_custody_lease.total_seconds() <= 0:
+            raise ValueError("RIVERHOG_COLLECTION_UPLOAD_CUSTODY_LEASE must be > 0")
         if bool(self.attestation_secret_key_file) != bool(self.attestation_public_key_file):
             raise ValueError("Riverhog attestation key configuration is incomplete")
         if not self.database_url:
@@ -625,6 +628,9 @@ def load_runtime_config() -> RuntimeConfig:
         archive_require_explicit_passphrases=archive_require_explicit_passphrases,
         archive_scrypt_work_factor=archive_scrypt_work_factor,
         archive_upload_sweep_interval=archive_upload_sweep_interval,
+        collection_upload_custody_lease=parse_duration(
+            os.getenv("RIVERHOG_COLLECTION_UPLOAD_CUSTODY_LEASE", "1h")
+        ),
         retrieval_restore_poll_interval=retrieval_restore_poll_interval,
         retrieval_estimated_latency=retrieval_estimated_latency,
         ots_stamp_command=ots_stamp_command,

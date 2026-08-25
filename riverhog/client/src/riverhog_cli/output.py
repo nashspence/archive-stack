@@ -193,6 +193,7 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
         f"state: {payload.get('state', 'unknown')}",
         f"files: {payload.get('files_uploaded', 0)}/{payload.get('files_total', 0)}",
         f"bytes: {_bytes(payload.get('uploaded_bytes'))}/{_bytes(payload.get('bytes_total'))}",
+        f"custody: {payload.get('custody_mode', 'unknown')}",
         f"encryption: {payload.get('encryption_format', 'unknown')}:"
         f"{payload.get('passphrase_id', 'unknown')}",
     ]
@@ -200,7 +201,47 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
         lines.append(f"archive phase: {payload['archive_phase']}")
     if payload.get("latest_failure"):
         lines.append(f"failure: {payload['latest_failure']}")
+    if payload.get("upload_state_expires_at"):
+        lines.append(f"lease expires: {payload['upload_state_expires_at']}")
+    if payload.get("orphaned_at"):
+        lines.append(f"orphaned: {payload['orphaned_at']}")
     return "\n".join(lines)
+
+
+def format_collection_upload_discard_plan(payload: Mapping[str, object]) -> str:
+    lines = [
+        f"collection upload discard: {payload.get('status', 'unknown')}",
+        f"collection: {payload.get('collection_id', 'unknown')}",
+        f"state: {payload.get('state', 'unknown')}",
+        f"files: {payload.get('files', 0)}",
+        f"bytes: {_bytes(payload.get('bytes'))}",
+        f"custodied files: {payload.get('custodied_files', 0)}",
+        f"custodied bytes: {_bytes(payload.get('custodied_bytes'))}",
+        f"archive objects: {payload.get('archive_objects', 0)}",
+        f"warning: {payload.get('warning', 'unknown')}",
+    ]
+    blockers = payload.get("blockers")
+    if isinstance(blockers, Sequence) and blockers:
+        lines.extend(f"blocked: {item}" for item in blockers)
+    if payload.get("expires_at"):
+        lines.append(f"plan expires: {payload['expires_at']}")
+    if payload.get("challenge"):
+        lines.append(f"confirmation challenge: {payload['challenge']}")
+    return "\n".join(lines)
+
+
+def format_collection_upload_discard_result(payload: Mapping[str, object]) -> str:
+    return "\n".join(
+        [
+            f"collection upload discard: {payload.get('status', 'unknown')}",
+            f"collection: {payload.get('collection_id', 'unknown')}",
+            f"files: {payload.get('files', 0)}",
+            f"bytes: {_bytes(payload.get('bytes'))}",
+            f"custodied files: {payload.get('custodied_files', 0)}",
+            f"custodied bytes: {_bytes(payload.get('custodied_bytes'))}",
+            f"archive objects: {payload.get('archive_objects', 0)}",
+        ]
+    )
 
 
 def format_collection_uploads(payload: Mapping[str, object]) -> str:
@@ -214,10 +255,26 @@ def format_collection_uploads(payload: Mapping[str, object]) -> str:
             f"created={upload.get('created_at', 'unknown')}  "
             f"files={upload.get('files', 0)}  "
             f"bytes={_bytes(upload.get('bytes'))}  "
-            f"uploaded={_bytes(upload.get('uploaded_bytes'))}  "
+            f"custodied={upload.get('custodied_files', 0)}/"
+            f"{upload.get('files', 0)}:{_bytes(upload.get('custodied_bytes'))}  "
+            f"mode={upload.get('custody_mode', 'unknown')}  "
             f"encryption={upload.get('encryption_format', 'unknown')}:"
             f"{upload.get('passphrase_id', 'unknown')}  "
             f"tags={tag_text or 'none'}"
+        )
+    return "\n".join(lines)
+
+
+def format_collection_upload_files(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "files")]
+    for file in _items(payload, "files"):
+        receipt = file.get("custody_receipt")
+        custody = "custodied" if isinstance(receipt, Mapping) else "pending"
+        lines.append(
+            f"- {file.get('path', 'unknown')}  "
+            f"custody={custody}  "
+            f"bytes={_bytes(file.get('bytes'))}  "
+            f"sha256={file.get('sha256', 'unknown')}"
         )
     return "\n".join(lines)
 

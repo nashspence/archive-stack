@@ -178,8 +178,8 @@ def test_nvenc_preflight_and_encode_share_one_exact_projection(tmp_path: Path) -
         item,
     )
 
-    assert item.archive_path == "video/primary.mkv"
-    assert item.xmp_path == "video/primary.mkv.xmp"
+    assert item.archive_path == "video/primary/archive.mkv"
+    assert item.xmp_path == "video/primary/archive.mkv.xmp"
     assert item.derived_from == ("primary", "sidecar")
     assert "creation_time=2025-02-03T04:05:06-08:00" in command
     assert "ARTIST=Alex Example; River Example" in command

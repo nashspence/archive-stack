@@ -493,3 +493,107 @@ def test_collection_upload_control_commands_have_human_json_parity(
             payload = payload["uploads"][0]
         assert payload["collection_id"] == COLLECTION_ID
         assert payload["state"] == state
+
+
+def test_collection_upload_custody_files_and_guarded_discard_have_human_json_parity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    challenge = "discard-upload:fixture"
+    file_payload = {
+        "path": "video/archive.mkv",
+        "bytes": 10,
+        "sha256": "a" * 64,
+        "provenance": {
+            "status": "omitted",
+            "omission_reason": "fixture",
+        },
+        "custody_receipt": {
+            "format": "riverhog-artifact-custody-receipt/v1",
+            "collection_id": COLLECTION_ID,
+            "path": "video/archive.mkv",
+            "bytes": 10,
+            "sha256": "a" * 64,
+            "archive_objects": [
+                {"volume_id": "pack-000000000000", "sealed_receipt_sha256": "b" * 64}
+            ],
+            "receipt_sha256": "c" * 64,
+        },
+    }
+
+    class Api:
+        def list_collection_upload_session_files(
+            self,
+            collection_id: int,
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            return {
+                "page": 1,
+                "pages": 1,
+                "per_page": 1,
+                "total": 1,
+                "files": [file_payload],
+            }
+
+        def plan_collection_upload_discard(self, collection_id: int) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            return {
+                "status": "ready",
+                "collection_id": collection_id,
+                "state": "orphaned",
+                "files": 1,
+                "bytes": 10,
+                "custodied_files": 1,
+                "custodied_bytes": 10,
+                "archive_objects": 1,
+                "warning": "This permanently destroys Riverhog-custodied artifacts.",
+                "blockers": [],
+                "expires_at": "2026-08-25T01:00:00Z",
+                "challenge": challenge,
+            }
+
+        def discard_collection_upload(
+            self,
+            collection_id: int,
+            *,
+            challenge: str,
+        ) -> dict[str, object]:
+            assert collection_id == COLLECTION_ID
+            assert challenge == "discard-upload:fixture"
+            return {
+                "status": "discarded",
+                "collection_id": collection_id,
+                "files": 1,
+                "bytes": 10,
+                "custodied_files": 1,
+                "custodied_bytes": 10,
+                "archive_objects": 1,
+            }
+
+    monkeypatch.setattr(riverhog_main, "client", Api)
+    cases = (
+        (["collection", "upload", "files", str(COLLECTION_ID)], "custodied", "files"),
+        (
+            ["collection", "upload", "discard", str(COLLECTION_ID), "--dry-run"],
+            "permanently destroys",
+            "status",
+        ),
+        (
+            [
+                "collection",
+                "upload",
+                "discard",
+                str(COLLECTION_ID),
+                "--confirm",
+                challenge,
+            ],
+            "discarded",
+            "status",
+        ),
+    )
+    for arguments, expected_human, structured_key in cases:
+        human = RUNNER.invoke(riverhog_main.app, arguments)
+        structured = RUNNER.invoke(riverhog_main.app, [*arguments, "--json"])
+        assert human.exit_code == structured.exit_code == 0
+        assert expected_human in human.stdout
+        assert structured_key in json.loads(structured.stdout)

@@ -270,8 +270,8 @@ def resolve_media_archive_projection(
             MediaProjectionItem(
                 input_artifact_id=primary_artifact.id,
                 associated_sidecar_artifact_ids=tuple(item.id for item in associated),
-                archive_path=f"{archive_directory}/{primary_artifact.id}{archive_suffix}",
-                xmp_path=f"{archive_directory}/{primary_artifact.id}{archive_suffix}.xmp",
+                archive_path=(f"{archive_directory}/{primary_artifact.id}/archive{archive_suffix}"),
+                xmp_path=(f"{archive_directory}/{primary_artifact.id}/archive{archive_suffix}.xmp"),
                 assertions=assertions,
                 selected=_select_values(assertions, policy),
             )
@@ -279,7 +279,7 @@ def resolve_media_archive_projection(
     retained = tuple(
         RetainedXmpSidecar(
             input_artifact_id=item.id,
-            output_path=f"source-artifacts/{item.id}.xmp",
+            output_path=f"{archive_directory}/~source-artifacts/{item.id}.xmp",
         )
         for item in sorted(sidecars, key=lambda item: item.id)
     )

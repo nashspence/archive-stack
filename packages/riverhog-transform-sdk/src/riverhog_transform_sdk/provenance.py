@@ -50,6 +50,194 @@ class _TransformProvenanceApi(Protocol):
     ) -> bytes: ...
 
 
+@dataclass(frozen=True, slots=True)
+class IncrementalArtifactProvenance:
+    binding: Mapping[str, object]
+    journals: Mapping[str, bytes]
+
+
+@dataclass(frozen=True, slots=True)
+class IncrementalTransformProvenance:
+    """Exact source histories reusable as target artifacts finalize."""
+
+    api: _TransformProvenanceApi
+    current_by_input: Mapping[tuple[int, str], bytes]
+    journals: Mapping[str, bytes]
+    execution_id: str
+    operation_id: str
+    producer_app: str
+    producer_version: str
+    started_at: str
+    heartbeat: Callable[[], None] | None
+
+    @property
+    def captured(self) -> bool:
+        return bool(self.current_by_input)
+
+    def artifact(
+        self,
+        collection_id: CollectionId,
+        identity: ProducerArtifactIdentity,
+        *,
+        sources: Sequence[ClaimedArtifact],
+        resumed: bool,
+    ) -> IncrementalArtifactProvenance | None:
+        ordered = tuple(
+            self.current_by_input[item.key]
+            for item in sorted(sources, key=lambda current: current.key)
+            if item.key in self.current_by_input
+        )
+        if not ordered:
+            return None
+        if self.heartbeat is not None:
+            self.heartbeat()
+        journal_id = _output_journal_id(self.execution_id, identity.path)
+        journal: bytes | None = None
+        if resumed:
+            try:
+                journal = self.api.export_collection_upload_session_provenance_journal(
+                    collection_id,
+                    journal_id,
+                )
+            except NotFound:
+                pass
+        if journal is None:
+            journal = create_derivative_journal_from_identity(
+                relative_path=identity.path,
+                byte_count=identity.bytes,
+                sha256=identity.sha256,
+                source_journals=ordered,
+                agent_name=self.producer_app,
+                agent_version=self.producer_version,
+                event_label=self.operation_id,
+                started_at=self.started_at,
+                ended_at=_utc_now(),
+                journal_id=journal_id,
+            )
+        summary = validate_journal(journal)
+        verify_payload_binding(
+            summary,
+            path=identity.path,
+            byte_count=identity.bytes,
+            sha256=identity.sha256,
+        )
+        expected_sources = {
+            (
+                reference.journal_id,
+                reference.entry_id,
+                reference.entry_json_sha256,
+                reference.state_id,
+            )
+            for reference in map(current_state_reference, ordered)
+        }
+        actual_sources = {
+            (
+                reference.journal_id,
+                reference.entry_id,
+                reference.entry_json_sha256,
+                reference.state_id,
+            )
+            for reference in summary.external_states
+        }
+        if summary.journal_id != journal_id or actual_sources != expected_sources:
+            raise RuntimeError("staged transform provenance differs from exact source lineage")
+        journals = dict(self.journals)
+        existing = journals.get(journal_id)
+        if existing is not None and existing != journal:
+            raise RuntimeError("transform provenance journal identity collides")
+        journals[journal_id] = journal
+        return IncrementalArtifactProvenance(
+            binding={
+                "status": "captured",
+                "journal_id": journal_id,
+                "current_state_id": summary.current_state_id,
+            },
+            journals=journals,
+        )
+
+
+def prepare_incremental_transform_provenance(
+    api: _TransformProvenanceApi,
+    *,
+    inventory: Sequence[ClaimedArtifact],
+    execution_id: str,
+    operation_id: str,
+    producer_app: str,
+    producer_version: str,
+    started_at: str,
+    heartbeat: Callable[[], None] | None = None,
+) -> IncrementalTransformProvenance:
+    """Capture available input histories before incremental output publication."""
+
+    rows: dict[tuple[int, str], Mapping[str, object]] = {}
+    by_key = {item.key: item for item in inventory}
+    for collection_id in sorted({item.root.collection_id for item in inventory}):
+        if heartbeat is not None:
+            heartbeat()
+        payload = api.list_collection_provenance(collection_id, all_items=True)
+        raw_files = payload.get("files")
+        if not isinstance(raw_files, list):
+            raise RuntimeError("Riverhog provenance inventory has no file rows")
+        for raw in raw_files:
+            if not isinstance(raw, Mapping):
+                raise RuntimeError("Riverhog provenance inventory contains an invalid row")
+            key = (
+                _positive_int(raw.get("collection_id"), "provenance collection id"),
+                str(raw.get("path") or ""),
+            )
+            if key in by_key:
+                rows[key] = raw
+    journals: dict[str, bytes] = {}
+    loaded: set[tuple[int, str]] = set()
+    current: dict[tuple[int, str], bytes] = {}
+    for key, artifact in sorted(by_key.items()):
+        row = rows.get(key)
+        if row is None:
+            raise RuntimeError("Riverhog provenance inventory omitted a claimed input")
+        if (
+            _nonnegative_int(row.get("bytes"), "provenance artifact bytes") != artifact.bytes
+            or str(row.get("sha256") or "") != artifact.sha256
+        ):
+            raise RuntimeError("Riverhog provenance inventory changed an input identity")
+        binding = row.get("provenance")
+        if not isinstance(binding, Mapping):
+            raise RuntimeError("Riverhog provenance inventory has no artifact binding")
+        if str(binding.get("status") or "") == "omitted":
+            continue
+        if str(binding.get("status") or "") != "captured":
+            raise RuntimeError("Riverhog provenance inventory has an invalid status")
+        journal_id = str(binding.get("journal_id") or "")
+        content = _load_journal_closure(
+            api,
+            collection_id=key[0],
+            journal_id=journal_id,
+            journals=journals,
+            loaded_journals=loaded,
+            heartbeat=heartbeat,
+        )
+        summary = validate_journal(content)
+        verify_payload_binding(
+            summary,
+            path=artifact.path,
+            byte_count=artifact.bytes,
+            sha256=artifact.sha256,
+        )
+        if str(binding.get("current_state_id") or "") != summary.current_state_id:
+            raise RuntimeError("Riverhog provenance projection changed its current state")
+        current[key] = content
+    return IncrementalTransformProvenance(
+        api=api,
+        current_by_input=current,
+        journals=journals,
+        execution_id=execution_id,
+        operation_id=operation_id,
+        producer_app=producer_app,
+        producer_version=producer_version,
+        started_at=started_at,
+        heartbeat=heartbeat,
+    )
+
+
 def prepare_transform_provenance(
     api: _TransformProvenanceApi,
     *,

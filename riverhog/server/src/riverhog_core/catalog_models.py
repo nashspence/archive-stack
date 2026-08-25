@@ -837,6 +837,9 @@ class CollectionUploadRecord(Base):
     initiated_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     event_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     state: Mapped[str] = mapped_column(String, default="open")
+    custody_mode: Mapped[str] = mapped_column(String, default="producer-retained")
+    lease_expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    orphaned_at: Mapped[str | None] = mapped_column(String, nullable=True)
     archive_store: Mapped[str] = mapped_column(String, nullable=False)
     opened_at: Mapped[str] = mapped_column(String)
     last_activity_at: Mapped[str] = mapped_column(String)
@@ -913,6 +916,8 @@ class CollectionUploadFileRecord(Base):
     provenance_journal_id: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance_current_state_id: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    custodied_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    custody_receipt_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(

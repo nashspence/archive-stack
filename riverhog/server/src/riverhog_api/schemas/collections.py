@@ -8,6 +8,8 @@ from riverhog_protocol import (
     ArchiveStoreName,
     CollectionId,
     CollectionSort,
+    CollectionUploadArtifactCustodyReceiptDocument,
+    CollectionUploadCustodyMode,
     CollectionUploadFileBatchDocument,
     CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadSort,
@@ -56,6 +58,7 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     event_context: dict[str, Any] | None = None
     provenance_mode: Literal["captured", "omitted"] = "captured"
     provenance_omission_reason: CanonicalVisibleText | None = None
+    custody_mode: CollectionUploadCustodyMode = "producer-retained"
 
     @field_validator("tags")
     @classmethod
@@ -185,6 +188,7 @@ class CollectionDeletionResultOut(RiverhogModel):
 
 class CollectionUploadFileOut(ImmutableFileIdentityDocument):
     provenance: FileProvenanceBinding
+    custody_receipt: CollectionUploadArtifactCustodyReceiptDocument | None = None
 
 
 class CollectionUploadProvenanceJournalOut(RiverhogModel):
@@ -230,10 +234,15 @@ class CollectionUploadListItemOut(RiverhogModel):
     archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
-    state: Literal["open", "uploading", "finalizing", "failed"]
+    state: Literal["open", "uploading", "finalizing", "failed", "orphaned", "discarding"]
+    custody_mode: CollectionUploadCustodyMode
     files: int
     bytes: int
     uploaded_bytes: int
+    custodied_files: int
+    custodied_bytes: int
+    upload_state_expires_at: str | None
+    orphaned_at: str | None
 
 
 class CollectionUploadListFiltersOut(RiverhogModel):
@@ -299,7 +308,17 @@ class CollectionUploadSessionOut(RiverhogModel):
     archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
-    state: Literal["open", "uploading", "finalizing", "finalized", "failed", "canceled"]
+    state: Literal[
+        "open",
+        "uploading",
+        "finalizing",
+        "finalized",
+        "failed",
+        "canceled",
+        "orphaned",
+        "discarding",
+    ]
+    custody_mode: CollectionUploadCustodyMode
     registration_constraints: CollectionUploadRegistrationConstraintsOut | None
     files_total: int
     files_pending: int
@@ -309,6 +328,9 @@ class CollectionUploadSessionOut(RiverhogModel):
     uploaded_bytes: int
     missing_bytes: int
     upload_state_expires_at: str | None
+    custodied_files: int
+    custodied_bytes: int
+    orphaned_at: str | None
     latest_failure: str | None = None
     archive_phase: str | None = None
     archive_phase_updated_at: str | None = None
@@ -342,6 +364,43 @@ class CollectionUploadSessionOut(RiverhogModel):
 
 class CreateOrResumeCollectionUploadSessionOut(CollectionUploadSessionOut):
     resumed: bool
+
+
+class CollectionUploadDiscardPlanOut(RiverhogModel):
+    status: Literal["ready", "blocked"]
+    collection_id: CollectionId
+    warning: str
+    expires_at: str
+    challenge: str | None
+    state: Literal["open", "uploading", "finalizing", "failed", "orphaned", "discarding"]
+    files: int
+    bytes: int
+    custodied_files: int
+    custodied_bytes: int
+    archive_objects: int
+    blockers: list[str]
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> CollectionUploadDiscardPlanOut:
+        if self.status == "ready" and (not self.challenge or self.blockers):
+            raise ValueError("ready upload discard plan requires a challenge and no blockers")
+        if self.status == "blocked" and (self.challenge is not None or not self.blockers):
+            raise ValueError("blocked upload discard plan requires blockers and no challenge")
+        return self
+
+
+class DiscardCollectionUploadRequest(RiverhogModel):
+    challenge: CanonicalVisibleText
+
+
+class CollectionUploadDiscardResultOut(RiverhogModel):
+    status: Literal["discarded", "already_absent"]
+    collection_id: CollectionId
+    files: int
+    bytes: int
+    custodied_files: int
+    custodied_bytes: int
+    archive_objects: int
 
 
 class CollectionUploadUnitSourceOut(RiverhogModel):

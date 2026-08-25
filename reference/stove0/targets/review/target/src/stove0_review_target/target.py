@@ -356,26 +356,6 @@ class ReviewTargetService(PersistentTargetService):
             workspace = execution.open_workspace(self.workspace_root)
             try:
                 resolved = execution.inputs()
-                inputs: list[SamplerInput] = []
-                with execution.prepare_inputs(
-                    tuple(item for item, _claimed in resolved)
-                ) as retrieval:
-                    for artifact, claimed in resolved:
-                        check()
-                        suffix = PurePosixPath(artifact.path).suffix[:32]
-                        relative = f"input/{artifact.id}{suffix}"
-                        source = workspace.resolve(relative)
-                        source.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                        retrieval.download(claimed, source)
-                        inputs.append(
-                            SamplerInput(
-                                id=artifact.id,
-                                path=relative,
-                                bytes=artifact.bytes,
-                                sha256=artifact.sha256,
-                                media_type=artifact.media_type,
-                            )
-                        )
                 windows = tuple(
                     SamplerWindow(
                         id=f"sample-{index:04d}",
@@ -386,58 +366,108 @@ class ReviewTargetService(PersistentTargetService):
                     )
                     for index, window in enumerate(sample_plan.windows, start=1)
                 )
-                sampler_request = SamplerRequest.seal(
-                    SamplerRequestPayload(
-                        sampler_descriptor_sha256=descriptor.descriptor_sha256,
-                        workspace_id=workspace.execution_id,
-                        inputs=tuple(sorted(inputs, key=lambda item: item.id)),
-                        windows=windows,
-                        portable_intent=portable_intent,
-                        maximum_output_bytes=maximum,
-                        timeout_seconds=timeout,
-                        cancellation_path="control/cancel",
-                    )
-                )
-                sampler_result = self._sample(
-                    registration,
-                    sampler_request,
-                    cancellation=cancellation,
-                    workspace=workspace,
-                )
-                _require_sampler_success(sampler_result)
                 artifacts: list[OutputArtifact] = []
-                producers: dict[str, ProducerFile] = {}
-                samples: list[dict[str, object]] = []
-                for output in sampler_result.outputs:
-                    path = workspace.resolve(output.path)
-                    _verify_file(path, output.bytes, output.sha256)
-                    collection_path = output.path.removeprefix("output/")
-                    output_artifact = OutputArtifact(
-                        id=output.id,
-                        role=descriptor.output_role,
-                        path=collection_path,
-                        bytes=output.bytes,
-                        sha256=output.sha256,
-                        media_type=output.media_type,
-                        derived_from=output.derived_from,
-                    )
-                    artifacts.append(output_artifact)
-                    producers[output_artifact.id] = ProducerFile(path, collection_path)
-                    window = next(item for item in windows if item.id == output.id)
-                    samples.append(
-                        {
-                            "artifact_id": output.id,
-                            "source_artifact_id": window.input_id,
-                            "path": collection_path,
-                            "start_ms": window.start_ms,
-                            "duration_ms": window.duration_ms,
-                        }
-                    )
-                _verify_output_set(
-                    workspace,
-                    {output.path for output in sampler_result.outputs},
+                publication = (
+                    execution.open_collection_publication() if self.destination is None else None
                 )
-                index_path = workspace.resolve("output/review/index.json")
+                samples: list[dict[str, object]] = []
+                sampler_requests: list[SamplerRequest] = []
+                sampler_results: list[SamplerResult] = []
+                allowed_output_paths: set[str] = set()
+                produced_bytes = 0
+                for artifact, claimed in sorted(resolved, key=lambda item: item[0].id):
+                    artifact_windows = tuple(
+                        item for item in windows if item.input_id == artifact.id
+                    )
+                    if not artifact_windows:
+                        continue
+                    check()
+                    suffix = PurePosixPath(artifact.path).suffix[:32]
+                    relative = f"input/{artifact.id}{suffix}"
+                    source = workspace.resolve(relative)
+                    source.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    with execution.prepare_inputs((artifact,)) as retrieval:
+                        retrieval.download(claimed, source)
+                    try:
+                        remaining_bytes = maximum - produced_bytes
+                        if remaining_bytes < 1:
+                            raise RuntimeError("review output exceeded its sealed byte budget")
+                        sampler_request = SamplerRequest.seal(
+                            SamplerRequestPayload(
+                                sampler_descriptor_sha256=descriptor.descriptor_sha256,
+                                workspace_id=workspace.execution_id,
+                                inputs=(
+                                    SamplerInput(
+                                        id=artifact.id,
+                                        path=relative,
+                                        bytes=artifact.bytes,
+                                        sha256=artifact.sha256,
+                                        media_type=artifact.media_type,
+                                    ),
+                                ),
+                                windows=artifact_windows,
+                                portable_intent=portable_intent,
+                                maximum_output_bytes=remaining_bytes,
+                                timeout_seconds=timeout,
+                                cancellation_path="control/cancel",
+                            )
+                        )
+                        sampler_result = self._sample(
+                            registration,
+                            sampler_request,
+                            cancellation=cancellation,
+                            workspace=workspace,
+                        )
+                        _require_sampler_success(sampler_result)
+                        sampler_requests.append(sampler_request)
+                        sampler_results.append(sampler_result)
+                        current_paths = {output.path for output in sampler_result.outputs}
+                        allowed_output_paths.update(current_paths)
+                        _verify_output_set(
+                            workspace,
+                            allowed=allowed_output_paths,
+                            required=current_paths,
+                        )
+                        produced_bytes += sum(output.bytes for output in sampler_result.outputs)
+                        for output in sorted(sampler_result.outputs, key=lambda item: item.path):
+                            path = workspace.resolve(output.path)
+                            _verify_file(path, output.bytes, output.sha256)
+                            collection_path = output.path.removeprefix("output/")
+                            output_artifact = OutputArtifact(
+                                id=output.id,
+                                role=descriptor.output_role,
+                                path=collection_path,
+                                bytes=output.bytes,
+                                sha256=output.sha256,
+                                media_type=output.media_type,
+                                derived_from=output.derived_from,
+                            )
+                            artifacts.append(output_artifact)
+                            if publication is not None:
+                                publication.append(
+                                    ProducerFile(path, collection_path), output_artifact
+                                )
+                            window = next(item for item in windows if item.id == output.id)
+                            samples.append(
+                                {
+                                    "artifact_id": output.id,
+                                    "source_artifact_id": window.input_id,
+                                    "path": collection_path,
+                                    "start_ms": window.start_ms,
+                                    "duration_ms": window.duration_ms,
+                                }
+                            )
+                    finally:
+                        source.unlink(missing_ok=True)
+                if not sampler_results:
+                    raise RuntimeError("review sample plan produced no executable sampler groups")
+                sampler_result_sha256 = canonical_json_sha256(
+                    {
+                        "format": "stove0-review-sampler-result-set/v1",
+                        "results": [item.result_sha256 for item in sampler_results],
+                    }
+                )
+                index_path = workspace.resolve("output/review/summary.json")
                 index_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
                 index_path.write_bytes(
                     canonical_json_bytes(
@@ -446,8 +476,13 @@ class ReviewTargetService(PersistentTargetService):
                             "variant_id": variant_id,
                             "sample_plan": sample_plan.model_dump(mode="json"),
                             "sampler_descriptor": descriptor.model_dump(mode="json"),
-                            "sampler_request_sha256": sampler_request.request_sha256,
-                            "sampler_result_sha256": sampler_result.result_sha256,
+                            "sampler_request_sha256s": [
+                                item.request_sha256 for item in sampler_requests
+                            ],
+                            "sampler_result_sha256s": [
+                                item.result_sha256 for item in sampler_results
+                            ],
+                            "sampler_result_set_sha256": sampler_result_sha256,
                             "samples": samples,
                         }
                     )
@@ -456,14 +491,15 @@ class ReviewTargetService(PersistentTargetService):
                 index = OutputArtifact(
                     id="review-index",
                     role=REVIEW_INDEX_ROLE,
-                    path="review/index.json",
+                    path="review/summary.json",
                     bytes=index_bytes,
                     sha256=index_sha,
                     media_type="application/json",
                     derived_from=tuple(sorted(item.id for item, _claimed in resolved)),
                 )
                 artifacts.append(index)
-                producers[index.id] = ProducerFile(index_path, index.path)
+                if publication is not None:
+                    publication.append(ProducerFile(index_path, index.path), index)
                 declared = tuple(sorted(artifacts, key=lambda item: item.id))
                 dispositions = tuple(
                     ArtifactDisposition(
@@ -480,7 +516,7 @@ class ReviewTargetService(PersistentTargetService):
                 execution_sha256 = _execution_sha256(
                     request.declaration.plan.plan_sha256,
                     self.image_digest,
-                    sampler_result.result_sha256,
+                    sampler_result_sha256,
                     declared,
                 )
                 if self.destination is not None:
@@ -510,12 +546,12 @@ class ReviewTargetService(PersistentTargetService):
                             "image_digest": self.image_digest,
                             "sampler_descriptor_sha256": descriptor.descriptor_sha256,
                             "sampler_image_digest": descriptor.image_digest,
-                            "sampler_result_sha256": sampler_result.result_sha256,
+                            "sampler_result_set_sha256": sampler_result_sha256,
                         },
                     )
-                return execution.publish_success(
-                    producers,
-                    artifacts=declared,
+                if publication is None:
+                    raise RuntimeError("review collection publication was not initialized")
+                return publication.finish_success(
                     operation=REVIEW_MATERIALIZE_OPERATION,
                     execution_sha256=execution_sha256,
                     dispositions=dispositions,
@@ -524,7 +560,7 @@ class ReviewTargetService(PersistentTargetService):
                         "image_digest": self.image_digest,
                         "sampler_descriptor_sha256": descriptor.descriptor_sha256,
                         "sampler_image_digest": descriptor.image_digest,
-                        "sampler_result_sha256": sampler_result.result_sha256,
+                        "sampler_result_set_sha256": sampler_result_sha256,
                     },
                 )
             finally:
@@ -620,14 +656,19 @@ def _verify_file(path: Path, expected_bytes: int, expected_sha256: str) -> None:
         raise RuntimeError("sampler output differs from its declared identity")
 
 
-def _verify_output_set(workspace: TransformWorkspace, expected: set[str]) -> None:
+def _verify_output_set(
+    workspace: TransformWorkspace,
+    *,
+    allowed: set[str],
+    required: set[str],
+) -> None:
     output_root = workspace.resolve("output")
     actual = {
         path.relative_to(workspace.root).as_posix()
         for path in output_root.rglob("*")
         if path.is_file()
     }
-    if actual != expected:
+    if not required <= actual or not actual <= allowed:
         raise RuntimeError("sampler workspace contains an undeclared output")
 
 

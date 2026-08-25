@@ -5,18 +5,36 @@ from __future__ import annotations
 from typing import Annotated, Literal, Self
 
 from http_api_contracts import CanonicalVisibleText
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from riverhog_provenance_contracts import (
     ProvenanceJournalId,
     ProvenanceJournalStateReference,
     ProvenanceStateId,
 )
 
+from riverhog_protocol.collection_workflows import (
+    DERIVATION_EVIDENCE_PATH,
+    canonical_json_sha256,
+)
 from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
+from riverhog_protocol.paths import CollectionId, normalize_relpath, validate_collection_id
 from riverhog_protocol.raw_ingress import RawSourceDigestManifest
 from riverhog_protocol.transport import COLLECTION_UPLOAD_FILE_BATCH_MAX
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+CollectionUploadCustodyMode = Literal["producer-retained", "custody-transfer"]
+
+
+def collection_upload_path_order_key(path: str) -> tuple[int, bytes]:
+    """Order v1 upload members while keeping terminal derivation evidence last.
+
+    A collection derivation binds the complete output set and therefore cannot
+    exist while a transform is still producing artifacts. All other member
+    paths retain their ordinary UTF-8 lexical order.
+    """
+
+    normalized = normalize_relpath(path)
+    return (1 if normalized == DERIVATION_EVIDENCE_PATH else 0, normalized.encode("utf-8"))
 
 
 class CollectionUploadDocument(BaseModel):
@@ -65,12 +83,80 @@ class CollectionUploadFileBatchDocument(CollectionUploadDocument):
 
     @model_validator(mode="after")
     def validate_canonical_file_order(self) -> Self:
-        if self.files != sorted(self.files, key=lambda item: item.path):
+        if self.files != sorted(
+            self.files,
+            key=lambda item: collection_upload_path_order_key(item.path),
+        ):
             raise ValueError("collection upload files must be in canonical path order")
         paths = [item.path for item in self.files]
         if len(paths) != len(set(paths)):
             raise ValueError("collection upload file paths must be unique")
         return self
+
+
+class CollectionUploadCustodyObjectDocument(CollectionUploadDocument):
+    volume_id: CanonicalVisibleText
+    sealed_receipt_sha256: Sha256
+
+
+class CollectionUploadArtifactCustodyReceiptDocument(CollectionUploadDocument):
+    """Exact safe-release evidence for one artifact in construction state."""
+
+    format: Literal["riverhog-artifact-custody-receipt/v1"] = "riverhog-artifact-custody-receipt/v1"
+    collection_id: CollectionId
+    path: str
+    bytes: int = Field(ge=0, strict=True)
+    sha256: Sha256
+    archive_objects: tuple[CollectionUploadCustodyObjectDocument, ...] = Field(min_length=1)
+    receipt_sha256: Sha256
+
+    @field_validator("collection_id")
+    @classmethod
+    def canonical_collection_id(cls, value: int) -> int:
+        return validate_collection_id(value)
+
+    @field_validator("path")
+    @classmethod
+    def canonical_path(cls, value: str) -> str:
+        return normalize_relpath(value)
+
+    @model_validator(mode="after")
+    def validate_receipt(self) -> Self:
+        object_ids = [item.volume_id for item in self.archive_objects]
+        if object_ids != sorted(set(object_ids)):
+            raise ValueError("custody receipt archive objects must be unique and ordered")
+        payload = self.model_dump(mode="json", exclude={"receipt_sha256"})
+        if canonical_json_sha256(payload) != self.receipt_sha256:
+            raise ValueError("artifact custody receipt identity differs from its payload")
+        return self
+
+    @classmethod
+    def seal(
+        cls,
+        *,
+        collection_id: int,
+        path: str,
+        bytes: int,
+        sha256: str,
+        archive_objects: tuple[CollectionUploadCustodyObjectDocument, ...],
+    ) -> CollectionUploadArtifactCustodyReceiptDocument:
+        payload = {
+            "format": "riverhog-artifact-custody-receipt/v1",
+            "collection_id": collection_id,
+            "path": path,
+            "bytes": bytes,
+            "sha256": sha256,
+            "archive_objects": [item.model_dump(mode="json") for item in archive_objects],
+        }
+        return cls(
+            format="riverhog-artifact-custody-receipt/v1",
+            collection_id=collection_id,
+            path=path,
+            bytes=bytes,
+            sha256=sha256,
+            archive_objects=archive_objects,
+            receipt_sha256=canonical_json_sha256(payload),
+        )
 
 
 def validate_collection_upload_batch_against_registration_constraints(
@@ -112,10 +198,14 @@ __all__ = [
     "CapturedFileProvenanceBinding",
     "CollectionUploadFileBatchDocument",
     "CollectionUploadFileIn",
+    "CollectionUploadArtifactCustodyReceiptDocument",
+    "CollectionUploadCustodyMode",
+    "CollectionUploadCustodyObjectDocument",
     "CollectionUploadRegistrationConstraintsDocument",
     "CollectionUploadRawPartsIn",
     "FileProvenanceBinding",
     "OmittedFileProvenanceBinding",
     "collection_upload_raw_digest_manifest",
+    "collection_upload_path_order_key",
     "validate_collection_upload_batch_against_registration_constraints",
 ]

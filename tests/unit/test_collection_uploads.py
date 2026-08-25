@@ -11,10 +11,12 @@ from riverhog_core.app_permissions import (
     ALL_RESOURCES,
     CATALOG_READ,
     COLLECTIONS_CREATE,
+    COLLECTIONS_DELETE,
     PROVENANCE_EXPORT,
     PROVENANCE_READ,
     ApplicationAccess,
     ApplicationPrincipal,
+    tag_resource,
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import initialize_db, make_session_factory, session_scope
@@ -30,6 +32,7 @@ from riverhog_core.catalog_models import (
     RetrievalCacheObjectRecord,
     TagRecord,
 )
+from riverhog_core.catalog_workflow_models import CollectionProcessingClaimRecord
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.domain.archive import ArchiveFile
 from riverhog_core.incremental_plan import (
@@ -63,6 +66,24 @@ _CREATOR = ApplicationPrincipal(
     app="uploader",
     key_id="key-1",
     access=frozenset({ApplicationAccess(COLLECTIONS_CREATE, ALL_RESOURCES)}),
+)
+
+_DELETER = ApplicationPrincipal(
+    app="operator",
+    key_id="key-operator",
+    access=frozenset({ApplicationAccess(COLLECTIONS_DELETE, ALL_RESOURCES)}),
+)
+
+_DOCS_DELETER = ApplicationPrincipal(
+    app="docs-operator",
+    key_id="key-docs-operator",
+    access=frozenset({ApplicationAccess(COLLECTIONS_DELETE, tag_resource("docs"))}),
+)
+
+_OTHER_DELETER = ApplicationPrincipal(
+    app="other-operator",
+    key_id="key-other-operator",
+    access=frozenset({ApplicationAccess(COLLECTIONS_DELETE, tag_resource("other"))}),
 )
 
 
@@ -826,6 +847,241 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
             provenance_mode="omitted",
             provenance_omission_reason="fixture does not exercise source observation",
         )
+
+
+def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
+    tmp_path: Path,
+) -> None:
+    policy = CollectionVolumePolicy(
+        pack_source_bytes=1024,
+        pack_files=1,
+        pack_member_bytes=1024,
+        pack_part_plaintext_bytes=5 * 1024 * 1024,
+        raw_volume_plaintext_bytes=5 * 1024 * 1024,
+        raw_part_plaintext_bytes=5 * 1024 * 1024,
+    )
+    service, config, _resumable, _root = _service_with_archive_objects(
+        tmp_path,
+        policy=policy,
+    )
+    contents = {"a.txt": b"first", "b.txt": b"second"}
+    opened = service.create_or_resume(
+        idempotency_key="custody-transfer",
+        tags=("docs",),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture intentionally omits host provenance",
+        custody_mode="custody-transfer",
+    )
+    collection_id = int(opened["collection_id"])
+    assert opened["custody_mode"] == "custody-transfer"
+    assert opened["upload_state_expires_at"] is not None
+
+    for path in contents:
+        content = contents[path]
+        service.register_files(
+            collection_id,
+            (
+                {
+                    "path": path,
+                    "bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                },
+            ),
+        )
+    volume = service.list_volumes(collection_id)["volumes"][0]
+    unit = volume["units"][0]
+    service.upload_unit(
+        collection_id,
+        str(volume["volume_id"]),
+        int(unit["unit"]),
+        plan_sha256=str(volume["plan_sha256"]),
+        content=b"".join(contents[str(source["path"])] for source in unit["sources"]),
+    )
+    files = service.list_files(collection_id, page=1, per_page=100, all_items=True)["files"]
+    by_path = {str(item["path"]): item for item in files}
+    assert by_path["a.txt"]["custody_receipt"] is not None
+    assert by_path["b.txt"]["custody_receipt"] is None
+    assert service.get(collection_id)["custodied_files"] == 1
+
+    service.require_read_access(collection_id, _DELETER)
+    service.require_read_access(collection_id, _DOCS_DELETER)
+    service.require_discard_access(collection_id, _DELETER)
+    service.require_discard_access(collection_id, _DOCS_DELETER)
+    with pytest.raises(NotFound):
+        service.require_read_access(collection_id, _OTHER_DELETER)
+    with pytest.raises(NotFound):
+        service.require_discard_access(collection_id, _OTHER_DELETER)
+    assert (
+        service.list(
+            page=1,
+            per_page=100,
+            q=None,
+            tag=None,
+            state=None,
+            sort="id",
+            order="asc",
+            all_items=True,
+            principal=_DELETER,
+        )["total"]
+        == 1
+    )
+    assert (
+        service.list(
+            page=1,
+            per_page=100,
+            q=None,
+            tag=None,
+            state=None,
+            sort="id",
+            order="asc",
+            all_items=True,
+            principal=_DOCS_DELETER,
+        )["total"]
+        == 1
+    )
+    assert (
+        service.list(
+            page=1,
+            per_page=100,
+            q=None,
+            tag=None,
+            state=None,
+            sort="id",
+            order="asc",
+            all_items=True,
+            principal=_OTHER_DELETER,
+        )["total"]
+        == 0
+    )
+
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.lease_expires_at = "2020-01-01T00:00:00.000000Z"
+    assert service.reap_expired_custody_transfers() == 1
+    assert service.get(collection_id)["state"] == "orphaned"
+    assert service.reap_expired_custody_transfers() == 0
+
+    resumed = service.create_or_resume(
+        idempotency_key="custody-transfer",
+        tags=("docs",),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture intentionally omits host provenance",
+        custody_mode="custody-transfer",
+    )
+    assert resumed["state"] == "open"
+    assert resumed["custodied_files"] == 1
+    assert service.plan_orphan_discard(collection_id)["status"] == "blocked"
+
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.lease_expires_at = "2020-01-01T00:00:00.000000Z"
+    assert service.reap_expired_custody_transfers() == 1
+    execution_id = "a" * 64
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.initiated_by_app = f"transform:{execution_id}"
+        session.add(
+            CollectionProcessingClaimRecord(
+                id="b" * 64,
+                work_id="c" * 64,
+                consumer_app="fixture-controller",
+                consumer_key_id="fixture-key",
+                purpose="fixture-operation",
+                work_document_json="{}",
+                work_document_sha256="d" * 64,
+                execution_id=execution_id,
+                state="active",
+                fence=1,
+                expires_at="2099-01-01T00:00:00.000000Z",
+                created_at="2026-08-25T00:00:00.000000Z",
+                updated_at="2026-08-25T00:00:00.000000Z",
+            )
+        )
+    active_plan = service.plan_orphan_discard(collection_id)
+    assert active_plan["status"] == "blocked"
+    assert active_plan["challenge"] is None
+    assert "owning processing claim remains active" in str(active_plan["blockers"])
+    with session_scope(make_session_factory(config.database_url)) as session:
+        claim = session.get(CollectionProcessingClaimRecord, "b" * 64)
+        assert claim is not None
+        claim.expires_at = "2020-01-01T00:00:00.000000Z"
+    plan = service.plan_orphan_discard(collection_id)
+    assert plan["status"] == "ready"
+    assert "permanently destroys" in str(plan["warning"])
+    result = service.discard_orphan(collection_id, challenge=str(plan["challenge"]))
+    assert result == {
+        "status": "discarded",
+        "collection_id": collection_id,
+        "files": 2,
+        "bytes": 11,
+        "custodied_files": 1,
+        "custodied_bytes": 5,
+        "archive_objects": 1,
+    }
+    with pytest.raises(NotFound):
+        service.get(collection_id)
+
+
+def test_failed_orphan_cleanup_remains_visible_and_exactly_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, config = _service(tmp_path)
+    opened = service.create_or_resume(
+        idempotency_key="failed-discard",
+        tags=("docs",),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture",
+        custody_mode="custody-transfer",
+    )
+    collection_id = int(opened["collection_id"])
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.lease_expires_at = "2020-01-01T00:00:00.000000Z"
+    assert service.reap_expired_custody_transfers() == 1
+    store = service._archive_stores.require("archive").store  # noqa: SLF001
+    original = store.discard_collection_archive_upload
+    monkeypatch.setattr(
+        store,
+        "discard_collection_archive_upload",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("provider cleanup failed")),
+    )
+    plan = service.plan_orphan_discard(collection_id)
+
+    with pytest.raises(RuntimeError, match="provider cleanup failed"):
+        service.discard_orphan(collection_id, challenge=str(plan["challenge"]))
+
+    retained = service.get(collection_id)
+    assert retained["state"] == "orphaned"
+    assert retained["latest_failure"] == "provider cleanup failed"
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.state = "discarding"
+    assert service.requeue_interrupted_orphan_discards_for_startup() == 1
+    assert service.get(collection_id)["state"] == "orphaned"
+    monkeypatch.setattr(store, "discard_collection_archive_upload", original)
+    retry = service.plan_orphan_discard(collection_id)
+    assert (
+        service.discard_orphan(collection_id, challenge=str(retry["challenge"]))["status"]
+        == "discarded"
+    )
 
 
 def test_completion_requires_volume_plans_to_match_registered_file_identities(
