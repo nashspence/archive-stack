@@ -28,6 +28,7 @@ from riverhog_provenance import (
     validate_journal,
 )
 
+from tests.provenance_observer import native_provenance_observer
 from tests.unit.db_helpers import sqlite_url
 
 NOW = "2026-01-01T00:00:00.000000Z"
@@ -57,6 +58,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
         host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
         agent_name="fixture",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
     )
     second = create_observation_journal(
         _payload(tmp_path / "second.mov", b"second"),
@@ -64,6 +66,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
         host_id="urn:uuid:00000000-0000-4000-8000-000000000002",
         agent_name="fixture",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
     )
     derivative_path = _payload(tmp_path / "derivative.tar", b"derivative")
     derivative = create_derivative_journal(
@@ -76,6 +79,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
         event_label="Fixture aggregation",
         started_at=NOW,
         ended_at=NOW,
+        observer=native_provenance_observer(),
         derivation_kind="aggregation",
     )
     unrelated = create_observation_journal(
@@ -84,6 +88,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
         host_id="urn:uuid:00000000-0000-4000-8000-000000000004",
         agent_name="fixture",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
     )
     journals = (first, second, derivative, unrelated)
     summaries = {

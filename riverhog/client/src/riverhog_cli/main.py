@@ -59,6 +59,7 @@ from riverhog_provenance import (
 from time_formats import parse_duration, utc_timestamp_now
 
 from riverhog_cli.local import local_app
+from riverhog_cli.native_provenance import native_provenance_observer
 from riverhog_cli.output import (
     format_app_access,
     format_app_access_selectors,
@@ -1125,6 +1126,7 @@ def _hash_collection_source(
         host_id=user_installation_id("riverhog-client"),
         agent_name="riverhog-client",
         agent_version=importlib.metadata.version("riverhog-client"),
+        observer=native_provenance_observer(),
         provenance=provenance,
         omit_reason=omit_provenance,
     )

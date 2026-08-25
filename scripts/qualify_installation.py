@@ -1699,7 +1699,7 @@ def _run_recovery(
     return actual_digest
 
 
-def _install_command(component: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
+def _installation_platform() -> str:
     platform = {
         "darwin": "macos-arm64",
         "linux": "linux-x64",
@@ -1707,6 +1707,11 @@ def _install_command(component: dict[str, Any], manifest: dict[str, Any]) -> lis
     }.get(sys.platform)
     if platform is None:
         raise QualificationError(f"unsupported qualification platform: {sys.platform}")
+    return platform
+
+
+def _install_command(component: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
+    platform = _installation_platform()
     command = [
         "uv",
         "--no-config",
@@ -1760,8 +1765,10 @@ def _qualify_component(
     if _python_version(python, scratch, environment) != manifest["toolchain"]["python"]:
         raise QualificationError(f"{root} did not use the exact managed CPython patch")
     inventory = _installed_inventory(python, scratch, environment)
+    platform = _installation_platform()
     expected_first_party = {
-        str(item["name"]): str(item["version"]) for item in component["first_party_closure"]
+        str(item["name"]): str(item["version"])
+        for item in component["first_party_closure"][platform]
     }
     actual_first_party = {
         name: version for name, version in inventory.items() if name in all_project_names

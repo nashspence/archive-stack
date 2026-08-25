@@ -30,6 +30,10 @@ COPY packages/riverhog-ftp-adapter-api-client packages/riverhog-ftp-adapter-api-
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contracts
+COPY packages/riverhog-provenance-linux-contracts packages/riverhog-provenance-linux-contracts
+COPY packages/riverhog-provenance-linux-observer packages/riverhog-provenance-linux-observer
+COPY packages/riverhog-provenance-macos-contracts packages/riverhog-provenance-macos-contracts
+COPY packages/riverhog-provenance-windows-contracts packages/riverhog-provenance-windows-contracts
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/time-formats packages/time-formats
 RUN uv sync --frozen --package riverhog-ftp-adapter --no-dev --no-editable

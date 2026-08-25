@@ -12,10 +12,20 @@ members = [
 ]
 
 [tool.uv.sources]
+gogurt-core = { workspace = true }
+gogurt-linux = { workspace = true }
+gogurt-macos = { workspace = true }
+gogurt-windows = { workspace = true }
 riverhog-ftp-adapter-api-client = { workspace = true }
 riverhog-archive-contracts = { workspace = true }
 riverhog-provenance = { workspace = true }
 riverhog-provenance-contracts = { workspace = true }
+riverhog-provenance-linux-contracts = { workspace = true }
+riverhog-provenance-linux-observer = { workspace = true }
+riverhog-provenance-macos-contracts = { workspace = true }
+riverhog-provenance-macos-observer = { workspace = true }
+riverhog-provenance-windows-contracts = { workspace = true }
+riverhog-provenance-windows-observer = { workspace = true }
 riverhog-storage-adapter-asgi-support = { workspace = true }
 riverhog-storage-adapter-protocol = { workspace = true }
 riverhog-storage-adapter-s3-support = { workspace = true }
@@ -77,19 +87,19 @@ python_version = "3.12"
 strict = true
 
 [[tool.mypy.overrides]]
-module = "riverhog_provenance.linux"
+module = "riverhog_provenance_linux_observer"
 # OSError.errno is typed as optional even on the caught native failures whose
 # numeric code is preserved for diagnostic rendering.
 disable_error_code = ["arg-type"]
 
 [[tool.mypy.overrides]]
-module = "riverhog_provenance.macos"
+module = "riverhog_provenance_macos_observer"
 # The non-Darwin host stubs cannot express Darwin errno and native ABI details;
 # live macOS CI qualifies the implementation itself.
 disable_error_code = ["arg-type"]
 
 [[tool.mypy.overrides]]
-module = "riverhog_provenance.windows"
+module = "riverhog_provenance_windows_observer"
 # The non-Windows host stubs intentionally omit ctypes/msvcrt/winreg members;
 # live Windows CI qualifies those APIs and their independently typed wrappers.
 disable_error_code = ["attr-defined"]

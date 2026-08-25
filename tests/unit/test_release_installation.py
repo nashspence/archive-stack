@@ -113,12 +113,46 @@ def test_installation_artifacts_are_derived_and_mutually_consistent(
             "workspace" in str(item) or "file://" in str(item) for item in lock["packages"]
         )
         for platform in installation.SUPPORTED_PLATFORMS:
+            closure = {item["name"] for item in component["first_party_closure"][platform]}
+            requirements = {
+                item["name"]
+                for item in component["platform_requirements"][platform]
+                if item["name"] in {project.name for project in projects}
+            }
+            assert requirements == closure
             commands = component["commands"][platform]
             assert len(commands) == 5
             assert "3.12.3" in commands[1]
             assert "--no-build" in commands[1]
             assert "pip sync" in commands[2]
             assert "--dry-run --strict --no-build" in commands[2]
+
+    components = {item["root"]: item for item in manifest["components"]}
+    platform_packages = {
+        "linux-x64": ("gogurt-linux", "riverhog-provenance-linux-observer"),
+        "macos-arm64": ("gogurt-macos", "riverhog-provenance-macos-observer"),
+        "windows-x64": ("gogurt-windows", "riverhog-provenance-windows-observer"),
+    }
+    all_gogurt_native = {value[0] for value in platform_packages.values()}
+    all_provenance_native = {value[1] for value in platform_packages.values()}
+    provenance_contracts = {
+        "riverhog-provenance-linux-contracts",
+        "riverhog-provenance-macos-contracts",
+        "riverhog-provenance-windows-contracts",
+    }
+    for platform, (gogurt_native, provenance_native) in platform_packages.items():
+        gogurt_closure = {
+            item["name"] for item in components["gogurt"]["first_party_closure"][platform]
+        }
+        assert {"gogurt", "gogurt-core", gogurt_native} <= gogurt_closure
+        assert gogurt_closure.isdisjoint(all_gogurt_native - {gogurt_native})
+
+        client_closure = {
+            item["name"] for item in components["riverhog-client"]["first_party_closure"][platform]
+        }
+        assert {"riverhog-client", "riverhog-provenance", provenance_native} <= client_closure
+        assert provenance_contracts <= client_closure
+        assert client_closure.isdisjoint(all_provenance_native - {provenance_native})
 
     snapshot = tmp_path / manifest["index"]["snapshot_path"]
     with tarfile.open(snapshot, mode="r:gz") as archive:

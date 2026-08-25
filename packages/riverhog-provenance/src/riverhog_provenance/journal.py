@@ -17,7 +17,7 @@ from .common import (
     utc_now,
 )
 from .constants import PROVENANCE_ENTRY_SCHEMA, PROVENANCE_PROFILE
-from .factory import get_observer
+from .interface import FileStateObserver
 from .model import ObservationPolicy, ObservationRequest, PayloadBindingRequest
 from .schema import validate_entry_document
 
@@ -343,6 +343,7 @@ def create_observation_journal(
     host_id: str,
     agent_name: str,
     agent_version: str,
+    observer: FileStateObserver,
     policy: ObservationPolicy | None = None,
 ) -> bytes:
     journal_id = new_urn_uuid()
@@ -387,7 +388,7 @@ def create_observation_journal(
         },
     }
     init_json = canonical_json(init)
-    observation = get_observer().observe(
+    observation = observer.observe(
         ObservationRequest(
             path=path,
             lineage_id=lineage_id,
@@ -418,11 +419,12 @@ def append_observation(
     host_id: str,
     agent_name: str,
     agent_version: str,
+    observer: FileStateObserver,
     policy: ObservationPolicy | None = None,
 ) -> bytes:
     summary = validate_journal(content)
     agent = software_agent(agent_name, agent_version)
-    observation = get_observer().observe(
+    observation = observer.observe(
         ObservationRequest(
             path=path,
             lineage_id=summary.primary_lineage_id,
@@ -461,12 +463,13 @@ def append_replacement_transformation(
     event_label: str,
     started_at: str,
     ended_at: str,
+    observer: FileStateObserver,
     evidence: Sequence[Mapping[str, Any]] = (),
     policy: ObservationPolicy | None = None,
 ) -> bytes:
     summary = validate_journal(content)
     agent = software_agent(agent_name, agent_version)
-    observation = get_observer().observe(
+    observation = observer.observe(
         ObservationRequest(
             path=output_path,
             lineage_id=summary.primary_lineage_id,
@@ -578,6 +581,7 @@ def create_derivative_journal(
     event_label: str,
     started_at: str,
     ended_at: str,
+    observer: FileStateObserver,
     derivation_kind: str = "transformation",
     evidence: Sequence[Mapping[str, Any]] = (),
     policy: ObservationPolicy | None = None,
@@ -608,6 +612,7 @@ def create_derivative_journal(
         host_id=host_id,
         agent_name=agent_name,
         agent_version=agent_version,
+        observer=observer,
         policy=policy,
     )
     summary = validate_journal(content)

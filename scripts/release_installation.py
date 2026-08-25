@@ -18,8 +18,15 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast
 
-from gogurt.listener import listener_release_contract
+from gogurt_core.listener import (
+    LISTENER_LOG_BACKUPS,
+    LISTENER_LOG_BYTES,
+    LISTENER_OPERATIONS,
+    LISTENER_STATUS_SCHEMA,
+)
+from gogurt_windows import WINDOWS_TASK_RESTART_COUNT, WINDOWS_TASK_RESTART_INTERVAL
 from packaging.markers import Marker, default_environment
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.tags import Tag, compatible_tags, cpython_tags, mac_platforms
 from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 
@@ -45,6 +52,57 @@ INSTALLATION_POLICY = {
         "service_managers": ["systemd-user", "launchd-user", "task-scheduler-user"],
     },
 }
+
+
+def listener_release_contract() -> dict[str, object]:
+    """Return the product contract assembled from portable and native owners."""
+
+    return {
+        "schema": "gogurt-listener-contract/v1",
+        "root": "gogurt",
+        "scope": "current-user",
+        "resume": "next-login",
+        "autorun": "explicit-required",
+        "operations": list(LISTENER_OPERATIONS),
+        "platforms": {
+            "linux-x64": "systemd-user",
+            "macos-arm64": "launchd-user",
+            "windows-x64": "task-scheduler-user",
+        },
+        "status_schema": LISTENER_STATUS_SCHEMA,
+        "health": {
+            "healthy": "current-heartbeat-valid-global-configuration-and-live-worker",
+            "failed": "global-configuration-or-runtime-prevents-dispatch",
+            "mount_attention": "isolated-bounded-nonfatal-diagnostics",
+        },
+        "replacement": "validated-staged-transaction-with-healthy-rollback",
+        "native_registration": {
+            "identity": "current-user",
+            "manager_state": "authoritative-independent-of-definition-file",
+            "windows_task_identity": "current-user-sid-sha256",
+            "windows_execution_limit": "indefinite",
+            "windows_battery_operation": "allowed",
+            "windows_restart_on_failure": {
+                "count": WINDOWS_TASK_RESTART_COUNT,
+                "interval": WINDOWS_TASK_RESTART_INTERVAL,
+            },
+        },
+        "shutdown": "cooperative-bounded-action-custody-settlement",
+        "state": {
+            "posix": "private-directory-and-files",
+            "windows": "current-user-native-acl",
+        },
+        "dispatch": {
+            "completed": "not-replayed-across-ordinary-restart",
+            "running_after_crash": "uncertain-no-automatic-replay",
+            "known_failure": "bounded-retry",
+            "downstream": "idempotency-required-where-replay-is-possible",
+        },
+        "logs": {
+            "bytes_per_file": LISTENER_LOG_BYTES,
+            "backups": LISTENER_LOG_BACKUPS,
+        },
+    }
 
 
 class InstallationError(RuntimeError):
@@ -115,24 +173,37 @@ def installation_roots(projects: Sequence[ProjectLike]) -> list[ProjectLike]:
     return roots
 
 
-def project_dependency_graph(root: Path, projects: Sequence[ProjectLike]) -> dict[str, set[str]]:
+def project_dependency_graph(
+    root: Path, projects: Sequence[ProjectLike]
+) -> dict[str, tuple[Requirement, ...]]:
     names = {project.name for project in projects}
-    graph: dict[str, set[str]] = {}
+    graph: dict[str, tuple[Requirement, ...]] = {}
     for project in projects:
         metadata = tomllib.loads(
             (root / project.path / "pyproject.toml").read_text(encoding="utf-8")
         )["project"]
-        dependencies: set[str] = set()
+        dependencies: list[Requirement] = []
         for value in metadata.get("dependencies", []):
-            match = re.match(r"[A-Za-z0-9_.-]+", str(value))
-            if match is None:
-                raise InstallationError(f"{project.name} has an invalid dependency")
-            dependencies.add(normalize_name(match.group()))
-        graph[project.name] = dependencies & names
+            try:
+                requirement = Requirement(str(value))
+            except InvalidRequirement as exc:
+                raise InstallationError(f"{project.name} has an invalid dependency") from exc
+            if normalize_name(requirement.name) in names:
+                dependencies.append(requirement)
+        graph[project.name] = tuple(
+            sorted(
+                dependencies, key=lambda item: (normalize_name(item.name), str(item.marker or ""))
+            )
+        )
     return graph
 
 
-def dependency_closure(graph: dict[str, set[str]], root: str) -> set[str]:
+def dependency_closure(
+    graph: dict[str, tuple[Requirement, ...]],
+    root: str,
+    *,
+    environment: dict[str, str],
+) -> set[str]:
     pending = [root]
     result: set[str] = set()
     while pending:
@@ -140,8 +211,45 @@ def dependency_closure(graph: dict[str, set[str]], root: str) -> set[str]:
         if name in result:
             continue
         result.add(name)
-        pending.extend(graph[name] - result)
+        pending.extend(
+            normalize_name(requirement.name)
+            for requirement in graph[name]
+            if requirement.marker is None or requirement.marker.evaluate(environment=environment)
+        )
     return result
+
+
+def platform_dependency_closures(
+    graph: dict[str, tuple[Requirement, ...]],
+    root: str,
+    *,
+    python_version: str,
+) -> dict[str, set[str]]:
+    """Return the exact first-party closure selected on every release platform."""
+
+    return {
+        platform: dependency_closure(
+            graph,
+            root,
+            environment=_marker_environment(platform, python_version),
+        )
+        for platform in SUPPORTED_PLATFORMS
+    }
+
+
+def _platform_marker(platforms: set[str]) -> str | None:
+    if platforms == set(SUPPORTED_PLATFORMS):
+        return None
+    identities = {
+        "linux-x64": 'sys_platform == "linux"',
+        "macos-arm64": 'sys_platform == "darwin"',
+        "windows-x64": 'sys_platform == "win32"',
+    }
+    if not platforms or not platforms <= set(identities):
+        raise InstallationError("a first-party package has no valid platform projection")
+    return " or ".join(
+        identities[platform] for platform in SUPPORTED_PLATFORMS if platform in platforms
+    )
 
 
 def _entry_points(root: Path, project: ProjectLike) -> list[str]:
@@ -182,8 +290,9 @@ def _internal_lock_block(
     wheel_url: str,
     wheel_size: int,
     wheel_sha256: str,
+    marker: str | None,
 ) -> str:
-    return (
+    block = (
         "[[packages]]\n"
         f"name = {json.dumps(name)}\n"
         f"version = {json.dumps(version)}\n"
@@ -193,6 +302,9 @@ def _internal_lock_block(
         f"hashes = {{ sha256 = {json.dumps(wheel_sha256)} }}"
         " }]\n"
     )
+    if marker is not None:
+        block += f"marker = {json.dumps(marker)}\n"
+    return block
 
 
 def _export_external_lock(root: Path, package: str, uv_version: str) -> tuple[str, dict[str, str]]:
@@ -232,7 +344,7 @@ def _write_component_lock(
     destination: Path,
     *,
     package: str,
-    closure: set[str],
+    package_markers: dict[str, str | None],
     project_versions: dict[str, str],
     wheels: dict[str, dict[str, Any]],
     index_url: str,
@@ -244,7 +356,7 @@ def _write_component_lock(
     if overlap:
         raise InstallationError(f"workspace identities escaped uv export: {sorted(overlap)}")
     components: list[dict[str, Any]] = []
-    for name in sorted(closure):
+    for name in sorted(package_markers):
         wheel = wheels[name]
         blocks[name] = _internal_lock_block(
             name=name,
@@ -253,6 +365,7 @@ def _write_component_lock(
             wheel_url=asset_base_url + str(wheel["asset"]),
             wheel_size=int(wheel["size"]),
             wheel_sha256=str(wheel["sha256"]),
+            marker=package_markers[name],
         )
     for name, block in blocks.items():
         parsed = tomllib.loads(block)
@@ -261,7 +374,12 @@ def _write_component_lock(
             {
                 "name": name,
                 "version": str(package_item["version"]),
-                "first_party": name in closure,
+                "first_party": name in package_markers,
+                **(
+                    {"marker": str(package_item["marker"])}
+                    if package_item.get("marker") is not None
+                    else {}
+                ),
             }
         )
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -624,7 +742,21 @@ def build_installation_artifacts(
             "sha256": str(record["sha256"]),
             "size": int(record["size"]),
         }
-    required_names = set().union(*(dependency_closure(graph, item.name) for item in roots))
+    root_platform_closures = {
+        item.name: platform_dependency_closures(
+            graph,
+            item.name,
+            python_version=tools["python"],
+        )
+        for item in roots
+    }
+    required_names = set().union(
+        *(
+            closure
+            for platform_closures in root_platform_closures.values()
+            for closure in platform_closures.values()
+        )
+    )
     if set(wheels) != set(project_by_name):
         raise InstallationError("release wheel records differ from the coordinated project graph")
 
@@ -633,14 +765,25 @@ def build_installation_artifacts(
     component_items: list[dict[str, Any]] = []
     records: list[dict[str, Any]] = []
     for project in roots:
-        closure = dependency_closure(graph, project.name)
+        platform_closures = root_platform_closures[project.name]
+        closure = set().union(*platform_closures.values())
+        package_markers = {
+            name: _platform_marker(
+                {
+                    platform
+                    for platform, platform_closure in platform_closures.items()
+                    if name in platform_closure
+                }
+            )
+            for name in closure
+        }
         lock_name = f"pylock.{project.name}.toml"
         lock_path = installation_dir / lock_name
         packages = _write_component_lock(
             root,
             lock_path,
             package=project.name,
-            closure=closure,
+            package_markers=package_markers,
             project_versions=project_versions,
             wheels=wheels,
             index_url=index_url,
@@ -703,9 +846,13 @@ def build_installation_artifacts(
             {
                 "root": project.name,
                 "entry_points": _entry_points(root, project),
-                "first_party_closure": [
-                    {"name": name, "version": project_versions[name]} for name in sorted(closure)
-                ],
+                "first_party_closure": {
+                    platform: [
+                        {"name": name, "version": project_versions[name]}
+                        for name in sorted(platform_closure)
+                    ]
+                    for platform, platform_closure in platform_closures.items()
+                },
                 "resolved_packages": packages,
                 "platform_requirements": platform_requirements,
                 "lock": {
@@ -916,6 +1063,19 @@ def verify_installation_artifacts(output: Path, manifest: dict[str, Any]) -> Non
             commands = component["commands"].get(platform)
             if not isinstance(commands, list) or len(commands) != 5:
                 raise InstallationError(f"component commands are incomplete: {component['root']}")
+            expected_closure = {
+                str(item["name"]): str(item["version"])
+                for item in component["first_party_closure"][platform]
+            }
+            projected = {
+                str(item["name"]): str(item["version"])
+                for item in component["platform_requirements"][platform]
+                if item["name"] in wheel_names
+            }
+            if projected != expected_closure:
+                raise InstallationError(
+                    f"component platform closure differs: {component['root']} {platform}"
+                )
     snapshot = output / str(manifest["index"]["snapshot_path"])
     if not snapshot.is_file() or sha256_file(snapshot) != manifest["index"]["snapshot_sha256"]:
         raise InstallationError("Simple index snapshot does not verify")

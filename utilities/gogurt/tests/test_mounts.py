@@ -3,15 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from gogurt.mounts import (
+from gogurt_core.mounts import (
     MAX_GOGURT_INTERVAL_SECONDS,
     MIN_GOGURT_INTERVAL_SECONDS,
     iter_new_mounts,
-    linux_mount_points,
-    macos_mount_points,
     validate_gogurt_interval,
-    windows_mount_points,
 )
+from gogurt_linux import linux_mount_points
+from gogurt_macos import macos_mount_points
+from gogurt_windows import windows_mount_points
 
 
 def test_linux_mount_discovery_decodes_mountinfo_paths(tmp_path: Path) -> None:

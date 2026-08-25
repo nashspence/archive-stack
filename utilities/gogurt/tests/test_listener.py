@@ -13,12 +13,13 @@ from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
 
-import gogurt.listener as listener_module
+import gogurt_core.listener as listener_module
 import pytest
 from config_validation import ConfigError
-from gogurt.core import load_gogurt_actions, write_gogurt_marker
-from gogurt.core import plan_gogurt_action as core_plan_gogurt_action
-from gogurt.listener import (
+from gogurt.native import listener_adapter
+from gogurt_core.core import load_gogurt_actions, write_gogurt_marker
+from gogurt_core.core import plan_gogurt_action as core_plan_gogurt_action
+from gogurt_core.listener import (
     LISTENER_CONFIG_SCHEMA,
     ListenerConfig,
     ListenerError,
@@ -31,7 +32,7 @@ from gogurt.listener import (
     stop_listener,
     uninstall_listener,
 )
-from gogurt.listener_platform import ListenerPaths, NativeListenerStatus
+from gogurt_core.platform import ListenerPaths, NativeListenerStatus
 
 
 def _paths(tmp_path: Path) -> ListenerPaths:
@@ -377,7 +378,7 @@ def test_listener_process_logs_an_unhandled_runtime_failure(
     )
 
     with pytest.raises(ListenerError, match="qualification fatal fixture"):
-        listener_module.run_listener(paths.config_file)
+        listener_module.run_listener(paths.config_file, discover=lambda: [])
 
     logger = listener_module.logging.getLogger("gogurt.listener")
     for handler in logger.handlers:
@@ -546,12 +547,12 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
         thread.join(timeout=5)
         assert not thread.is_alive()
         assert failures == []
-        assert listener_module._process_is_running(action_pid) is False
+        assert listener_adapter().process_is_running(action_pid) is False
         assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
     finally:
         runtime.request_stop()
         thread.join(timeout=5)
-        if action_pid is not None and listener_module._process_is_running(action_pid):
+        if action_pid is not None and listener_adapter().process_is_running(action_pid):
             os.kill(action_pid, signal.SIGKILL)
 
 
@@ -590,12 +591,12 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         thread.join(timeout=5)
 
         assert not thread.is_alive()
-        assert listener_module._process_is_running(action_pid) is False
+        assert listener_adapter().process_is_running(action_pid) is False
         assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
     finally:
         runtime.request_stop()
         thread.join(timeout=5)
-        if action_pid is not None and listener_module._process_is_running(action_pid):
+        if action_pid is not None and listener_adapter().process_is_running(action_pid):
             os.kill(action_pid, signal.SIGKILL)
 
 
@@ -813,6 +814,10 @@ class FakeAdapter:
         self.unregister_calls += 1
         self.installed = False
         self.running = False
+
+    @staticmethod
+    def process_is_running(pid: int) -> bool:
+        return pid == os.getpid()
 
 
 def test_install_binds_absolute_executable_and_rolls_back_failed_startup(tmp_path: Path) -> None:
@@ -1236,7 +1241,7 @@ def test_failed_replacement_restores_the_previous_listener(
         health_checks.append(expected)
         return {"health": sorted(expected)[0]}
 
-    monkeypatch.setattr("gogurt.listener._wait_for_health", instant_health)
+    monkeypatch.setattr("gogurt_core.listener._wait_for_health", instant_health)
 
     with pytest.raises(OSError, match="startup failed"):
         install_listener(
@@ -1278,7 +1283,7 @@ def test_replacement_staging_failure_leaves_previous_listener_running(
     def fail_staging(*_args: object, **_kwargs: object) -> Path:
         raise OSError("staging failed")
 
-    monkeypatch.setattr("gogurt.listener.stage_bytes", fail_staging)
+    monkeypatch.setattr("gogurt_core.listener.stage_bytes", fail_staging)
 
     with pytest.raises(OSError, match="staging failed"):
         install_listener(
@@ -1320,9 +1325,9 @@ def test_replacement_promotion_failure_restores_proven_healthy_listener(
         health_checks.append(expected)
         return {"health": sorted(expected)[0]}
 
-    monkeypatch.setattr("gogurt.listener._wait_for_health", instant_health)
+    monkeypatch.setattr("gogurt_core.listener._wait_for_health", instant_health)
     monkeypatch.setattr(
-        "gogurt.listener.promote_staged",
+        "gogurt_core.listener.promote_staged",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("promotion failed")),
     )
 
@@ -1375,7 +1380,7 @@ def test_unhealthy_replacement_restores_proven_healthy_listener(
         return {"health": sorted(expected)[0]}
 
     monkeypatch.setattr(
-        "gogurt.listener._wait_for_health",
+        "gogurt_core.listener._wait_for_health",
         replacement_then_rollback_health,
     )
 
@@ -1829,7 +1834,7 @@ def test_restarted_native_process_cannot_reuse_a_predecessor_heartbeat(
     adapter = FakeAdapter()
     adapter.installed = True
     adapter.running = True
-    monkeypatch.setattr(listener_module, "_process_is_running", lambda _pid: False)
+    monkeypatch.setattr(adapter, "process_is_running", lambda _pid: False)
 
     status = listener_status(
         paths=paths,

@@ -14,6 +14,8 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts/release.py"
@@ -57,12 +59,12 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
 
     projects = module.validate_release_contract(REPO_ROOT)
 
-    assert len(projects) == 56
+    assert len(projects) == 66
     assert {project.version for project in projects} == {"0.1.0"}
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
         "deployed_implementation": 13,
-        "reusable_library": 35,
+        "reusable_library": 45,
         "internal_build_unit": 4,
     }
     assert {project.name for project in projects} >= {
@@ -310,7 +312,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert plan["tag"] == "v1.0.0"
     assert len(plan["source_sha"]) == 40
     assert all(character in "0123456789abcdef" for character in plan["source_sha"])
-    assert len(plan["python"]) == 56
+    assert len(plan["python"]) == 66
     assert all(len(project["artifacts"]) == 2 for project in plan["python"])
     assert {image["target"] for image in plan["images"]} == set(module.RUNTIME_IMAGE_TARGETS)
     assert all(image["platforms"] == ["linux/amd64"] for image in plan["images"])
@@ -373,7 +375,7 @@ def test_coordinated_version_application_updates_all_internal_ranges(tmp_path: P
         assert metadata["version"] == "1.0.0"
         for dependency in metadata.get("dependencies", []):
             if module._dependency_name(dependency) in internal_names:
-                assert dependency.endswith(">=1.0,<2.0")
+                assert Requirement(dependency).specifier == SpecifierSet(">=1.0,<2.0")
     updated_lock = tomllib.loads((tmp_path / "uv.lock").read_text(encoding="utf-8"))
     original_external = [
         package for package in original_lock["package"] if package["name"] not in internal_names

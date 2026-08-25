@@ -23,6 +23,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 import release_installation as installation
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import SpecifierSet
 from runtime_image_attribution import RuntimeAttributionError, locked_runtime_payloads
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -476,8 +478,15 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
     for project in projects:
         metadata = _project_metadata(root / project.path / "pyproject.toml")
         for dependency in metadata.get("dependencies", []):
-            dependency_name = _dependency_name(str(dependency))
-            if dependency_name in seen_names and dependency != dependency_name + expected_range:
+            raw_dependency = str(dependency)
+            dependency_name = _dependency_name(raw_dependency)
+            try:
+                requirement = Requirement(raw_dependency)
+            except InvalidRequirement as exc:
+                raise ReleaseError(f"{project.name} has an invalid dependency") from exc
+            if dependency_name in seen_names and requirement.specifier != SpecifierSet(
+                expected_range
+            ):
                 raise ReleaseError(
                     f"{project.name} dependency {dependency_name} must use {expected_range}"
                 )
@@ -583,6 +592,10 @@ def apply_release_version(root: Path, version: str) -> list[Project]:
             updated = updated.replace(
                 f'"{name}{current_range}"',
                 f'"{name}{target_range}"',
+            )
+            updated = updated.replace(
+                f'"{name}{current_range};',
+                f'"{name}{target_range};',
             )
         path.write_text(updated, encoding="utf-8")
     _apply_release_version_to_lock(

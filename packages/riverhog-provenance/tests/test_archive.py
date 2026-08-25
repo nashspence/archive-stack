@@ -19,6 +19,8 @@ from riverhog_provenance import (
     validate_provenance_archive,
 )
 
+from tests.provenance_observer import native_provenance_observer
+
 
 def _all_json_nodes(value: object) -> Iterator[object]:
     yield value
@@ -39,6 +41,7 @@ def _journal(tmp_path: Path, urn_factory) -> tuple[Path, bytes]:
         host_id=urn_factory(),
         agent_name="riverhog-test",
         agent_version="0.1.0",
+        observer=native_provenance_observer(),
     )
     return payload, content
 
@@ -139,6 +142,7 @@ def test_existing_sidecar_is_preserved_as_an_exact_prefix(tmp_path: Path, urn_fa
         host_id=urn_factory(),
         agent_name="riverhog-client",
         agent_version="0.1.0",
+        observer=native_provenance_observer(),
     )
 
     continued = prepared.journals[str(prepared.binding.journal_id)]
@@ -157,6 +161,7 @@ def test_explicit_omission_is_accounted_for(tmp_path: Path, urn_factory) -> None
         host_id=urn_factory(),
         agent_name="riverhog-client",
         agent_version="0.1.0",
+        observer=native_provenance_observer(),
         omit_reason="operator deliberately omitted source provenance",
     )
 

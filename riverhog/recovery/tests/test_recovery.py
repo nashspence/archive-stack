@@ -40,6 +40,7 @@ from riverhog_provenance import (
 from riverhog_recover import RecoveryError, recover_archive
 
 from tests.fixtures.archive import age_state_json
+from tests.provenance_observer import native_provenance_observer
 
 PASSPHRASE = "correct horse battery archive"
 PASSPHRASE_ID = "recovery-test-key-v1"
@@ -187,6 +188,7 @@ def _write_archive(
                 host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
                 agent_name="recovery-fixture",
                 agent_version="1.0.0",
+                observer=native_provenance_observer(),
             )
             observed.unlink()
         summary = validate_journal(exact_journal)
@@ -483,6 +485,7 @@ def test_client_transform_riverhog_recovery_restores_exact_derivative_history(
         host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
         agent_name="riverhog-client",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
     )
     transformed = b"alpha\n"
     target_journal = create_derivative_journal_from_identity(
@@ -546,6 +549,7 @@ def test_client_transform_riverhog_recovery_restores_exact_derivative_history(
         host_id="urn:uuid:00000000-0000-4000-8000-000000000002",
         agent_name="riverhog-client",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
         provenance=provenance_root,
     )
     assert prepared.journals == journals

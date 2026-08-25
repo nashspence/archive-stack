@@ -17,6 +17,10 @@ BAKE_FILE = docker-bake.hcl
 MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-color-output
 MYPY_SOURCES = \
 	companions/stove0/client/src \
+	packages/gogurt-core/src \
+	packages/gogurt-linux/src \
+	packages/gogurt-macos/src \
+	packages/gogurt-windows/src \
 	reference/stove0/observers/exiftool/src \
 	reference/stove0/observers/ffprobe-sampling/src \
 	reference/stove0/targets/nvenc-av1-opus/review-sampler/src \
@@ -37,6 +41,12 @@ MYPY_SOURCES = \
 	packages/riverhog-cli-support/src \
 	packages/riverhog-protocol/src \
 	packages/riverhog-provenance-contracts/src \
+	packages/riverhog-provenance-linux-contracts/src \
+	packages/riverhog-provenance-linux-observer/src \
+	packages/riverhog-provenance-macos-contracts/src \
+	packages/riverhog-provenance-macos-observer/src \
+	packages/riverhog-provenance-windows-contracts/src \
+	packages/riverhog-provenance-windows-observer/src \
 	packages/riverhog-transform-sdk/src \
 	packages/riverhog-storage-adapter-asgi-support/src \
 	packages/riverhog-storage-adapter-protocol/src \

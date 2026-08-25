@@ -13,6 +13,10 @@ members = [
     "config-validation",
     "file-download",
     "gogurt",
+    "gogurt-core",
+    "gogurt-linux",
+    "gogurt-macos",
+    "gogurt-windows",
     "http-api-contracts",
     "lifecycle-events",
     "mango-fish",
@@ -26,6 +30,12 @@ members = [
     "riverhog-protocol",
     "riverhog-provenance",
     "riverhog-provenance-contracts",
+    "riverhog-provenance-linux-contracts",
+    "riverhog-provenance-linux-observer",
+    "riverhog-provenance-macos-contracts",
+    "riverhog-provenance-macos-observer",
+    "riverhog-provenance-windows-contracts",
+    "riverhog-provenance-windows-observer",
     "riverhog-recover",
     "riverhog-server",
     "riverhog-storage-adapter-asgi-support",
@@ -540,6 +550,10 @@ version = "0.1.0"
 source = { editable = "utilities/gogurt" }
 dependencies = [
     { name = "config-validation" },
+    { name = "gogurt-core" },
+    { name = "gogurt-linux", marker = "sys_platform == 'linux'" },
+    { name = "gogurt-macos", marker = "sys_platform == 'darwin'" },
+    { name = "gogurt-windows", marker = "sys_platform == 'win32'" },
     { name = "riverhog-cli-support" },
     { name = "typer" },
 ]
@@ -547,9 +561,57 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "config-validation", editable = "packages/config-validation" },
+    { name = "gogurt-core", editable = "packages/gogurt-core" },
+    { name = "gogurt-linux", marker = "sys_platform == 'linux'", editable = "packages/gogurt-linux" },
+    { name = "gogurt-macos", marker = "sys_platform == 'darwin'", editable = "packages/gogurt-macos" },
+    { name = "gogurt-windows", marker = "sys_platform == 'win32'", editable = "packages/gogurt-windows" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "typer", specifier = ">=0.12,<1.0" },
 ]
+
+[[package]]
+name = "gogurt-core"
+version = "0.1.0"
+source = { editable = "packages/gogurt-core" }
+dependencies = [
+    { name = "config-validation" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "config-validation", editable = "packages/config-validation" }]
+
+[[package]]
+name = "gogurt-linux"
+version = "0.1.0"
+source = { editable = "packages/gogurt-linux" }
+dependencies = [
+    { name = "gogurt-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "gogurt-core", editable = "packages/gogurt-core" }]
+
+[[package]]
+name = "gogurt-macos"
+version = "0.1.0"
+source = { editable = "packages/gogurt-macos" }
+dependencies = [
+    { name = "gogurt-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "gogurt-core", editable = "packages/gogurt-core" }]
+
+[[package]]
+name = "gogurt-windows"
+version = "0.1.0"
+source = { editable = "packages/gogurt-windows" }
+dependencies = [
+    { name = "gogurt-core" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "gogurt-core", editable = "packages/gogurt-core" }]
 
 [[package]]
 name = "greenlet"
@@ -1602,6 +1664,9 @@ dependencies = [
     { name = "riverhog-cli-support" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
+    { name = "riverhog-provenance-linux-observer", marker = "sys_platform == 'linux'" },
+    { name = "riverhog-provenance-macos-observer", marker = "sys_platform == 'darwin'" },
+    { name = "riverhog-provenance-windows-observer", marker = "sys_platform == 'win32'" },
     { name = "state-schema" },
     { name = "time-formats" },
     { name = "typer" },
@@ -1615,6 +1680,9 @@ requires-dist = [
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "riverhog-provenance-linux-observer", marker = "sys_platform == 'linux'", editable = "packages/riverhog-provenance-linux-observer" },
+    { name = "riverhog-provenance-macos-observer", marker = "sys_platform == 'darwin'", editable = "packages/riverhog-provenance-macos-observer" },
+    { name = "riverhog-provenance-windows-observer", marker = "sys_platform == 'win32'", editable = "packages/riverhog-provenance-windows-observer" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "typer", specifier = ">=0.12,<1.0" },
@@ -1632,6 +1700,7 @@ dependencies = [
     { name = "riverhog-ftp-adapter-api-client" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
+    { name = "riverhog-provenance-linux-observer" },
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1645,6 +1714,7 @@ requires-dist = [
     { name = "riverhog-ftp-adapter-api-client", editable = "packages/riverhog-ftp-adapter-api-client" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "riverhog-provenance-linux-observer", editable = "packages/riverhog-provenance-linux-observer" },
     { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
@@ -1690,12 +1760,18 @@ source = { editable = "packages/riverhog-provenance" }
 dependencies = [
     { name = "jsonschema" },
     { name = "riverhog-provenance-contracts" },
+    { name = "riverhog-provenance-linux-contracts" },
+    { name = "riverhog-provenance-macos-contracts" },
+    { name = "riverhog-provenance-windows-contracts" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5.0" },
     { name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" },
+    { name = "riverhog-provenance-linux-contracts", editable = "packages/riverhog-provenance-linux-contracts" },
+    { name = "riverhog-provenance-macos-contracts", editable = "packages/riverhog-provenance-macos-contracts" },
+    { name = "riverhog-provenance-windows-contracts", editable = "packages/riverhog-provenance-windows-contracts" },
 ]
 
 [[package]]
@@ -1708,6 +1784,66 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.12,<3.0" }]
+
+[[package]]
+name = "riverhog-provenance-linux-contracts"
+version = "0.1.0"
+source = { editable = "packages/riverhog-provenance-linux-contracts" }
+
+[[package]]
+name = "riverhog-provenance-linux-observer"
+version = "0.1.0"
+source = { editable = "packages/riverhog-provenance-linux-observer" }
+dependencies = [
+    { name = "riverhog-provenance" },
+    { name = "riverhog-provenance-linux-contracts" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "riverhog-provenance-linux-contracts", editable = "packages/riverhog-provenance-linux-contracts" },
+]
+
+[[package]]
+name = "riverhog-provenance-macos-contracts"
+version = "0.1.0"
+source = { editable = "packages/riverhog-provenance-macos-contracts" }
+
+[[package]]
+name = "riverhog-provenance-macos-observer"
+version = "0.1.0"
+source = { editable = "packages/riverhog-provenance-macos-observer" }
+dependencies = [
+    { name = "riverhog-provenance" },
+    { name = "riverhog-provenance-macos-contracts" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "riverhog-provenance-macos-contracts", editable = "packages/riverhog-provenance-macos-contracts" },
+]
+
+[[package]]
+name = "riverhog-provenance-windows-contracts"
+version = "0.1.0"
+source = { editable = "packages/riverhog-provenance-windows-contracts" }
+
+[[package]]
+name = "riverhog-provenance-windows-observer"
+version = "0.1.0"
+source = { editable = "packages/riverhog-provenance-windows-observer" }
+dependencies = [
+    { name = "riverhog-provenance" },
+    { name = "riverhog-provenance-windows-contracts" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "riverhog-provenance-windows-contracts", editable = "packages/riverhog-provenance-windows-contracts" },
+]
 
 [[package]]
 name = "riverhog-recover"

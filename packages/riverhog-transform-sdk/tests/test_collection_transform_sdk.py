@@ -43,6 +43,8 @@ from riverhog_transform_sdk import (
     TransformWorkspace,
 )
 
+from tests.provenance_observer import native_provenance_observer
+
 WORK_ID = "3" * 64
 EXECUTION_ID = "4" * 64
 CONTROLLER_EVIDENCE = {
@@ -573,6 +575,7 @@ def test_producer_builds_provenance_after_exact_stream_verification(
         host_id="urn:uuid:00000000-0000-4000-8000-000000000567",
         agent_name="fixture-target",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
     )
     summary = validate_journal(journal)
 
@@ -670,6 +673,7 @@ def test_transform_provenance_fans_out_fans_in_and_recovers_staged_journals(
             host_id="urn:uuid:00000000-0000-4000-8000-000000000567",
             agent_name="riverhog-client",
             agent_version="1.0.0",
+            observer=native_provenance_observer(),
         )
         source_journals[validate_journal(journal).journal_id] = journal
     original_a = tmp_path / "original-a.mov"
@@ -680,6 +684,7 @@ def test_transform_provenance_fans_out_fans_in_and_recovers_staged_journals(
         host_id="urn:uuid:00000000-0000-4000-8000-000000000567",
         agent_name="riverhog-client",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
     )
     continued_a_journal = create_derivative_journal_from_identity(
         relative_path="camera/a.mov",
@@ -798,6 +803,7 @@ def test_incremental_transform_recovers_journal_staged_before_registration(
         host_id="urn:uuid:00000000-0000-4000-8000-000000000567",
         agent_name="riverhog-client",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
     )
     api = ProvenanceTransformApi({validate_journal(source_journal).journal_id: source_journal})
     api.source_contents = {"camera/a.mov": b"source a"}

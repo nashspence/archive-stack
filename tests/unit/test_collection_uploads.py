@@ -57,6 +57,7 @@ from riverhog_provenance import (
 )
 
 from tests.fixtures.crypto import FixtureProofStamper
+from tests.provenance_observer import native_provenance_observer
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
 from tests.unit.db_helpers import sqlite_url
 from tests.unit.test_archive_root import MemoryImmutableStore
@@ -492,6 +493,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
         agent_name="riverhog-test-client",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
     )
     summary = validate_journal(journal)
     bindings = (

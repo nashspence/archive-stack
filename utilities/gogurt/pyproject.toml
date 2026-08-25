@@ -20,6 +20,10 @@ classifiers = [
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "config-validation>=0.1,<0.2",
+  "gogurt-core>=0.1,<0.2",
+  "gogurt-linux>=0.1,<0.2; sys_platform == 'linux'",
+  "gogurt-macos>=0.1,<0.2; sys_platform == 'darwin'",
+  "gogurt-windows>=0.1,<0.2; sys_platform == 'win32'",
   "riverhog-cli-support>=0.1,<0.2",
   "typer>=0.12,<1.0",
 ]
@@ -29,6 +33,10 @@ gogurt = "gogurt.cli:main"
 
 [tool.uv.sources]
 config-validation = { workspace = true }
+gogurt-core = { workspace = true }
+gogurt-linux = { workspace = true }
+gogurt-macos = { workspace = true }
+gogurt-windows = { workspace = true }
 riverhog-cli-support = { workspace = true }
 
 [tool.hatch.build.targets.wheel]

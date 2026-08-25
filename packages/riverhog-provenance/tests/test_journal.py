@@ -16,6 +16,8 @@ from riverhog_provenance import (
     verify_payload_binding,
 )
 
+from tests.provenance_observer import native_provenance_observer
+
 
 def _payload(path: Path, content: bytes) -> Path:
     path.write_bytes(content)
@@ -33,6 +35,7 @@ def test_observation_journal_binds_payload_and_continues_exact_prefix(
         host_id=urn_factory(),
         agent_name="riverhog-client",
         agent_version="0.1.0",
+        observer=native_provenance_observer(),
     )
     initial = validate_journal(original)
     verify_payload_binding(
@@ -49,6 +52,7 @@ def test_observation_journal_binds_payload_and_continues_exact_prefix(
         host_id=urn_factory(),
         agent_name="stove0",
         agent_version="0.1.0",
+        observer=native_provenance_observer(),
     )
     current = validate_journal(continued)
 
@@ -67,6 +71,7 @@ def test_replacement_transformation_stays_in_the_same_lineage(tmp_path: Path, ur
         host_id=urn_factory(),
         agent_name="target-client",
         agent_version="0.1.0",
+        observer=native_provenance_observer(),
     )
     initial = validate_journal(journal)
     output = _payload(tmp_path / "source.mkv", b"transcoded container")
@@ -81,6 +86,7 @@ def test_replacement_transformation_stays_in_the_same_lineage(tmp_path: Path, ur
         event_label="Canonical transcode",
         started_at="2026-08-10T01:00:00Z",
         ended_at="2026-08-10T01:01:00Z",
+        observer=native_provenance_observer(),
     )
     current = validate_journal(transformed)
 
@@ -104,6 +110,7 @@ def test_derivative_gets_a_new_lineage_with_exact_multi_input_references(
                 host_id=urn_factory(),
                 agent_name="target-client",
                 agent_version="0.1.0",
+                observer=native_provenance_observer(),
             )
         )
     output = _payload(tmp_path / "source-artifacts.tar.zst", b"artifacts")
@@ -118,6 +125,7 @@ def test_derivative_gets_a_new_lineage_with_exact_multi_input_references(
         event_label="Preserve source artifacts",
         started_at="2026-08-10T01:00:00Z",
         ended_at="2026-08-10T01:01:00Z",
+        observer=native_provenance_observer(),
         derivation_kind="aggregation",
     )
     summaries = validate_journal_set(
@@ -148,6 +156,7 @@ def test_identity_derivative_binds_stream_without_rereading_payload(
         host_id=urn_factory(),
         agent_name="riverhog-client",
         agent_version="0.1.0",
+        observer=native_provenance_observer(),
     )
     output = b"generated range-readable output"
     journal_id = urn_factory()
@@ -190,6 +199,7 @@ def test_payload_binding_mismatch_is_rejected(tmp_path: Path, urn_factory) -> No
             host_id=urn_factory(),
             agent_name="riverhog-client",
             agent_version="0.1.0",
+            observer=native_provenance_observer(),
         )
     )
 
@@ -210,6 +220,7 @@ def test_noncanonical_or_truncated_journal_is_rejected(tmp_path: Path, urn_facto
         host_id=urn_factory(),
         agent_name="riverhog-client",
         agent_version="0.1.0",
+        observer=native_provenance_observer(),
     )
 
     with pytest.raises(ProvenanceValidationError):
