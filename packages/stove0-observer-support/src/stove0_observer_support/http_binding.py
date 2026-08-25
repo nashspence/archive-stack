@@ -6,7 +6,7 @@ import json
 import threading
 from dataclasses import dataclass
 
-from http_api_contracts import HttpOperationContract
+from http_api_contracts import HttpErrorContract, HttpOperationContract
 from pydantic import BaseModel, ValidationError
 from stove0_observer_protocol import (
     ObservationInvocation,
@@ -18,19 +18,42 @@ from stove0_observer_protocol import (
 from stove0_observer_support.runtime import ContentObserver, ObservationRuntime
 
 OBSERVER_HTTP_OPERATIONS = (
-    HttpOperationContract("GET", "/v1/observer", response_type=ObserverDescriptor),
+    HttpOperationContract(
+        "GET",
+        "/v1/observer",
+        response_type=ObserverDescriptor,
+        errors=(
+            HttpErrorContract("bad_request", 400),
+            HttpErrorContract("unauthorized", 401),
+            HttpErrorContract("observer_failed", 500),
+        ),
+    ),
     HttpOperationContract(
         "POST",
         "/v1/observe",
         ObservationInvocation,
         ObservationResult,
         "json",
-        error_statuses=(400, 401, 413, 500),
+        errors=(
+            HttpErrorContract("invalid_observation_request", 400),
+            HttpErrorContract("unauthorized", 401),
+            HttpErrorContract("request_too_large", 413),
+            HttpErrorContract("observer_failed", 500),
+        ),
     ),
 )
 
 _JSON_CONTENT_TYPE = "application/json"
 _DEFAULT_MAX_REQUEST_BYTES = 4 * 1024 * 1024
+_OBSERVER_HTTP_ERROR_STATUS = {
+    "bad_request": 400,
+    "invalid_observation_request": 400,
+    "method_not_allowed": 405,
+    "not_found": 404,
+    "observer_failed": 500,
+    "request_too_large": 413,
+    "unauthorized": 401,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +141,8 @@ def _model_response(model: BaseModel) -> ObserverHttpResponse:
 
 
 def _error(status: int, code: str, message: str) -> ObserverHttpResponse:
+    if _OBSERVER_HTTP_ERROR_STATUS.get(code) != status:
+        raise ValueError("observer HTTP binding emitted an undeclared error code/status")
     body = json.dumps(
         {"error": {"code": code, "message": message}},
         ensure_ascii=False,

@@ -340,6 +340,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
                 },
             }
         ],
+        layout=opened["layout"],
     )
     assert (
         operator.list_collection_upload_session_files(collection_id, all_items=True)["total"] == 1
@@ -808,6 +809,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
             }
             for path, byte_count, sha256 in sorted(output_entries)
         ],
+        layout=target_session["layout"],
     )
     target.complete_collection_upload_session(
         output_collection_id,

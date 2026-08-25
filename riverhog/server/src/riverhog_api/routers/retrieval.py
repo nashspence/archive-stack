@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from datetime import timedelta
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from http_api_contracts import error_responses, operation_interface
+from riverhog_protocol import (
+    ArchiveStoreName,
+    RetrievalCacheProtection,
+    RetrievalCacheSort,
+    RetrievalCacheState,
+    SortOrder,
+)
 from riverhog_protocol.errors import BadRequest
 from riverhog_protocol.paths import CanonicalTag
 
@@ -49,21 +56,13 @@ def list_retrieval_cache_objects(
     q: str | None = Query(None),
     tag: Annotated[CanonicalTag | None, Query()] = None,
     collection_id: int | None = Query(None, ge=1),
-    source_store: str | None = Query(None),
-    state: Literal["ready", "delete_pending", "deleting"] | None = Query(None),
-    protection: Literal["protected", "unleased"] | None = Query(None),
+    source_store: Annotated[ArchiveStoreName | None, Query()] = None,
+    state: Annotated[RetrievalCacheState | None, Query()] = None,
+    protection: Annotated[RetrievalCacheProtection | None, Query()] = None,
     expires_before: str | None = Query(None),
     expires_after: str | None = Query(None),
-    sort: Literal[
-        "collection_id",
-        "source_store",
-        "object_id",
-        "stored_bytes",
-        "cached_at",
-        "verified_at",
-        "protected_until",
-    ] = Query("cached_at"),
-    order: Literal["asc", "desc"] = Query("desc"),
+    sort: Annotated[RetrievalCacheSort, Query()] = "cached_at",
+    order: Annotated[SortOrder, Query()] = "desc",
     all_items: bool = Query(False, alias="all"),
 ) -> RetrievalCacheObjectListOut:
     return RetrievalCacheObjectListOut.model_validate(
@@ -92,7 +91,7 @@ def list_retrieval_cache_objects(
 )
 def get_retrieval_cache_object(
     collection_id: int,
-    source_store: str,
+    source_store: ArchiveStoreName,
     object_id: str,
     principal: CatalogReader,
     container: ContainerDep,

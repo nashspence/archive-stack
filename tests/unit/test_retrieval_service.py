@@ -655,7 +655,7 @@ def test_cache_status_list_and_show_respect_catalog_tag_access(tmp_path: Path) -
     assert filtered["objects"] == listed["objects"]
     assert filtered["filters"] == {
         "tag": "docs",
-        "collection_id": str(collection_id),
+        "collection_id": collection_id,
         "source_store": "archive",
         "state": "ready",
         "protection": "protected",

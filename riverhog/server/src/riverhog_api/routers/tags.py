@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Query
+from riverhog_protocol import SortOrder, TagSort
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, CollectionTagManager, TagCreator, TagDeleter
@@ -38,8 +39,8 @@ def list_tags(
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
     q: str | None = Query(None),
-    sort: Literal["id", "created_at", "collections"] = Query("id"),
-    order: Literal["asc", "desc"] = Query("asc"),
+    sort: Annotated[TagSort, Query()] = "id",
+    order: Annotated[SortOrder, Query()] = "asc",
     all_items: bool = Query(False, alias="all"),
 ) -> TagListOut:
     return TagListOut.model_validate(

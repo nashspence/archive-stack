@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TypeVar
 
-from http_api_contracts import HttpOperationContract
+from http_api_contracts import HttpErrorContract, HttpOperationContract, http_operation_for_request
 from pydantic import BaseModel, ValidationError
 from riverhog_storage_adapter_protocol import (
     AbortIncompleteUploadsRequest,
@@ -58,8 +58,8 @@ class StorageAdapterServiceError(RuntimeError):
         message: str,
     ) -> None:
         super().__init__(message)
-        if status < 400 or status > 599:
-            raise ValueError("storage adapter error status must be 4xx or 5xx")
+        if _ERROR_STATUS[code] != status:
+            raise ValueError("storage adapter error code does not match its HTTP status")
         self.status = status
         self.code = code
         self.message = message
@@ -93,6 +93,11 @@ class StorageAdapterHttpBinding:
         body: bytes = b"",
     ) -> StorageAdapterHttpResponse:
         normalized_method = method.upper()
+        operation = http_operation_for_request(
+            STORAGE_ADAPTER_HTTP_OPERATIONS,
+            normalized_method,
+            path,
+        )
         try:
             if normalized_method == "GET" and path == "/v1/adapter":
                 if body:
@@ -180,7 +185,7 @@ class StorageAdapterHttpBinding:
             if normalized_method == "POST" and path == "/v1/objects/put":
                 small_request, content = parse_framed_request(body, SmallObjectWriteRequest)
                 if hashlib.sha256(content).hexdigest() != small_request.stored_sha256:
-                    return _error(400, "integrity_failure", "small object digest differs")
+                    return _error(409, "integrity_failure", "small object digest differs")
                 small_receipt = self.adapter.put_small_object(small_request, content)
                 if small_receipt.object_path != small_request.object_path:
                     raise RuntimeError("adapter small-object receipt differs from its request")
@@ -253,9 +258,14 @@ class StorageAdapterHttpBinding:
                 return _error(405, "method_not_allowed", "adapter method is not allowed")
             return _error(404, "not_found", "adapter endpoint was not found")
         except StorageAdapterServiceError as exc:
+            if operation is None or not operation.accepts_error(status=exc.status, code=exc.code):
+                return _error(500, "internal_failure", "storage adapter operation failed")
             return _error(exc.status, exc.code, exc.message)
         except StorageAdapterRejection as exc:
-            return _error(_ERROR_STATUS[exc.code], exc.code, exc.message)
+            status = _ERROR_STATUS[exc.code]
+            if operation is None or not operation.accepts_error(status=status, code=exc.code):
+                return _error(500, "internal_failure", "storage adapter operation failed")
+            return _error(status, exc.code, exc.message)
         except (ValidationError, ValueError):
             return _error(400, "invalid_request", "adapter request is invalid")
         except Exception:
@@ -270,142 +280,6 @@ class StorageAdapterHttpBinding:
             )
         return model.model_validate_json(body)
 
-
-_CONTROL_ERRORS = (400, 401, 404, 409, 413, 500, 503)
-STORAGE_ADAPTER_HTTP_OPERATIONS = (
-    HttpOperationContract("GET", "/v1/adapter", response_type=AdapterDescriptor),
-    HttpOperationContract(
-        "POST",
-        "/v1/multipart/create",
-        MultipartCreateRequest,
-        MultipartUpload,
-        "json",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/multipart/part",
-        MultipartPartWriteRequest,
-        MultipartPartReceipt,
-        "framed",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/multipart/list",
-        MultipartUpload,
-        list[MultipartPartReceipt],
-        "json",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/multipart/complete",
-        MultipartCompleteRequest,
-        CompletedObjectReceipt,
-        "json",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/multipart/head",
-        MultipartHeadRequest,
-        CompletedObjectReceipt,
-        "json",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/multipart/abort",
-        MultipartUpload,
-        None,
-        "json",
-        "none",
-        (204,),
-        _CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/objects/put",
-        SmallObjectWriteRequest,
-        ImmutableObjectReceipt,
-        "framed",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/objects/head",
-        ObjectHeadRequest,
-        ObjectMetadataReceipt,
-        "json",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/objects/read",
-        ObjectReadRequest,
-        None,
-        "json",
-        "binary",
-        (200, 206),
-        (*_CONTROL_ERRORS, 416),
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/objects/delete",
-        DeleteObjectRequest,
-        None,
-        "json",
-        "none",
-        (204,),
-        _CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/objects/delete-prefix",
-        DeletePrefixRequest,
-        MaintenanceResult,
-        "json",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/reads/prepare",
-        ReadPreparationRequest,
-        ReadStatus,
-        "json",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/reads/status",
-        ReadPreparationRequest,
-        ReadStatus,
-        "json",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/reads/cleanup",
-        ReadPreparationRequest,
-        None,
-        "json",
-        "none",
-        (204,),
-        _CONTROL_ERRORS,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/maintenance/abort-incomplete",
-        AbortIncompleteUploadsRequest,
-        MaintenanceResult,
-        "json",
-        error_statuses=_CONTROL_ERRORS,
-    ),
-)
-STORAGE_ADAPTER_HTTP_PATHS = frozenset(
-    operation.path for operation in STORAGE_ADAPTER_HTTP_OPERATIONS
-)
 
 _ERROR_STATUS: dict[StorageAdapterErrorCode, int] = {
     "unauthorized": 401,
@@ -422,6 +296,209 @@ _ERROR_STATUS: dict[StorageAdapterErrorCode, int] = {
     "provider_unavailable": 503,
     "internal_failure": 500,
 }
+_COMMON_OPERATION_ERRORS: tuple[StorageAdapterErrorCode, ...] = (
+    "unauthorized",
+    "invalid_request",
+    "provider_unavailable",
+    "internal_failure",
+)
+
+
+def _adapter_errors(
+    *additional: StorageAdapterErrorCode,
+) -> tuple[HttpErrorContract, ...]:
+    codes = dict.fromkeys((*_COMMON_OPERATION_ERRORS, *additional))
+    return tuple(HttpErrorContract(code, _ERROR_STATUS[code]) for code in codes)
+
+
+STORAGE_ADAPTER_HTTP_OPERATIONS = (
+    HttpOperationContract(
+        "GET",
+        "/v1/adapter",
+        response_type=AdapterDescriptor,
+        errors=_adapter_errors(),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/multipart/create",
+        MultipartCreateRequest,
+        MultipartUpload,
+        "json",
+        errors=_adapter_errors("request_too_large", "invalid_path"),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/multipart/part",
+        MultipartPartWriteRequest,
+        MultipartPartReceipt,
+        "framed",
+        errors=_adapter_errors("request_too_large", "invalid_path", "not_found"),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/multipart/list",
+        MultipartUpload,
+        list[MultipartPartReceipt],
+        "json",
+        errors=_adapter_errors("request_too_large", "invalid_path", "not_found"),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/multipart/complete",
+        MultipartCompleteRequest,
+        CompletedObjectReceipt,
+        "json",
+        errors=_adapter_errors(
+            "request_too_large",
+            "invalid_path",
+            "not_found",
+            "identity_conflict",
+            "integrity_failure",
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/multipart/head",
+        MultipartHeadRequest,
+        CompletedObjectReceipt,
+        "json",
+        errors=_adapter_errors(
+            "request_too_large",
+            "invalid_path",
+            "not_found",
+            "identity_conflict",
+            "integrity_failure",
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/multipart/abort",
+        MultipartUpload,
+        None,
+        "json",
+        "none",
+        (204,),
+        _adapter_errors("request_too_large", "invalid_path", "not_found"),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/objects/put",
+        SmallObjectWriteRequest,
+        ImmutableObjectReceipt,
+        "framed",
+        errors=_adapter_errors(
+            "request_too_large",
+            "invalid_path",
+            "identity_conflict",
+            "integrity_failure",
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/objects/head",
+        ObjectHeadRequest,
+        ObjectMetadataReceipt,
+        "json",
+        errors=_adapter_errors(
+            "request_too_large",
+            "invalid_path",
+            "not_found",
+            "identity_conflict",
+            "integrity_failure",
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/objects/read",
+        ObjectReadRequest,
+        None,
+        "json",
+        "binary",
+        (200, 206),
+        _adapter_errors(
+            "request_too_large",
+            "invalid_path",
+            "not_found",
+            "invalid_range",
+            "read_not_ready",
+            "read_expired",
+            "integrity_failure",
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/objects/delete",
+        DeleteObjectRequest,
+        None,
+        "json",
+        "none",
+        (204,),
+        _adapter_errors("request_too_large", "invalid_path", "not_found"),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/objects/delete-prefix",
+        DeletePrefixRequest,
+        MaintenanceResult,
+        "json",
+        errors=_adapter_errors("request_too_large", "invalid_path"),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/reads/prepare",
+        ReadPreparationRequest,
+        ReadStatus,
+        "json",
+        errors=_adapter_errors(
+            "request_too_large",
+            "invalid_path",
+            "not_found",
+            "read_not_ready",
+            "read_expired",
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/reads/status",
+        ReadPreparationRequest,
+        ReadStatus,
+        "json",
+        errors=_adapter_errors(
+            "request_too_large",
+            "invalid_path",
+            "not_found",
+            "read_not_ready",
+            "read_expired",
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/reads/cleanup",
+        ReadPreparationRequest,
+        None,
+        "json",
+        "none",
+        (204,),
+        _adapter_errors(
+            "request_too_large",
+            "invalid_path",
+            "not_found",
+            "read_not_ready",
+            "read_expired",
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/maintenance/abort-incomplete",
+        AbortIncompleteUploadsRequest,
+        MaintenanceResult,
+        "json",
+        errors=_adapter_errors("request_too_large", "invalid_path"),
+    ),
+)
+STORAGE_ADAPTER_HTTP_PATHS = frozenset(
+    operation.path for operation in STORAGE_ADAPTER_HTTP_OPERATIONS
+)
 
 
 def _model_response(model: BaseModel) -> StorageAdapterHttpResponse:
@@ -450,6 +527,8 @@ def _error(
     code: StorageAdapterErrorCode,
     message: str,
 ) -> StorageAdapterHttpResponse:
+    if _ERROR_STATUS[code] != status:
+        raise ValueError("storage adapter HTTP binding emitted an undeclared code/status")
     payload = StorageAdapterError(error=StorageAdapterErrorBody(code=code, message=message))
     return StorageAdapterHttpResponse(
         status=status,

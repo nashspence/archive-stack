@@ -13,6 +13,8 @@ import httpx
 from application_access import (
     ApplicationAccessGrant,
     ApplicationAccessGrantSet,
+    ApplicationKeyId,
+    ApplicationName,
 )
 from application_access import (
     ApplicationPermission as ApplicationPermission,
@@ -24,9 +26,32 @@ from file_download import verified_download
 from http_api_contracts import CanonicalVisibleText, parse_error_payload, safe_http_base_url
 from pydantic import Field, TypeAdapter, ValidationError
 from riverhog_protocol import (
+    ApplicationAccessSort,
+    ApplicationKeySort,
+    ApplicationSort,
+    ArchiveCopySort,
+    ArchiveCopyState,
+    ArchiveCopyStoreSelectionDocument,
+    ArchiveStoreName,
+    ArchiveStoreSort,
+    CollectionSort,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
+    CollectionUploadLayoutDocument,
+    CollectionUploadSort,
+    CollectionUploadState,
+    DownloadQuotaSort,
     PortableCollectionRecord,
+    ProvenanceSort,
+    ProvenanceStatus,
+    RetrievalCacheProtection,
+    RetrievalCacheSort,
+    RetrievalCacheState,
+    RetrievalFileReferenceSetDocument,
+    SearchSort,
+    SortOrder,
+    TagSort,
+    validate_collection_upload_batch_against_layout,
 )
 from riverhog_protocol.errors import (
     BadRequest,
@@ -38,6 +63,7 @@ from riverhog_protocol.errors import (
 )
 from riverhog_protocol.lifecycle_events import RiverhogEventPage
 from riverhog_protocol.paths import validate_canonical_tag
+from riverhog_provenance_contracts import ProvenanceJournalId
 
 from riverhog_api_client.workflows import CollectionWorkflowMethods
 
@@ -55,56 +81,14 @@ type CollectionUploadIdempotencyKey = Annotated[
     CanonicalVisibleText,
     Field(max_length=200),
 ]
-type _SortOrder = Literal["asc", "desc"]
-type _CollectionSort = Literal["id", "created_at", "bytes", "files"]
-type _UploadState = Literal["open", "uploading", "finalizing", "failed"]
-type _UploadSort = Literal["id", "created_at", "state", "bytes", "files"]
-type _CacheState = Literal["ready", "delete_pending", "deleting"]
-type _CacheProtection = Literal["protected", "unleased"]
-type _CacheSort = Literal[
-    "collection_id",
-    "source_store",
-    "object_id",
-    "stored_bytes",
-    "cached_at",
-    "verified_at",
-    "protected_until",
-]
-type _SearchSort = Literal["file_ref", "collection_id", "path", "bytes"]
-type _ProvenanceStatus = Literal["captured", "omitted"]
-type _ProvenanceSort = Literal["path", "bytes", "status"]
-type _ArchiveStoreSort = Literal[
-    "store", "read_mode", "read_priority", "collections", "objects", "stored_bytes"
-]
-type _AppSort = Literal["name", "keys", "active_keys", "last_used_at"]
-type _AppKeySort = Literal["id", "created_at", "expires_at", "last_used_at"]
-type _AccessSort = Literal["app", "key_id", "permission", "resource", "created_at"]
-type _TagSort = Literal["id", "created_at", "collections"]
-type _QuotaSort = Literal[
-    "app",
-    "key_id",
-    "monthly_bytes",
-    "accounted_bytes",
-    "reserved_bytes",
-    "remaining_bytes",
-]
+_PROVENANCE_JOURNAL_ID: TypeAdapter[str] = TypeAdapter(ProvenanceJournalId)
+_APPLICATION_NAME: TypeAdapter[str] = TypeAdapter(ApplicationName)
+_APPLICATION_KEY_ID: TypeAdapter[str] = TypeAdapter(ApplicationKeyId)
+_ARCHIVE_STORE_NAME: TypeAdapter[str] = TypeAdapter(ArchiveStoreName)
 
 _COLLECTION_UPLOAD_IDEMPOTENCY_KEY: TypeAdapter[CollectionUploadIdempotencyKey] = TypeAdapter(
     CollectionUploadIdempotencyKey
 )
-type _ArchiveCopyState = Literal[
-    "requested",
-    "waiting",
-    "checking",
-    "copying",
-    "canceling",
-    "completed",
-    "failed",
-    "canceled",
-]
-type _ArchiveCopySort = Literal[
-    "collection_id", "source_store", "destination_store", "state", "requested_at"
-]
 
 
 def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
@@ -119,6 +103,29 @@ def _canonical_tag(value: str) -> str:
         return validate_canonical_tag(value)
     except ValueError as exc:
         raise BadRequest(str(exc)) from exc
+
+
+def _application_name(value: str) -> str:
+    try:
+        return _APPLICATION_NAME.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def _application_key_id(value: str) -> str:
+    try:
+        return _APPLICATION_KEY_ID.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def _archive_store_name(value: str) -> str:
+    try:
+        return _ARCHIVE_STORE_NAME.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(
+            "archive store name must use lowercase letters, digits, and single dashes"
+        ) from exc
 
 
 def _canonical_tags(values: Sequence[str]) -> list[str]:
@@ -210,7 +217,19 @@ def _timeout_seconds(env_name: str, default: float) -> float:
 def _file_selections_payload(
     files: Sequence[tuple[int, str]],
 ) -> list[dict[str, object]]:
-    return [{"collection_id": collection_id, "path": path} for collection_id, path in files]
+    ordered = sorted(files, key=lambda item: (item[0], item[1].encode("utf-8")))
+    try:
+        document = RetrievalFileReferenceSetDocument.model_validate(
+            {
+                "files": [
+                    {"collection_id": collection_id, "path": path}
+                    for collection_id, path in ordered
+                ]
+            }
+        )
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+    return [item.model_dump(mode="json") for item in document.files]
 
 
 class _HttpApiClient:
@@ -543,9 +562,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         lease_seconds: int | None = None,
         restore_policy: RestorePolicy = "allow",
     ) -> dict[str, Any]:
+        validated_restore_policy = _restore_policy(restore_policy)
         payload: dict[str, Any] = {
             "files": _file_selections_payload(files),
-            "restore_policy": _restore_policy(restore_policy),
+            "restore_policy": validated_restore_policy,
         }
         if lease_seconds is not None:
             payload["lease_seconds"] = lease_seconds
@@ -560,9 +580,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         restore_policy: RestorePolicy = "allow",
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        validated_restore_policy = _restore_policy(restore_policy)
         payload: dict[str, Any] = {
             "files": _file_selections_payload(files),
-            "restore_policy": _restore_policy(restore_policy),
+            "restore_policy": validated_restore_policy,
         }
         if lease_seconds is not None:
             payload["lease_seconds"] = lease_seconds
@@ -602,13 +623,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         q: str | None = None,
         tag: str | None = None,
         collection_id: int | None = None,
-        source_store: str | None = None,
-        state: _CacheState | None = None,
-        protection: _CacheProtection | None = None,
+        source_store: ArchiveStoreName | None = None,
+        state: RetrievalCacheState | None = None,
+        protection: RetrievalCacheProtection | None = None,
         expires_before: str | None = None,
         expires_after: str | None = None,
-        sort: _CacheSort = "cached_at",
-        order: _SortOrder = "desc",
+        sort: RetrievalCacheSort = "cached_at",
+        order: SortOrder = "desc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -637,8 +658,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["tag"] = _canonical_tag(tag)
         if collection_id is not None:
             params["collection_id"] = collection_id
-        if source_store:
-            params["source_store"] = source_store
+        if source_store is not None:
+            params["source_store"] = _archive_store_name(source_store)
         if state:
             params["state"] = _one_of(
                 state,
@@ -662,13 +683,14 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def get_retrieval_cache_object(
         self,
         collection_id: int,
-        source_store: str,
+        source_store: ArchiveStoreName,
         object_id: str,
     ) -> dict[str, Any]:
         return self._json(
             "GET",
             "/v1/retrieval-cache/objects/"
-            f"{str(collection_id)}/{quote(source_store, safe='')}/{quote(object_id, safe='')}",
+            f"{str(collection_id)}/{quote(_archive_store_name(source_store), safe='')}/"
+            f"{quote(object_id, safe='')}",
         )
 
     def download_retrieval_file(
@@ -798,7 +820,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         tags: Sequence[str],
         *,
         ingest_source: str | None = None,
-        archive_store: str | None = None,
+        archive_store: ArchiveStoreName | None = None,
         event_context: Mapping[str, Any] | None = None,
         provenance_mode: ProvenanceMode = "captured",
         provenance_omission_reason: str | None = None,
@@ -815,7 +837,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if ingest_source is not None:
             payload["ingest_source"] = ingest_source
         if archive_store is not None:
-            payload["archive_store"] = archive_store
+            payload["archive_store"] = _archive_store_name(archive_store)
         if event_context is not None:
             payload["event_context"] = dict(event_context)
         if provenance_omission_reason is not None:
@@ -826,6 +848,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         collection_id: int,
         files: Sequence[CollectionUploadFileIn | Mapping[str, Any]],
+        *,
+        layout: CollectionUploadLayoutDocument | Mapping[str, Any],
     ) -> dict[str, Any]:
         try:
             batch = CollectionUploadFileBatchDocument.model_validate(
@@ -838,7 +862,15 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                     ]
                 }
             )
+            layout_document = (
+                layout
+                if isinstance(layout, CollectionUploadLayoutDocument)
+                else CollectionUploadLayoutDocument.model_validate(dict(layout))
+            )
+            validate_collection_upload_batch_against_layout(batch, layout_document)
         except ValidationError as exc:
+            raise BadRequest(str(exc)) from exc
+        except ValueError as exc:
             raise BadRequest(str(exc)) from exc
         return self._json(
             "POST",
@@ -867,15 +899,22 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def put_collection_upload_session_provenance_journal(
         self,
         collection_id: int,
-        journal_id: str,
+        journal_id: ProvenanceJournalId,
         *,
         content: bytes,
         sha256: str,
     ) -> dict[str, Any]:
+        try:
+            canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
+                journal_id,
+                strict=True,
+            )
+        except ValidationError as exc:
+            raise BadRequest(str(exc)) from exc
         return self._json(
             "PUT",
             f"/v1/collection-upload-sessions/{str(collection_id)}/provenance/journals/"
-            f"{quote(journal_id, safe='')}",
+            f"{quote(canonical_journal_id, safe='')}",
             headers={
                 "Content-Type": "application/json-seq",
                 "X-Riverhog-Provenance-SHA256": sha256,
@@ -887,12 +926,19 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     def export_collection_upload_session_provenance_journal(
         self,
         collection_id: int,
-        journal_id: str,
+        journal_id: ProvenanceJournalId,
     ) -> bytes:
+        try:
+            canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
+                journal_id,
+                strict=True,
+            )
+        except ValidationError as exc:
+            raise BadRequest(str(exc)) from exc
         response = self._request(
             "GET",
             f"/v1/collection-upload-sessions/{str(collection_id)}/provenance/journals/"
-            f"{quote(journal_id, safe='')}",
+            f"{quote(canonical_journal_id, safe='')}",
         )
         content = response.content
         expected = response.headers.get("ETag", "").strip().strip('"')
@@ -906,10 +952,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        state: _UploadState | None = None,
+        state: CollectionUploadState | None = None,
         tag: str | None = None,
-        sort: _UploadSort = "created_at",
-        order: _SortOrder = "desc",
+        sort: CollectionUploadSort = "created_at",
+        order: SortOrder = "desc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -1020,8 +1066,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         *,
         page: int = 1,
         per_page: int = 25,
-        sort: _SearchSort = "file_ref",
-        order: _SortOrder = "asc",
+        sort: SearchSort = "file_ref",
+        order: SortOrder = "asc",
         collection: int | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
@@ -1056,9 +1102,9 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        status: _ProvenanceStatus | None = None,
-        sort: _ProvenanceSort = "path",
-        order: _SortOrder = "asc",
+        status: ProvenanceStatus | None = None,
+        sort: ProvenanceSort = "path",
+        order: SortOrder = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
@@ -1173,8 +1219,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         tag: str | None = None,
         encryption_format: str | None = None,
         passphrase_id: str | None = None,
-        sort: _CollectionSort = "id",
-        order: _SortOrder = "asc",
+        sort: CollectionSort = "id",
+        order: SortOrder = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -1211,8 +1257,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: _ArchiveStoreSort = "store",
-        order: _SortOrder = "asc",
+        sort: ArchiveStoreSort = "store",
+        order: SortOrder = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -1240,8 +1286,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["all"] = True
         return self._json("GET", "/v1/archive/stores", params=params)
 
-    def get_archive_store(self, store: str) -> dict[str, Any]:
-        return self._json("GET", f"/v1/archive/stores/{quote(store, safe='')}")
+    def get_archive_store(self, store: ArchiveStoreName) -> dict[str, Any]:
+        return self._json("GET", f"/v1/archive/stores/{quote(_archive_store_name(store), safe='')}")
 
     def list_apps(
         self,
@@ -1249,8 +1295,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: _AppSort = "name",
-        order: _SortOrder = "asc",
+        sort: ApplicationSort = "name",
+        order: SortOrder = "asc",
         active: bool | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
@@ -1274,7 +1320,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
 
     def create_app_key(
         self,
-        app: str,
+        app: ApplicationName,
         *,
         access: Sequence[Mapping[str, str]],
         expires_in_seconds: int | None = None,
@@ -1284,19 +1330,19 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             payload["expires_in_seconds"] = expires_in_seconds
         return self._json(
             "POST",
-            f"/v1/apps/{quote(app, safe='')}/keys",
+            f"/v1/apps/{quote(_application_name(app), safe='')}/keys",
             json=payload,
         )
 
     def list_app_keys(
         self,
-        app: str,
+        app: ApplicationName,
         *,
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: _AppKeySort = "created_at",
-        order: _SortOrder = "desc",
+        sort: ApplicationKeySort = "created_at",
+        order: SortOrder = "desc",
         active: bool | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
@@ -1318,20 +1364,22 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["all"] = True
         return self._json(
             "GET",
-            f"/v1/apps/{quote(app, safe='')}/keys",
+            f"/v1/apps/{quote(_application_name(app), safe='')}/keys",
             params=params,
         )
 
-    def revoke_app_key(self, app: str, key_id: str) -> dict[str, Any]:
+    def revoke_app_key(self, app: ApplicationName, key_id: ApplicationKeyId) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/revoke",
+            f"/v1/apps/{quote(_application_name(app), safe='')}/keys/"
+            f"{quote(_application_key_id(key_id), safe='')}/revoke",
         )
 
-    def rotate_app_key(self, app: str, key_id: str) -> dict[str, Any]:
+    def rotate_app_key(self, app: ApplicationName, key_id: ApplicationKeyId) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/rotate",
+            f"/v1/apps/{quote(_application_name(app), safe='')}/keys/"
+            f"{quote(_application_key_id(key_id), safe='')}/rotate",
         )
 
     def list_app_key_access(
@@ -1340,10 +1388,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: _AccessSort = "permission",
-        order: _SortOrder = "asc",
-        app: str | None = None,
-        key_id: str | None = None,
+        sort: ApplicationAccessSort = "permission",
+        order: SortOrder = "asc",
+        app: ApplicationName | None = None,
+        key_id: ApplicationKeyId | None = None,
         permission: str | None = None,
         resource: str | None = None,
         active: bool | None = None,
@@ -1361,10 +1409,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         }
         if q:
             params["q"] = q
-        if app:
-            params["app"] = app
-        if key_id:
-            params["key"] = key_id
+        if app is not None:
+            params["app"] = _application_name(app)
+        if key_id is not None:
+            params["key"] = _application_key_id(key_id)
         if permission:
             params["permission"] = permission
         if resource:
@@ -1377,42 +1425,45 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
 
     def replace_app_key_access(
         self,
-        app: str,
-        key_id: str,
+        app: ApplicationName,
+        key_id: ApplicationKeyId,
         *,
         access: Sequence[Mapping[str, str]],
     ) -> dict[str, Any]:
         return self._json(
             "PUT",
-            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
+            f"/v1/apps/{quote(_application_name(app), safe='')}/keys/"
+            f"{quote(_application_key_id(key_id), safe='')}/access",
             json={"access": _application_access_payload(access)},
         )
 
     def add_app_key_access(
         self,
-        app: str,
-        key_id: str,
+        app: ApplicationName,
+        key_id: ApplicationKeyId,
         *,
         permission: ApplicationPermission,
         resource: ApplicationResource,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
+            f"/v1/apps/{quote(_application_name(app), safe='')}/keys/"
+            f"{quote(_application_key_id(key_id), safe='')}/access",
             json=_application_access_grant_payload(permission, resource),
         )
 
     def remove_app_key_access(
         self,
-        app: str,
-        key_id: str,
+        app: ApplicationName,
+        key_id: ApplicationKeyId,
         *,
         permission: ApplicationPermission,
         resource: ApplicationResource,
     ) -> dict[str, Any]:
         return self._json(
             "DELETE",
-            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/access",
+            f"/v1/apps/{quote(_application_name(app), safe='')}/keys/"
+            f"{quote(_application_key_id(key_id), safe='')}/access",
             json=_application_access_grant_payload(permission, resource),
         )
 
@@ -1428,8 +1479,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: _TagSort = "id",
-        order: _SortOrder = "asc",
+        sort: TagSort = "id",
+        order: SortOrder = "asc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -1509,14 +1560,15 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
 
     def set_app_key_download_quota(
         self,
-        app: str,
-        key_id: str,
+        app: ApplicationName,
+        key_id: ApplicationKeyId,
         *,
         monthly_bytes: int | None,
     ) -> dict[str, Any]:
         return self._json(
             "PUT",
-            f"/v1/apps/{quote(app, safe='')}/keys/{quote(key_id, safe='')}/download-quota",
+            f"/v1/apps/{quote(_application_name(app), safe='')}/keys/"
+            f"{quote(_application_key_id(key_id), safe='')}/download-quota",
             json={"monthly_bytes": monthly_bytes},
         )
 
@@ -1526,9 +1578,9 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        sort: _QuotaSort = "app",
-        order: _SortOrder = "asc",
-        app: str | None = None,
+        sort: DownloadQuotaSort = "app",
+        order: SortOrder = "asc",
+        app: ApplicationName | None = None,
         active: bool | None = None,
         all_items: bool = False,
     ) -> dict[str, Any]:
@@ -1553,8 +1605,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         }
         if q:
             params["q"] = q
-        if app:
-            params["app"] = app
+        if app is not None:
+            params["app"] = _application_name(app)
         if active is not None:
             params["active"] = str(active).lower()
         if all_items:
@@ -1565,16 +1617,23 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         collection_id: int,
         *,
-        destination_store: str,
-        source_store: str | None = None,
+        destination_store: ArchiveStoreName,
+        source_store: ArchiveStoreName | None = None,
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        try:
+            stores = ArchiveCopyStoreSelectionDocument(
+                destination_store=destination_store,
+                source_store=source_store,
+            )
+        except ValueError as exc:
+            raise BadRequest(str(exc)) from exc
         payload: dict[str, Any] = {
             "collection_id": collection_id,
-            "destination_store": destination_store,
+            "destination_store": stores.destination_store,
         }
-        if source_store is not None:
-            payload["source_store"] = source_store
+        if stores.source_store is not None:
+            payload["source_store"] = stores.source_store
         if event_context is not None:
             payload["event_context"] = dict(event_context)
         return self._json("POST", "/v1/archive/copies", json=payload)
@@ -1585,9 +1644,9 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         page: int = 1,
         per_page: int = 25,
         q: str | None = None,
-        state: _ArchiveCopyState | None = None,
-        sort: _ArchiveCopySort = "requested_at",
-        order: _SortOrder = "desc",
+        state: ArchiveCopyState | None = None,
+        sort: ArchiveCopySort = "requested_at",
+        order: SortOrder = "desc",
         all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -1635,41 +1694,43 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         collection_id: int,
         *,
-        destination_store: str,
+        destination_store: ArchiveStoreName,
     ) -> dict[str, Any]:
         return self._json(
             "GET",
-            f"/v1/archive/copies/{collection_id}/{quote(destination_store, safe='')}",
+            f"/v1/archive/copies/{collection_id}/"
+            f"{quote(_archive_store_name(destination_store), safe='')}",
         )
 
     def cancel_archive_copy_job(
         self,
         collection_id: int,
         *,
-        destination_store: str,
+        destination_store: ArchiveStoreName,
     ) -> dict[str, Any]:
         return self._json(
             "DELETE",
-            f"/v1/archive/copies/{collection_id}/{quote(destination_store, safe='')}",
+            f"/v1/archive/copies/{collection_id}/"
+            f"{quote(_archive_store_name(destination_store), safe='')}",
         )
 
     def plan_archive_copy_retirement(
         self,
         collection_id: int,
         *,
-        store: str,
+        store: ArchiveStoreName,
     ) -> dict[str, Any]:
         return self._json(
             "POST",
             "/v1/archive/copies/retirement-plan",
-            json={"collection_id": collection_id, "store": store},
+            json={"collection_id": collection_id, "store": _archive_store_name(store)},
         )
 
     def retire_archive_copy(
         self,
         collection_id: int,
         *,
-        store: str,
+        store: ArchiveStoreName,
         challenge: str,
     ) -> dict[str, Any]:
         return self._json(
@@ -1677,7 +1738,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "/v1/archive/copies/retire",
             json={
                 "collection_id": collection_id,
-                "store": store,
+                "store": _archive_store_name(store),
                 "challenge": challenge,
             },
         )

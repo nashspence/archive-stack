@@ -25,6 +25,7 @@ members = [
     "riverhog-ftp-adapter-api-client",
     "riverhog-protocol",
     "riverhog-provenance",
+    "riverhog-provenance-contracts",
     "riverhog-recover",
     "riverhog-server",
     "riverhog-storage-adapter-asgi-support",
@@ -1555,6 +1556,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
+    { name = "riverhog-provenance-contracts" },
 ]
 
 [package.metadata]
@@ -1566,6 +1568,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" },
 ]
 
 [[package]]
@@ -1665,6 +1668,7 @@ dependencies = [
     { name = "http-api-contracts" },
     { name = "lifecycle-events" },
     { name = "pydantic" },
+    { name = "riverhog-provenance-contracts" },
 ]
 
 [package.metadata]
@@ -1672,6 +1676,7 @@ requires-dist = [
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "pydantic", specifier = ">=2.12,<3.0" },
+    { name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" },
 ]
 
 [[package]]
@@ -1680,10 +1685,25 @@ version = "0.1.0"
 source = { editable = "packages/riverhog-provenance" }
 dependencies = [
     { name = "jsonschema" },
+    { name = "riverhog-provenance-contracts" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "jsonschema", specifier = ">=4.23,<5.0" }]
+requires-dist = [
+    { name = "jsonschema", specifier = ">=4.23,<5.0" },
+    { name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" },
+]
+
+[[package]]
+name = "riverhog-provenance-contracts"
+version = "0.1.0"
+source = { editable = "packages/riverhog-provenance-contracts" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.12,<3.0" }]
 
 [[package]]
 name = "riverhog-recover"
@@ -1713,6 +1733,7 @@ dependencies = [
     { name = "riverhog-archive-contracts" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
+    { name = "riverhog-provenance-contracts" },
     { name = "riverhog-storage-adapter-protocol" },
     { name = "riverhog-storage-adapter-support" },
     { name = "sqlalchemy" },
@@ -1736,6 +1757,7 @@ requires-dist = [
     { name = "riverhog-archive-contracts", editable = "packages/riverhog-archive-contracts" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" },
     { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
     { name = "riverhog-storage-adapter-support", editable = "packages/riverhog-storage-adapter-support" },
     { name = "sqlalchemy", specifier = ">=2.0,<3.0" },

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import field_validator
+from pydantic import ConfigDict, field_validator, model_validator
+from riverhog_protocol import SortOrder, TagSort
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.schemas.common import RiverhogModel
@@ -25,8 +26,8 @@ class TagListOut(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: TagSort
+    order: SortOrder
     query: str | None
     tags: list[TagOut]
 
@@ -64,6 +65,27 @@ class TagDependenciesOut(RiverhogModel):
 
 
 class TagDeletionPlanOut(RiverhogModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "status": {"const": "blocked"},
+                        "challenge": {"type": "null"},
+                        "blockers": {"minItems": 1},
+                    }
+                },
+                {
+                    "properties": {
+                        "status": {"const": "ready"},
+                        "challenge": {"type": "string", "minLength": 1},
+                        "blockers": {"maxItems": 0},
+                    }
+                },
+            ]
+        }
+    )
+
     status: Literal["ready", "blocked"]
     tag: CanonicalTag
     warning: str
@@ -71,6 +93,15 @@ class TagDeletionPlanOut(RiverhogModel):
     challenge: str | None
     dependencies: TagDependenciesOut
     blockers: list[str]
+
+    @model_validator(mode="after")
+    def validate_plan_state(self) -> TagDeletionPlanOut:
+        if self.status == "blocked":
+            if self.challenge is not None or not self.blockers:
+                raise ValueError("blocked tag deletion requires blockers and no challenge")
+        elif not self.challenge or self.blockers:
+            raise ValueError("ready tag deletion requires a challenge and no blockers")
+        return self
 
 
 class DeleteTagRequest(RiverhogModel):

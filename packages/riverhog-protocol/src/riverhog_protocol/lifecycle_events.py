@@ -8,6 +8,7 @@ from lifecycle_events.models import CloudEvent, normalize_event_context
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from riverhog_protocol.paths import normalize_collection_id, normalize_tag
+from riverhog_protocol.storage_names import ArchiveStoreName
 
 RIVERHOG_EVENT_TYPE_PREFIX = "io.riverhog.riverhog."
 COLLECTION_FINALIZED = RIVERHOG_EVENT_TYPE_PREFIX + "collection.finalized"
@@ -99,7 +100,7 @@ class CollectionEventData(RiverhogEventData):
 class CollectionFinalizedData(CollectionEventData):
     files_total: int = Field(ge=0)
     bytes_total: int = Field(ge=0)
-    archive_store: str = Field(min_length=1, max_length=300)
+    archive_store: ArchiveStoreName
     archive_storage_prefix: str = Field(min_length=1, max_length=2000)
     archive_objects: int = Field(ge=1)
 
@@ -123,8 +124,8 @@ ArchiveCopyState = Literal[
 
 
 class ArchiveCopyEventData(CollectionEventData):
-    source_store: str = Field(min_length=1, max_length=300)
-    destination_store: str = Field(min_length=1, max_length=300)
+    source_store: ArchiveStoreName
+    destination_store: ArchiveStoreName
     state: ArchiveCopyState
 
 

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "riverhog-protocol"
 version = "0.1.0"
-description = "Riverhog protocol constants and error vocabulary."
+description = "Canonical Riverhog wire and identity contracts."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -22,11 +22,13 @@ dependencies = [
   "http-api-contracts>=0.1,<0.2",
   "lifecycle-events>=0.1,<0.2",
   "pydantic>=2.12,<3.0",
+  "riverhog-provenance-contracts>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
 http-api-contracts = { workspace = true }
 lifecycle-events = { workspace = true }
+riverhog-provenance-contracts = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riverhog_protocol"]

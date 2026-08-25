@@ -52,6 +52,20 @@ class HttpPathParameterContract:
 
 
 @dataclass(frozen=True, slots=True)
+class HttpErrorContract:
+    """One exact transport/control error code and its HTTP status."""
+
+    code: str
+    status: int
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[a-z][a-z0-9_]*", self.code) is None:
+            raise ValueError("HTTP error code must be canonical snake case")
+        if self.status < 400 or self.status > 599:
+            raise ValueError("HTTP error status must be 4xx or 5xx")
+
+
+@dataclass(frozen=True, slots=True)
 class HttpOperationContract:
     """One exact method/path binding projected into a running OpenAPI document."""
 
@@ -62,7 +76,7 @@ class HttpOperationContract:
     request_kind: HttpBodyKind = "none"
     response_kind: HttpBodyKind = "json"
     success_statuses: tuple[int, ...] = (200,)
-    error_statuses: tuple[int, ...] = (400, 401, 500)
+    errors: tuple[HttpErrorContract, ...] = ()
     path_parameters: tuple[HttpPathParameterContract, ...] = ()
 
     def __post_init__(self) -> None:
@@ -78,6 +92,43 @@ class HttpOperationContract:
         declared = tuple(parameter.name for parameter in self.path_parameters)
         if placeholders != declared or len(declared) != len(set(declared)):
             raise ValueError("HTTP path parameters must exactly match the operation path")
+        codes = tuple(error.code for error in self.errors)
+        if len(codes) != len(set(codes)):
+            raise ValueError("HTTP operation error codes must be unique")
+
+    @property
+    def error_statuses(self) -> tuple[int, ...]:
+        return tuple(sorted({error.status for error in self.errors}))
+
+    def accepts_error(self, *, status: int, code: str) -> bool:
+        return HttpErrorContract(code, status) in self.errors
+
+    def matches(self, method: str, path: str) -> bool:
+        if method.upper() != self.method:
+            return False
+        expected = self.path.split("/")
+        actual = path.split("/")
+        if len(expected) != len(actual):
+            return False
+        return all(
+            bool(actual_part)
+            if expected_part.startswith("{") and expected_part.endswith("}")
+            else expected_part == actual_part
+            for expected_part, actual_part in zip(expected, actual, strict=True)
+        )
+
+
+def http_operation_for_request(
+    contracts: tuple[HttpOperationContract, ...],
+    method: str,
+    path: str,
+) -> HttpOperationContract | None:
+    """Return the one declared operation matching an exact request identity."""
+
+    matches = tuple(contract for contract in contracts if contract.matches(method, path))
+    if len(matches) > 1:
+        raise ValueError("HTTP operation contracts overlap")
+    return matches[0] if matches else None
 
 
 def inline_type_schema(value: object) -> dict[str, Any]:
@@ -133,6 +184,9 @@ def operation_openapi(
     for status in contract.error_statuses:
         responses[status] = {
             "description": HTTPStatus(status).phrase,
+            "x-riverhog-error-codes": sorted(
+                error.code for error in contract.errors if error.status == status
+            ),
             "content": {"application/json": {"schema": inline_type_schema(error_type)}},
         }
     extra: dict[str, Any] = {}
@@ -383,6 +437,7 @@ __all__ = [
     "ErrorBody",
     "ErrorResponse",
     "HealthResponse",
+    "HttpErrorContract",
     "HttpBodyKind",
     "HttpOperationContract",
     "HttpPathParameterContract",
@@ -394,6 +449,7 @@ __all__ = [
     "operation_interface",
     "operation_openapi",
     "inline_type_schema",
+    "http_operation_for_request",
     "parse_error_payload",
     "safe_http_base_url",
     "status_for_error_code",

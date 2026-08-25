@@ -7,7 +7,8 @@ from collections.abc import Sequence
 from datetime import timedelta
 
 from application_access import (
-    normalize_app_name as normalize_application_name,
+    validate_application_key_id,
+    validate_application_name,
 )
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from sqlalchemy import and_, asc, case, delete, desc, func, or_, select
@@ -52,7 +53,14 @@ def _create_key_credentials(prefix: str) -> tuple[str, str, str]:
 
 def normalize_app_name(value: str) -> str:
     try:
-        return normalize_application_name(value)
+        return validate_application_name(value)
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def normalize_key_id(value: str) -> str:
+    try:
+        return validate_application_key_id(value)
     except ValueError as exc:
         raise BadRequest(str(exc)) from exc
 
@@ -193,7 +201,7 @@ class SqlAlchemyAppKeyService:
         grantor: ApplicationPrincipal,
     ) -> dict[str, object]:
         normalized_app = normalize_app_name(app)
-        normalized_key_id = key_id.strip().casefold()
+        normalized_key_id = normalize_key_id(key_id)
         now = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             record = _require_key(
@@ -221,7 +229,7 @@ class SqlAlchemyAppKeyService:
 
     def revoke(self, *, app: str, key_id: str) -> dict[str, object]:
         normalized_app = normalize_app_name(app)
-        normalized_key_id = key_id.strip().casefold()
+        normalized_key_id = normalize_key_id(key_id)
         now = format_utc_timestamp(utc_now())
         with session_scope(self._session_factory) as session:
             record = _require_key(
@@ -276,7 +284,7 @@ class SqlAlchemyAppKeyService:
         grantor: ApplicationPrincipal,
     ) -> dict[str, object]:
         normalized_app = normalize_app_name(app)
-        normalized_key_id = key_id.strip().casefold()
+        normalized_key_id = normalize_key_id(key_id)
         normalized_access = normalize_access(access)
         if not grantor.can_grant(normalized_access):
             raise Forbidden("an application key cannot grant access it does not hold")
@@ -313,7 +321,7 @@ class SqlAlchemyAppKeyService:
         grantor: ApplicationPrincipal,
     ) -> dict[str, object]:
         normalized_app = normalize_app_name(app)
-        normalized_key_id = key_id.strip().casefold()
+        normalized_key_id = normalize_key_id(key_id)
         added = normalize_access((access,))[0]
         if not grantor.can_grant((added,)):
             raise Forbidden("an application key cannot grant access it does not hold")
@@ -345,7 +353,7 @@ class SqlAlchemyAppKeyService:
         access: ApplicationAccess | tuple[str, str],
     ) -> dict[str, object]:
         normalized_app = normalize_app_name(app)
-        normalized_key_id = key_id.strip().casefold()
+        normalized_key_id = normalize_key_id(key_id)
         removed = normalize_access((access,))[0]
         with session_scope(self._session_factory) as session:
             _require_key(session, app=normalized_app, key_id=normalized_key_id)
@@ -391,9 +399,7 @@ class SqlAlchemyAppKeyService:
             fields=_ACCESS_SORT_FIELDS,
         )
         normalized_app = normalize_app_name(app) if app is not None else None
-        normalized_key_id = key_id.strip().casefold() if key_id is not None else None
-        if normalized_key_id == "":
-            raise BadRequest("key_id must not be empty")
+        normalized_key_id = normalize_key_id(key_id) if key_id is not None else None
         normalized_permission = None
         if permission is not None:
             normalized_permission = normalize_access(((permission, "*"),))[0].permission

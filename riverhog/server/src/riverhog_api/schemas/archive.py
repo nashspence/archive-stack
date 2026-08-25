@@ -1,12 +1,22 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, Self
+
+from application_access import ApplicationKeyId, ApplicationName
+from pydantic import ConfigDict, model_validator
+from riverhog_protocol import (
+    ArchiveCopySort,
+    ArchiveCopyState,
+    ArchiveCopyStoreSelectionDocument,
+    ArchiveStoreName,
+    SortOrder,
+)
 
 from riverhog_api.schemas.common import RiverhogModel
 
 
 class ArchiveCopyOut(RiverhogModel):
-    store: str
+    store: ArchiveStoreName
     state: Literal["pending", "uploading", "uploaded", "retrying", "failed"]
     storage_prefix: str | None
     object_count: int
@@ -25,34 +35,61 @@ class ArchiveRootPublicationOut(RiverhogModel):
     proof_state: Literal["pending", "uploaded", "failed"] = "pending"
 
 
-class CreateArchiveCopyRequest(RiverhogModel):
+class CreateArchiveCopyRequest(ArchiveCopyStoreSelectionDocument):
     collection_id: int
-    destination_store: str
-    source_store: str | None = None
     event_context: dict[str, Any] | None = None
 
 
 class ArchiveCopyJobOut(RiverhogModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {"properties": {"state": {"const": "completed"}}},
+                    "then": {
+                        "properties": {
+                            "completed_at": {"type": "string"},
+                            "failure": {"type": "null"},
+                        }
+                    },
+                },
+                {
+                    "if": {"properties": {"state": {"const": "canceled"}}},
+                    "then": {"properties": {"completed_at": {"type": "string"}}},
+                },
+                {
+                    "if": {"properties": {"state": {"const": "failed"}}},
+                    "then": {"properties": {"failure": {"type": "string", "minLength": 1}}},
+                },
+            ]
+        }
+    )
+
     collection_id: int
-    source_store: str | None
-    destination_store: str
-    initiated_by_app: str | None
-    initiated_by_key_id: str | None
-    state: Literal[
-        "requested",
-        "waiting",
-        "checking",
-        "copying",
-        "canceling",
-        "completed",
-        "failed",
-        "canceled",
-    ]
+    source_store: ArchiveStoreName | None
+    destination_store: ArchiveStoreName
+    initiated_by_app: ApplicationName | None
+    initiated_by_key_id: ApplicationKeyId | None
+    state: ArchiveCopyState
     requested_at: str | None
     ready_at: str | None
     expires_at: str | None
     completed_at: str | None
     failure: str | None
+
+    @model_validator(mode="after")
+    def validate_terminal_evidence(self) -> Self:
+        if self.state == "completed" and (self.completed_at is None or self.failure is not None):
+            raise ValueError("completed archive-copy jobs require completion evidence")
+        if self.state == "canceled" and self.completed_at is None:
+            raise ValueError("canceled archive-copy jobs require completed_at")
+        if self.state == "failed" and not self.failure:
+            raise ValueError("failed archive-copy jobs require failure evidence")
+        return self
+
+
+class ArchiveCopyJobListFiltersOut(RiverhogModel):
+    state: ArchiveCopyState | None = None
 
 
 class ArchiveCopyJobListOut(RiverhogModel):
@@ -60,16 +97,16 @@ class ArchiveCopyJobListOut(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: str
-    order: Literal["asc", "desc"]
+    sort: ArchiveCopySort
+    order: SortOrder
     query: str | None
-    filters: dict[str, str]
+    filters: ArchiveCopyJobListFiltersOut
     copies: list[ArchiveCopyJobOut]
 
 
 class ArchiveCopyRetirementRequest(RiverhogModel):
     collection_id: int
-    store: str
+    store: ArchiveStoreName
 
 
 class RetireArchiveCopyRequest(ArchiveCopyRetirementRequest):
@@ -77,22 +114,43 @@ class RetireArchiveCopyRequest(ArchiveCopyRetirementRequest):
 
 
 class ArchiveCopyRetirementTargetOut(RiverhogModel):
-    store: str
+    store: ArchiveStoreName
     last_verified_at: str
     remote_storage_bytes: int
     object_count: int
 
 
 class ArchiveCopyRetirementRetainedOut(RiverhogModel):
-    store: str
+    store: ArchiveStoreName
     last_verified_at: str
     remote_storage_bytes: int
 
 
 class ArchiveCopyRetirementPlanOut(RiverhogModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "status": {"const": "blocked"},
+                        "challenge": {"type": "null"},
+                        "blockers": {"minItems": 1},
+                    }
+                },
+                {
+                    "properties": {
+                        "status": {"enum": ["ready", "retiring"]},
+                        "challenge": {"type": "string", "minLength": 1},
+                        "blockers": {"maxItems": 0},
+                    }
+                },
+            ]
+        }
+    )
+
     status: Literal["ready", "blocked", "retiring"]
     collection_id: int
-    store: str
+    store: ArchiveStoreName
     warning: str
     expires_at: str
     challenge: str | None
@@ -103,10 +161,21 @@ class ArchiveCopyRetirementPlanOut(RiverhogModel):
     verification_note: str
     billing_note: str
 
+    @model_validator(mode="after")
+    def validate_plan_state(self) -> Self:
+        if self.status == "blocked":
+            if self.challenge is not None or not self.blockers:
+                raise ValueError(
+                    "blocked archive-copy retirement requires blockers and no challenge"
+                )
+        elif not self.challenge or self.blockers:
+            raise ValueError("ready archive-copy retirement requires a challenge and no blockers")
+        return self
+
 
 class ArchiveCopyRetirementResultOut(RiverhogModel):
     status: Literal["retired", "already_absent"]
     collection_id: int
-    store: str
+    store: ArchiveStoreName
     remote_storage_bytes: int
-    verified_store: str | None
+    verified_store: ArchiveStoreName | None

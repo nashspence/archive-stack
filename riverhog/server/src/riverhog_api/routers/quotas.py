@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated
 
+from application_access import ApplicationKeyId, ApplicationName
 from fastapi import APIRouter, Query
+from riverhog_protocol import DownloadQuotaSort, SortOrder
 from riverhog_protocol.errors import Forbidden
 
 from riverhog_api.auth import QuotaManager, RetrievalManager
@@ -34,17 +36,10 @@ def list_download_quotas(
     _principal: QuotaManager,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    sort: Literal[
-        "app",
-        "key_id",
-        "monthly_bytes",
-        "accounted_bytes",
-        "reserved_bytes",
-        "remaining_bytes",
-    ] = Query("app"),
-    order: Literal["asc", "desc"] = Query("asc"),
+    sort: Annotated[DownloadQuotaSort, Query()] = "app",
+    order: Annotated[SortOrder, Query()] = "asc",
     q: str | None = Query(None),
-    app: str | None = Query(None),
+    app: Annotated[ApplicationName | None, Query()] = None,
     active: bool | None = Query(None),
     all_items: bool = Query(False, alias="all"),
 ) -> KeyDownloadQuotaListOut:
@@ -67,8 +62,8 @@ def list_download_quotas(
     response_model=KeyDownloadQuotaOut,
 )
 def set_app_key_download_quota(
-    app: str,
-    key_id: str,
+    app: ApplicationName,
+    key_id: ApplicationKeyId,
     request: SetKeyDownloadQuotaRequest,
     container: ContainerDep,
     _principal: QuotaManager,

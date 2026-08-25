@@ -16,6 +16,8 @@ from dataclasses import asdict
 from enum import Enum
 from typing import Any, cast
 
+from riverhog_provenance_contracts import require_canonical_uuid_urn
+
 from .constants import (
     CAPTURE_PLAN_ID,
     COVERAGE_CATEGORIES,
@@ -53,17 +55,7 @@ def new_urn_uuid() -> str:
 
 
 def require_urn_uuid(value: str, field: str) -> str:
-    prefix = "urn:uuid:"
-    if not value.startswith(prefix):
-        raise ValueError(f"{field} must be a lowercase UUID URN")
-    try:
-        parsed = uuid.UUID(value[len(prefix) :])
-    except ValueError as exc:
-        raise ValueError(f"{field} must be a valid UUID URN") from exc
-    canonical = f"urn:uuid:{parsed}"
-    if value != canonical:
-        raise ValueError(f"{field} must use canonical lowercase UUID URN syntax")
-    return canonical
+    return require_canonical_uuid_urn(value, field)
 
 
 def provenance_journal_filename(journal_id: str) -> str:

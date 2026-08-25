@@ -238,8 +238,11 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             self,
             collection_id: int,
             files: list[dict[str, object]],
+            *,
+            layout: object,
         ) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
+            assert layout.model_dump() == LAYOUT
             registered.extend(files)
             return {"files": files}
 

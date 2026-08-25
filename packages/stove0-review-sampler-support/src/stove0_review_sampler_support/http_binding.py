@@ -7,21 +7,51 @@ import threading
 from dataclasses import dataclass
 from typing import Protocol
 
-from http_api_contracts import HttpOperationContract
+from http_api_contracts import (
+    HttpErrorContract,
+    HttpOperationContract,
+    http_operation_for_request,
+)
 from pydantic import ValidationError
 from stove0_review_sampler_protocol import SamplerDescriptor, SamplerRequest, SamplerResult
 
 SAMPLER_HTTP_OPERATIONS = (
-    HttpOperationContract("GET", "/v1/sampler", response_type=SamplerDescriptor),
+    HttpOperationContract(
+        "GET",
+        "/v1/sampler",
+        response_type=SamplerDescriptor,
+        errors=(
+            HttpErrorContract("bad_request", 400),
+            HttpErrorContract("unauthorized", 401),
+            HttpErrorContract("sampler_failed", 500),
+        ),
+    ),
     HttpOperationContract(
         "POST",
         "/v1/sample",
         SamplerRequest,
         SamplerResult,
         "json",
-        error_statuses=(400, 401, 409, 413, 500),
+        errors=(
+            HttpErrorContract("invalid_sampler_request", 400),
+            HttpErrorContract("unauthorized", 401),
+            HttpErrorContract("sampler_changed", 409),
+            HttpErrorContract("request_too_large", 413),
+            HttpErrorContract("sampler_failed", 500),
+        ),
     ),
 )
+
+_SAMPLER_HTTP_ERROR_STATUS = {
+    "bad_request": 400,
+    "invalid_sampler_request": 400,
+    "method_not_allowed": 405,
+    "not_found": 404,
+    "request_too_large": 413,
+    "sampler_changed": 409,
+    "sampler_failed": 500,
+    "unauthorized": 401,
+}
 
 
 class ReviewSampler(Protocol):
@@ -56,6 +86,7 @@ class SamplerHttpBinding:
 
     def handle(self, method: str, path: str, body: bytes = b"") -> SamplerHttpResponse:
         method = method.upper()
+        operation = http_operation_for_request(SAMPLER_HTTP_OPERATIONS, method, path)
         try:
             if method == "GET" and path == "/v1/sampler":
                 if body:
@@ -73,7 +104,12 @@ class SamplerHttpBinding:
                 return _error(405, "method_not_allowed", "sampler endpoint method is not allowed")
             return _error(404, "not_found", "sampler endpoint not found")
         except (ValidationError, ValueError) as exc:
-            return _error(400, "invalid_sampler_request", str(exc))
+            if operation is not None and operation.accepts_error(
+                status=400,
+                code="invalid_sampler_request",
+            ):
+                return _error(400, "invalid_sampler_request", str(exc))
+            return _error(500, "sampler_failed", "review sampler execution failed")
         except Exception:
             return _error(500, "sampler_failed", "review sampler execution failed")
 
@@ -87,6 +123,8 @@ def _model(model: SamplerDescriptor | SamplerResult) -> SamplerHttpResponse:
 
 
 def _error(status: int, code: str, message: str) -> SamplerHttpResponse:
+    if _SAMPLER_HTTP_ERROR_STATUS.get(code) != status:
+        raise ValueError("sampler HTTP binding emitted an undeclared error code/status")
     return SamplerHttpResponse(
         status,
         (("Content-Type", "application/json"),),

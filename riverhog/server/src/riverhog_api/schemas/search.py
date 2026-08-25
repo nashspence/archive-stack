@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from riverhog_protocol import SearchSort, SortOrder
 
 from riverhog_api.schemas.common import RiverhogModel
 
@@ -20,6 +20,6 @@ class SearchResponse(RiverhogModel):
     per_page: int
     total: int
     pages: int
-    sort: Literal["file_ref", "collection_id", "path", "bytes"]
-    order: Literal["asc", "desc"]
+    sort: SearchSort
+    order: SortOrder
     files: list[SearchFileOut]

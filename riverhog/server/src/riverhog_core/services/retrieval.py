@@ -8,7 +8,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-from riverhog_protocol import PortableCollectionRecord
+from riverhog_protocol import PortableCollectionRecord, RetrievalFileReferenceSetDocument
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
 from sqlalchemy import case, delete, desc, exists, func, or_, select, update
@@ -475,9 +475,7 @@ class SqlAlchemyRetrievalService:
             "query": needle,
             "filters": {
                 "tag": normalized_tag,
-                "collection_id": (
-                    str(normalized_collection_id) if normalized_collection_id is not None else None
-                ),
+                "collection_id": normalized_collection_id,
                 "source_store": normalized_store,
                 "state": normalized_state,
                 "protection": normalized_protection,
@@ -1815,20 +1813,17 @@ def _stored_parts(content: str) -> tuple[StoredPartReceipt, ...]:
 
 
 def _normalize_file_refs(files: Sequence[tuple[int, str]]) -> tuple[tuple[int, str], ...]:
-    normalized: list[tuple[int, str]] = []
-    seen: set[tuple[int, str]] = set()
-    for collection_id, path in files:
-        normalized_path = str(path).strip()
-        if not normalized_path:
-            raise BadRequest("retrieval file references require collection_id and path")
-        current = (_normalize_collection_id_or_raise(collection_id), normalized_path)
-        if current in seen:
-            continue
-        seen.add(current)
-        normalized.append(current)
-    if not normalized:
-        raise BadRequest("retrieval requires at least one file")
-    return tuple(normalized)
+    try:
+        document = RetrievalFileReferenceSetDocument.model_validate(
+            {
+                "files": [
+                    {"collection_id": collection_id, "path": path} for collection_id, path in files
+                ]
+            }
+        )
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+    return tuple((item.collection_id, item.path) for item in document.files)
 
 
 def _normalize_restore_policy(value: str) -> str:

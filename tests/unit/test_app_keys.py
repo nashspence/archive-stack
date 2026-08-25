@@ -117,7 +117,7 @@ def test_app_key_plaintext_is_returned_once_and_only_its_digest_is_stored(
     service, config = app_keys(tmp_path)
     created = create_key(
         service,
-        app="Review-Station",
+        app="review-station",
         access=(ApplicationAccess(CATALOG_READ), ApplicationAccess(RETRIEVAL_MANAGE)),
     )
 

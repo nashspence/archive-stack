@@ -15,6 +15,7 @@ members = [
 riverhog-ftp-adapter-api-client = { workspace = true }
 riverhog-archive-contracts = { workspace = true }
 riverhog-provenance = { workspace = true }
+riverhog-provenance-contracts = { workspace = true }
 riverhog-storage-adapter-asgi-support = { workspace = true }
 riverhog-storage-adapter-protocol = { workspace = true }
 riverhog-storage-adapter-s3-support = { workspace = true }
