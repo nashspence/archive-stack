@@ -460,6 +460,12 @@ def test_maintained_observer_distributions_do_not_pull_target_authority() -> Non
         assert not closure & forbidden
 
 
+def test_media_archive_target_contracts_do_not_pull_observer_authority() -> None:
+    _projects, graph = workspace_project_graph()
+    closure = dependency_closure("stove0-media-archive-target-contracts", graph)
+    assert "stove0-media-metadata-observer-contracts" not in closure
+
+
 def test_semantic_contract_distributions_do_not_pull_runtime_support() -> None:
     _projects, graph = workspace_project_graph()
     for distribution in (

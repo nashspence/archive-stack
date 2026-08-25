@@ -295,7 +295,7 @@ def _decode_write_token(
         not isinstance(key, str) or not isinstance(value, str)
         for key, value in raw_metadata.items()
     ):
-        raise ValueError("archive-cache mirror identity metadata is invalid")
+        raise ValueError("archive-cache mirror required identity assertions is invalid")
     if archive.object_path != session.object_path:
         raise ValueError("archive-cache mirror object path changed")
     return archive, cache, dict(raw_metadata)

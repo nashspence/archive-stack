@@ -16,6 +16,7 @@ from stove0_target_protocol import (
 from stove0_media_archive_target_contracts.projection_policy import (
     MediaFieldPreference,
     MediaGps,
+    MediaProjectionFieldName,
     MediaProjectionPolicy,
 )
 from stove0_media_archive_target_contracts.roles import (
@@ -150,6 +151,7 @@ __all__ = [
     "METADATA_XMP_ROLE",
     "MediaFieldPreference",
     "MediaGps",
+    "MediaProjectionFieldName",
     "MediaProjectionPolicy",
     "OPERATIONS",
     "SOURCE_ARTIFACT_ROLE",

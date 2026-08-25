@@ -33,13 +33,13 @@ class MemoryImmutableStore:
         object_path: str,
         content: bytes,
         content_type: str,
-        identity_metadata: dict[str, str],
+        required_identity_assertions: dict[str, str],
         placement: ObjectPlacement,
     ) -> ImmutableObjectReceipt:
         assert content_type and placement == "immediate"
         existing = self.objects.get(object_path)
         if existing is not None:
-            if existing.identity != identity_metadata:
+            if existing.identity != required_identity_assertions:
                 raise RuntimeError("identity conflict")
             return existing.receipt
         receipt = ImmutableObjectReceipt(
@@ -50,7 +50,7 @@ class MemoryImmutableStore:
             stored_sha256=hashlib.sha256(content).hexdigest(),
             completed_at="2026-08-03T00:00:00Z",
         )
-        self.objects[object_path] = _Stored(content, dict(identity_metadata), receipt)
+        self.objects[object_path] = _Stored(content, dict(required_identity_assertions), receipt)
         return receipt
 
 

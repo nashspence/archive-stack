@@ -168,7 +168,7 @@ def test_target_owned_semantics_do_not_depend_on_observer_runtime() -> None:
         item for path in REVIEW_TARGET_CONTRACT_ROOT.rglob("*.py") for item in _import_roots(path)
     }
     assert "stove0_target_protocol" in media_imports
-    assert "stove0_media_metadata_observer_contracts" in media_imports
+    assert "stove0_media_metadata_observer_contracts" not in media_imports
     assert "stove0_target_protocol" in review_imports
     assert "stove0_media_sampling_observer_contracts" not in review_imports
     for imports in (media_imports, review_imports):

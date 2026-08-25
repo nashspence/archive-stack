@@ -73,7 +73,7 @@ def run_storage_adapter_conformance(
     small_request = SmallObjectWriteRequest(
         object_path=small_path,
         content_type="application/octet-stream",
-        identity_metadata={"riverhog-conformance": "small/v1"},
+        required_identity_assertions={"riverhog-conformance": "small/v1"},
         placement="immediate",
         mode="create_only",
         stored_bytes=len(small_content),
@@ -81,14 +81,7 @@ def run_storage_adapter_conformance(
     )
     try:
         first_small = client.put_small_object(small_request, small_content)
-        retry_content = small_content + b"randomized-ciphertext"
-        retry_request = small_request.model_copy(
-            update={
-                "stored_bytes": len(retry_content),
-                "stored_sha256": hashlib.sha256(retry_content).hexdigest(),
-            }
-        )
-        retried_small = client.put_small_object(retry_request, retry_content)
+        retried_small = client.put_small_object(small_request, small_content)
         if retried_small != first_small:
             raise AssertionError("create-only retry did not return the original object receipt")
         checks.append("create-only-retry")
@@ -103,7 +96,7 @@ def run_storage_adapter_conformance(
             metadata is None
             or metadata.stored_bytes != len(small_content)
             or metadata.stored_sha256 != small_sha256
-            or metadata.identity_metadata != small_request.identity_metadata
+            or metadata.required_identity_assertions != small_request.required_identity_assertions
         ):
             raise AssertionError("small-object metadata differs from its exact input")
         checks.append("exact-metadata")
@@ -125,11 +118,16 @@ def run_storage_adapter_conformance(
             raise AssertionError("exact range differs from the stored object")
         checks.append("exact-range")
 
-        conflicting = retry_request.model_copy(
-            update={"identity_metadata": {"riverhog-conformance": "different/v1"}}
+        conflicting_content = small_content + b"different-ciphertext"
+        conflicting = small_request.model_copy(
+            update={
+                "required_identity_assertions": {"riverhog-conformance": "different/v1"},
+                "stored_bytes": len(conflicting_content),
+                "stored_sha256": hashlib.sha256(conflicting_content).hexdigest(),
+            }
         )
         try:
-            client.put_small_object(conflicting, retry_content)
+            client.put_small_object(conflicting, conflicting_content)
         except StorageAdapterProtocolError as exc:
             if exc.code != "identity_conflict":
                 raise AssertionError("changed identity returned the wrong error code") from exc
@@ -154,25 +152,30 @@ def run_storage_adapter_conformance(
         write_request = WriteStartRequest(
             object_path=write_path,
             content_type="application/octet-stream",
-            identity_metadata={"riverhog-conformance": "resumable-write/v1"},
+            required_identity_assertions={"riverhog-conformance": "resumable-write/v1"},
             placement="immediate",
         )
         session = client.begin_write(write_request)
         written_segments = tuple(
-            client.write_segment(session=session, number=index, content=content)
+            client.write_segment(
+                session=session,
+                number=index,
+                stored_bytes=len(content),
+                content=content,
+            )
             for index, content in enumerate(segment_contents, start=1)
         )
-        listed_segments = client.list_segments(session)
-        if listed_segments != written_segments:
+        listed_segment_set = client.list_segments(session)
+        if listed_segment_set.segments != written_segments:
             raise AssertionError("write listing differs from written segment receipts")
         checks.append("write-reconciliation")
 
         total_bytes = sum(len(content) for content in segment_contents)
         completion_request = WriteCompleteRequest(
             session=session,
-            segments=listed_segments,
+            segments=listed_segment_set.segments,
             expected_bytes=total_bytes,
-            expected_identity_metadata=write_request.identity_metadata,
+            required_identity_assertions=write_request.required_identity_assertions,
             expected_placement=write_request.placement,
         )
         completed = client.complete_write(completion_request)
@@ -182,7 +185,7 @@ def run_storage_adapter_conformance(
         headed_completion = client.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=write_path,
-                expected_identity_metadata=write_request.identity_metadata,
+                required_identity_assertions=write_request.required_identity_assertions,
                 expected_placement=write_request.placement,
             )
         )
@@ -216,7 +219,7 @@ def run_storage_adapter_conformance(
         )
         prepared = client.prepare_read(preparation)
         status = client.read_status(preparation)
-        if prepared.state not in {"ready", "requested"} or status.state not in {
+        if prepared.readiness.state not in {"ready", "requested"} or status.readiness.state not in {
             "ready",
             "requested",
             "expired",

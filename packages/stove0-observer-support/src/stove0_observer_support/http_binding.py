@@ -12,6 +12,7 @@ from stove0_observer_protocol import (
     ObservationInvocation,
     ObservationResult,
     ObserverDescriptor,
+    validate_observation_request,
     validate_observation_result,
 )
 
@@ -108,7 +109,7 @@ class ObserverHttpBinding:
             except Exception:
                 return _error(500, "observer_failed", "content observer descriptor failed")
             try:
-                _validate_descriptor(invocation, descriptor)
+                validate_observation_request(invocation.request, descriptor)
             except ValueError as exc:
                 return _error(400, "invalid_observation_request", str(exc))
             try:
@@ -122,18 +123,6 @@ class ObserverHttpBinding:
         if path in {"/v1/observer", "/v1/observe"}:
             return _error(405, "method_not_allowed", "observer endpoint method is not allowed")
         return _error(404, "not_found", "observer endpoint not found")
-
-
-def _validate_descriptor(
-    invocation: ObservationInvocation,
-    descriptor: ObserverDescriptor,
-) -> None:
-    request = invocation.request
-    if descriptor.descriptor_sha256 != request.observer_descriptor_sha256:
-        raise ValueError("observer descriptor differs from the sealed request")
-    support = descriptor.support_for(request.observer_contract_id)
-    if support.contract_sha256 != request.observer_contract_sha256:
-        raise ValueError("observer contract differs from the sealed request")
 
 
 def _model_response(model: BaseModel) -> ObserverHttpResponse:

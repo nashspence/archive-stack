@@ -31,7 +31,7 @@ from stove0_review_target_contracts import (
     REVIEW_INDEX_ROLE,
     REVIEW_MATERIALIZE_OPERATION,
     REVIEW_RCLONE_DELIVER_OPERATION,
-    ReviewSamplePlan,
+    ReviewMaterializeIntent,
 )
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
@@ -254,6 +254,14 @@ class ReviewTargetService(PersistentTargetService):
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
         try:
+            intent = ReviewMaterializeIntent.model_validate(request.intent)
+        except ValueError as exc:
+            raise TargetServiceError(
+                400,
+                "invalid_target_request",
+                "review target intent is invalid",
+            ) from exc
+        try:
             sampler_id = str(request.target_options["sampler_registration_id"])
         except (KeyError, ValueError) as exc:
             raise TargetServiceError(
@@ -270,6 +278,16 @@ class ReviewTargetService(PersistentTargetService):
                 f"review sampler is not configured: {sampler_id}",
             ) from exc
         descriptor = registration.descriptor()
+        try:
+            Draft202012Validator(descriptor.portable_intent_schema.document).validate(
+                intent.variant.portable_intent
+            )
+        except Exception as exc:
+            raise TargetServiceError(
+                400,
+                "invalid_target_request",
+                "review variant intent is invalid for the selected sampler",
+            ) from exc
         expected = {
             "sampler_descriptor_sha256": descriptor.descriptor_sha256,
             "sampler_image_digest": descriptor.image_digest,
@@ -307,16 +325,10 @@ class ReviewTargetService(PersistentTargetService):
         cancellation: threading.Event,
         session: TargetExecutionSession,
     ) -> TargetJobStatus:
-        intent = request.declaration.plan.intent
-        raw_plan = intent.get("sample_plan")
-        raw_variant = intent.get("variant")
-        if not isinstance(raw_plan, dict) or not isinstance(raw_variant, dict):
-            raise ValueError("review intent has no sample plan or variant")
-        sample_plan = ReviewSamplePlan.model_validate(raw_plan)
-        portable_intent = raw_variant.get("portable_intent")
-        variant_id = raw_variant.get("id")
-        if not isinstance(portable_intent, dict) or not isinstance(variant_id, str):
-            raise ValueError("review variant intent is invalid")
+        intent = ReviewMaterializeIntent.model_validate(request.declaration.plan.intent)
+        sample_plan = intent.sample_plan
+        portable_intent = intent.variant.portable_intent
+        variant_id = intent.variant.id
         options = request.declaration.plan.target_options
         if self.destination is not None and (
             options.get("destination_identity") != self.destination.identity

@@ -15,9 +15,11 @@ from stove0_review_target_contracts.contracts import (
     REVIEW_VIDEO_ROLE,
 )
 from stove0_review_target_contracts.models import (
+    ReviewMaterializeIntent,
     ReviewSamplePlan,
     ReviewSamplePlanPayload,
     ReviewSampleWindow,
+    ReviewVariantIntent,
 )
 
 __all__ = [
@@ -33,7 +35,9 @@ __all__ = [
     "REVIEW_RCLONE_RECEIPT_SCHEMA_ID",
     "REVIEW_SOURCE_ROLE",
     "REVIEW_VIDEO_ROLE",
+    "ReviewMaterializeIntent",
     "ReviewSamplePlan",
     "ReviewSamplePlanPayload",
     "ReviewSampleWindow",
+    "ReviewVariantIntent",
 ]

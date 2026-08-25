@@ -507,33 +507,6 @@ class ObservationEvidence(Stove0ProtocolModel):
         return self
 
 
-def validate_observation_result(
-    result: ObservationResult,
-    request: ObservationRequest,
-    descriptor: ObserverDescriptor,
-) -> None:
-    if result.request_id != request.request_id:
-        raise ValueError("observation result does not bind the request")
-    support = descriptor.support_for(request.observer_contract_id)
-    if (
-        request.observer_contract_sha256 != support.contract_sha256
-        or descriptor.descriptor_sha256 != request.observer_descriptor_sha256
-        or result.observer_contract_id != support.contract_id
-        or result.observer_contract_sha256 != support.contract_sha256
-        or result.observer.descriptor_sha256 != request.observer_descriptor_sha256
-    ):
-        raise ValueError("observation result does not bind the accepted observer contract")
-    if result.subjects != request.subjects:
-        raise ValueError("observation result subjects differ from the request")
-    if request.maximum_result_bytes > support.maximum_result_bytes:
-        raise ValueError("observation request exceeds the observer contract result limit")
-    if result.state == "observed" and result.facts_schema != support.facts_schema:
-        raise ValueError("observation result uses an unexpected facts schema")
-    encoded = canonical_json_bytes(result.model_dump(mode="json", exclude_none=True))
-    if len(encoded) > request.maximum_result_bytes:
-        raise ValueError("observation result exceeds the requested result-size limit")
-
-
 class WorkflowPlanPayload(Stove0ProtocolModel):
     format: Literal["stove0-workflow-plan/v1"] = WORKFLOW_PLAN_FORMAT
     work: WorkIdentity
@@ -950,5 +923,4 @@ __all__ = [
     "CollectionRootRef",
     "canonical_json_bytes",
     "canonical_json_sha256",
-    "validate_observation_result",
 ]

@@ -7,20 +7,30 @@ import sys
 import pytest
 from pydantic import ValidationError
 from riverhog_storage_adapter_protocol import (
+    ADAPTER_PRIVATE_ASSERTION_PREFIX,
     AdapterDescriptor,
     DeleteObjectRequest,
     DeletePrefixRequest,
+    ObjectHeadRequest,
     ObjectLocator,
     ObjectMetadataReceipt,
     ObjectReadRequest,
     ReadPreparationRequest,
+    ReadReady,
+    ReadRequested,
+    ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterPort,
     WriteCompleteRequest,
     WriteSegmentReceipt,
+    WriteSegmentSet,
     WriteSession,
     WriteStartRequest,
     normalize_object_path,
+    validate_object_metadata_response,
+    validate_read_status_response,
+    validate_write_segment_set_response,
+    validate_write_session_response,
 )
 
 
@@ -67,11 +77,11 @@ def test_write_completion_preserves_optional_digests_and_repeated_provider_token
             ),
         ),
         expected_bytes=12,
-        expected_identity_metadata={"Riverhog-Format": "riverhog-pack-volume/v1"},
+        required_identity_assertions={"Riverhog-Format": "riverhog-pack-volume/v1"},
         expected_placement="archive",
     )
 
-    assert request.expected_identity_metadata == {"riverhog-format": "riverhog-pack-volume/v1"}
+    assert request.required_identity_assertions == {"riverhog-format": "riverhog-pack-volume/v1"}
     assert request.segments[0].segment_token == request.segments[1].segment_token
     assert request.segments[0].stored_sha256 is None
     assert "stored_sha256" not in WriteCompleteRequest.model_fields
@@ -81,7 +91,7 @@ def test_small_object_digest_does_not_apply_to_resumable_writes() -> None:
     request = SmallObjectWriteRequest(
         object_path="README.md",
         content_type="text/markdown",
-        identity_metadata={"archive-guidance-format": "encrypted-archive-readme-v1"},
+        required_identity_assertions={"archive-guidance-format": "encrypted-archive-readme-v1"},
         placement="immediate",
         mode="create_only",
         stored_bytes=0,
@@ -92,26 +102,40 @@ def test_small_object_digest_does_not_apply_to_resumable_writes() -> None:
     assert request.stored_sha256 == "b" * 64
 
 
-def test_identity_metadata_is_bounded_canonical_and_opaque() -> None:
+def test_required_identity_assertions_is_bounded_canonical_and_opaque() -> None:
     request = WriteStartRequest(
         object_path="archives/id/volumes/segment.bin.age",
         content_type="application/octet-stream",
-        identity_metadata={
+        required_identity_assertions={
             "Riverhog-Plan-Sha256": "a" * 64,
             "riverhog-format": "riverhog-raw-volume/v1",
         },
         placement="archive",
     )
 
-    assert list(request.identity_metadata) == [
+    assert list(request.required_identity_assertions) == [
         "riverhog-format",
         "riverhog-plan-sha256",
     ]
+    description = WriteStartRequest.model_json_schema()["properties"][
+        "required_identity_assertions"
+    ]["description"]
+    assert "must contain" in description
+    assert "additional adapter-private assertions" in description
     with pytest.raises(ValidationError, match="encoded-size bound"):
         WriteStartRequest(
             object_path="archives/id/object",
             content_type="application/octet-stream",
-            identity_metadata={"identity": "x" * (16 * 1024 + 1)},
+            required_identity_assertions={"identity": "x" * (16 * 1024 + 1)},
+            placement="archive",
+        )
+    with pytest.raises(ValidationError, match="adapter-private namespace"):
+        WriteStartRequest(
+            object_path="archives/id/object",
+            content_type="application/octet-stream",
+            required_identity_assertions={
+                f"{ADAPTER_PRIVATE_ASSERTION_PREFIX}private": "not-public"
+            },
             placement="archive",
         )
 
@@ -148,7 +172,7 @@ def test_object_metadata_keeps_large_object_digest_optional() -> None:
     receipt = ObjectMetadataReceipt(
         object_path="archives/id/volumes/pack.tar.age",
         stored_bytes=100,
-        identity_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
+        required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
         completed_at="2026-08-21T00:00:00Z",
     )
 
@@ -197,6 +221,53 @@ def test_read_preparation_carries_only_exact_opaque_objects() -> None:
     assert "retrieval_tier" not in schema
     assert "hold_days" not in schema
     assert "storage_class" not in schema
+
+
+def test_response_validators_bind_exact_requests_and_closed_readiness_states() -> None:
+    start = WriteStartRequest(
+        object_path="archives/id/object.age",
+        content_type="application/octet-stream",
+        required_identity_assertions={"riverhog-format": "fixture/v1"},
+        placement="archive",
+    )
+    session = WriteSession(object_path=start.object_path, write_token="opaque")
+    validate_write_session_response(start, session)
+    segment_set = WriteSegmentSet(
+        session=session,
+        segments=(WriteSegmentReceipt(number=1, segment_token="one", stored_bytes=1),),
+    )
+    validate_write_segment_set_response(session, segment_set)
+
+    other_session = session.model_copy(update={"write_token": "other"})
+    with pytest.raises(ValueError, match="segment set"):
+        validate_write_segment_set_response(other_session, segment_set)
+
+    head_request = ObjectHeadRequest(
+        object=ObjectLocator(object_path=start.object_path, revision="revision-1"),
+        expected_placement="archive",
+    )
+    metadata = ObjectMetadataReceipt(
+        object_path=start.object_path,
+        revision="revision-1",
+        stored_bytes=1,
+        required_identity_assertions=start.required_identity_assertions,
+        completed_at="2026-08-25T00:00:00Z",
+    )
+    validate_object_metadata_response(head_request, metadata)
+
+    read_request = ReadPreparationRequest(objects=(head_request.object,))
+    status = ReadStatus(
+        objects=read_request.objects,
+        readiness=ReadRequested(estimated_ready_at="2026-08-25T01:00:00Z"),
+    )
+    validate_read_status_response(read_request, status)
+    assert (
+        ReadStatus(
+            objects=read_request.objects,
+            readiness=ReadReady(available_until="2026-08-26T00:00:00Z"),
+        ).readiness.state
+        == "ready"
+    )
 
 
 def test_protocol_imports_no_runtime_or_provider_implementation() -> None:

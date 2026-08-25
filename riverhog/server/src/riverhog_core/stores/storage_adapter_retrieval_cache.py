@@ -222,7 +222,7 @@ class StorageAdapterRetrievalCache:
                         SmallObjectWriteRequest(
                             object_path=object_path,
                             content_type="application/octet-stream",
-                            identity_metadata=metadata,
+                            required_identity_assertions=metadata,
                             placement="immediate",
                             mode="replace_current",
                             stored_bytes=written,
@@ -242,7 +242,7 @@ class StorageAdapterRetrievalCache:
                 WriteStartRequest(
                     object_path=object_path,
                     content_type="application/octet-stream",
-                    identity_metadata=metadata,
+                    required_identity_assertions=metadata,
                     placement="immediate",
                 )
             )
@@ -272,7 +272,7 @@ class StorageAdapterRetrievalCache:
                         session=session,
                         segments=segments,
                         expected_bytes=written,
-                        expected_identity_metadata=metadata,
+                        required_identity_assertions=metadata,
                         expected_placement="immediate",
                     )
                 )
@@ -438,6 +438,7 @@ class StorageAdapterRetrievalCache:
             receipt = self._adapter.write_segment(
                 session=session,
                 number=segment_number,
+                stored_bytes=len(body),
                 content=body,
             )
             remote_seconds = time.perf_counter() - remote_started
@@ -524,7 +525,7 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
             WriteStartRequest(
                 object_path=self._object_path,
                 content_type=content_type,
-                identity_metadata=self._cache_metadata(metadata),
+                required_identity_assertions=self._cache_metadata(metadata),
                 placement="immediate",
             )
         )
@@ -544,6 +545,7 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
                 write_token=session.write_token,
             ),
             number=number,
+            stored_bytes=len(content),
             content=content,
         )
         return WriteSegmentReceipt(
@@ -567,7 +569,7 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
                     object_path=session.object_path,
                     write_token=session.write_token,
                 )
-            )
+            ).segments
         )
 
     def complete_write(
@@ -595,7 +597,7 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
                     for current in segments
                 ),
                 expected_bytes=expected_bytes,
-                expected_identity_metadata=self._cache_metadata(expected_metadata),
+                required_identity_assertions=self._cache_metadata(expected_metadata),
                 expected_placement="immediate",
             )
         )
@@ -612,7 +614,7 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
             receipt = self._adapter.find_completed_write(
                 CompletedWriteLookupRequest(
                     object_path=self._object_path,
-                    expected_identity_metadata=self._cache_metadata(expected_metadata),
+                    required_identity_assertions=self._cache_metadata(expected_metadata),
                     expected_placement="immediate",
                 )
             )

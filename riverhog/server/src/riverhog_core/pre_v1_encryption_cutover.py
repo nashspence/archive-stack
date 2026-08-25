@@ -110,7 +110,7 @@ class PreV1EncryptionCutover:
                 object_path=item.descriptor_path,
                 content=item.descriptor_bytes,
                 content_type=RECOVERY_DESCRIPTOR_CONTENT_TYPE,
-                identity_metadata={
+                required_identity_assertions={
                     "riverhog-format": RECOVERY_DESCRIPTOR_STORAGE_FORMAT,
                     "riverhog-sha256": item.descriptor_sha256,
                     "riverhog-root-stored-sha256": item.manifest_stored_sha256,

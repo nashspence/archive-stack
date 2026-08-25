@@ -20,6 +20,7 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterRejection,
     WriteCompleteRequest,
     WriteSegmentReceipt,
+    WriteSegmentSet,
     WriteSession,
     WriteStartRequest,
 )
@@ -53,9 +54,11 @@ class _Adapter:
         *,
         session: WriteSession,
         number: int,
+        stored_bytes: int,
         content: bytes,
     ) -> WriteSegmentReceipt:
         assert session == self.upload
+        assert len(content) == stored_bytes
         self.parts[number] = content
         return WriteSegmentReceipt(
             number=number,
@@ -64,16 +67,19 @@ class _Adapter:
             stored_sha256=hashlib.sha256(content).hexdigest(),
         )
 
-    def list_segments(self, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
+    def list_segments(self, session: WriteSession) -> WriteSegmentSet:
         assert session == self.upload
-        return tuple(
-            WriteSegmentReceipt(
-                number=number,
-                segment_token=f"part-{number}",
-                stored_bytes=len(content),
-                stored_sha256=hashlib.sha256(content).hexdigest(),
-            )
-            for number, content in sorted(self.parts.items())
+        return WriteSegmentSet(
+            session=session,
+            segments=tuple(
+                WriteSegmentReceipt(
+                    number=number,
+                    segment_token=f"part-{number}",
+                    stored_bytes=len(content),
+                    stored_sha256=hashlib.sha256(content).hexdigest(),
+                )
+                for number, content in sorted(self.parts.items())
+            ),
         )
 
     def complete_write(
@@ -81,7 +87,7 @@ class _Adapter:
         request: WriteCompleteRequest,
     ) -> CompletedObjectReceipt:
         assert request.expected_placement == "archive"
-        assert request.expected_identity_metadata == {"riverhog-format": "volume/v1"}
+        assert request.required_identity_assertions == {"riverhog-format": "volume/v1"}
         return self._completed()
 
     def find_completed_write(
@@ -163,7 +169,7 @@ def test_existing_object_ports_preserve_adapter_receipts_and_generic_placement()
         object_path="archives/id/manifest.age",
         content=content,
         content_type="application/octet-stream",
-        identity_metadata={"riverhog-format": "manifest/v1"},
+        required_identity_assertions={"riverhog-format": "manifest/v1"},
         placement="immediate",
     )
     assert adapter.small is not None and adapter.small.placement == "immediate"

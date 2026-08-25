@@ -6,7 +6,11 @@ from typing import Any, cast
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from http_api_contracts import HttpOperationContract
+from http_api_contracts import (
+    FRAMED_REQUEST_FORMAT,
+    FRAMED_REQUEST_MEDIA_TYPE,
+    HttpOperationContract,
+)
 from riverhog_storage_adapter_asgi_support import create_storage_adapter_app
 from riverhog_storage_adapter_support import STORAGE_ADAPTER_HTTP_OPERATIONS
 from stove0_exiftool_observer.app import create_app as create_exiftool_app
@@ -107,6 +111,14 @@ def test_maintained_role_openapi_is_derived_from_each_executable_binding() -> No
                 request_body = operation["requestBody"]
                 assert request_body["required"] is True
                 assert "#/$defs/" not in str(request_body)
+                if contract.request_kind == "framed":
+                    assert set(request_body["content"]) == {FRAMED_REQUEST_MEDIA_TYPE}
+                    framing = request_body["content"][FRAMED_REQUEST_MEDIA_TYPE][
+                        "x-riverhog-framing"
+                    ]
+                    assert framing["format"] == FRAMED_REQUEST_FORMAT
+                    assert framing["declaration_length_bytes"] == 4
+                    assert framing["maximum_declaration_bytes"] == 32 * 1024
             success = operation["responses"][str(contract.success_statuses[0])]
             if contract.response_kind == "json":
                 assert "application/json" in success["content"]
@@ -196,6 +208,7 @@ def test_storage_adapter_declares_only_operation_applicable_error_vocabularies()
         "integrity_failure",
     }
     assert by_operation[("POST", "/v1/objects/put")] == common | request | {
+        "length_required",
         "identity_conflict",
         "integrity_failure",
     }

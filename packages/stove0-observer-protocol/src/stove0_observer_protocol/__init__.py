@@ -36,6 +36,10 @@ from stove0_protocol.models import (
     Sha256,
     canonical_json_bytes,
     canonical_json_sha256,
+)
+
+from stove0_observer_protocol.validation import (
+    validate_observation_request,
     validate_observation_result,
 )
 
@@ -69,5 +73,6 @@ __all__ = [
     "Sha256",
     "canonical_json_bytes",
     "canonical_json_sha256",
+    "validate_observation_request",
     "validate_observation_result",
 ]

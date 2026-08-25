@@ -10,6 +10,8 @@ from stove0_target_protocol import (
     OutputArtifactContract,
 )
 
+from stove0_review_target_contracts.models import ReviewMaterializeIntent
+
 REVIEW_MATERIALIZE_OPERATION_ID = "stove0.review.materialize/v1"
 REVIEW_RCLONE_DELIVER_OPERATION_ID = "stove0.review.rclone-deliver/v1"
 REVIEW_MATERIALIZE_INTENT_SCHEMA_ID = "stove0.review.materialize-intent/v1"
@@ -22,62 +24,7 @@ REVIEW_VIDEO_ROLE = "stove0.review.video/v1"
 
 REVIEW_MATERIALIZE_INTENT_SCHEMA = JsonSchemaDocument.from_schema(
     REVIEW_MATERIALIZE_INTENT_SCHEMA_ID,
-    {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "required": ["sample_plan", "variant"],
-        "properties": {
-            "sample_plan": {
-                "type": "object",
-                "required": [
-                    "format",
-                    "selection_method",
-                    "samples_per_artifact",
-                    "window_duration_ms",
-                    "windows",
-                    "sample_plan_sha256",
-                ],
-                "properties": {
-                    "format": {"const": "stove0-review-sample-plan/v1"},
-                    "selection_method": {"const": "evenly-spaced/v1"},
-                    "samples_per_artifact": {"type": "integer", "minimum": 1},
-                    "window_duration_ms": {"type": "integer", "minimum": 1},
-                    "windows": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "required": ["artifact_id", "start_ms", "duration_ms"],
-                            "properties": {
-                                "artifact_id": {"type": "string", "minLength": 1},
-                                "start_ms": {"type": "integer", "minimum": 0},
-                                "duration_ms": {"type": "integer", "minimum": 1},
-                            },
-                            "additionalProperties": False,
-                        },
-                    },
-                    "sample_plan_sha256": {
-                        "type": "string",
-                        "pattern": "^[0-9a-f]{64}$",
-                    },
-                },
-                "additionalProperties": False,
-            },
-            "variant": {
-                "type": "object",
-                "required": ["id", "portable_intent"],
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,158}[a-z0-9])?$",
-                    },
-                    "portable_intent": {"type": "object"},
-                },
-                "additionalProperties": False,
-            },
-        },
-        "additionalProperties": False,
-    },
+    ReviewMaterializeIntent.model_json_schema(),
 )
 
 REVIEW_MATERIALIZE_OPERATION = OperationContract.seal(

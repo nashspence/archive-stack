@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 import uvicorn
 from riverhog_storage_adapter_asgi_support import create_storage_adapter_app
-from riverhog_storage_adapter_protocol import ReadStatus
+from riverhog_storage_adapter_protocol import ReadReadiness, ReadReady
 from riverhog_storage_adapter_s3_support import (
     S3ClientConfig,
     S3StorageAdapter,
@@ -22,11 +22,11 @@ _PREFIX = "RIVERHOG_GARAGE_STORAGE_ADAPTER_"
 class _AlwaysReadyPreparation:
     """Exercise restore-required Riverhog behavior without imitating a cloud provider."""
 
-    def prepare(self, **_: Any) -> ReadStatus:
-        return ReadStatus(state="ready")
+    def prepare(self, **_: Any) -> ReadReadiness:
+        return ReadReady()
 
-    def status(self, **_: Any) -> ReadStatus:
-        return ReadStatus(state="ready")
+    def status(self, **_: Any) -> ReadReadiness:
+        return ReadReady()
 
     def cleanup(self, **_: Any) -> None:
         return None

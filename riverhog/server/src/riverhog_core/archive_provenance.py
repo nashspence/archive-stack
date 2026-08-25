@@ -100,7 +100,7 @@ class ArchiveProvenancePublisher:
                 if kind == "provenance-index"
                 else "application/vnd.riverhog.provenance-bundle+age"
             ),
-            identity_metadata={
+            required_identity_assertions={
                 "riverhog-format": storage_format,
                 "riverhog-plaintext-bytes": str(len(content)),
                 "riverhog-plaintext-sha256": plaintext_sha256,

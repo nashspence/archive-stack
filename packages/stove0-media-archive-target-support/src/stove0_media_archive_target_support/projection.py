@@ -7,13 +7,14 @@ import re
 from collections.abc import Sequence
 from html import escape
 from pathlib import PurePosixPath
-from typing import Literal, Self, cast
+from typing import Final, Literal, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from riverhog_protocol.paths import normalize_relpath
 from stove0_media_archive_target_contracts import (
     SOURCE_ROLE,
     XMP_SOURCE_ROLE,
+    MediaProjectionFieldName,
     MediaProjectionPolicy,
 )
 from stove0_media_metadata_observer_contracts import (
@@ -35,13 +36,26 @@ MEDIA_PROJECTION_FORMAT: Literal["stove0-media-archive-projection/v1"] = (
     "stove0-media-archive-projection/v1"
 )
 
+# This bridge is the only authority that relates independently owned observer
+# facts to fields the archive target knows how to project. ``None`` is an
+# explicit decision that the observed fact is not target input.
+MEDIA_FACT_PROJECTION_FIELDS: Final[dict[MediaFactName, MediaProjectionFieldName | None]] = {
+    "capture-time": "capture-time",
+    "container-format": None,
+    "creator": "creator",
+    "device-make": "device-make",
+    "device-model": "device-model",
+    "gps-latitude": "gps-latitude",
+    "gps-longitude": "gps-longitude",
+}
+
 
 class ProjectionModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class MediaProjectedValue(ProjectionModel):
-    name: MediaFactName
+    name: MediaProjectionFieldName
     value: JsonValue
     source: Literal["observation", "recipe"]
     evidence: tuple[MediaFactEvidence, ...] = ()
@@ -226,6 +240,10 @@ def resolve_media_archive_projection(
         for fact_group in facts.artifacts:
             if fact_group.artifact_id in facts_by_artifact:
                 raise ValueError("media observation evidence repeats an artifact")
+            if any(
+                fact.evidence.artifact_id != fact_group.artifact_id for fact in fact_group.facts
+            ):
+                raise ValueError("media observation assertion differs from its artifact group")
             facts_by_artifact[fact_group.artifact_id] = fact_group.facts
     missing = sorted(item.id for item in inputs if item.id not in facts_by_artifact)
     if missing:
@@ -398,7 +416,7 @@ def ffmpeg_container_metadata_args(item: MediaProjectionItem) -> list[str]:
     if isinstance(creators, list) and all(isinstance(value, str) for value in creators):
         joined = "; ".join(cast(list[str], creators))
         metadata.extend((key, joined) for key in ("ARTIST", "CREATOR"))
-    scalar_fields: tuple[tuple[MediaFactName, str], ...] = (
+    scalar_fields: tuple[tuple[MediaProjectionFieldName, str], ...] = (
         ("device-make", "MAKE"),
         ("device-model", "MODEL"),
     )
@@ -423,13 +441,15 @@ def _select_values(
     assertions: Sequence[MediaMetadataFact],
     policy: MediaProjectionPolicy,
 ) -> tuple[MediaProjectedValue, ...]:
-    by_name: dict[MediaFactName, list[MediaMetadataFact]] = {}
+    by_name: dict[MediaProjectionFieldName, list[MediaMetadataFact]] = {}
     for assertion in assertions:
-        by_name.setdefault(assertion.name, []).append(assertion)
+        projection_field = MEDIA_FACT_PROJECTION_FIELDS[assertion.name]
+        if projection_field is not None:
+            by_name.setdefault(projection_field, []).append(assertion)
     preferences = {item.name: item.fields for item in policy.field_preferences}
     selected: list[MediaProjectedValue] = []
 
-    configured: dict[MediaFactName, JsonValue] = {}
+    configured: dict[MediaProjectionFieldName, JsonValue] = {}
     if policy.device_make is not None:
         configured["device-make"] = policy.device_make
     if policy.device_model is not None:
@@ -442,8 +462,8 @@ def _select_values(
     for name, configured_value in configured.items():
         selected.append(MediaProjectedValue(name=name, value=configured_value, source="recipe"))
 
-    for name in cast(tuple[MediaFactName, ...], tuple(sorted(by_name))):
-        if name in configured or name == "container-format":
+    for name in cast(tuple[MediaProjectionFieldName, ...], tuple(sorted(by_name))):
+        if name in configured:
             continue
         candidates = by_name[name]
         if name == "creator":
