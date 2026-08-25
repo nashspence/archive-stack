@@ -4,7 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from gogurt.core import execute_gogurt_action, load_gogurt_actions, plan_gogurt_action
+from gogurt_core.core import execute_gogurt_action, load_gogurt_actions, plan_gogurt_action
 from riverhog_ftp_adapter.config import load_config as load_adapter_config
 from stove0_core import RecipeCatalog
 

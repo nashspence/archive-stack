@@ -9,7 +9,7 @@ import gogurt.cli as cli
 import pytest
 from config_validation import ConfigError
 from gogurt.cli import app
-from gogurt.core import (
+from gogurt_core.core import (
     DEFAULT_GOGURT_MARKER_NAME,
     MAX_GOGURT_MARKER_BYTES,
     execute_gogurt_action,
@@ -20,7 +20,7 @@ from gogurt.core import (
     validate_gogurt_marker_name,
     write_gogurt_marker,
 )
-from gogurt.listener import ListenerError
+from gogurt_core.listener import ListenerError
 from typer.testing import CliRunner
 
 RUNNER = CliRunner()
@@ -407,12 +407,13 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
         "health": "healthy",
         "diagnostic": None,
     }
-    monkeypatch.setattr("gogurt.cli.listener_status", lambda: payload)
-    monkeypatch.setattr("gogurt.cli.start_listener", lambda: payload)
-    monkeypatch.setattr("gogurt.cli.stop_listener", lambda: payload)
-    monkeypatch.setattr("gogurt.cli.restart_listener", lambda: payload)
-    monkeypatch.setattr("gogurt.cli.uninstall_listener", lambda: payload)
+    monkeypatch.setattr("gogurt.cli.listener_status", lambda **_kwargs: payload)
+    monkeypatch.setattr("gogurt.cli.start_listener", lambda **_kwargs: payload)
+    monkeypatch.setattr("gogurt.cli.stop_listener", lambda **_kwargs: payload)
+    monkeypatch.setattr("gogurt.cli.restart_listener", lambda **_kwargs: payload)
+    monkeypatch.setattr("gogurt.cli.uninstall_listener", lambda **_kwargs: payload)
     monkeypatch.setattr("gogurt.cli.install_listener", lambda *_args, **_kwargs: payload)
+    monkeypatch.setattr("gogurt.cli.resolve_listener_executable", lambda: Path(sys.executable))
 
     for command in ("status", "start", "stop", "restart", "uninstall"):
         human = RUNNER.invoke(app, ["listener", command])
@@ -433,7 +434,7 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
         "health": "failed",
         "diagnostic": "global configuration: ConfigError: routes are invalid",
     }
-    monkeypatch.setattr("gogurt.cli.listener_status", lambda: failed_payload)
+    monkeypatch.setattr("gogurt.cli.listener_status", lambda **_kwargs: failed_payload)
     human_failure = RUNNER.invoke(app, ["listener", "status"])
     json_failure = RUNNER.invoke(app, ["listener", "status", "--json"])
     assert human_failure.exit_code == 0

@@ -8,9 +8,7 @@ from typing import Annotated
 
 import typer
 from config_validation import ConfigError
-from riverhog_cli_support.output import json_text
-
-from gogurt.core import (
+from gogurt_core.core import (
     DEFAULT_GOGURT_CONFIG_FILENAME,
     DEFAULT_GOGURT_MARKER_NAME,
     GOGURT_EMOJI,
@@ -20,7 +18,7 @@ from gogurt.core import (
     plan_gogurt_marker,
     write_gogurt_marker,
 )
-from gogurt.listener import (
+from gogurt_core.listener import (
     ListenerError,
     install_listener,
     listener_status,
@@ -30,12 +28,19 @@ from gogurt.listener import (
     stop_listener,
     uninstall_listener,
 )
-from gogurt.listener_platform import ListenerPlatformError
-from gogurt.mounts import (
+from gogurt_core.mounts import (
     MAX_GOGURT_INTERVAL_SECONDS,
     MIN_GOGURT_INTERVAL_SECONDS,
-    discover_mount_points,
     iter_new_mounts,
+)
+from gogurt_core.platform import ListenerPlatformError
+from riverhog_cli_support.output import json_text
+
+from gogurt.native import (
+    default_listener_paths,
+    discover_mount_points,
+    listener_adapter,
+    resolve_listener_executable,
 )
 
 app = typer.Typer(help="Portable mounted-volume marker actions.")
@@ -244,6 +249,7 @@ def watch_cmd(
     typer.echo(f"{GOGURT_EMOJI} gogurt watcher started", err=True)
     try:
         for mount_point in iter_new_mounts(
+            discover=discover_mount_points,
             interval_seconds=interval_seconds,
             include_existing=include_existing,
         ):
@@ -312,6 +318,9 @@ def listener_install_cmd(
         actions_dir=actions_dir,
         marker_name=marker_name,
         interval_seconds=interval_seconds,
+        executable=resolve_listener_executable(),
+        paths=default_listener_paths(),
+        adapter=listener_adapter(),
     )
     _emit_listener(payload, json_mode=json_mode, operation="installed")
 
@@ -322,7 +331,11 @@ def listener_status_cmd(
 ) -> None:
     """Report native registration, health, and durable dispatch state."""
 
-    _emit_listener(listener_status(), json_mode=json_mode, operation="status")
+    _emit_listener(
+        listener_status(paths=default_listener_paths(), adapter=listener_adapter()),
+        json_mode=json_mode,
+        operation="status",
+    )
 
 
 @listener_app.command("start")
@@ -331,7 +344,11 @@ def listener_start_cmd(
 ) -> None:
     """Start an installed current-user listener."""
 
-    _emit_listener(start_listener(), json_mode=json_mode, operation="started")
+    _emit_listener(
+        start_listener(paths=default_listener_paths(), adapter=listener_adapter()),
+        json_mode=json_mode,
+        operation="started",
+    )
 
 
 @listener_app.command("stop")
@@ -340,7 +357,11 @@ def listener_stop_cmd(
 ) -> None:
     """Stop the current-user listener without removing login persistence."""
 
-    _emit_listener(stop_listener(), json_mode=json_mode, operation="stopped")
+    _emit_listener(
+        stop_listener(paths=default_listener_paths(), adapter=listener_adapter()),
+        json_mode=json_mode,
+        operation="stopped",
+    )
 
 
 @listener_app.command("restart")
@@ -349,7 +370,11 @@ def listener_restart_cmd(
 ) -> None:
     """Restart the installed current-user listener."""
 
-    _emit_listener(restart_listener(), json_mode=json_mode, operation="restarted")
+    _emit_listener(
+        restart_listener(paths=default_listener_paths(), adapter=listener_adapter()),
+        json_mode=json_mode,
+        operation="restarted",
+    )
 
 
 @listener_app.command("uninstall")
@@ -358,7 +383,11 @@ def listener_uninstall_cmd(
 ) -> None:
     """Stop the listener and remove its registration, state, and bounded logs."""
 
-    _emit_listener(uninstall_listener(), json_mode=json_mode, operation="uninstalled")
+    _emit_listener(
+        uninstall_listener(paths=default_listener_paths(), adapter=listener_adapter()),
+        json_mode=json_mode,
+        operation="uninstalled",
+    )
 
 
 @listener_app.command("_run", hidden=True)
@@ -370,7 +399,7 @@ def listener_run_cmd(
 ) -> None:
     """Run the registered listener process."""
 
-    run_listener(runtime_config)
+    run_listener(runtime_config, discover=discover_mount_points)
 
 
 @app.command("write")

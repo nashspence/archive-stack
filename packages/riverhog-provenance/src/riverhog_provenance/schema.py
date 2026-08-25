@@ -9,6 +9,9 @@ from importlib.resources.abc import Traversable
 from typing import Any, cast
 
 from jsonschema import Draft202012Validator, FormatChecker
+from riverhog_provenance_linux_contracts import load_schemas as load_linux_schemas
+from riverhog_provenance_macos_contracts import load_schemas as load_macos_schemas
+from riverhog_provenance_windows_contracts import load_schemas as load_windows_schemas
 
 from .common import canonical_json
 from .constants import OBSERVER_PROFILE
@@ -47,6 +50,15 @@ def load_observer_schemas() -> dict[str, dict[str, Any]]:
         schema_id = document.get("$id")
         if isinstance(schema_id, str):
             schemas[schema_id] = document
+    for platform_schemas in (
+        load_linux_schemas(),
+        load_macos_schemas(),
+        load_windows_schemas(),
+    ):
+        overlap = schemas.keys() & platform_schemas.keys()
+        if overlap:
+            raise RuntimeError(f"observer schema identity is repeated: {sorted(overlap)}")
+        schemas.update(platform_schemas)
     return schemas
 
 

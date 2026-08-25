@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from gogurt.mounts import discover_mount_points
+from gogurt.native import discover_mount_points
 
 
 def test_native_mount_discovery_observes_at_least_one_root() -> None:

@@ -20,6 +20,7 @@ from riverhog_provenance import (
     canonical_sidecar_path,
     prepare_file_provenance,
 )
+from riverhog_provenance_linux_observer import LinuxFileStateObserver
 
 from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 
@@ -328,6 +329,7 @@ class FtpAdapter:
             host_id=self.config.host_id,
             agent_name="riverhog-ftp-adapter",
             agent_version="1.0.0",
+            observer=LinuxFileStateObserver(),
             omit_reason=(
                 source.provenance_omission_reason if source.provenance == "omit" else None
             ),

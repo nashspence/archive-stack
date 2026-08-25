@@ -9,6 +9,7 @@ from .archive import (
     ValidatedProvenanceIndex,
     validate_portable_provenance_set,
 )
+from .interface import FileStateObserver
 from .journal import (
     ProvenanceValidationError,
     append_observation,
@@ -37,6 +38,7 @@ def prepare_file_provenance(
     host_id: str,
     agent_name: str,
     agent_version: str,
+    observer: FileStateObserver | None = None,
     provenance: Path | None = None,
     omit_reason: str | None = None,
 ) -> PreparedFileProvenance:
@@ -63,12 +65,15 @@ def prepare_file_provenance(
 
     discovered = provenance or _discover_provenance(payload)
     if discovered is None:
+        if observer is None:
+            raise ProvenanceValidationError("capturing provenance requires a native observer")
         journal = create_observation_journal(
             payload,
             relative_path=relative_path,
             host_id=host_id,
             agent_name=agent_name,
             agent_version=agent_version,
+            observer=observer,
         )
         summary = validate_journal(journal)
         return _captured(
@@ -107,6 +112,8 @@ def prepare_file_provenance(
     if summary.current_bytes != byte_count or summary.current_sha256 != sha256:
         raise ProvenanceValidationError("supplied provenance does not bind to the payload bytes")
     if summary.current_path != relative_path:
+        if observer is None:
+            raise ProvenanceValidationError("continuing provenance requires a native observer")
         continued = append_observation(
             current,
             payload,
@@ -114,6 +121,7 @@ def prepare_file_provenance(
             host_id=host_id,
             agent_name=agent_name,
             agent_version=agent_version,
+            observer=observer,
         )
         if not continued.startswith(current):
             raise RuntimeError("continued provenance did not preserve its exact prefix")

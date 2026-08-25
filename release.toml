@@ -150,6 +150,10 @@ deployed_implementation = [
   "utilities/mango-fish",
 ]
 reusable_library = [
+  "packages/gogurt-core",
+  "packages/gogurt-linux",
+  "packages/gogurt-macos",
+  "packages/gogurt-windows",
   "packages/application-access",
   "packages/file-download",
   "packages/http-api-contracts",
@@ -161,6 +165,12 @@ reusable_library = [
   "packages/riverhog-protocol",
   "packages/riverhog-provenance",
   "packages/riverhog-provenance-contracts",
+  "packages/riverhog-provenance-linux-contracts",
+  "packages/riverhog-provenance-linux-observer",
+  "packages/riverhog-provenance-macos-contracts",
+  "packages/riverhog-provenance-macos-observer",
+  "packages/riverhog-provenance-windows-contracts",
+  "packages/riverhog-provenance-windows-observer",
   "packages/riverhog-storage-adapter-asgi-support",
   "packages/riverhog-storage-adapter-protocol",
   "packages/riverhog-storage-adapter-s3-support",

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "riverhog-provenance-linux-contracts"
+version = "0.1.0"
+description = "Portable Linux observation contracts for Riverhog provenance."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riverhog_provenance_linux_contracts"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"NOTICE" = "riverhog_provenance_linux_contracts/NOTICE"

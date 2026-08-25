@@ -12,14 +12,17 @@ run_uv() {
 }
 
 workspace_wheel_closure() {
-  local python="$1"
-  local root_wheel="$2"
-  "${python}" -I - "${DIST_DIR}" "${root_wheel}" <<'PY'
+  local root_wheel="$1"
+  "${MISE_BIN}" x -- uv run --locked --all-packages --group dev \
+    python -I - "${DIST_DIR}" "${root_wheel}" <<'PY'
 import re
 import sys
 import zipfile
 from email.parser import BytesParser
 from pathlib import Path
+
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
 
 
 def canonical_name(value: str) -> str:
@@ -48,10 +51,15 @@ while pending:
     if name in selected:
         continue
     selected[name] = wheel
-    for requirement in metadata.get_all("Requires-Dist", []):
-        match = re.match(r"[A-Za-z0-9_.-]+", requirement)
-        if match and canonical_name(match.group()) in packages:
-            pending.append(packages[canonical_name(match.group())][0])
+    for raw_requirement in metadata.get_all("Requires-Dist", []):
+        requirement = Requirement(raw_requirement)
+        if requirement.marker is not None and not requirement.marker.evaluate(
+            environment=default_environment()
+        ):
+            continue
+        dependency = canonical_name(requirement.name)
+        if dependency in packages:
+            pending.append(packages[dependency][0])
 
 for wheel in sorted(selected.values()):
     print(wheel)
@@ -77,7 +85,7 @@ smoke_workspace_distribution() {
   wheel="$(single_wheel "${pattern}")"
   run_uv venv --python 3.12 "${SCRATCH}/${name}"
   mapfile -t wheels < <(
-    workspace_wheel_closure "${SCRATCH}/${name}/bin/python" "${wheel}"
+    workspace_wheel_closure "${wheel}"
   )
   run_uv pip install \
     --strict \
@@ -99,7 +107,7 @@ server_wheel="$(single_wheel 'riverhog_server-*.whl')"
 
 run_uv venv --python 3.12 "${SCRATCH}/client"
 mapfile -t client_wheels < <(
-  workspace_wheel_closure "${SCRATCH}/client/bin/python" "${client_wheel}"
+  workspace_wheel_closure "${client_wheel}"
 )
 run_uv pip install \
   --strict \
@@ -117,11 +125,13 @@ run_uv pip install \
   [[ "${client_version}" == "${installed_version}" ]]
   "${SCRATCH}/client/bin/python" -I -c \
     'import importlib.metadata as m; import riverhog_cli.main; import riverhog_cli_support.output; m.version("riverhog-cli-support")'
+  "${SCRATCH}/client/bin/python" -I -c \
+    'import importlib.metadata as m, sys; names = {d.metadata["Name"].lower() for d in m.distributions()}; native = {"riverhog-provenance-linux-observer", "riverhog-provenance-macos-observer", "riverhog-provenance-windows-observer"}; expected = "riverhog-provenance-linux-observer" if sys.platform.startswith("linux") else "riverhog-provenance-macos-observer" if sys.platform == "darwin" else "riverhog-provenance-windows-observer"; assert names & native == {expected}; assert {"riverhog-provenance-linux-contracts", "riverhog-provenance-macos-contracts", "riverhog-provenance-windows-contracts"} <= names'
 )
 
 run_uv venv --python 3.12 "${SCRATCH}/recovery"
 mapfile -t recovery_wheels < <(
-  workspace_wheel_closure "${SCRATCH}/recovery/bin/python" "${recovery_wheel}"
+  workspace_wheel_closure "${recovery_wheel}"
 )
 run_uv pip install \
   --strict \
@@ -137,7 +147,7 @@ run_uv pip install \
 
 run_uv venv --python 3.12 "${SCRATCH}/server"
 mapfile -t server_wheels < <(
-  workspace_wheel_closure "${SCRATCH}/server/bin/python" "${server_wheel}"
+  workspace_wheel_closure "${server_wheel}"
 )
 run_uv pip install \
   --strict \
@@ -219,7 +229,7 @@ smoke_workspace_distribution \
 smoke_workspace_distribution \
   gogurt \
   'gogurt-*.whl' \
-  'import importlib.metadata as m; import gogurt.cli; m.version("gogurt")' \
+  'import importlib.metadata as m, sys; import gogurt.cli; m.version("gogurt"); names = {d.metadata["Name"].lower() for d in m.distributions()}; native = {"gogurt-linux", "gogurt-macos", "gogurt-windows"}; expected = "gogurt-linux" if sys.platform.startswith("linux") else "gogurt-macos" if sys.platform == "darwin" else "gogurt-windows"; assert names & native == {expected}' \
   gogurt
 smoke_workspace_distribution \
   mango-fish \

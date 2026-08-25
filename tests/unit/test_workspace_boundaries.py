@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 import yaml
+from packaging.requirements import Requirement
 
 from tests.workspace import workspace_pyprojects
 
@@ -348,6 +349,78 @@ def test_projects_declare_their_exact_direct_runtime_dependencies() -> None:
                 violations.append(f"{distribution}: imports {root} without declaring {required}")
 
     assert not violations, "\n".join(violations)
+
+
+def test_portable_products_compose_exactly_one_native_platform_implementation() -> None:
+    native_markers = {
+        "linux": 'sys_platform == "linux"',
+        "macos": 'sys_platform == "darwin"',
+        "windows": 'sys_platform == "win32"',
+    }
+    product_native = {
+        REPO / "utilities/gogurt/pyproject.toml": "gogurt-{platform}",
+        REPO / "riverhog/client/pyproject.toml": "riverhog-provenance-{platform}-observer",
+    }
+    for pyproject, template in product_native.items():
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        requirements = {
+            requirement.name: requirement
+            for raw in config["project"]["dependencies"]
+            if (requirement := Requirement(raw)).name
+            in {template.format(platform=platform) for platform in native_markers}
+        }
+        assert set(requirements) == {
+            template.format(platform=platform) for platform in native_markers
+        }
+        for platform, marker in native_markers.items():
+            requirement = requirements[template.format(platform=platform)]
+            assert str(requirement.marker) == marker
+
+
+def test_portable_core_and_platform_package_dependency_direction_is_exact() -> None:
+    gogurt_native_roots = {"gogurt_linux", "gogurt_macos", "gogurt_windows"}
+    gogurt_core_imports = set().union(
+        *(imported_roots(path) for path in (REPO / "packages/gogurt-core/src").rglob("*.py"))
+    )
+    assert gogurt_core_imports.isdisjoint(gogurt_native_roots)
+
+    platform_contracts = {
+        "linux": "riverhog-provenance-linux-contracts",
+        "macos": "riverhog-provenance-macos-contracts",
+        "windows": "riverhog-provenance-windows-contracts",
+    }
+    for platform, contract in platform_contracts.items():
+        observer = f"riverhog-provenance-{platform}-observer"
+        observer_config = tomllib.loads(
+            (REPO / f"packages/{observer}/pyproject.toml").read_text(encoding="utf-8")
+        )
+        assert declared_project_dependencies(observer_config) == {
+            "riverhog-provenance",
+            contract,
+        }
+        contract_config = tomllib.loads(
+            (REPO / f"packages/{contract}/pyproject.toml").read_text(encoding="utf-8")
+        )
+        assert contract_config["project"]["dependencies"] == []
+
+        gogurt_config = tomllib.loads(
+            (REPO / f"packages/gogurt-{platform}/pyproject.toml").read_text(encoding="utf-8")
+        )
+        assert declared_project_dependencies(gogurt_config) == {"gogurt-core"}
+
+    provenance_config = tomllib.loads(
+        (REPO / "packages/riverhog-provenance/pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert set(platform_contracts.values()) <= declared_project_dependencies(provenance_config)
+    provenance_imports = set().union(
+        *(
+            imported_roots(path)
+            for path in (REPO / "packages/riverhog-provenance/src").rglob("*.py")
+        )
+    )
+    assert provenance_imports.isdisjoint(
+        {f"riverhog_provenance_{platform}_observer" for platform in platform_contracts}
+    )
 
 
 def test_core_dependency_graphs_are_acyclic() -> None:

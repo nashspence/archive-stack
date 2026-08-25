@@ -21,7 +21,6 @@ from .errors import (
     UnsupportedFileTypeError,
     UnsupportedPlatformError,
 )
-from .factory import get_observer
 from .identity import (
     INSTALLATION_ID_FILENAME,
     load_or_create_installation_id,
@@ -45,8 +44,6 @@ from .journal import (
     validate_journal_set,
     verify_payload_binding,
 )
-from .linux import LinuxFileStateObserver, LinuxNativeAPI
-from .macos import MacOSFileStateObserver, MacOSNativeAPI
 from .model import (
     LargeValueDisposition,
     ObservationPolicy,
@@ -66,7 +63,6 @@ from .sidecars import (
     canonical_sidecar_path,
     prepare_file_provenance,
 )
-from .windows import WindowsFileStateObserver, WindowsNativeAPI
 
 __all__ = [
     "DEFAULT_OBSERVER_AGENT_ID",
@@ -77,10 +73,6 @@ __all__ = [
     "JournalFrame",
     "JournalSummary",
     "LargeValueDisposition",
-    "LinuxFileStateObserver",
-    "LinuxNativeAPI",
-    "MacOSFileStateObserver",
-    "MacOSNativeAPI",
     "NativeObservationError",
     "ObservationPolicy",
     "ObservationRequest",
@@ -99,8 +91,6 @@ __all__ = [
     "UnstableFileError",
     "UnsupportedFileTypeError",
     "UnsupportedPlatformError",
-    "WindowsFileStateObserver",
-    "WindowsNativeAPI",
     "ValidatedProvenanceIndex",
     "append_observation",
     "append_replacement_transformation",
@@ -111,7 +101,6 @@ __all__ = [
     "create_derivative_journal",
     "create_derivative_journal_from_identity",
     "current_state_reference",
-    "get_observer",
     "load_or_create_installation_id",
     "load_provenance_index_schema",
     "load_provenance_set_schema",

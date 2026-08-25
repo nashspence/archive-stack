@@ -5,6 +5,8 @@ from pathlib import Path
 
 from riverhog_provenance import prepare_file_provenance, validate_journal
 
+from tests.provenance_observer import native_provenance_observer
+
 
 def test_live_platform_observer_produces_a_restorable_payload_binding(tmp_path: Path) -> None:
     payload = tmp_path / "native-observation.bin"
@@ -17,6 +19,7 @@ def test_live_platform_observer_produces_a_restorable_payload_binding(tmp_path: 
         host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
         agent_name="riverhog-platform-qualification",
         agent_version="1.0.0",
+        observer=native_provenance_observer(),
     )
 
     assert prepared.source == "captured"

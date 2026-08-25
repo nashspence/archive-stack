@@ -74,6 +74,7 @@ from riverhog_provenance import (
 from riverhog_storage_adapter_protocol import ObjectPlacement
 from sqlalchemy.orm import Session
 
+from tests.provenance_observer import native_provenance_observer
 from tests.unit.db_helpers import sqlite_url
 
 COLLECTION_ID = 1
@@ -255,6 +256,7 @@ def make_captured_provenance_archive(
             host_id="urn:uuid:00000000-0000-4000-8000-000000000001",
             agent_name="riverhog-archive-fixture",
             agent_version="1.0.0",
+            observer=native_provenance_observer(),
         )
         summary = validate_journal(journal)
         bindings.append(

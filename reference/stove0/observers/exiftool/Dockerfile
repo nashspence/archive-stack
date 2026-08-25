@@ -39,6 +39,9 @@ COPY packages/lifecycle-events packages/lifecycle-events
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contracts
+COPY packages/riverhog-provenance-linux-contracts packages/riverhog-provenance-linux-contracts
+COPY packages/riverhog-provenance-macos-contracts packages/riverhog-provenance-macos-contracts
+COPY packages/riverhog-provenance-windows-contracts packages/riverhog-provenance-windows-contracts
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/riverhog-transform-sdk packages/riverhog-transform-sdk
 COPY packages/stove0-media-metadata-observer-contracts packages/stove0-media-metadata-observer-contracts

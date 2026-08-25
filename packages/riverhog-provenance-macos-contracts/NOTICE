@@ -1,0 +1,3 @@
+Riverhog provenance includes adapted portions of fileprov-observers 1.1.0,
+the FileProv reference observer implementation.
+SPDX-License-Identifier: Apache-2.0

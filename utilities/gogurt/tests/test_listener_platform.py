@@ -8,27 +8,39 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from pathlib import Path
 
-import gogurt.filesystem as filesystem_module
+import gogurt_core.filesystem as filesystem_module
 import pytest
-from gogurt.listener_platform import (
+from gogurt_core.platform import ListenerPaths, ListenerPlatformError, NativeListenerStatus
+from gogurt_linux import (
+    SystemdUserAdapter,
+    render_systemd_unit,
+)
+from gogurt_linux import (
+    default_listener_paths as linux_listener_paths,
+)
+from gogurt_macos import (
     LISTENER_LABEL,
+    LaunchdUserAdapter,
+    render_launchd_plist,
+)
+from gogurt_macos import (
+    default_listener_paths as macos_listener_paths,
+)
+from gogurt_windows import (
     WINDOWS_TASK_NOT_FOUND_EXIT,
     WINDOWS_TASK_NOT_FOUND_HRESULT,
     WINDOWS_TASK_RESTART_COUNT,
     WINDOWS_TASK_RESTART_INTERVAL,
     WINDOWS_TASK_XML_NAMESPACE,
-    LaunchdUserAdapter,
-    ListenerPaths,
-    ListenerPlatformError,
-    NativeListenerStatus,
-    SystemdUserAdapter,
     TaskSchedulerUserAdapter,
-    default_listener_paths,
-    render_launchd_plist,
-    render_systemd_unit,
     render_windows_task_xml,
-    resolve_listener_executable,
     windows_task_name,
+)
+from gogurt_windows import (
+    default_listener_paths as windows_listener_paths,
+)
+from gogurt_windows import (
+    resolve_listener_executable as resolve_windows_listener_executable,
 )
 
 
@@ -56,8 +68,8 @@ def test_windows_existing_private_file_is_validated_without_reopening(
     def refuse_open(*_args: object, **_kwargs: object) -> int:
         raise AssertionError("Windows existing state must not be reopened for POSIX modes")
 
-    monkeypatch.setattr("gogurt.filesystem.os.name", "nt")
-    monkeypatch.setattr("gogurt.filesystem.os.open", refuse_open)
+    monkeypatch.setattr("gogurt_core.filesystem.os.name", "nt")
+    monkeypatch.setattr("gogurt_core.filesystem.os.open", refuse_open)
 
     filesystem_module.ensure_private_file(sidecar)
 
@@ -84,9 +96,9 @@ def test_windows_atomic_promotion_settles_a_transient_reader(
             raise WindowsSharingError("destination is being read")
         real_replace(source, target)
 
-    monkeypatch.setattr("gogurt.filesystem.os.name", "nt")
-    monkeypatch.setattr("gogurt.filesystem.os.replace", replace)
-    monkeypatch.setattr("gogurt.filesystem.time.sleep", delays.append)
+    monkeypatch.setattr("gogurt_core.filesystem.os.name", "nt")
+    monkeypatch.setattr("gogurt_core.filesystem.os.replace", replace)
+    monkeypatch.setattr("gogurt_core.filesystem.time.sleep", delays.append)
 
     filesystem_module.promote_staged(
         temporary,
@@ -129,8 +141,7 @@ def test_vanished_sqlite_sidecar_does_not_abort_remaining_validation(
 
 
 def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> None:
-    linux = default_listener_paths(
-        platform="linux",
+    linux = linux_listener_paths(
         environment={
             "XDG_STATE_HOME": str(tmp_path / "linux-state"),
             "XDG_CONFIG_HOME": str(tmp_path / "linux-config"),
@@ -142,14 +153,13 @@ def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> 
         tmp_path / "linux-config" / "systemd" / "user" / "gogurt-listener.service"
     )
 
-    macos = default_listener_paths(platform="darwin", environment={}, home=tmp_path)
+    macos = macos_listener_paths(environment={}, home=tmp_path)
     assert macos.state_dir == tmp_path / "Library" / "Application Support" / "Gogurt"
     assert macos.registration_file == (
         tmp_path / "Library" / "LaunchAgents" / f"{LISTENER_LABEL}.plist"
     )
 
-    windows = default_listener_paths(
-        platform="win32",
+    windows = windows_listener_paths(
         environment={"LOCALAPPDATA": str(tmp_path / "LocalAppData")},
         home=tmp_path,
     )
@@ -162,10 +172,9 @@ def test_windows_resolves_the_uv_console_launcher_extension(
 ) -> None:
     launcher = tmp_path / "gogurt.exe"
     launcher.write_text("fixture", encoding="utf-8")
-    monkeypatch.setattr("gogurt.listener_platform.sys.platform", "win32")
     monkeypatch.setenv("PATHEXT", ".exe;.cmd")
 
-    assert resolve_listener_executable(str(tmp_path / "gogurt")) == launcher.resolve()
+    assert resolve_windows_listener_executable(str(tmp_path / "gogurt")) == launcher.resolve()
 
 
 def test_native_registrations_bind_only_the_absolute_installed_command() -> None:
@@ -398,7 +407,7 @@ def test_launchd_stop_waits_until_the_native_job_is_unloaded(
         )
     )
     monkeypatch.setattr(adapter, "_print", lambda: next(observations))
-    monkeypatch.setattr("gogurt.listener_platform.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("gogurt_macos.time.sleep", lambda _seconds: None)
 
     adapter.stop(paths)
 
@@ -540,7 +549,7 @@ def test_windows_stop_waits_for_cooperative_listener_settlement(
         return state
 
     monkeypatch.setattr(adapter, "_query_state", settle_after_request)
-    monkeypatch.setattr("gogurt.listener_platform.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("gogurt_windows.time.sleep", lambda _seconds: None)
 
     adapter.stop(paths)
 
@@ -555,8 +564,8 @@ def test_windows_stop_fails_closed_without_hard_termination(
     paths = _paths(tmp_path, None)
     adapter = RecordingTaskAdapter()
     times = iter((0.0, 0.0, 21.0))
-    monkeypatch.setattr("gogurt.listener_platform.time.monotonic", lambda: next(times))
-    monkeypatch.setattr("gogurt.listener_platform.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("gogurt_windows.time.monotonic", lambda: next(times))
+    monkeypatch.setattr("gogurt_windows.time.sleep", lambda _seconds: None)
 
     with pytest.raises(ListenerPlatformError, match="did not settle"):
         adapter.stop(paths)

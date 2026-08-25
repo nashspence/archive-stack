@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "riverhog-provenance-macos-observer"
+version = "0.1.0"
+description = "Native macOS filesystem observer for Riverhog provenance."
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "riverhog-provenance>=0.1,<0.2",
+  "riverhog-provenance-macos-contracts>=0.1,<0.2",
+]
+
+[tool.uv.sources]
+riverhog-provenance = { workspace = true }
+riverhog-provenance-macos-contracts = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/riverhog_provenance_macos_observer"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"NOTICE" = "riverhog_provenance_macos_observer/NOTICE"
