@@ -36,7 +36,8 @@ ADAPTER_STORED_SHA256_ASSERTION = "riverhog-adapter-stored-sha256"
 AWS_DEEP_ARCHIVE_MINIMUM_DAYS = 180
 DEFAULT_AWS_EXPIRATION_DAYS = 185
 DEFAULT_B2_DELETE_DAYS = 1
-DEFAULT_MULTIPART_ABORT_DAYS = 3
+MIN_MULTIPART_ABORT_DAYS = 4
+DEFAULT_MULTIPART_ABORT_DAYS = MIN_MULTIPART_ABORT_DAYS
 DEFAULT_RESTORE_COPY_DAYS = 3
 DEFAULT_RESTORE_DEADLINE_HOURS = 96
 MIB = 1024 * 1024
@@ -434,6 +435,10 @@ def load_config(path: Path) -> QualificationConfig:
     multipart_abort_days = _expect_int(
         retention, "multipart_abort_days", DEFAULT_MULTIPART_ABORT_DAYS
     )
+    if multipart_abort_days < MIN_MULTIPART_ABORT_DAYS:
+        raise QualificationError(
+            "multipart_abort_days must outlast Riverhog's incomplete-write continuation window"
+        )
     restore = _expect_mapping(raw.get("restore"), label="restore")
     restore_copy_days = _expect_int(restore, "copy_days", DEFAULT_RESTORE_COPY_DAYS)
     restore_deadline_hours = _expect_int(restore, "deadline_hours", DEFAULT_RESTORE_DEADLINE_HOURS)

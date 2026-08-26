@@ -74,6 +74,18 @@ trap cleanup EXIT
 
 "${ROOT_DIR}/scripts/bootstrap_garage.sh"
 compose up --detach --wait archive-adapter retrieval-cache-adapter
+continuation_root="${smoke_root}/storage-adapter-continuation"
+install -d -m 0700 "${continuation_root}"
+compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
+  --volume "${continuation_root}:/continuation" \
+  --entrypoint python \
+  test -m tests.harness.storage_adapter_restart_probe prepare /continuation/state.json
+compose restart archive-adapter
+compose up --detach --wait archive-adapter
+compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" \
+  --volume "${continuation_root}:/continuation" \
+  --entrypoint python \
+  test -m tests.harness.storage_adapter_restart_probe resume /continuation/state.json
 compose run --rm \
   --env RIVERHOG_GARAGE_ARCHIVE_INGRESS_TEST=1 \
   --entrypoint python \

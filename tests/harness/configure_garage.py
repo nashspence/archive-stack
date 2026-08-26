@@ -15,7 +15,7 @@ EXPECTED_LIFECYCLE_CONFIGURATION = {
             "ID": "abort-incomplete-riverhog-uploads",
             "Status": "Enabled",
             "Filter": {},
-            "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 3},
+            "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 4},
         }
     ]
 }

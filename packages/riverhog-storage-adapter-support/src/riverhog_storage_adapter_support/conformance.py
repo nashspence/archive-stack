@@ -22,6 +22,7 @@ from riverhog_storage_adapter_protocol import (
     ReadPreparationRequest,
     SmallObjectWriteRequest,
     WriteCompleteRequest,
+    WriteSession,
     WriteStartRequest,
     normalize_object_path,
 )
@@ -53,6 +54,7 @@ class StorageAdapterConformanceResult(BaseModel):
 def run_storage_adapter_conformance(
     client: StorageAdapterClient,
     *,
+    continuation_client: StorageAdapterClient,
     object_prefix: str,
 ) -> StorageAdapterConformanceResult:
     """Exercise the public contract beneath one disposable, owned prefix.
@@ -156,18 +158,31 @@ def run_storage_adapter_conformance(
             placement="immediate",
         )
         session = client.begin_write(write_request)
-        written_segments = tuple(
-            client.write_segment(
-                session=session,
-                number=index,
-                stored_bytes=len(content),
-                content=content,
-            )
-            for index, content in enumerate(segment_contents, start=1)
+        first_segment = client.write_segment(
+            session=session,
+            number=1,
+            stored_bytes=len(segment_contents[0]),
+            content=segment_contents[0],
         )
-        listed_segment_set = client.list_segments(session)
+        persisted_session = WriteSession.model_validate_json(session.model_dump_json())
+        if continuation_client.descriptor() != descriptor:
+            raise AssertionError("continuation client names a different adapter contract")
+        written_segments = (
+            first_segment,
+            *(
+                continuation_client.write_segment(
+                    session=persisted_session,
+                    number=index,
+                    stored_bytes=len(content),
+                    content=content,
+                )
+                for index, content in enumerate(segment_contents[1:], start=2)
+            ),
+        )
+        listed_segment_set = continuation_client.list_segments(persisted_session)
         if listed_segment_set.segments != written_segments:
             raise AssertionError("write listing differs from written segment receipts")
+        checks.append("write-continuation-replay")
         checks.append("write-reconciliation")
 
         total_bytes = sum(len(content) for content in segment_contents)
@@ -178,11 +193,11 @@ def run_storage_adapter_conformance(
             required_identity_assertions=write_request.required_identity_assertions,
             expected_placement=write_request.placement,
         )
-        completed = client.complete_write(completion_request)
-        recovered_completion = client.complete_write(completion_request)
+        completed = continuation_client.complete_write(completion_request)
+        recovered_completion = continuation_client.complete_write(completion_request)
         if recovered_completion != completed:
             raise AssertionError("lost completion response did not reconcile exactly")
-        headed_completion = client.find_completed_write(
+        headed_completion = continuation_client.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=write_path,
                 required_identity_assertions=write_request.required_identity_assertions,
@@ -195,7 +210,7 @@ def run_storage_adapter_conformance(
 
         write_content = b"".join(segment_contents)
         stored_write = b"".join(
-            client.iter_object(
+            continuation_client.iter_object(
                 ObjectReadRequest(
                     object=ObjectLocator(
                         object_path=write_path,
@@ -217,22 +232,23 @@ def run_storage_adapter_conformance(
                 ),
             )
         )
-        prepared = client.prepare_read(preparation)
-        status = client.read_status(preparation)
+        prepared = continuation_client.prepare_read(preparation)
+        status = continuation_client.read_status(preparation)
         if prepared.readiness.state not in {"ready", "requested"} or status.readiness.state not in {
             "ready",
             "requested",
             "expired",
         }:
             raise AssertionError("adapter returned an invalid read-preparation state")
-        client.cleanup_read(preparation)
+        continuation_client.cleanup_read(preparation)
         checks.append("read-preparation")
 
         aborted = client.begin_write(
             write_request.model_copy(update={"object_path": f"{normalized_prefix}/aborted.bin"})
         )
-        client.abort_write(aborted)
-        client.abort_write(aborted)
+        persisted_aborted = WriteSession.model_validate_json(aborted.model_dump_json())
+        continuation_client.abort_write(persisted_aborted)
+        continuation_client.abort_write(persisted_aborted)
         checks.append("write-abort")
 
         delete_request = (
@@ -309,9 +325,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         token_file=args.token_file,
         allow_insecure_http=args.allow_insecure_http,
     )
+    continuation_client = StorageAdapterClient.from_token_file(
+        args.base_url,
+        token_file=args.token_file,
+        allow_insecure_http=args.allow_insecure_http,
+    )
     try:
-        result = run_storage_adapter_conformance(client, object_prefix=run_prefix)
+        result = run_storage_adapter_conformance(
+            client,
+            continuation_client=continuation_client,
+            object_prefix=run_prefix,
+        )
     finally:
+        continuation_client.close()
         client.close()
     print(json.dumps(result.model_dump(mode="json"), sort_keys=True))
     return 0

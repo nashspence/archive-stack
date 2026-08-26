@@ -172,7 +172,9 @@ def test_required_identity_assertions_is_bounded_canonical_and_opaque() -> None:
     description = WriteStartRequest.model_json_schema()["properties"][
         "required_identity_assertions"
     ]["description"]
-    assert "must contain" in description
+    assert "used only to identify and reconcile" in description
+    assert "must not interpret" in description
+    assert "routing, retrieval, retention, credentials, placement" in description
     assert "additional adapter-private assertions" in description
     with pytest.raises(ValidationError, match="encoded-size bound"):
         WriteStartRequest(
@@ -190,6 +192,19 @@ def test_required_identity_assertions_is_bounded_canonical_and_opaque() -> None:
             },
             placement="archive",
         )
+
+
+def test_write_session_is_a_persistable_restart_stable_continuation() -> None:
+    session = WriteSession(
+        object_path="archives/id/volumes/segment.bin.age",
+        write_token="opaque-adapter-continuation",
+    )
+
+    assert WriteSession.model_validate_json(session.model_dump_json()) == session
+    description = WriteSession.model_json_schema()["properties"]["write_token"]["description"]
+    assert "persistable continuation handle" in description
+    assert "process restarts" in description
+    assert "incomplete-write reclamation" in description
 
 
 @pytest.mark.parametrize(
