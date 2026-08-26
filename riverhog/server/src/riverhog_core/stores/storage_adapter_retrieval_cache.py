@@ -20,6 +20,7 @@ from riverhog_storage_adapter_protocol import (
     WriteCompleteRequest,
     WriteStartRequest,
     validate_completed_write_response,
+    validate_small_object_response,
 )
 from riverhog_storage_adapter_protocol import (
     CompletedObjectReceipt as AdapterCompletedObjectReceipt,
@@ -219,18 +220,17 @@ class StorageAdapterRetrievalCache:
                 with self._resources.upload_requests.reserve() as upload_wait:
                     queue_wait_seconds += upload_wait
                     remote_started = time.perf_counter()
-                    receipt = self._adapter.put_small_object(
-                        SmallObjectWriteRequest(
-                            object_path=object_path,
-                            content_type="application/octet-stream",
-                            required_identity_assertions=metadata,
-                            placement="immediate",
-                            mode="replace_current",
-                            stored_bytes=written,
-                            stored_sha256=digest.hexdigest(),
-                        ),
-                        bytes(body),
+                    small_request = SmallObjectWriteRequest(
+                        object_path=object_path,
+                        content_type="application/octet-stream",
+                        required_identity_assertions=metadata,
+                        placement="immediate",
+                        mode="replace_current",
+                        stored_bytes=written,
+                        stored_sha256=digest.hexdigest(),
                     )
+                    receipt = self._adapter.put_small_object(small_request, bytes(body))
+                    validate_small_object_response(small_request, receipt)
                     remote_seconds += time.perf_counter() - remote_started
             finally:
                 if content_length:
@@ -272,6 +272,7 @@ class StorageAdapterRetrievalCache:
                     session=session,
                     segments=segments,
                     expected_bytes=written,
+                    expected_content_type="application/octet-stream",
                     required_identity_assertions=metadata,
                     expected_placement="immediate",
                 )
@@ -579,6 +580,7 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
         session: WriteSession,
         segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
         self._require_path(session.object_path)
@@ -597,6 +599,7 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
                 for current in segments
             ),
             expected_bytes=expected_bytes,
+            expected_content_type=expected_content_type,
             required_identity_assertions=self._cache_metadata(expected_metadata),
             expected_placement="immediate",
         )
@@ -608,11 +611,13 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
         self,
         *,
         object_path: str,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         _ = object_path
         request = CompletedWriteLookupRequest(
             object_path=self._object_path,
+            expected_content_type=expected_content_type,
             required_identity_assertions=self._cache_metadata(expected_metadata),
             expected_placement="immediate",
         )

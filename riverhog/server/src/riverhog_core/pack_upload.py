@@ -315,6 +315,7 @@ class PackVolumeUploader:
             if checkpoint.completed is None:
                 completed = self._object_store.find_completed_write(
                     object_path=object_path,
+                    expected_content_type=PACK_VOLUME_CONTENT_TYPE,
                     expected_metadata=_object_metadata(plan, checkpoint.age_state_json),
                 )
                 if completed is not None:
@@ -324,6 +325,7 @@ class PackVolumeUploader:
 
         completed = self._object_store.find_completed_write(
             object_path=object_path,
+            expected_content_type=PACK_VOLUME_CONTENT_TYPE,
             expected_metadata=_object_metadata(plan),
         )
         if completed is not None:
@@ -629,6 +631,7 @@ class PackVolumeUploader:
             session=session,
             segments=tuple(sorted(checkpoint.write_segments, key=lambda current: current.number)),
             expected_bytes=sum(current.stored_bytes for current in parts),
+            expected_content_type=PACK_VOLUME_CONTENT_TYPE,
             expected_metadata=_object_metadata(plan, checkpoint.age_state_json),
         )
         return self._mark_completed(checkpoint, completed)

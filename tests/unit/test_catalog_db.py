@@ -15,11 +15,11 @@ from riverhog_core.catalog_db import (
     make_session_factory,
     validate_db,
 )
-from riverhog_core.state_migrations.versions import v1_0008, v1_0010
-from riverhog_protocol import (
+from riverhog_core.collection_creation_identity import (
     CollectionUploadCreationIdentityDocument,
     CollectionUploadCreationIdentityPayload,
 )
+from riverhog_core.state_migrations.versions import v1_0008, v1_0010
 from sqlalchemy import inspect
 
 from tests.unit.db_helpers import sqlite_url
@@ -85,6 +85,50 @@ def test_v1_0010_backfill_uses_the_upload_creation_identity_encoding() -> None:
 
     assert v1_0010._canonical_sha256(document) == (
         CollectionUploadCreationIdentityDocument.seal(payload).creation_identity_sha256
+    )
+
+
+def test_upload_creation_identity_binds_every_create_or_resume_input() -> None:
+    base = CollectionUploadCreationIdentityPayload(
+        tags=("derived",),
+        ingest_source="transform:fixture",
+        archive_store="archive",
+        event_context={"source": "fixture"},
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture source has no provenance",
+        custody_mode="custody-transfer",
+    )
+    sealed = CollectionUploadCreationIdentityDocument.seal(base)
+    alternatives = (
+        base.model_copy(update={"tags": ("other",)}),
+        base.model_copy(update={"ingest_source": "transform:other"}),
+        base.model_copy(update={"archive_store": "secondary"}),
+        base.model_copy(update={"event_context": {"source": "other"}}),
+        base.model_copy(
+            update={
+                "provenance_mode": "captured",
+                "provenance_omission_reason": None,
+            }
+        ),
+        base.model_copy(update={"provenance_omission_reason": "a different reason"}),
+        base.model_copy(update={"custody_mode": "producer-retained"}),
+    )
+
+    assert (
+        CollectionUploadCreationIdentityDocument.model_validate_json(sealed.model_dump_json())
+        == sealed
+    )
+    assert (
+        len(
+            {
+                sealed.creation_identity_sha256,
+                *(
+                    CollectionUploadCreationIdentityDocument.seal(current).creation_identity_sha256
+                    for current in alternatives
+                ),
+            }
+        )
+        == len(alternatives) + 1
     )
 
 

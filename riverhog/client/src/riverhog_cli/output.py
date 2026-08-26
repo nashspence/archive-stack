@@ -191,8 +191,9 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
     lines = [
         f"collection upload {payload.get('collection_id', 'unknown')}",
         f"state: {payload.get('state', 'unknown')}",
-        f"files: {payload.get('files_uploaded', 0)}/{payload.get('files_total', 0)}",
-        f"bytes: {_bytes(payload.get('uploaded_bytes'))}/{_bytes(payload.get('bytes_total'))}",
+        f"custodied files: {payload.get('custodied_files', 0)}/{payload.get('files_total', 0)}",
+        f"custodied bytes: {_bytes(payload.get('custodied_bytes'))}/"
+        f"{_bytes(payload.get('bytes_total'))}",
         f"custody: {payload.get('custody_mode', 'unknown')}",
         f"encryption: {payload.get('encryption_format', 'unknown')}:"
         f"{payload.get('passphrase_id', 'unknown')}",

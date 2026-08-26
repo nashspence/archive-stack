@@ -241,11 +241,11 @@ def test_completion_and_expiry_have_one_serial_terminal_intent(
         assert reaped == 1
         _create(first)
         resumed = first.complete(collection_id, files_total=1, content_identity=identity)
-        assert resumed["state"] in {"uploading", "finalizing", "finalized"}
+        assert resumed["state"] in {"closing", "uploading", "finalizing", "finalized"}
     else:
         assert not isinstance(completed, Exception)
         assert reaped == 0
-        assert state in {"uploading", "finalizing", "finalized"}
+        assert state in {"closing", "uploading", "finalizing", "finalized"}
 
 
 def test_guarded_discard_and_exact_resume_cannot_both_win_for_old_custody(

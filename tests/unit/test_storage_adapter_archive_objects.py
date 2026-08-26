@@ -112,6 +112,7 @@ class _Adapter:
             entity_token="entity-small",
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
+            verified_content_type=request.content_type,
             verified_identity_assertions=request.required_identity_assertions,
             verified_placement=request.placement,
             completed_at="2026-08-21T00:00:00.000000Z",
@@ -132,6 +133,7 @@ class _Adapter:
             revision="version-volume",
             entity_token="entity-volume",
             stored_bytes=11,
+            verified_content_type=request.expected_content_type,
             verified_identity_assertions=request.required_identity_assertions,
             verified_placement=request.expected_placement,
             completed_at="2026-08-21T00:00:00.000000Z",
@@ -154,6 +156,7 @@ def test_existing_object_ports_preserve_adapter_receipts_and_generic_placement()
         session=session,
         segments=segments,
         expected_bytes=11,
+        expected_content_type="application/octet-stream",
         expected_metadata={"riverhog-format": "volume/v1"},
     )
 
@@ -164,6 +167,7 @@ def test_existing_object_ports_preserve_adapter_receipts_and_generic_placement()
     assert (
         store.find_completed_write(
             object_path=session.object_path,
+            expected_content_type="application/octet-stream",
             expected_metadata={"riverhog-format": "volume/v1"},
         )
         == completed
@@ -216,6 +220,7 @@ def test_identity_conflicts_keep_the_existing_internal_exception() -> None:
     with pytest.raises(ArchiveObjectIdentityConflict, match="different object"):
         store.find_completed_write(
             object_path="archives/id/volume.age",
+            expected_content_type="application/octet-stream",
             expected_metadata={"riverhog-format": "volume/v1"},
         )
 
@@ -242,5 +247,6 @@ def test_completed_receipts_must_attest_the_exact_requested_storage_predicates()
             session=session,
             segments=(segment,),
             expected_bytes=11,
+            expected_content_type="application/octet-stream",
             expected_metadata={"riverhog-format": "volume/v1"},
         )

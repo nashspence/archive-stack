@@ -137,6 +137,7 @@ def resume(path: Path) -> dict[str, object]:
             session=session,
             segments=segments,
             expected_bytes=first_segment_bytes + len(_SECOND_SEGMENT),
+            expected_content_type=request.content_type,
             required_identity_assertions=request.required_identity_assertions,
             expected_placement=request.placement,
         )
@@ -145,6 +146,7 @@ def resume(path: Path) -> dict[str, object]:
         recovered = client.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=request.object_path,
+                expected_content_type=request.content_type,
                 required_identity_assertions=request.required_identity_assertions,
                 expected_placement=request.placement,
             )

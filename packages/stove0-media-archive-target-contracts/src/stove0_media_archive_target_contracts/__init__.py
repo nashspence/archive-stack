@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from importlib.resources import files
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -16,6 +17,7 @@ from stove0_target_protocol import (
     OperationContract,
     OperationContractPayload,
     OutputArtifactContract,
+    SemanticIntentConformanceVectors,
 )
 
 from stove0_media_archive_target_contracts.projection_policy import (
@@ -62,6 +64,17 @@ def _schema(identifier: str, model: type[IntentModel]) -> JsonSchemaDocument:
     return JsonSchemaDocument.from_schema(identifier, model.model_json_schema())
 
 
+AUDIO_ARCHIVE_INTENT_CONFORMANCE_VECTORS = SemanticIntentConformanceVectors.model_validate_json(
+    files("stove0_media_archive_target_contracts")
+    .joinpath("vectors/audio-archive-intent-v1.json")
+    .read_text(encoding="utf-8")
+)
+AV1_OPUS_ARCHIVE_INTENT_CONFORMANCE_VECTORS = SemanticIntentConformanceVectors.model_validate_json(
+    files("stove0_media_archive_target_contracts")
+    .joinpath("vectors/av1-opus-archive-intent-v1.json")
+    .read_text(encoding="utf-8")
+)
+
 AUDIO_ARCHIVE_INTENT_SEMANTICS = SemanticValidationProfile.seal(
     SemanticValidationProfilePayload(
         id="stove0.media.audio-archive-intent-semantics/v1",
@@ -69,6 +82,7 @@ AUDIO_ARCHIVE_INTENT_SEMANTICS = SemanticValidationProfile.seal(
             "stove0.media.audio-archive-intent.typed-model/v1",
             "stove0.media.projection-policy.semantic-validation/v1",
         ),
+        conformance_vectors_sha256=AUDIO_ARCHIVE_INTENT_CONFORMANCE_VECTORS.sha256,
     )
 )
 AV1_OPUS_ARCHIVE_INTENT_SEMANTICS = SemanticValidationProfile.seal(
@@ -78,6 +92,7 @@ AV1_OPUS_ARCHIVE_INTENT_SEMANTICS = SemanticValidationProfile.seal(
             "stove0.media.av1-opus-archive-intent.typed-model/v1",
             "stove0.media.projection-policy.semantic-validation/v1",
         ),
+        conformance_vectors_sha256=AV1_OPUS_ARCHIVE_INTENT_CONFORMANCE_VECTORS.sha256,
     )
 )
 
@@ -180,6 +195,7 @@ def operation_contract(operation_id: str) -> OperationContract:
 
 __all__ = [
     "AUDIO_ARCHIVE_OPERATION",
+    "AUDIO_ARCHIVE_INTENT_CONFORMANCE_VECTORS",
     "AUDIO_ARCHIVE_OPERATION_ID",
     "AUDIO_ARCHIVE_INTENT_SEMANTICS",
     "AUDIO_ARCHIVE_ROLE",
@@ -194,6 +210,7 @@ __all__ = [
     "SOURCE_ROLE",
     "XMP_SOURCE_ROLE",
     "AV1_OPUS_ARCHIVE_OPERATION",
+    "AV1_OPUS_ARCHIVE_INTENT_CONFORMANCE_VECTORS",
     "AV1_OPUS_ARCHIVE_OPERATION_ID",
     "AV1_OPUS_ARCHIVE_INTENT_SEMANTICS",
     "AV1_OPUS_ARCHIVE_ROLE",

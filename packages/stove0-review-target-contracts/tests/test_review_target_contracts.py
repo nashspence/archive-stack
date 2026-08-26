@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from stove0_review_target_contracts import (
+    REVIEW_MATERIALIZE_INTENT_CONFORMANCE_VECTORS,
     REVIEW_MATERIALIZE_INTENT_SCHEMA,
     REVIEW_MATERIALIZE_INTENT_SEMANTICS,
     REVIEW_MATERIALIZE_OPERATION,
@@ -32,13 +33,13 @@ def test_review_target_contracts_retain_exact_result_and_retirement_semantics() 
     assert REVIEW_MATERIALIZE_OPERATION.id == "stove0.review.materialize/v1"
     assert (
         REVIEW_MATERIALIZE_OPERATION.contract_sha256
-        == "4eebc8c253cb3d099fe98dccf3df5c797bd7f48db9410d2dbaa12f24fa39d7b4"
+        == "4be8075379efc3b1cc7ff30f3458ad895e855e0d18357b5caf39d7997f4ec3f4"
     )
     assert REVIEW_MATERIALIZE_OPERATION.result_kind == "collection"
     assert REVIEW_RCLONE_DELIVER_OPERATION.id == "stove0.review.rclone-deliver/v1"
     assert (
         REVIEW_RCLONE_DELIVER_OPERATION.contract_sha256
-        == "67e24a42d55e9db5c0d978d4e756308a37c7d96786c6850b278817a0ce6a3a7e"
+        == "6295e22ff6cd95f1c5657d427ebb47622f3625112c831ef0e51c366bfaf38ed2"
     )
     assert REVIEW_RCLONE_DELIVER_OPERATION.result_kind == "external-effect"
     assert REVIEW_MATERIALIZE_OPERATION.source_retirement_permitted is False
@@ -87,3 +88,18 @@ def test_review_sample_plan_enforces_its_exact_declared_shape() -> None:
             window_duration_ms=1_000,
             windows=tuple(reversed(windows)),
         )
+
+
+def test_review_materialize_semantic_vectors_are_bound_and_executable() -> None:
+    assert REVIEW_MATERIALIZE_INTENT_CONFORMANCE_VECTORS.profile_id == (
+        REVIEW_MATERIALIZE_INTENT_SEMANTICS.id
+    )
+    assert REVIEW_MATERIALIZE_INTENT_SEMANTICS.conformance_vectors_sha256 == (
+        REVIEW_MATERIALIZE_INTENT_CONFORMANCE_VECTORS.sha256
+    )
+    for vector in REVIEW_MATERIALIZE_INTENT_CONFORMANCE_VECTORS.vectors:
+        if vector.accepted:
+            validate_review_materialize_intent(vector.intent)
+        else:
+            with pytest.raises(ValueError):
+                validate_review_materialize_intent(vector.intent)

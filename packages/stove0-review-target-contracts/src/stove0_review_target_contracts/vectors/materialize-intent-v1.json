@@ -1,0 +1,40 @@
+{
+  "format": "stove0-semantic-intent-conformance/v1",
+  "profile_id": "stove0.review.materialize-intent-semantics/v1",
+  "vectors": [
+    {
+      "id": "accepted-exact-plan",
+      "accepted": true,
+      "intent": {
+        "sample_plan": {
+          "format": "stove0-review-sample-plan/v1",
+          "selection_method": "evenly-spaced/v1",
+          "samples_per_artifact": 1,
+          "window_duration_ms": 1000,
+          "windows": [
+            {"artifact_id": "camera", "start_ms": 0, "duration_ms": 1000}
+          ],
+          "sample_plan_sha256": "435a32c61d96ffea60ecfd8bcbdbb2453eadaec0f2e33c1581801fd66d41f1ee"
+        },
+        "variant": {"id": "opus-96", "portable_intent": {"bitrate_kbps": 96}}
+      }
+    },
+    {
+      "id": "rejected-plan-identity",
+      "accepted": false,
+      "intent": {
+        "sample_plan": {
+          "format": "stove0-review-sample-plan/v1",
+          "selection_method": "evenly-spaced/v1",
+          "samples_per_artifact": 1,
+          "window_duration_ms": 1000,
+          "windows": [
+            {"artifact_id": "camera", "start_ms": 0, "duration_ms": 1000}
+          ],
+          "sample_plan_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "variant": {"id": "opus-96", "portable_intent": {"bitrate_kbps": 96}}
+      }
+    }
+  ]
+}

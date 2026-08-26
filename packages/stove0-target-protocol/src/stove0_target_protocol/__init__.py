@@ -6,6 +6,10 @@ from stove0_protocol import (
     SemanticValidationProfilePayload,
 )
 
+from stove0_target_protocol.conformance import (
+    SemanticIntentConformanceVector,
+    SemanticIntentConformanceVectors,
+)
 from stove0_target_protocol.jcs import canonical_json_bytes, canonical_json_sha256
 from stove0_target_protocol.protocol import (
     ARTIFACT_ID_PATTERN,
@@ -76,6 +80,8 @@ __all__ = [
     "OutputArtifactContract",
     "OutputCollectionRef",
     "SemanticId",
+    "SemanticIntentConformanceVector",
+    "SemanticIntentConformanceVectors",
     "SemanticValidationProfile",
     "SemanticValidationProfilePayload",
     "Sha256",

@@ -221,6 +221,7 @@ def run_storage_adapter_conformance(
             session=session,
             segments=listed_segment_set.segments,
             expected_bytes=total_bytes,
+            expected_content_type=write_request.content_type,
             required_identity_assertions=write_request.required_identity_assertions,
             expected_placement=write_request.placement,
         )
@@ -231,6 +232,7 @@ def run_storage_adapter_conformance(
         headed_completion = continuation_client.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=write_path,
+                expected_content_type=write_request.content_type,
                 required_identity_assertions=write_request.required_identity_assertions,
                 expected_placement=write_request.placement,
             )

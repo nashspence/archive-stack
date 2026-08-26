@@ -1,0 +1,16 @@
+{
+  "format": "stove0-semantic-intent-conformance/v1",
+  "profile_id": "stove0.media.audio-archive-intent-semantics/v1",
+  "vectors": [
+    {
+      "id": "accepted-default",
+      "accepted": true,
+      "intent": {}
+    },
+    {
+      "id": "rejected-codec",
+      "accepted": false,
+      "intent": {"codec": "aac"}
+    }
+  ]
+}

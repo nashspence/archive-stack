@@ -4,7 +4,11 @@ import subprocess
 import sys
 
 import pytest
-from stove0_protocol import JsonSchemaDocument
+from stove0_protocol import (
+    JsonSchemaDocument,
+    SemanticValidationProfile,
+    SemanticValidationProfilePayload,
+)
 from stove0_target_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     InputArtifactContract,
@@ -53,6 +57,36 @@ def test_target_contract_models_are_importable_without_runtime_support() -> None
         "assert not loaded, sorted(loaded)\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_target_contract_requires_vectors_for_non_schema_only_semantics() -> None:
+    semantics = SemanticValidationProfile.seal(
+        SemanticValidationProfilePayload(
+            id="fixture.intent-semantics/v1",
+            rules=("fixture.intent-rule/v1",),
+        )
+    )
+    with pytest.raises(ValueError, match="require conformance-vector identity"):
+        OperationContractPayload(
+            id="fixture.copy/v1",
+            intent_schema=JsonSchemaDocument.from_schema(
+                "fixture.copy-intent/v1",
+                {"type": "object", "additionalProperties": False},
+            ),
+            intent_semantics=semantics,
+            inputs=(
+                InputArtifactContract(
+                    role="fixture.source/v1",
+                    allowed_dispositions=("transformed",),
+                ),
+            ),
+            outputs=(
+                OutputArtifactContract(
+                    role="fixture.output/v1",
+                    derived_from_roles=("fixture.source/v1",),
+                ),
+            ),
+        )
 
 
 def test_operation_result_kind_owns_collection_disposition_semantics() -> None:

@@ -601,7 +601,8 @@ class MemoryArchiveStore:
         self.attestation_artifacts: dict[str, bytes] = {}
         self.objects: dict[str, bytes] = {}
         self.object_metadata: dict[str, dict[str, str]] = {}
-        self._writes: dict[str, tuple[str, dict[str, str], dict[int, bytes]]] = {}
+        self.object_content_types: dict[str, str] = {}
+        self._writes: dict[str, tuple[str, str, dict[str, str], dict[int, bytes]]] = {}
         self._next_write = 1
 
     def read_mode(self) -> str:
@@ -643,7 +644,7 @@ class MemoryArchiveStore:
         _ = content_type
         write_token = f"write-{self._next_write}"
         self._next_write += 1
-        self._writes[write_token] = (object_path, dict(metadata), {})
+        self._writes[write_token] = (object_path, content_type, dict(metadata), {})
         return WriteSession(object_path=object_path, write_token=write_token)
 
     def write_segment(
@@ -653,10 +654,10 @@ class MemoryArchiveStore:
         number: int,
         content: bytes,
     ) -> WriteSegmentReceipt:
-        object_path, metadata, segments = self._writes[session.write_token]
+        object_path, content_type, metadata, segments = self._writes[session.write_token]
         assert object_path == session.object_path
         segments[number] = content
-        self._writes[session.write_token] = (object_path, metadata, segments)
+        self._writes[session.write_token] = (object_path, content_type, metadata, segments)
         return WriteSegmentReceipt(
             number=number,
             segment_token=hashlib.sha256(content).hexdigest(),
@@ -665,7 +666,7 @@ class MemoryArchiveStore:
         )
 
     def list_segments(self, *, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
-        _path, _metadata, segments = self._writes[session.write_token]
+        _path, _content_type, _metadata, segments = self._writes[session.write_token]
         return tuple(
             WriteSegmentReceipt(
                 number=number,
@@ -682,13 +683,18 @@ class MemoryArchiveStore:
         session: WriteSession,
         segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
-        object_path, metadata, written_segments = self._writes.pop(session.write_token)
+        object_path, content_type, metadata, written_segments = self._writes.pop(
+            session.write_token
+        )
+        assert content_type == expected_content_type
         assert metadata == expected_metadata
         content = b"".join(written_segments[current.number] for current in segments)
         assert len(content) == expected_bytes
         self.objects[object_path] = content
+        self.object_content_types[object_path] = content_type
         self.object_metadata[object_path] = metadata
         return self._completed_receipt(object_path, content)
 
@@ -696,12 +702,15 @@ class MemoryArchiveStore:
         self,
         *,
         object_path: str,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         content = self.objects.get(object_path)
         if content is None:
             return None
         if self.object_metadata.get(object_path) != expected_metadata:
+            raise ArchiveObjectIdentityConflict(object_path)
+        if self.object_content_types.get(object_path) != expected_content_type:
             raise ArchiveObjectIdentityConflict(object_path)
         return self._completed_receipt(object_path, content)
 
@@ -726,6 +735,7 @@ class MemoryArchiveStore:
         ):
             raise ArchiveObjectIdentityConflict(object_path)
         self.objects[object_path] = content
+        self.object_content_types[object_path] = content_type
         self.object_metadata[object_path] = dict(required_identity_assertions)
         return ImmutableObjectReceipt(
             object_path=object_path,

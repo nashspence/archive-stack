@@ -73,6 +73,7 @@ class MirroredArchiveResumableObjectStore:
         try:
             cache_completed = self._cache_objects.find_completed_write(
                 object_path=object_path,
+                expected_content_type=content_type,
                 expected_metadata=metadata,
             )
             cache_session = (
@@ -92,6 +93,7 @@ class MirroredArchiveResumableObjectStore:
             write_token=_encode_write_token(
                 archive_session=archive_session,
                 cache_session=cache_session,
+                content_type=content_type,
                 metadata=metadata,
             ),
         )
@@ -103,9 +105,10 @@ class MirroredArchiveResumableObjectStore:
         number: int,
         content: bytes,
     ) -> WriteSegmentReceipt:
-        archive_session, cache_session, metadata = _decode_write_token(session)
+        archive_session, cache_session, content_type, metadata = _decode_write_token(session)
         cache_completed = self._cache_objects.find_completed_write(
             object_path=session.object_path,
+            expected_content_type=content_type,
             expected_metadata=metadata,
         )
         if cache_completed is not None:
@@ -142,10 +145,11 @@ class MirroredArchiveResumableObjectStore:
         return archive_receipt
 
     def list_segments(self, *, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
-        archive_session, cache_session, metadata = _decode_write_token(session)
+        archive_session, cache_session, content_type, metadata = _decode_write_token(session)
         archive_segments = self._archive.list_segments(session=archive_session)
         cache_completed = self._cache_objects.find_completed_write(
             object_path=session.object_path,
+            expected_content_type=content_type,
             expected_metadata=metadata,
         )
         if cache_completed is not None:
@@ -169,11 +173,15 @@ class MirroredArchiveResumableObjectStore:
         session: WriteSession,
         segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
-        archive_session, cache_session, _metadata = _decode_write_token(session)
+        archive_session, cache_session, content_type, _metadata = _decode_write_token(session)
+        if content_type != expected_content_type:
+            raise ValueError("archive-cache mirror content type changed")
         cache_completed = self._cache_objects.find_completed_write(
             object_path=session.object_path,
+            expected_content_type=expected_content_type,
             expected_metadata=expected_metadata,
         )
         if cache_completed is None:
@@ -185,6 +193,7 @@ class MirroredArchiveResumableObjectStore:
                 session=cache_session,
                 segments=cache_segments,
                 expected_bytes=expected_bytes,
+                expected_content_type=expected_content_type,
                 expected_metadata=expected_metadata,
             )
         if cache_completed.bytes != expected_bytes:
@@ -197,6 +206,7 @@ class MirroredArchiveResumableObjectStore:
             session=archive_session,
             segments=segments,
             expected_bytes=expected_bytes,
+            expected_content_type=expected_content_type,
             expected_metadata=expected_metadata,
         )
         return replace(archive_completed, retrieval_cache=cache_receipt)
@@ -205,16 +215,19 @@ class MirroredArchiveResumableObjectStore:
         self,
         *,
         object_path: str,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         archive_completed = self._archive.find_completed_write(
             object_path=object_path,
+            expected_content_type=expected_content_type,
             expected_metadata=expected_metadata,
         )
         if archive_completed is None:
             return None
         cache_completed = self._cache_objects.find_completed_write(
             object_path=object_path,
+            expected_content_type=expected_content_type,
             expected_metadata=expected_metadata,
         )
         if cache_completed is None or cache_completed.bytes != archive_completed.bytes:
@@ -225,13 +238,15 @@ class MirroredArchiveResumableObjectStore:
         )
 
     def abort_write(self, *, session: WriteSession) -> None:
-        archive_session, cache_session, metadata = _decode_write_token(session)
+        archive_session, cache_session, content_type, metadata = _decode_write_token(session)
         archive_completed = self._archive.find_completed_write(
             object_path=session.object_path,
+            expected_content_type=content_type,
             expected_metadata=metadata,
         )
         cache_completed = self._cache_objects.find_completed_write(
             object_path=session.object_path,
+            expected_content_type=content_type,
             expected_metadata=metadata,
         )
         archive_error: BaseException | None = None
@@ -254,11 +269,13 @@ def _encode_write_token(
     *,
     archive_session: WriteSession,
     cache_session: WriteSession | None,
+    content_type: str,
     metadata: dict[str, str],
 ) -> str:
     return json.dumps(
         {
             "schema": _WRITE_SCHEMA,
+            "content_type": content_type,
             "metadata": dict(sorted(metadata.items())),
             "archive": {
                 "object_path": archive_session.object_path,
@@ -280,7 +297,7 @@ def _encode_write_token(
 
 def _decode_write_token(
     session: WriteSession,
-) -> tuple[WriteSession, WriteSession | None, dict[str, str]]:
+) -> tuple[WriteSession, WriteSession | None, str, dict[str, str]]:
     try:
         payload = json.loads(session.write_token)
     except json.JSONDecodeError as exc:
@@ -290,6 +307,9 @@ def _decode_write_token(
     archive = _session_from_payload(payload.get("archive"), label="archive")
     cache_payload = payload.get("cache")
     cache = None if cache_payload is None else _session_from_payload(cache_payload, label="cache")
+    content_type = str(payload.get("content_type") or "").strip()
+    if not content_type:
+        raise ValueError("archive-cache mirror content type is invalid")
     raw_metadata = payload.get("metadata")
     if not isinstance(raw_metadata, dict) or any(
         not isinstance(key, str) or not isinstance(value, str)
@@ -298,7 +318,7 @@ def _decode_write_token(
         raise ValueError("archive-cache mirror required identity assertions is invalid")
     if archive.object_path != session.object_path:
         raise ValueError("archive-cache mirror object path changed")
-    return archive, cache, dict(raw_metadata)
+    return archive, cache, content_type, dict(raw_metadata)
 
 
 def _session_from_payload(value: object, *, label: str) -> WriteSession:

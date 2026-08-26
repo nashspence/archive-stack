@@ -234,6 +234,36 @@ def test_incremental_producer_keeps_local_custody_when_receipt_identity_is_wrong
         producer.stop()
 
 
+def test_incremental_producer_inserts_evidence_when_one_append_crosses_its_path(
+    tmp_path: Path,
+) -> None:
+    api = _CustodyApi()
+    before = tmp_path / "before.bin"
+    after = tmp_path / "after.bin"
+    before.write_bytes(b"before evidence")
+    after.write_bytes(b"after evidence")
+    producer = _producer(api)
+    try:
+        producer.append_inputs(
+            (
+                ProducerFile(before, "a.txt"),
+                ProducerFile(after, "z.txt"),
+            )
+        )
+        producer.finish(
+            terminal_evidence={DERIVATION_EVIDENCE_PATH: b'{"format":"fixture/v1"}'},
+        )
+    finally:
+        producer.stop()
+
+    assert tuple(api.rows) == (
+        "a.txt",
+        "riverhog/producer-evidence.json",
+        "z.txt",
+        DERIVATION_EVIDENCE_PATH,
+    )
+
+
 class _ServiceApi:
     def __init__(
         self,

@@ -360,9 +360,9 @@ def test_upload_retry_returns_an_already_finalized_collection(
         "collection_id": COLLECTION_ID,
         "state": "finalized",
         "files_total": 1,
-        "files_uploaded": 1,
         "bytes_total": 5,
-        "uploaded_bytes": 5,
+        "custodied_files": 1,
+        "custodied_bytes": 5,
         "registration_constraints": None,
     }
 
@@ -450,8 +450,9 @@ def test_collection_upload_control_commands_have_human_json_parity(
             "collection_id": COLLECTION_ID,
             "state": state,
             "files_total": 2,
-            "files_uploaded": 2,
             "bytes_total": 10,
+            "custodied_files": 2,
+            "custodied_bytes": 10,
             "tags": ["my-trip"],
             "encryption_format": "age-v1-scrypt",
             "passphrase_id": "fixture-archive-key-v1",

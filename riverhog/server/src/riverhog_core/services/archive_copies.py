@@ -810,6 +810,7 @@ class SqlAlchemyArchiveCopyService:
         )
         completed = destination_object_store.find_completed_write(
             object_path=destination_path,
+            expected_content_type=content_type,
             expected_metadata=metadata,
         )
         if completed is not None:
@@ -878,6 +879,7 @@ class SqlAlchemyArchiveCopyService:
             session=write_session,
             segments=committed,
             expected_bytes=source.stored_bytes,
+            expected_content_type=content_type,
             expected_metadata=metadata,
         )
         return _CopiedObject(

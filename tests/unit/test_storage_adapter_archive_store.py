@@ -40,6 +40,7 @@ from riverhog_storage_adapter_protocol import (
 @dataclass
 class _Stored:
     content: bytes
+    content_type: str
     identity: dict[str, str]
     placement: str
     revision: str
@@ -71,13 +72,18 @@ class _MemoryAdapter:
         content: bytes,
     ) -> ImmutableObjectReceipt:
         existing = self.objects.get(request.object_path)
-        if existing is not None and existing.identity == request.required_identity_assertions:
+        if (
+            existing is not None
+            and existing.content_type == request.content_type
+            and existing.identity == request.required_identity_assertions
+        ):
             return self._immutable(request.object_path, existing)
         if existing is not None and request.mode == "create_only":
             raise StorageAdapterRejection("identity_conflict", "different identity")
         revision = f"revision-{len(self.objects) + 1}"
         stored = _Stored(
             content=content,
+            content_type=request.content_type,
             identity=dict(request.required_identity_assertions),
             placement=request.placement,
             revision=revision,
@@ -96,7 +102,7 @@ class _MemoryAdapter:
             object_path=request.object.object_path,
             revision=stored.revision,
             entity_token=f"entity-{stored.revision}",
-            content_type="application/octet-stream",
+            content_type=stored.content_type,
             stored_bytes=len(stored.content),
             stored_sha256=hashlib.sha256(stored.content).hexdigest(),
             required_identity_assertions=stored.identity,
@@ -176,6 +182,7 @@ class _MemoryAdapter:
             entity_token=f"entity-{stored.revision}",
             stored_bytes=len(stored.content),
             stored_sha256=hashlib.sha256(stored.content).hexdigest(),
+            verified_content_type=stored.content_type,
             verified_identity_assertions=stored.identity,
             verified_placement=stored.placement,
             completed_at=stored.completed_at,
@@ -271,6 +278,7 @@ def test_verification_is_metadata_only_and_explicit_hashing_reads_once() -> None
     path = "archives/opaque/volumes/pack-000000000000.tar.age"
     adapter.objects[path] = _Stored(
         content=content,
+        content_type="application/vnd.riverhog.pack+age",
         identity={
             "riverhog-format": "riverhog-pack-volume/v1",
             "riverhog-plaintext-bytes": "1024",
@@ -365,6 +373,7 @@ def test_deletion_uses_all_versions_and_verifies_current_absence() -> None:
     content = b"ciphertext"
     adapter.objects[path] = _Stored(
         content=content,
+        content_type="application/vnd.riverhog.collection-metadata+age",
         identity={
             "riverhog-format": "riverhog-collection-manifest/v1",
             "riverhog-plaintext-bytes": "1",
@@ -445,6 +454,7 @@ def test_incomplete_sweep_and_discard_stay_scoped_to_the_archive_namespace() -> 
     store = _store(adapter)
     adapter.objects["archives/opaque/partial"] = _Stored(
         content=b"partial",
+        content_type="application/octet-stream",
         identity={},
         placement="archive",
         revision="partial-version",

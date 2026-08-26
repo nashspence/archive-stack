@@ -96,12 +96,14 @@ class StorageAdapterArchiveResumableObjectStore:
         session: WriteSession,
         segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
         request = WriteCompleteRequest(
             session=_adapter_session(session),
             segments=tuple(_adapter_segment(current) for current in segments),
             expected_bytes=expected_bytes,
+            expected_content_type=expected_content_type,
             required_identity_assertions=expected_metadata,
             expected_placement=self._placement,
         )
@@ -123,10 +125,12 @@ class StorageAdapterArchiveResumableObjectStore:
         self,
         *,
         object_path: str,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         request = CompletedWriteLookupRequest(
             object_path=object_path,
+            expected_content_type=expected_content_type,
             required_identity_assertions=expected_metadata,
             expected_placement=self._placement,
         )

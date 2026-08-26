@@ -4,8 +4,6 @@ import pytest
 from pydantic import ValidationError
 from riverhog_protocol import (
     CollectionUploadArtifactCustodyReceiptDocument,
-    CollectionUploadCreationIdentityDocument,
-    CollectionUploadCreationIdentityPayload,
     CollectionUploadCustodyObjectDocument,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
@@ -15,6 +13,13 @@ from riverhog_protocol import (
 )
 from riverhog_protocol.collection_workflows import DERIVATION_EVIDENCE_PATH
 from riverhog_protocol.manifest import collection_content_identity
+
+
+def test_server_upload_creation_identity_is_not_public_protocol() -> None:
+    import riverhog_protocol
+
+    assert "CollectionUploadCreationIdentityDocument" not in riverhog_protocol.__all__
+    assert "CollectionUploadCreationIdentityPayload" not in riverhog_protocol.__all__
 
 
 def _file(path: str) -> dict[str, object]:
@@ -147,50 +152,6 @@ def test_artifact_custody_receipt_seals_exact_recovering_objects() -> None:
                 changed_artifact,
                 receipt,
             )
-
-
-def test_upload_creation_identity_binds_every_create_or_resume_input() -> None:
-    base = CollectionUploadCreationIdentityPayload(
-        tags=("derived",),
-        ingest_source="transform:fixture",
-        archive_store="archive",
-        event_context={"source": "fixture"},
-        provenance_mode="omitted",
-        provenance_omission_reason="fixture source has no provenance",
-        custody_mode="custody-transfer",
-    )
-    sealed = CollectionUploadCreationIdentityDocument.seal(base)
-    alternatives = (
-        base.model_copy(update={"tags": ("other",)}),
-        base.model_copy(update={"ingest_source": "transform:other"}),
-        base.model_copy(update={"archive_store": "secondary"}),
-        base.model_copy(update={"event_context": {"source": "other"}}),
-        base.model_copy(
-            update={
-                "provenance_mode": "captured",
-                "provenance_omission_reason": None,
-            }
-        ),
-        base.model_copy(update={"provenance_omission_reason": "a different reason"}),
-        base.model_copy(update={"custody_mode": "producer-retained"}),
-    )
-
-    assert (
-        CollectionUploadCreationIdentityDocument.model_validate_json(sealed.model_dump_json())
-        == sealed
-    )
-    assert (
-        len(
-            {
-                sealed.creation_identity_sha256,
-                *(
-                    CollectionUploadCreationIdentityDocument.seal(current).creation_identity_sha256
-                    for current in alternatives
-                ),
-            }
-        )
-        == len(alternatives) + 1
-    )
 
 
 def test_direct_ingress_batch_rejects_duplicate_file_paths() -> None:

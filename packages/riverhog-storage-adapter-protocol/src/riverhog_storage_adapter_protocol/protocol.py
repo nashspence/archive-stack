@@ -233,6 +233,7 @@ class WriteCompleteRequest(StorageAdapterModel):
     session: WriteSession
     segments: tuple[WriteSegmentReceipt, ...] = Field(min_length=1)
     expected_bytes: int = Field(ge=1)
+    expected_content_type: str = Field(min_length=1, max_length=255)
     required_identity_assertions: RequiredIdentityAssertions
     expected_placement: ObjectPlacement
 
@@ -258,6 +259,7 @@ class WriteCompleteRequest(StorageAdapterModel):
 
 class CompletedWriteLookupRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
+    expected_content_type: str = Field(min_length=1, max_length=255)
     required_identity_assertions: RequiredIdentityAssertions
     expected_placement: ObjectPlacement
 
@@ -277,6 +279,7 @@ class CompletedObjectReceipt(StorageAdapterModel):
     revision: str | None = Field(default=None, min_length=1, max_length=2000)
     entity_token: str | None = Field(default=None, min_length=1, max_length=4000)
     stored_bytes: int = Field(ge=1)
+    verified_content_type: str = Field(min_length=1, max_length=255)
     verified_identity_assertions: RequiredIdentityAssertions
     verified_placement: ObjectPlacement
     completed_at: str = Field(min_length=1, max_length=100)
@@ -323,6 +326,7 @@ class ImmutableObjectReceipt(StorageAdapterModel):
     entity_token: str | None = Field(default=None, min_length=1, max_length=4000)
     stored_bytes: int = Field(ge=0)
     stored_sha256: Sha256
+    verified_content_type: str = Field(min_length=1, max_length=255)
     verified_identity_assertions: RequiredIdentityAssertions
     verified_placement: ObjectPlacement
     completed_at: str = Field(min_length=1, max_length=100)
@@ -549,6 +553,8 @@ def validate_completed_write_response(
         raise ValueError("adapter completed-object receipt differs from its request")
     if response.verified_identity_assertions != request.required_identity_assertions:
         raise ValueError("adapter completed-object identity assertions differ from their request")
+    if response.verified_content_type != request.expected_content_type:
+        raise ValueError("adapter completed-object content type differs from its request")
     if response.verified_placement != request.expected_placement:
         raise ValueError("adapter completed-object placement differs from its request")
     if (
@@ -566,6 +572,7 @@ def validate_small_object_response(
         response.object_path != request.object_path
         or response.stored_bytes != request.stored_bytes
         or response.stored_sha256 != request.stored_sha256
+        or response.verified_content_type != request.content_type
         or response.verified_identity_assertions != request.required_identity_assertions
         or response.verified_placement != request.placement
     ):

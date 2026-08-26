@@ -55,6 +55,7 @@ class _Adapter:
             object_path=request.object_path,
             stored_bytes=len(stored),
             stored_sha256=request.stored_sha256,
+            verified_content_type=request.content_type,
             verified_identity_assertions=request.required_identity_assertions,
             verified_placement=request.placement,
             completed_at="2026-08-25T00:00:00.000000Z",

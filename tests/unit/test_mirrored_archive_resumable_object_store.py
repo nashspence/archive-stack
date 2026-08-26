@@ -23,6 +23,7 @@ class _ResumableStore:
     name: str
     object_path: str | None = None
     write_token: str | None = None
+    content_type: str = "application/vnd.riverhog.pack+age"
     segments: dict[int, bytes] = field(default_factory=dict)
     completed: bytes | None = None
     events: list[str] = field(default_factory=list)
@@ -32,8 +33,9 @@ class _ResumableStore:
         return ResumableWriteConstraints(1, None, None)
 
     def begin_write(self, *, object_path, content_type, metadata):  # type: ignore[no-untyped-def]
-        _ = content_type, metadata
+        _ = metadata
         self.object_path = object_path
+        self.content_type = content_type
         self.write_token = f"{self.name}-write"
         self.events.append(f"{self.name}:begin")
         return WriteSession(object_path, self.write_token)
@@ -62,9 +64,11 @@ class _ResumableStore:
         session,
         segments,
         expected_bytes,
+        expected_content_type,
         expected_metadata,
     ):  # type: ignore[no-untyped-def]
         _ = expected_metadata
+        assert expected_content_type == self.content_type
         assert session.write_token == self.write_token
         if self.fail_completion_once:
             self.fail_completion_once = False
@@ -74,9 +78,12 @@ class _ResumableStore:
         self.events.append(f"{self.name}:complete")
         return self._completed_receipt()
 
-    def find_completed_write(self, *, object_path, expected_metadata):  # type: ignore[no-untyped-def]
+    def find_completed_write(self, *, object_path, expected_content_type, expected_metadata):  # type: ignore[no-untyped-def]
         _ = object_path, expected_metadata
-        return self._completed_receipt() if self.completed is not None else None
+        if self.completed is None:
+            return None
+        assert expected_content_type == self.content_type
+        return self._completed_receipt()
 
     def abort_write(self, *, session):  # type: ignore[no-untyped-def]
         assert session.write_token == self.write_token
@@ -155,6 +162,7 @@ def test_encrypted_segments_are_verified_in_cache_before_archive_completion() ->
         session=session,
         segments=(receipt,),
         expected_bytes=9,
+        expected_content_type="application/vnd.riverhog.pack+age",
         expected_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
     )
 
@@ -181,6 +189,7 @@ def test_completion_resumes_after_cache_sealed_before_archive() -> None:
             session=session,
             segments=(receipt,),
             expected_bytes=10,
+            expected_content_type="application/vnd.riverhog.raw-segment+age",
             expected_metadata={"riverhog-format": "riverhog-raw-volume/v1"},
         )
 
@@ -188,6 +197,7 @@ def test_completion_resumes_after_cache_sealed_before_archive() -> None:
         session=session,
         segments=(receipt,),
         expected_bytes=10,
+        expected_content_type="application/vnd.riverhog.raw-segment+age",
         expected_metadata={"riverhog-format": "riverhog-raw-volume/v1"},
     )
     assert completed.retrieval_cache is not None
@@ -205,6 +215,7 @@ def test_completed_archive_without_required_cache_is_rejected() -> None:
     with pytest.raises(RuntimeError, match="missing its required retrieval cache"):
         _mirror(archive, cache).find_completed_write(
             object_path="archives/one/volumes/pack.tar.age",
+            expected_content_type="application/vnd.riverhog.pack+age",
             expected_metadata={"riverhog-format": "riverhog-pack-volume/v1"},
         )
 

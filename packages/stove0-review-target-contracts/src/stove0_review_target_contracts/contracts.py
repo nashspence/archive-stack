@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from importlib.resources import files
 
 from stove0_protocol import (
     JsonSchemaDocument,
@@ -14,6 +15,7 @@ from stove0_target_protocol import (
     OperationContract,
     OperationContractPayload,
     OutputArtifactContract,
+    SemanticIntentConformanceVectors,
 )
 
 from stove0_review_target_contracts.models import ReviewMaterializeIntent
@@ -32,6 +34,13 @@ REVIEW_MATERIALIZE_INTENT_SCHEMA = JsonSchemaDocument.from_schema(
     REVIEW_MATERIALIZE_INTENT_SCHEMA_ID,
     ReviewMaterializeIntent.model_json_schema(),
 )
+REVIEW_MATERIALIZE_INTENT_CONFORMANCE_VECTORS = (
+    SemanticIntentConformanceVectors.model_validate_json(
+        files("stove0_review_target_contracts")
+        .joinpath("vectors/materialize-intent-v1.json")
+        .read_text(encoding="utf-8")
+    )
+)
 REVIEW_MATERIALIZE_INTENT_SEMANTICS = SemanticValidationProfile.seal(
     SemanticValidationProfilePayload(
         id="stove0.review.materialize-intent-semantics/v1",
@@ -39,6 +48,7 @@ REVIEW_MATERIALIZE_INTENT_SEMANTICS = SemanticValidationProfile.seal(
             "stove0.review.sample-plan.exact-declared-shape/v1",
             "stove0.review.sample-plan.identity-verification/v1",
         ),
+        conformance_vectors_sha256=REVIEW_MATERIALIZE_INTENT_CONFORMANCE_VECTORS.sha256,
     )
 )
 
@@ -131,6 +141,7 @@ __all__ = [
     "REVIEW_AUDIO_ROLE",
     "REVIEW_INDEX_ROLE",
     "REVIEW_MATERIALIZE_INTENT_SCHEMA",
+    "REVIEW_MATERIALIZE_INTENT_CONFORMANCE_VECTORS",
     "REVIEW_MATERIALIZE_INTENT_SCHEMA_ID",
     "REVIEW_MATERIALIZE_INTENT_SEMANTICS",
     "REVIEW_MATERIALIZE_OPERATION",

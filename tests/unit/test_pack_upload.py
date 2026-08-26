@@ -58,7 +58,7 @@ class _UploadRow:
 class MemoryResumableStore:
     def __init__(self) -> None:
         self.uploads: dict[str, _UploadRow] = {}
-        self.objects: dict[str, tuple[bytes, dict[str, str], CompletedObjectReceipt]] = {}
+        self.objects: dict[str, tuple[bytes, str, dict[str, str], CompletedObjectReceipt]] = {}
         self.next_id = 1
         self.complete_calls = 0
         self.lose_complete_response = False
@@ -104,10 +104,12 @@ class MemoryResumableStore:
         session: WriteSession,
         segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
         self.complete_calls += 1
         row = self.uploads[session.write_token]
+        assert row.content_type == expected_content_type
         assert all(row.metadata.get(key) == value for key, value in expected_metadata.items())
         content = b"".join(row.parts[current.number] for current in segments)
         assert len(content) == expected_bytes
@@ -118,7 +120,7 @@ class MemoryResumableStore:
             bytes=len(content),
             completed_at="2026-08-03T00:00:00Z",
         )
-        self.objects[session.object_path] = (content, row.metadata, receipt)
+        self.objects[session.object_path] = (content, row.content_type, row.metadata, receipt)
         del self.uploads[session.write_token]
         if self.lose_complete_response:
             self.lose_complete_response = False
@@ -129,14 +131,17 @@ class MemoryResumableStore:
         self,
         *,
         object_path: str,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         found = self.objects.get(object_path)
         if found is None:
             return None
-        if any(found[1].get(key) != value for key, value in expected_metadata.items()):
+        if found[1] != expected_content_type or any(
+            found[2].get(key) != value for key, value in expected_metadata.items()
+        ):
             return None
-        return found[2]
+        return found[3]
 
     def abort_write(self, *, session: WriteSession) -> None:
         self.uploads.pop(session.write_token, None)

@@ -4,12 +4,15 @@ import math
 
 import pytest
 from stove0_media_archive_target_contracts import (
+    AUDIO_ARCHIVE_INTENT_CONFORMANCE_VECTORS,
     AUDIO_ARCHIVE_INTENT_SEMANTICS,
     AUDIO_ARCHIVE_OPERATION,
+    AV1_OPUS_ARCHIVE_INTENT_CONFORMANCE_VECTORS,
     AV1_OPUS_ARCHIVE_INTENT_SEMANTICS,
     AV1_OPUS_ARCHIVE_OPERATION,
     SOURCE_ARTIFACT_ROLE,
     Av1OpusArchiveIntent,
+    validate_audio_archive_intent,
     validate_av1_opus_archive_intent,
 )
 
@@ -24,13 +27,13 @@ def test_media_archive_operations_retain_exact_v1_retirement_semantics() -> None
     assert AUDIO_ARCHIVE_OPERATION.id == "stove0.media.audio-archive/v1"
     assert (
         AUDIO_ARCHIVE_OPERATION.contract_sha256
-        == "1181702c11274dde8f3401c202bcad6b6a4bf8cc8d0eb3a1289e7493f5c31b10"
+        == "1279bebeccaac66474d95c48750eb6911beeba51c20c05c51509236caafda707"
     )
     assert AUDIO_ARCHIVE_OPERATION.source_retirement_permitted is False
     assert AV1_OPUS_ARCHIVE_OPERATION.id == "stove0.media.av1-opus-archive/v1"
     assert (
         AV1_OPUS_ARCHIVE_OPERATION.contract_sha256
-        == "020c6c9820057200ded67b419cd3e0ea11587e7953a9cd4939dfd3fc556c3080"
+        == "932b9104233bc3f2d0d4288c67649fce66a41a92ea6905ca271f14444387ee5f"
     )
     assert AV1_OPUS_ARCHIVE_OPERATION.source_retirement_permitted is True
     assert source_artifacts.minimum == 1
@@ -48,3 +51,31 @@ def test_media_archive_semantic_profile_executes_projection_rules() -> None:
                 }
             }
         )
+
+
+def test_media_archive_semantic_vectors_are_bound_and_executable() -> None:
+    assert AUDIO_ARCHIVE_INTENT_CONFORMANCE_VECTORS.profile_id == (
+        AUDIO_ARCHIVE_INTENT_SEMANTICS.id
+    )
+    assert AUDIO_ARCHIVE_INTENT_SEMANTICS.conformance_vectors_sha256 == (
+        AUDIO_ARCHIVE_INTENT_CONFORMANCE_VECTORS.sha256
+    )
+    for vector in AUDIO_ARCHIVE_INTENT_CONFORMANCE_VECTORS.vectors:
+        if vector.accepted:
+            validate_audio_archive_intent(vector.intent)
+        else:
+            with pytest.raises(ValueError):
+                validate_audio_archive_intent(vector.intent)
+
+    assert AV1_OPUS_ARCHIVE_INTENT_CONFORMANCE_VECTORS.profile_id == (
+        AV1_OPUS_ARCHIVE_INTENT_SEMANTICS.id
+    )
+    assert AV1_OPUS_ARCHIVE_INTENT_SEMANTICS.conformance_vectors_sha256 == (
+        AV1_OPUS_ARCHIVE_INTENT_CONFORMANCE_VECTORS.sha256
+    )
+    for vector in AV1_OPUS_ARCHIVE_INTENT_CONFORMANCE_VECTORS.vectors:
+        if vector.accepted:
+            validate_av1_opus_archive_intent(vector.intent)
+        else:
+            with pytest.raises(ValueError):
+                validate_av1_opus_archive_intent(vector.intent)

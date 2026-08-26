@@ -251,10 +251,11 @@ def _small_request(
     content: bytes,
     *,
     identity: str = "logical/v1",
+    content_type: str = "application/octet-stream",
 ) -> SmallObjectWriteRequest:
     return SmallObjectWriteRequest(
         object_path="archives/collection/manifest.age",
-        content_type="application/octet-stream",
+        content_type=content_type,
         required_identity_assertions={"riverhog-logical-identity": identity},
         placement="immediate",
         mode="create_only",
@@ -276,6 +277,7 @@ def test_small_object_retry_uses_exact_identity_without_rereading_ciphertext() -
     stored = client.versions[("owned/archives/collection/manifest.age", first.revision or "")]
     assert stored["Body"] == first_content
     assert first.stored_sha256 == hashlib.sha256(first_content).hexdigest()
+    assert first.verified_content_type == "application/octet-stream"
     assert first.verified_identity_assertions == {"riverhog-logical-identity": "logical/v1"}
     assert first.verified_placement == "immediate"
 
@@ -289,6 +291,21 @@ def test_small_object_rejects_a_changed_logical_identity() -> None:
         adapter.put_small_object(
             _small_request(b"second", identity="different/v1"),
             b"second",
+        )
+
+    assert raised.value.code == "identity_conflict"
+
+
+def test_small_object_rejects_a_changed_content_type() -> None:
+    client = _FakeS3Client()
+    adapter = S3StorageAdapter(client, _config())
+    content = b"first"
+    adapter.put_small_object(_small_request(content), content)
+
+    with pytest.raises(StorageAdapterRejection) as raised:
+        adapter.put_small_object(
+            _small_request(content, content_type="application/vnd.example.other"),
+            content,
         )
 
     assert raised.value.code == "identity_conflict"
@@ -345,6 +362,7 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
         session=persisted_session,
         segments=segments,
         expected_bytes=len(first_content) + 6,
+        expected_content_type=create.content_type,
         required_identity_assertions=create.required_identity_assertions,
         expected_placement=create.placement,
     )
@@ -358,6 +376,7 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
         restarted_adapter.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=first.object_path,
+                expected_content_type=create.content_type,
                 required_identity_assertions=create.required_identity_assertions,
                 expected_placement=create.placement,
             )
@@ -366,10 +385,21 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
     )
     head = client.versions[("owned/archives/collection/volume.age", first.revision or "")]
     assert head["StorageClass"] == "DEEP_ARCHIVE"
+    assert first.verified_content_type == create.content_type
     assert head["Metadata"] == {
         "riverhog-adapter-placement": "archive",
         "riverhog-plan-sha256": "a" * 64,
     }
+    with pytest.raises(StorageAdapterRejection) as raised:
+        restarted_adapter.find_completed_write(
+            CompletedWriteLookupRequest(
+                object_path=first.object_path,
+                expected_content_type="application/vnd.example.other",
+                required_identity_assertions=create.required_identity_assertions,
+                expected_placement=create.placement,
+            )
+        )
+    assert raised.value.code == "identity_conflict"
 
 
 def test_resumable_write_lists_sparse_provider_state_after_restart() -> None:

@@ -1078,7 +1078,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if state:
             params["state"] = _one_of(
                 state,
-                frozenset({"open", "uploading", "finalizing", "orphaned", "discarding"}),
+                frozenset({"open", "closing", "uploading", "finalizing", "orphaned", "discarding"}),
                 "collection-upload state",
             )
         if tag is not None:

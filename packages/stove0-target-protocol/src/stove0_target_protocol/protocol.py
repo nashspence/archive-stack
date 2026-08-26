@@ -22,6 +22,7 @@ from riverhog_protocol.collection_workflows import (
 )
 from riverhog_protocol.paths import CollectionId
 from stove0_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     RIVERHOG_CAPABILITY_TRANSPORT,
     CollectionRootRef,
     ControllerEvidence,
@@ -122,6 +123,15 @@ class OperationContractPayload(TargetProtocolModel):
     outputs: tuple[OutputArtifactContract, ...] = ()
     effect_receipt_schema: JsonSchemaDocument | None = None
     source_retirement_permitted: bool = False
+
+    @model_validator(mode="after")
+    def bind_semantic_conformance_vectors(self) -> Self:
+        if (
+            self.intent_semantics != JSON_SCHEMA_ONLY_SEMANTIC_PROFILE
+            and self.intent_semantics.conformance_vectors_sha256 is None
+        ):
+            raise ValueError("non-schema-only target semantics require conformance-vector identity")
+        return self
 
     @model_validator(mode="after")
     def validate_roles(self) -> Self:

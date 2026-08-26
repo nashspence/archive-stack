@@ -346,6 +346,7 @@ class RawVolumeUploader:
             if checkpoint.completed is None:
                 completed = self._object_store.find_completed_write(
                     object_path=object_path,
+                    expected_content_type=RAW_VOLUME_CONTENT_TYPE,
                     expected_metadata=_metadata(plan, checkpoint.age_state_json),
                 )
                 if completed is not None:
@@ -355,6 +356,7 @@ class RawVolumeUploader:
 
         completed = self._object_store.find_completed_write(
             object_path=object_path,
+            expected_content_type=RAW_VOLUME_CONTENT_TYPE,
             expected_metadata=_metadata(plan),
         )
         if completed is not None:
@@ -635,6 +637,7 @@ class RawVolumeUploader:
             session=WriteSession(checkpoint.object_path, checkpoint.write_token),
             segments=tuple(sorted(checkpoint.write_segments, key=lambda current: current.number)),
             expected_bytes=sum(current.stored_bytes for current in parts),
+            expected_content_type=RAW_VOLUME_CONTENT_TYPE,
             expected_metadata=_metadata(
                 _checkpoint_plan(checkpoint),
                 checkpoint.age_state_json,

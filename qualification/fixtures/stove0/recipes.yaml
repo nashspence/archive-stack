@@ -118,7 +118,8 @@ operations:
     rules:
     - stove0.media.audio-archive-intent.typed-model/v1
     - stove0.media.projection-policy.semantic-validation/v1
-    profile_sha256: fdcb743730ac76dd3c12b7a567661c09cefcce7600a8b90d88a4ace043464642
+    conformance_vectors_sha256: c5ad7dce1d55fe04f79b06ed8781f92f9f067e02983d47111c22537c9ecc8ee6
+    profile_sha256: aacc7ad91957bc72bcbe95e6fc71740196899ed830e5345500a07a6789ea44c9
   inputs:
   - role: stove0.media.source/v1
     minimum: 1
@@ -144,7 +145,7 @@ operations:
     derived_from_roles:
     - stove0.media.xmp-source/v1
   source_retirement_permitted: false
-  contract_sha256: 1181702c11274dde8f3401c202bcad6b6a4bf8cc8d0eb3a1289e7493f5c31b10
+  contract_sha256: 1279bebeccaac66474d95c48750eb6911beeba51c20c05c51509236caafda707
 - id: stove0.media.av1-opus-archive/v1
   result_kind: collection
   intent_schema:
@@ -284,7 +285,8 @@ operations:
     rules:
     - stove0.media.av1-opus-archive-intent.typed-model/v1
     - stove0.media.projection-policy.semantic-validation/v1
-    profile_sha256: 86dfbca784162a3cb30b652c42df7262df6b26408d0321427b261cbad9e090f9
+    conformance_vectors_sha256: e7d40a99be175a3ef3b8e3ffeb9aaf06c2755754f8ef81c02779fe02db4c4a50
+    profile_sha256: c29d0f4f59331fd94cb57af2da8c311aa9b32e4243940bd948d0894f3ed3c4b6
   inputs:
   - role: stove0.media.source/v1
     minimum: 1
@@ -311,7 +313,7 @@ operations:
     - stove0.media.source/v1
     - stove0.media.xmp-source/v1
   source_retirement_permitted: true
-  contract_sha256: 020c6c9820057200ded67b419cd3e0ea11587e7953a9cd4939dfd3fc556c3080
+  contract_sha256: 932b9104233bc3f2d0d4288c67649fce66a41a92ea6905ca271f14444387ee5f
 - id: stove0.review.materialize/v1
   result_kind: collection
   intent_schema:
@@ -413,7 +415,8 @@ operations:
     rules:
     - stove0.review.sample-plan.exact-declared-shape/v1
     - stove0.review.sample-plan.identity-verification/v1
-    profile_sha256: 7c8049255cad6c4ac154cf6fd35a6fbdacde70559ccf5f1e4ec6bf9e9f7eb679
+    conformance_vectors_sha256: eda75742bb220994e735aa6e00cb0f598dbac7de55e3cdd9576cbe4944789583
+    profile_sha256: 4625bc86e212e403da151d0c6dfe1f7a6cbf9832adea7161ffcec32656c1b79c
   inputs:
   - role: stove0.review.source/v1
     minimum: 1
@@ -435,7 +438,7 @@ operations:
     derived_from_roles:
     - stove0.review.source/v1
   source_retirement_permitted: false
-  contract_sha256: 4eebc8c253cb3d099fe98dccf3df5c797bd7f48db9410d2dbaa12f24fa39d7b4
+  contract_sha256: 4be8075379efc3b1cc7ff30f3458ad895e855e0d18357b5caf39d7997f4ec3f4
 - id: stove0.review.rclone-deliver/v1
   result_kind: external-effect
   intent_schema:
@@ -537,7 +540,8 @@ operations:
     rules:
     - stove0.review.sample-plan.exact-declared-shape/v1
     - stove0.review.sample-plan.identity-verification/v1
-    profile_sha256: 7c8049255cad6c4ac154cf6fd35a6fbdacde70559ccf5f1e4ec6bf9e9f7eb679
+    conformance_vectors_sha256: eda75742bb220994e735aa6e00cb0f598dbac7de55e3cdd9576cbe4944789583
+    profile_sha256: 4625bc86e212e403da151d0c6dfe1f7a6cbf9832adea7161ffcec32656c1b79c
   inputs:
   - role: stove0.review.source/v1
     minimum: 1
@@ -575,7 +579,7 @@ operations:
           minimum: 0
       additionalProperties: false
   source_retirement_permitted: false
-  contract_sha256: 67e24a42d55e9db5c0d978d4e756308a37c7d96786c6850b278817a0ce6a3a7e
+  contract_sha256: 6295e22ff6cd95f1c5657d427ebb47622f3625112c831ef0e51c366bfaf38ed2
 recipes:
 - id: stove0.audio-archive/v1
   revision: 1

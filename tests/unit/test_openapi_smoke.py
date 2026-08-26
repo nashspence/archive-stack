@@ -346,6 +346,14 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
         "orphaned",
         "discarding",
     ]
+    assert {
+        "files_pending",
+        "files_partial",
+        "files_uploaded",
+        "uploaded_bytes",
+        "missing_bytes",
+    }.isdisjoint(schemas["CollectionUploadSessionOut"]["properties"])
+    assert "uploaded_bytes" not in schemas["CollectionUploadListItemOut"]["properties"]
     for schema in (
         "CollectionSummaryOut",
         "CollectionUploadListItemOut",

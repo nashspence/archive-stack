@@ -53,6 +53,14 @@ from stove0_protocol.models import (
 )
 
 
+def test_json_schema_document_rejects_invalid_draft_2020_12_schema() -> None:
+    with pytest.raises(ValueError, match="not valid JSON Schema Draft 2020-12"):
+        JsonSchemaDocument.from_schema(
+            "fixture.invalid-schema/v1",
+            {"type": "definitely-not-a-json-schema-type"},
+        )
+
+
 def _sha(character: str) -> str:
     return character * 64
 

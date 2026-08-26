@@ -113,6 +113,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
             session=session,
             segments=(segment,),
             expected_bytes=len(ciphertext),
+            expected_content_type="application/vnd.riverhog.raw-volume+age",
             expected_metadata=metadata,
         )
         assert completed.object_path == volume_path
@@ -146,6 +147,7 @@ def test_canonical_archive_capabilities_against_garage_adapter() -> None:
                 ),
             ),
             expected_bytes=len(ciphertext),
+            expected_content_type="application/vnd.riverhog.raw-volume+age",
             expected_metadata=metadata,
         )
         cache_receipt = mirrored_completed.retrieval_cache

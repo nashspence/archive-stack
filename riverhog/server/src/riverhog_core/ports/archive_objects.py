@@ -71,6 +71,7 @@ class ArchiveResumableObjectStore(Protocol):
         session: WriteSession,
         segments: tuple[WriteSegmentReceipt, ...],
         expected_bytes: int,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt: ...
 
@@ -78,6 +79,7 @@ class ArchiveResumableObjectStore(Protocol):
         self,
         *,
         object_path: str,
+        expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None: ...
 

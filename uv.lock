@@ -2685,6 +2685,7 @@ name = "stove0-protocol"
 version = "0.1.0"
 source = { editable = "packages/stove0-protocol" }
 dependencies = [
+    { name = "jsonschema" },
     { name = "pydantic" },
     { name = "rfc8785" },
     { name = "riverhog-protocol" },
@@ -2692,6 +2693,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "jsonschema", specifier = ">=4.25,<5.0" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "rfc8785", specifier = ">=0.1.4,<0.2" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },

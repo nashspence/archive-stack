@@ -33,8 +33,6 @@ __all__ = [
 from riverhog_protocol.collection_upload_transport import (
     CapturedFileProvenanceBinding,
     CollectionUploadArtifactCustodyReceiptDocument,
-    CollectionUploadCreationIdentityDocument,
-    CollectionUploadCreationIdentityPayload,
     CollectionUploadCustodyMode,
     CollectionUploadCustodyObjectDocument,
     CollectionUploadFileBatchDocument,
@@ -147,8 +145,6 @@ __all__ += [
     "CapturedFileProvenanceBinding",
     "CollectionUploadFileBatchDocument",
     "CollectionUploadArtifactCustodyReceiptDocument",
-    "CollectionUploadCreationIdentityDocument",
-    "CollectionUploadCreationIdentityPayload",
     "CollectionUploadCustodyMode",
     "CollectionUploadCustodyObjectDocument",
     "CollectionUploadFileIn",

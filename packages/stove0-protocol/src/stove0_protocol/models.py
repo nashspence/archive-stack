@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -91,6 +93,10 @@ class JsonSchemaDocument(Stove0ProtocolModel):
     def verify_digest(self) -> Self:
         if canonical_json_sha256(self.document) != self.sha256:
             raise ValueError("schema sha256 does not match its canonical JSON")
+        try:
+            Draft202012Validator.check_schema(self.document)
+        except SchemaError as exc:
+            raise ValueError("schema is not valid JSON Schema Draft 2020-12") from exc
         return self
 
     @classmethod

@@ -32,6 +32,7 @@ from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
 
 _UPLOAD_NONCUSTODY_STATES = ["uploading", "finalizing", "canceled", "finalized"]
+_UPLOAD_LEASE_STATES = ["open", "closing"]
 _UPLOAD_CUSTODY_STATE_SCHEMA: list[dict[str, Any]] = [
     {
         "if": {
@@ -63,7 +64,7 @@ _UPLOAD_CUSTODY_STATE_SCHEMA: list[dict[str, Any]] = [
         "if": {
             "properties": {
                 "custody_mode": {"const": "custody-transfer"},
-                "state": {"const": "open"},
+                "state": {"enum": _UPLOAD_LEASE_STATES},
             },
             "required": ["custody_mode", "state"],
         },
@@ -103,7 +104,8 @@ CollectionUploadArchivePhase = Literal[
 ]
 _CANONICAL_UTC_TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$"
 _UPLOAD_ARCHIVE_STATE_PHASES: dict[str, tuple[str, ...]] = {
-    "open": ("planning",),
+    "open": ("planning", "uploading"),
+    "closing": ("uploading",),
     "uploading": ("uploading",),
     "finalizing": ("finalization_queued", "finalizing", "retry_wait"),
     "finalized": ("completed",),
@@ -192,8 +194,12 @@ def _validate_upload_custody_state(
         if upload_state_expires_at is not None or orphaned_at is None:
             raise ValueError("orphan custody state requires its transition time and no lease")
         return
-    if state != "open" or upload_state_expires_at is None or orphaned_at is not None:
-        raise ValueError("open custody-transfer state requires its lease and no orphan time")
+    if (
+        state not in _UPLOAD_LEASE_STATES
+        or upload_state_expires_at is None
+        or orphaned_at is not None
+    ):
+        raise ValueError("active custody-transfer state requires its lease and no orphan time")
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
@@ -425,11 +431,10 @@ class CollectionUploadListItemOut(RiverhogModel):
     archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
-    state: Literal["open", "uploading", "finalizing", "orphaned", "discarding"]
+    state: Literal["open", "closing", "uploading", "finalizing", "orphaned", "discarding"]
     custody_mode: CollectionUploadCustodyMode
     files: int
     bytes: int
-    uploaded_bytes: int
     custodied_files: int
     custodied_bytes: int
     upload_state_expires_at: str | None
@@ -509,6 +514,7 @@ class CollectionUploadSessionOut(RiverhogModel):
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
     state: Literal[
         "open",
+        "closing",
         "uploading",
         "finalizing",
         "finalized",
@@ -519,12 +525,7 @@ class CollectionUploadSessionOut(RiverhogModel):
     custody_mode: CollectionUploadCustodyMode
     registration_constraints: CollectionUploadRegistrationConstraintsOut | None
     files_total: int
-    files_pending: int
-    files_partial: int
-    files_uploaded: int
     bytes_total: int
-    uploaded_bytes: int
-    missing_bytes: int
     upload_state_expires_at: str | None
     custodied_files: int
     custodied_bytes: int
@@ -590,7 +591,7 @@ class CollectionUploadDiscardPlanOut(RiverhogModel):
     warning: str
     expires_at: str
     challenge: str | None
-    state: Literal["open", "uploading", "finalizing", "orphaned", "discarding"]
+    state: Literal["open", "closing", "uploading", "finalizing", "orphaned", "discarding"]
     files: int
     bytes: int
     custodied_files: int

@@ -998,6 +998,7 @@ def test_persistent_target_requires_and_executes_advertised_semantic_validation(
         SemanticValidationProfilePayload(
             id="fixture.copy-intent-semantics/v1",
             rules=("fixture.copy-intent.suffix-policy/v1",),
+            conformance_vectors_sha256=_sha("e"),
         )
     )
     payload = base.model_dump(mode="python", exclude={"contract_sha256"})

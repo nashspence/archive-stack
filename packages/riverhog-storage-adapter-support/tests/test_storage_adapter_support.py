@@ -51,7 +51,9 @@ from riverhog_storage_adapter_support import (
 class MemoryAdapterState:
     created: dict[str, WriteStartRequest] = field(default_factory=dict)
     segments: dict[tuple[str, int], bytes] = field(default_factory=dict)
-    objects: dict[str, tuple[bytes, dict[str, str], str | None, str]] = field(default_factory=dict)
+    objects: dict[str, tuple[bytes, str, dict[str, str], str | None, str]] = field(
+        default_factory=dict
+    )
     small_objects: set[str] = field(default_factory=set)
     read_requests: list[ReadPreparationRequest] = field(default_factory=list)
 
@@ -124,6 +126,7 @@ class MemoryAdapter:
         )
         self.objects[request.session.object_path] = (
             content,
+            created.content_type,
             created.required_identity_assertions,
             "version-1",
             created.placement,
@@ -133,6 +136,7 @@ class MemoryAdapter:
             revision="version-1",
             entity_token="completed-token",
             stored_bytes=len(content),
+            verified_content_type=created.content_type,
             verified_identity_assertions=request.required_identity_assertions,
             verified_placement=request.expected_placement,
             completed_at="2026-08-21T00:00:00.000000Z",
@@ -145,14 +149,18 @@ class MemoryAdapter:
         stored = self.objects.get(request.object_path)
         if stored is None:
             return None
-        content, metadata, revision, placement = stored
-        if metadata != request.required_identity_assertions:
+        content, content_type, metadata, revision, placement = stored
+        if (
+            content_type != request.expected_content_type
+            or metadata != request.required_identity_assertions
+        ):
             raise RuntimeError("different identity")
         return CompletedObjectReceipt(
             object_path=request.object_path,
             revision=revision,
             entity_token="completed-token",
             stored_bytes=len(content),
+            verified_content_type=content_type,
             verified_identity_assertions=metadata,
             verified_placement=placement,
             completed_at="2026-08-21T00:00:00.000000Z",
@@ -169,8 +177,13 @@ class MemoryAdapter:
         content = content if isinstance(content, bytes) else b"".join(content)
         existing = self.objects.get(request.object_path)
         if existing is not None and request.mode == "create_only":
-            existing_content, existing_metadata, _revision, _placement = existing
-            if existing_metadata != request.required_identity_assertions:
+            existing_content, existing_content_type, existing_metadata, _revision, _placement = (
+                existing
+            )
+            if (
+                existing_content_type != request.content_type
+                or existing_metadata != request.required_identity_assertions
+            ):
                 raise StorageAdapterRejection(
                     "identity_conflict",
                     "object already exists with a different identity",
@@ -181,12 +194,14 @@ class MemoryAdapter:
                 entity_token="small-token",
                 stored_bytes=len(existing_content),
                 stored_sha256=hashlib.sha256(existing_content).hexdigest(),
+                verified_content_type=existing_content_type,
                 verified_identity_assertions=request.required_identity_assertions,
                 verified_placement=request.placement,
                 completed_at="2026-08-21T00:00:00.000000Z",
             )
         self.objects[request.object_path] = (
             content,
+            request.content_type,
             request.required_identity_assertions,
             "small-version",
             request.placement,
@@ -198,6 +213,7 @@ class MemoryAdapter:
             entity_token="small-token",
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
+            verified_content_type=request.content_type,
             verified_identity_assertions=request.required_identity_assertions,
             verified_placement=request.placement,
             completed_at="2026-08-21T00:00:00.000000Z",
@@ -207,13 +223,14 @@ class MemoryAdapter:
         stored = self.objects.get(request.object.object_path)
         if stored is None:
             return None
-        content, metadata, revision, placement = stored
+        content, content_type, metadata, revision, placement = stored
         if placement != request.expected_placement:
             raise RuntimeError("different placement")
         return ObjectMetadataReceipt(
             object_path=request.object.object_path,
             revision=revision,
             entity_token="object-token",
+            content_type=content_type,
             stored_bytes=len(content),
             stored_sha256=(
                 hashlib.sha256(content).hexdigest()
@@ -312,6 +329,7 @@ def test_client_preserves_write_segment_receipts_and_declares_body_lengths() -> 
                 session=created,
                 segments=(first, second),
                 expected_bytes=11,
+                expected_content_type="application/octet-stream",
                 required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
                 expected_placement="archive",
             )
@@ -319,6 +337,7 @@ def test_client_preserves_write_segment_receipts_and_declares_body_lengths() -> 
         recovered = client.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=created.object_path,
+                expected_content_type="application/octet-stream",
                 required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
                 expected_placement="archive",
             )

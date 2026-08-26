@@ -796,8 +796,8 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         files_total=1,
         content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
     )
-    assert closed["state"] == "uploading"
-    assert closed["upload_state_expires_at"] is None
+    assert closed["state"] == ("closing" if custody_mode == "custody-transfer" else "uploading")
+    assert (closed["upload_state_expires_at"] is not None) == (custody_mode == "custody-transfer")
     assert closed["orphaned_at"] is None
     volume = service.list_volumes(collection_id)["volumes"][0]
     assert volume["kind"] == "pack"
@@ -830,7 +830,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     finalized = service.get(collection_id)
     assert finalized["state"] == "finalized"
     assert finalized["tags"] == list(tags)
-    assert finalized["uploaded_bytes"] == len(content)
+    assert finalized["custodied_bytes"] == len(content)
     assert finalized["custody_mode"] == custody_mode
 
     with session_scope(make_session_factory(config.database_url)) as session:
@@ -927,6 +927,71 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
             provenance_omission_reason="a different explicit omission",
             custody_mode=custody_mode,
         )
+
+
+def test_closed_custody_transfer_keeps_lease_until_final_tail_is_custodied(
+    tmp_path: Path,
+) -> None:
+    service, config = _service(tmp_path)
+    content = b"tail remains producer dependent\n"
+    sha256 = hashlib.sha256(content).hexdigest()
+    opened = service.create_or_resume(
+        idempotency_key="leased-final-tail",
+        tags=(),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture",
+        custody_mode="custody-transfer",
+    )
+    collection_id = int(opened["collection_id"])
+    service.register_files(
+        collection_id,
+        ({"path": "tail.txt", "bytes": len(content), "sha256": sha256},),
+    )
+    identity = collection_content_identity((("tail.txt", len(content), sha256),))
+    closing = service.complete(collection_id, files_total=1, content_identity=identity)
+    assert closing["state"] == "closing"
+    assert closing["custodied_files"] == 0
+    assert closing["upload_state_expires_at"] is not None
+
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        upload.lease_expires_at = "2020-01-01T00:00:00.000000Z"
+    assert service.reap_expired_custody_transfers() == 1
+    assert service.get(collection_id)["state"] == "orphaned"
+
+    resumed = service.create_or_resume(
+        idempotency_key="leased-final-tail",
+        tags=(),
+        ingest_source="fixture",
+        archive_store=None,
+        initiator=_CREATOR,
+        event_context=None,
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture",
+        custody_mode="custody-transfer",
+    )
+    assert resumed["state"] == "closing"
+    assert resumed["archive_phase"] == "uploading"
+    assert service.heartbeat(collection_id)["state"] == "closing"
+
+    volume = service.list_volumes(collection_id)["volumes"][0]
+    unit = volume["units"][0]
+    service.upload_unit(
+        collection_id,
+        str(volume["volume_id"]),
+        int(unit["unit"]),
+        plan_sha256=str(volume["plan_sha256"]),
+        content=content,
+    )
+    queued = service.get(collection_id)
+    assert queued["state"] == "finalizing"
+    assert queued["custodied_files"] == 1
+    assert queued["upload_state_expires_at"] is None
 
 
 def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(

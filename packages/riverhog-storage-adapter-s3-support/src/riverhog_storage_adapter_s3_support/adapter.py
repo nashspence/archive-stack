@@ -278,6 +278,7 @@ class S3StorageAdapter:
             recovered = self.find_completed_write(
                 CompletedWriteLookupRequest(
                     object_path=request.session.object_path,
+                    expected_content_type=request.expected_content_type,
                     required_identity_assertions=request.required_identity_assertions,
                     expected_placement=request.expected_placement,
                 )
@@ -295,6 +296,7 @@ class S3StorageAdapter:
         completed = self.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=request.session.object_path,
+                expected_content_type=request.expected_content_type,
                 required_identity_assertions=request.required_identity_assertions,
                 expected_placement=request.expected_placement,
             )
@@ -320,6 +322,11 @@ class S3StorageAdapter:
             raise StorageAdapterRejection(
                 "identity_conflict",
                 "object already exists with different required identity assertions",
+            )
+        if _provider_content_type(head) != request.expected_content_type:
+            raise StorageAdapterRejection(
+                "identity_conflict",
+                "object already exists with a different content type",
             )
         self._validate_placement(head, request.expected_placement)
         return self._completed_receipt(
@@ -600,6 +607,8 @@ class S3StorageAdapter:
             for key, value in request.required_identity_assertions.items()
         ):
             return None
+        if _provider_content_type(head) != request.content_type:
+            return None
         self._validate_placement(head, request.placement)
         receipt = self._immutable_receipt(
             request.object_path,
@@ -700,6 +709,7 @@ class S3StorageAdapter:
             revision=_provider_revision(head),
             entity_token=_provider_entity_token(head),
             stored_bytes=int(str(head["ContentLength"])),
+            verified_content_type=_provider_content_type(head),
             verified_identity_assertions=verified_identity_assertions,
             verified_placement=verified_placement,
             completed_at=_provider_timestamp(head),
@@ -722,6 +732,7 @@ class S3StorageAdapter:
             entity_token=_provider_entity_token(head),
             stored_bytes=int(str(head["ContentLength"])),
             stored_sha256=stored_sha256,
+            verified_content_type=_provider_content_type(head),
             verified_identity_assertions=verified_identity_assertions,
             verified_placement=verified_placement,
             completed_at=_provider_timestamp(head),
@@ -892,6 +903,13 @@ def _provider_revision(head: dict[str, Any]) -> str | None:
 def _provider_entity_token(head: dict[str, Any]) -> str | None:
     value = head.get("ETag")
     return str(value) if value is not None else None
+
+
+def _provider_content_type(head: dict[str, Any]) -> str:
+    value = str(head.get("ContentType") or "").strip()
+    if not value:
+        raise RuntimeError("S3 object is missing its content type")
+    return value
 
 
 def _provider_timestamp(head: dict[str, Any]) -> str:

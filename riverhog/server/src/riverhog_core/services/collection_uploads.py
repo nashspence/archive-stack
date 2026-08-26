@@ -18,8 +18,6 @@ from riverhog_archive_contracts import CollectionEncryptionBinding
 from riverhog_protocol import (
     CapturedFileProvenanceBinding,
     CollectionUploadArtifactCustodyReceiptDocument,
-    CollectionUploadCreationIdentityDocument,
-    CollectionUploadCreationIdentityPayload,
     CollectionUploadCustodyMode,
     CollectionUploadCustodyObjectDocument,
     CollectionUploadFileBatchDocument,
@@ -96,6 +94,10 @@ from riverhog_core.collection_access import (
     permission_resources,
     require_collection_create_access,
     tag_ids,
+)
+from riverhog_core.collection_creation_identity import (
+    CollectionUploadCreationIdentityDocument,
+    CollectionUploadCreationIdentityPayload,
 )
 from riverhog_core.collection_metadata import collection_record_manifest
 from riverhog_core.collection_plan import CollectionVolumePolicy
@@ -297,9 +299,17 @@ class SqlAlchemyCollectionUploadService:
                 if upload.creation_identity_sha256 != creation_identity.creation_identity_sha256:
                     raise Conflict("collection upload idempotency identity changed")
                 if upload.state == "orphaned":
-                    upload.state = "open"
+                    checkpoint = _planner_checkpoint(upload)
+                    upload.state = "closing" if checkpoint.closed else "open"
                     upload.orphaned_at = None
-                    _touch_upload(upload, config=self._config)
+                    resumed_at = utc_timestamp_now()
+                    _touch_upload(upload, config=self._config, now=resumed_at)
+                    upload.archive_phase = (
+                        "uploading" if checkpoint.closed or upload.archive_objects else "planning"
+                    )
+                    upload.archive_phase_updated_at = resumed_at
+                    upload.archive_failure = None
+                    upload.archive_next_attempt_at = None
                 elif upload.state == "discarding":
                     raise Conflict("collection upload discard is in progress")
                 return _upload_payload(session, upload, resumed=True)
@@ -657,7 +667,7 @@ class SqlAlchemyCollectionUploadService:
             )
             if upload is None:
                 raise NotFound(f"collection upload session not found: {normalized_id}")
-            if upload.state not in {"open", "uploading", "finalizing"}:
+            if upload.state not in {"open", "closing", "uploading", "finalizing"}:
                 raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
             if upload.state == "finalizing":
                 return _upload_payload(session, upload)
@@ -704,8 +714,15 @@ class SqlAlchemyCollectionUploadService:
                 raise Conflict(
                     "collection upload volume plans differ from registered files"
                 ) from exc
-            upload.state = "uploading"
-            upload.lease_expires_at = None
+            custody_pending = (
+                upload.custody_mode == "custody-transfer"
+                and not _has_complete_artifact_custody(upload)
+            )
+            upload.state = "closing" if custody_pending else "uploading"
+            if custody_pending:
+                _touch_upload(upload, config=self._config)
+            else:
+                upload.lease_expires_at = None
             upload.provenance_identity = actual_provenance_identity
             upload.closed_at = utc_timestamp_now()
             upload.last_activity_at = upload.closed_at
@@ -805,7 +822,7 @@ class SqlAlchemyCollectionUploadService:
             )
             if upload is None or record is None:
                 raise NotFound(f"collection upload volume not found: {volume_id}")
-            if upload.state not in {"open", "uploading"}:
+            if upload.state not in {"open", "closing", "uploading"}:
                 raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
             if plan_sha256 != record.plan_sha256:
                 raise Conflict("archive upload unit plan identity changed")
@@ -941,7 +958,7 @@ class SqlAlchemyCollectionUploadService:
                 raise NotFound(f"collection upload session not found: {normalized_id}")
             if upload.custody_mode != "custody-transfer":
                 raise Conflict("collection upload does not have a custody-transfer lease")
-            if upload.state != "open":
+            if upload.state not in {"open", "closing"}:
                 raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
             _touch_upload(upload, config=self._config)
             return _upload_payload(session, upload)
@@ -958,7 +975,7 @@ class SqlAlchemyCollectionUploadService:
                     select(CollectionUploadRecord)
                     .where(
                         CollectionUploadRecord.custody_mode == "custody-transfer",
-                        CollectionUploadRecord.state == "open",
+                        CollectionUploadRecord.state.in_(("open", "closing")),
                         CollectionUploadRecord.lease_expires_at.is_not(None),
                         CollectionUploadRecord.lease_expires_at <= now,
                     )
@@ -1391,7 +1408,7 @@ class SqlAlchemyCollectionUploadService:
             uploads = list(
                 session.scalars(
                     select(CollectionUploadRecord)
-                    .where(CollectionUploadRecord.state.in_(("uploading", "finalizing")))
+                    .where(CollectionUploadRecord.state.in_(("closing", "uploading", "finalizing")))
                     .order_by(
                         CollectionUploadRecord.archive_phase_updated_at,
                         CollectionUploadRecord.collection_id,
@@ -1467,7 +1484,7 @@ class SqlAlchemyCollectionUploadService:
             uploads = list(
                 session.scalars(
                     select(CollectionUploadRecord)
-                    .where(CollectionUploadRecord.state == "uploading")
+                    .where(CollectionUploadRecord.state.in_(("closing", "uploading")))
                     .order_by(
                         CollectionUploadRecord.archive_phase_updated_at,
                         CollectionUploadRecord.collection_id,
@@ -2389,11 +2406,19 @@ def _ready_for_finalization(upload: CollectionUploadRecord) -> bool:
         checkpoint.closed
         and upload.archive_objects
         and all(current.state == "sealed" for current in upload.archive_objects)
+        and _has_complete_artifact_custody(upload)
+    )
+
+
+def _has_complete_artifact_custody(upload: CollectionUploadRecord) -> bool:
+    return bool(upload.files) and all(
+        current.custody_receipt_json is not None for current in upload.files
     )
 
 
 def _mark_finalization_ready(upload: CollectionUploadRecord, *, now: str) -> None:
     upload.state = "finalizing"
+    upload.lease_expires_at = None
     upload.archive_phase = "finalization_queued"
     upload.archive_phase_updated_at = now
     upload.archive_next_attempt_at = now
@@ -2663,7 +2688,6 @@ def _upload_list_payload(
         "custody_mode": upload.custody_mode,
         "files": files,
         "bytes": byte_count,
-        "uploaded_bytes": custodied_bytes,
         "custodied_files": custodied_files,
         "custodied_bytes": custodied_bytes,
         "upload_state_expires_at": upload.lease_expires_at,
@@ -2776,7 +2800,7 @@ def _touch_upload(
 ) -> None:
     current = now or utc_timestamp_now()
     upload.last_activity_at = current
-    if upload.custody_mode == "custody-transfer" and upload.state == "open":
+    if upload.custody_mode == "custody-transfer" and upload.state in {"open", "closing"}:
         upload.lease_expires_at = _custody_lease_expiry(config, now=current)
 
 
@@ -2844,7 +2868,7 @@ def _upload_payload(
             func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0),
         ).where(CollectionUploadFileRecord.collection_id == upload.collection_id)
     ).one()
-    custodied_files, uploaded_bytes = _custody_stats(session, upload.collection_id)
+    custodied_files, custodied_bytes = _custody_stats(session, upload.collection_id)
     archive_progress = session.execute(
         select(
             func.coalesce(func.sum(CollectionArchiveObjectUploadRecord.uploaded_bytes), 0),
@@ -2868,15 +2892,10 @@ def _upload_payload(
             _planner_checkpoint(upload).policy
         ),
         "files_total": int(files_total),
-        "files_pending": max(0, int(files_total) - custodied_files),
-        "files_partial": 0,
-        "files_uploaded": custodied_files,
         "bytes_total": int(bytes_total),
-        "uploaded_bytes": min(int(bytes_total), uploaded_bytes),
-        "missing_bytes": max(0, int(bytes_total) - uploaded_bytes),
         "upload_state_expires_at": None if state == "canceled" else upload.lease_expires_at,
         "custodied_files": custodied_files,
-        "custodied_bytes": uploaded_bytes,
+        "custodied_bytes": custodied_bytes,
         "orphaned_at": None if state == "canceled" else upload.orphaned_at,
         "latest_failure": upload.archive_failure,
         "archive_phase": upload.archive_phase,
@@ -2943,12 +2962,7 @@ def _finalized_payload(
         "custody_mode": collection.creation_custody_mode,
         "registration_constraints": None,
         "files_total": summary["files"],
-        "files_pending": 0,
-        "files_partial": 0,
-        "files_uploaded": summary["files"],
         "bytes_total": summary["bytes"],
-        "uploaded_bytes": summary["bytes"],
-        "missing_bytes": 0,
         "upload_state_expires_at": None,
         "custodied_files": summary["files"],
         "custodied_bytes": summary["bytes"],

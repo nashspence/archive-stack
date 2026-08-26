@@ -84,6 +84,7 @@ def test_write_completion_preserves_optional_digests_and_repeated_provider_token
             ),
         ),
         expected_bytes=12,
+        expected_content_type="application/vnd.riverhog.pack+age",
         required_identity_assertions={"Riverhog-Format": "riverhog-pack-volume/v1"},
         expected_placement="archive",
     )
@@ -97,6 +98,7 @@ def test_write_completion_preserves_optional_digests_and_repeated_provider_token
 def test_completed_write_attestation_binds_exact_identity_and_placement() -> None:
     request = CompletedWriteLookupRequest(
         object_path="archives/id/volumes/pack.tar.age",
+        expected_content_type="application/vnd.riverhog.pack+age",
         required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
         expected_placement="archive",
     )
@@ -105,6 +107,7 @@ def test_completed_write_attestation_binds_exact_identity_and_placement() -> Non
         revision="opaque-revision",
         entity_token="opaque-entity",
         stored_bytes=12,
+        verified_content_type=request.expected_content_type,
         verified_identity_assertions=request.required_identity_assertions,
         verified_placement=request.expected_placement,
         completed_at="2026-08-25T00:00:00.000000Z",
@@ -115,6 +118,7 @@ def test_completed_write_attestation_binds_exact_identity_and_placement() -> Non
         session=WriteSession(object_path=request.object_path, write_token="opaque-write"),
         segments=(WriteSegmentReceipt(number=1, segment_token="opaque-part", stored_bytes=12),),
         expected_bytes=12,
+        expected_content_type=request.expected_content_type,
         required_identity_assertions=request.required_identity_assertions,
         expected_placement=request.expected_placement,
     )
@@ -135,6 +139,11 @@ def test_completed_write_attestation_binds_exact_identity_and_placement() -> Non
             receipt.model_copy(
                 update={"verified_identity_assertions": {"riverhog-format": "other/v1"}}
             ),
+        )
+    with pytest.raises(ValueError, match="content type"):
+        validate_completed_write_response(
+            request,
+            receipt.model_copy(update={"verified_content_type": "application/octet-stream"}),
         )
     with pytest.raises(ValueError, match="placement"):
         validate_completed_write_response(
@@ -368,6 +377,7 @@ def test_listed_write_segments_allow_sparse_restart_state_but_completion_does_no
             session=session,
             segments=listed.segments,
             expected_bytes=1,
+            expected_content_type="application/octet-stream",
             required_identity_assertions={"identity": "exact"},
             expected_placement="archive",
         )
@@ -404,6 +414,7 @@ def test_small_write_and_head_success_bind_exact_storage_predicates() -> None:
         object_path=request.object_path,
         stored_bytes=request.stored_bytes,
         stored_sha256=request.stored_sha256,
+        verified_content_type=request.content_type,
         verified_identity_assertions=request.required_identity_assertions,
         verified_placement=request.placement,
         completed_at="2026-08-25T00:00:00.000000Z",
@@ -419,6 +430,11 @@ def test_small_write_and_head_success_bind_exact_storage_predicates() -> None:
         validate_small_object_response(
             request,
             receipt.model_copy(update={"verified_identity_assertions": {"identity": "other"}}),
+        )
+    with pytest.raises(ValueError, match="immutable-object receipt"):
+        validate_small_object_response(
+            request,
+            receipt.model_copy(update={"verified_content_type": "text/plain"}),
         )
 
     head = ObjectHeadRequest(

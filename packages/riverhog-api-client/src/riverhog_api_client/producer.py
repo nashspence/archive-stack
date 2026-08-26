@@ -768,10 +768,11 @@ class IncrementalCollectionProducer:
     def _append_sources(self, values: Sequence[_Source], *, terminal: bool = False) -> None:
         candidates = list(values)
         if PRODUCER_EVIDENCE_PATH not in self._registered:
-            first_key = collection_upload_path_order_key(candidates[0].path) if candidates else None
+            evidence_key = collection_upload_path_order_key(PRODUCER_EVIDENCE_PATH)
             if terminal or (
-                first_key is not None
-                and collection_upload_path_order_key(PRODUCER_EVIDENCE_PATH) <= first_key
+                candidates
+                and evidence_key
+                <= max(collection_upload_path_order_key(source.path) for source in candidates)
             ):
                 candidates.append(self._producer_evidence)
         candidates.sort(key=lambda current: collection_upload_path_order_key(current.path))

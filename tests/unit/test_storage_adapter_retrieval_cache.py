@@ -116,6 +116,7 @@ class _Adapter:
         self.revisions[request.session.object_path] = "version-1"
         return self._completed(
             request.session.object_path,
+            content_type=request.expected_content_type,
             identity_assertions=request.required_identity_assertions,
             placement=request.expected_placement,
         )
@@ -128,6 +129,7 @@ class _Adapter:
             return None
         return self._completed(
             request.object_path,
+            content_type=request.expected_content_type,
             identity_assertions=request.required_identity_assertions,
             placement=request.expected_placement,
         )
@@ -151,6 +153,7 @@ class _Adapter:
             entity_token="entity-small",
             stored_bytes=len(content),
             stored_sha256=request.stored_sha256,
+            verified_content_type=request.content_type,
             verified_identity_assertions=request.required_identity_assertions,
             verified_placement=request.placement,
             completed_at="2026-08-21T00:00:00.000000Z",
@@ -176,6 +179,7 @@ class _Adapter:
         self,
         object_path: str,
         *,
+        content_type: str,
         identity_assertions: dict[str, str],
         placement: ObjectPlacement,
     ) -> AdapterCompletedObjectReceipt:
@@ -184,6 +188,7 @@ class _Adapter:
             revision=self.revisions[object_path],
             entity_token="entity-1",
             stored_bytes=len(self.objects[object_path]),
+            verified_content_type=content_type,
             verified_identity_assertions=identity_assertions,
             verified_placement=placement,
             completed_at="2026-08-21T00:00:00.000000Z",
