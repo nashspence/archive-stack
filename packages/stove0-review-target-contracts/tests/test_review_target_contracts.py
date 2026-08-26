@@ -3,12 +3,14 @@ from __future__ import annotations
 import pytest
 from stove0_review_target_contracts import (
     REVIEW_MATERIALIZE_INTENT_SCHEMA,
+    REVIEW_MATERIALIZE_INTENT_SEMANTICS,
     REVIEW_MATERIALIZE_OPERATION,
     REVIEW_RCLONE_DELIVER_OPERATION,
     ReviewMaterializeIntent,
     ReviewSamplePlan,
     ReviewSamplePlanPayload,
     ReviewSampleWindow,
+    validate_review_materialize_intent,
 )
 
 
@@ -30,13 +32,13 @@ def test_review_target_contracts_retain_exact_result_and_retirement_semantics() 
     assert REVIEW_MATERIALIZE_OPERATION.id == "stove0.review.materialize/v1"
     assert (
         REVIEW_MATERIALIZE_OPERATION.contract_sha256
-        == "ff0157d80d1bf97e73c983ae6edb64da86570305f41ade031fda4671e0dd2532"
+        == "4eebc8c253cb3d099fe98dccf3df5c797bd7f48db9410d2dbaa12f24fa39d7b4"
     )
     assert REVIEW_MATERIALIZE_OPERATION.result_kind == "collection"
     assert REVIEW_RCLONE_DELIVER_OPERATION.id == "stove0.review.rclone-deliver/v1"
     assert (
         REVIEW_RCLONE_DELIVER_OPERATION.contract_sha256
-        == "df33cea0d93fd8ecfff758bfeb952cb923997acbb03fec5f89908067abd35cf7"
+        == "67e24a42d55e9db5c0d978d4e756308a37c7d96786c6850b278817a0ce6a3a7e"
     )
     assert REVIEW_RCLONE_DELIVER_OPERATION.result_kind == "external-effect"
     assert REVIEW_MATERIALIZE_OPERATION.source_retirement_permitted is False
@@ -48,6 +50,9 @@ def test_review_target_contracts_retain_exact_result_and_retirement_semantics() 
     }
     assert ReviewMaterializeIntent.model_validate(intent).sample_plan == plan
     assert REVIEW_MATERIALIZE_INTENT_SCHEMA.document == ReviewMaterializeIntent.model_json_schema()
+    assert REVIEW_MATERIALIZE_OPERATION.intent_semantics == REVIEW_MATERIALIZE_INTENT_SEMANTICS
+    assert REVIEW_RCLONE_DELIVER_OPERATION.intent_semantics == REVIEW_MATERIALIZE_INTENT_SEMANTICS
+    validate_review_materialize_intent(intent)
 
 
 def test_review_sample_plan_enforces_its_exact_declared_shape() -> None:

@@ -501,6 +501,8 @@ def seed_archive_copy(
         collection = CollectionRecord(
             id=current.collection_id,
             creation_idempotency_key="fixture-docs",
+            creation_identity_sha256=f"{current.collection_id:064x}",
+            creation_custody_mode="producer-retained",
             content_identity=content_identity,
             encryption_format=ARCHIVE_ENCRYPTION_FORMAT,
             passphrase_id=DEV_ARCHIVE_PASSPHRASE_ID,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator
 from riverhog_protocol.collection_workflows import PRODUCER_EVIDENCE_PATH
 from stove0_observer_client import ContentObserverClient, ObserverProtocolError
 from stove0_observer_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     ObservationInvocation,
     ObservationRequest,
     ObservationRequestPayload,
@@ -39,6 +40,8 @@ from stove0_protocol import (
     ArtifactSubject,
     CollectionRootRef,
     JsonSchemaDocument,
+    SemanticValidationProfile,
+    SemanticValidationProfilePayload,
     canonical_json_sha256,
 )
 
@@ -165,6 +168,7 @@ def _contract() -> ObserverContract:
                     "additionalProperties": False,
                 },
             ),
+            facts_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             maximum_result_bytes=4096,
         )
     )
@@ -535,6 +539,68 @@ def test_framework_neutral_observer_http_binding() -> None:
     result = ObservationResult.model_validate_json(result_response.body)
     assert result.facts == {"bytes": len(api.data)}
     assert binding.handle("DELETE", "/v1/observer").status == 405
+
+
+def test_observer_binding_requires_and_executes_the_exact_semantic_profile() -> None:
+    api = RetrievalApi()
+    base = _contract()
+    semantics = SemanticValidationProfile.seal(
+        SemanticValidationProfilePayload(
+            id="fixture.bytes-facts-semantics/v1",
+            rules=("fixture.bytes-facts.nonzero/v1",),
+        )
+    )
+    payload = base.model_dump(mode="python", exclude={"contract_sha256"})
+    payload["facts_semantics"] = semantics
+    contract = ObserverContract.seal(ObserverContractPayload.model_validate(payload))
+    descriptor = _descriptor(contract)
+
+    assert (
+        ObserverHttpBinding(BindingObserver(descriptor)).handle("GET", "/v1/observer").status == 500
+    )
+    assert (
+        ObserverHttpBinding(
+            BindingObserver(descriptor),
+            facts_semantic_validators={"f" * 64: lambda _request, _facts: None},
+        )
+        .handle("GET", "/v1/observer")
+        .status
+        == 500
+    )
+
+    called: list[Mapping[str, object]] = []
+
+    def reject_facts(
+        _request: ObservationRequest,
+        facts: Mapping[str, object],
+    ) -> None:
+        called.append(facts)
+        raise ValueError("fixture semantic policy rejected the facts")
+
+    request = _request(contract, descriptor, api)
+    invocation = ObservationInvocation(
+        request=request,
+        claim_id="claim-1",
+        fence=3,
+        runtime=ObserverRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="secret-capability",
+            workspace_assurance="ephemeral",
+        ),
+    )
+    binding = ObserverHttpBinding(
+        BindingObserver(descriptor),
+        facts_semantic_validators={semantics.profile_sha256: reject_facts},
+    )
+
+    assert binding.handle("GET", "/v1/observer").status == 200
+    response = binding.handle(
+        "POST",
+        "/v1/observe",
+        invocation.model_dump_json(exclude_none=True).encode(),
+    )
+    assert response.status == 500
+    assert called == [{"bytes": len(api.data)}]
 
 
 def test_observer_descriptor_failure_uses_the_public_error_envelope() -> None:

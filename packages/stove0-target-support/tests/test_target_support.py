@@ -4,6 +4,7 @@ import hashlib
 import os
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,8 @@ from stove0_protocol import (
     JsonSchemaDocument,
     OperationRef,
     RecipeRef,
+    SemanticValidationProfile,
+    SemanticValidationProfilePayload,
     TargetPlanBinding,
     WorkflowPlan,
     WorkflowPlanPayload,
@@ -53,6 +56,7 @@ from stove0_target_client import TargetClient, TargetProtocolError
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     EFFECT_TARGET_PROTOCOL,
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     TARGET_HTTP_OPERATIONS,
     TARGET_TERMINAL_STATE_RETENTION_ENV,
     EffectPlan,
@@ -143,6 +147,7 @@ def _operation() -> OperationContract:
                     "additionalProperties": False,
                 },
             ),
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             inputs=(
                 InputArtifactContract(
                     role="fixture.source/v1",
@@ -290,6 +295,7 @@ def _effect_request() -> tuple[OperationContract, TargetContract, TargetJobReque
                 "fixture.record-index-intent/v1",
                 {"type": "object", "additionalProperties": False},
             ),
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             inputs=(
                 InputArtifactContract(
                     role="fixture.source/v1",
@@ -982,6 +988,55 @@ def test_target_operation_matching_enforces_the_declared_job_identity() -> None:
     )
     assert response.status == 404
     assert b'"code":"not_found"' in response.body
+
+
+def test_persistent_target_requires_and_executes_advertised_semantic_validation(
+    tmp_path: Path,
+) -> None:
+    base = _operation()
+    semantics = SemanticValidationProfile.seal(
+        SemanticValidationProfilePayload(
+            id="fixture.copy-intent-semantics/v1",
+            rules=("fixture.copy-intent.suffix-policy/v1",),
+        )
+    )
+    payload = base.model_dump(mode="python", exclude={"contract_sha256"})
+    payload["intent_semantics"] = semantics
+    operation = OperationContract.seal(OperationContractPayload.model_validate(payload))
+    target = _target(operation)
+
+    with pytest.raises(ValueError, match="semantic validators"):
+        PersistentTargetService(
+            contract=target,
+            operations={operation.id: operation},
+            state_root=tmp_path / "missing-validator",
+            execute=lambda *_args: pytest.fail("target execution must not start"),
+        )
+
+    def validate_intent(intent: Mapping[str, object]) -> None:
+        if intent.get("suffix") != ".accepted":
+            raise ValueError("fixture suffix policy rejected the intent")
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=tmp_path / "validated",
+        execute=lambda *_args: pytest.fail("target execution must not start"),
+        intent_semantic_validators={operation.intent_semantics.profile_sha256: validate_intent},
+    )
+    try:
+        with pytest.raises(TargetServiceError, match="suffix policy"):
+            service.preflight(
+                TargetPreflightRequest(
+                    operation_id=operation.id,
+                    operation_contract_sha256=operation.contract_sha256,
+                    inputs=(_input(),),
+                    intent={"suffix": ".rejected"},
+                    target_options={},
+                )
+            )
+    finally:
+        service.close()
 
 
 def test_persistent_target_service_uses_canonical_public_error_codes(tmp_path: Path) -> None:

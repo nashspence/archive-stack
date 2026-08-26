@@ -68,6 +68,8 @@ def test_startup_rejects_a_persisted_key_id_without_its_secret(tmp_path: Path) -
             CollectionRecord(
                 id=1,
                 creation_idempotency_key="fixture",
+                creation_identity_sha256="e" * 64,
+                creation_custody_mode="producer-retained",
                 content_identity="a" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="removed-archive-key-v1",
@@ -97,6 +99,8 @@ def test_startup_rejects_an_uploaded_copy_without_recovery_descriptor(tmp_path: 
             CollectionRecord(
                 id=1,
                 creation_idempotency_key="fixture",
+                creation_identity_sha256="e" * 64,
+                creation_custody_mode="producer-retained",
                 content_identity="a" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="riverhog-dev-key-v1",

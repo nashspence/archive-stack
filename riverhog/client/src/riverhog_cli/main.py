@@ -144,7 +144,7 @@ UPLOAD_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
 UPLOAD_RESUME_RETRY_MAX_DELAY_SECONDS = 10.0
 UPLOAD_RESUME_RETRY_LOG_INTERVAL_SECONDS = 30.0
 UPLOAD_LOG_LOCK = threading.Lock()
-UploadCompletionState = Literal["finalized", "failed", "timeout"]
+UploadCompletionState = Literal["finalized", "timeout"]
 _API_CLIENT: ApiClient | None = None
 
 
@@ -1347,8 +1347,6 @@ def _wait_for_finalized_collection(
             state = str(last_payload.get("state", "unknown"))
             if state == "finalized":
                 return last_payload, "finalized"
-            if state == "failed":
-                return last_payload, "failed"
             if state == "canceled":
                 raise RuntimeError("collection upload was canceled before custody completed")
             if now - last_status_log_at >= UPLOAD_FINALIZE_STATUS_INTERVAL_SECONDS:
@@ -1497,9 +1495,6 @@ def _upload_collection_via_session(
         if completion_state == "timeout":
             progress.notice("Timed out waiting for verified custody", phase="timeout")
             raise typer.Exit(124)
-        if completion_state == "failed":
-            progress.notice("Collection finalization failed", phase="failed")
-            raise typer.Exit(1)
         progress.notice("Collection finalized with verified archive custody", phase="finalized")
         return final_payload
 
@@ -1712,8 +1707,6 @@ def upload_cmd(
         payload if json_mode else format_collection_upload(payload),
         json_mode=json_mode,
     )
-    if payload.get("state") == "failed":
-        raise typer.Exit(1)
 
 
 _COLLECTION_UPLOAD_SORT_FIELDS = {"id", "created_at", "state", "bytes", "files"}
@@ -1828,8 +1821,6 @@ def upload_watch_cmd(
         None,
     )
     emit(payload if json_mode else format_collection_upload(payload), json_mode=json_mode)
-    if completion_state == "failed":
-        raise typer.Exit(1)
     if completion_state == "timeout":
         raise typer.Exit(124)
 

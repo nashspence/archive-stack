@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -37,6 +38,7 @@ from riverhog_protocol import (
     ArchiveStoreSort,
     CollectionId,
     CollectionSort,
+    CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadCustodyMode,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
@@ -44,6 +46,7 @@ from riverhog_protocol import (
     CollectionUploadSort,
     CollectionUploadState,
     DownloadQuotaSort,
+    ImmutableFileIdentityDocument,
     PortableCollectionRecord,
     ProcessingClaimId,
     ProvenanceSort,
@@ -55,6 +58,7 @@ from riverhog_protocol import (
     SearchSort,
     SortOrder,
     TagSort,
+    validate_collection_upload_artifact_custody_receipt,
     validate_collection_upload_batch_against_registration_constraints,
 )
 from riverhog_protocol.errors import (
@@ -175,6 +179,42 @@ def _validated_collection_upload_idempotency_key(
         return _COLLECTION_UPLOAD_IDEMPOTENCY_KEY.validate_python(value, strict=True)
     except ValidationError as exc:
         raise BadRequest(str(exc)) from exc
+
+
+def _validated_collection_upload_file_response(
+    collection_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        if _COLLECTION_ID.validate_python(payload.get("collection_id")) != collection_id:
+            raise ValueError("collection upload file response differs from its request")
+        rows = payload.get("files")
+        if not isinstance(rows, list):
+            raise ValueError("collection upload file response has no file inventory")
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise ValueError("collection upload file response contains an invalid row")
+            receipt_value = row.get("custody_receipt")
+            if receipt_value is None:
+                continue
+            artifact = ImmutableFileIdentityDocument.model_validate(
+                {
+                    "path": row.get("path"),
+                    "bytes": row.get("bytes"),
+                    "sha256": row.get("sha256"),
+                }
+            )
+            receipt = CollectionUploadArtifactCustodyReceiptDocument.model_validate_json(
+                json.dumps(receipt_value, sort_keys=True, separators=(",", ":"))
+            )
+            validate_collection_upload_artifact_custody_receipt(
+                collection_id,
+                artifact,
+                receipt,
+            )
+    except (TypeError, ValidationError, ValueError) as exc:
+        raise InvalidState("API returned an invalid collection upload file response") from exc
+    return payload
 
 
 def _restore_policy(value: RestorePolicy) -> RestorePolicy:
@@ -929,10 +969,14 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             raise BadRequest(str(exc)) from exc
         except ValueError as exc:
             raise BadRequest(str(exc)) from exc
-        return self._json(
-            "POST",
-            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/files",
-            json=batch.model_dump(mode="json"),
+        normalized_collection_id = _collection_id(collection_id)
+        return _validated_collection_upload_file_response(
+            normalized_collection_id,
+            self._json(
+                "POST",
+                f"/v1/collection-upload-sessions/{str(normalized_collection_id)}/files",
+                json=batch.model_dump(mode="json"),
+            ),
         )
 
     def list_collection_upload_session_files(
@@ -943,14 +987,18 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         per_page: int = 25,
         all_items: bool = False,
     ) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/files",
-            params={
-                "page": page,
-                "per_page": per_page,
-                "all": str(all_items).lower(),
-            },
+        normalized_collection_id = _collection_id(collection_id)
+        return _validated_collection_upload_file_response(
+            normalized_collection_id,
+            self._json(
+                "GET",
+                f"/v1/collection-upload-sessions/{str(normalized_collection_id)}/files",
+                params={
+                    "page": page,
+                    "per_page": per_page,
+                    "all": str(all_items).lower(),
+                },
+            ),
         )
 
     def put_collection_upload_session_provenance_journal(
@@ -1030,7 +1078,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if state:
             params["state"] = _one_of(
                 state,
-                frozenset({"open", "uploading", "finalizing", "failed", "orphaned", "discarding"}),
+                frozenset({"open", "uploading", "finalizing", "orphaned", "discarding"}),
                 "collection-upload state",
             )
         if tag is not None:

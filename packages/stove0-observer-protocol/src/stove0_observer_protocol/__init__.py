@@ -8,6 +8,7 @@ HTTP client, Riverhog data plane, and stove0 core.
 
 from stove0_protocol.models import (
     ARTIFACT_ID_PATTERN,
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     OBSERVATION_REQUEST_FORMAT,
     OBSERVATION_RESULT_FORMAT,
     OBSERVER_PROTOCOL,
@@ -33,6 +34,8 @@ from stove0_protocol.models import (
     ObserverImplementation,
     ObserverRuntimeAuthority,
     SemanticId,
+    SemanticValidationProfile,
+    SemanticValidationProfilePayload,
     Sha256,
     canonical_json_bytes,
     canonical_json_sha256,
@@ -46,6 +49,7 @@ from stove0_observer_protocol.validation import (
 __all__ = [
     "ARTIFACT_ID_PATTERN",
     "OBSERVER_PROTOCOL",
+    "JSON_SCHEMA_ONLY_SEMANTIC_PROFILE",
     "OBSERVATION_REQUEST_FORMAT",
     "OBSERVATION_RESULT_FORMAT",
     "RIVERHOG_CAPABILITY_TRANSPORT",
@@ -70,6 +74,8 @@ __all__ = [
     "ObserverImplementation",
     "ObserverRuntimeAuthority",
     "SemanticId",
+    "SemanticValidationProfile",
+    "SemanticValidationProfilePayload",
     "Sha256",
     "canonical_json_bytes",
     "canonical_json_sha256",

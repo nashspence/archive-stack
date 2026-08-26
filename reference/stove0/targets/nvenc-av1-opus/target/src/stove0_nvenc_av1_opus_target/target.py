@@ -17,6 +17,7 @@ from stove0_media_archive_target_contracts import (
     METADATA_XMP_ROLE,
     SOURCE_ARTIFACT_ROLE,
     Av1OpusArchiveIntent,
+    validate_av1_opus_archive_intent,
 )
 from stove0_media_archive_target_support import (
     MediaArchiveProjection,
@@ -115,6 +116,11 @@ class NvencAv1OpusTargetService(PersistentTargetService):
             operations={AV1_OPUS_ARCHIVE_OPERATION.id: AV1_OPUS_ARCHIVE_OPERATION},
             state_root=state_root,
             execute=self._execute,
+            intent_semantic_validators={
+                AV1_OPUS_ARCHIVE_OPERATION.intent_semantics.profile_sha256: (
+                    validate_av1_opus_archive_intent
+                )
+            },
             terminal_state_retention_seconds=terminal_state_retention_seconds,
         )
 

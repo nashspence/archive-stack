@@ -17,6 +17,7 @@ from riverhog_api.schemas.archive import (
 from riverhog_api.schemas.collections import (
     CollectionDeletionPlanOut,
     CollectionUploadFileOut,
+    CollectionUploadListItemOut,
     CollectionUploadSessionOut,
 )
 from riverhog_api.schemas.provenance import (
@@ -214,7 +215,7 @@ def test_operational_responses_reject_contradictory_state_evidence() -> None:
         )
 
 
-def test_finalized_and_failed_upload_sessions_require_terminal_evidence() -> None:
+def test_finalized_upload_sessions_require_immutable_evidence() -> None:
     payload = {
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
@@ -243,32 +244,121 @@ def test_finalized_and_failed_upload_sessions_require_terminal_evidence() -> Non
         "orphaned_at": None,
         "collection": None,
     }
+    schema_validator = Draft202012Validator(CollectionUploadSessionOut.model_json_schema())
     with pytest.raises(ValidationError, match="immutable collection evidence"):
         CollectionUploadSessionOut.model_validate(payload)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(payload)
 
-    failed = deepcopy(payload)
-    failed.update(
+    open_with_final_identity = deepcopy(payload)
+    open_with_final_identity.update(
         {
-            "state": "failed",
+            "state": "open",
+            "content_identity": "a" * 64,
             "registration_constraints": {
                 "pack_member_bytes": 1,
                 "raw_part_plaintext_bytes": 65536,
             },
         }
     )
-    with pytest.raises(ValidationError, match="failure evidence"):
-        CollectionUploadSessionOut.model_validate(failed)
-
-    open_with_final_identity = deepcopy(failed)
-    open_with_final_identity.update(
-        {
-            "state": "open",
-            "content_identity": "a" * 64,
-            "latest_failure": None,
-        }
-    )
     with pytest.raises(ValidationError, match="nonfinal"):
         CollectionUploadSessionOut.model_validate(open_with_final_identity)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(open_with_final_identity)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"custody_mode": "producer-retained", "upload_state_expires_at": "later"},
+        {
+            "custody_mode": "producer-retained",
+            "state": "orphaned",
+            "orphaned_at": "now",
+        },
+        {"custody_mode": "custody-transfer", "upload_state_expires_at": None},
+        {
+            "custody_mode": "custody-transfer",
+            "state": "orphaned",
+            "upload_state_expires_at": "later",
+            "orphaned_at": "now",
+        },
+        {
+            "custody_mode": "custody-transfer",
+            "state": "uploading",
+            "upload_state_expires_at": "later",
+        },
+    ),
+)
+def test_upload_session_list_states_reject_impossible_custody_lifecycles(
+    changes: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "collection_id": 1,
+        "created_at": "2026-08-25T00:00:00.000000Z",
+        "tags": [],
+        "ingest_source": None,
+        "archive_store": "archive",
+        "encryption_format": "age-x25519/v1",
+        "passphrase_id": "0123456789abcdef",
+        "state": "open",
+        "custody_mode": "producer-retained",
+        "files": 0,
+        "bytes": 0,
+        "uploaded_bytes": 0,
+        "custodied_files": 0,
+        "custodied_bytes": 0,
+        "upload_state_expires_at": None,
+        "orphaned_at": None,
+    }
+
+    schema_validator = Draft202012Validator(CollectionUploadListItemOut.model_json_schema())
+    schema_validator.validate(payload)
+    invalid = {**payload, **changes}
+    with pytest.raises(ValidationError):
+        CollectionUploadListItemOut.model_validate(invalid)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(invalid)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {},
+        {"custody_mode": "custody-transfer", "upload_state_expires_at": "later"},
+        {"custody_mode": "custody-transfer", "state": "uploading"},
+        {
+            "custody_mode": "custody-transfer",
+            "state": "orphaned",
+            "orphaned_at": "now",
+        },
+    ),
+)
+def test_upload_session_list_states_accept_reachable_custody_lifecycles(
+    changes: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "collection_id": 1,
+        "created_at": "2026-08-25T00:00:00.000000Z",
+        "tags": [],
+        "ingest_source": None,
+        "archive_store": "archive",
+        "encryption_format": "age-x25519/v1",
+        "passphrase_id": "0123456789abcdef",
+        "state": "open",
+        "custody_mode": "producer-retained",
+        "files": 0,
+        "bytes": 0,
+        "uploaded_bytes": 0,
+        "custodied_files": 0,
+        "custodied_bytes": 0,
+        "upload_state_expires_at": None,
+        "orphaned_at": None,
+    }
+    current = {**payload, **changes}
+
+    CollectionUploadListItemOut.model_validate(current)
+    Draft202012Validator(CollectionUploadListItemOut.model_json_schema()).validate(current)
 
 
 def test_list_responses_expose_only_closed_sort_and_filter_contracts() -> None:

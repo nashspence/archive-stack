@@ -190,6 +190,50 @@ def test_incremental_producer_resumes_without_rereading_custodied_local_bytes(
     assert expected["sha256"] == hashlib.sha256(b"completed artifact").hexdigest()
 
 
+def test_incremental_producer_keeps_local_custody_when_receipt_identity_is_wrong(
+    tmp_path: Path,
+) -> None:
+    class _WrongReceiptApi(_CustodyApi):
+        def register_collection_upload_session_files(
+            self,
+            collection_id: int,
+            files: Sequence[Mapping[str, object]],
+            **kwargs: object,
+        ) -> dict[str, object]:
+            result = super().register_collection_upload_session_files(
+                collection_id,
+                files,
+                **kwargs,
+            )
+            row = self.rows.get("z/artifact.bin")
+            if row is not None:
+                row["custody_receipt"] = CollectionUploadArtifactCustodyReceiptDocument.seal(
+                    collection_id=collection_id,
+                    path="z/other.bin",
+                    bytes=int(row["bytes"]),
+                    sha256=str(row["sha256"]),
+                    archive_objects=(
+                        CollectionUploadCustodyObjectDocument(
+                            volume_id="sealed-000000000000",
+                            sealed_receipt_sha256="f" * 64,
+                        ),
+                    ),
+                ).model_dump(mode="json")
+            return result
+
+    api = _WrongReceiptApi()
+    source = tmp_path / "artifact.bin"
+    source.write_bytes(b"completed artifact")
+    producer = _producer(api)
+    try:
+        with pytest.raises(ValueError, match="upload file identity"):
+            producer.append_inputs((ProducerFile(source, "z/artifact.bin"),))
+        assert "z/artifact.bin" in producer._sources  # noqa: SLF001
+        assert "z/artifact.bin" not in producer.custody_receipts
+    finally:
+        producer.stop()
+
+
 class _ServiceApi:
     def __init__(
         self,

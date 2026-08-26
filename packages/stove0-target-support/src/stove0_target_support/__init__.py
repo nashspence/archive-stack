@@ -2,6 +2,7 @@ from stove0_target_protocol import (
     ARTIFACT_ID_PATTERN,
     EFFECT_RECEIPT_FORMAT,
     EFFECT_TARGET_PROTOCOL,
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     SHA256_PATTERN,
     TRANSFORM_TARGET_PROTOCOL,
     AcceptedTargetJob,
@@ -62,6 +63,7 @@ from stove0_target_support.http_binding import (
 )
 from stove0_target_support.persistent import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
+    IntentSemanticValidator,
     JobExecutor,
     PersistentTargetService,
     TargetEffectCommitUncertain,
@@ -93,7 +95,9 @@ __all__ = [
     "InputArtifact",
     "InputDisposition",
     "InputArtifactContract",
+    "JSON_SCHEMA_ONLY_SEMANTIC_PROFILE",
     "JobExecutor",
+    "IntentSemanticValidator",
     "OperationContract",
     "OperationContractPayload",
     "OutputArtifact",

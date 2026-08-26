@@ -3,6 +3,7 @@
 from stove0_media_sampling_observer_contracts.contracts import (
     MEDIA_SAMPLING_FACTS_SCHEMA,
     MEDIA_SAMPLING_FACTS_SCHEMA_ID,
+    MEDIA_SAMPLING_FACTS_SEMANTICS,
     MEDIA_SAMPLING_OBSERVATION_ID,
     MEDIA_SAMPLING_OBSERVER_CONTRACT,
     MEDIA_SAMPLING_OPTIONS_SCHEMA,
@@ -10,11 +11,13 @@ from stove0_media_sampling_observer_contracts.contracts import (
     MediaSamplingArtifactFacts,
     MediaSamplingFacts,
     SampleableRange,
+    validate_media_sampling_facts,
 )
 
 __all__ = [
     "MEDIA_SAMPLING_FACTS_SCHEMA",
     "MEDIA_SAMPLING_FACTS_SCHEMA_ID",
+    "MEDIA_SAMPLING_FACTS_SEMANTICS",
     "MEDIA_SAMPLING_OBSERVATION_ID",
     "MEDIA_SAMPLING_OBSERVER_CONTRACT",
     "MEDIA_SAMPLING_OPTIONS_SCHEMA",
@@ -22,4 +25,5 @@ __all__ = [
     "MediaSamplingArtifactFacts",
     "MediaSamplingFacts",
     "SampleableRange",
+    "validate_media_sampling_facts",
 ]

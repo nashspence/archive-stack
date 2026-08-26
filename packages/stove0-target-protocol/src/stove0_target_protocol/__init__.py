@@ -1,5 +1,11 @@
 """Dependency-light public models for external stove0 targets."""
 
+from stove0_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
+    SemanticValidationProfile,
+    SemanticValidationProfilePayload,
+)
+
 from stove0_target_protocol.jcs import canonical_json_bytes, canonical_json_sha256
 from stove0_target_protocol.protocol import (
     ARTIFACT_ID_PATTERN,
@@ -63,12 +69,15 @@ __all__ = [
     "InputArtifact",
     "InputDisposition",
     "InputArtifactContract",
+    "JSON_SCHEMA_ONLY_SEMANTIC_PROFILE",
     "OperationContract",
     "OperationContractPayload",
     "OutputArtifact",
     "OutputArtifactContract",
     "OutputCollectionRef",
     "SemanticId",
+    "SemanticValidationProfile",
+    "SemanticValidationProfilePayload",
     "Sha256",
     "TargetContract",
     "TargetContractPayload",

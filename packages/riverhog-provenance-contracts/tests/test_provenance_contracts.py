@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
-from riverhog_provenance_contracts import ProvenanceEntryId, ProvenanceJournalStateReference
+from riverhog_provenance_contracts import (
+    ProvenanceEntryId,
+    ProvenanceJournalStateReference,
+    index_schema_documents,
+)
 
 JOURNAL_ID = "urn:uuid:00000000-0000-7000-8000-000000000001"
 STATE_ID = "urn:uuid:00000000-0000-7000-8000-000000000002"
@@ -47,3 +51,17 @@ def test_provenance_entry_identity_uses_the_journal_schema_grammar() -> None:
     for value in ("entry-1", ENTRY_ID.upper(), "urn:uuid:not-a-uuid"):
         with pytest.raises(ValidationError):
             adapter.validate_python(value, strict=True)
+
+
+def test_schema_contract_pack_rejects_duplicate_and_missing_identities() -> None:
+    first = {"$id": "https://riverhog.example/schema/v1", "type": "object"}
+    second = {"$id": "https://riverhog.example/another/v1", "type": "object"}
+
+    assert tuple(index_schema_documents((first, second), owner="fixture")) == (
+        second["$id"],
+        first["$id"],
+    )
+    with pytest.raises(ValueError, match="duplicated"):
+        index_schema_documents((first, dict(first)), owner="fixture")
+    with pytest.raises(ValueError, match="canonical \\$id"):
+        index_schema_documents(({"type": "object"},), owner="fixture")

@@ -113,6 +113,12 @@ operations:
           $ref: '#/$defs/MediaProjectionPolicy'
       title: AudioArchiveIntent
       type: object
+  intent_semantics:
+    id: stove0.media.audio-archive-intent-semantics/v1
+    rules:
+    - stove0.media.audio-archive-intent.typed-model/v1
+    - stove0.media.projection-policy.semantic-validation/v1
+    profile_sha256: fdcb743730ac76dd3c12b7a567661c09cefcce7600a8b90d88a4ace043464642
   inputs:
   - role: stove0.media.source/v1
     minimum: 1
@@ -138,7 +144,7 @@ operations:
     derived_from_roles:
     - stove0.media.xmp-source/v1
   source_retirement_permitted: false
-  contract_sha256: 9809e2591b4c73f8e792def9dc5b23339045231bd5177034dc7324fd2b89f818
+  contract_sha256: 1181702c11274dde8f3401c202bcad6b6a4bf8cc8d0eb3a1289e7493f5c31b10
 - id: stove0.media.av1-opus-archive/v1
   result_kind: collection
   intent_schema:
@@ -273,6 +279,12 @@ operations:
           $ref: '#/$defs/MediaProjectionPolicy'
       title: Av1OpusArchiveIntent
       type: object
+  intent_semantics:
+    id: stove0.media.av1-opus-archive-intent-semantics/v1
+    rules:
+    - stove0.media.av1-opus-archive-intent.typed-model/v1
+    - stove0.media.projection-policy.semantic-validation/v1
+    profile_sha256: 86dfbca784162a3cb30b652c42df7262df6b26408d0321427b261cbad9e090f9
   inputs:
   - role: stove0.media.source/v1
     minimum: 1
@@ -299,7 +311,7 @@ operations:
     - stove0.media.source/v1
     - stove0.media.xmp-source/v1
   source_retirement_permitted: true
-  contract_sha256: d4596612f4f55652ec5fc75dbd30333ac092cff6b204e6639cefdea6cd8ff769
+  contract_sha256: 020c6c9820057200ded67b419cd3e0ea11587e7953a9cd4939dfd3fc556c3080
 - id: stove0.review.materialize/v1
   result_kind: collection
   intent_schema:
@@ -396,6 +408,12 @@ operations:
       - variant
       title: ReviewMaterializeIntent
       type: object
+  intent_semantics:
+    id: stove0.review.materialize-intent-semantics/v1
+    rules:
+    - stove0.review.sample-plan.exact-declared-shape/v1
+    - stove0.review.sample-plan.identity-verification/v1
+    profile_sha256: 7c8049255cad6c4ac154cf6fd35a6fbdacde70559ccf5f1e4ec6bf9e9f7eb679
   inputs:
   - role: stove0.review.source/v1
     minimum: 1
@@ -417,7 +435,7 @@ operations:
     derived_from_roles:
     - stove0.review.source/v1
   source_retirement_permitted: false
-  contract_sha256: ff0157d80d1bf97e73c983ae6edb64da86570305f41ade031fda4671e0dd2532
+  contract_sha256: 4eebc8c253cb3d099fe98dccf3df5c797bd7f48db9410d2dbaa12f24fa39d7b4
 - id: stove0.review.rclone-deliver/v1
   result_kind: external-effect
   intent_schema:
@@ -514,6 +532,12 @@ operations:
       - variant
       title: ReviewMaterializeIntent
       type: object
+  intent_semantics:
+    id: stove0.review.materialize-intent-semantics/v1
+    rules:
+    - stove0.review.sample-plan.exact-declared-shape/v1
+    - stove0.review.sample-plan.identity-verification/v1
+    profile_sha256: 7c8049255cad6c4ac154cf6fd35a6fbdacde70559ccf5f1e4ec6bf9e9f7eb679
   inputs:
   - role: stove0.review.source/v1
     minimum: 1
@@ -551,7 +575,7 @@ operations:
           minimum: 0
       additionalProperties: false
   source_retirement_permitted: false
-  contract_sha256: df33cea0d93fd8ecfff758bfeb952cb923997acbb03fec5f89908067abd35cf7
+  contract_sha256: 67e24a42d55e9db5c0d978d4e756308a37c7d96786c6850b278817a0ce6a3a7e
 recipes:
 - id: stove0.audio-archive/v1
   revision: 1
@@ -564,7 +588,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: c58f17cb8503ad730684d7fb00c374d5bbe1a346e44befb02bf5fa496c3e958e
+    contract_sha256: 8ba39e38fd400b4c5f172e7ec0dc4229692840d1e398de6b843a99be07799fc2
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1
@@ -612,7 +636,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: c58f17cb8503ad730684d7fb00c374d5bbe1a346e44befb02bf5fa496c3e958e
+    contract_sha256: 8ba39e38fd400b4c5f172e7ec0dc4229692840d1e398de6b843a99be07799fc2
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1
@@ -774,7 +798,7 @@ recipes:
   observers:
   - registration_id: ffprobe-sampling
     contract_id: stove0.review.media-sampling/v1
-    contract_sha256: 3323eb5382837ea4e10e12f18979cfe34f34a6ab3e57c04d7b1fa3db5bb00f98
+    contract_sha256: d8019a517bd28316135887f2c56bf638121a9d5c8db58457e192b9e28e8fa74b
     artifact_rules:
     - glob: '*'
       role: stove0.review.source/v1
@@ -818,7 +842,7 @@ recipes:
   observers:
   - registration_id: ffprobe-sampling
     contract_id: stove0.review.media-sampling/v1
-    contract_sha256: 3323eb5382837ea4e10e12f18979cfe34f34a6ab3e57c04d7b1fa3db5bb00f98
+    contract_sha256: d8019a517bd28316135887f2c56bf638121a9d5c8db58457e192b9e28e8fa74b
     artifact_rules:
     - glob: '*'
       role: stove0.review.source/v1

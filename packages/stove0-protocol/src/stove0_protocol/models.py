@@ -250,10 +250,51 @@ class WorkIdentity(WorkPayload):
         return tuple(item.to_identity() for item in self.inputs)
 
 
+class SemanticValidationProfilePayload(Stove0ProtocolModel):
+    """Portable identity for semantic rules not expressible by JSON Schema."""
+
+    id: SemanticId
+    rules: tuple[SemanticId, ...] = Field(min_length=1)
+
+    @field_validator("rules")
+    @classmethod
+    def canonical_rules(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != tuple(sorted(value)) or len(value) != len(set(value)):
+            raise ValueError("semantic validation rules must be unique and ordered")
+        return value
+
+
+class SemanticValidationProfile(SemanticValidationProfilePayload):
+    profile_sha256: Sha256
+
+    @model_validator(mode="after")
+    def verify_digest(self) -> Self:
+        if canonical_json_sha256(_without_digest(self, "profile_sha256")) != self.profile_sha256:
+            raise ValueError("semantic validation profile digest differs from its payload")
+        return self
+
+    @classmethod
+    def seal(
+        cls,
+        payload: SemanticValidationProfilePayload,
+    ) -> SemanticValidationProfile:
+        document = payload.model_dump(mode="json", by_alias=True, exclude_none=True)
+        return cls(**document, profile_sha256=canonical_json_sha256(document))
+
+
+JSON_SCHEMA_ONLY_SEMANTIC_PROFILE = SemanticValidationProfile.seal(
+    SemanticValidationProfilePayload(
+        id="stove0.semantic.json-schema-only/v1",
+        rules=("stove0.semantic.json-schema-draft-2020-12/v1",),
+    )
+)
+
+
 class ObserverContractPayload(Stove0ProtocolModel):
     id: SemanticId
     options_schema: JsonSchemaDocument
     facts_schema: JsonSchemaDocument
+    facts_semantics: SemanticValidationProfile
     maximum_result_bytes: int = Field(default=1024 * 1024, ge=1, le=64 * 1024 * 1024)
 
 
@@ -277,6 +318,7 @@ class ObserverContractSupport(Stove0ProtocolModel):
     contract_sha256: Sha256
     options_schema: JsonSchemaDocument
     facts_schema: JsonSchemaDocument
+    facts_semantics: SemanticValidationProfile
     preferred_subject_batch_size: int = Field(default=128, ge=1)
     maximum_result_bytes: int = Field(ge=1, le=64 * 1024 * 1024)
 
@@ -292,6 +334,7 @@ class ObserverContractSupport(Stove0ProtocolModel):
             contract_sha256=value.contract_sha256,
             options_schema=value.options_schema,
             facts_schema=value.facts_schema,
+            facts_semantics=value.facts_semantics,
             preferred_subject_batch_size=preferred_subject_batch_size,
             maximum_result_bytes=value.maximum_result_bytes,
         )
@@ -877,6 +920,7 @@ __all__ = [
     "JoinWorkBinding",
     "JoinWorkMemberBinding",
     "JsonSchemaDocument",
+    "JSON_SCHEMA_ONLY_SEMANTIC_PROFILE",
     "OBSERVER_PROTOCOL",
     "OBSERVATION_REQUEST_FORMAT",
     "OBSERVATION_RESULT_FORMAT",
@@ -904,6 +948,8 @@ __all__ = [
     "RetirementPolicy",
     "SHA256_PATTERN",
     "SemanticId",
+    "SemanticValidationProfile",
+    "SemanticValidationProfilePayload",
     "Sha256",
     "Stove0ProtocolModel",
     "TargetPlanBinding",

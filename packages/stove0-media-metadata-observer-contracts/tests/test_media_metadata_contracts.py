@@ -9,7 +9,9 @@ from stove0_media_metadata_observer_contracts import (
     MediaFactEvidence,
     MediaMetadataFact,
     MediaMetadataFacts,
+    validate_media_metadata_facts,
 )
+from stove0_observer_protocol import ArtifactSubject, CollectionRootRef
 
 
 def test_media_metadata_contract_carries_exact_evidence_without_a_ceiling() -> None:
@@ -35,7 +37,7 @@ def test_media_metadata_contract_carries_exact_evidence_without_a_ceiling() -> N
     assert MEDIA_METADATA_OBSERVER_CONTRACT.id == "stove0.media.metadata/v1"
     assert (
         MEDIA_METADATA_OBSERVER_CONTRACT.contract_sha256
-        == "c58f17cb8503ad730684d7fb00c374d5bbe1a346e44befb02bf5fa496c3e958e"
+        == "8ba39e38fd400b4c5f172e7ec0dc4229692840d1e398de6b843a99be07799fc2"
     )
     assert facts.artifacts[0].artifact_id == "primary"
     assert (
@@ -68,4 +70,58 @@ def test_media_fact_model_and_published_schema_share_state_acceptance() -> None:
     with pytest.raises(Exception, match="expected to be empty"):
         Draft202012Validator(MEDIA_METADATA_OBSERVER_CONTRACT.facts_schema.document).validate(
             document
+        )
+
+
+def test_media_metadata_semantics_bind_evidence_and_exact_request_subjects() -> None:
+    subject = ArtifactSubject(
+        id="primary",
+        role="fixture.media/v1",
+        collection=CollectionRootRef(
+            collection_id=1,
+            archive_root_sha256="a" * 64,
+            content_identity="b" * 64,
+        ),
+        path="camera.mp4",
+        bytes=10,
+        sha256="c" * 64,
+    )
+    document = {
+        "artifacts": [
+            {
+                "artifact_id": "primary",
+                "state": "observed",
+                "facts": [
+                    {
+                        "name": "creator",
+                        "value": "Example",
+                        "evidence": {"artifact_id": "primary", "field": "Artist"},
+                    }
+                ],
+            }
+        ]
+    }
+
+    assert validate_media_metadata_facts(document, (subject,)).artifacts[0].artifact_id == "primary"
+    wrong_evidence = {
+        "artifacts": [
+            {
+                "artifact_id": "primary",
+                "state": "observed",
+                "facts": [
+                    {
+                        "name": "creator",
+                        "value": "Example",
+                        "evidence": {"artifact_id": "other", "field": "Artist"},
+                    }
+                ],
+            }
+        ]
+    }
+    with pytest.raises(ValidationError, match="containing artifact"):
+        validate_media_metadata_facts(wrong_evidence, (subject,))
+    with pytest.raises(ValueError, match="exact request subjects"):
+        validate_media_metadata_facts(
+            document,
+            (subject.model_copy(update={"id": "other"}),),
         )

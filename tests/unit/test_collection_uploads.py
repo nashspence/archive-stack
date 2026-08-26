@@ -748,8 +748,11 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     "tags",
     [pytest.param(("docs",), id="tagged"), pytest.param((), id="untagged")],
 )
+@pytest.mark.parametrize("custody_mode", ("producer-retained", "custody-transfer"))
 def test_small_collection_moves_directly_from_source_unit_to_final_custody(
-    tmp_path: Path, tags: tuple[str, ...]
+    tmp_path: Path,
+    tags: tuple[str, ...],
+    custody_mode: str,
 ) -> None:
     service, config = _service(tmp_path)
     content = b"direct final archive\n"
@@ -764,9 +767,24 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         event_context=None,
         provenance_mode="omitted",
         provenance_omission_reason="fixture does not exercise source observation",
+        custody_mode=custody_mode,
     )
     assert opened["tags"] == list(tags)
+    assert opened["custody_mode"] == custody_mode
+    assert (opened["upload_state_expires_at"] is not None) == (custody_mode == "custody-transfer")
     collection_id = int(opened["collection_id"])
+    with pytest.raises(Conflict, match="idempotency identity changed"):
+        service.create_or_resume(
+            idempotency_key="upload-1",
+            tags=tags,
+            ingest_source="other-fixture",
+            archive_store=None,
+            initiator=_CREATOR,
+            event_context=None,
+            provenance_mode="omitted",
+            provenance_omission_reason="fixture does not exercise source observation",
+            custody_mode=custody_mode,
+        )
     registered = service.register_files(
         collection_id,
         ({"path": "document.txt", "bytes": len(content), "sha256": sha256},),
@@ -779,6 +797,8 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         content_identity=collection_content_identity((("document.txt", len(content), sha256),)),
     )
     assert closed["state"] == "uploading"
+    assert closed["upload_state_expires_at"] is None
+    assert closed["orphaned_at"] is None
     volume = service.list_volumes(collection_id)["volumes"][0]
     assert volume["kind"] == "pack"
     unit = volume["units"][0]
@@ -801,12 +821,15 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert committed["state"] == "committed"
     queued = service.get(collection_id)
     assert queued["state"] == "finalizing"
+    assert queued["upload_state_expires_at"] is None
+    assert queued["orphaned_at"] is None
     assert queued["archive_phase"] == "retry_wait"
     assert service.process_due_finalizations() == 1
     finalized = service.get(collection_id)
     assert finalized["state"] == "finalized"
     assert finalized["tags"] == list(tags)
     assert finalized["uploaded_bytes"] == len(content)
+    assert finalized["custody_mode"] == custody_mode
 
     with session_scope(make_session_factory(config.database_url)) as session:
         objects = list(
@@ -834,6 +857,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         event_context=None,
         provenance_mode="omitted",
         provenance_omission_reason="fixture does not exercise source observation",
+        custody_mode=custody_mode,
     )
     assert resumed["collection_id"] == collection_id
     assert resumed["state"] == "finalized"
@@ -848,6 +872,58 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
             event_context=None,
             provenance_mode="omitted",
             provenance_omission_reason="fixture does not exercise source observation",
+            custody_mode=custody_mode,
+        )
+    changed_custody_mode = (
+        "custody-transfer" if custody_mode == "producer-retained" else "producer-retained"
+    )
+    with pytest.raises(Conflict, match="idempotency identity changed"):
+        service.create_or_resume(
+            idempotency_key="upload-1",
+            tags=tags,
+            ingest_source="fixture",
+            archive_store=None,
+            initiator=_CREATOR,
+            event_context=None,
+            provenance_mode="omitted",
+            provenance_omission_reason="fixture does not exercise source observation",
+            custody_mode=changed_custody_mode,
+        )
+    with pytest.raises(Conflict, match="idempotency identity changed"):
+        service.create_or_resume(
+            idempotency_key="upload-1",
+            tags=tags,
+            ingest_source="other-fixture",
+            archive_store=None,
+            initiator=_CREATOR,
+            event_context=None,
+            provenance_mode="omitted",
+            provenance_omission_reason="fixture does not exercise source observation",
+            custody_mode=custody_mode,
+        )
+    with pytest.raises(Conflict, match="idempotency identity changed"):
+        service.create_or_resume(
+            idempotency_key="upload-1",
+            tags=tags,
+            ingest_source="fixture",
+            archive_store=None,
+            initiator=_CREATOR,
+            event_context={"source": "other-fixture"},
+            provenance_mode="omitted",
+            provenance_omission_reason="fixture does not exercise source observation",
+            custody_mode=custody_mode,
+        )
+    with pytest.raises(Conflict, match="idempotency identity changed"):
+        service.create_or_resume(
+            idempotency_key="upload-1",
+            tags=tags,
+            ingest_source="fixture",
+            archive_store=None,
+            initiator=_CREATOR,
+            event_context=None,
+            provenance_mode="omitted",
+            provenance_omission_reason="a different explicit omission",
+            custody_mode=custody_mode,
         )
 
 

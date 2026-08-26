@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 from stove0_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     ArtifactSelection,
     ArtifactSubject,
     BranchPlan,
@@ -93,6 +94,7 @@ def _contract() -> ObserverContract:
             id="camera.probe/v1",
             options_schema=options,
             facts_schema=facts,
+            facts_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             maximum_result_bytes=8192,
         )
     )
@@ -496,6 +498,7 @@ def test_observer_batch_preference_and_large_evaluation_are_supported() -> None:
                 "fixture.large-observer-facts/v1",
                 {"type": "object", "additionalProperties": True},
             ),
+            facts_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             maximum_result_bytes=1024,
         )
     )

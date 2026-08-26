@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from http_api_contracts import HttpErrorContract, HttpOperationContract
 from pydantic import BaseModel, ValidationError
 from stove0_observer_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     ObservationInvocation,
     ObservationResult,
     ObserverDescriptor,
@@ -16,7 +18,11 @@ from stove0_observer_protocol import (
     validate_observation_result,
 )
 
-from stove0_observer_support.runtime import ContentObserver, ObservationRuntime
+from stove0_observer_support.runtime import (
+    ContentObserver,
+    FactsSemanticValidator,
+    ObservationRuntime,
+)
 
 OBSERVER_HTTP_OPERATIONS = (
     HttpOperationContract(
@@ -76,6 +82,7 @@ class ObserverHttpBinding:
         self,
         observer: ContentObserver,
         *,
+        facts_semantic_validators: Mapping[str, FactsSemanticValidator] | None = None,
         maximum_request_bytes: int = _DEFAULT_MAX_REQUEST_BYTES,
         maximum_concurrency: int = 1,
     ) -> None:
@@ -84,6 +91,7 @@ class ObserverHttpBinding:
         if isinstance(maximum_concurrency, bool) or maximum_concurrency < 1:
             raise ValueError("observer execution concurrency must be positive")
         self.observer = observer
+        self._facts_semantic_validators = dict(facts_semantic_validators or {})
         self.maximum_request_bytes = maximum_request_bytes
         self.maximum_concurrency = maximum_concurrency
         self._execution_slots = threading.BoundedSemaphore(maximum_concurrency)
@@ -94,7 +102,9 @@ class ObserverHttpBinding:
             if body:
                 return _error(400, "bad_request", "GET /v1/observer must not include a body")
             try:
-                return _model_response(self.observer.descriptor())
+                descriptor = ObserverDescriptor.model_validate(self.observer.descriptor())
+                _require_semantic_validators(self._facts_semantic_validators, descriptor)
+                return _model_response(descriptor)
             except Exception:
                 return _error(500, "observer_failed", "content observer descriptor failed")
         if normalized_method == "POST" and path == "/v1/observe":
@@ -106,6 +116,7 @@ class ObserverHttpBinding:
                 return _error(400, "invalid_observation_request", str(exc))
             try:
                 descriptor = ObserverDescriptor.model_validate(self.observer.descriptor())
+                _require_semantic_validators(self._facts_semantic_validators, descriptor)
             except Exception:
                 return _error(500, "observer_failed", "content observer descriptor failed")
             try:
@@ -117,12 +128,37 @@ class ObserverHttpBinding:
                     with ObservationRuntime.from_invocation(invocation) as runtime:
                         result = self.observer.observe(invocation.request, runtime)
                 validate_observation_result(result, invocation.request, descriptor)
+                support = descriptor.support_for(invocation.request.observer_contract_id)
+                if (
+                    result.state == "observed"
+                    and result.facts is not None
+                    and support.facts_semantics.profile_sha256
+                    != JSON_SCHEMA_ONLY_SEMANTIC_PROFILE.profile_sha256
+                ):
+                    self._facts_semantic_validators[support.facts_semantics.profile_sha256](
+                        invocation.request,
+                        result.facts,
+                    )
                 return _model_response(result)
             except Exception:
                 return _error(500, "observer_failed", "content observer execution failed")
         if path in {"/v1/observer", "/v1/observe"}:
             return _error(405, "method_not_allowed", "observer endpoint method is not allowed")
         return _error(404, "not_found", "observer endpoint not found")
+
+
+def _require_semantic_validators(
+    validators: Mapping[str, FactsSemanticValidator],
+    descriptor: ObserverDescriptor,
+) -> None:
+    required_profiles = {
+        support.facts_semantics.profile_sha256
+        for support in descriptor.contracts
+        if support.facts_semantics.profile_sha256
+        != JSON_SCHEMA_ONLY_SEMANTIC_PROFILE.profile_sha256
+    }
+    if set(validators) != required_profiles:
+        raise ValueError("observer semantic validator differs from its advertised fact profiles")
 
 
 def _model_response(model: BaseModel) -> ObserverHttpResponse:

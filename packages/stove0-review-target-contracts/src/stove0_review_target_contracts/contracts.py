@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from stove0_protocol import JsonSchemaDocument
+from collections.abc import Mapping
+
+from stove0_protocol import (
+    JsonSchemaDocument,
+    SemanticValidationProfile,
+    SemanticValidationProfilePayload,
+)
 from stove0_target_protocol import (
     InputArtifactContract,
     OperationContract,
@@ -26,11 +32,26 @@ REVIEW_MATERIALIZE_INTENT_SCHEMA = JsonSchemaDocument.from_schema(
     REVIEW_MATERIALIZE_INTENT_SCHEMA_ID,
     ReviewMaterializeIntent.model_json_schema(),
 )
+REVIEW_MATERIALIZE_INTENT_SEMANTICS = SemanticValidationProfile.seal(
+    SemanticValidationProfilePayload(
+        id="stove0.review.materialize-intent-semantics/v1",
+        rules=(
+            "stove0.review.sample-plan.exact-declared-shape/v1",
+            "stove0.review.sample-plan.identity-verification/v1",
+        ),
+    )
+)
+
+
+def validate_review_materialize_intent(intent: Mapping[str, object]) -> None:
+    ReviewMaterializeIntent.model_validate(dict(intent))
+
 
 REVIEW_MATERIALIZE_OPERATION = OperationContract.seal(
     OperationContractPayload(
         id=REVIEW_MATERIALIZE_OPERATION_ID,
         intent_schema=REVIEW_MATERIALIZE_INTENT_SCHEMA,
+        intent_semantics=REVIEW_MATERIALIZE_INTENT_SEMANTICS,
         inputs=(
             InputArtifactContract(
                 role=REVIEW_SOURCE_ROLE,
@@ -93,6 +114,7 @@ REVIEW_RCLONE_DELIVER_OPERATION = OperationContract.seal(
         id=REVIEW_RCLONE_DELIVER_OPERATION_ID,
         result_kind="external-effect",
         intent_schema=REVIEW_MATERIALIZE_INTENT_SCHEMA,
+        intent_semantics=REVIEW_MATERIALIZE_INTENT_SEMANTICS,
         inputs=(
             InputArtifactContract(
                 role=REVIEW_SOURCE_ROLE,
@@ -110,6 +132,7 @@ __all__ = [
     "REVIEW_INDEX_ROLE",
     "REVIEW_MATERIALIZE_INTENT_SCHEMA",
     "REVIEW_MATERIALIZE_INTENT_SCHEMA_ID",
+    "REVIEW_MATERIALIZE_INTENT_SEMANTICS",
     "REVIEW_MATERIALIZE_OPERATION",
     "REVIEW_MATERIALIZE_OPERATION_ID",
     "REVIEW_RCLONE_DELIVER_OPERATION",
@@ -118,4 +141,5 @@ __all__ = [
     "REVIEW_RCLONE_RECEIPT_SCHEMA_ID",
     "REVIEW_SOURCE_ROLE",
     "REVIEW_VIDEO_ROLE",
+    "validate_review_materialize_intent",
 ]

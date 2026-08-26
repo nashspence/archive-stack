@@ -40,6 +40,8 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                 CollectionRecord(
                     id=collection_id,
                     creation_idempotency_key=f"fixture-{collection_id}",
+                    creation_identity_sha256=f"{collection_id:064x}",
+                    creation_custody_mode="producer-retained",
                     content_identity=f"{collection_id:064x}",
                     encryption_format="age-v1-scrypt",
                     passphrase_id=f"fixture-archive-key-v{1 if collection_id % 2 else 2}",

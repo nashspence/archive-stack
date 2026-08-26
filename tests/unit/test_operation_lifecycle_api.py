@@ -392,6 +392,9 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
                 plan_sha256=str(volume["plan_sha256"]),
                 content=_unit_content(source_root, current),
             )
+    assert (
+        operator.list_collection_upload_session_files(collection_id, all_items=True)["total"] == 1
+    )
     assert container.collection_uploads.process_due_finalizations() == 1
     assert operator.get_collection_upload_session(collection_id)["state"] == "finalized"
     assert operator.get_collection(collection_id)["id"] == collection_id

@@ -230,6 +230,8 @@ def _seed(database_url: str) -> None:
             CollectionRecord(
                 id=COLLECTION_ID,
                 creation_idempotency_key="fixture-docs",
+                creation_identity_sha256="e" * 64,
+                creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
@@ -307,6 +309,8 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
             CollectionRecord(
                 id=SECOND_COLLECTION_ID,
                 creation_idempotency_key="fixture-second",
+                creation_identity_sha256="d" * 64,
+                creation_custody_mode="producer-retained",
                 content_identity="1" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
@@ -512,6 +516,8 @@ def _seed_derived_output(
             CollectionRecord(
                 id=output_collection_id,
                 creation_idempotency_key=execution_id,
+                creation_identity_sha256=("c" if output_collection_id == 2 else "b") * 64,
+                creation_custody_mode="producer-retained",
                 content_identity=("4" if output_collection_id == 2 else "5") * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
@@ -621,6 +627,8 @@ def _seed_multi_input_derived_output(
             CollectionRecord(
                 id=2,
                 creation_idempotency_key=EXECUTION_ID,
+                creation_identity_sha256="c" * 64,
+                creation_custody_mode="producer-retained",
                 content_identity="4" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",

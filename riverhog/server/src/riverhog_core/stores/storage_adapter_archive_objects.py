@@ -13,6 +13,7 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterRejection,
     WriteCompleteRequest,
     WriteStartRequest,
+    validate_completed_write_response,
 )
 from riverhog_storage_adapter_protocol import (
     WriteSegmentReceipt as AdapterWriteSegmentReceipt,
@@ -97,19 +98,19 @@ class StorageAdapterArchiveResumableObjectStore:
         expected_bytes: int,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
+        request = WriteCompleteRequest(
+            session=_adapter_session(session),
+            segments=tuple(_adapter_segment(current) for current in segments),
+            expected_bytes=expected_bytes,
+            required_identity_assertions=expected_metadata,
+            expected_placement=self._placement,
+        )
         try:
-            receipt = self._adapter.complete_write(
-                WriteCompleteRequest(
-                    session=_adapter_session(session),
-                    segments=tuple(_adapter_segment(current) for current in segments),
-                    expected_bytes=expected_bytes,
-                    required_identity_assertions=expected_metadata,
-                    expected_placement=self._placement,
-                )
-            )
+            receipt = self._adapter.complete_write(request)
         except StorageAdapterRejection as exc:
             _raise_identity_conflict(exc)
             raise
+        validate_completed_write_response(request, receipt)
         return CompletedObjectReceipt(
             object_path=receipt.object_path,
             revision=receipt.revision,
@@ -124,19 +125,19 @@ class StorageAdapterArchiveResumableObjectStore:
         object_path: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
+        request = CompletedWriteLookupRequest(
+            object_path=object_path,
+            required_identity_assertions=expected_metadata,
+            expected_placement=self._placement,
+        )
         try:
-            receipt = self._adapter.find_completed_write(
-                CompletedWriteLookupRequest(
-                    object_path=object_path,
-                    required_identity_assertions=expected_metadata,
-                    expected_placement=self._placement,
-                )
-            )
+            receipt = self._adapter.find_completed_write(request)
         except StorageAdapterRejection as exc:
             _raise_identity_conflict(exc)
             raise
         if receipt is None:
             return None
+        validate_completed_write_response(request, receipt)
         return CompletedObjectReceipt(
             object_path=receipt.object_path,
             revision=receipt.revision,

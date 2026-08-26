@@ -17,6 +17,7 @@ from riverhog_protocol.collection_upload_transport import (
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadRegistrationConstraintsDocument,
     collection_upload_path_order_key,
+    validate_collection_upload_artifact_custody_receipt,
 )
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
@@ -24,6 +25,7 @@ from riverhog_protocol.collection_workflows import (
     JsonValue,
     ProducerEvidence,
 )
+from riverhog_protocol.file_identity import ImmutableFileIdentityDocument
 from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.paths import CollectionId, normalize_relpath, validate_collection_id
 from riverhog_protocol.raw_ingress import hash_raw_source
@@ -867,6 +869,15 @@ class IncrementalCollectionProducer:
             if receipt_value is not None:
                 receipt = CollectionUploadArtifactCustodyReceiptDocument.model_validate_json(
                     json.dumps(receipt_value, sort_keys=True, separators=(",", ":"))
+                )
+                validate_collection_upload_artifact_custody_receipt(
+                    self.collection_id,
+                    ImmutableFileIdentityDocument(
+                        path=source.path,
+                        bytes=source.bytes,
+                        sha256=source.sha256,
+                    ),
+                    receipt,
                 )
                 self._custody[source.path] = ProducerArtifactCustody(
                     artifact=ProducerArtifactIdentity(source.path, source.bytes, source.sha256),

@@ -8,6 +8,7 @@ from stove0_observer_support.results import ObservationResultBuilder
 from stove0_observer_support.runtime import (
     CancellationCheck,
     ContentObserver,
+    FactsSemanticValidator,
     Heartbeat,
     ObservationRuntime,
 )
@@ -19,6 +20,7 @@ from stove0_observer_support.schemas import (
 __all__ = [
     "CancellationCheck",
     "ContentObserver",
+    "FactsSemanticValidator",
     "Heartbeat",
     "ObservationRuntime",
     "ObservationResultBuilder",

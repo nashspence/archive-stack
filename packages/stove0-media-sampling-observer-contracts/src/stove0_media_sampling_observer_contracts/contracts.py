@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from stove0_observer_protocol import (
+    ArtifactSubject,
     JsonSchemaDocument,
     ObserverContract,
     ObserverContractPayload,
+    SemanticValidationProfile,
+    SemanticValidationProfilePayload,
 )
 
 MEDIA_SAMPLING_OBSERVATION_ID = "stove0.review.media-sampling/v1"
@@ -107,11 +111,37 @@ MEDIA_SAMPLING_FACTS_SCHEMA = JsonSchemaDocument.from_schema(
     },
 )
 
+MEDIA_SAMPLING_FACTS_SEMANTICS = SemanticValidationProfile.seal(
+    SemanticValidationProfilePayload(
+        id="stove0.review.media-sampling-facts-semantics/v1",
+        rules=(
+            "stove0.review.media-sampling-facts.complete-request-subjects/v1",
+            "stove0.review.media-sampling-facts.nonoverlapping-bounded-ranges/v1",
+        ),
+    )
+)
+
+
+def validate_media_sampling_facts(
+    facts: Mapping[str, object],
+    subjects: Sequence[ArtifactSubject],
+) -> MediaSamplingFacts:
+    """Apply the exact semantic profile advertised by the observer contract."""
+
+    document = MediaSamplingFacts.model_validate(dict(facts))
+    if tuple(item.artifact_id for item in document.artifacts) != tuple(
+        item.id for item in subjects
+    ):
+        raise ValueError("sampling facts must cover the exact request subjects")
+    return document
+
+
 MEDIA_SAMPLING_OBSERVER_CONTRACT = ObserverContract.seal(
     ObserverContractPayload(
         id=MEDIA_SAMPLING_OBSERVATION_ID,
         options_schema=MEDIA_SAMPLING_OPTIONS_SCHEMA,
         facts_schema=MEDIA_SAMPLING_FACTS_SCHEMA,
+        facts_semantics=MEDIA_SAMPLING_FACTS_SEMANTICS,
         maximum_result_bytes=256 * 1024,
     )
 )
@@ -119,6 +149,7 @@ MEDIA_SAMPLING_OBSERVER_CONTRACT = ObserverContract.seal(
 __all__ = [
     "MEDIA_SAMPLING_FACTS_SCHEMA",
     "MEDIA_SAMPLING_FACTS_SCHEMA_ID",
+    "MEDIA_SAMPLING_FACTS_SEMANTICS",
     "MEDIA_SAMPLING_OBSERVATION_ID",
     "MEDIA_SAMPLING_OBSERVER_CONTRACT",
     "MEDIA_SAMPLING_OPTIONS_SCHEMA",
@@ -126,4 +157,5 @@ __all__ = [
     "MediaSamplingArtifactFacts",
     "MediaSamplingFacts",
     "SampleableRange",
+    "validate_media_sampling_facts",
 ]

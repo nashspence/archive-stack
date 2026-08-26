@@ -27,6 +27,7 @@ from stove0_protocol import (
     ControllerEvidence,
     JsonSchemaDocument,
     OperationResultKind,
+    SemanticValidationProfile,
 )
 from stove0_protocol.jcs import canonical_json_bytes, canonical_json_sha256
 from stove0_protocol.models import ObservationEvidence
@@ -116,6 +117,7 @@ class OperationContractPayload(TargetProtocolModel):
     id: SemanticId
     result_kind: TargetResultKind = "collection"
     intent_schema: JsonSchemaDocument
+    intent_semantics: SemanticValidationProfile
     inputs: tuple[InputArtifactContract, ...] = Field(min_length=1)
     outputs: tuple[OutputArtifactContract, ...] = ()
     effect_receipt_schema: JsonSchemaDocument | None = None
