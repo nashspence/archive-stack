@@ -40,12 +40,6 @@ dependencies = [
   "uvicorn[standard]>=0.30,<1.0",
 ]
 
-[project.optional-dependencies]
-first-party-observer-contracts = [
-  "stove0-media-metadata-observer-contracts>=0.1,<0.2",
-  "stove0-media-sampling-observer-contracts>=0.1,<0.2",
-]
-
 [project.scripts]
 stove0-server = "stove0_api.app:main"
 
@@ -55,8 +49,6 @@ riverhog-api-client = { workspace = true }
 riverhog-protocol = { workspace = true }
 stove0-observer-client = { workspace = true }
 stove0-observer-protocol = { workspace = true }
-stove0-media-metadata-observer-contracts = { workspace = true }
-stove0-media-sampling-observer-contracts = { workspace = true }
 stove0-operator-contracts = { workspace = true }
 stove0-protocol = { workspace = true }
 stove0-recipe-config = { workspace = true }

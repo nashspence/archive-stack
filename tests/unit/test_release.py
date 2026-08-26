@@ -315,6 +315,13 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert len(plan["python"]) == 67
     assert all(len(project["artifacts"]) == 2 for project in plan["python"])
     assert {image["target"] for image in plan["images"]} == set(module.RUNTIME_IMAGE_TARGETS)
+    assert next(image for image in plan["images"] if image["target"] == "stove0")[
+        "distributions"
+    ] == [
+        "stove0-server",
+        "stove0-media-metadata-observer-contracts",
+        "stove0-media-sampling-observer-contracts",
+    ]
     assert all(image["platforms"] == ["linux/amd64"] for image in plan["images"])
     assert all(
         image["tags"]
