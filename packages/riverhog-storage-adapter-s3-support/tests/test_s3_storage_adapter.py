@@ -24,6 +24,7 @@ from riverhog_storage_adapter_protocol import (
     SmallObjectWriteRequest,
     StorageAdapterRejection,
     WriteCompleteRequest,
+    WriteSession,
     WriteStartRequest,
 )
 from riverhog_storage_adapter_s3_support import (
@@ -320,36 +321,39 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
     )
     session = adapter.begin_write(create)
     first_content = b"f" * adapter.descriptor().minimum_nonfinal_segment_bytes
+    first_segment = adapter.write_segment(
+        session=session,
+        number=1,
+        stored_bytes=len(first_content),
+        content=first_content,
+    )
+    persisted_session = WriteSession.model_validate_json(session.model_dump_json())
+    restarted_adapter = S3StorageAdapter(client, _config())
     segments = (
-        adapter.write_segment(
-            session=session,
-            number=1,
-            stored_bytes=len(first_content),
-            content=first_content,
-        ),
-        adapter.write_segment(
-            session=session,
+        first_segment,
+        restarted_adapter.write_segment(
+            session=persisted_session,
             number=2,
             stored_bytes=6,
             content=b"second",
         ),
     )
-    assert adapter.list_segments(session).segments == segments
+    assert restarted_adapter.list_segments(persisted_session).segments == segments
     completion = WriteCompleteRequest(
-        session=session,
+        session=persisted_session,
         segments=segments,
         expected_bytes=len(first_content) + 6,
         required_identity_assertions=create.required_identity_assertions,
         expected_placement=create.placement,
     )
 
-    first = adapter.complete_write(completion)
-    recovered = adapter.complete_write(completion)
+    first = restarted_adapter.complete_write(completion)
+    recovered = restarted_adapter.complete_write(completion)
 
     assert recovered == first
     assert not hasattr(first, "stored_sha256")
     assert (
-        adapter.find_completed_write(
+        restarted_adapter.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=first.object_path,
                 required_identity_assertions=create.required_identity_assertions,
@@ -364,6 +368,45 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
         "riverhog-adapter-placement": "archive",
         "riverhog-plan-sha256": "a" * 64,
     }
+
+
+def test_identity_assertions_are_inert_while_placement_remains_explicit() -> None:
+    client = _FakeS3Client()
+    adapter = S3StorageAdapter(client, _config())
+    identity = {
+        "riverhog-format": "riverhog-pack-volume/v1",
+        "riverhog-plan-sha256": "a" * 64,
+    }
+
+    immediate = adapter.begin_write(
+        WriteStartRequest(
+            object_path="cache/collection/volume.age",
+            content_type="application/octet-stream",
+            required_identity_assertions=identity,
+            placement="immediate",
+        )
+    )
+    archive = adapter.begin_write(
+        WriteStartRequest(
+            object_path="archives/collection/volume.age",
+            content_type="application/octet-stream",
+            required_identity_assertions=identity,
+            placement="archive",
+        )
+    )
+
+    immediate_request = client.uploads[immediate.write_token]["request"]
+    archive_request = client.uploads[archive.write_token]["request"]
+    assert immediate_request["Metadata"] == {
+        "riverhog-adapter-placement": "immediate",
+        **identity,
+    }
+    assert archive_request["Metadata"] == {
+        "riverhog-adapter-placement": "archive",
+        **identity,
+    }
+    assert "StorageClass" not in immediate_request
+    assert archive_request["StorageClass"] == "DEEP_ARCHIVE"
 
 
 def test_full_and_exact_range_reads_preserve_version_and_length() -> None:

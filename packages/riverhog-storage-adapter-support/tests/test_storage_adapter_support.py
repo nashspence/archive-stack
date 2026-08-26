@@ -4,6 +4,7 @@ import ast
 import hashlib
 import struct
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -46,13 +47,23 @@ from riverhog_storage_adapter_support import (
 )
 
 
+@dataclass
+class MemoryAdapterState:
+    created: dict[str, WriteStartRequest] = field(default_factory=dict)
+    segments: dict[tuple[str, int], bytes] = field(default_factory=dict)
+    objects: dict[str, tuple[bytes, dict[str, str], str | None, str]] = field(default_factory=dict)
+    small_objects: set[str] = field(default_factory=set)
+    read_requests: list[ReadPreparationRequest] = field(default_factory=list)
+
+
 class MemoryAdapter:
-    def __init__(self) -> None:
-        self.created: dict[str, WriteStartRequest] = {}
-        self.segments: dict[tuple[str, int], bytes] = {}
-        self.objects: dict[str, tuple[bytes, dict[str, str], str | None, str]] = {}
-        self.small_objects: set[str] = set()
-        self.read_requests: list[ReadPreparationRequest] = []
+    def __init__(self, state: MemoryAdapterState | None = None) -> None:
+        shared = state or MemoryAdapterState()
+        self.created = shared.created
+        self.segments = shared.segments
+        self.objects = shared.objects
+        self.small_objects = shared.small_objects
+        self.read_requests = shared.read_requests
 
     def descriptor(self) -> AdapterDescriptor:
         return AdapterDescriptor(
@@ -683,11 +694,15 @@ def test_client_surfaces_the_closed_adapter_error() -> None:
 
 
 def test_consumer_runnable_conformance_uses_only_the_public_http_contract() -> None:
-    adapter = MemoryAdapter()
+    state = MemoryAdapterState()
+    adapter = MemoryAdapter(state)
+    restarted_adapter = MemoryAdapter(state)
     client, http = _client(adapter)
+    continuation_client, continuation_http = _client(restarted_adapter)
     try:
         result = run_storage_adapter_conformance(
             client,
+            continuation_client=continuation_client,
             object_prefix="conformance/run-1",
         )
 
@@ -699,6 +714,7 @@ def test_consumer_runnable_conformance_uses_only_the_public_http_contract() -> N
             "exact-metadata",
             "exact-range",
             "identity-conflict",
+            "write-continuation-replay",
             "write-reconciliation",
             "write-completion-recovery",
             "write-stream",
@@ -709,5 +725,7 @@ def test_consumer_runnable_conformance_uses_only_the_public_http_contract() -> N
         )
         assert not adapter.objects
     finally:
+        continuation_client.close()
+        continuation_http.close()
         client.close()
         http.close()

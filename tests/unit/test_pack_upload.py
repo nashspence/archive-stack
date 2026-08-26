@@ -210,7 +210,7 @@ def test_pack_upload_revalidates_the_registered_source_identity() -> None:
         )
 
 
-def test_checkpoint_resumes_between_whole_file_units() -> None:
+def test_checkpoint_resumes_across_riverhog_and_adapter_restart() -> None:
     contents = {f"f-{index}.bin": bytes([index]) * (1024 * 1024) for index in range(7)}
     plan = plan_pack_volume(
         [_file(path, value) for path, value in contents.items()],
@@ -233,7 +233,11 @@ def test_checkpoint_resumes_between_whole_file_units() -> None:
         payload_chunks=(_payload(plan, 0, contents),),
     )
 
-    second_process = _uploader(store, checkpoints)
+    restarted_store = MemoryResumableStore()
+    restarted_store.uploads = store.uploads
+    restarted_store.objects = store.objects
+    restarted_store.next_id = store.next_id
+    second_process = _uploader(restarted_store, checkpoints)
     resumed = second_process.open(
         collection_id=1,
         plan=plan,
@@ -249,7 +253,7 @@ def test_checkpoint_resumes_between_whole_file_units() -> None:
         )
 
     assert len(resumed.archive_parts) == len(plan.units)
-    assert store.complete_calls == 1
+    assert restarted_store.complete_calls == 1
 
 
 def test_lost_complete_response_is_recovered_from_final_object_metadata() -> None:

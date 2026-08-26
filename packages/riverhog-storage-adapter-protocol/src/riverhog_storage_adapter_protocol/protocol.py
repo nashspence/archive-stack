@@ -52,8 +52,11 @@ RequiredIdentityAssertions = Annotated[
     dict[str, str],
     Field(
         description=(
-            "Public identity assertions that an existing object must contain during "
-            "reconciliation; adapters may retain additional adapter-private assertions."
+            "Inert caller-owned facts used only to identify and reconcile an exact stored "
+            "object. Adapters canonicalize, persist, return, and compare these assertions; "
+            "they must not interpret them as routing, retrieval, retention, credentials, "
+            "placement, or provider-control instructions. Adapters may retain additional "
+            "adapter-private assertions."
         )
     ),
 ]
@@ -138,7 +141,16 @@ class ObjectLocator(StorageAdapterModel):
 
 class WriteSession(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
-    write_token: str = Field(min_length=1, max_length=4000)
+    write_token: str = Field(
+        min_length=1,
+        max_length=4000,
+        description=(
+            "Opaque adapter-owned persistable continuation handle. For the same configured "
+            "adapter it remains replayable across client, transport, Riverhog, and adapter "
+            "process restarts until completion, explicit abort, or caller-authorized "
+            "incomplete-write reclamation makes the write terminal."
+        ),
+    )
 
     @field_validator("object_path")
     @classmethod
@@ -403,7 +415,11 @@ class ReadStatus(StorageAdapterModel):
 
 class AbortIncompleteWritesRequest(StorageAdapterModel):
     object_prefix: str = Field(min_length=1, max_length=4096)
-    initiated_before: str = Field(min_length=1, max_length=100)
+    initiated_before: str = Field(
+        min_length=1,
+        max_length=100,
+        description=("Caller-authorized cutoff that terminalizes matching nonterminal writes."),
+    )
 
     @field_validator("object_prefix")
     @classmethod
@@ -510,7 +526,12 @@ def validate_read_status_response(
 
 
 class StorageAdapterPort(Protocol):
-    """Transport-neutral effects required from one configured adapter target."""
+    """Transport-neutral effects required from one configured adapter target.
+
+    Public identity assertions are inert reconciliation evidence. Write sessions are durable
+    continuation identities rather than process-local handles; provider-specific state needed
+    to honor them remains private to the adapter.
+    """
 
     def descriptor(self) -> AdapterDescriptor: ...
 

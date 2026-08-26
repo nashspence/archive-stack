@@ -667,6 +667,9 @@ def test_compose_smoke_starts_and_cleans_a_fresh_stack(tmp_path: Path) -> None:
     docker_log = "\n".join(_read_log_lines(docker_log_path))
     assert f" build --sbom=generator={SBOM_GENERATOR} test" in docker_log
     assert " up --detach garage" in docker_log
+    assert "tests.harness.storage_adapter_restart_probe prepare" in docker_log
+    assert " restart archive-adapter" in docker_log
+    assert "tests.harness.storage_adapter_restart_probe resume" in docker_log
     assert f" build --sbom=generator={SBOM_GENERATOR} app" in docker_log
     assert " up --detach --wait app" in docker_log
     assert " exec -T postgres createdb --username riverhog --owner riverhog stove0" in docker_log
