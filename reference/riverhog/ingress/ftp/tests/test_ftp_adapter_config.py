@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 import yaml
-from riverhog_ftp_adapter.config import SourceConfig, load_config
+from riverhog_ftp_adapter.app import FtpAdapterComposition
+from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig, load_config
 
 REPO_ROOT = Path(__file__).parents[5]
 
@@ -16,6 +17,7 @@ def _write_config(path: Path, root: Path, *, host_id: str) -> None:
             {
                 "host_id": host_id,
                 "riverhog_base_url": "https://riverhog.invalid",
+                "provenance_observer": "fixture-observer",
                 "sources": [
                     {
                         "id": "ftp",
@@ -156,3 +158,51 @@ def test_capture_configuration_requires_a_canonical_provenance_host_identity(
 
     with pytest.raises(ValueError, match="host_id must be a lowercase UUID URN"):
         load_config(config_path)
+
+
+def test_capture_requires_one_explicit_connected_observer_provider(tmp_path: Path) -> None:
+    source = SourceConfig(
+        id="ftp",
+        root=tmp_path / "ftp",
+        ingest_source="ftp:fixture",
+        tags=("ftp",),
+    )
+    values = {
+        "host_id": "urn:uuid:00000000-0000-4000-8000-000000000675",
+        "riverhog_base_url": "https://riverhog.invalid",
+        "riverhog_token": "riverhog-token",
+        "api_token": "adapter-token",
+        "sources": (source,),
+    }
+
+    with pytest.raises(ValueError, match="explicit observer provider"):
+        FtpAdapterConfig(**values)
+
+    config = FtpAdapterConfig(provenance_observer="riverhog-linux", **values)
+    assert config.provenance_observer == "riverhog-linux"
+    composition = FtpAdapterComposition.build(config)
+    try:
+        assert composition.adapter.status()["provenance_observer"] == "riverhog-linux"
+    finally:
+        composition.api.close()
+
+
+def test_omission_does_not_accept_an_unused_observer_setting(tmp_path: Path) -> None:
+    source = SourceConfig(
+        id="ftp",
+        root=tmp_path / "ftp",
+        ingest_source="ftp:fixture",
+        tags=("ftp",),
+        provenance="omit",
+        provenance_omission_reason="Fixture explicitly omits provenance.",
+    )
+
+    with pytest.raises(ValueError, match="observer is unused"):
+        FtpAdapterConfig(
+            host_id="fixture",
+            riverhog_base_url="https://riverhog.invalid",
+            riverhog_token="riverhog-token",
+            api_token="adapter-token",
+            provenance_observer="riverhog-linux",
+            sources=(source,),
+        )

@@ -10,6 +10,8 @@ from riverhog_cli import main as riverhog_main
 from riverhog_cli.upload_progress import CollectionUploadProgressState, format_upload_progress_line
 from typer.testing import CliRunner
 
+from tests.provenance_observer import native_provenance_observer
+
 RUNNER = CliRunner()
 COLLECTION_ID = 1
 REGISTRATION_CONSTRAINTS = {
@@ -123,6 +125,7 @@ def test_large_source_hash_includes_server_layout_part_digests(tmp_path: Path) -
         source,
         pack_member_bytes=8,
         raw_part_plaintext_bytes=65_536,
+        provenance_observer_factory=native_provenance_observer,
     )
 
     assert entry["path"] == "large.bin"
@@ -337,6 +340,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
         ingest_source=str(root),
         file_concurrency=1,
         json_mode=True,
+        provenance_observer_factory=native_provenance_observer,
     )
 
     assert payload["state"] == "finalized"

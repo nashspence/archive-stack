@@ -47,7 +47,8 @@ from riverhog_provenance.model import (
     NativeStat,
     ObservationRequest,
 )
-from riverhog_provenance_macos_contracts import PLATFORM_FAMILY
+from riverhog_provenance.providers import ProvenanceObserverBinding
+from riverhog_provenance_macos_contracts import CONTRACT_BINDING, PLATFORM_FAMILY
 
 # Darwin getattrlist(2) constants, from XNU sys/attr.h.
 ATTR_BIT_MAP_COUNT = 5
@@ -1311,3 +1312,12 @@ class MacOSFileStateObserver(DescriptorFileStateObserver):
         enforce_platform: bool = True,
     ) -> None:
         super().__init__(MacOSBackend(native=native, enforce_platform=enforce_platform))
+
+
+OBSERVER_BINDING = ProvenanceObserverBinding(
+    observer_id="riverhog-provenance-macos-observer/v1",
+    contract_provider="riverhog-macos",
+    contract_id=CONTRACT_BINDING.contract_id,
+    contract_sha256=CONTRACT_BINDING.contract_sha256,
+    factory=MacOSFileStateObserver,
+)

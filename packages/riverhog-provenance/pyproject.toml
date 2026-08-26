@@ -21,16 +21,10 @@ urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "
 dependencies = [
   "jsonschema>=4.23,<5.0",
   "riverhog-provenance-contracts>=0.1,<0.2",
-  "riverhog-provenance-linux-contracts>=0.1,<0.2",
-  "riverhog-provenance-macos-contracts>=0.1,<0.2",
-  "riverhog-provenance-windows-contracts>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
 riverhog-provenance-contracts = { workspace = true }
-riverhog-provenance-linux-contracts = { workspace = true }
-riverhog-provenance-macos-contracts = { workspace = true }
-riverhog-provenance-windows-contracts = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riverhog_provenance"]

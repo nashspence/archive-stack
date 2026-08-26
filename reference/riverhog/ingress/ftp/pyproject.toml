@@ -26,10 +26,12 @@ dependencies = [
   "riverhog-ftp-adapter-api-client>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
   "riverhog-provenance>=0.1,<0.2",
-  "riverhog-provenance-linux-observer>=0.1,<0.2",
   "starlette>=0.37,<2.0",
   "uvicorn[standard]>=0.30,<1.0",
 ]
+
+[project.optional-dependencies]
+reference-linux-provenance = ["riverhog-provenance-linux-observer>=0.1,<0.2"]
 
 [project.scripts]
 riverhog-ftp-adapter = "riverhog_ftp_adapter.app:main"

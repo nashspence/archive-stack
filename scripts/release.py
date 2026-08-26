@@ -41,6 +41,7 @@ NOTICE_POLICY = {
 RELEASE_ROLES = (
     "end_user_artifact",
     "deployed_implementation",
+    "reference_implementation",
     "reusable_library",
     "internal_build_unit",
     "test_only_artifact",
@@ -1068,9 +1069,16 @@ def _project_dependency_graph(
     licenses: dict[str, str] = {}
     for project in projects:
         metadata = _project_metadata(root / project.path / "pyproject.toml")
-        dependencies = {_dependency_name(str(value)) for value in metadata.get("dependencies", [])}
-        direct[project.name] = dependencies
-        internal[project.name] = dependencies & project_names
+        required = {_dependency_name(str(value)) for value in metadata.get("dependencies", [])}
+        optional = {
+            _dependency_name(str(value))
+            for values in metadata.get("optional-dependencies", {}).values()
+            for value in values
+        }
+        # Optional requirements are wheel metadata and must be attested exactly,
+        # but they do not enter the default first-party dependency closure.
+        direct[project.name] = required | optional
+        internal[project.name] = required & project_names
         licenses[project.name] = str(metadata.get("license", "NOASSERTION"))
     return internal, direct, licenses
 

@@ -1902,9 +1902,74 @@
         },
         "configuration_digest": {
           "$ref": "#/$defs/digest"
+        },
+        "provenance_observer": {
+          "$ref": "#/$defs/provenanceObserverReference"
         }
       },
       "minProperties": 1
+    },
+    "provenanceContractReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "provider",
+        "contract_id",
+        "contract_sha256"
+      ],
+      "properties": {
+        "format": {
+          "const": "riverhog-provenance-contract-reference/v1"
+        },
+        "provider": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "contract_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256Hex"
+        }
+      }
+    },
+    "provenanceObserverReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "provider",
+        "observer_id",
+        "contract"
+      ],
+      "dependentRequired": {
+        "distribution": [
+          "version"
+        ],
+        "version": [
+          "distribution"
+        ]
+      },
+      "properties": {
+        "format": {
+          "const": "riverhog-provenance-observer-reference/v1"
+        },
+        "provider": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "observer_id": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "distribution": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "contract": {
+          "$ref": "#/$defs/provenanceContractReference"
+        }
+      }
     },
     "kernel": {
       "type": "object",

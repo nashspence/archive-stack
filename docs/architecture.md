@@ -1,6 +1,6 @@
 # Architecture
 
-Executable contracts define packages; this page records authority, ownership, and placement.
+Executable contracts define packages; this page records ownership and placement.
 
 ## Authority model
 
@@ -25,23 +25,22 @@ Executable contracts define packages; this page records authority, ownership, an
 
 ## Boundary model
 
-- **Implementation ownership.** Products own implementations. Focused packages may share contracts
-  or behavior; implementations do not cross product boundaries.
+- **Implementation ownership.** Products own implementations. Focused packages share contracts or
+  behavior without crossing product boundaries.
 - **Public contracts.** Runtime integration crosses published HTTP and CloudEvents contracts.
   Shared models own identity-bearing documents. Exact HTTP/OpenAPI contracts own ordinary CRUD;
   official clients may expose their JSON.
 - **Riverhog platform.** Server owns archive construction, publication, copies, retrieval, and
-  verified file delivery. The client is an API consumer owning only local
-  materializations.
+  verified delivery. The client owns only local materializations.
 - **Ingress adapters.** Ingress adapters accept external protocols as content-opaque, bounded-custody
   Riverhog clients; they relinquish bytes only after finalization.
 - **Storage adapters.** Storage adapters translate Riverhog's opaque-object capabilities into
   provider mechanisms. Provider policy and mechanisms remain outside Riverhog.
 - **Companions.** Companions consume Riverhog capabilities and own their workflow state. Stove0 is
   a provided transformation companion; its core does not interpret content.
-- **Extensions.** Content observers report bounded facts about exact immutable artifacts. Transform
-  targets perform one operation through an exact derived-collection capability. Native mechanisms
-  remain behind focused platform boundaries.
+- **Extensions.** Observers report bounded facts about exact immutable artifacts. Targets perform
+  one operation through an exact derived-collection capability. Applications explicitly compose
+  focused extensions; no platform or provider implementation set is authoritative or implicit.
 - **Transfer path.** Payload loops exclude control-plane status and reporting work.
 
 Workspace checks enforce ownership boundaries.
@@ -52,6 +51,8 @@ Workspace checks enforce ownership boundaries.
 - [`riverhog/client`](../riverhog/client/): official client.
 - [`riverhog/recovery`](../riverhog/recovery/): permissively licensed reference for recovery.
 - [`reference/riverhog/ingress`](../reference/riverhog/ingress/): maintained ingress adapters.
+- [`reference/riverhog/provenance`](../reference/riverhog/provenance/): optional provenance observer
+  references.
 - [`reference/riverhog/storage`](../reference/riverhog/storage/): maintained storage adapters.
 - [`companions`](../companions/): independent Riverhog applications.
 - [`reference/stove0`](../reference/stove0/): maintained Stove0 components.

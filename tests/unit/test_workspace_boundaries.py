@@ -27,6 +27,18 @@ IMPLEMENTATION_OWNERS = {
         REPO / "reference/riverhog/storage/backblaze/src",
         {"riverhog_storage_adapter_backblaze"},
     ),
+    "riverhog-provenance-linux-observer": (
+        REPO / "reference/riverhog/provenance/linux/src",
+        {"riverhog_provenance_linux_observer"},
+    ),
+    "riverhog-provenance-macos-observer": (
+        REPO / "reference/riverhog/provenance/macos/src",
+        {"riverhog_provenance_macos_observer"},
+    ),
+    "riverhog-provenance-windows-observer": (
+        REPO / "reference/riverhog/provenance/windows/src",
+        {"riverhog_provenance_windows_observer"},
+    ),
     "stove0-server": (
         REPO / "companions/stove0/server/src",
         {"stove0_api", "stove0_core"},
@@ -359,7 +371,6 @@ def test_portable_products_compose_exactly_one_native_platform_implementation() 
     }
     product_native = {
         REPO / "utilities/gogurt/pyproject.toml": "gogurt-{platform}",
-        REPO / "riverhog/client/pyproject.toml": "riverhog-provenance-{platform}-observer",
     }
     for pyproject, template in product_native.items():
         config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
@@ -375,6 +386,16 @@ def test_portable_products_compose_exactly_one_native_platform_implementation() 
         for platform, marker in native_markers.items():
             requirement = requirements[template.format(platform=platform)]
             assert str(requirement.marker) == marker
+
+    client = tomllib.loads((REPO / "riverhog/client/pyproject.toml").read_text(encoding="utf-8"))
+    client_dependencies = declared_project_dependencies(client)
+    assert client_dependencies.isdisjoint(
+        {
+            "riverhog-provenance-linux-observer",
+            "riverhog-provenance-macos-observer",
+            "riverhog-provenance-windows-observer",
+        }
+    )
 
 
 def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exact() -> None:
@@ -406,9 +427,10 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
         "windows": "riverhog-provenance-windows-contracts",
     }
     for platform, contract in platform_contracts.items():
-        observer = f"riverhog-provenance-{platform}-observer"
         observer_config = tomllib.loads(
-            (REPO / f"packages/{observer}/pyproject.toml").read_text(encoding="utf-8")
+            (REPO / f"reference/riverhog/provenance/{platform}/pyproject.toml").read_text(
+                encoding="utf-8"
+            )
         )
         assert declared_project_dependencies(observer_config) == {
             "riverhog-provenance",
@@ -427,7 +449,9 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
     provenance_config = tomllib.loads(
         (REPO / "packages/riverhog-provenance/pyproject.toml").read_text(encoding="utf-8")
     )
-    assert set(platform_contracts.values()) <= declared_project_dependencies(provenance_config)
+    assert declared_project_dependencies(provenance_config).isdisjoint(
+        set(platform_contracts.values())
+    )
     provenance_imports = set().union(
         *(
             imported_roots(path)
@@ -469,7 +493,10 @@ def test_core_domain_and_ports_are_dependency_roots() -> None:
 def test_images_copy_only_their_owned_implementation_project() -> None:
     dockerfiles = {
         REPO / "riverhog/server/Dockerfile": "riverhog/server",
-        REPO / "reference/riverhog/ingress/ftp/Dockerfile": "reference/riverhog/ingress/ftp",
+        REPO / "reference/riverhog/ingress/ftp/Dockerfile": (
+            "reference/riverhog/ingress/ftp",
+            "reference/riverhog/provenance/linux",
+        ),
         REPO / "reference/riverhog/storage/aws/Dockerfile": "reference/riverhog/storage/aws",
         REPO / "reference/riverhog/storage/backblaze/Dockerfile": (
             "reference/riverhog/storage/backblaze"
@@ -628,7 +655,10 @@ def test_compose_timezone_defaults_are_configurable_utc() -> None:
 def test_images_copy_their_complete_internal_dependency_closure() -> None:
     images = {
         REPO / "riverhog/server/Dockerfile": "riverhog-server",
-        REPO / "reference/riverhog/ingress/ftp/Dockerfile": "riverhog-ftp-adapter",
+        REPO / "reference/riverhog/ingress/ftp/Dockerfile": (
+            "riverhog-ftp-adapter",
+            "riverhog-provenance-linux-observer",
+        ),
         REPO / "reference/riverhog/storage/aws/Dockerfile": "riverhog-storage-adapter-aws",
         REPO / "reference/riverhog/storage/backblaze/Dockerfile": (
             "riverhog-storage-adapter-backblaze"

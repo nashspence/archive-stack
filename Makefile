@@ -43,11 +43,11 @@ MYPY_SOURCES = \
 	packages/riverhog-protocol/src \
 	packages/riverhog-provenance-contracts/src \
 	packages/riverhog-provenance-linux-contracts/src \
-	packages/riverhog-provenance-linux-observer/src \
+	reference/riverhog/provenance/linux/src \
 	packages/riverhog-provenance-macos-contracts/src \
-	packages/riverhog-provenance-macos-observer/src \
+	reference/riverhog/provenance/macos/src \
 	packages/riverhog-provenance-windows-contracts/src \
-	packages/riverhog-provenance-windows-observer/src \
+	reference/riverhog/provenance/windows/src \
 	packages/riverhog-transform-sdk/src \
 	packages/riverhog-storage-adapter-asgi-support/src \
 	packages/riverhog-storage-adapter-protocol/src \

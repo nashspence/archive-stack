@@ -49,7 +49,8 @@ from riverhog_provenance.model import (
     NativeStat,
     ObservationRequest,
 )
-from riverhog_provenance_linux_contracts import PLATFORM_FAMILY
+from riverhog_provenance.providers import ProvenanceObserverBinding
+from riverhog_provenance_linux_contracts import CONTRACT_BINDING, PLATFORM_FAMILY
 
 # Linux uapi constants. These values are stable ABI, not libc implementation details.
 AT_EMPTY_PATH = 0x1000
@@ -1329,3 +1330,12 @@ class LinuxFileStateObserver(DescriptorFileStateObserver):
                 enforce_platform=enforce_platform,
             )
         )
+
+
+OBSERVER_BINDING = ProvenanceObserverBinding(
+    observer_id="riverhog-provenance-linux-observer/v1",
+    contract_provider="riverhog-linux",
+    contract_id=CONTRACT_BINDING.contract_id,
+    contract_sha256=CONTRACT_BINDING.contract_sha256,
+    factory=LinuxFileStateObserver,
+)

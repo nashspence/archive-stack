@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Annotated, Any
 
+import rfc8785
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 CANONICAL_UUID_URN_PATTERN = (
     r"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
+PROVENANCE_CONTRACT_ENTRY_POINT_GROUP = "riverhog.provenance-contracts"
+PROVENANCE_CONTRACT_BINDING_FORMAT = "riverhog-provenance-contract-binding/v1"
+PROVENANCE_CONTRACT_REFERENCE_FORMAT = "riverhog-provenance-contract-reference/v1"
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
 def index_schema_documents(
@@ -30,6 +38,63 @@ def index_schema_documents(
             raise ValueError(f"{owner} schema identity is duplicated: {identifier}")
         indexed[identifier] = document
     return dict(sorted(indexed.items()))
+
+
+def _canonical_json(value: Mapping[str, Any]) -> bytes:
+    return rfc8785.dumps(dict(value))
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ProvenanceContractBinding:
+    """One immutable, content-addressed provenance observation contract pack."""
+
+    format: str
+    contract_id: str
+    contract_sha256: str
+    _schemas_json: bytes
+
+    def __init__(
+        self,
+        *,
+        contract_id: str,
+        schemas: Iterable[Mapping[str, Any]],
+    ) -> None:
+        if not contract_id or contract_id != contract_id.strip():
+            raise ValueError("provenance contract ID must be nonempty and canonical")
+        indexed = index_schema_documents(schemas, owner=contract_id)
+        if not indexed:
+            raise ValueError("provenance contract pack must contain at least one schema")
+        document = {
+            "format": PROVENANCE_CONTRACT_BINDING_FORMAT,
+            "contract_id": contract_id,
+            "schemas": indexed,
+        }
+        encoded = _canonical_json(document)
+        object.__setattr__(self, "format", PROVENANCE_CONTRACT_BINDING_FORMAT)
+        object.__setattr__(self, "contract_id", contract_id)
+        object.__setattr__(self, "contract_sha256", hashlib.sha256(encoded).hexdigest())
+        object.__setattr__(self, "_schemas_json", _canonical_json(indexed))
+
+    @property
+    def schemas(self) -> dict[str, dict[str, Any]]:
+        """Return an isolated copy of the schemas sealed by this binding."""
+
+        value = json.loads(self._schemas_json)
+        if not isinstance(value, dict):  # pragma: no cover - constructor invariant
+            raise RuntimeError("invalid sealed provenance contract schema map")
+        return value
+
+    def reference(self, provider: str) -> dict[str, str]:
+        """Return the exact portable identity persisted with an observation."""
+
+        if not provider or provider != provider.strip():
+            raise ValueError("provenance contract provider name must be canonical")
+        return {
+            "format": PROVENANCE_CONTRACT_REFERENCE_FORMAT,
+            "provider": provider,
+            "contract_id": self.contract_id,
+            "contract_sha256": self.contract_sha256,
+        }
 
 
 def require_canonical_uuid_urn(value: str, field: str = "identity") -> str:
@@ -88,9 +153,14 @@ class ProvenanceJournalStateReference(BaseModel):
 
 __all__ = [
     "CANONICAL_UUID_URN_PATTERN",
+    "PROVENANCE_CONTRACT_BINDING_FORMAT",
+    "PROVENANCE_CONTRACT_ENTRY_POINT_GROUP",
+    "PROVENANCE_CONTRACT_REFERENCE_FORMAT",
     "ProvenanceJournalId",
     "ProvenanceEntryId",
+    "ProvenanceContractBinding",
     "ProvenanceJournalStateReference",
+    "SHA256_PATTERN",
     "ProvenanceStateId",
     "index_schema_documents",
     "require_canonical_uuid_urn",

@@ -1682,9 +1682,6 @@ dependencies = [
     { name = "riverhog-cli-support" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
-    { name = "riverhog-provenance-linux-observer", marker = "sys_platform == 'linux'" },
-    { name = "riverhog-provenance-macos-observer", marker = "sys_platform == 'darwin'" },
-    { name = "riverhog-provenance-windows-observer", marker = "sys_platform == 'win32'" },
     { name = "state-schema" },
     { name = "time-formats" },
     { name = "typer" },
@@ -1698,9 +1695,6 @@ requires-dist = [
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
-    { name = "riverhog-provenance-linux-observer", marker = "sys_platform == 'linux'", editable = "packages/riverhog-provenance-linux-observer" },
-    { name = "riverhog-provenance-macos-observer", marker = "sys_platform == 'darwin'", editable = "packages/riverhog-provenance-macos-observer" },
-    { name = "riverhog-provenance-windows-observer", marker = "sys_platform == 'win32'", editable = "packages/riverhog-provenance-windows-observer" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "typer", specifier = ">=0.12,<1.0" },
@@ -1718,9 +1712,13 @@ dependencies = [
     { name = "riverhog-ftp-adapter-api-client" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
-    { name = "riverhog-provenance-linux-observer" },
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+reference-linux-provenance = [
+    { name = "riverhog-provenance-linux-observer" },
 ]
 
 [package.metadata]
@@ -1732,10 +1730,11 @@ requires-dist = [
     { name = "riverhog-ftp-adapter-api-client", editable = "packages/riverhog-ftp-adapter-api-client" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
-    { name = "riverhog-provenance-linux-observer", editable = "packages/riverhog-provenance-linux-observer" },
+    { name = "riverhog-provenance-linux-observer", marker = "extra == 'reference-linux-provenance'", editable = "reference/riverhog/provenance/linux" },
     { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
+provides-extras = ["reference-linux-provenance"]
 
 [[package]]
 name = "riverhog-ftp-adapter-api-client"
@@ -1778,18 +1777,12 @@ source = { editable = "packages/riverhog-provenance" }
 dependencies = [
     { name = "jsonschema" },
     { name = "riverhog-provenance-contracts" },
-    { name = "riverhog-provenance-linux-contracts" },
-    { name = "riverhog-provenance-macos-contracts" },
-    { name = "riverhog-provenance-windows-contracts" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5.0" },
     { name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" },
-    { name = "riverhog-provenance-linux-contracts", editable = "packages/riverhog-provenance-linux-contracts" },
-    { name = "riverhog-provenance-macos-contracts", editable = "packages/riverhog-provenance-macos-contracts" },
-    { name = "riverhog-provenance-windows-contracts", editable = "packages/riverhog-provenance-windows-contracts" },
 ]
 
 [[package]]
@@ -1798,10 +1791,14 @@ version = "0.1.0"
 source = { editable = "packages/riverhog-provenance-contracts" }
 dependencies = [
     { name = "pydantic" },
+    { name = "rfc8785" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.12,<3.0" }]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.12,<3.0" },
+    { name = "rfc8785", specifier = ">=0.1,<0.2" },
+]
 
 [[package]]
 name = "riverhog-provenance-linux-contracts"
@@ -1817,7 +1814,7 @@ requires-dist = [{ name = "riverhog-provenance-contracts", editable = "packages/
 [[package]]
 name = "riverhog-provenance-linux-observer"
 version = "0.1.0"
-source = { editable = "packages/riverhog-provenance-linux-observer" }
+source = { editable = "reference/riverhog/provenance/linux" }
 dependencies = [
     { name = "riverhog-provenance" },
     { name = "riverhog-provenance-linux-contracts" },
@@ -1843,7 +1840,7 @@ requires-dist = [{ name = "riverhog-provenance-contracts", editable = "packages/
 [[package]]
 name = "riverhog-provenance-macos-observer"
 version = "0.1.0"
-source = { editable = "packages/riverhog-provenance-macos-observer" }
+source = { editable = "reference/riverhog/provenance/macos" }
 dependencies = [
     { name = "riverhog-provenance" },
     { name = "riverhog-provenance-macos-contracts" },
@@ -1869,7 +1866,7 @@ requires-dist = [{ name = "riverhog-provenance-contracts", editable = "packages/
 [[package]]
 name = "riverhog-provenance-windows-observer"
 version = "0.1.0"
-source = { editable = "packages/riverhog-provenance-windows-observer" }
+source = { editable = "reference/riverhog/provenance/windows" }
 dependencies = [
     { name = "riverhog-provenance" },
     { name = "riverhog-provenance-windows-contracts" },

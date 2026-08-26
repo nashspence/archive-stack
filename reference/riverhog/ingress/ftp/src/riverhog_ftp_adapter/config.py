@@ -67,6 +67,7 @@ class FtpAdapterConfig(ConfigModel):
     riverhog_token: str = Field(min_length=1, max_length=4096, repr=False)
     allow_insecure_http: bool = False
     api_token: str = Field(min_length=1, max_length=4096, repr=False)
+    provenance_observer: str | None = Field(default=None, min_length=1, max_length=255)
     sources: tuple[SourceConfig, ...] = Field(min_length=1)
     poll_seconds: float = Field(default=5.0, ge=0.1, le=3600)
 
@@ -83,8 +84,13 @@ class FtpAdapterConfig(ConfigModel):
 
     @model_validator(mode="after")
     def provenance_authority(self) -> Self:
-        if any(source.provenance == "capture" for source in self.sources):
+        captures = any(source.provenance == "capture" for source in self.sources)
+        if captures:
             require_urn_uuid(self.host_id, "host_id")
+            if self.provenance_observer is None:
+                raise ValueError("captured provenance requires an explicit observer provider")
+        elif self.provenance_observer is not None:
+            raise ValueError("provenance observer is unused when every source omits provenance")
         return self
 
     def source(self, source_id: str) -> SourceConfig:

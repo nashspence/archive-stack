@@ -58,6 +58,7 @@ PAGED_LIST_COMMANDS = (
 
 BOUNDED_LIST_COMMANDS = (
     ("riverhog", "collection", "tag", "list", "--help"),
+    ("riverhog", "local", "provenance-observer", "list", "--help"),
     ("stove0", "recipe", "list", "--help"),
 )
 
