@@ -20,6 +20,27 @@ REPOSITORY_MAP_TARGETS = {
     REPO / "packages",
 }
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+ARCHITECTURE_CATEGORY_RE = re.compile(r"^- \*\*([^*]+)\.\*\*", flags=re.MULTILINE)
+ARCHITECTURE_CATEGORIES = {
+    "Authority model": [
+        "Archive authority",
+        "Trust boundary",
+        "Operational state",
+        "Provenance authority",
+        "Collection views",
+        "Deployment configuration",
+    ],
+    "Boundary model": [
+        "Implementation ownership",
+        "Public contracts",
+        "Riverhog platform",
+        "Ingress adapters",
+        "Storage adapters",
+        "Companions",
+        "Extensions",
+        "Transfer path",
+    ],
+}
 IGNORED_TREES = {
     ".git",
     ".mypy_cache",
@@ -126,7 +147,15 @@ def test_architecture_is_scoped_to_quick_context() -> None:
         "Boundary model",
         "Repository map",
     ]
-    assert len(architecture.split()) <= 500
+    assert len(architecture.split()) <= 425
+
+
+def test_architecture_categories_follow_the_durable_mental_model() -> None:
+    architecture = (REPO / "docs/architecture.md").read_text(encoding="utf-8")
+
+    for heading, expected in ARCHITECTURE_CATEGORIES.items():
+        section = architecture.partition(f"## {heading}\n")[2].partition("\n## ")[0]
+        assert ARCHITECTURE_CATEGORY_RE.findall(section) == expected
 
 
 def test_architecture_states_the_repo_wide_provenance_authority_policy() -> None:
@@ -142,11 +171,11 @@ def test_architecture_states_the_direct_to_final_ingress_authority_policy() -> N
     architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
 
     assert (
-        "Collection ingress writes server-encrypted units directly to immutable final archive "
-        "keys in its selected store; ingress is not a storage tier"
+        "Ingress encrypts there before writing immutable final-object units to the selected "
+        "archive store; ingress is not a storage tier"
     ) in architecture
     assert (
-        "Sealed objects and published immutable roots alone are archive authority"
+        "Only sealed objects and published immutable roots are archive authority"
     ) in architecture
 
 
