@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal, Protocol, Self, cast
@@ -17,6 +17,7 @@ from riverhog_transform_sdk import (
 )
 from stove0_observer_protocol import (
     ArtifactSubject,
+    FactsSemanticValidator,
     ObservationInvocation,
     ObservationRequest,
     ObservationResult,
@@ -25,7 +26,6 @@ from stove0_observer_protocol import (
 
 CancellationCheck = Callable[[], None]
 Heartbeat = Callable[[], None]
-FactsSemanticValidator = Callable[[ObservationRequest, Mapping[str, object]], None]
 
 
 class ContentObserver(Protocol):

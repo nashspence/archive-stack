@@ -11,9 +11,14 @@ from typing import Any
 
 import httpx
 import pytest
+import stove0_observer_client.providers as observer_provider_module
 from jsonschema import Draft202012Validator
 from riverhog_protocol.collection_workflows import PRODUCER_EVIDENCE_PATH
-from stove0_observer_client import ContentObserverClient, ObserverProtocolError
+from stove0_observer_client import (
+    ContentObserverClient,
+    ObserverProtocolError,
+    load_semantic_validator_registry,
+)
 from stove0_observer_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     ObservationInvocation,
@@ -28,6 +33,8 @@ from stove0_observer_protocol import (
     ObserverDescriptorPayload,
     ObserverImplementation,
     ObserverRuntimeAuthority,
+    SemanticValidatorBinding,
+    SemanticValidatorRegistry,
 )
 from stove0_observer_support import (
     ObservationResultBuilder,
@@ -320,6 +327,19 @@ def test_conformance_report_checks_contract_schemas_and_result_binding() -> None
 
     assert report["status"] == "conformant"
     assert report["observation"]["facts"] == {"bytes": len(api.data)}
+    assert report["contracts"] == [
+        {
+            "contract_id": contract.id,
+            "contract_sha256": contract.contract_sha256,
+            "options_schema_sha256": contract.options_schema.sha256,
+            "facts_schema_sha256": contract.facts_schema.sha256,
+            "facts_semantics_id": contract.facts_semantics.id,
+            "facts_semantics_sha256": contract.facts_semantics.profile_sha256,
+            "facts_semantics_conformance_vectors_sha256": None,
+            "preferred_subject_batch_size": 128,
+            "maximum_result_bytes": contract.maximum_result_bytes,
+        }
+    ]
 
 
 def test_result_builder_binds_schema_identity_and_size_limits() -> None:
@@ -541,13 +561,16 @@ def test_framework_neutral_observer_http_binding() -> None:
     assert binding.handle("DELETE", "/v1/observer").status == 405
 
 
-def test_observer_binding_requires_and_executes_the_exact_semantic_profile() -> None:
+def test_observer_binding_and_client_execute_the_exact_semantic_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     api = RetrievalApi()
     base = _contract()
     semantics = SemanticValidationProfile.seal(
         SemanticValidationProfilePayload(
             id="fixture.bytes-facts-semantics/v1",
             rules=("fixture.bytes-facts.nonzero/v1",),
+            conformance_vectors_sha256=_sha("e"),
         )
     )
     payload = base.model_dump(mode="python", exclude={"contract_sha256"})
@@ -561,7 +584,32 @@ def test_observer_binding_requires_and_executes_the_exact_semantic_profile() -> 
     assert (
         ObserverHttpBinding(
             BindingObserver(descriptor),
-            facts_semantic_validators={"f" * 64: lambda _request, _facts: None},
+            semantic_validators=SemanticValidatorRegistry(
+                (
+                    SemanticValidatorBinding(
+                        profile_id=semantics.id,
+                        profile_sha256="f" * 64,
+                        validator=lambda _request, _facts: None,
+                    ),
+                )
+            ),
+        )
+        .handle("GET", "/v1/observer")
+        .status
+        == 500
+    )
+    assert (
+        ObserverHttpBinding(
+            BindingObserver(descriptor),
+            semantic_validators=SemanticValidatorRegistry(
+                (
+                    SemanticValidatorBinding(
+                        profile_id="fixture.other-semantics/v1",
+                        profile_sha256=semantics.profile_sha256,
+                        validator=lambda _request, _facts: None,
+                    ),
+                )
+            ),
         )
         .handle("GET", "/v1/observer")
         .status
@@ -590,7 +638,9 @@ def test_observer_binding_requires_and_executes_the_exact_semantic_profile() -> 
     )
     binding = ObserverHttpBinding(
         BindingObserver(descriptor),
-        facts_semantic_validators={semantics.profile_sha256: reject_facts},
+        semantic_validators=SemanticValidatorRegistry(
+            (SemanticValidatorBinding.from_profile(semantics, reject_facts),)
+        ),
     )
 
     assert binding.handle("GET", "/v1/observer").status == 200
@@ -601,6 +651,63 @@ def test_observer_binding_requires_and_executes_the_exact_semantic_profile() -> 
     )
     assert response.status == 500
     assert called == [{"bytes": len(api.data)}]
+
+    result = _result(request, contract, descriptor, len(api.data))
+    real_client = httpx.Client
+
+    def respond(received: httpx.Request) -> httpx.Response:
+        if received.method == "GET":
+            return httpx.Response(200, json=descriptor.model_dump(mode="json"))
+        return httpx.Response(200, json=result.model_dump(mode="json"))
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **_kwargs: real_client(transport=httpx.MockTransport(respond)),
+    )
+    with pytest.raises(ObserverProtocolError, match="not enabled"):
+        ContentObserverClient("https://observer.example").descriptor()
+
+    client = ContentObserverClient(
+        "https://observer.example",
+        semantic_validators=SemanticValidatorRegistry(
+            (SemanticValidatorBinding.from_profile(semantics, reject_facts),)
+        ),
+    )
+    assert client.descriptor() == descriptor
+    with pytest.raises(ObserverProtocolError, match="inconsistent with the invocation"):
+        client.observe(invocation, descriptor=descriptor)
+
+
+def test_semantic_validator_entry_points_are_loaded_only_by_explicit_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = SemanticValidatorBinding.from_profile(
+        JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
+        lambda _request, _facts: None,
+    )
+
+    class FixtureEntryPoint:
+        name = "fixture"
+
+        @staticmethod
+        def load() -> SemanticValidatorBinding:
+            return binding
+
+    monkeypatch.setattr(
+        observer_provider_module.importlib.metadata,
+        "entry_points",
+        lambda *, group: (FixtureEntryPoint(),),
+    )
+
+    registry = load_semantic_validator_registry(("fixture",))
+    assert registry.resolve(binding.profile_id, binding.profile_sha256) is binding.validator
+    assert (
+        load_semantic_validator_registry(()).resolve(binding.profile_id, binding.profile_sha256)
+        is None
+    )
+    with pytest.raises(ValueError, match="resolve exactly once"):
+        load_semantic_validator_registry(("missing",))
 
 
 def test_observer_descriptor_failure_uses_the_public_error_envelope() -> None:

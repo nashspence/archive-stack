@@ -201,6 +201,8 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
         lines.append(f"archive phase: {payload['archive_phase']}")
     if payload.get("latest_failure"):
         lines.append(f"failure: {payload['latest_failure']}")
+    if payload.get("archive_next_attempt_at"):
+        lines.append(f"archive next attempt: {payload['archive_next_attempt_at']}")
     if payload.get("upload_state_expires_at"):
         lines.append(f"lease expires: {payload['upload_state_expires_at']}")
     if payload.get("orphaned_at"):

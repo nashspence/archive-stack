@@ -15,8 +15,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from stove0_observer_protocol import (
     ObservationRequest,
     ObservationResult,
-    ObserverDescriptor,
-    validate_observation_result,
 )
 from stove0_operator_contracts import validate_work_state_shape
 from stove0_protocol import (
@@ -668,7 +666,6 @@ class Stove0WorkService:
         work_id: str,
         result: ObservationResult,
         *,
-        descriptor: ObserverDescriptor,
         expected_revision: int,
     ) -> WorkRecord:
         record = self._load(work_id, expected_revision)
@@ -678,7 +675,6 @@ class Stove0WorkService:
         request = requests.get(result.request_id)
         if request is None:
             raise ValueError("observation result was not requested by this work")
-        validate_observation_result(result, request, descriptor)
         results = {item.request_id: item for item in record.observation_results}
         existing = results.get(result.request_id)
         if existing is not None and existing != result:

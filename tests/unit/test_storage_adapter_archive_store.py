@@ -43,7 +43,7 @@ class _Stored:
     identity: dict[str, str]
     placement: str
     revision: str
-    completed_at: str = "2026-08-21T00:00:00Z"
+    completed_at: str = "2026-08-21T00:00:00.000000Z"
 
 
 class _MemoryAdapter:
@@ -100,6 +100,7 @@ class _MemoryAdapter:
             stored_bytes=len(stored.content),
             stored_sha256=hashlib.sha256(stored.content).hexdigest(),
             required_identity_assertions=stored.identity,
+            verified_placement=request.expected_placement,
             completed_at=stored.completed_at,
         )
 
@@ -175,6 +176,8 @@ class _MemoryAdapter:
             entity_token=f"entity-{stored.revision}",
             stored_bytes=len(stored.content),
             stored_sha256=hashlib.sha256(stored.content).hexdigest(),
+            verified_identity_assertions=stored.identity,
+            verified_placement=stored.placement,
             completed_at=stored.completed_at,
         )
 

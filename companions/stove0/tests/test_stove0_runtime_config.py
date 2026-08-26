@@ -40,7 +40,8 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
             "STOVE0_SCHEDULER_INTERVAL_SECONDS": "0.5",
             "STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS": "86400",
             "STOVE0_OBSERVERS_JSON": (
-                '{"probe":{"base_url":"http://probe:8080","allow_insecure_http":true}}'
+                '{"probe":{"base_url":"http://probe:8080","allow_insecure_http":true,'
+                '"semantic_validator_providers":["fixture"]}}'
             ),
             "STOVE0_TARGETS_JSON": (
                 '{"target":{"base_url":"https://target.invalid","allow_insecure_http":false}}'
@@ -56,8 +57,10 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
     assert config.recipes_path == (tmp_path / "recipes.yaml").resolve()
     assert config.observers["probe"].base_url == "http://probe:8080"
     assert config.observers["probe"].allow_insecure_http is True
+    assert config.observers["probe"].semantic_validator_providers == ("fixture",)
     assert config.targets["target"].base_url == "https://target.invalid"
     assert config.targets["target"].allow_insecure_http is False
+    assert config.targets["target"].semantic_validator_providers == ()
     assert config.workspace_assurance == "ephemeral"
     assert config.claim_lease_seconds == 240
     assert config.capability_ttl_seconds == 120
@@ -86,6 +89,24 @@ def test_runtime_secrets_accept_exactly_one_direct_or_file_source(tmp_path: Path
 def test_operator_api_configuration_requires_its_bearer_secret(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="STOVE0_API_TOKEN or STOVE0_API_TOKEN_FILE is required"):
         Stove0RuntimeConfig.from_environment(_environment(tmp_path / "recipes.yaml"))
+
+
+def test_semantic_validator_providers_are_observer_only_and_unique(tmp_path: Path) -> None:
+    environment = _environment(tmp_path / "recipes.yaml")
+    environment["STOVE0_OBSERVERS_JSON"] = (
+        '{"probe":{"base_url":"https://probe.invalid",'
+        '"semantic_validator_providers":["same","same"]}}'
+    )
+    with pytest.raises(ValueError, match="providers repeat"):
+        Stove0RuntimeConfig.from_environment(environment, require_api_token=False)
+
+    environment["STOVE0_OBSERVERS_JSON"] = "{}"
+    environment["STOVE0_TARGETS_JSON"] = (
+        '{"target":{"base_url":"https://target.invalid",'
+        '"semantic_validator_providers":["fixture"]}}'
+    )
+    with pytest.raises(ValueError, match="cannot configure semantic validators"):
+        Stove0RuntimeConfig.from_environment(environment, require_api_token=False)
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])

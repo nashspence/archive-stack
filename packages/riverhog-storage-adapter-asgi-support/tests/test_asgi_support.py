@@ -55,8 +55,13 @@ class _Adapter:
             object_path=request.object_path,
             stored_bytes=len(stored),
             stored_sha256=request.stored_sha256,
-            completed_at="2026-08-25T00:00:00Z",
+            verified_identity_assertions=request.required_identity_assertions,
+            verified_placement=request.placement,
+            completed_at="2026-08-25T00:00:00.000000Z",
         )
+
+    def abort_incomplete_writes(self, _request: object) -> int:
+        raise AssertionError("malformed maintenance request reached the adapter")
 
 
 def test_asgi_shell_authenticates_before_dispatch() -> None:
@@ -125,6 +130,24 @@ def test_asgi_health_is_public_but_readiness_fails_closed() -> None:
     response = client.get("/health/ready")
     assert response.status_code == 503
     assert "provider detail" not in response.text
+
+
+def test_asgi_shell_rejects_malformed_maintenance_cutoff_before_dispatch() -> None:
+    adapter = _Adapter()
+    app = create_storage_adapter_app(
+        service="fixture-storage-adapter",
+        token="secret-token",
+        adapter=cast(StorageAdapterPort, adapter),
+    )
+
+    response = TestClient(app).post(
+        "/v1/maintenance/abort-incomplete-writes",
+        headers={"Authorization": "Bearer secret-token"},
+        json={"object_prefix": "objects/", "initiated_before": "not-a-timestamp"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
 
 
 def test_asgi_shell_streams_framed_uploads_without_materializing_request_body(

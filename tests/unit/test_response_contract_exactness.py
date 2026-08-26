@@ -242,6 +242,10 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         "custodied_files": 0,
         "custodied_bytes": 0,
         "orphaned_at": None,
+        "latest_failure": None,
+        "archive_phase": "completed",
+        "archive_phase_updated_at": "2026-08-25T00:00:00.000000Z",
+        "archive_next_attempt_at": None,
         "collection": None,
     }
     schema_validator = Draft202012Validator(CollectionUploadSessionOut.model_json_schema())
@@ -265,6 +269,37 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         CollectionUploadSessionOut.model_validate(open_with_final_identity)
     with pytest.raises(JsonSchemaValidationError):
         schema_validator.validate(open_with_final_identity)
+
+    open_payload = deepcopy(open_with_final_identity)
+    open_payload.update(
+        {
+            "content_identity": None,
+            "archive_phase": "planning",
+        }
+    )
+    CollectionUploadSessionOut.model_validate(open_payload)
+    schema_validator.validate(open_payload)
+
+    invalid_phase = deepcopy(open_payload)
+    invalid_phase["archive_phase"] = "completed"
+    with pytest.raises(ValidationError, match="archive phase differs"):
+        CollectionUploadSessionOut.model_validate(invalid_phase)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(invalid_phase)
+
+    invalid_retry = deepcopy(open_payload)
+    invalid_retry.update({"state": "finalizing", "archive_phase": "retry_wait"})
+    with pytest.raises(ValidationError, match="failure and retry schedule"):
+        CollectionUploadSessionOut.model_validate(invalid_retry)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(invalid_retry)
+
+    noncanonical_timestamp = deepcopy(open_payload)
+    noncanonical_timestamp["archive_phase_updated_at"] = "2026-08-25T00:00:00Z"
+    with pytest.raises(ValidationError, match="pattern|canonical UTC"):
+        CollectionUploadSessionOut.model_validate(noncanonical_timestamp)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(noncanonical_timestamp)
 
 
 @pytest.mark.parametrize(

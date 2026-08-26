@@ -276,6 +276,8 @@ def test_small_object_retry_uses_exact_identity_without_rereading_ciphertext() -
     stored = client.versions[("owned/archives/collection/manifest.age", first.revision or "")]
     assert stored["Body"] == first_content
     assert first.stored_sha256 == hashlib.sha256(first_content).hexdigest()
+    assert first.verified_identity_assertions == {"riverhog-logical-identity": "logical/v1"}
+    assert first.verified_placement == "immediate"
 
 
 def test_small_object_rejects_a_changed_logical_identity() -> None:
@@ -370,6 +372,30 @@ def test_resumable_write_reconciles_segments_and_lost_completion() -> None:
     }
 
 
+def test_resumable_write_lists_sparse_provider_state_after_restart() -> None:
+    client = _FakeS3Client()
+    adapter = S3StorageAdapter(client, _config())
+    session = adapter.begin_write(
+        WriteStartRequest(
+            object_path="archives/collection/sparse.age",
+            content_type="application/octet-stream",
+            required_identity_assertions={"riverhog-plan-sha256": "a" * 64},
+            placement="archive",
+        )
+    )
+    persisted_session = WriteSession.model_validate_json(session.model_dump_json())
+    restarted_adapter = S3StorageAdapter(client, _config())
+    content = b"s" * restarted_adapter.descriptor().minimum_nonfinal_segment_bytes
+    second = restarted_adapter.write_segment(
+        session=persisted_session,
+        number=2,
+        stored_bytes=len(content),
+        content=content,
+    )
+
+    assert restarted_adapter.list_segments(persisted_session).segments == (second,)
+
+
 def test_identity_assertions_are_inert_while_placement_remains_explicit() -> None:
     client = _FakeS3Client()
     adapter = S3StorageAdapter(client, _config())
@@ -458,6 +484,7 @@ def test_metadata_head_hides_adapter_markers_but_keeps_opaque_identity() -> None
 
     assert head is not None
     assert head.required_identity_assertions == {"riverhog-logical-identity": "logical/v1"}
+    assert head.verified_placement == "immediate"
     assert head.stored_sha256 == hashlib.sha256(content).hexdigest()
 
 
@@ -498,11 +525,11 @@ def test_read_preparation_mechanics_remain_adapter_private() -> None:
 
         def prepare(self, **kwargs: Any) -> ReadReadiness:
             self.calls.append(("prepare", kwargs["objects"]))
-            return ReadRequested(estimated_ready_at="2026-01-03T00:00:00Z")
+            return ReadRequested(estimated_ready_at="2026-01-03T00:00:00.000000Z")
 
         def status(self, **kwargs: Any) -> ReadReadiness:
             self.calls.append(("status", kwargs["objects"]))
-            return ReadReady(available_until="2026-01-04T00:00:00Z")
+            return ReadReady(available_until="2026-01-04T00:00:00.000000Z")
 
         def cleanup(self, **kwargs: Any) -> None:
             self.calls.append(("cleanup", kwargs["objects"]))
@@ -547,7 +574,7 @@ def test_incomplete_upload_cleanup_is_prefix_and_cutoff_scoped() -> None:
     aborted = adapter.abort_incomplete_writes(
         AbortIncompleteWritesRequest(
             object_prefix="archives/",
-            initiated_before="2026-01-02T00:00:00Z",
+            initiated_before="2026-01-02T00:00:00.000000Z",
         )
     )
 

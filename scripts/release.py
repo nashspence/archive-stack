@@ -82,7 +82,11 @@ RUNTIME_IMAGE_TARGETS = {
         "repository": "ghcr.io/nashspence/riverhog-mango-fish",
     },
     "stove0": {
-        "distributions": ["stove0-server"],
+        "distributions": [
+            "stove0-server",
+            "stove0-media-metadata-observer-contracts",
+            "stove0-media-sampling-observer-contracts",
+        ],
         "repository": "ghcr.io/nashspence/riverhog-stove0",
     },
     "stove0-exiftool-observer": {

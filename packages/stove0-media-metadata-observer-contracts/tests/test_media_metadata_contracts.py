@@ -4,6 +4,8 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 from stove0_media_metadata_observer_contracts import (
+    MEDIA_METADATA_FACTS_CONFORMANCE_VECTORS,
+    MEDIA_METADATA_FACTS_SEMANTICS,
     MEDIA_METADATA_OBSERVER_CONTRACT,
     MediaArtifactFacts,
     MediaFactEvidence,
@@ -37,7 +39,7 @@ def test_media_metadata_contract_carries_exact_evidence_without_a_ceiling() -> N
     assert MEDIA_METADATA_OBSERVER_CONTRACT.id == "stove0.media.metadata/v1"
     assert (
         MEDIA_METADATA_OBSERVER_CONTRACT.contract_sha256
-        == "8ba39e38fd400b4c5f172e7ec0dc4229692840d1e398de6b843a99be07799fc2"
+        == "e7c4c52d0913f738ea813949066cd59fba6e1c680f5d54d9795404de03ee0435"
     )
     assert facts.artifacts[0].artifact_id == "primary"
     assert (
@@ -46,6 +48,21 @@ def test_media_metadata_contract_carries_exact_evidence_without_a_ceiling() -> N
         )
         is None
     )
+
+
+def test_media_metadata_semantic_vectors_are_bound_and_executable() -> None:
+    assert MEDIA_METADATA_FACTS_CONFORMANCE_VECTORS.profile_id == (
+        MEDIA_METADATA_FACTS_SEMANTICS.id
+    )
+    assert MEDIA_METADATA_FACTS_SEMANTICS.conformance_vectors_sha256 == (
+        MEDIA_METADATA_FACTS_CONFORMANCE_VECTORS.sha256
+    )
+    for vector in MEDIA_METADATA_FACTS_CONFORMANCE_VECTORS.vectors:
+        if vector.accepted:
+            validate_media_metadata_facts(vector.facts, vector.subjects)
+        else:
+            with pytest.raises((ValidationError, ValueError)):
+                validate_media_metadata_facts(vector.facts, vector.subjects)
 
 
 def test_media_fact_model_and_published_schema_share_state_acceptance() -> None:

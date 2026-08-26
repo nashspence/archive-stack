@@ -135,7 +135,11 @@ class StorageAdapterHttpBinding:
             if normalized_method == "POST" and path == "/v1/writes/segments":
                 session = self._parse(body, WriteSession)
                 segment_set = self.adapter.list_segments(session)
-                validate_write_segment_set_response(session, segment_set)
+                validate_write_segment_set_response(
+                    session,
+                    segment_set,
+                    self.adapter.descriptor(),
+                )
                 return _model_response(segment_set)
             if normalized_method == "POST" and path == "/v1/writes/complete":
                 complete_request = self._parse(body, WriteCompleteRequest)

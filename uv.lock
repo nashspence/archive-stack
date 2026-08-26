@@ -2012,10 +2012,14 @@ version = "0.1.0"
 source = { editable = "packages/riverhog-storage-adapter-protocol" }
 dependencies = [
     { name = "pydantic" },
+    { name = "time-formats" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.7,<3.0" }]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "time-formats", editable = "packages/time-formats" },
+]
 
 [[package]]
 name = "riverhog-storage-adapter-s3-support"
@@ -2558,12 +2562,14 @@ version = "0.1.0"
 source = { editable = "packages/stove0-observer-protocol" }
 dependencies = [
     { name = "jsonschema" },
+    { name = "pydantic" },
     { name = "stove0-protocol" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.25,<5.0" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "stove0-protocol", editable = "packages/stove0-protocol" },
 ]
 

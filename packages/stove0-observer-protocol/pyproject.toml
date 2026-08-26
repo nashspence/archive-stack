@@ -20,6 +20,7 @@ classifiers = [
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "jsonschema>=4.25,<5.0",
+  "pydantic>=2.7,<3.0",
   "stove0-protocol>=0.1,<0.2",
 ]
 

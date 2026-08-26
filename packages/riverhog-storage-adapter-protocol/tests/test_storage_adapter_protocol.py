@@ -3,16 +3,19 @@ from __future__ import annotations
 import inspect
 import subprocess
 import sys
+from collections.abc import Callable
 
 import pytest
 from pydantic import ValidationError
 from riverhog_storage_adapter_protocol import (
     ADAPTER_PRIVATE_ASSERTION_PREFIX,
+    AbortIncompleteWritesRequest,
     AdapterDescriptor,
     CompletedObjectReceipt,
     CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
+    ImmutableObjectReceipt,
     ObjectHeadRequest,
     ObjectLocator,
     ObjectMetadataReceipt,
@@ -32,6 +35,7 @@ from riverhog_storage_adapter_protocol import (
     validate_completed_write_response,
     validate_object_metadata_response,
     validate_read_status_response,
+    validate_small_object_response,
     validate_write_segment_set_response,
     validate_write_session_response,
 )
@@ -103,7 +107,7 @@ def test_completed_write_attestation_binds_exact_identity_and_placement() -> Non
         stored_bytes=12,
         verified_identity_assertions=request.required_identity_assertions,
         verified_placement=request.expected_placement,
-        completed_at="2026-08-25T00:00:00Z",
+        completed_at="2026-08-25T00:00:00.000000Z",
     )
 
     validate_completed_write_response(request, receipt)
@@ -240,7 +244,8 @@ def test_object_metadata_keeps_large_object_digest_optional() -> None:
         object_path="archives/id/volumes/pack.tar.age",
         stored_bytes=100,
         required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
-        completed_at="2026-08-21T00:00:00Z",
+        verified_placement="archive",
+        completed_at="2026-08-21T00:00:00.000000Z",
     )
 
     assert receipt.revision is None
@@ -291,6 +296,13 @@ def test_read_preparation_carries_only_exact_opaque_objects() -> None:
 
 
 def test_response_validators_bind_exact_requests_and_closed_readiness_states() -> None:
+    descriptor = AdapterDescriptor(
+        implementation_id="fixture.storage/v1",
+        implementation_version="1.0.0",
+        read_mode="immediate",
+        minimum_nonfinal_segment_bytes=1,
+        maximum_segment_count=2,
+    )
     start = WriteStartRequest(
         object_path="archives/id/object.age",
         content_type="application/octet-stream",
@@ -303,11 +315,11 @@ def test_response_validators_bind_exact_requests_and_closed_readiness_states() -
         session=session,
         segments=(WriteSegmentReceipt(number=1, segment_token="one", stored_bytes=1),),
     )
-    validate_write_segment_set_response(session, segment_set)
+    validate_write_segment_set_response(session, segment_set, descriptor)
 
     other_session = session.model_copy(update={"write_token": "other"})
     with pytest.raises(ValueError, match="segment set"):
-        validate_write_segment_set_response(other_session, segment_set)
+        validate_write_segment_set_response(other_session, segment_set, descriptor)
 
     head_request = ObjectHeadRequest(
         object=ObjectLocator(object_path=start.object_path, revision="revision-1"),
@@ -318,23 +330,127 @@ def test_response_validators_bind_exact_requests_and_closed_readiness_states() -
         revision="revision-1",
         stored_bytes=1,
         required_identity_assertions=start.required_identity_assertions,
-        completed_at="2026-08-25T00:00:00Z",
+        verified_placement="archive",
+        completed_at="2026-08-25T00:00:00.000000Z",
     )
     validate_object_metadata_response(head_request, metadata)
 
     read_request = ReadPreparationRequest(objects=(head_request.object,))
     status = ReadStatus(
         objects=read_request.objects,
-        readiness=ReadRequested(estimated_ready_at="2026-08-25T01:00:00Z"),
+        readiness=ReadRequested(estimated_ready_at="2026-08-25T01:00:00.000000Z"),
     )
     validate_read_status_response(read_request, status)
     assert (
         ReadStatus(
             objects=read_request.objects,
-            readiness=ReadReady(available_until="2026-08-26T00:00:00Z"),
+            readiness=ReadReady(available_until="2026-08-26T00:00:00.000000Z"),
         ).readiness.state
         == "ready"
     )
+
+
+def test_listed_write_segments_allow_sparse_restart_state_but_completion_does_not() -> None:
+    session = WriteSession(object_path="archives/id/object.age", write_token="opaque")
+    second = WriteSegmentReceipt(number=2, segment_token="two", stored_bytes=1)
+    listed = WriteSegmentSet(session=session, segments=(second,))
+    descriptor = AdapterDescriptor(
+        implementation_id="fixture.storage/v1",
+        implementation_version="1.0.0",
+        read_mode="immediate",
+        minimum_nonfinal_segment_bytes=1,
+        maximum_segment_count=2,
+    )
+
+    validate_write_segment_set_response(session, listed, descriptor)
+    with pytest.raises(ValidationError, match="contiguous"):
+        WriteCompleteRequest(
+            session=session,
+            segments=listed.segments,
+            expected_bytes=1,
+            required_identity_assertions={"identity": "exact"},
+            expected_placement="archive",
+        )
+    with pytest.raises(ValueError, match="segment-count limit"):
+        validate_write_segment_set_response(
+            session,
+            WriteSegmentSet(
+                session=session,
+                segments=(WriteSegmentReceipt(number=3, segment_token="three", stored_bytes=1),),
+            ),
+            descriptor,
+        )
+    with pytest.raises(ValidationError, match="unique and strictly ordered"):
+        WriteSegmentSet(
+            session=session,
+            segments=(
+                WriteSegmentReceipt(number=2, segment_token="two", stored_bytes=1),
+                WriteSegmentReceipt(number=1, segment_token="one", stored_bytes=1),
+            ),
+        )
+
+
+def test_small_write_and_head_success_bind_exact_storage_predicates() -> None:
+    request = SmallObjectWriteRequest(
+        object_path="objects/item",
+        content_type="application/octet-stream",
+        required_identity_assertions={"identity": "exact"},
+        placement="immediate",
+        mode="create_only",
+        stored_bytes=1,
+        stored_sha256="a" * 64,
+    )
+    receipt = ImmutableObjectReceipt(
+        object_path=request.object_path,
+        stored_bytes=request.stored_bytes,
+        stored_sha256=request.stored_sha256,
+        verified_identity_assertions=request.required_identity_assertions,
+        verified_placement=request.placement,
+        completed_at="2026-08-25T00:00:00.000000Z",
+    )
+
+    validate_small_object_response(request, receipt)
+    with pytest.raises(ValueError, match="immutable-object receipt"):
+        validate_small_object_response(
+            request,
+            receipt.model_copy(update={"verified_placement": "archive"}),
+        )
+    with pytest.raises(ValueError, match="immutable-object receipt"):
+        validate_small_object_response(
+            request,
+            receipt.model_copy(update={"verified_identity_assertions": {"identity": "other"}}),
+        )
+
+    head = ObjectHeadRequest(
+        object=ObjectLocator(object_path=request.object_path),
+        expected_placement="immediate",
+    )
+    metadata = ObjectMetadataReceipt(
+        object_path=request.object_path,
+        stored_bytes=1,
+        required_identity_assertions=request.required_identity_assertions,
+        verified_placement="archive",
+        completed_at="2026-08-25T00:00:00.000000Z",
+    )
+    with pytest.raises(ValueError, match="metadata placement"):
+        validate_object_metadata_response(head, metadata)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: AbortIncompleteWritesRequest(
+            object_prefix="objects/", initiated_before="not-a-timestamp"
+        ),
+        lambda: ReadRequested(estimated_ready_at="2026-08-25T01:00:00Z"),
+        lambda: ReadReady(available_until="2026-08-26T00:00:00+00:00"),
+    ],
+)
+def test_storage_adapter_timestamps_require_canonical_utc(
+    factory: Callable[[], object],
+) -> None:
+    with pytest.raises(ValidationError, match="timestamp"):
+        factory()
 
 
 def test_protocol_imports_no_runtime_or_provider_implementation() -> None:

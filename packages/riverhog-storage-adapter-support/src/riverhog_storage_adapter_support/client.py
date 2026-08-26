@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TypeVar
 
 import httpx
 from http_api_contracts import safe_http_base_url
@@ -166,7 +166,12 @@ class StorageAdapterClient:
 
     def list_segments(self, session: WriteSession) -> WriteSegmentSet:
         response = self._model("POST", "/v1/writes/segments", WriteSegmentSet, session)
-        self._validate(validate_write_segment_set_response, session, response)
+        self._validate(
+            validate_write_segment_set_response,
+            session,
+            response,
+            self.descriptor(),
+        )
         return response
 
     def complete_write(
@@ -355,12 +360,11 @@ class StorageAdapterClient:
 
     @staticmethod
     def _validate(
-        validator: Callable[[Any, Any], None],
-        request: object,
-        response: object,
+        validator: Callable[..., None],
+        *arguments: object,
     ) -> None:
         try:
-            validator(request, response)
+            validator(*arguments)
         except ValueError as exc:
             raise StorageAdapterProtocolError(
                 "adapter returned a response inconsistent with its request"

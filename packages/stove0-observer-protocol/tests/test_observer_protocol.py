@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import stove0_protocol
 from stove0_observer_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
@@ -12,6 +13,8 @@ from stove0_observer_protocol import (
     ObservationRequest,
     ObserverContract,
     ObserverContractPayload,
+    SemanticValidationProfile,
+    SemanticValidationProfilePayload,
     validate_observation_request,
 )
 from stove0_protocol import models as shared_models
@@ -34,8 +37,14 @@ _OBSERVER_AUTHOR_SYMBOLS = frozenset(
         "ObserverDescriptorPayload",
         "ObserverImplementation",
         "ObserverRuntimeAuthority",
+        "SemanticFactsConformanceVector",
+        "SemanticFactsConformanceVectors",
+        "SemanticValidatorBinding",
+        "SemanticValidatorProvider",
+        "SemanticValidatorRegistry",
+        "accept_observation_result",
+        "require_semantic_validators",
         "validate_observation_request",
-        "validate_observation_result",
     }
 )
 
@@ -79,6 +88,28 @@ def test_observer_author_surface_reuses_one_model_implementation() -> None:
     assert ObservationRequest is shared_models.ObservationRequest
     assert ObserverContract is shared_models.ObserverContract
     assert _OBSERVER_AUTHOR_SYMBOLS.isdisjoint(stove0_protocol.__all__)
+
+
+def test_only_the_exact_schema_only_profile_can_omit_conformance_vectors() -> None:
+    altered = SemanticValidationProfile.seal(
+        SemanticValidationProfilePayload(
+            id=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE.id,
+            rules=("fixture.different-rule/v1",),
+        )
+    )
+    with pytest.raises(ValueError, match="conformance-vector identity"):
+        ObserverContractPayload(
+            id="fixture.observation/v1",
+            options_schema=JsonSchemaDocument.from_schema(
+                "fixture.options/v1",
+                {"type": "object", "additionalProperties": False},
+            ),
+            facts_schema=JsonSchemaDocument.from_schema(
+                "fixture.facts/v1",
+                {"type": "object", "additionalProperties": False},
+            ),
+            facts_semantics=altered,
+        )
 
 
 def test_repository_consumers_use_the_observer_author_surface() -> None:

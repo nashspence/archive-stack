@@ -255,6 +255,7 @@ class SemanticValidationProfilePayload(Stove0ProtocolModel):
 
     id: SemanticId
     rules: tuple[SemanticId, ...] = Field(min_length=1)
+    conformance_vectors_sha256: Sha256 | None = None
 
     @field_validator("rules")
     @classmethod
@@ -296,6 +297,17 @@ class ObserverContractPayload(Stove0ProtocolModel):
     facts_schema: JsonSchemaDocument
     facts_semantics: SemanticValidationProfile
     maximum_result_bytes: int = Field(default=1024 * 1024, ge=1, le=64 * 1024 * 1024)
+
+    @model_validator(mode="after")
+    def bind_semantic_conformance_vectors(self) -> Self:
+        if (
+            self.facts_semantics != JSON_SCHEMA_ONLY_SEMANTIC_PROFILE
+            and self.facts_semantics.conformance_vectors_sha256 is None
+        ):
+            raise ValueError(
+                "non-schema-only observer semantics require conformance-vector identity"
+            )
+        return self
 
 
 class ObserverContract(ObserverContractPayload):

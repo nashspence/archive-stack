@@ -218,7 +218,7 @@ mango-fish = { distributions = ["mango-fish"], repository = "ghcr.io/nashspence/
 riverhog-ftp-adapter = { distributions = ["riverhog-ftp-adapter"], repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
 riverhog-storage-adapter-aws = { distributions = ["riverhog-storage-adapter-aws"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-aws" }
 riverhog-storage-adapter-backblaze = { distributions = ["riverhog-storage-adapter-backblaze"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-backblaze" }
-stove0 = { distributions = ["stove0-server"], repository = "ghcr.io/nashspence/riverhog-stove0" }
+stove0 = { distributions = ["stove0-server", "stove0-media-metadata-observer-contracts", "stove0-media-sampling-observer-contracts"], repository = "ghcr.io/nashspence/riverhog-stove0" }
 stove0-exiftool-observer = { distributions = ["stove0-exiftool-observer"], repository = "ghcr.io/nashspence/riverhog-stove0-exiftool-observer" }
 stove0-ffprobe-sampling-observer = { distributions = ["stove0-ffprobe-sampling-observer"], repository = "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer" }
 stove0-nvenc-av1-opus-target = { distributions = ["stove0-nvenc-av1-opus-target", "stove0-nvenc-av1-opus-review-sampler"], repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target" }

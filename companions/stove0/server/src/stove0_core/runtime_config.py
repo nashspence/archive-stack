@@ -18,6 +18,7 @@ class EndpointRegistration:
     base_url: str
     token: str | None
     allow_insecure_http: bool
+    semantic_validator_providers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +70,11 @@ class Stove0RuntimeConfig:
                 False,
             ),
             recipes_path=recipes_path,
-            observers=_registrations(values, "STOVE0_OBSERVERS_JSON"),
+            observers=_registrations(
+                values,
+                "STOVE0_OBSERVERS_JSON",
+                semantic_validators=True,
+            ),
             targets=_registrations(values, "STOVE0_TARGETS_JSON"),
             workspace_assurance=cast(
                 Literal["encrypted", "ephemeral"],
@@ -182,6 +187,8 @@ def _number(
 def _registrations(
     values: Mapping[str, str],
     name: str,
+    *,
+    semantic_validators: bool = False,
 ) -> dict[str, EndpointRegistration]:
     raw = values.get(name, "{}").strip() or "{}"
     try:
@@ -206,10 +213,27 @@ def _registrations(
             raise ValueError(
                 f"{name} registration {registration_id} allow_insecure_http must be boolean"
             )
+        raw_providers = value.get("semantic_validator_providers", [])
+        if not semantic_validators and raw_providers:
+            raise ValueError(
+                f"{name} registration {registration_id} cannot configure semantic validators"
+            )
+        if not isinstance(raw_providers, list) or any(
+            not isinstance(provider, str) or not provider.strip() for provider in raw_providers
+        ):
+            raise ValueError(
+                f"{name} registration {registration_id} semantic validator providers are invalid"
+            )
+        providers = tuple(sorted(provider.strip() for provider in raw_providers))
+        if len(providers) != len(set(providers)):
+            raise ValueError(
+                f"{name} registration {registration_id} semantic validator providers repeat"
+            )
         registrations[registration_id] = EndpointRegistration(
             base_url=base_url,
             token=token,
             allow_insecure_http=allow,
+            semantic_validator_providers=providers,
         )
     return registrations
 

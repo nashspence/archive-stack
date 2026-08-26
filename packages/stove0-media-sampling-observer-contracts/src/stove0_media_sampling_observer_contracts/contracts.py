@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from importlib.resources import files
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from stove0_observer_protocol import (
     ArtifactSubject,
     JsonSchemaDocument,
+    ObservationRequest,
     ObserverContract,
     ObserverContractPayload,
+    SemanticFactsConformanceVectors,
     SemanticValidationProfile,
     SemanticValidationProfilePayload,
+    SemanticValidatorBinding,
 )
 
 MEDIA_SAMPLING_OBSERVATION_ID = "stove0.review.media-sampling/v1"
@@ -111,6 +115,12 @@ MEDIA_SAMPLING_FACTS_SCHEMA = JsonSchemaDocument.from_schema(
     },
 )
 
+MEDIA_SAMPLING_FACTS_CONFORMANCE_VECTORS = SemanticFactsConformanceVectors.model_validate_json(
+    files("stove0_media_sampling_observer_contracts")
+    .joinpath("vectors/facts-semantics-v1.json")
+    .read_text(encoding="utf-8")
+)
+
 MEDIA_SAMPLING_FACTS_SEMANTICS = SemanticValidationProfile.seal(
     SemanticValidationProfilePayload(
         id="stove0.review.media-sampling-facts-semantics/v1",
@@ -118,6 +128,7 @@ MEDIA_SAMPLING_FACTS_SEMANTICS = SemanticValidationProfile.seal(
             "stove0.review.media-sampling-facts.complete-request-subjects/v1",
             "stove0.review.media-sampling-facts.nonoverlapping-bounded-ranges/v1",
         ),
+        conformance_vectors_sha256=MEDIA_SAMPLING_FACTS_CONFORMANCE_VECTORS.sha256,
     )
 )
 
@@ -136,6 +147,21 @@ def validate_media_sampling_facts(
     return document
 
 
+def validate_media_sampling_observation(
+    request: ObservationRequest,
+    facts: Mapping[str, object],
+) -> None:
+    """Execute the advertised profile through the generic consumer signature."""
+
+    validate_media_sampling_facts(facts, request.subjects)
+
+
+MEDIA_SAMPLING_SEMANTIC_VALIDATOR = SemanticValidatorBinding.from_profile(
+    MEDIA_SAMPLING_FACTS_SEMANTICS,
+    validate_media_sampling_observation,
+)
+
+
 MEDIA_SAMPLING_OBSERVER_CONTRACT = ObserverContract.seal(
     ObserverContractPayload(
         id=MEDIA_SAMPLING_OBSERVATION_ID,
@@ -150,12 +176,15 @@ __all__ = [
     "MEDIA_SAMPLING_FACTS_SCHEMA",
     "MEDIA_SAMPLING_FACTS_SCHEMA_ID",
     "MEDIA_SAMPLING_FACTS_SEMANTICS",
+    "MEDIA_SAMPLING_FACTS_CONFORMANCE_VECTORS",
     "MEDIA_SAMPLING_OBSERVATION_ID",
     "MEDIA_SAMPLING_OBSERVER_CONTRACT",
     "MEDIA_SAMPLING_OPTIONS_SCHEMA",
     "MEDIA_SAMPLING_OPTIONS_SCHEMA_ID",
+    "MEDIA_SAMPLING_SEMANTIC_VALIDATOR",
     "MediaSamplingArtifactFacts",
     "MediaSamplingFacts",
     "SampleableRange",
     "validate_media_sampling_facts",
+    "validate_media_sampling_observation",
 ]
