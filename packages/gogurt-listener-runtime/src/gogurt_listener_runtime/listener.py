@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import faulthandler
-import importlib.metadata
 import json
 import logging
 import logging.handlers
@@ -25,7 +24,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from config_validation import ConfigError
-
 from gogurt_core.core import (
     DEFAULT_GOGURT_MARKER_NAME,
     plan_gogurt_action,
@@ -33,7 +31,9 @@ from gogurt_core.core import (
     validate_gogurt_action_executables,
     validate_gogurt_marker_name,
 )
-from gogurt_core.filesystem import (
+from gogurt_core.mounts import validate_gogurt_interval
+
+from gogurt_listener_runtime.filesystem import (
     PRIVATE_FILE_MODE,
     atomic_write,
     ensure_private_directory,
@@ -43,10 +43,9 @@ from gogurt_core.filesystem import (
     promote_staged,
     stage_bytes,
 )
-from gogurt_core.mounts import validate_gogurt_interval
-from gogurt_core.platform import (
+from gogurt_listener_runtime.platform import (
     ListenerAdapter,
-    ListenerPaths,
+    ListenerRuntimePaths,
 )
 
 LISTENER_CONFIG_SCHEMA = "gogurt-listener-config/v1"
@@ -106,8 +105,10 @@ def _now_text(now: float | None = None) -> str:
     return datetime.fromtimestamp(value, tz=UTC).isoformat().replace("+00:00", "Z")
 
 
-def _package_version() -> str:
-    return importlib.metadata.version("gogurt")
+def _validated_product_version(value: str) -> str:
+    if not value or value != value.strip() or len(value) > 128:
+        raise ListenerError("Gogurt product version must be a bounded nonempty string")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,15 +119,21 @@ class ListenerConfig:
     marker_name: str
     interval_seconds: float
     state_dir: Path
+    product_version: str
     autorun: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "interval_seconds", _listener_interval(self.interval_seconds))
+        object.__setattr__(
+            self,
+            "product_version",
+            _validated_product_version(self.product_version),
+        )
 
     def payload(self) -> dict[str, object]:
         return {
             "schema": LISTENER_CONFIG_SCHEMA,
-            "version": _package_version(),
+            "version": self.product_version,
             "executable": str(self.executable),
             "routes_file": str(self.routes_file),
             "actions_dir": str(self.actions_dir) if self.actions_dir is not None else None,
@@ -145,7 +152,8 @@ class ListenerConfig:
         atomic_write(path, self.content(), mode=PRIVATE_FILE_MODE)
 
     @classmethod
-    def read(cls, path: Path) -> ListenerConfig:
+    def read(cls, path: Path, *, product_version: str) -> ListenerConfig:
+        expected_product_version = _validated_product_version(product_version)
         try:
             raw = json.loads(
                 path.read_text(encoding="utf-8"),
@@ -170,7 +178,7 @@ class ListenerConfig:
         }
         if not isinstance(raw, dict) or set(raw) != expected:
             raise ListenerError(f"invalid Gogurt listener config fields: {path}")
-        if raw["schema"] != LISTENER_CONFIG_SCHEMA or raw["version"] != _package_version():
+        if raw["schema"] != LISTENER_CONFIG_SCHEMA or raw["version"] != expected_product_version:
             raise ListenerError(
                 f"Gogurt listener config version differs from the executable: {path}"
             )
@@ -206,6 +214,7 @@ class ListenerConfig:
             marker_name=raw["marker_name"],
             interval_seconds=interval,
             state_dir=state_dir,
+            product_version=expected_product_version,
         )
 
 
@@ -249,7 +258,7 @@ def _secure_sqlite_database_metadata(path: Path) -> bool:
     return True
 
 
-def _secure_listener_state(paths: ListenerPaths) -> None:
+def _secure_listener_state(paths: ListenerRuntimePaths) -> None:
     ensure_private_directory(paths.state_dir)
     _secure_sqlite_database_metadata(paths.database_file)
     ensure_private_files(
@@ -265,12 +274,12 @@ def _secure_listener_state(paths: ListenerPaths) -> None:
     )
 
 
-def _require_matching_state(config: ListenerConfig, paths: ListenerPaths) -> None:
+def _require_matching_state(config: ListenerConfig, paths: ListenerRuntimePaths) -> None:
     if config.state_dir != paths.state_dir:
         raise ListenerError("installed Gogurt listener state directory does not match its config")
 
 
-def _validate_global_configuration(config: ListenerConfig, paths: ListenerPaths) -> None:
+def _validate_global_configuration(config: ListenerConfig, paths: ListenerRuntimePaths) -> None:
     _require_matching_state(config, paths)
     _listener_interval(config.interval_seconds)
     validate_gogurt_marker_name(config.marker_name)
@@ -671,7 +680,7 @@ class ListenerRuntime:
     def __init__(
         self,
         config: ListenerConfig,
-        paths: ListenerPaths,
+        paths: ListenerRuntimePaths,
         *,
         discover: Callable[[], Sequence[Path]],
         clock: Callable[[], float] = time.time,
@@ -793,7 +802,7 @@ class ListenerRuntime:
             mount_attention = list(self._mount_attention)
         payload = {
             "schema": LISTENER_HEARTBEAT_SCHEMA,
-            "version": _package_version(),
+            "version": self.config.product_version,
             "pid": os.getpid(),
             "started_at": _now_text(self.started_at),
             "heartbeat_at": _now_text(self.clock()),
@@ -998,7 +1007,7 @@ class _PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
         )
 
 
-def _logger(paths: ListenerPaths) -> logging.Logger:
+def _logger(paths: ListenerRuntimePaths) -> logging.Logger:
     _secure_listener_state(paths)
     ensure_private_file(paths.log_file)
     logger = logging.getLogger("gogurt.listener")
@@ -1016,7 +1025,7 @@ def _logger(paths: ListenerPaths) -> logging.Logger:
 
 
 @contextmanager
-def _fatal_signal_log(paths: ListenerPaths) -> Iterator[None]:
+def _fatal_signal_log(paths: ListenerRuntimePaths) -> Iterator[None]:
     """Retain bounded interpreter fatal-signal evidence outside the rotating log FD."""
 
     path = paths.state_dir / "listener.fatal.log"
@@ -1040,9 +1049,10 @@ def run_listener(
     config_file: Path,
     *,
     discover: Callable[[], Sequence[Path]],
+    product_version: str,
 ) -> None:
     state_dir = config_file.parent
-    bootstrap_paths = ListenerPaths(
+    bootstrap_paths = ListenerRuntimePaths(
         state_dir=state_dir,
         config_file=config_file,
         database_file=state_dir / "listener.sqlite3",
@@ -1050,11 +1060,10 @@ def run_listener(
         lock_file=state_dir / "listener.lock",
         log_file=state_dir / "listener.log",
         stop_file=state_dir / "stop.request",
-        registration_file=None,
     )
     _secure_listener_state(bootstrap_paths)
-    config = ListenerConfig.read(config_file)
-    paths = ListenerPaths(
+    config = ListenerConfig.read(config_file, product_version=product_version)
+    paths = ListenerRuntimePaths(
         state_dir=config.state_dir,
         config_file=config_file,
         database_file=config.state_dir / "listener.sqlite3",
@@ -1062,7 +1071,6 @@ def run_listener(
         lock_file=config.state_dir / "listener.lock",
         log_file=config.state_dir / "listener.log",
         stop_file=config.state_dir / "stop.request",
-        registration_file=None,
     )
     _require_matching_state(config, paths)
     _secure_listener_state(paths)
@@ -1074,7 +1082,11 @@ def run_listener(
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     with ListenerLock(paths.lock_file), _fatal_signal_log(paths):
-        runtime.logger.info("listener started pid=%s version=%s", os.getpid(), _package_version())
+        runtime.logger.info(
+            "listener started pid=%s version=%s",
+            os.getpid(),
+            config.product_version,
+        )
         try:
             runtime.run()
         except BaseException as exc:
@@ -1103,7 +1115,7 @@ def _heartbeat_timestamp(value: object, *, field: str) -> float:
     return timestamp
 
 
-def _validate_heartbeat(value: object) -> dict[str, object]:
+def _validate_heartbeat(value: object, *, product_version: str) -> dict[str, object]:
     expected = {
         "schema",
         "version",
@@ -1121,7 +1133,7 @@ def _validate_heartbeat(value: object) -> dict[str, object]:
         raise ListenerError("Gogurt listener heartbeat fields are invalid")
     if value["schema"] != LISTENER_HEARTBEAT_SCHEMA:
         raise ListenerError("Gogurt listener heartbeat schema is invalid")
-    if value["version"] != _package_version():
+    if value["version"] != _validated_product_version(product_version):
         raise ListenerError("Gogurt listener heartbeat version differs from the executable")
     pid = value["pid"]
     if isinstance(pid, bool) or not isinstance(pid, int) or not 0 < pid <= LISTENER_MAX_PID:
@@ -1161,7 +1173,11 @@ def _validate_heartbeat(value: object) -> dict[str, object]:
     return value
 
 
-def _read_heartbeat_result(path: Path) -> tuple[dict[str, object] | None, str | None]:
+def _read_heartbeat_result(
+    path: Path,
+    *,
+    product_version: str,
+) -> tuple[dict[str, object] | None, str | None]:
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -1177,31 +1193,42 @@ def _read_heartbeat_result(path: Path) -> tuple[dict[str, object] | None, str | 
             parse_constant=_reject_json_constant,
             parse_int=_strict_json_integer,
         )
-        return _validate_heartbeat(value), None
+        return _validate_heartbeat(value, product_version=product_version), None
     except (ListenerError, OSError, json.JSONDecodeError, UnicodeError) as exc:
         return None, _safe_diagnostic("listener heartbeat", exc)
 
 
-def _read_heartbeat(path: Path) -> dict[str, object] | None:
-    heartbeat, _diagnostic = _read_heartbeat_result(path)
+def _read_heartbeat(path: Path, *, product_version: str) -> dict[str, object] | None:
+    heartbeat, _diagnostic = _read_heartbeat_result(
+        path,
+        product_version=product_version,
+    )
     return heartbeat
 
 
 def listener_status(
     *,
-    paths: ListenerPaths,
+    paths: ListenerRuntimePaths,
     adapter: ListenerAdapter,
+    product_version: str,
     now: float | None = None,
 ) -> dict[str, object]:
     resolved_paths = paths
     native_adapter = adapter
     native = native_adapter.status(resolved_paths)
-    heartbeat, heartbeat_file_diagnostic = _read_heartbeat_result(resolved_paths.heartbeat_file)
+    expected_product_version = _validated_product_version(product_version)
+    heartbeat, heartbeat_file_diagnostic = _read_heartbeat_result(
+        resolved_paths.heartbeat_file,
+        product_version=expected_product_version,
+    )
     config: ListenerConfig | None = None
     config_error: str | None = None
     if resolved_paths.config_file.is_file():
         try:
-            config = ListenerConfig.read(resolved_paths.config_file)
+            config = ListenerConfig.read(
+                resolved_paths.config_file,
+                product_version=expected_product_version,
+            )
             _validate_global_configuration(config, resolved_paths)
         except (ConfigError, ListenerError, OSError, UnicodeError, ValueError) as exc:
             config_error = _safe_diagnostic("global configuration", exc)
@@ -1283,7 +1310,7 @@ def listener_status(
         health = "healthy" if healthy else "stale"
     return {
         "schema": LISTENER_STATUS_SCHEMA,
-        "version": _package_version(),
+        "version": expected_product_version,
         "platform": sys.platform,
         "installed": native.installed,
         "enabled": native.enabled,
@@ -1303,14 +1330,19 @@ def listener_status(
 def _wait_for_health(
     expected: frozenset[str],
     *,
-    paths: ListenerPaths,
+    paths: ListenerRuntimePaths,
     adapter: ListenerAdapter,
+    product_version: str,
     previous_pid: int | None = None,
     terminated_pid: int | None = None,
     timeout_seconds: float = 20,
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout_seconds
-    status = listener_status(paths=paths, adapter=adapter)
+    status = listener_status(
+        paths=paths,
+        adapter=adapter,
+        product_version=product_version,
+    )
     while time.monotonic() < deadline:
         heartbeat = status.get("heartbeat")
         current_pid = heartbeat.get("pid") if isinstance(heartbeat, dict) else None
@@ -1333,13 +1365,17 @@ def _wait_for_health(
         ):
             return status
         time.sleep(0.2)
-        status = listener_status(paths=paths, adapter=adapter)
+        status = listener_status(
+            paths=paths,
+            adapter=adapter,
+            product_version=product_version,
+        )
     raise ListenerError(f"Gogurt listener did not reach {sorted(expected)}: {status['health']}")
 
 
 def _wait_for_native_absence(
     *,
-    paths: ListenerPaths,
+    paths: ListenerRuntimePaths,
     adapter: ListenerAdapter,
     terminated_pid: int | None,
     timeout_seconds: float = 20,
@@ -1369,8 +1405,11 @@ def _wait_for_native_absence(
     )
 
 
-def _heartbeat_pid(paths: ListenerPaths) -> int | None:
-    heartbeat = _read_heartbeat(paths.heartbeat_file)
+def _heartbeat_pid(paths: ListenerRuntimePaths, *, product_version: str) -> int | None:
+    heartbeat = _read_heartbeat(
+        paths.heartbeat_file,
+        product_version=product_version,
+    )
     if heartbeat is None:
         return None
     value = heartbeat.get("pid")
@@ -1381,7 +1420,7 @@ def _heartbeat_pid(paths: ListenerPaths) -> int | None:
     )
 
 
-def _clear_stop_request(paths: ListenerPaths) -> None:
+def _clear_stop_request(paths: ListenerRuntimePaths) -> None:
     try:
         info = paths.stop_file.lstat()
     except FileNotFoundError:
@@ -1412,10 +1451,12 @@ def install_listener(
     marker_name: str = DEFAULT_GOGURT_MARKER_NAME,
     interval_seconds: float = 2.0,
     executable: Path,
-    paths: ListenerPaths,
+    paths: ListenerRuntimePaths,
     adapter: ListenerAdapter,
+    product_version: str,
     wait_for_health: bool = True,
 ) -> dict[str, object]:
+    expected_product_version = _validated_product_version(product_version)
     routes = routes_file.expanduser().resolve()
     validate_gogurt_marker_name(marker_name)
     actions = actions_dir.expanduser().resolve() if actions_dir is not None else None
@@ -1433,6 +1474,7 @@ def install_listener(
         marker_name=marker_name,
         interval_seconds=interval,
         state_dir=resolved_paths.state_dir,
+        product_version=expected_product_version,
     )
     _secure_listener_state(resolved_paths)
     native_status = native_adapter.status(resolved_paths)
@@ -1442,17 +1484,27 @@ def install_listener(
     if native_status.installed:
         if not resolved_paths.config_file.is_file():
             raise ListenerError("installed Gogurt listener config is absent")
-        previous = ListenerConfig.read(resolved_paths.config_file)
+        previous = ListenerConfig.read(
+            resolved_paths.config_file,
+            product_version=expected_product_version,
+        )
         previous_content = resolved_paths.config_file.read_bytes()
         if (
             previous_content == requested_content
             and native_status.enabled
             and native_status.running
         ):
-            current = listener_status(paths=resolved_paths, adapter=native_adapter)
+            current = listener_status(
+                paths=resolved_paths,
+                adapter=native_adapter,
+                product_version=expected_product_version,
+            )
             if current.get("health") == "healthy":
                 return current
-    previous_pid = _heartbeat_pid(resolved_paths)
+    previous_pid = _heartbeat_pid(
+        resolved_paths,
+        product_version=expected_product_version,
+    )
     staged_config = stage_bytes(
         resolved_paths.config_file,
         requested_content,
@@ -1466,6 +1518,7 @@ def install_listener(
                     frozenset({"absent", "stopped"}),
                     paths=resolved_paths,
                     adapter=native_adapter,
+                    product_version=expected_product_version,
                     terminated_pid=previous_pid,
                 )
             promote_staged(
@@ -1486,13 +1539,21 @@ def install_listener(
                     frozenset({"healthy"}),
                     paths=resolved_paths,
                     adapter=native_adapter,
+                    product_version=expected_product_version,
                     previous_pid=previous_pid,
                 )
-            return listener_status(paths=resolved_paths, adapter=native_adapter)
+            return listener_status(
+                paths=resolved_paths,
+                adapter=native_adapter,
+                product_version=expected_product_version,
+            )
         except BaseException as exc:
             rollback_errors: list[str] = []
             try:
-                failed_pid = _heartbeat_pid(resolved_paths)
+                failed_pid = _heartbeat_pid(
+                    resolved_paths,
+                    product_version=expected_product_version,
+                )
             except BaseException as rollback_exc:
                 failed_pid = None
                 rollback_errors.append(_safe_diagnostic("read failed listener pid", rollback_exc))
@@ -1502,6 +1563,7 @@ def install_listener(
                     frozenset({"absent"}),
                     paths=resolved_paths,
                     adapter=native_adapter,
+                    product_version=expected_product_version,
                     terminated_pid=failed_pid,
                 )
             except BaseException as rollback_exc:
@@ -1528,6 +1590,7 @@ def install_listener(
                         frozenset({"healthy"}),
                         paths=resolved_paths,
                         adapter=native_adapter,
+                        product_version=expected_product_version,
                         previous_pid=failed_pid,
                     )
                 except BaseException as rollback_exc:
@@ -1545,48 +1608,72 @@ def install_listener(
         staged_config.unlink(missing_ok=True)
 
 
-def start_listener(*, paths: ListenerPaths, adapter: ListenerAdapter) -> dict[str, object]:
+def start_listener(
+    *,
+    paths: ListenerRuntimePaths,
+    adapter: ListenerAdapter,
+    product_version: str,
+) -> dict[str, object]:
     resolved_paths = paths
     native_adapter = adapter
     _secure_listener_state(resolved_paths)
-    config = ListenerConfig.read(resolved_paths.config_file)
+    config = ListenerConfig.read(
+        resolved_paths.config_file,
+        product_version=product_version,
+    )
     _validate_global_configuration(config, resolved_paths)
-    previous_pid = _heartbeat_pid(resolved_paths)
+    previous_pid = _heartbeat_pid(resolved_paths, product_version=product_version)
     _clear_stop_request(resolved_paths)
     native_adapter.start(resolved_paths)
     return _wait_for_health(
         frozenset({"healthy"}),
         paths=resolved_paths,
         adapter=native_adapter,
+        product_version=product_version,
         previous_pid=previous_pid,
     )
 
 
-def stop_listener(*, paths: ListenerPaths, adapter: ListenerAdapter) -> dict[str, object]:
+def stop_listener(
+    *,
+    paths: ListenerRuntimePaths,
+    adapter: ListenerAdapter,
+    product_version: str,
+) -> dict[str, object]:
     resolved_paths = paths
     native_adapter = adapter
-    previous_pid = _heartbeat_pid(resolved_paths)
+    previous_pid = _heartbeat_pid(resolved_paths, product_version=product_version)
     native_adapter.stop(resolved_paths)
     return _wait_for_health(
         frozenset({"absent", "stopped"}),
         paths=resolved_paths,
         adapter=native_adapter,
+        product_version=product_version,
         terminated_pid=previous_pid,
     )
 
 
-def restart_listener(*, paths: ListenerPaths, adapter: ListenerAdapter) -> dict[str, object]:
+def restart_listener(
+    *,
+    paths: ListenerRuntimePaths,
+    adapter: ListenerAdapter,
+    product_version: str,
+) -> dict[str, object]:
     resolved_paths = paths
     native_adapter = adapter
     _secure_listener_state(resolved_paths)
-    config = ListenerConfig.read(resolved_paths.config_file)
+    config = ListenerConfig.read(
+        resolved_paths.config_file,
+        product_version=product_version,
+    )
     _validate_global_configuration(config, resolved_paths)
-    previous_pid = _heartbeat_pid(resolved_paths)
+    previous_pid = _heartbeat_pid(resolved_paths, product_version=product_version)
     native_adapter.stop(resolved_paths)
     _wait_for_health(
         frozenset({"absent", "stopped"}),
         paths=resolved_paths,
         adapter=native_adapter,
+        product_version=product_version,
         terminated_pid=previous_pid,
     )
     _clear_stop_request(resolved_paths)
@@ -1595,14 +1682,20 @@ def restart_listener(*, paths: ListenerPaths, adapter: ListenerAdapter) -> dict[
         frozenset({"healthy"}),
         paths=resolved_paths,
         adapter=native_adapter,
+        product_version=product_version,
         previous_pid=previous_pid,
     )
 
 
-def uninstall_listener(*, paths: ListenerPaths, adapter: ListenerAdapter) -> dict[str, object]:
+def uninstall_listener(
+    *,
+    paths: ListenerRuntimePaths,
+    adapter: ListenerAdapter,
+    product_version: str,
+) -> dict[str, object]:
     resolved_paths = paths
     native_adapter = adapter
-    previous_pid = _heartbeat_pid(resolved_paths)
+    previous_pid = _heartbeat_pid(resolved_paths, product_version=product_version)
     cleanup_errors: list[str] = []
     try:
         native_adapter.unregister(resolved_paths)
@@ -1627,4 +1720,8 @@ def uninstall_listener(*, paths: ListenerPaths, adapter: ListenerAdapter) -> dic
         detail = _combine_diagnostics(*cleanup_errors)
         assert detail is not None
         raise ListenerError(f"Gogurt listener uninstall failed: {detail}")
-    return listener_status(paths=resolved_paths, adapter=native_adapter)
+    return listener_status(
+        paths=resolved_paths,
+        adapter=native_adapter,
+        product_version=product_version,
+    )

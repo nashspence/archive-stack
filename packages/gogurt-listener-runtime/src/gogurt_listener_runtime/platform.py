@@ -1,4 +1,4 @@
-"""Ports implemented by one native Gogurt platform package."""
+"""Port implemented by one native Gogurt platform package."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ class ListenerPlatformError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class ListenerPaths:
+class ListenerRuntimePaths:
     state_dir: Path
     config_file: Path
     database_file: Path
@@ -21,7 +21,6 @@ class ListenerPaths:
     lock_file: Path
     log_file: Path
     stop_file: Path
-    registration_file: Path | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,22 +31,22 @@ class NativeListenerStatus:
 
 
 class ListenerAdapter(Protocol):
-    def register(self, paths: ListenerPaths, command: Sequence[str]) -> None: ...
+    def register(self, paths: ListenerRuntimePaths, command: Sequence[str]) -> None: ...
 
-    def status(self, paths: ListenerPaths) -> NativeListenerStatus: ...
+    def status(self, paths: ListenerRuntimePaths) -> NativeListenerStatus: ...
 
-    def start(self, paths: ListenerPaths) -> None: ...
+    def start(self, paths: ListenerRuntimePaths) -> None: ...
 
-    def stop(self, paths: ListenerPaths) -> None: ...
+    def stop(self, paths: ListenerRuntimePaths) -> None: ...
 
-    def unregister(self, paths: ListenerPaths) -> None: ...
+    def unregister(self, paths: ListenerRuntimePaths) -> None: ...
 
     def process_is_running(self, pid: int) -> bool: ...
 
 
 __all__ = [
     "ListenerAdapter",
-    "ListenerPaths",
+    "ListenerRuntimePaths",
     "ListenerPlatformError",
     "NativeListenerStatus",
 ]

@@ -14,10 +14,10 @@ authors = [{ name = "Nash Spence" }]
 maintainers = [{ name = "Nash Spence" }]
 classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
-dependencies = ["gogurt-core>=0.1,<0.2"]
+dependencies = ["gogurt-listener-runtime>=0.1,<0.2"]
 
 [tool.uv.sources]
-gogurt-core = { workspace = true }
+gogurt-listener-runtime = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gogurt_windows"]

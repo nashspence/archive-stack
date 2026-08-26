@@ -227,9 +227,13 @@ smoke_workspace_distribution \
   stove0-review-sampler-conformance \
   stove0-review-sampler-schemas
 smoke_workspace_distribution \
+  gogurt-listener-runtime \
+  'gogurt_listener_runtime-*.whl' \
+  'import importlib.metadata as m; import gogurt_listener_runtime.listener; assert m.version("gogurt-listener-runtime")'
+smoke_workspace_distribution \
   gogurt \
   'gogurt-*.whl' \
-  'import importlib.metadata as m, sys; import gogurt.cli; m.version("gogurt"); names = {d.metadata["Name"].lower() for d in m.distributions()}; native = {"gogurt-linux", "gogurt-macos", "gogurt-windows"}; expected = "gogurt-linux" if sys.platform.startswith("linux") else "gogurt-macos" if sys.platform == "darwin" else "gogurt-windows"; assert names & native == {expected}' \
+  'import importlib.metadata as m, sys; import gogurt.cli; import gogurt_listener_runtime.listener; m.version("gogurt"); names = {d.metadata["Name"].lower() for d in m.distributions()}; assert "gogurt-listener-runtime" in names; native = {"gogurt-linux", "gogurt-macos", "gogurt-windows"}; expected = "gogurt-linux" if sys.platform.startswith("linux") else "gogurt-macos" if sys.platform == "darwin" else "gogurt-windows"; assert names & native == {expected}' \
   gogurt
 smoke_workspace_distribution \
   mango-fish \

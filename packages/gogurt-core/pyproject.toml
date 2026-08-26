@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gogurt-core"
 version = "0.1.0"
-description = "Portable Gogurt marker, routing, listener, and custody semantics."
+description = "Portable Gogurt marker, routing, action, and watch semantics."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

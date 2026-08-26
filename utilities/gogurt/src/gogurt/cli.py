@@ -18,7 +18,12 @@ from gogurt_core.core import (
     plan_gogurt_marker,
     write_gogurt_marker,
 )
-from gogurt_core.listener import (
+from gogurt_core.mounts import (
+    MAX_GOGURT_INTERVAL_SECONDS,
+    MIN_GOGURT_INTERVAL_SECONDS,
+    iter_new_mounts,
+)
+from gogurt_listener_runtime.listener import (
     ListenerError,
     install_listener,
     listener_status,
@@ -28,12 +33,7 @@ from gogurt_core.listener import (
     stop_listener,
     uninstall_listener,
 )
-from gogurt_core.mounts import (
-    MAX_GOGURT_INTERVAL_SECONDS,
-    MIN_GOGURT_INTERVAL_SECONDS,
-    iter_new_mounts,
-)
-from gogurt_core.platform import ListenerPlatformError
+from gogurt_listener_runtime.platform import ListenerPlatformError
 from riverhog_cli_support.output import json_text
 
 from gogurt.native import (
@@ -51,8 +51,12 @@ app.add_typer(listener_app, name="listener")
 def _version_callback(value: bool) -> None:
     if not value:
         return
-    typer.echo(importlib.metadata.version("gogurt"))
+    typer.echo(_product_version())
     raise typer.Exit()
+
+
+def _product_version() -> str:
+    return importlib.metadata.version("gogurt")
 
 
 @app.callback()
@@ -321,6 +325,7 @@ def listener_install_cmd(
         executable=resolve_listener_executable(),
         paths=default_listener_paths(),
         adapter=listener_adapter(),
+        product_version=_product_version(),
     )
     _emit_listener(payload, json_mode=json_mode, operation="installed")
 
@@ -332,7 +337,11 @@ def listener_status_cmd(
     """Report native registration, health, and durable dispatch state."""
 
     _emit_listener(
-        listener_status(paths=default_listener_paths(), adapter=listener_adapter()),
+        listener_status(
+            paths=default_listener_paths(),
+            adapter=listener_adapter(),
+            product_version=_product_version(),
+        ),
         json_mode=json_mode,
         operation="status",
     )
@@ -345,7 +354,11 @@ def listener_start_cmd(
     """Start an installed current-user listener."""
 
     _emit_listener(
-        start_listener(paths=default_listener_paths(), adapter=listener_adapter()),
+        start_listener(
+            paths=default_listener_paths(),
+            adapter=listener_adapter(),
+            product_version=_product_version(),
+        ),
         json_mode=json_mode,
         operation="started",
     )
@@ -358,7 +371,11 @@ def listener_stop_cmd(
     """Stop the current-user listener without removing login persistence."""
 
     _emit_listener(
-        stop_listener(paths=default_listener_paths(), adapter=listener_adapter()),
+        stop_listener(
+            paths=default_listener_paths(),
+            adapter=listener_adapter(),
+            product_version=_product_version(),
+        ),
         json_mode=json_mode,
         operation="stopped",
     )
@@ -371,7 +388,11 @@ def listener_restart_cmd(
     """Restart the installed current-user listener."""
 
     _emit_listener(
-        restart_listener(paths=default_listener_paths(), adapter=listener_adapter()),
+        restart_listener(
+            paths=default_listener_paths(),
+            adapter=listener_adapter(),
+            product_version=_product_version(),
+        ),
         json_mode=json_mode,
         operation="restarted",
     )
@@ -384,7 +405,11 @@ def listener_uninstall_cmd(
     """Stop the listener and remove its registration, state, and bounded logs."""
 
     _emit_listener(
-        uninstall_listener(paths=default_listener_paths(), adapter=listener_adapter()),
+        uninstall_listener(
+            paths=default_listener_paths(),
+            adapter=listener_adapter(),
+            product_version=_product_version(),
+        ),
         json_mode=json_mode,
         operation="uninstalled",
     )
@@ -399,7 +424,11 @@ def listener_run_cmd(
 ) -> None:
     """Run the registered listener process."""
 
-    run_listener(runtime_config, discover=discover_mount_points)
+    run_listener(
+        runtime_config,
+        discover=discover_mount_points,
+        product_version=_product_version(),
+    )
 
 
 @app.command("write")

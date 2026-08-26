@@ -11,15 +11,16 @@ import threading
 import time
 from collections.abc import Sequence
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 
-import gogurt_core.listener as listener_module
+import gogurt_listener_runtime.listener as listener_module
 import pytest
 from config_validation import ConfigError
 from gogurt.native import listener_adapter
 from gogurt_core.core import load_gogurt_actions, write_gogurt_marker
 from gogurt_core.core import plan_gogurt_action as core_plan_gogurt_action
-from gogurt_core.listener import (
+from gogurt_listener_runtime.listener import (
     LISTENER_CONFIG_SCHEMA,
     ListenerConfig,
     ListenerError,
@@ -27,17 +28,31 @@ from gogurt_core.listener import (
     ListenerRuntime,
     ListenerStore,
     _logger,
-    install_listener,
-    listener_status,
-    stop_listener,
-    uninstall_listener,
 )
-from gogurt_core.platform import ListenerPaths, NativeListenerStatus
+from gogurt_listener_runtime.listener import (
+    install_listener as _install_listener,
+)
+from gogurt_listener_runtime.listener import (
+    listener_status as _listener_status,
+)
+from gogurt_listener_runtime.listener import (
+    stop_listener as _stop_listener,
+)
+from gogurt_listener_runtime.listener import (
+    uninstall_listener as _uninstall_listener,
+)
+from gogurt_listener_runtime.platform import ListenerRuntimePaths, NativeListenerStatus
+
+TEST_PRODUCT_VERSION = importlib.metadata.version("gogurt")
+install_listener = partial(_install_listener, product_version=TEST_PRODUCT_VERSION)
+listener_status = partial(_listener_status, product_version=TEST_PRODUCT_VERSION)
+stop_listener = partial(_stop_listener, product_version=TEST_PRODUCT_VERSION)
+uninstall_listener = partial(_uninstall_listener, product_version=TEST_PRODUCT_VERSION)
 
 
-def _paths(tmp_path: Path) -> ListenerPaths:
+def _paths(tmp_path: Path) -> ListenerRuntimePaths:
     state = tmp_path / "state"
-    return ListenerPaths(
+    return ListenerRuntimePaths(
         state_dir=state,
         config_file=state / "listener.json",
         database_file=state / "listener.sqlite3",
@@ -45,11 +60,10 @@ def _paths(tmp_path: Path) -> ListenerPaths:
         lock_file=state / "listener.lock",
         log_file=state / "listener.log",
         stop_file=state / "stop.request",
-        registration_file=tmp_path / "registration",
     )
 
 
-def _fixture(tmp_path: Path) -> tuple[ListenerConfig, ListenerPaths, Path, Path]:
+def _fixture(tmp_path: Path) -> tuple[ListenerConfig, ListenerRuntimePaths, Path, Path]:
     mount = tmp_path / "mount"
     mount.mkdir()
     counter = tmp_path / "counter.txt"
@@ -83,6 +97,7 @@ def _fixture(tmp_path: Path) -> tuple[ListenerConfig, ListenerPaths, Path, Path]
         marker_name=".gogurt",
         interval_seconds=0.1,
         state_dir=paths.state_dir,
+        product_version=TEST_PRODUCT_VERSION,
     )
     return config, paths, mount, counter
 
@@ -106,14 +121,17 @@ def _wait_for_published_pid(pid_file: Path) -> int:
     raise AssertionError("Gogurt action did not publish its process ID")
 
 
-def _heartbeat_payload(paths: ListenerPaths) -> dict[str, object]:
-    payload = listener_module._read_heartbeat(paths.heartbeat_file)
+def _heartbeat_payload(paths: ListenerRuntimePaths) -> dict[str, object]:
+    payload = listener_module._read_heartbeat(
+        paths.heartbeat_file,
+        product_version=TEST_PRODUCT_VERSION,
+    )
     assert payload is not None
     return payload
 
 
 def _wait_for_health_value(
-    paths: ListenerPaths,
+    paths: ListenerRuntimePaths,
     adapter: FakeAdapter,
     expected: str,
 ) -> dict[str, object]:
@@ -134,12 +152,14 @@ def test_listener_config_is_versioned_absolute_and_autorun(tmp_path: Path) -> No
     assert payload["schema"] == LISTENER_CONFIG_SCHEMA
     assert payload["autorun"] is True
     assert Path(payload["executable"]).is_absolute()
-    assert ListenerConfig.read(paths.config_file) == config
+    assert ListenerConfig.read(paths.config_file, product_version=TEST_PRODUCT_VERSION) == config
+    with pytest.raises(ListenerError, match="version differs from the executable"):
+        ListenerConfig.read(paths.config_file, product_version="different-product-version")
 
     payload["autorun"] = False
     paths.config_file.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ListenerError, match="explicitly enable autorun"):
-        ListenerConfig.read(paths.config_file)
+        ListenerConfig.read(paths.config_file, product_version=TEST_PRODUCT_VERSION)
 
 
 def test_listener_config_json_and_fields_are_strict(tmp_path: Path) -> None:
@@ -157,11 +177,17 @@ def test_listener_config_json_and_fields_are_strict(tmp_path: Path) -> None:
         paths.config_file.parent.mkdir(parents=True, exist_ok=True)
         paths.config_file.write_text(content, encoding="utf-8")
         with pytest.raises(ListenerError):
-            ListenerConfig.read(paths.config_file)
+            ListenerConfig.read(paths.config_file, product_version=TEST_PRODUCT_VERSION)
 
     bounded = payload | {"interval_seconds": 3600.0}
     paths.config_file.write_text(json.dumps(bounded), encoding="utf-8")
-    assert ListenerConfig.read(paths.config_file).interval_seconds == 3600.0
+    assert (
+        ListenerConfig.read(
+            paths.config_file,
+            product_version=TEST_PRODUCT_VERSION,
+        ).interval_seconds
+        == 3600.0
+    )
 
 
 def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Path) -> None:
@@ -378,7 +404,11 @@ def test_listener_process_logs_an_unhandled_runtime_failure(
     )
 
     with pytest.raises(ListenerError, match="qualification fatal fixture"):
-        listener_module.run_listener(paths.config_file, discover=lambda: [])
+        listener_module.run_listener(
+            paths.config_file,
+            discover=lambda: [],
+            product_version=TEST_PRODUCT_VERSION,
+        )
 
     logger = listener_module.logging.getLogger("gogurt.listener")
     for handler in logger.handlers:
@@ -492,7 +522,10 @@ def test_official_heartbeat_observation_does_not_own_publication(
 
     def publish(destination: Path, content: bytes, *, mode: int) -> None:
         nonlocal observed_during_publication
-        observed_during_publication = listener_module._read_heartbeat(paths.heartbeat_file)
+        observed_during_publication = listener_module._read_heartbeat(
+            paths.heartbeat_file,
+            product_version=TEST_PRODUCT_VERSION,
+        )
         real_atomic_write(destination, content, mode=mode)
 
     monkeypatch.setattr(listener_module, "atomic_write", publish)
@@ -568,6 +601,7 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         marker_name=config.marker_name,
         interval_seconds=3600,
         state_dir=config.state_dir,
+        product_version=TEST_PRODUCT_VERSION,
     )
     action = Path(load_gogurt_actions(config.routes_file)[0].command[1])
     action.write_text(
@@ -787,7 +821,7 @@ class FakeAdapter:
         self.unregister_calls = 0
         self.commands: list[list[str]] = []
 
-    def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
+    def register(self, paths: ListenerRuntimePaths, command: Sequence[str]) -> None:
         del paths
         self.register_calls += 1
         self.commands.append(list(command))
@@ -796,20 +830,20 @@ class FakeAdapter:
         self.installed = True
         self.running = True
 
-    def status(self, paths: ListenerPaths) -> NativeListenerStatus:
+    def status(self, paths: ListenerRuntimePaths) -> NativeListenerStatus:
         del paths
         return NativeListenerStatus(self.installed, self.installed, self.running)
 
-    def start(self, paths: ListenerPaths) -> None:
+    def start(self, paths: ListenerRuntimePaths) -> None:
         del paths
         self.running = True
 
-    def stop(self, paths: ListenerPaths) -> None:
+    def stop(self, paths: ListenerRuntimePaths) -> None:
         del paths
         self.stop_calls += 1
         self.running = False
 
-    def unregister(self, paths: ListenerPaths) -> None:
+    def unregister(self, paths: ListenerRuntimePaths) -> None:
         del paths
         self.unregister_calls += 1
         self.installed = False
@@ -888,7 +922,7 @@ def test_exact_healthy_install_is_idempotent_without_native_process_churn(
         adapter=adapter,
         wait_for_health=False,
     )
-    persisted = ListenerConfig.read(paths.config_file)
+    persisted = ListenerConfig.read(paths.config_file, product_version=TEST_PRODUCT_VERSION)
     runtime = ListenerRuntime(persisted, paths, discover=lambda: [])
     runtime.store.create()
     runtime._heartbeat()
@@ -1003,6 +1037,7 @@ def test_impossible_mount_executable_is_rejected_before_and_after_registration(
         marker_name=".gogurt",
         interval_seconds=0.1,
         state_dir=paths.state_dir,
+        product_version=TEST_PRODUCT_VERSION,
     )
     persisted.write(paths.config_file)
     runtime = ListenerRuntime(persisted, paths, discover=lambda: [])
@@ -1039,6 +1074,7 @@ def test_missing_installed_static_action_reports_failed_health_without_dispatch(
         marker_name=config.marker_name,
         interval_seconds=config.interval_seconds,
         state_dir=config.state_dir,
+        product_version=TEST_PRODUCT_VERSION,
     )
     runtime_config.write(paths.config_file)
     runtime = ListenerRuntime(runtime_config, paths, discover=lambda: [mount])
@@ -1078,7 +1114,7 @@ def test_native_status_failure_preserves_the_existing_installation_state(
         )
         previous_content = paths.config_file.read_bytes()
 
-    def fail_status(_paths: ListenerPaths) -> NativeListenerStatus:
+    def fail_status(_paths: ListenerRuntimePaths) -> NativeListenerStatus:
         raise OSError("native status unavailable")
 
     monkeypatch.setattr(adapter, "status", fail_status)
@@ -1116,7 +1152,7 @@ def test_install_rollback_aggregates_bounded_single_line_diagnostics(
     executable.chmod(0o755)
     adapter = FakeAdapter(fail_registration=True)
 
-    def fail_unregister(_paths: ListenerPaths) -> None:
+    def fail_unregister(_paths: ListenerRuntimePaths) -> None:
         raise OSError("cleanup failed\n" + "bounded-detail-" * 100)
 
     monkeypatch.setattr(adapter, "unregister", fail_unregister)
@@ -1241,7 +1277,7 @@ def test_failed_replacement_restores_the_previous_listener(
         health_checks.append(expected)
         return {"health": sorted(expected)[0]}
 
-    monkeypatch.setattr("gogurt_core.listener._wait_for_health", instant_health)
+    monkeypatch.setattr("gogurt_listener_runtime.listener._wait_for_health", instant_health)
 
     with pytest.raises(OSError, match="startup failed"):
         install_listener(
@@ -1254,7 +1290,13 @@ def test_failed_replacement_restores_the_previous_listener(
             wait_for_health=False,
         )
 
-    assert ListenerConfig.read(paths.config_file).interval_seconds == 0.1
+    assert (
+        ListenerConfig.read(
+            paths.config_file,
+            product_version=TEST_PRODUCT_VERSION,
+        ).interval_seconds
+        == 0.1
+    )
     assert adapter.installed is True
     assert adapter.running is True
     assert adapter.register_calls == 3
@@ -1283,7 +1325,7 @@ def test_replacement_staging_failure_leaves_previous_listener_running(
     def fail_staging(*_args: object, **_kwargs: object) -> Path:
         raise OSError("staging failed")
 
-    monkeypatch.setattr("gogurt_core.listener.stage_bytes", fail_staging)
+    monkeypatch.setattr("gogurt_listener_runtime.listener.stage_bytes", fail_staging)
 
     with pytest.raises(OSError, match="staging failed"):
         install_listener(
@@ -1325,9 +1367,9 @@ def test_replacement_promotion_failure_restores_proven_healthy_listener(
         health_checks.append(expected)
         return {"health": sorted(expected)[0]}
 
-    monkeypatch.setattr("gogurt_core.listener._wait_for_health", instant_health)
+    monkeypatch.setattr("gogurt_listener_runtime.listener._wait_for_health", instant_health)
     monkeypatch.setattr(
-        "gogurt_core.listener.promote_staged",
+        "gogurt_listener_runtime.listener.promote_staged",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("promotion failed")),
     )
 
@@ -1380,7 +1422,7 @@ def test_unhealthy_replacement_restores_proven_healthy_listener(
         return {"health": sorted(expected)[0]}
 
     monkeypatch.setattr(
-        "gogurt_core.listener._wait_for_health",
+        "gogurt_listener_runtime.listener._wait_for_health",
         replacement_then_rollback_health,
     )
 
@@ -1412,7 +1454,7 @@ def test_interrupted_first_install_rolls_back_then_propagates(
     executable.chmod(0o755)
     adapter = FakeAdapter()
 
-    def interrupt_registration(_paths: ListenerPaths, _command: Sequence[str]) -> None:
+    def interrupt_registration(_paths: ListenerRuntimePaths, _command: Sequence[str]) -> None:
         adapter.register_calls += 1
         raise KeyboardInterrupt
 
@@ -1456,7 +1498,7 @@ def test_interrupted_replacement_restores_prior_health_then_propagates(
     original_register = adapter.register
     health_checks: list[frozenset[str]] = []
 
-    def interrupt_replacement(paths_value: ListenerPaths, command: Sequence[str]) -> None:
+    def interrupt_replacement(paths_value: ListenerRuntimePaths, command: Sequence[str]) -> None:
         if adapter.register_calls == 1:
             adapter.register_calls += 1
             raise KeyboardInterrupt
