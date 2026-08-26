@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -203,7 +204,9 @@ def _validated_collection_upload_file_response(
                     "sha256": row.get("sha256"),
                 }
             )
-            receipt = CollectionUploadArtifactCustodyReceiptDocument.model_validate(receipt_value)
+            receipt = CollectionUploadArtifactCustodyReceiptDocument.model_validate_json(
+                json.dumps(receipt_value, sort_keys=True, separators=(",", ":"))
+            )
             validate_collection_upload_artifact_custody_receipt(
                 collection_id,
                 artifact,
