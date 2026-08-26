@@ -64,8 +64,12 @@ class FixtureAdapter:
         return False
 
 
+def _fixture_root(name: str) -> Path:
+    return Path.cwd().resolve() / name
+
+
 def _paths() -> ListenerRuntimePaths:
-    root = Path("/fixture/gogurt")
+    root = _fixture_root("fixture-gogurt")
     return ListenerRuntimePaths(
         state_dir=root,
         config_file=root / "listener.json",
@@ -81,13 +85,13 @@ def _bindings() -> tuple[MountProviderBinding, ListenerHostProviderBinding]:
     return (
         MountProviderBinding(
             provider_id="external-mount-provider/v1",
-            discover=lambda: (Path("/fixture/mount"),),
+            discover=lambda: (_fixture_root("fixture-mount"),),
         ),
         ListenerHostProviderBinding(
             provider_id="external-listener-host-provider/v1",
             paths=_paths,
             adapter=FixtureAdapter,
-            executable=lambda _raw=None: Path("/fixture/gogurt"),
+            executable=lambda _raw=None: _fixture_root("fixture-gogurt-executable"),
         ),
     )
 
@@ -127,7 +131,7 @@ def test_independent_external_providers_resolve_by_exact_name(
     mount = resolve_mount_provider("external-mount")
     host = resolve_listener_host_provider("external-host")
 
-    assert mount.discover() == (Path("/fixture/mount"),)
+    assert mount.discover() == (_fixture_root("fixture-mount"),)
     assert mount.reference.provider_id == "external-mount-provider/v1"
     assert host.paths() == _paths()
     assert host.reference.provider_id == "external-listener-host-provider/v1"
@@ -213,14 +217,15 @@ def test_installed_external_distribution_composes_without_workspace_registration
                 "    def unregister(self, paths): pass",
                 "    def process_is_running(self, pid): return False",
                 "def paths():",
-                "    root = Path('/external/gogurt')",
+                "    root = Path.cwd().resolve() / 'external-gogurt'",
                 "    return ListenerRuntimePaths(root, root/'config', root/'db', root/'heartbeat',",
                 "                                root/'lock', root/'log', root/'stop')",
                 "MOUNT = MountProviderBinding(",
-                "    'external-freebsd-mount/v1', lambda: (Path('/mnt'),))",
+                "    'external-freebsd-mount/v1',",
+                "    lambda: (Path.cwd().resolve() / 'external-mount',))",
                 "HOST = ListenerHostProviderBinding(",
                 "    'external-freebsd-host/v1', paths, Adapter,",
-                "    lambda raw=None: Path('/bin/gogurt'))",
+                "    lambda raw=None: Path.cwd().resolve() / 'external-gogurt-executable')",
             )
         ),
         encoding="utf-8",
@@ -249,12 +254,12 @@ def test_installed_external_distribution_composes_without_workspace_registration
     host = resolve_listener_host_provider("external-freebsd")
 
     assert mount.metadata.distribution == "external-gogurt"
-    assert mount.discover() == (Path("/mnt"),)
+    assert mount.discover() == (_fixture_root("external-mount"),)
     assert host.metadata.version == "1.0"
-    assert host.paths().state_dir == Path("/external/gogurt")
+    assert host.paths().state_dir == _fixture_root("external-gogurt")
 
     listener_config = ListenerConfig(
-        executable=Path("/external/gogurt"),
+        executable=tmp_path / "gogurt",
         routes_file=tmp_path / "routes.yaml",
         actions_dir=None,
         marker_name=".gogurt",
@@ -274,11 +279,11 @@ def test_installed_external_distribution_composes_without_workspace_registration
     assert resolve_mount_provider(
         restored.mount_provider.name,
         expected=restored.mount_provider,
-    ).discover() == (Path("/mnt"),)
+    ).discover() == (_fixture_root("external-mount"),)
     assert resolve_listener_host_provider(
         restored.listener_host_provider.name,
         expected=restored.listener_host_provider,
-    ).paths().state_dir == Path("/external/gogurt")
+    ).paths().state_dir == _fixture_root("external-gogurt")
 
 
 def test_provider_cli_has_human_json_and_ids_parity(
@@ -311,6 +316,6 @@ def test_provider_cli_has_human_json_and_ids_parity(
         env={"GOGURT_LISTENER_HOST_PROVIDER": "external-host"},
     )
     assert mounts.exit_code == 0
-    assert json.loads(mounts.stdout) == ["/fixture/mount"]
+    assert json.loads(mounts.stdout) == [str(_fixture_root("fixture-mount"))]
     assert status.exit_code == 0
     assert json.loads(status.stdout)["listener_host_provider"]["name"] == "external-host"
