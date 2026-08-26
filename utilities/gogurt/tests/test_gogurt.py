@@ -20,7 +20,7 @@ from gogurt_core.core import (
     validate_gogurt_marker_name,
     write_gogurt_marker,
 )
-from gogurt_core.listener import ListenerError
+from gogurt_listener_runtime.listener import ListenerError
 from typer.testing import CliRunner
 
 RUNNER = CliRunner()

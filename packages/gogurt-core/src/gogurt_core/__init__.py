@@ -1,1 +1,1 @@
-"""Portable Gogurt semantics and native-platform ports."""
+"""Portable Gogurt marker, routing, action, and watch semantics."""

@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from gogurt_core.platform import ListenerAdapter, ListenerPaths
+from gogurt_listener_runtime.platform import ListenerAdapter, ListenerRuntimePaths
 
 if sys.platform.startswith("linux"):
     from gogurt_linux import (
@@ -32,7 +32,7 @@ elif sys.platform == "win32":
 else:
     raise RuntimeError(f"Gogurt does not support native integration on {sys.platform}")
 
-_default_listener_paths: Callable[[], ListenerPaths] = default_listener_paths
+_default_listener_paths: Callable[[], ListenerRuntimePaths] = default_listener_paths
 _discover_mount_points: Callable[[], Sequence[Path]] = discover_mount_points
 _listener_adapter: Callable[[], ListenerAdapter] = listener_adapter
 _resolve_listener_executable: Callable[[str | None], Path] = resolve_listener_executable

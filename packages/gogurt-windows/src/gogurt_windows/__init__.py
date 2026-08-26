@@ -16,11 +16,11 @@ from hashlib import sha256
 from pathlib import Path, PureWindowsPath
 from typing import Any, cast
 
-from gogurt_core.filesystem import PRIVATE_FILE_MODE, atomic_write, stage_bytes
-from gogurt_core.platform import (
+from gogurt_listener_runtime.filesystem import PRIVATE_FILE_MODE, atomic_write, stage_bytes
+from gogurt_listener_runtime.platform import (
     ListenerAdapter,
-    ListenerPaths,
     ListenerPlatformError,
+    ListenerRuntimePaths,
     NativeListenerStatus,
 )
 
@@ -40,14 +40,14 @@ def default_listener_paths(
     *,
     environment: Mapping[str, str] | None = None,
     home: Path | None = None,
-) -> ListenerPaths:
+) -> ListenerRuntimePaths:
     del home
     env = environment or os.environ
     raw_local = env.get("LOCALAPPDATA")
     if not raw_local:
         raise ListenerPlatformError("LOCALAPPDATA is required for the Gogurt listener")
     state_dir = Path(raw_local).expanduser().resolve() / "Gogurt"
-    return ListenerPaths(
+    return ListenerRuntimePaths(
         state_dir=state_dir,
         config_file=state_dir / "listener.json",
         database_file=state_dir / "listener.sqlite3",
@@ -55,7 +55,6 @@ def default_listener_paths(
         lock_file=state_dir / "listener.lock",
         log_file=state_dir / "listener.log",
         stop_file=state_dir / "stop.request",
-        registration_file=None,
     )
 
 
@@ -190,10 +189,10 @@ class TaskSchedulerUserAdapter:
         )
 
     @staticmethod
-    def _clear_stop_request(paths: ListenerPaths) -> None:
+    def _clear_stop_request(paths: ListenerRuntimePaths) -> None:
         paths.stop_file.unlink(missing_ok=True)
 
-    def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
+    def register(self, paths: ListenerRuntimePaths, command: Sequence[str]) -> None:
         user_sid = self._current_user_sid()
         task_name = windows_task_name(user_sid)
         self._clear_stop_request(paths)
@@ -208,18 +207,18 @@ class TaskSchedulerUserAdapter:
             temporary.unlink(missing_ok=True)
         self._run(["schtasks.exe", "/Run", "/TN", task_name])
 
-    def status(self, paths: ListenerPaths) -> NativeListenerStatus:
+    def status(self, paths: ListenerRuntimePaths) -> NativeListenerStatus:
         del paths
         return self._query_state(self._task_name())
 
-    def start(self, paths: ListenerPaths) -> None:
+    def start(self, paths: ListenerRuntimePaths) -> None:
         task_name = self._task_name()
         if not self._query_state(task_name).installed:
             raise ListenerPlatformError("Gogurt listener is not installed")
         self._clear_stop_request(paths)
         self._run(["schtasks.exe", "/Run", "/TN", task_name])
 
-    def stop(self, paths: ListenerPaths) -> None:
+    def stop(self, paths: ListenerRuntimePaths) -> None:
         task_name = self._task_name()
         state = self._query_state(task_name)
         if not state.installed or not state.running:
@@ -234,7 +233,7 @@ class TaskSchedulerUserAdapter:
             "Gogurt listener did not settle its action custody before the Windows stop deadline"
         )
 
-    def unregister(self, paths: ListenerPaths) -> None:
+    def unregister(self, paths: ListenerRuntimePaths) -> None:
         task_name = self._task_name()
         if self._query_state(task_name).running:
             self.stop(paths)

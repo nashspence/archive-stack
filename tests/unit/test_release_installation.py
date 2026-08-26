@@ -144,7 +144,12 @@ def test_installation_artifacts_are_derived_and_mutually_consistent(
         gogurt_closure = {
             item["name"] for item in components["gogurt"]["first_party_closure"][platform]
         }
-        assert {"gogurt", "gogurt-core", gogurt_native} <= gogurt_closure
+        assert {
+            "gogurt",
+            "gogurt-core",
+            "gogurt-listener-runtime",
+            gogurt_native,
+        } <= gogurt_closure
         assert gogurt_closure.isdisjoint(all_gogurt_native - {gogurt_native})
 
         client_closure = {

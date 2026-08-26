@@ -377,12 +377,28 @@ def test_portable_products_compose_exactly_one_native_platform_implementation() 
             assert str(requirement.marker) == marker
 
 
-def test_portable_core_and_platform_package_dependency_direction_is_exact() -> None:
+def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exact() -> None:
     gogurt_native_roots = {"gogurt_linux", "gogurt_macos", "gogurt_windows"}
     gogurt_core_imports = set().union(
         *(imported_roots(path) for path in (REPO / "packages/gogurt-core/src").rglob("*.py"))
     )
-    assert gogurt_core_imports.isdisjoint(gogurt_native_roots)
+    assert gogurt_core_imports.isdisjoint(gogurt_native_roots | {"gogurt_listener_runtime"})
+
+    listener_runtime_config = tomllib.loads(
+        (REPO / "packages/gogurt-listener-runtime/pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert declared_project_dependencies(listener_runtime_config) == {
+        "config-validation",
+        "gogurt-core",
+    }
+    listener_runtime_imports = set().union(
+        *(
+            imported_roots(path)
+            for path in (REPO / "packages/gogurt-listener-runtime/src").rglob("*.py")
+        )
+    )
+    assert "gogurt_core" in listener_runtime_imports
+    assert listener_runtime_imports.isdisjoint(gogurt_native_roots | {"gogurt"})
 
     platform_contracts = {
         "linux": "riverhog-provenance-linux-contracts",
@@ -406,7 +422,7 @@ def test_portable_core_and_platform_package_dependency_direction_is_exact() -> N
         gogurt_config = tomllib.loads(
             (REPO / f"packages/gogurt-{platform}/pyproject.toml").read_text(encoding="utf-8")
         )
-        assert declared_project_dependencies(gogurt_config) == {"gogurt-core"}
+        assert declared_project_dependencies(gogurt_config) == {"gogurt-listener-runtime"}
 
     provenance_config = tomllib.loads(
         (REPO / "packages/riverhog-provenance/pyproject.toml").read_text(encoding="utf-8")

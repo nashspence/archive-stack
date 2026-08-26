@@ -18,6 +18,7 @@ MYPY_FLAGS = --show-error-codes --hide-error-context --no-error-summary --no-col
 MYPY_SOURCES = \
 	companions/stove0/client/src \
 	packages/gogurt-core/src \
+	packages/gogurt-listener-runtime/src \
 	packages/gogurt-linux/src \
 	packages/gogurt-macos/src \
 	packages/gogurt-windows/src \

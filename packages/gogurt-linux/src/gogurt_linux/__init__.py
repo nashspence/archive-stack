@@ -10,11 +10,11 @@ import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from gogurt_core.filesystem import PRIVATE_FILE_MODE, atomic_write
-from gogurt_core.platform import (
+from gogurt_listener_runtime.filesystem import PRIVATE_FILE_MODE, atomic_write
+from gogurt_listener_runtime.platform import (
     ListenerAdapter,
-    ListenerPaths,
     ListenerPlatformError,
+    ListenerRuntimePaths,
     NativeListenerStatus,
 )
 
@@ -26,16 +26,12 @@ def default_listener_paths(
     *,
     environment: Mapping[str, str] | None = None,
     home: Path | None = None,
-) -> ListenerPaths:
+) -> ListenerRuntimePaths:
     env = environment or os.environ
     user_home = (home or Path.home()).expanduser().resolve()
     state_root = Path(env.get("XDG_STATE_HOME", user_home / ".local" / "state"))
-    config_root = Path(env.get("XDG_CONFIG_HOME", user_home / ".config"))
     state_dir = state_root.expanduser().resolve() / "gogurt"
-    registration = (
-        config_root.expanduser().resolve() / "systemd" / "user" / "gogurt-listener.service"
-    )
-    return ListenerPaths(
+    return ListenerRuntimePaths(
         state_dir=state_dir,
         config_file=state_dir / "listener.json",
         database_file=state_dir / "listener.sqlite3",
@@ -43,8 +39,18 @@ def default_listener_paths(
         lock_file=state_dir / "listener.lock",
         log_file=state_dir / "listener.log",
         stop_file=state_dir / "stop.request",
-        registration_file=registration,
     )
+
+
+def _default_registration_file(
+    *,
+    environment: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    env = environment or os.environ
+    user_home = (home or Path.home()).expanduser().resolve()
+    config_root = Path(env.get("XDG_CONFIG_HOME", user_home / ".config"))
+    return config_root.expanduser().resolve() / "systemd" / "user" / "gogurt-listener.service"
 
 
 def _systemd_quote(value: str) -> str:
@@ -68,6 +74,9 @@ def render_systemd_unit(command: Sequence[str]) -> bytes:
 
 
 class SystemdUserAdapter:
+    def __init__(self, registration_file: Path) -> None:
+        self.registration_file = registration_file
+
     def _run(
         self,
         command: Sequence[str],
@@ -80,22 +89,18 @@ class SystemdUserAdapter:
             raise ListenerPlatformError(f"{' '.join(command)} failed: {detail}")
         return completed
 
-    @staticmethod
-    def _require_registration(paths: ListenerPaths) -> Path:
-        if paths.registration_file is None:
-            raise ListenerPlatformError("systemd listener registration path is absent")
-        return paths.registration_file
-
-    def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
-        registration = self._require_registration(paths)
+    def register(self, paths: ListenerRuntimePaths, command: Sequence[str]) -> None:
+        del paths
+        registration = self.registration_file
         registration.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(registration, render_systemd_unit(command), mode=PRIVATE_FILE_MODE)
         self._run(["systemctl", "--user", "daemon-reload"])
         self._run(["systemctl", "--user", "enable", registration.name])
         self._run(["systemctl", "--user", "start", registration.name])
 
-    def status(self, paths: ListenerPaths) -> NativeListenerStatus:
-        registration = self._require_registration(paths)
+    def status(self, paths: ListenerRuntimePaths) -> NativeListenerStatus:
+        del paths
+        registration = self.registration_file
         loaded = self._run(
             ["systemctl", "--user", "show", registration.name, "--property=LoadState", "--value"],
             allowed=frozenset({0, 1, 3, 4}),
@@ -121,22 +126,22 @@ class SystemdUserAdapter:
             running=running,
         )
 
-    def start(self, paths: ListenerPaths) -> None:
-        registration = self._require_registration(paths)
+    def start(self, paths: ListenerRuntimePaths) -> None:
+        registration = self.registration_file
         if not self.status(paths).installed:
             raise ListenerPlatformError("Gogurt listener is not installed")
         self._run(["systemctl", "--user", "start", registration.name])
 
-    def stop(self, paths: ListenerPaths) -> None:
-        registration = self._require_registration(paths)
+    def stop(self, paths: ListenerRuntimePaths) -> None:
+        registration = self.registration_file
         if self.status(paths).installed:
             self._run(
                 ["systemctl", "--user", "stop", registration.name],
                 allowed=frozenset({0, 5}),
             )
 
-    def unregister(self, paths: ListenerPaths) -> None:
-        registration = self._require_registration(paths)
+    def unregister(self, paths: ListenerRuntimePaths) -> None:
+        registration = self.registration_file
         self.stop(paths)
         self._run(
             ["systemctl", "--user", "disable", registration.name],
@@ -160,8 +165,12 @@ class SystemdUserAdapter:
         return True
 
 
-def listener_adapter() -> ListenerAdapter:
-    return SystemdUserAdapter()
+def listener_adapter(
+    *,
+    environment: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> ListenerAdapter:
+    return SystemdUserAdapter(_default_registration_file(environment=environment, home=home))
 
 
 def resolve_listener_executable(raw: str | None = None) -> Path:

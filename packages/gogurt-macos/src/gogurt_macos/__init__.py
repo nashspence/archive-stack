@@ -11,11 +11,11 @@ import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from gogurt_core.filesystem import PRIVATE_FILE_MODE, atomic_write
-from gogurt_core.platform import (
+from gogurt_listener_runtime.filesystem import PRIVATE_FILE_MODE, atomic_write
+from gogurt_listener_runtime.platform import (
     ListenerAdapter,
-    ListenerPaths,
     ListenerPlatformError,
+    ListenerRuntimePaths,
     NativeListenerStatus,
 )
 
@@ -27,12 +27,11 @@ def default_listener_paths(
     *,
     environment: Mapping[str, str] | None = None,
     home: Path | None = None,
-) -> ListenerPaths:
+) -> ListenerRuntimePaths:
     del environment
     user_home = (home or Path.home()).expanduser().resolve()
     state_dir = user_home / "Library" / "Application Support" / "Gogurt"
-    registration = user_home / "Library" / "LaunchAgents" / f"{LISTENER_LABEL}.plist"
-    return ListenerPaths(
+    return ListenerRuntimePaths(
         state_dir=state_dir,
         config_file=state_dir / "listener.json",
         database_file=state_dir / "listener.sqlite3",
@@ -40,8 +39,12 @@ def default_listener_paths(
         lock_file=state_dir / "listener.lock",
         log_file=state_dir / "listener.log",
         stop_file=state_dir / "stop.request",
-        registration_file=registration,
     )
+
+
+def _default_registration_file(*, home: Path | None = None) -> Path:
+    user_home = (home or Path.home()).expanduser().resolve()
+    return user_home / "Library" / "LaunchAgents" / f"{LISTENER_LABEL}.plist"
 
 
 def render_launchd_plist(command: Sequence[str]) -> bytes:
@@ -61,6 +64,9 @@ def render_launchd_plist(command: Sequence[str]) -> bytes:
 
 
 class LaunchdUserAdapter:
+    def __init__(self, registration_file: Path) -> None:
+        self.registration_file = registration_file
+
     def _run(
         self,
         command: Sequence[str],
@@ -79,12 +85,6 @@ class LaunchdUserAdapter:
         if getuid is None:
             raise ListenerPlatformError("launchd user identity is unavailable")
         return f"gui/{getuid()}"
-
-    @staticmethod
-    def _require_registration(paths: ListenerPaths) -> Path:
-        if paths.registration_file is None:
-            raise ListenerPlatformError("launchd listener registration path is absent")
-        return paths.registration_file
 
     def _target(self) -> str:
         return f"{self._domain()}/{LISTENER_LABEL}"
@@ -117,14 +117,16 @@ class LaunchdUserAdapter:
             and int(pid.group(1)) > 0
         )
 
-    def register(self, paths: ListenerPaths, command: Sequence[str]) -> None:
-        registration = self._require_registration(paths)
+    def register(self, paths: ListenerRuntimePaths, command: Sequence[str]) -> None:
+        del paths
+        registration = self.registration_file
         registration.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(registration, render_launchd_plist(command), mode=PRIVATE_FILE_MODE)
         self._run(["launchctl", "bootstrap", self._domain(), str(registration)])
 
-    def status(self, paths: ListenerPaths) -> NativeListenerStatus:
-        registration = self._require_registration(paths)
+    def status(self, paths: ListenerRuntimePaths) -> NativeListenerStatus:
+        del paths
+        registration = self.registration_file
         state = self._print()
         loaded = state.returncode == 0
         installed = registration.is_file() or loaded
@@ -134,8 +136,9 @@ class LaunchdUserAdapter:
             running=self._is_running(state),
         )
 
-    def start(self, paths: ListenerPaths) -> None:
-        registration = self._require_registration(paths)
+    def start(self, paths: ListenerRuntimePaths) -> None:
+        del paths
+        registration = self.registration_file
         state = self._print()
         if state.returncode != 0:
             if not registration.is_file():
@@ -144,8 +147,8 @@ class LaunchdUserAdapter:
         elif not self._is_running(state):
             self._run(["launchctl", "kickstart", self._target()])
 
-    def stop(self, paths: ListenerPaths) -> None:
-        self._require_registration(paths)
+    def stop(self, paths: ListenerRuntimePaths) -> None:
+        del paths
         if self._print().returncode == 0:
             self._run(
                 ["launchctl", "bootout", self._target()],
@@ -153,8 +156,8 @@ class LaunchdUserAdapter:
             )
             self._wait_unloaded()
 
-    def unregister(self, paths: ListenerPaths) -> None:
-        registration = self._require_registration(paths)
+    def unregister(self, paths: ListenerRuntimePaths) -> None:
+        registration = self.registration_file
         self.stop(paths)
         registration.unlink(missing_ok=True)
 
@@ -169,8 +172,13 @@ class LaunchdUserAdapter:
         return True
 
 
-def listener_adapter() -> ListenerAdapter:
-    return LaunchdUserAdapter()
+def listener_adapter(
+    *,
+    environment: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> ListenerAdapter:
+    del environment
+    return LaunchdUserAdapter(_default_registration_file(home=home))
 
 
 def resolve_listener_executable(raw: str | None = None) -> Path:

@@ -8,15 +8,22 @@ import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from pathlib import Path
 
-import gogurt_core.filesystem as filesystem_module
+import gogurt_listener_runtime.filesystem as filesystem_module
 import pytest
-from gogurt_core.platform import ListenerPaths, ListenerPlatformError, NativeListenerStatus
 from gogurt_linux import (
     SystemdUserAdapter,
     render_systemd_unit,
 )
 from gogurt_linux import (
     default_listener_paths as linux_listener_paths,
+)
+from gogurt_linux import (
+    listener_adapter as linux_listener_adapter,
+)
+from gogurt_listener_runtime.platform import (
+    ListenerPlatformError,
+    ListenerRuntimePaths,
+    NativeListenerStatus,
 )
 from gogurt_macos import (
     LISTENER_LABEL,
@@ -25,6 +32,9 @@ from gogurt_macos import (
 )
 from gogurt_macos import (
     default_listener_paths as macos_listener_paths,
+)
+from gogurt_macos import (
+    listener_adapter as macos_listener_adapter,
 )
 from gogurt_windows import (
     WINDOWS_TASK_NOT_FOUND_EXIT,
@@ -44,9 +54,9 @@ from gogurt_windows import (
 )
 
 
-def _paths(tmp_path: Path, registration: Path | None) -> ListenerPaths:
+def _paths(tmp_path: Path) -> ListenerRuntimePaths:
     state = tmp_path / "state"
-    return ListenerPaths(
+    return ListenerRuntimePaths(
         state_dir=state,
         config_file=state / "listener.json",
         database_file=state / "listener.sqlite3",
@@ -54,7 +64,6 @@ def _paths(tmp_path: Path, registration: Path | None) -> ListenerPaths:
         lock_file=state / "listener.lock",
         log_file=state / "listener.log",
         stop_file=state / "stop.request",
-        registration_file=registration,
     )
 
 
@@ -68,8 +77,8 @@ def test_windows_existing_private_file_is_validated_without_reopening(
     def refuse_open(*_args: object, **_kwargs: object) -> int:
         raise AssertionError("Windows existing state must not be reopened for POSIX modes")
 
-    monkeypatch.setattr("gogurt_core.filesystem.os.name", "nt")
-    monkeypatch.setattr("gogurt_core.filesystem.os.open", refuse_open)
+    monkeypatch.setattr("gogurt_listener_runtime.filesystem.os.name", "nt")
+    monkeypatch.setattr("gogurt_listener_runtime.filesystem.os.open", refuse_open)
 
     filesystem_module.ensure_private_file(sidecar)
 
@@ -96,14 +105,14 @@ def test_windows_atomic_promotion_settles_a_transient_reader(
             raise WindowsSharingError("destination is being read")
         real_replace(source, target)
 
-    monkeypatch.setattr("gogurt_core.filesystem.os.name", "nt")
-    monkeypatch.setattr("gogurt_core.filesystem.os.replace", replace)
-    monkeypatch.setattr("gogurt_core.filesystem.time.sleep", delays.append)
+    monkeypatch.setattr("gogurt_listener_runtime.filesystem.os.name", "nt")
+    monkeypatch.setattr("gogurt_listener_runtime.filesystem.os.replace", replace)
+    monkeypatch.setattr("gogurt_listener_runtime.filesystem.time.sleep", delays.append)
 
     filesystem_module.promote_staged(
         temporary,
         destination,
-        mode=filesystem_module.PORTABLE_FILE_MODE,
+        mode=filesystem_module.PRIVATE_FILE_MODE,
     )
 
     assert attempts == 3
@@ -149,13 +158,20 @@ def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> 
         home=tmp_path,
     )
     assert linux.state_dir == tmp_path / "linux-state" / "gogurt"
-    assert linux.registration_file == (
+    linux_adapter = linux_listener_adapter(
+        environment={"XDG_CONFIG_HOME": str(tmp_path / "linux-config")},
+        home=tmp_path,
+    )
+    assert isinstance(linux_adapter, SystemdUserAdapter)
+    assert linux_adapter.registration_file == (
         tmp_path / "linux-config" / "systemd" / "user" / "gogurt-listener.service"
     )
 
     macos = macos_listener_paths(environment={}, home=tmp_path)
     assert macos.state_dir == tmp_path / "Library" / "Application Support" / "Gogurt"
-    assert macos.registration_file == (
+    macos_adapter = macos_listener_adapter(environment={}, home=tmp_path)
+    assert isinstance(macos_adapter, LaunchdUserAdapter)
+    assert macos_adapter.registration_file == (
         tmp_path / "Library" / "LaunchAgents" / f"{LISTENER_LABEL}.plist"
     )
 
@@ -164,7 +180,15 @@ def test_listener_paths_follow_each_user_platform_convention(tmp_path: Path) -> 
         home=tmp_path,
     )
     assert windows.state_dir == tmp_path / "LocalAppData" / "Gogurt"
-    assert windows.registration_file is None
+    assert set(ListenerRuntimePaths.__dataclass_fields__) == {
+        "state_dir",
+        "config_file",
+        "database_file",
+        "heartbeat_file",
+        "lock_file",
+        "log_file",
+        "stop_file",
+    }
 
 
 def test_windows_resolves_the_uv_console_launcher_extension(
@@ -243,7 +267,8 @@ def test_native_registrations_bind_only_the_absolute_installed_command() -> None
 
 
 class RecordingSystemdAdapter(SystemdUserAdapter):
-    def __init__(self) -> None:
+    def __init__(self, registration_file: Path) -> None:
+        super().__init__(registration_file)
         self.commands: list[list[str]] = []
 
     def _run(
@@ -259,8 +284,8 @@ class RecordingSystemdAdapter(SystemdUserAdapter):
 
 def test_systemd_registration_enables_login_resume_and_cleans_up(tmp_path: Path) -> None:
     registration = tmp_path / "config" / "gogurt-listener.service"
-    paths = _paths(tmp_path, registration)
-    adapter = RecordingSystemdAdapter()
+    paths = _paths(tmp_path)
+    adapter = RecordingSystemdAdapter(registration)
     command = (str(tmp_path / "gogurt"), "listener", "_run")
 
     adapter.register(paths, command)
@@ -283,8 +308,8 @@ def test_systemd_registration_enables_login_resume_and_cleans_up(tmp_path: Path)
 
 def test_systemd_loaded_registration_remains_manageable_without_its_file(tmp_path: Path) -> None:
     registration = tmp_path / "config" / "gogurt-listener.service"
-    paths = _paths(tmp_path, registration)
-    adapter = RecordingSystemdAdapter()
+    paths = _paths(tmp_path)
+    adapter = RecordingSystemdAdapter(registration)
     adapter.register(paths, (str(tmp_path / "gogurt"), "listener", "_run"))
     registration.unlink()
 
@@ -301,7 +326,8 @@ def test_systemd_loaded_registration_remains_manageable_without_its_file(tmp_pat
 
 
 class RecordingLaunchdAdapter(LaunchdUserAdapter):
-    def __init__(self) -> None:
+    def __init__(self, registration_file: Path) -> None:
+        super().__init__(registration_file)
         self.commands: list[list[str]] = []
         self.loaded = False
         self.running = False
@@ -346,8 +372,8 @@ class RecordingLaunchdAdapter(LaunchdUserAdapter):
 
 def test_launchd_registration_bootstraps_and_removes_the_agent(tmp_path: Path) -> None:
     registration = tmp_path / "Library" / "LaunchAgents" / f"{LISTENER_LABEL}.plist"
-    paths = _paths(tmp_path, registration)
-    adapter = RecordingLaunchdAdapter()
+    paths = _paths(tmp_path)
+    adapter = RecordingLaunchdAdapter(registration)
     command = (str(tmp_path / "gogurt"), "listener", "_run")
 
     adapter.register(paths, command)
@@ -397,8 +423,8 @@ def test_launchd_stop_waits_until_the_native_job_is_unloaded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registration = tmp_path / "Library" / "LaunchAgents" / f"{LISTENER_LABEL}.plist"
-    paths = _paths(tmp_path, registration)
-    adapter = RecordingLaunchdAdapter()
+    paths = _paths(tmp_path)
+    adapter = RecordingLaunchdAdapter(registration)
     adapter.register(paths, (str(tmp_path / "gogurt"), "listener", "_run"))
     observations = iter(
         (
@@ -417,8 +443,8 @@ def test_launchd_stop_waits_until_the_native_job_is_unloaded(
 
 def test_launchd_loaded_registration_remains_manageable_without_its_file(tmp_path: Path) -> None:
     registration = tmp_path / "Library" / "LaunchAgents" / f"{LISTENER_LABEL}.plist"
-    paths = _paths(tmp_path, registration)
-    adapter = RecordingLaunchdAdapter()
+    paths = _paths(tmp_path)
+    adapter = RecordingLaunchdAdapter(registration)
     adapter.register(paths, (str(tmp_path / "gogurt"), "listener", "_run"))
     registration.unlink()
 
@@ -471,7 +497,7 @@ class RecordingTaskAdapter(TaskSchedulerUserAdapter):
 
 
 def test_task_registration_uses_current_user_onlogon_without_elevation(tmp_path: Path) -> None:
-    paths = _paths(tmp_path, None)
+    paths = _paths(tmp_path)
     adapter = RecordingTaskAdapter()
     command = (str(tmp_path / "Gogurt Tool" / "gogurt.exe"), "listener", "_run")
 
@@ -533,7 +559,7 @@ def test_windows_stop_waits_for_cooperative_listener_settlement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths = _paths(tmp_path, None)
+    paths = _paths(tmp_path)
     adapter = RecordingTaskAdapter()
     observed = 0
     original_query = adapter._query_state
@@ -561,7 +587,7 @@ def test_windows_stop_fails_closed_without_hard_termination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths = _paths(tmp_path, None)
+    paths = _paths(tmp_path)
     adapter = RecordingTaskAdapter()
     times = iter((0.0, 0.0, 21.0))
     monkeypatch.setattr("gogurt_windows.time.monotonic", lambda: next(times))

@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, cast
 
-from gogurt_core.listener import (
+from gogurt_listener_runtime.listener import (
     LISTENER_LOG_BACKUPS,
     LISTENER_LOG_BYTES,
     LISTENER_OPERATIONS,
