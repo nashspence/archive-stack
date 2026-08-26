@@ -72,6 +72,7 @@ def test_repo_owns_toolchain_python_lock_and_runtime_exports() -> None:
         "companions/*/client",
         "companions/*/server",
         "packages/*",
+        "reference/gogurt/*",
         "reference/riverhog/*/*",
         "reference/stove0/observers/*",
         "reference/stove0/targets/*/target",

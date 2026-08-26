@@ -13,6 +13,7 @@ REPOSITORY_MAP_TARGETS = {
     REPO / "riverhog/client",
     REPO / "riverhog/recovery",
     REPO / "companions",
+    REPO / "reference/gogurt",
     REPO / "reference/riverhog/ingress",
     REPO / "reference/riverhog/provenance",
     REPO / "reference/riverhog/storage",

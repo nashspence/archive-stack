@@ -1,6 +1,6 @@
 # Architecture
 
-Executable contracts define packages; this page records ownership and placement.
+Executable contracts define packages; architecture records ownership and placement.
 
 ## Authority model
 
@@ -40,7 +40,7 @@ Executable contracts define packages; this page records ownership and placement.
   a provided transformation companion; its core does not interpret content.
 - **Extensions.** Observers report bounded facts about exact immutable artifacts. Targets perform
   one operation through an exact derived-collection capability. Applications explicitly compose
-  focused extensions; no platform or provider implementation set is authoritative or implicit.
+  extensions; no platform or provider set is authoritative or implicit.
 - **Transfer path.** Payload loops exclude control-plane status and reporting work.
 
 Workspace checks enforce ownership boundaries.
@@ -50,9 +50,9 @@ Workspace checks enforce ownership boundaries.
 - [`riverhog/server`](../riverhog/server/): archive service.
 - [`riverhog/client`](../riverhog/client/): official client.
 - [`riverhog/recovery`](../riverhog/recovery/): permissively licensed reference for recovery.
+- [`reference/gogurt`](../reference/gogurt/): optional Gogurt host references.
 - [`reference/riverhog/ingress`](../reference/riverhog/ingress/): maintained ingress adapters.
-- [`reference/riverhog/provenance`](../reference/riverhog/provenance/): optional provenance observer
-  references.
+- [`reference/riverhog/provenance`](../reference/riverhog/provenance/): provenance observer references.
 - [`reference/riverhog/storage`](../reference/riverhog/storage/): maintained storage adapters.
 - [`companions`](../companions/): independent Riverhog applications.
 - [`reference/stove0`](../reference/stove0/): maintained Stove0 components.

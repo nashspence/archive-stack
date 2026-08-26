@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gogurt-macos"
 version = "0.1.0"
-description = "macOS mount and launchd integration for Gogurt."
+description = "Optional macOS mount and launchd reference implementation for Gogurt."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -14,9 +14,19 @@ authors = [{ name = "Nash Spence" }]
 maintainers = [{ name = "Nash Spence" }]
 classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
-dependencies = ["gogurt-listener-runtime>=0.1,<0.2"]
+dependencies = [
+  "gogurt-core>=0.1,<0.2",
+  "gogurt-listener-runtime>=0.1,<0.2",
+]
+
+[project.entry-points."gogurt.mount-providers"]
+gogurt-macos = "gogurt_macos:MOUNT_PROVIDER_BINDING"
+
+[project.entry-points."gogurt.listener-host-providers"]
+gogurt-macos = "gogurt_macos:LISTENER_HOST_PROVIDER_BINDING"
 
 [tool.uv.sources]
+gogurt-core = { workspace = true }
 gogurt-listener-runtime = { workspace = true }
 
 [tool.hatch.build.targets.wheel]

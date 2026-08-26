@@ -17,9 +17,9 @@ from pathlib import Path
 import gogurt_listener_runtime.listener as listener_module
 import pytest
 from config_validation import ConfigError
-from gogurt.native import listener_adapter
 from gogurt_core.core import load_gogurt_actions, write_gogurt_marker
 from gogurt_core.core import plan_gogurt_action as core_plan_gogurt_action
+from gogurt_core.providers import GogurtProviderReference
 from gogurt_listener_runtime.listener import (
     LISTENER_CONFIG_SCHEMA,
     ListenerConfig,
@@ -41,13 +41,44 @@ from gogurt_listener_runtime.listener import (
 from gogurt_listener_runtime.listener import (
     uninstall_listener as _uninstall_listener,
 )
-from gogurt_listener_runtime.platform import ListenerRuntimePaths, NativeListenerStatus
+from gogurt_listener_runtime.platform import (
+    ListenerAdapter,
+    ListenerRuntimePaths,
+    NativeListenerStatus,
+)
 
 TEST_PRODUCT_VERSION = importlib.metadata.version("gogurt")
-install_listener = partial(_install_listener, product_version=TEST_PRODUCT_VERSION)
+TEST_MOUNT_PROVIDER = GogurtProviderReference(
+    kind="mount",
+    name="test-mount",
+    provider_id="test-mount-provider/v1",
+)
+TEST_LISTENER_HOST_PROVIDER = GogurtProviderReference(
+    kind="listener-host",
+    name="test-listener-host",
+    provider_id="test-listener-host-provider/v1",
+)
+install_listener = partial(
+    _install_listener,
+    product_version=TEST_PRODUCT_VERSION,
+    mount_provider=TEST_MOUNT_PROVIDER,
+    listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
+)
 listener_status = partial(_listener_status, product_version=TEST_PRODUCT_VERSION)
 stop_listener = partial(_stop_listener, product_version=TEST_PRODUCT_VERSION)
 uninstall_listener = partial(_uninstall_listener, product_version=TEST_PRODUCT_VERSION)
+
+
+def _native_listener_adapter() -> ListenerAdapter:
+    if sys.platform == "linux":
+        from gogurt_linux import listener_adapter
+    elif sys.platform == "darwin":
+        from gogurt_macos import listener_adapter
+    elif sys.platform == "win32":
+        from gogurt_windows import listener_adapter
+    else:  # pragma: no cover - the release matrix owns the supported fixtures
+        raise AssertionError(f"no lifecycle fixture for {sys.platform}")
+    return listener_adapter()
 
 
 def _paths(tmp_path: Path) -> ListenerRuntimePaths:
@@ -98,6 +129,8 @@ def _fixture(tmp_path: Path) -> tuple[ListenerConfig, ListenerRuntimePaths, Path
         interval_seconds=0.1,
         state_dir=paths.state_dir,
         product_version=TEST_PRODUCT_VERSION,
+        mount_provider=TEST_MOUNT_PROVIDER,
+        listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
     return config, paths, mount, counter
 
@@ -580,12 +613,12 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
         thread.join(timeout=5)
         assert not thread.is_alive()
         assert failures == []
-        assert listener_adapter().process_is_running(action_pid) is False
+        assert _native_listener_adapter().process_is_running(action_pid) is False
         assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
     finally:
         runtime.request_stop()
         thread.join(timeout=5)
-        if action_pid is not None and listener_adapter().process_is_running(action_pid):
+        if action_pid is not None and _native_listener_adapter().process_is_running(action_pid):
             os.kill(action_pid, signal.SIGKILL)
 
 
@@ -602,6 +635,8 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         interval_seconds=3600,
         state_dir=config.state_dir,
         product_version=TEST_PRODUCT_VERSION,
+        mount_provider=TEST_MOUNT_PROVIDER,
+        listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
     action = Path(load_gogurt_actions(config.routes_file)[0].command[1])
     action.write_text(
@@ -625,12 +660,12 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         thread.join(timeout=5)
 
         assert not thread.is_alive()
-        assert listener_adapter().process_is_running(action_pid) is False
+        assert _native_listener_adapter().process_is_running(action_pid) is False
         assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
     finally:
         runtime.request_stop()
         thread.join(timeout=5)
-        if action_pid is not None and listener_adapter().process_is_running(action_pid):
+        if action_pid is not None and _native_listener_adapter().process_is_running(action_pid):
             os.kill(action_pid, signal.SIGKILL)
 
 
@@ -1038,6 +1073,8 @@ def test_impossible_mount_executable_is_rejected_before_and_after_registration(
         interval_seconds=0.1,
         state_dir=paths.state_dir,
         product_version=TEST_PRODUCT_VERSION,
+        mount_provider=TEST_MOUNT_PROVIDER,
+        listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
     persisted.write(paths.config_file)
     runtime = ListenerRuntime(persisted, paths, discover=lambda: [])
@@ -1075,6 +1112,8 @@ def test_missing_installed_static_action_reports_failed_health_without_dispatch(
         interval_seconds=config.interval_seconds,
         state_dir=config.state_dir,
         product_version=TEST_PRODUCT_VERSION,
+        mount_provider=TEST_MOUNT_PROVIDER,
+        listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
     runtime_config.write(paths.config_file)
     runtime = ListenerRuntime(runtime_config, paths, discover=lambda: [mount])

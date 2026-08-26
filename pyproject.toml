@@ -3,6 +3,7 @@ members = [
   "companions/*/client",
   "companions/*/server",
   "packages/*",
+  "reference/gogurt/*",
   "reference/riverhog/*/*",
   "reference/stove0/observers/*",
   "reference/stove0/targets/*/target",

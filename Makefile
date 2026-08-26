@@ -19,9 +19,9 @@ MYPY_SOURCES = \
 	companions/stove0/client/src \
 	packages/gogurt-core/src \
 	packages/gogurt-listener-runtime/src \
-	packages/gogurt-linux/src \
-	packages/gogurt-macos/src \
-	packages/gogurt-windows/src \
+	reference/gogurt/linux/src \
+	reference/gogurt/macos/src \
+	reference/gogurt/windows/src \
 	reference/stove0/observers/exiftool/src \
 	reference/stove0/observers/ffprobe-sampling/src \
 	reference/stove0/targets/nvenc-av1-opus/review-sampler/src \

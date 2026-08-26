@@ -32,6 +32,7 @@ from gogurt_core.core import (
     validate_gogurt_marker_name,
 )
 from gogurt_core.mounts import validate_gogurt_interval
+from gogurt_core.providers import GogurtProviderReference
 
 from gogurt_listener_runtime.filesystem import (
     PRIVATE_FILE_MODE,
@@ -120,6 +121,8 @@ class ListenerConfig:
     interval_seconds: float
     state_dir: Path
     product_version: str
+    mount_provider: GogurtProviderReference
+    listener_host_provider: GogurtProviderReference
     autorun: bool = True
 
     def __post_init__(self) -> None:
@@ -129,6 +132,10 @@ class ListenerConfig:
             "product_version",
             _validated_product_version(self.product_version),
         )
+        if self.mount_provider.kind != "mount":
+            raise ListenerError("Gogurt listener config requires a mount provider")
+        if self.listener_host_provider.kind != "listener-host":
+            raise ListenerError("Gogurt listener config requires a listener-host provider")
 
     def payload(self) -> dict[str, object]:
         return {
@@ -140,6 +147,8 @@ class ListenerConfig:
             "marker_name": self.marker_name,
             "interval_seconds": self.interval_seconds,
             "state_dir": str(self.state_dir),
+            "mount_provider": self.mount_provider.as_dict(),
+            "listener_host_provider": self.listener_host_provider.as_dict(),
             "autorun": self.autorun,
         }
 
@@ -174,6 +183,8 @@ class ListenerConfig:
             "marker_name",
             "interval_seconds",
             "state_dir",
+            "mount_provider",
+            "listener_host_provider",
             "autorun",
         }
         if not isinstance(raw, dict) or set(raw) != expected:
@@ -207,15 +218,24 @@ class ListenerConfig:
             validate_gogurt_marker_name(raw["marker_name"])
         except ConfigError as exc:
             raise ListenerError("installed Gogurt listener marker name is invalid") from exc
-        return cls(
-            executable=executable,
-            routes_file=routes_file,
-            actions_dir=actions_dir,
-            marker_name=raw["marker_name"],
-            interval_seconds=interval,
-            state_dir=state_dir,
-            product_version=expected_product_version,
-        )
+        try:
+            mount_provider = GogurtProviderReference.from_mapping(raw["mount_provider"])
+            listener_host_provider = GogurtProviderReference.from_mapping(
+                raw["listener_host_provider"]
+            )
+            return cls(
+                executable=executable,
+                routes_file=routes_file,
+                actions_dir=actions_dir,
+                marker_name=raw["marker_name"],
+                interval_seconds=interval,
+                state_dir=state_dir,
+                product_version=expected_product_version,
+                mount_provider=mount_provider,
+                listener_host_provider=listener_host_provider,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ListenerError("installed Gogurt provider identity is invalid") from exc
 
 
 def _service_command(config: ListenerConfig, config_file: Path) -> tuple[str, ...]:
@@ -1319,6 +1339,10 @@ def listener_status(
         "config_file": str(resolved_paths.config_file),
         "state_dir": str(resolved_paths.state_dir),
         "executable": str(config.executable) if config is not None else None,
+        "mount_provider": config.mount_provider.as_dict() if config is not None else None,
+        "listener_host_provider": (
+            config.listener_host_provider.as_dict() if config is not None else None
+        ),
         "heartbeat_age_seconds": heartbeat_age,
         "heartbeat": heartbeat,
         "dispatches": state,
@@ -1454,6 +1478,8 @@ def install_listener(
     paths: ListenerRuntimePaths,
     adapter: ListenerAdapter,
     product_version: str,
+    mount_provider: GogurtProviderReference,
+    listener_host_provider: GogurtProviderReference,
     wait_for_health: bool = True,
 ) -> dict[str, object]:
     expected_product_version = _validated_product_version(product_version)
@@ -1475,6 +1501,8 @@ def install_listener(
         interval_seconds=interval,
         state_dir=resolved_paths.state_dir,
         product_version=expected_product_version,
+        mount_provider=mount_provider,
+        listener_host_provider=listener_host_provider,
     )
     _secure_listener_state(resolved_paths)
     native_status = native_adapter.status(resolved_paths)

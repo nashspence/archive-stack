@@ -115,7 +115,14 @@ root = "gogurt"
 scope = "current-user"
 resume = "next-login"
 autorun = "explicit-required"
-service_managers = ["systemd-user", "launchd-user", "task-scheduler-user"]
+provider_selection = "explicit"
+provider_identity = "persisted-exactly"
+
+[qualification.gogurt_reference]
+purpose = "First-party reference conformance only; these selections are not defaults or recommendations."
+linux-x64 = { distribution = "gogurt-linux", mount_provider = "gogurt-linux", listener_host_provider = "gogurt-linux" }
+macos-arm64 = { distribution = "gogurt-macos", mount_provider = "gogurt-macos", listener_host_provider = "gogurt-macos" }
+windows-x64 = { distribution = "gogurt-windows", mount_provider = "gogurt-windows", listener_host_provider = "gogurt-windows" }
 
 [signing]
 checksums = "SHA-256"
@@ -150,6 +157,9 @@ deployed_implementation = [
   "utilities/mango-fish",
 ]
 reference_implementation = [
+  "reference/gogurt/linux",
+  "reference/gogurt/macos",
+  "reference/gogurt/windows",
   "reference/riverhog/provenance/linux",
   "reference/riverhog/provenance/macos",
   "reference/riverhog/provenance/windows",
@@ -157,9 +167,6 @@ reference_implementation = [
 reusable_library = [
   "packages/gogurt-core",
   "packages/gogurt-listener-runtime",
-  "packages/gogurt-linux",
-  "packages/gogurt-macos",
-  "packages/gogurt-windows",
   "packages/application-access",
   "packages/file-download",
   "packages/http-api-contracts",

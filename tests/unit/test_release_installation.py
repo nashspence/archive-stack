@@ -104,7 +104,9 @@ def test_installation_artifacts_are_derived_and_mutually_consistent(
     ]
     reference = tmp_path / listener["reference_path"]
     assert reference.is_file()
-    assert "gogurt listener status --json" in reference.read_text(encoding="utf-8")
+    reference_text = reference.read_text(encoding="utf-8")
+    assert "gogurt listener status --listener-host-provider <name> --json" in reference_text
+    assert "No provider is selected implicitly" in reference_text
     for component in manifest["components"]:
         lock = tomllib.loads((tmp_path / component["lock"]["path"]).read_text(encoding="utf-8"))
         locked_names = {item["name"] for item in lock["packages"]}
@@ -152,9 +154,13 @@ def test_installation_artifacts_are_derived_and_mutually_consistent(
             "gogurt",
             "gogurt-core",
             "gogurt-listener-runtime",
-            gogurt_native,
         } <= gogurt_closure
-        assert gogurt_closure.isdisjoint(all_gogurt_native - {gogurt_native})
+        assert gogurt_closure.isdisjoint(all_gogurt_native)
+        assert manifest["qualification"]["gogurt_reference"]["platforms"][platform] == {
+            "distribution": gogurt_native,
+            "mount_provider": gogurt_native,
+            "listener_host_provider": gogurt_native,
+        }
 
         client_closure = {
             item["name"] for item in components["riverhog-client"]["first_party_closure"][platform]

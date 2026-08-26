@@ -8,7 +8,6 @@ import tomllib
 from pathlib import Path
 
 import yaml
-from packaging.requirements import Requirement
 
 from tests.workspace import workspace_pyprojects
 
@@ -74,6 +73,9 @@ IMPLEMENTATION_OWNERS = {
     ),
     "mango-fish": (REPO / "utilities/mango-fish/src", {"mango_fish"}),
     "gogurt": (REPO / "utilities/gogurt/src", {"gogurt"}),
+    "gogurt-linux": (REPO / "reference/gogurt/linux/src", {"gogurt_linux"}),
+    "gogurt-macos": (REPO / "reference/gogurt/macos/src", {"gogurt_macos"}),
+    "gogurt-windows": (REPO / "reference/gogurt/windows/src", {"gogurt_windows"}),
 }
 ALL_IMPLEMENTATION_MODULES = set().union(
     *(modules for _, modules in IMPLEMENTATION_OWNERS.values())
@@ -363,30 +365,15 @@ def test_projects_declare_their_exact_direct_runtime_dependencies() -> None:
     assert not violations, "\n".join(violations)
 
 
-def test_portable_products_compose_exactly_one_native_platform_implementation() -> None:
-    native_markers = {
-        "linux": 'sys_platform == "linux"',
-        "macos": 'sys_platform == "darwin"',
-        "windows": 'sys_platform == "win32"',
-    }
-    product_native = {
-        REPO / "utilities/gogurt/pyproject.toml": "gogurt-{platform}",
-    }
-    for pyproject, template in product_native.items():
-        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        requirements = {
-            requirement.name: requirement
-            for raw in config["project"]["dependencies"]
-            if (requirement := Requirement(raw)).name
-            in {template.format(platform=platform) for platform in native_markers}
-        }
-        assert set(requirements) == {
-            template.format(platform=platform) for platform in native_markers
-        }
-        for platform, marker in native_markers.items():
-            requirement = requirements[template.format(platform=platform)]
-            assert str(requirement.marker) == marker
-
+def test_portable_products_do_not_select_provider_implementations() -> None:
+    gogurt = tomllib.loads((REPO / "utilities/gogurt/pyproject.toml").read_text(encoding="utf-8"))
+    assert declared_project_dependencies(gogurt).isdisjoint(
+        {"gogurt-linux", "gogurt-macos", "gogurt-windows"}
+    )
+    gogurt_sources = tuple((REPO / "utilities/gogurt/src").rglob("*.py"))
+    gogurt_imports = set().union(*(imported_roots(path) for path in gogurt_sources))
+    assert gogurt_imports.isdisjoint({"gogurt_linux", "gogurt_macos", "gogurt_windows"})
+    assert all("sys.platform" not in path.read_text(encoding="utf-8") for path in gogurt_sources)
     client = tomllib.loads((REPO / "riverhog/client/pyproject.toml").read_text(encoding="utf-8"))
     client_dependencies = declared_project_dependencies(client)
     assert client_dependencies.isdisjoint(
@@ -442,9 +429,12 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
         assert declared_project_dependencies(contract_config) == {"riverhog-provenance-contracts"}
 
         gogurt_config = tomllib.loads(
-            (REPO / f"packages/gogurt-{platform}/pyproject.toml").read_text(encoding="utf-8")
+            (REPO / f"reference/gogurt/{platform}/pyproject.toml").read_text(encoding="utf-8")
         )
-        assert declared_project_dependencies(gogurt_config) == {"gogurt-listener-runtime"}
+        assert declared_project_dependencies(gogurt_config) == {
+            "gogurt-core",
+            "gogurt-listener-runtime",
+        }
 
     provenance_config = tomllib.loads(
         (REPO / "packages/riverhog-provenance/pyproject.toml").read_text(encoding="utf-8")

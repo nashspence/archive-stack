@@ -11,9 +11,11 @@ import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from gogurt_core.mounts import MountProviderBinding
 from gogurt_listener_runtime.filesystem import PRIVATE_FILE_MODE, atomic_write
 from gogurt_listener_runtime.platform import (
     ListenerAdapter,
+    ListenerHostProviderBinding,
     ListenerPlatformError,
     ListenerRuntimePaths,
     NativeListenerStatus,
@@ -204,7 +206,21 @@ def discover_mount_points() -> tuple[Path, ...]:
     return macos_mount_points()
 
 
+MOUNT_PROVIDER_BINDING = MountProviderBinding(
+    provider_id="gogurt-macos-mount-provider/v1",
+    discover=discover_mount_points,
+)
+LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(
+    provider_id="gogurt-macos-listener-host-provider/v1",
+    paths=default_listener_paths,
+    adapter=listener_adapter,
+    executable=resolve_listener_executable,
+)
+
+
 __all__ = [
+    "LISTENER_HOST_PROVIDER_BINDING",
+    "MOUNT_PROVIDER_BINDING",
     "LaunchdUserAdapter",
     "default_listener_paths",
     "discover_mount_points",
