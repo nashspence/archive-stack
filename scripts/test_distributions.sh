@@ -126,8 +126,21 @@ run_uv pip install \
   "${SCRATCH}/client/bin/python" -I -c \
     'import importlib.metadata as m; import riverhog_cli.main; import riverhog_cli_support.output; m.version("riverhog-cli-support")'
   "${SCRATCH}/client/bin/python" -I -c \
-    'import importlib.metadata as m, sys; names = {d.metadata["Name"].lower() for d in m.distributions()}; native = {"riverhog-provenance-linux-observer", "riverhog-provenance-macos-observer", "riverhog-provenance-windows-observer"}; expected = "riverhog-provenance-linux-observer" if sys.platform.startswith("linux") else "riverhog-provenance-macos-observer" if sys.platform == "darwin" else "riverhog-provenance-windows-observer"; assert names & native == {expected}; assert {"riverhog-provenance-linux-contracts", "riverhog-provenance-macos-contracts", "riverhog-provenance-windows-contracts"} <= names'
+    'import importlib.metadata as m; names = {d.metadata["Name"].lower() for d in m.distributions()}; native = {"riverhog-provenance-linux-observer", "riverhog-provenance-macos-observer", "riverhog-provenance-windows-observer"}; contracts = {"riverhog-provenance-linux-contracts", "riverhog-provenance-macos-contracts", "riverhog-provenance-windows-contracts"}; assert names.isdisjoint(native | contracts); assert "riverhog-provenance-contracts" in names'
 )
+
+linux_observer_wheel="$(single_wheel 'riverhog_provenance_linux_observer-*.whl')"
+mapfile -t linux_observer_wheels < <(
+  workspace_wheel_closure "${linux_observer_wheel}"
+)
+run_uv pip install \
+  --strict \
+  --python "${SCRATCH}/client/bin/python" \
+  --find-links "${DIST_DIR}" \
+  "${linux_observer_wheels[@]}"
+"${SCRATCH}/client/bin/riverhog" local provenance-observer show riverhog-linux --json \
+  | "${SCRATCH}/client/bin/python" -I -c \
+    'import json, sys; value = json.load(sys.stdin); assert value["observer_id"] == "riverhog-provenance-linux-observer/v1"; assert value["contract_id"] == "riverhog-provenance-linux-observation/v1"; assert len(value["contract_sha256"]) == 64'
 
 run_uv venv --python 3.12 "${SCRATCH}/recovery"
 mapfile -t recovery_wheels < <(

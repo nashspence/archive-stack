@@ -3,9 +3,9 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "riverhog-provenance-linux-observer"
+name = "riverhog-provenance-windows-observer"
 version = "0.1.0"
-description = "Native Linux filesystem observer for Riverhog provenance."
+description = "Native Windows filesystem observer for Riverhog provenance."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -16,15 +16,18 @@ classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Langu
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "riverhog-provenance>=0.1,<0.2",
-  "riverhog-provenance-linux-contracts>=0.1,<0.2",
+  "riverhog-provenance-windows-contracts>=0.1,<0.2",
 ]
+
+[project.entry-points."riverhog.provenance-observers"]
+riverhog-windows = "riverhog_provenance_windows_observer:OBSERVER_BINDING"
 
 [tool.uv.sources]
 riverhog-provenance = { workspace = true }
-riverhog-provenance-linux-contracts = { workspace = true }
+riverhog-provenance-windows-contracts = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/riverhog_provenance_linux_observer"]
+packages = ["src/riverhog_provenance_windows_observer"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"NOTICE" = "riverhog_provenance_linux_observer/NOTICE"
+"NOTICE" = "riverhog_provenance_windows_observer/NOTICE"

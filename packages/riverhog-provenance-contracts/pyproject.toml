@@ -18,7 +18,7 @@ classifiers = [
   "Typing :: Typed",
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
-dependencies = ["pydantic>=2.12,<3.0"]
+dependencies = ["pydantic>=2.12,<3.0", "rfc8785>=0.1,<0.2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/riverhog_provenance_contracts"]

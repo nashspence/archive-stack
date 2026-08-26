@@ -20,6 +20,9 @@ classifiers = [
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = ["riverhog-provenance-contracts>=0.1,<0.2"]
 
+[project.entry-points."riverhog.provenance-contracts"]
+riverhog-linux = "riverhog_provenance_linux_contracts:CONTRACT_BINDING"
+
 [tool.uv.sources]
 riverhog-provenance-contracts = { workspace = true }
 

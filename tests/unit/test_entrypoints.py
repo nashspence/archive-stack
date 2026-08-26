@@ -14,6 +14,7 @@ REPOSITORY_MAP_TARGETS = {
     REPO / "riverhog/recovery",
     REPO / "companions",
     REPO / "reference/riverhog/ingress",
+    REPO / "reference/riverhog/provenance",
     REPO / "reference/riverhog/storage",
     REPO / "reference/stove0",
     REPO / "utilities",

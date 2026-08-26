@@ -14,6 +14,8 @@ from riverhog_api_client.producer import ProducedCollection
 from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 from riverhog_ftp_adapter.landing import FtpAdapter
 
+from tests.provenance_observer import native_provenance_observer
+
 
 def _config(tmp_path: Path) -> FtpAdapterConfig:
     return FtpAdapterConfig(
@@ -207,6 +209,7 @@ def test_captured_provenance_is_identity_checked_and_projected_for_the_producer(
     config = base.model_copy(
         update={
             "host_id": "urn:uuid:00000000-0000-4000-8000-000000000522",
+            "provenance_observer": "fixture-observer",
             "sources": (source,),
         }
     )
@@ -216,7 +219,11 @@ def test_captured_provenance_is_identity_checked_and_projected_for_the_producer(
     _Producer.calls = []
     monkeypatch.setattr("riverhog_ftp_adapter.landing.CollectionProducer", _Producer)
 
-    result = FtpAdapter(object(), config).flush(source.id)  # type: ignore[arg-type]
+    result = FtpAdapter(
+        object(),  # type: ignore[arg-type]
+        config,
+        provenance_observer_factory=native_provenance_observer,
+    ).flush(source.id)
 
     assert result["completed"] == 1
     provenance = _Producer.calls[0]["files"][0][2]

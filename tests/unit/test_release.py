@@ -64,7 +64,8 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
         "deployed_implementation": 13,
-        "reusable_library": 46,
+        "reference_implementation": 3,
+        "reusable_library": 43,
         "internal_build_unit": 4,
     }
     assert {project.name for project in projects} >= {
@@ -130,6 +131,19 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "end_user_artifacts": ["linux-x64", "macos-arm64", "windows-x64"],
         "deployed_implementations": ["linux/amd64"],
     }
+
+
+def test_optional_dependencies_are_attested_without_becoming_default_closure() -> None:
+    module = load_script()
+    projects = module.validate_release_contract(REPO_ROOT)
+
+    internal, artifact_dependencies, _licenses = module._project_dependency_graph(
+        REPO_ROOT,
+        projects,
+    )
+
+    assert "riverhog-provenance-linux-observer" not in internal["riverhog-ftp-adapter"]
+    assert "riverhog-provenance-linux-observer" in artifact_dependencies["riverhog-ftp-adapter"]
 
 
 def test_reusable_library_public_annotations_do_not_leak_internal_build_units() -> None:

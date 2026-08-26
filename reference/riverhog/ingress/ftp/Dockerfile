@@ -31,12 +31,11 @@ COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contracts
 COPY packages/riverhog-provenance-linux-contracts packages/riverhog-provenance-linux-contracts
-COPY packages/riverhog-provenance-linux-observer packages/riverhog-provenance-linux-observer
-COPY packages/riverhog-provenance-macos-contracts packages/riverhog-provenance-macos-contracts
-COPY packages/riverhog-provenance-windows-contracts packages/riverhog-provenance-windows-contracts
+COPY reference/riverhog/provenance/linux reference/riverhog/provenance/linux
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/time-formats packages/time-formats
-RUN uv sync --frozen --package riverhog-ftp-adapter --no-dev --no-editable
+RUN uv sync --frozen --package riverhog-ftp-adapter \
+    --extra reference-linux-provenance --no-dev --no-editable
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 

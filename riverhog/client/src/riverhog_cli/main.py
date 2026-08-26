@@ -52,14 +52,17 @@ from riverhog_protocol.raw_ingress import hash_raw_source
 from riverhog_provenance import (
     SIDECAR_SUFFIX,
     FileProvenanceBinding,
+    FileStateObserverFactory,
+    ResolvedProvenanceObserver,
     build_provenance_archive,
+    canonical_sidecar_path,
     prepare_file_provenance,
+    resolve_provenance_observer,
     user_installation_id,
 )
 from time_formats import parse_duration, utc_timestamp_now
 
 from riverhog_cli.local import local_app
-from riverhog_cli.native_provenance import native_provenance_observer
 from riverhog_cli.output import (
     format_app_access,
     format_app_access_selectors,
@@ -1049,6 +1052,7 @@ def _collection_upload_dry_run_plan(
     root: Path,
     manifest: list[CollectionManifestEntry],
     archive_store: str | None = None,
+    provenance_observer: ResolvedProvenanceObserver | None = None,
 ) -> dict[str, object]:
     try:
         normalized_tags = sorted({normalize_tag(tag) for tag in tags})
@@ -1067,6 +1071,9 @@ def _collection_upload_dry_run_plan(
         "files_total": len(manifest),
         "bytes_total": sum(item["bytes"] for item in manifest),
         "archive_store": archive_store,
+        "provenance_observer": (
+            provenance_observer.as_dict() if provenance_observer is not None else None
+        ),
         "server_validation": "not_run",
         "created_at": utc_timestamp_now(),
         "files_preview": manifest[:5],
@@ -1093,6 +1100,7 @@ def _hash_collection_source(
     raw_part_plaintext_bytes: int,
     provenance: Path | None = None,
     omit_provenance: str | None = None,
+    provenance_observer_factory: FileStateObserverFactory | None = None,
 ) -> CollectionManifestEntry:
     rel_path = source_path.relative_to(root).as_posix()
     byte_count = source_path.stat().st_size
@@ -1126,7 +1134,9 @@ def _hash_collection_source(
         host_id=user_installation_id("riverhog-client"),
         agent_name="riverhog-client",
         agent_version=importlib.metadata.version("riverhog-client"),
-        observer=native_provenance_observer(),
+        observer=(
+            provenance_observer_factory() if provenance_observer_factory is not None else None
+        ),
         provenance=provenance,
         omit_reason=omit_provenance,
     )
@@ -1392,6 +1402,7 @@ def _upload_collection_via_session(
     api_factory: Callable[[], ApiClient] | None = None,
     provenance: Path | None = None,
     omit_provenance: str | None = None,
+    provenance_observer_factory: FileStateObserverFactory | None = None,
 ) -> dict[str, object]:
     _log_upload(f"Opening direct-to-archive upload session for {resolved_root}")
     session_payload = _create_or_resume_collection_upload_session(
@@ -1442,6 +1453,7 @@ def _upload_collection_via_session(
                 raw_part_plaintext_bytes=raw_part_plaintext_bytes,
                 provenance=provenance,
                 omit_provenance=omit_provenance,
+                provenance_observer_factory=provenance_observer_factory,
             )
 
         with ThreadPoolExecutor(max_workers=file_concurrency) as executor:
@@ -1650,6 +1662,14 @@ def upload_cmd(
             help="Explicit reason to omit provenance for the whole collection",
         ),
     ] = None,
+    provenance_observer: Annotated[
+        str | None,
+        typer.Option(
+            "--provenance-observer",
+            envvar="RIVERHOG_PROVENANCE_OBSERVER",
+            help="Explicit installed provenance observer provider name",
+        ),
+    ] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
     dry_run: Annotated[
         bool,
@@ -1668,9 +1688,40 @@ def upload_cmd(
         raise typer.BadParameter("collection source must be a directory")
     if provenance is not None and omit_provenance is not None:
         raise typer.BadParameter("--provenance and --omit-provenance are mutually exclusive")
+    if provenance_observer is not None and omit_provenance is not None:
+        raise typer.BadParameter(
+            "--provenance-observer and --omit-provenance are mutually exclusive"
+        )
     resolved_provenance = provenance.expanduser().resolve() if provenance is not None else None
     if resolved_provenance is not None and not resolved_provenance.exists():
         raise typer.BadParameter("--provenance path does not exist")
+    resolved_observer: ResolvedProvenanceObserver | None = None
+    if provenance_observer is not None:
+        try:
+            resolved_observer = resolve_provenance_observer(provenance_observer)
+        except (TypeError, ValueError) as exc:
+            raise typer.BadParameter(str(exc), param_hint="--provenance-observer") from exc
+    if (
+        not dry_run
+        and resolved_observer is None
+        and resolved_provenance is None
+        and omit_provenance is None
+    ):
+        missing_sidecar = next(
+            (
+                path
+                for path in sorted(resolved_root.rglob("*"))
+                if path.is_file()
+                and not _is_provenance_control_path(resolved_root, path)
+                and not canonical_sidecar_path(path).is_file()
+            ),
+            None,
+        )
+        if missing_sidecar is not None:
+            raise typer.BadParameter(
+                "provenance capture requires --provenance-observer, existing sidecars, "
+                "--provenance, or explicit --omit-provenance"
+            )
 
     if dry_run:
         _log_upload(f"Hashing collection manifest from {resolved_root}")
@@ -1688,6 +1739,7 @@ def upload_cmd(
             root=resolved_root,
             manifest=manifest,
             archive_store=archive_store,
+            provenance_observer=resolved_observer,
         )
         emit(payload if json_mode else format_collection_upload_plan(payload), json_mode=json_mode)
         return
@@ -1705,6 +1757,9 @@ def upload_cmd(
         file_concurrency=file_concurrency,
         provenance=resolved_provenance,
         omit_provenance=omit_provenance,
+        provenance_observer_factory=(
+            resolved_observer.create if resolved_observer is not None else None
+        ),
     )
     emit(
         payload if json_mode else format_collection_upload(payload),

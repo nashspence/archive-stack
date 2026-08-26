@@ -23,6 +23,7 @@ from riverhog_protocol.errors import InvalidState, NotFound
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
 from riverhog_protocol.portable_collection import PortableCollectionRecord
 from riverhog_protocol.transport import RETRIEVAL_FILE_BATCH_MAX
+from riverhog_provenance import list_provenance_observers, resolve_provenance_observer
 from state_schema import StateSchemaError
 from time_formats import parse_utc_timestamp
 
@@ -34,7 +35,12 @@ local_app = typer.Typer(
     help="Maintain selected archive collections in a local directory.",
 )
 local_state_app = typer.Typer(no_args_is_help=True, help="Manage local durable state.")
+local_provenance_observer_app = typer.Typer(
+    no_args_is_help=True,
+    help="Inspect explicitly composable local provenance observers.",
+)
 local_app.add_typer(local_state_app, name="state")
+local_app.add_typer(local_provenance_observer_app, name="provenance-observer")
 
 LOCAL_LIST_PAGE_SIZE_MAX = 100
 LOCAL_LIST_SORT_FIELDS = {
@@ -47,6 +53,60 @@ LOCAL_LIST_SORT_FIELDS = {
 PROJECTION_NAME_BYTES_MAX = 240
 LOCAL_AUDIT_SAMPLE_LIMIT = 100
 RETRIEVAL_RENEW_INTERVAL_MAX_SECONDS = 60 * 60
+
+
+@local_provenance_observer_app.command("list")
+def provenance_observer_list(
+    ids: Annotated[
+        bool,
+        typer.Option("--ids", help="Emit one provider name per line."),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """List installed observer metadata without executing provider code."""
+
+    if ids and json_mode:
+        raise typer.BadParameter("--ids and --json cannot be used together")
+    providers = [item.as_dict() for item in list_provenance_observers()]
+    payload = {
+        "format": "riverhog-provenance-observer-provider-list/v1",
+        "providers": providers,
+    }
+    human = [f"provenance observers: {len(providers)}"]
+    human.extend(
+        f"- {item['name']}  distribution={item['distribution'] or 'unknown'}  "
+        f"version={item['version'] or 'unknown'}"
+        for item in providers
+    )
+    if ids:
+        emit(format_list_ids(payload, "providers", id_key="name"), json_mode=False)
+        return
+    emit(payload if json_mode else "\n".join(human), json_mode=json_mode)
+
+
+@local_provenance_observer_app.command("show")
+def provenance_observer_show(
+    name: Annotated[str, typer.Argument(help="Exact installed observer provider name")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+) -> None:
+    """Load one selected provider and show its exact observer/contract identity."""
+
+    try:
+        resolved = resolve_provenance_observer(name)
+        payload = resolved.as_dict()
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc), param_hint="name") from exc
+    human = "\n".join(
+        (
+            f"provenance observer {payload['name']}",
+            f"observer: {payload['observer_id']}",
+            f"contract provider: {payload['contract_provider']}",
+            f"contract: {payload['contract_id']}",
+            f"contract sha256: {payload['contract_sha256']}",
+            f"schemas: {len(resolved.contract.schemas)}",
+        )
+    )
+    emit(payload if json_mode else human, json_mode=json_mode)
 
 
 def _target(*, create: bool = True) -> Path:

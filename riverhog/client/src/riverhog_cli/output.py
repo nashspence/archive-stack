@@ -454,6 +454,13 @@ def format_collection_upload_plan(payload: Mapping[str, object]) -> str:
         f"files: {payload.get('files_total', 0)}",
         f"bytes: {_bytes(payload.get('bytes_total'))}",
     ]
+    observer = payload.get("provenance_observer")
+    if isinstance(observer, Mapping):
+        lines.append(
+            f"provenance observer: {observer.get('name', 'unknown')}  "
+            f"contract={observer.get('contract_id', 'unknown')}@"
+            f"{observer.get('contract_sha256', 'unknown')}"
+        )
     return "\n".join(lines)
 
 

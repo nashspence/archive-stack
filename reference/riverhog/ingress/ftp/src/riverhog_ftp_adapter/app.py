@@ -29,6 +29,7 @@ from http_api_contracts import (
 )
 from riverhog_api_client import ApiClient
 from riverhog_ftp_adapter_api_client import RiverhogFtpAdapterClient
+from riverhog_provenance import resolve_provenance_observer
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from riverhog_ftp_adapter.config import FtpAdapterConfig, load_config
@@ -46,12 +47,25 @@ class FtpAdapterComposition:
 
     @classmethod
     def build(cls, config: FtpAdapterConfig) -> FtpAdapterComposition:
+        observer = (
+            resolve_provenance_observer(config.provenance_observer)
+            if config.provenance_observer is not None
+            else None
+        )
         api = ApiClient(
             base_url=config.riverhog_base_url,
             token=config.riverhog_token,
             allow_insecure_http=config.allow_insecure_http,
         )
-        return cls(config=config, api=api, adapter=FtpAdapter(api, config))
+        return cls(
+            config=config,
+            api=api,
+            adapter=FtpAdapter(
+                api,
+                config,
+                provenance_observer_factory=observer.create if observer is not None else None,
+            ),
+        )
 
 
 class FtpAdapterHttpError(Exception):
@@ -217,6 +231,7 @@ def _print(payload: Mapping[str, object], *, json_mode: bool) -> None:
         return
     if payload.get("format") == "riverhog-ftp-adapter-status/v1":
         print("Riverhog FTP adapter")
+        print(f"provenance observer: {payload.get('provenance_observer') or 'none'}")
         rows = payload.get("sources")
         for row in rows if isinstance(rows, list) else []:
             if isinstance(row, Mapping):

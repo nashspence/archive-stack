@@ -54,7 +54,8 @@ from riverhog_provenance.model import (
     ObservationRequest,
     PathInput,
 )
-from riverhog_provenance_windows_contracts import PLATFORM_FAMILY
+from riverhog_provenance.providers import ProvenanceObserverBinding
+from riverhog_provenance_windows_contracts import CONTRACT_BINDING, PLATFORM_FAMILY
 
 # Fixed-width Windows ABI scalar types.  ctypes.wintypes.DWORD is host-ABI
 # dependent on non-Windows LP64 builds, which would invalidate structure tests.
@@ -3160,3 +3161,12 @@ class WindowsFileStateObserver(DescriptorFileStateObserver):
         enforce_platform: bool = True,
     ) -> None:
         super().__init__(WindowsBackend(native=native, enforce_platform=enforce_platform))
+
+
+OBSERVER_BINDING = ProvenanceObserverBinding(
+    observer_id="riverhog-provenance-windows-observer/v1",
+    contract_provider="riverhog-windows",
+    contract_id=CONTRACT_BINDING.contract_id,
+    contract_sha256=CONTRACT_BINDING.contract_sha256,
+    factory=WindowsFileStateObserver,
+)

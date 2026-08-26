@@ -149,6 +149,11 @@ deployed_implementation = [
   "reference/riverhog/storage/backblaze",
   "utilities/mango-fish",
 ]
+reference_implementation = [
+  "reference/riverhog/provenance/linux",
+  "reference/riverhog/provenance/macos",
+  "reference/riverhog/provenance/windows",
+]
 reusable_library = [
   "packages/gogurt-core",
   "packages/gogurt-listener-runtime",
@@ -167,11 +172,8 @@ reusable_library = [
   "packages/riverhog-provenance",
   "packages/riverhog-provenance-contracts",
   "packages/riverhog-provenance-linux-contracts",
-  "packages/riverhog-provenance-linux-observer",
   "packages/riverhog-provenance-macos-contracts",
-  "packages/riverhog-provenance-macos-observer",
   "packages/riverhog-provenance-windows-contracts",
-  "packages/riverhog-provenance-windows-observer",
   "packages/riverhog-storage-adapter-asgi-support",
   "packages/riverhog-storage-adapter-protocol",
   "packages/riverhog-storage-adapter-s3-support",

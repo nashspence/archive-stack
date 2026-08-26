@@ -17,10 +17,10 @@ from riverhog_api_client import ApiClient
 from riverhog_api_client.producer import CollectionProducer, ProducedCollection, ProducerFile
 from riverhog_provenance import (
     FileProvenanceBinding,
+    FileStateObserverFactory,
     canonical_sidecar_path,
     prepare_file_provenance,
 )
-from riverhog_provenance_linux_observer import LinuxFileStateObserver
 
 from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 
@@ -51,9 +51,16 @@ class FtpAdapter:
     Payload bytes are removed only after an exact finalized Riverhog receipt.
     """
 
-    def __init__(self, api: ApiClient, config: FtpAdapterConfig) -> None:
+    def __init__(
+        self,
+        api: ApiClient,
+        config: FtpAdapterConfig,
+        *,
+        provenance_observer_factory: FileStateObserverFactory | None = None,
+    ) -> None:
         self.api = api
         self.config = config
+        self._provenance_observer_factory = provenance_observer_factory
         self._custody_pass_lock = threading.Lock()
 
     def run_once(self, source_ids: Sequence[str] | None = None) -> dict[str, object]:
@@ -125,7 +132,11 @@ class FtpAdapter:
                     "provenance": source.provenance,
                 }
             )
-        return {"format": "riverhog-ftp-adapter-status/v1", "sources": rows}
+        return {
+            "format": "riverhog-ftp-adapter-status/v1",
+            "provenance_observer": self.config.provenance_observer,
+            "sources": rows,
+        }
 
     def accept_completed_file(
         self,
@@ -323,13 +334,20 @@ class FtpAdapter:
         path: Path,
         relative: str,
     ) -> tuple[dict[str, object], dict[str, bytes]]:
+        observer = (
+            self._provenance_observer_factory()
+            if self._provenance_observer_factory is not None
+            else None
+        )
+        if source.provenance == "capture" and observer is None:
+            raise FtpAdapterError("configured provenance observer is unavailable")
         prepared = prepare_file_provenance(
             path,
             relative_path=relative,
             host_id=self.config.host_id,
             agent_name="riverhog-ftp-adapter",
             agent_version="1.0.0",
-            observer=LinuxFileStateObserver(),
+            observer=observer,
             omit_reason=(
                 source.provenance_omission_reason if source.provenance == "omit" else None
             ),
