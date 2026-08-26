@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from http_api_contracts import CanonicalVisibleText
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -19,6 +19,7 @@ from riverhog_protocol import (
     ProcessingClaimId,
     RetirementClaimReferenceDocument,
     SortOrder,
+    validate_collection_upload_artifact_custody_receipt,
 )
 from riverhog_protocol import (
     CollectionUploadFileIn as CollectionUploadFileIn,
@@ -28,6 +29,91 @@ from riverhog_provenance_contracts import ProvenanceJournalId, ProvenanceStateId
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
+
+_UPLOAD_NONCUSTODY_STATES = ["uploading", "finalizing", "canceled", "finalized"]
+_UPLOAD_CUSTODY_STATE_SCHEMA: list[dict[str, Any]] = [
+    {
+        "if": {
+            "properties": {"custody_mode": {"const": "producer-retained"}},
+            "required": ["custody_mode"],
+        },
+        "then": {
+            "properties": {
+                "state": {"enum": ["open", "uploading", "finalizing", "canceled", "finalized"]},
+                "upload_state_expires_at": {"type": "null"},
+                "orphaned_at": {"type": "null"},
+            }
+        },
+    },
+    {
+        "if": {
+            "properties": {"state": {"enum": ["orphaned", "discarding"]}},
+            "required": ["state"],
+        },
+        "then": {
+            "properties": {
+                "custody_mode": {"const": "custody-transfer"},
+                "upload_state_expires_at": {"type": "null"},
+                "orphaned_at": {"type": "string"},
+            }
+        },
+    },
+    {
+        "if": {
+            "properties": {
+                "custody_mode": {"const": "custody-transfer"},
+                "state": {"const": "open"},
+            },
+            "required": ["custody_mode", "state"],
+        },
+        "then": {
+            "properties": {
+                "upload_state_expires_at": {"type": "string"},
+                "orphaned_at": {"type": "null"},
+            }
+        },
+    },
+    {
+        "if": {
+            "properties": {
+                "custody_mode": {"const": "custody-transfer"},
+                "state": {"enum": _UPLOAD_NONCUSTODY_STATES},
+            },
+            "required": ["custody_mode", "state"],
+        },
+        "then": {
+            "properties": {
+                "upload_state_expires_at": {"type": "null"},
+                "orphaned_at": {"type": "null"},
+            }
+        },
+    },
+]
+
+
+def _validate_upload_custody_state(
+    *,
+    state: str,
+    custody_mode: str,
+    upload_state_expires_at: str | None,
+    orphaned_at: str | None,
+) -> None:
+    if state in _UPLOAD_NONCUSTODY_STATES:
+        if upload_state_expires_at is not None or orphaned_at is not None:
+            raise ValueError("noncustody upload states cannot retain custody lease state")
+        return
+    if custody_mode == "producer-retained":
+        if state in {"orphaned", "discarding"}:
+            raise ValueError("producer-retained upload sessions cannot become custody orphans")
+        if upload_state_expires_at is not None or orphaned_at is not None:
+            raise ValueError("producer-retained upload sessions cannot have custody lease state")
+        return
+    if state in {"orphaned", "discarding"}:
+        if upload_state_expires_at is not None or orphaned_at is None:
+            raise ValueError("orphan custody state requires its transition time and no lease")
+        return
+    if state != "open" or upload_state_expires_at is None or orphaned_at is not None:
+        raise ValueError("open custody-transfer state requires its lease and no orphan time")
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
@@ -211,6 +297,17 @@ class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
     files: list[CollectionUploadFileOut]
     volumes: list[CollectionUploadVolumeSummaryOut]
 
+    @model_validator(mode="after")
+    def validate_custody_receipts(self) -> CollectionUploadSessionFilesRegistrationOut:
+        for item in self.files:
+            if item.custody_receipt is not None:
+                validate_collection_upload_artifact_custody_receipt(
+                    self.collection_id,
+                    item,
+                    item.custody_receipt,
+                )
+        return self
+
 
 class CollectionUploadVolumeSummaryOut(RiverhogModel):
     volume_id: str
@@ -219,14 +316,28 @@ class CollectionUploadVolumeSummaryOut(RiverhogModel):
 
 
 class ListCollectionUploadSessionFilesResponse(RiverhogModel):
+    collection_id: CollectionId
     page: int
     per_page: int
     total: int
     pages: int
     files: list[CollectionUploadFileOut]
 
+    @model_validator(mode="after")
+    def validate_custody_receipts(self) -> ListCollectionUploadSessionFilesResponse:
+        for item in self.files:
+            if item.custody_receipt is not None:
+                validate_collection_upload_artifact_custody_receipt(
+                    self.collection_id,
+                    item,
+                    item.custody_receipt,
+                )
+        return self
+
 
 class CollectionUploadListItemOut(RiverhogModel):
+    model_config = ConfigDict(json_schema_extra={"allOf": cast(Any, _UPLOAD_CUSTODY_STATE_SCHEMA)})
+
     collection_id: CollectionId
     created_at: str | None
     tags: list[CanonicalTag]
@@ -234,7 +345,7 @@ class CollectionUploadListItemOut(RiverhogModel):
     archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
-    state: Literal["open", "uploading", "finalizing", "failed", "orphaned", "discarding"]
+    state: Literal["open", "uploading", "finalizing", "orphaned", "discarding"]
     custody_mode: CollectionUploadCustodyMode
     files: int
     bytes: int
@@ -243,6 +354,16 @@ class CollectionUploadListItemOut(RiverhogModel):
     custodied_bytes: int
     upload_state_expires_at: str | None
     orphaned_at: str | None
+
+    @model_validator(mode="after")
+    def validate_custody_state(self) -> CollectionUploadListItemOut:
+        _validate_upload_custody_state(
+            state=self.state,
+            custody_mode=self.custody_mode,
+            upload_state_expires_at=self.upload_state_expires_at,
+            orphaned_at=self.orphaned_at,
+        )
+        return self
 
 
 class CollectionUploadListFiltersOut(RiverhogModel):
@@ -289,10 +410,7 @@ class CollectionUploadSessionOut(RiverhogModel):
                         }
                     },
                 },
-                {
-                    "if": {"properties": {"state": {"const": "failed"}}},
-                    "then": {"properties": {"latest_failure": {"type": "string", "minLength": 1}}},
-                },
+                *_UPLOAD_CUSTODY_STATE_SCHEMA,
             ]
         }
     )
@@ -313,7 +431,6 @@ class CollectionUploadSessionOut(RiverhogModel):
         "uploading",
         "finalizing",
         "finalized",
-        "failed",
         "canceled",
         "orphaned",
         "discarding",
@@ -357,8 +474,12 @@ class CollectionUploadSessionOut(RiverhogModel):
             or self.collection is not None
         ):
             raise ValueError("nonfinal upload sessions require only registration constraints")
-        if self.state == "failed" and not self.latest_failure:
-            raise ValueError("failed upload sessions require failure evidence")
+        _validate_upload_custody_state(
+            state=self.state,
+            custody_mode=self.custody_mode,
+            upload_state_expires_at=self.upload_state_expires_at,
+            orphaned_at=self.orphaned_at,
+        )
         return self
 
 
@@ -372,7 +493,7 @@ class CollectionUploadDiscardPlanOut(RiverhogModel):
     warning: str
     expires_at: str
     challenge: str | None
-    state: Literal["open", "uploading", "finalizing", "failed", "orphaned", "discarding"]
+    state: Literal["open", "uploading", "finalizing", "orphaned", "discarding"]
     files: int
     bytes: int
     custodied_files: int

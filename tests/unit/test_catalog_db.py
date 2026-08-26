@@ -15,7 +15,11 @@ from riverhog_core.catalog_db import (
     make_session_factory,
     validate_db,
 )
-from riverhog_core.state_migrations.versions import v1_0008
+from riverhog_core.state_migrations.versions import v1_0008, v1_0010
+from riverhog_protocol import (
+    CollectionUploadCreationIdentityDocument,
+    CollectionUploadCreationIdentityPayload,
+)
 from sqlalchemy import inspect
 
 from tests.unit.db_helpers import sqlite_url
@@ -67,6 +71,23 @@ def test_v1_0008_hard_cut_preserves_resumable_checkpoint_identity() -> None:
     assert upgraded["completed"]["retrieval_cache"]["revision"] == "cache-revision"
 
 
+def test_v1_0010_backfill_uses_the_upload_creation_identity_encoding() -> None:
+    payload = CollectionUploadCreationIdentityPayload(
+        tags=("archive", "camera"),
+        ingest_source="fixture",
+        archive_store="primary",
+        event_context={"device": "fixture"},
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture omission",
+        custody_mode="custody-transfer",
+    )
+    document = payload.model_dump(mode="json", exclude_none=True)
+
+    assert v1_0010._canonical_sha256(document) == (
+        CollectionUploadCreationIdentityDocument.seal(payload).creation_identity_sha256
+    )
+
+
 def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     database_url = sqlite_url(tmp_path / "catalog.sqlite3")
 
@@ -75,7 +96,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
 
     inspector = inspect(create_catalog_engine(database_url))
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0009"
+    assert upgraded.current_revision == validated.current_revision == "v1_0010"
     assert set(inspector.get_table_names()) == {*Base.metadata.tables, STATE_VERSION_TABLE}
     assert {column["name"] for column in inspector.get_columns("archive_download_usage")} == {
         "store",
@@ -183,6 +204,8 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "file_order",
     }
     collection_columns = {column["name"]: column for column in inspector.get_columns("collections")}
+    assert collection_columns["creation_identity_sha256"]["nullable"] is False
+    assert collection_columns["creation_custody_mode"]["nullable"] is False
     assert collection_columns["content_identity"]["nullable"] is False
     assert collection_columns["record_etag"]["nullable"] is False
     assert collection_columns["metadata_revision"]["nullable"] is False
@@ -202,6 +225,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
     upload_columns = {
         column["name"]: column for column in inspector.get_columns("collection_uploads")
     }
+    assert upload_columns["creation_identity_sha256"]["nullable"] is False
     for name in (
         "state",
         "opened_at",

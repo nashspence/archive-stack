@@ -19,6 +19,7 @@ from stove0_media_metadata_observer_contracts import (
     MediaFactName,
     MediaMetadataFact,
     MediaMetadataFacts,
+    validate_media_metadata_facts,
 )
 from stove0_observer_protocol import (
     ObservationRequest,
@@ -153,8 +154,10 @@ class ExiftoolObserver:
             result = MediaMetadataFacts(
                 artifacts=tuple(sorted(artifacts, key=lambda item: item.artifact_id))
             )
+            document = result.model_dump(mode="json")
+            validate_media_metadata_facts(document, request.subjects)
             return builder.observed(
-                result.model_dump(mode="json"),
+                document,
                 execution_evidence=self.execution_evidence(),
             )
         except subprocess.TimeoutExpired:

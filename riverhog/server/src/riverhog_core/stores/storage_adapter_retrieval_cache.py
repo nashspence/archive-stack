@@ -19,6 +19,7 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterRejection,
     WriteCompleteRequest,
     WriteStartRequest,
+    validate_completed_write_response,
 )
 from riverhog_storage_adapter_protocol import (
     CompletedObjectReceipt as AdapterCompletedObjectReceipt,
@@ -267,15 +268,15 @@ class StorageAdapterRetrievalCache:
                 if written != content_length:
                     raise ValueError("retrieval cache stream length changed")
                 remote_started = time.perf_counter()
-                completed = self._adapter.complete_write(
-                    WriteCompleteRequest(
-                        session=session,
-                        segments=segments,
-                        expected_bytes=written,
-                        required_identity_assertions=metadata,
-                        expected_placement="immediate",
-                    )
+                completion_request = WriteCompleteRequest(
+                    session=session,
+                    segments=segments,
+                    expected_bytes=written,
+                    required_identity_assertions=metadata,
+                    expected_placement="immediate",
                 )
+                completed = self._adapter.complete_write(completion_request)
+                validate_completed_write_response(completion_request, completed)
                 remote_seconds += time.perf_counter() - remote_started
             except Exception:
                 self._adapter.abort_write(session)
@@ -581,26 +582,26 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
         self._require_path(session.object_path)
-        receipt = self._adapter.complete_write(
-            WriteCompleteRequest(
-                session=AdapterWriteSession(
-                    object_path=session.object_path,
-                    write_token=session.write_token,
-                ),
-                segments=tuple(
-                    AdapterWriteSegmentReceipt(
-                        number=current.number,
-                        segment_token=current.segment_token,
-                        stored_bytes=current.bytes,
-                        stored_sha256=current.sha256,
-                    )
-                    for current in segments
-                ),
-                expected_bytes=expected_bytes,
-                required_identity_assertions=self._cache_metadata(expected_metadata),
-                expected_placement="immediate",
-            )
+        request = WriteCompleteRequest(
+            session=AdapterWriteSession(
+                object_path=session.object_path,
+                write_token=session.write_token,
+            ),
+            segments=tuple(
+                AdapterWriteSegmentReceipt(
+                    number=current.number,
+                    segment_token=current.segment_token,
+                    stored_bytes=current.bytes,
+                    stored_sha256=current.sha256,
+                )
+                for current in segments
+            ),
+            expected_bytes=expected_bytes,
+            required_identity_assertions=self._cache_metadata(expected_metadata),
+            expected_placement="immediate",
         )
+        receipt = self._adapter.complete_write(request)
+        validate_completed_write_response(request, receipt)
         return _completed(receipt)
 
     def find_completed_write(
@@ -610,19 +611,21 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         _ = object_path
+        request = CompletedWriteLookupRequest(
+            object_path=self._object_path,
+            required_identity_assertions=self._cache_metadata(expected_metadata),
+            expected_placement="immediate",
+        )
         try:
-            receipt = self._adapter.find_completed_write(
-                CompletedWriteLookupRequest(
-                    object_path=self._object_path,
-                    required_identity_assertions=self._cache_metadata(expected_metadata),
-                    expected_placement="immediate",
-                )
-            )
+            receipt = self._adapter.find_completed_write(request)
         except StorageAdapterRejection as exc:
             if exc.code == "identity_conflict":
                 raise ArchiveObjectIdentityConflict(str(exc)) from exc
             raise
-        return _completed(receipt) if receipt is not None else None
+        if receipt is None:
+            return None
+        validate_completed_write_response(request, receipt)
+        return _completed(receipt)
 
     def abort_write(self, *, session: WriteSession) -> None:
         self._require_path(session.object_path)

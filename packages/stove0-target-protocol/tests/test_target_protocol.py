@@ -6,6 +6,7 @@ import sys
 import pytest
 from stove0_protocol import JsonSchemaDocument
 from stove0_target_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     InputArtifactContract,
     OperationContract,
     OperationContractPayload,
@@ -21,6 +22,7 @@ def test_target_contract_models_are_importable_without_runtime_support() -> None
                 "fixture.copy-intent/v1",
                 {"type": "object", "additionalProperties": False},
             ),
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             inputs=(
                 InputArtifactContract(
                     role="fixture.source/v1",
@@ -67,6 +69,7 @@ def test_operation_result_kind_owns_collection_disposition_semantics() -> None:
             id="fixture.effect/v1",
             result_kind="external-effect",
             intent_schema=schema,
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             inputs=(
                 InputArtifactContract(
                     role="fixture.source/v1",
@@ -79,6 +82,7 @@ def test_operation_result_kind_owns_collection_disposition_semantics() -> None:
         OperationContractPayload(
             id="fixture.collection/v1",
             intent_schema=schema,
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             inputs=(InputArtifactContract(role="fixture.source/v1"),),
             outputs=(
                 OutputArtifactContract(

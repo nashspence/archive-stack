@@ -34,6 +34,7 @@ from stove0_observer_protocol import (
     ObserverRuntimeAuthority,
 )
 from stove0_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     ArtifactSelection,
     ArtifactSubject,
     BranchPlan,
@@ -112,6 +113,7 @@ def _operation(*, source_retirement_permitted: bool = False) -> OperationContrac
     return OperationContract.seal(
         OperationContractPayload(
             id="fixture.copy/v1",
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             intent_schema=JsonSchemaDocument.from_schema(
                 "fixture.copy-intent/v1",
                 {
@@ -146,6 +148,7 @@ def _fork_join_operations() -> tuple[OperationContract, OperationContract]:
     branch = OperationContract.seal(
         OperationContractPayload(
             id="fixture.branch/v1",
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             intent_schema=intent,
             inputs=(
                 InputArtifactContract(
@@ -164,6 +167,7 @@ def _fork_join_operations() -> tuple[OperationContract, OperationContract]:
     join = OperationContract.seal(
         OperationContractPayload(
             id="fixture.join/v1",
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             intent_schema=intent,
             inputs=(
                 InputArtifactContract(
@@ -243,6 +247,7 @@ def _observer() -> tuple[ObserverContract, ObserverDescriptor]:
     contract = ObserverContract.seal(
         ObserverContractPayload(
             id="fixture.kind/v1",
+            facts_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             options_schema=JsonSchemaDocument.from_schema(
                 "fixture.kind-options/v1",
                 {"type": "object", "additionalProperties": False},

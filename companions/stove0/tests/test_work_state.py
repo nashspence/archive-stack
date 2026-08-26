@@ -37,6 +37,7 @@ from stove0_observer_protocol import (
     ObserverImplementation,
 )
 from stove0_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     ArtifactSelection,
     ArtifactSubject,
     BranchPlan,
@@ -102,6 +103,7 @@ def _observer() -> tuple[ObserverContract, ObserverDescriptor]:
     contract = ObserverContract.seal(
         ObserverContractPayload(
             id="fixture.kind/v1",
+            facts_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             options_schema=JsonSchemaDocument.from_schema(
                 "fixture.kind-options/v1",
                 {"type": "object", "additionalProperties": False},
@@ -179,6 +181,7 @@ def _operation() -> OperationContract:
     return OperationContract.seal(
         OperationContractPayload(
             id="fixture.copy/v1",
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             intent_schema=JsonSchemaDocument.from_schema(
                 "fixture.copy-intent/v1",
                 {

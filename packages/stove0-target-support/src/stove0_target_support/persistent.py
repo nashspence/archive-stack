@@ -19,6 +19,7 @@ from riverhog_protocol import DownloadAllowanceExceeded, RiverhogError, ServiceU
 from riverhog_transform_sdk import ClaimedCollectionRuntimeRegistry
 from stove0_target_protocol import (
     EFFECT_TARGET_PROTOCOL,
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     AcceptedTargetJob,
     EffectPlan,
     EffectPlanPayload,
@@ -50,6 +51,7 @@ JobExecutor = Callable[
     [TargetJobRequest, int, threading.Event, TargetExecutionSession],
     TargetJobStatus,
 ]
+IntentSemanticValidator = Callable[[Mapping[str, object]], None]
 
 
 class TargetExecutionCanceled(RuntimeError):
@@ -96,6 +98,7 @@ class PersistentTargetService:
         operations: Mapping[str, OperationContract],
         state_root: Path,
         execute: JobExecutor,
+        intent_semantic_validators: Mapping[str, IntentSemanticValidator] | None = None,
         maximum_workers: int = 1,
         terminal_state_retention_seconds: int = DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     ) -> None:
@@ -110,6 +113,17 @@ class PersistentTargetService:
                 or operation.result_kind != support.result_kind
             ):
                 raise ValueError("target operation implementation differs from its support binding")
+        self._intent_semantic_validators = dict(intent_semantic_validators or {})
+        required_semantic_validators = {
+            operation.intent_semantics.profile_sha256
+            for operation in self._operations.values()
+            if operation.intent_semantics.profile_sha256
+            != JSON_SCHEMA_ONLY_SEMANTIC_PROFILE.profile_sha256
+        }
+        if set(self._intent_semantic_validators) != required_semantic_validators:
+            raise ValueError(
+                "target semantic validators differ from the advertised operation profiles"
+            )
         self.state_root = state_root.resolve()
         self.state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.state_root, 0o700)
@@ -347,8 +361,8 @@ class PersistentTargetService:
                 f"target does not support operation: {operation_id}",
             ) from exc
 
-    @staticmethod
     def _validate_operation_request(
+        self,
         declaration: TargetDeclaration,
         operation: OperationContract,
         support: TargetOperationSupport,
@@ -359,6 +373,11 @@ class PersistentTargetService:
             Draft202012Validator(support.options_schema.document).validate(
                 declaration.target_options
             )
+            semantic_validator = self._intent_semantic_validators.get(
+                operation.intent_semantics.profile_sha256
+            )
+            if semantic_validator is not None:
+                semantic_validator(declaration.intent)
         except (JsonSchemaValidationError, ValueError) as exc:
             raise TargetServiceError(
                 400,
@@ -631,6 +650,7 @@ def _failure_status(
 __all__ = [
     "DEFAULT_TERMINAL_STATE_RETENTION_SECONDS",
     "JobExecutor",
+    "IntentSemanticValidator",
     "PersistentTargetService",
     "TargetEffectCommitUncertain",
     "TargetExecutionCanceled",

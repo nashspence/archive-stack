@@ -45,6 +45,7 @@ from stove0_observer_protocol import (
 )
 from stove0_observer_support import ObservationResultBuilder
 from stove0_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     ArtifactSelection,
     ArtifactSubject,
     BranchSetDecision,
@@ -378,6 +379,7 @@ def test_planning_rejects_stale_target_operation_contract_before_preflight() -> 
     changed_operation = OperationContract.seal(
         OperationContractPayload(
             id=AUDIO_ARCHIVE_OPERATION.id,
+            intent_semantics=AUDIO_ARCHIVE_OPERATION.intent_semantics,
             intent_schema=AUDIO_ARCHIVE_OPERATION.intent_schema,
             inputs=AUDIO_ARCHIVE_OPERATION.inputs,
             outputs=AUDIO_ARCHIVE_OPERATION.outputs,
@@ -972,6 +974,7 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
     branch_operation = OperationContract.seal(
         OperationContractPayload(
             id="fixture.branch/v1",
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             intent_schema=empty_schema,
             inputs=(
                 InputArtifactContract(
@@ -990,6 +993,7 @@ def test_production_planner_resolves_overlapping_branches_into_one_exact_join() 
     join_operation = OperationContract.seal(
         OperationContractPayload(
             id="fixture.join/v1",
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             intent_schema=empty_schema,
             inputs=(
                 InputArtifactContract(
@@ -1126,6 +1130,7 @@ def _retirement_operation() -> OperationContract:
     return OperationContract.seal(
         OperationContractPayload(
             id="fixture.retirement-copy/v1",
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             intent_schema=JsonSchemaDocument.from_schema(
                 "fixture.retirement-copy-options/v1",
                 {"type": "object", "additionalProperties": False},

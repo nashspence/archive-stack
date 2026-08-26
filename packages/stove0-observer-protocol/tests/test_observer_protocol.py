@@ -7,6 +7,7 @@ from pathlib import Path
 
 import stove0_protocol
 from stove0_observer_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     JsonSchemaDocument,
     ObservationRequest,
     ObserverContract,
@@ -51,6 +52,7 @@ def test_observer_contract_models_are_importable_without_runtime_support() -> No
                 "fixture.facts/v1",
                 {"type": "object", "additionalProperties": False},
             ),
+            facts_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
         )
     )
     assert contract.contract_sha256

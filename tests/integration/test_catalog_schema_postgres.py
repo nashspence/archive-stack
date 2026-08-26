@@ -70,7 +70,7 @@ def test_postgres_catalog_schema_is_current_and_stays_operator_controlled(
 
     after = {index["name"] for index in inspect(engine).get_indexes("retrieval_jobs")}
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0009"
+    assert upgraded.current_revision == validated.current_revision == "v1_0010"
     assert after == before
     engine.dispose()
 

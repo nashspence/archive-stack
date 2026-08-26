@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal, Protocol, Self, cast
@@ -25,6 +25,7 @@ from stove0_observer_protocol import (
 
 CancellationCheck = Callable[[], None]
 Heartbeat = Callable[[], None]
+FactsSemanticValidator = Callable[[ObservationRequest, Mapping[str, object]], None]
 
 
 class ContentObserver(Protocol):
@@ -258,6 +259,7 @@ def _token(value: str) -> str:
 __all__ = [
     "CancellationCheck",
     "ContentObserver",
+    "FactsSemanticValidator",
     "Heartbeat",
     "ObservationRuntime",
 ]

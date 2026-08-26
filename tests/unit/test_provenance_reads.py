@@ -103,6 +103,8 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
             CollectionRecord(
                 id=1,
                 creation_idempotency_key="fixture",
+                creation_identity_sha256="e" * 64,
+                creation_custody_mode="producer-retained",
                 content_identity="a" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",

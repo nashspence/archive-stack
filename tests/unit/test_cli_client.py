@@ -7,10 +7,15 @@ from typing import Any
 import httpx
 import pytest
 from riverhog_api_client.client import ApiClient
+from riverhog_protocol import (
+    CollectionUploadArtifactCustodyReceiptDocument,
+    CollectionUploadCustodyObjectDocument,
+)
 from riverhog_protocol.errors import (
     BadRequest,
     DownloadAllowanceExceeded,
     Forbidden,
+    InvalidState,
     ServiceUnavailable,
     Unauthorized,
 )
@@ -28,7 +33,35 @@ class RecordingClient(ApiClient):
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         self.calls.append((method, path, kwargs))
-        return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, path))
+        payload: dict[str, Any] = {"ok": True}
+        if method == "POST" and path.endswith("/files"):
+            payload = {
+                "collection_id": int(path.split("/")[-2]),
+                "files": [{**item, "custody_receipt": None} for item in kwargs["json"]["files"]],
+            }
+        return httpx.Response(200, json=payload, request=httpx.Request(method, path))
+
+
+class WrongCustodyReceiptClient(RecordingClient):
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        response = super()._request(method, path, **kwargs)
+        if method != "POST" or not path.endswith("/files"):
+            return response
+        payload = response.json()
+        row = payload["files"][0]
+        row["custody_receipt"] = CollectionUploadArtifactCustodyReceiptDocument.seal(
+            collection_id=int(payload["collection_id"]),
+            path="other.txt",
+            bytes=int(row["bytes"]),
+            sha256=str(row["sha256"]),
+            archive_objects=(
+                CollectionUploadCustodyObjectDocument(
+                    volume_id="raw-000000000001",
+                    sealed_receipt_sha256="b" * 64,
+                ),
+            ),
+        ).model_dump(mode="json")
+        return httpx.Response(200, json=payload, request=httpx.Request(method, path))
 
 
 def test_client_host_header_environment_reaches_requests(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -219,6 +252,27 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
         "content_identity": "b" * 64,
         "provenance_identity": None,
     }
+
+
+def test_collection_upload_client_rejects_a_custody_receipt_for_another_artifact() -> None:
+    client = WrongCustodyReceiptClient()
+
+    with pytest.raises(InvalidState, match="invalid collection upload file response"):
+        client.register_collection_upload_session_files(
+            1,
+            [
+                {
+                    "path": "one.txt",
+                    "bytes": 1,
+                    "sha256": "a" * 64,
+                    "provenance": {
+                        "status": "omitted",
+                        "omission_reason": "fixture source has no provenance",
+                    },
+                }
+            ],
+            registration_constraints=UPLOAD_REGISTRATION_CONSTRAINTS,
+        )
 
 
 def test_client_rejects_invalid_upload_provenance_before_transport() -> None:

@@ -401,7 +401,7 @@ def test_portable_core_and_platform_package_dependency_direction_is_exact() -> N
         contract_config = tomllib.loads(
             (REPO / f"packages/{contract}/pyproject.toml").read_text(encoding="utf-8")
         )
-        assert contract_config["project"]["dependencies"] == []
+        assert declared_project_dependencies(contract_config) == {"riverhog-provenance-contracts"}
 
         gogurt_config = tomllib.loads(
             (REPO / f"packages/gogurt-{platform}/pyproject.toml").read_text(encoding="utf-8")

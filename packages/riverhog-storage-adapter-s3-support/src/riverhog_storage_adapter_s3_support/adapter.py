@@ -322,7 +322,12 @@ class S3StorageAdapter:
                 "object already exists with different required identity assertions",
             )
         self._validate_placement(head, request.expected_placement)
-        return self._completed_receipt(request.object_path, head)
+        return self._completed_receipt(
+            request.object_path,
+            head,
+            verified_identity_assertions=request.required_identity_assertions,
+            verified_placement=request.expected_placement,
+        )
 
     def abort_write(self, session: WriteSession) -> None:
         try:
@@ -675,12 +680,17 @@ class S3StorageAdapter:
     def _completed_receipt(
         object_path: str,
         head: dict[str, Any],
+        *,
+        verified_identity_assertions: dict[str, str],
+        verified_placement: ObjectPlacement,
     ) -> CompletedObjectReceipt:
         return CompletedObjectReceipt(
             object_path=object_path,
             revision=_provider_revision(head),
             entity_token=_provider_entity_token(head),
             stored_bytes=int(str(head["ContentLength"])),
+            verified_identity_assertions=verified_identity_assertions,
+            verified_placement=verified_placement,
             completed_at=_provider_timestamp(head),
         )
 

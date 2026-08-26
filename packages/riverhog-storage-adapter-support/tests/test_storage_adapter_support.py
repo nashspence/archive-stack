@@ -122,6 +122,8 @@ class MemoryAdapter:
             revision="version-1",
             entity_token="completed-token",
             stored_bytes=len(content),
+            verified_identity_assertions=request.required_identity_assertions,
+            verified_placement=request.expected_placement,
             completed_at="2026-08-21T00:00:00Z",
         )
 
@@ -132,7 +134,7 @@ class MemoryAdapter:
         stored = self.objects.get(request.object_path)
         if stored is None:
             return None
-        content, metadata, revision, _placement = stored
+        content, metadata, revision, placement = stored
         if metadata != request.required_identity_assertions:
             raise RuntimeError("different identity")
         return CompletedObjectReceipt(
@@ -140,6 +142,8 @@ class MemoryAdapter:
             revision=revision,
             entity_token="completed-token",
             stored_bytes=len(content),
+            verified_identity_assertions=metadata,
+            verified_placement=placement,
             completed_at="2026-08-21T00:00:00Z",
         )
 

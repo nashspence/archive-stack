@@ -33,6 +33,8 @@ __all__ = [
 from riverhog_protocol.collection_upload_transport import (
     CapturedFileProvenanceBinding,
     CollectionUploadArtifactCustodyReceiptDocument,
+    CollectionUploadCreationIdentityDocument,
+    CollectionUploadCreationIdentityPayload,
     CollectionUploadCustodyMode,
     CollectionUploadCustodyObjectDocument,
     CollectionUploadFileBatchDocument,
@@ -43,6 +45,7 @@ from riverhog_protocol.collection_upload_transport import (
     OmittedFileProvenanceBinding,
     collection_upload_path_order_key,
     collection_upload_raw_digest_manifest,
+    validate_collection_upload_artifact_custody_receipt,
     validate_collection_upload_batch_against_registration_constraints,
 )
 from riverhog_protocol.collection_workflow_transport import (
@@ -144,6 +147,8 @@ __all__ += [
     "CapturedFileProvenanceBinding",
     "CollectionUploadFileBatchDocument",
     "CollectionUploadArtifactCustodyReceiptDocument",
+    "CollectionUploadCreationIdentityDocument",
+    "CollectionUploadCreationIdentityPayload",
     "CollectionUploadCustodyMode",
     "CollectionUploadCustodyObjectDocument",
     "CollectionUploadFileIn",
@@ -170,6 +175,7 @@ __all__ += [
     "ArchiveCopyStoreSelectionDocument",
     "collection_upload_raw_digest_manifest",
     "collection_upload_path_order_key",
+    "validate_collection_upload_artifact_custody_receipt",
     "validate_collection_upload_batch_against_registration_constraints",
     "validate_archive_store_name",
     "validate_collection_id",

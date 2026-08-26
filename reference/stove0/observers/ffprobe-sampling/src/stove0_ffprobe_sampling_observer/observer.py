@@ -14,6 +14,7 @@ from stove0_media_sampling_observer_contracts import (
     MediaSamplingArtifactFacts,
     MediaSamplingFacts,
     SampleableRange,
+    validate_media_sampling_facts,
 )
 from stove0_observer_protocol import (
     ObservationRequest,
@@ -94,8 +95,10 @@ class FfprobeSamplingObserver:
                         sampleable_ranges=(SampleableRange(start_ms=0, duration_ms=duration),),
                     )
                 )
+            document = MediaSamplingFacts(artifacts=tuple(facts)).model_dump(mode="json")
+            validate_media_sampling_facts(document, request.subjects)
             return builder.observed(
-                MediaSamplingFacts(artifacts=tuple(facts)).model_dump(mode="json"),
+                document,
                 execution_evidence=self.execution_evidence(),
             )
         except subprocess.TimeoutExpired:

@@ -221,6 +221,7 @@ def test_tag_deletion_plan_reports_only_bounded_catalog_dependencies(tmp_path: P
         now = "2026-08-08T00:00:00.000000Z"
         upload = CollectionUploadRecord(
             idempotency_key="photos-upload",
+            creation_identity_sha256="e" * 64,
             provenance_mode="omitted",
             provenance_omission_reason="fixture does not exercise source observation",
             encryption_format="age-v1-scrypt",

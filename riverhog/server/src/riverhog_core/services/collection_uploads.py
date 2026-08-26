@@ -11,13 +11,16 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict, cast
 
 from riverhog_age import encrypt_age_scrypt
 from riverhog_archive_contracts import CollectionEncryptionBinding
 from riverhog_protocol import (
     CapturedFileProvenanceBinding,
     CollectionUploadArtifactCustodyReceiptDocument,
+    CollectionUploadCreationIdentityDocument,
+    CollectionUploadCreationIdentityPayload,
+    CollectionUploadCustodyMode,
     CollectionUploadCustodyObjectDocument,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
@@ -244,6 +247,15 @@ class SqlAlchemyCollectionUploadService:
             provenance_omission_reason,
         )
         normalized_custody_mode = _normalize_custody_mode(custody_mode)
+        creation_identity = _collection_upload_creation_identity(
+            tags=normalized_tags,
+            ingest_source=ingest_source,
+            archive_store=store_name,
+            event_context_json=context_json,
+            provenance_mode=normalized_provenance_mode,
+            provenance_omission_reason=normalized_omission_reason,
+            custody_mode=normalized_custody_mode,
+        )
 
         with session_scope(self._session_factory) as session:
             _require_transform_output_intent(
@@ -263,17 +275,10 @@ class SqlAlchemyCollectionUploadService:
                 )
             )
             if collection is not None:
-                collection_tags = tuple(sorted(current.tag_id for current in collection.tags))
-                if collection_tags != normalized_tags:
-                    raise Conflict("collection upload idempotency identity changed")
-                if (
-                    normalized_provenance_mode == "omitted"
-                    and collection.provenance_mode != "omitted"
-                ) or (
-                    normalized_provenance_mode == "captured"
-                    and collection.provenance_mode == "omitted"
+                if collection.creation_identity_sha256 != (
+                    creation_identity.creation_identity_sha256
                 ):
-                    raise Conflict("collection upload provenance identity changed")
+                    raise Conflict("collection upload idempotency identity changed")
                 return _finalized_payload(
                     session,
                     collection,
@@ -289,14 +294,7 @@ class SqlAlchemyCollectionUploadService:
                 .with_for_update()
             )
             if upload is not None:
-                if (
-                    _upload_tags(upload) != normalized_tags
-                    or upload.archive_store != store_name
-                    or upload.event_context_json != context_json
-                    or upload.provenance_mode != normalized_provenance_mode
-                    or upload.provenance_omission_reason != normalized_omission_reason
-                    or upload.custody_mode != normalized_custody_mode
-                ):
+                if upload.creation_identity_sha256 != creation_identity.creation_identity_sha256:
                     raise Conflict("collection upload idempotency identity changed")
                 if upload.state == "orphaned":
                     upload.state = "open"
@@ -311,6 +309,7 @@ class SqlAlchemyCollectionUploadService:
             checkpoint = new_incremental_volume_planner(policy=self._policy)
             upload = CollectionUploadRecord(
                 idempotency_key=key,
+                creation_identity_sha256=creation_identity.creation_identity_sha256,
                 ingest_source=ingest_source,
                 provenance_mode=normalized_provenance_mode,
                 provenance_omission_reason=normalized_omission_reason,
@@ -658,7 +657,7 @@ class SqlAlchemyCollectionUploadService:
             )
             if upload is None:
                 raise NotFound(f"collection upload session not found: {normalized_id}")
-            if upload.state not in {"open", "uploading", "finalizing", "failed"}:
+            if upload.state not in {"open", "uploading", "finalizing"}:
                 raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
             if upload.state == "finalizing":
                 return _upload_payload(session, upload)
@@ -749,6 +748,7 @@ class SqlAlchemyCollectionUploadService:
                 statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = list(session.scalars(statement))
             return {
+                "collection_id": normalized_id,
                 "page": 1 if all_items else page,
                 "per_page": total if all_items and total else per_page,
                 "total": total,
@@ -805,7 +805,7 @@ class SqlAlchemyCollectionUploadService:
             )
             if upload is None or record is None:
                 raise NotFound(f"collection upload volume not found: {volume_id}")
-            if upload.state not in {"open", "uploading", "failed"}:
+            if upload.state not in {"open", "uploading"}:
                 raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
             if plan_sha256 != record.plan_sha256:
                 raise Conflict("archive upload unit plan identity changed")
@@ -1383,7 +1383,7 @@ class SqlAlchemyCollectionUploadService:
             uploads = list(
                 session.scalars(
                     select(CollectionUploadRecord)
-                    .where(CollectionUploadRecord.state.in_(("uploading", "finalizing", "failed")))
+                    .where(CollectionUploadRecord.state.in_(("uploading", "finalizing")))
                     .order_by(
                         CollectionUploadRecord.archive_phase_updated_at,
                         CollectionUploadRecord.collection_id,
@@ -1457,7 +1457,7 @@ class SqlAlchemyCollectionUploadService:
             uploads = list(
                 session.scalars(
                     select(CollectionUploadRecord)
-                    .where(CollectionUploadRecord.state.in_(("uploading", "failed")))
+                    .where(CollectionUploadRecord.state == "uploading")
                     .order_by(
                         CollectionUploadRecord.archive_phase_updated_at,
                         CollectionUploadRecord.collection_id,
@@ -1795,6 +1795,8 @@ class SqlAlchemyCollectionUploadService:
             collection = CollectionRecord(
                 id=collection_id,
                 creation_idempotency_key=upload.idempotency_key,
+                creation_identity_sha256=upload.creation_identity_sha256,
+                creation_custody_mode=upload.custody_mode,
                 content_identity=content_identity,
                 encryption_format=upload.encryption_format,
                 passphrase_id=upload.passphrase_id,
@@ -2124,6 +2126,32 @@ def _normalize_idempotency_key(value: str) -> str:
     return normalized
 
 
+def _collection_upload_creation_identity(
+    *,
+    tags: tuple[str, ...],
+    ingest_source: str | None,
+    archive_store: str,
+    event_context_json: str | None,
+    provenance_mode: Literal["captured", "omitted"],
+    provenance_omission_reason: str | None,
+    custody_mode: CollectionUploadCustodyMode,
+) -> CollectionUploadCreationIdentityDocument:
+    event_context = json.loads(event_context_json) if event_context_json is not None else None
+    if event_context is not None and not isinstance(event_context, dict):  # pragma: no cover
+        raise RuntimeError("normalized upload event context is not an object")
+    return CollectionUploadCreationIdentityDocument.seal(
+        CollectionUploadCreationIdentityPayload(
+            tags=tags,
+            ingest_source=ingest_source,
+            archive_store=archive_store,
+            event_context=event_context,
+            provenance_mode=provenance_mode,
+            provenance_omission_reason=provenance_omission_reason,
+            custody_mode=custody_mode,
+        )
+    )
+
+
 def _normalize_tags(values: Sequence[str]) -> tuple[str, ...]:
     normalized = tuple(sorted(value.strip().casefold() for value in values))
     if any(not value for value in normalized):
@@ -2234,13 +2262,13 @@ def _registered_file_identity(record: CollectionUploadFileRecord) -> _Registered
 def _normalize_provenance_mode(
     mode: str,
     omission_reason: str | None,
-) -> tuple[str, str | None]:
+) -> tuple[Literal["captured", "omitted"], str | None]:
     if mode == "captured" and omission_reason is None:
-        return mode, None
+        return "captured", None
     if mode == "omitted" and omission_reason:
         normalized = omission_reason.strip()
         if normalized == omission_reason:
-            return mode, normalized
+            return "omitted", normalized
     raise BadRequest("provenance_mode must be captured, or omitted with provenance_omission_reason")
 
 
@@ -2632,11 +2660,11 @@ def _upload_list_payload(
     }
 
 
-def _normalize_custody_mode(value: str) -> str:
+def _normalize_custody_mode(value: str) -> CollectionUploadCustodyMode:
     normalized = str(value or "")
     if normalized not in {"producer-retained", "custody-transfer"}:
         raise BadRequest("collection upload custody mode is invalid")
-    return normalized
+    return cast(CollectionUploadCustodyMode, normalized)
 
 
 def _upload_visible_to_deleter(
@@ -2835,10 +2863,10 @@ def _upload_payload(
         "bytes_total": int(bytes_total),
         "uploaded_bytes": min(int(bytes_total), uploaded_bytes),
         "missing_bytes": max(0, int(bytes_total) - uploaded_bytes),
-        "upload_state_expires_at": upload.lease_expires_at,
+        "upload_state_expires_at": None if state == "canceled" else upload.lease_expires_at,
         "custodied_files": custodied_files,
         "custodied_bytes": uploaded_bytes,
-        "orphaned_at": upload.orphaned_at,
+        "orphaned_at": None if state == "canceled" else upload.orphaned_at,
         "latest_failure": upload.archive_failure,
         "archive_phase": upload.archive_phase,
         "archive_phase_updated_at": upload.archive_phase_updated_at,
@@ -2861,7 +2889,6 @@ def _finalized_payload(
     store_name: str,
     resumed: bool | None = None,
 ) -> dict[str, object]:
-    upload = session.get(CollectionUploadRecord, collection.id)
     copy = next(
         (current for current in collection.archive_copies if current.store == store_name),
         collection.archive_copies[0] if collection.archive_copies else None,
@@ -2901,7 +2928,7 @@ def _finalized_payload(
         "encryption_format": collection.encryption_format,
         "passphrase_id": collection.passphrase_id,
         "state": "finalized",
-        "custody_mode": upload.custody_mode if upload is not None else "producer-retained",
+        "custody_mode": collection.creation_custody_mode,
         "registration_constraints": None,
         "files_total": summary["files"],
         "files_pending": 0,

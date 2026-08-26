@@ -88,14 +88,14 @@ class _Adapter:
     ) -> CompletedObjectReceipt:
         assert request.expected_placement == "archive"
         assert request.required_identity_assertions == {"riverhog-format": "volume/v1"}
-        return self._completed()
+        return self._completed(request)
 
     def find_completed_write(
         self,
         request: CompletedWriteLookupRequest,
     ) -> CompletedObjectReceipt | None:
         assert request.expected_placement == "archive"
-        return self._completed()
+        return self._completed(request)
 
     def abort_write(self, session: WriteSession) -> None:
         assert session == self.upload
@@ -122,12 +122,16 @@ class _Adapter:
         yield content[request.offset : request.offset + request.size]
 
     @staticmethod
-    def _completed() -> CompletedObjectReceipt:
+    def _completed(
+        request: WriteCompleteRequest | CompletedWriteLookupRequest,
+    ) -> CompletedObjectReceipt:
         return CompletedObjectReceipt(
             object_path="archives/id/volume.age",
             revision="version-volume",
             entity_token="entity-volume",
             stored_bytes=11,
+            verified_identity_assertions=request.required_identity_assertions,
+            verified_placement=request.expected_placement,
             completed_at="2026-08-21T00:00:00Z",
         )
 
@@ -210,5 +214,31 @@ def test_identity_conflicts_keep_the_existing_internal_exception() -> None:
     with pytest.raises(ArchiveObjectIdentityConflict, match="different object"):
         store.find_completed_write(
             object_path="archives/id/volume.age",
+            expected_metadata={"riverhog-format": "volume/v1"},
+        )
+
+
+def test_completed_receipts_must_attest_the_exact_requested_storage_predicates() -> None:
+    class _FalseAttestationAdapter(_Adapter):
+        def complete_write(
+            self,
+            request: WriteCompleteRequest,
+        ) -> CompletedObjectReceipt:
+            return self._completed(request).model_copy(update={"verified_placement": "immediate"})
+
+    store = StorageAdapterArchiveResumableObjectStore(
+        _FalseAttestationAdapter()  # type: ignore[arg-type]
+    )
+    session = store.begin_write(
+        object_path="archives/id/volume.age",
+        content_type="application/octet-stream",
+        metadata={"riverhog-format": "volume/v1"},
+    )
+    segment = store.write_segment(session=session, number=1, content=b"firstsecond")
+    with pytest.raises(ValueError, match="placement"):
+        store.complete_write(
+            session=session,
+            segments=(segment,),
+            expected_bytes=11,
             expected_metadata={"riverhog-format": "volume/v1"},
         )

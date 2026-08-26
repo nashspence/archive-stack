@@ -1789,6 +1789,12 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.12,<3.0" }]
 name = "riverhog-provenance-linux-contracts"
 version = "0.1.0"
 source = { editable = "packages/riverhog-provenance-linux-contracts" }
+dependencies = [
+    { name = "riverhog-provenance-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" }]
 
 [[package]]
 name = "riverhog-provenance-linux-observer"
@@ -1809,6 +1815,12 @@ requires-dist = [
 name = "riverhog-provenance-macos-contracts"
 version = "0.1.0"
 source = { editable = "packages/riverhog-provenance-macos-contracts" }
+dependencies = [
+    { name = "riverhog-provenance-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" }]
 
 [[package]]
 name = "riverhog-provenance-macos-observer"
@@ -1829,6 +1841,12 @@ requires-dist = [
 name = "riverhog-provenance-windows-contracts"
 version = "0.1.0"
 source = { editable = "packages/riverhog-provenance-windows-contracts" }
+dependencies = [
+    { name = "riverhog-provenance-contracts" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "riverhog-provenance-contracts", editable = "packages/riverhog-provenance-contracts" }]
 
 [[package]]
 name = "riverhog-provenance-windows-observer"

@@ -39,6 +39,8 @@ class CollectionRecord(Base):
 
     id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     creation_idempotency_key: Mapped[str] = mapped_column(String)
+    creation_identity_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    creation_custody_mode: Mapped[str] = mapped_column(String, nullable=False)
     content_identity: Mapped[str] = mapped_column(String(64))
     encryption_format: Mapped[str] = mapped_column(String, nullable=False)
     passphrase_id: Mapped[str] = mapped_column(String, nullable=False)
@@ -827,6 +829,7 @@ class CollectionUploadRecord(Base):
         primary_key=True,
     )
     idempotency_key: Mapped[str] = mapped_column(String)
+    creation_identity_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance_mode: Mapped[str] = mapped_column(String)
     provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -32,6 +32,7 @@ from stove0_review_target_contracts import (
     REVIEW_MATERIALIZE_OPERATION,
     REVIEW_RCLONE_DELIVER_OPERATION,
     ReviewMaterializeIntent,
+    validate_review_materialize_intent,
 )
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
@@ -249,6 +250,9 @@ class ReviewTargetService(PersistentTargetService):
             operations={operation.id: operation},
             state_root=state_root,
             execute=self._execute,
+            intent_semantic_validators={
+                operation.intent_semantics.profile_sha256: validate_review_materialize_intent
+            },
             terminal_state_retention_seconds=terminal_state_retention_seconds,
         )
 

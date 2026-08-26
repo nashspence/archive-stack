@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 
 import pytest
+import riverhog_provenance.schema as provenance_schema
+import riverhog_provenance_linux_contracts as linux_contracts
+import riverhog_provenance_macos_contracts as macos_contracts
+import riverhog_provenance_windows_contracts as windows_contracts
 from jsonschema import Draft202012Validator
 from riverhog_provenance import (
     FileProvenanceBinding,
@@ -113,6 +119,41 @@ def test_published_archive_index_schemas_are_valid_and_collection_unbounded() ->
         assert all(
             "maxItems" not in node for node in _all_json_nodes(schema) if isinstance(node, dict)
         )
+
+
+def _write_duplicate_schema_pack(path: Path) -> None:
+    document = {"$id": "https://riverhog.example/duplicate/v1", "type": "object"}
+    for name in ("first.schema.json", "second.schema.json"):
+        path.joinpath(name).write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_portable_observer_schema_pack_rejects_duplicate_identities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_duplicate_schema_pack(tmp_path)
+    monkeypatch.setattr(provenance_schema, "_schema_directory", lambda: tmp_path)
+
+    with pytest.raises(ValueError, match="duplicated"):
+        provenance_schema.load_observer_schemas()
+
+
+@pytest.mark.parametrize(
+    "contracts",
+    (linux_contracts, macos_contracts, windows_contracts),
+)
+def test_platform_observer_schema_packs_reject_duplicate_identities(
+    contracts: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema_directory = tmp_path / "schemas"
+    schema_directory.mkdir()
+    _write_duplicate_schema_pack(schema_directory)
+    monkeypatch.setattr(contracts.resources, "files", lambda _package: tmp_path)
+
+    with pytest.raises(ValueError, match="duplicated"):
+        contracts.load_schemas()
 
 
 def test_archive_rejects_a_payload_binding_mismatch(tmp_path: Path, urn_factory) -> None:

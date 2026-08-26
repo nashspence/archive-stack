@@ -3,13 +3,33 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from collections.abc import Iterable, Mapping
+from typing import Annotated, Any
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 CANONICAL_UUID_URN_PATTERN = (
     r"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
+
+
+def index_schema_documents(
+    documents: Iterable[Mapping[str, Any]],
+    *,
+    owner: str,
+) -> dict[str, dict[str, Any]]:
+    """Index one contract pack without silently replacing a schema identity."""
+
+    indexed: dict[str, dict[str, Any]] = {}
+    for supplied in documents:
+        document = dict(supplied)
+        identifier = document.get("$id")
+        if not isinstance(identifier, str) or not identifier or identifier != identifier.strip():
+            raise ValueError(f"{owner} schema has no canonical $id")
+        if identifier in indexed:
+            raise ValueError(f"{owner} schema identity is duplicated: {identifier}")
+        indexed[identifier] = document
+    return dict(sorted(indexed.items()))
 
 
 def require_canonical_uuid_urn(value: str, field: str = "identity") -> str:
@@ -72,5 +92,6 @@ __all__ = [
     "ProvenanceEntryId",
     "ProvenanceJournalStateReference",
     "ProvenanceStateId",
+    "index_schema_documents",
     "require_canonical_uuid_urn",
 ]

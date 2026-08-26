@@ -245,12 +245,19 @@ class CompletedObjectReceipt(StorageAdapterModel):
     revision: str | None = Field(default=None, min_length=1, max_length=2000)
     entity_token: str | None = Field(default=None, min_length=1, max_length=4000)
     stored_bytes: int = Field(ge=1)
+    verified_identity_assertions: RequiredIdentityAssertions
+    verified_placement: ObjectPlacement
     completed_at: str = Field(min_length=1, max_length=100)
 
     @field_validator("object_path")
     @classmethod
     def canonical_path(cls, value: str) -> str:
         return normalize_object_path(value)
+
+    @field_validator("verified_identity_assertions")
+    @classmethod
+    def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
+        return _canonical_identity_assertions(value)
 
 
 class SmallObjectWriteRequest(StorageAdapterModel):
@@ -461,6 +468,10 @@ def validate_completed_write_response(
     )
     if response.object_path != expected_path:
         raise ValueError("adapter completed-object receipt differs from its request")
+    if response.verified_identity_assertions != request.required_identity_assertions:
+        raise ValueError("adapter completed-object identity assertions differ from their request")
+    if response.verified_placement != request.expected_placement:
+        raise ValueError("adapter completed-object placement differs from its request")
     if (
         isinstance(request, WriteCompleteRequest)
         and response.stored_bytes != request.expected_bytes

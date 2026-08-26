@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import Final, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from stove0_observer_protocol import (
+    ArtifactSubject,
     JsonSchemaDocument,
     ObserverContract,
     ObserverContractPayload,
+    SemanticValidationProfile,
+    SemanticValidationProfilePayload,
+    canonical_json_bytes,
 )
 
 MEDIA_METADATA_OBSERVATION_ID: Final = "stove0.media.metadata/v1"
@@ -68,11 +73,40 @@ class MediaArtifactFacts(MediaObservationModel):
     def valid_state(self) -> Self:
         if self.state == "unsupported" and self.facts:
             raise ValueError("unsupported media artifacts cannot report metadata facts")
+        if any(item.evidence.artifact_id != self.artifact_id for item in self.facts):
+            raise ValueError("media fact evidence must bind its containing artifact")
+        ordered = tuple(
+            sorted(
+                self.facts,
+                key=lambda item: (
+                    item.name,
+                    item.evidence.field,
+                    canonical_json_bytes(item.value),
+                ),
+            )
+        )
+        identities = {
+            (item.name, item.evidence.field, canonical_json_bytes(item.value))
+            for item in self.facts
+        }
+        if self.facts != ordered or len(identities) != len(self.facts):
+            raise ValueError("media facts must be unique and canonically ordered")
         return self
 
 
 class MediaMetadataFacts(MediaObservationModel):
     artifacts: tuple[MediaArtifactFacts, ...] = Field(min_length=1)
+
+    @field_validator("artifacts")
+    @classmethod
+    def canonical_artifacts(
+        cls,
+        value: tuple[MediaArtifactFacts, ...],
+    ) -> tuple[MediaArtifactFacts, ...]:
+        ids = [item.artifact_id for item in value]
+        if ids != sorted(ids) or len(ids) != len(set(ids)):
+            raise ValueError("media artifact facts must be unique and ordered")
+        return value
 
 
 MEDIA_METADATA_OPTIONS_SCHEMA = JsonSchemaDocument.from_schema(
@@ -90,11 +124,38 @@ MEDIA_METADATA_FACTS_SCHEMA = JsonSchemaDocument.from_schema(
     MediaMetadataFacts.model_json_schema(),
 )
 
+MEDIA_METADATA_FACTS_SEMANTICS = SemanticValidationProfile.seal(
+    SemanticValidationProfilePayload(
+        id="stove0.media.metadata-facts-semantics/v1",
+        rules=(
+            "stove0.media.metadata-facts.canonical-unique-evidence/v1",
+            "stove0.media.metadata-facts.complete-request-subjects/v1",
+            "stove0.media.metadata-facts.evidence-artifact-binding/v1",
+        ),
+    )
+)
+
+
+def validate_media_metadata_facts(
+    facts: Mapping[str, object],
+    subjects: Sequence[ArtifactSubject],
+) -> MediaMetadataFacts:
+    """Apply the exact semantic profile advertised by the observer contract."""
+
+    document = MediaMetadataFacts.model_validate(dict(facts))
+    if tuple(item.artifact_id for item in document.artifacts) != tuple(
+        item.id for item in subjects
+    ):
+        raise ValueError("media metadata facts must cover the exact request subjects")
+    return document
+
+
 MEDIA_METADATA_OBSERVER_CONTRACT = ObserverContract.seal(
     ObserverContractPayload(
         id=MEDIA_METADATA_OBSERVATION_ID,
         options_schema=MEDIA_METADATA_OPTIONS_SCHEMA,
         facts_schema=MEDIA_METADATA_FACTS_SCHEMA,
+        facts_semantics=MEDIA_METADATA_FACTS_SEMANTICS,
         maximum_result_bytes=1024 * 1024,
     )
 )
@@ -103,6 +164,7 @@ MEDIA_METADATA_OBSERVER_CONTRACT = ObserverContract.seal(
 __all__ = [
     "MEDIA_METADATA_FACTS_SCHEMA",
     "MEDIA_METADATA_FACTS_SCHEMA_ID",
+    "MEDIA_METADATA_FACTS_SEMANTICS",
     "MEDIA_METADATA_OBSERVATION_ID",
     "MEDIA_METADATA_OBSERVER_CONTRACT",
     "MEDIA_METADATA_OPTIONS_SCHEMA",
@@ -113,4 +175,5 @@ __all__ = [
     "MediaFactName",
     "MediaMetadataFact",
     "MediaMetadataFacts",
+    "validate_media_metadata_facts",
 ]

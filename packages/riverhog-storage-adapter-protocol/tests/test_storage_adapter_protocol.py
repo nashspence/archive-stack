@@ -9,6 +9,8 @@ from pydantic import ValidationError
 from riverhog_storage_adapter_protocol import (
     ADAPTER_PRIVATE_ASSERTION_PREFIX,
     AdapterDescriptor,
+    CompletedObjectReceipt,
+    CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
     ObjectHeadRequest,
@@ -27,6 +29,7 @@ from riverhog_storage_adapter_protocol import (
     WriteSession,
     WriteStartRequest,
     normalize_object_path,
+    validate_completed_write_response,
     validate_object_metadata_response,
     validate_read_status_response,
     validate_write_segment_set_response,
@@ -85,6 +88,55 @@ def test_write_completion_preserves_optional_digests_and_repeated_provider_token
     assert request.segments[0].segment_token == request.segments[1].segment_token
     assert request.segments[0].stored_sha256 is None
     assert "stored_sha256" not in WriteCompleteRequest.model_fields
+
+
+def test_completed_write_attestation_binds_exact_identity_and_placement() -> None:
+    request = CompletedWriteLookupRequest(
+        object_path="archives/id/volumes/pack.tar.age",
+        required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
+        expected_placement="archive",
+    )
+    receipt = CompletedObjectReceipt(
+        object_path=request.object_path,
+        revision="opaque-revision",
+        entity_token="opaque-entity",
+        stored_bytes=12,
+        verified_identity_assertions=request.required_identity_assertions,
+        verified_placement=request.expected_placement,
+        completed_at="2026-08-25T00:00:00Z",
+    )
+
+    validate_completed_write_response(request, receipt)
+    completion = WriteCompleteRequest(
+        session=WriteSession(object_path=request.object_path, write_token="opaque-write"),
+        segments=(WriteSegmentReceipt(number=1, segment_token="opaque-part", stored_bytes=12),),
+        expected_bytes=12,
+        required_identity_assertions=request.required_identity_assertions,
+        expected_placement=request.expected_placement,
+    )
+    validate_completed_write_response(completion, receipt)
+    with pytest.raises(ValueError, match="receipt differs"):
+        validate_completed_write_response(
+            completion,
+            receipt.model_copy(update={"object_path": "archives/id/other.age"}),
+        )
+    with pytest.raises(ValueError, match="completed-object bytes"):
+        validate_completed_write_response(
+            completion,
+            receipt.model_copy(update={"stored_bytes": 13}),
+        )
+    with pytest.raises(ValueError, match="identity assertions"):
+        validate_completed_write_response(
+            request,
+            receipt.model_copy(
+                update={"verified_identity_assertions": {"riverhog-format": "other/v1"}}
+            ),
+        )
+    with pytest.raises(ValueError, match="placement"):
+        validate_completed_write_response(
+            request,
+            receipt.model_copy(update={"verified_placement": "immediate"}),
+        )
 
 
 def test_small_object_digest_does_not_apply_to_resumable_writes() -> None:

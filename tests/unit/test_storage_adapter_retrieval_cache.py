@@ -15,6 +15,7 @@ from riverhog_storage_adapter_protocol import (
     CompletedWriteLookupRequest,
     DeleteObjectRequest,
     ImmutableObjectReceipt,
+    ObjectPlacement,
     ObjectReadRequest,
     SmallObjectWriteRequest,
     WriteCompleteRequest,
@@ -113,7 +114,11 @@ class _Adapter:
         assert len(content) == request.expected_bytes
         self.objects[request.session.object_path] = content
         self.revisions[request.session.object_path] = "version-1"
-        return self._completed(request.session.object_path)
+        return self._completed(
+            request.session.object_path,
+            identity_assertions=request.required_identity_assertions,
+            placement=request.expected_placement,
+        )
 
     def find_completed_write(
         self,
@@ -121,7 +126,11 @@ class _Adapter:
     ) -> AdapterCompletedObjectReceipt | None:
         if request.object_path not in self.objects:
             return None
-        return self._completed(request.object_path)
+        return self._completed(
+            request.object_path,
+            identity_assertions=request.required_identity_assertions,
+            placement=request.expected_placement,
+        )
 
     def abort_write(self, session: AdapterWriteSession) -> None:
         assert session.write_token == "write-1"
@@ -161,12 +170,20 @@ class _Adapter:
         assert request.object_prefix == "objects/"
         return 2
 
-    def _completed(self, object_path: str) -> AdapterCompletedObjectReceipt:
+    def _completed(
+        self,
+        object_path: str,
+        *,
+        identity_assertions: dict[str, str],
+        placement: ObjectPlacement,
+    ) -> AdapterCompletedObjectReceipt:
         return AdapterCompletedObjectReceipt(
             object_path=object_path,
             revision=self.revisions[object_path],
             entity_token="entity-1",
             stored_bytes=len(self.objects[object_path]),
+            verified_identity_assertions=identity_assertions,
+            verified_placement=placement,
             completed_at="2026-08-21T00:00:00Z",
         )
 

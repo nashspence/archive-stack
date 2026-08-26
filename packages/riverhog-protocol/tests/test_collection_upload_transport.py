@@ -4,10 +4,13 @@ import pytest
 from pydantic import ValidationError
 from riverhog_protocol import (
     CollectionUploadArtifactCustodyReceiptDocument,
+    CollectionUploadCreationIdentityDocument,
+    CollectionUploadCreationIdentityPayload,
     CollectionUploadCustodyObjectDocument,
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
     CollectionUploadRegistrationConstraintsDocument,
+    validate_collection_upload_artifact_custody_receipt,
     validate_collection_upload_batch_against_registration_constraints,
 )
 from riverhog_protocol.collection_workflows import DERIVATION_EVIDENCE_PATH
@@ -111,6 +114,82 @@ def test_artifact_custody_receipt_seals_exact_recovering_objects() -> None:
             receipt.model_dump_json()
         )
         == receipt
+    )
+    assert (
+        validate_collection_upload_artifact_custody_receipt(
+            42,
+            CollectionUploadFileIn.model_validate(
+                {
+                    **_file("video/source/archive.mkv"),
+                    "bytes": 123,
+                }
+            ),
+            receipt,
+        )
+        is receipt
+    )
+    artifact = CollectionUploadFileIn.model_validate(
+        {
+            **_file("video/source/archive.mkv"),
+            "bytes": 123,
+        }
+    )
+    mismatches = (
+        (43, artifact),
+        (42, artifact.model_copy(update={"path": "video/source/other.mkv"})),
+        (42, artifact.model_copy(update={"bytes": 124})),
+        (42, artifact.model_copy(update={"sha256": "c" * 64})),
+    )
+    for collection_id, changed_artifact in mismatches:
+        with pytest.raises(ValueError, match="upload file identity"):
+            validate_collection_upload_artifact_custody_receipt(
+                collection_id,
+                changed_artifact,
+                receipt,
+            )
+
+
+def test_upload_creation_identity_binds_every_create_or_resume_input() -> None:
+    base = CollectionUploadCreationIdentityPayload(
+        tags=("derived",),
+        ingest_source="transform:fixture",
+        archive_store="archive",
+        event_context={"source": "fixture"},
+        provenance_mode="omitted",
+        provenance_omission_reason="fixture source has no provenance",
+        custody_mode="custody-transfer",
+    )
+    sealed = CollectionUploadCreationIdentityDocument.seal(base)
+    alternatives = (
+        base.model_copy(update={"tags": ("other",)}),
+        base.model_copy(update={"ingest_source": "transform:other"}),
+        base.model_copy(update={"archive_store": "secondary"}),
+        base.model_copy(update={"event_context": {"source": "other"}}),
+        base.model_copy(
+            update={
+                "provenance_mode": "captured",
+                "provenance_omission_reason": None,
+            }
+        ),
+        base.model_copy(update={"provenance_omission_reason": "a different reason"}),
+        base.model_copy(update={"custody_mode": "producer-retained"}),
+    )
+
+    assert (
+        CollectionUploadCreationIdentityDocument.model_validate_json(sealed.model_dump_json())
+        == sealed
+    )
+    assert (
+        len(
+            {
+                sealed.creation_identity_sha256,
+                *(
+                    CollectionUploadCreationIdentityDocument.seal(current).creation_identity_sha256
+                    for current in alternatives
+                ),
+            }
+        )
+        == len(alternatives) + 1
     )
 
 

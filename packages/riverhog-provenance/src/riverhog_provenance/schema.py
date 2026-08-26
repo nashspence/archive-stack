@@ -9,6 +9,7 @@ from importlib.resources.abc import Traversable
 from typing import Any, cast
 
 from jsonschema import Draft202012Validator, FormatChecker
+from riverhog_provenance_contracts import index_schema_documents
 from riverhog_provenance_linux_contracts import load_schemas as load_linux_schemas
 from riverhog_provenance_macos_contracts import load_schemas as load_macos_schemas
 from riverhog_provenance_windows_contracts import load_schemas as load_windows_schemas
@@ -42,14 +43,12 @@ def load_provenance_set_schema() -> dict[str, Any]:
 
 
 def load_observer_schemas() -> dict[str, dict[str, Any]]:
-    schemas: dict[str, dict[str, Any]] = {}
-    for resource in _schema_directory().iterdir():
-        if not resource.name.endswith(".schema.json"):
-            continue
-        document = cast(dict[str, Any], json.loads(resource.read_text(encoding="utf-8")))
-        schema_id = document.get("$id")
-        if isinstance(schema_id, str):
-            schemas[schema_id] = document
+    documents = (
+        cast(dict[str, Any], json.loads(resource.read_text(encoding="utf-8")))
+        for resource in _schema_directory().iterdir()
+        if resource.name.endswith(".schema.json")
+    )
+    schemas = index_schema_documents(documents, owner="portable provenance")
     for platform_schemas in (
         load_linux_schemas(),
         load_macos_schemas(),

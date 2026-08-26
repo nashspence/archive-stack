@@ -48,6 +48,8 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             CollectionRecord(
                 id=1,
                 creation_idempotency_key="fixture-1",
+                creation_identity_sha256="e" * 64,
+                creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",

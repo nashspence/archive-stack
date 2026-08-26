@@ -67,6 +67,8 @@ def _collection(
     collection = CollectionRecord(
         id=collection_id,
         creation_idempotency_key=idempotency_key or f"collection-{collection_id}",
+        creation_identity_sha256=f"{collection_id:064x}",
+        creation_custody_mode="producer-retained",
         content_identity=str(collection_id) * 64,
         encryption_format="age-v1-scrypt",
         passphrase_id="fixture-archive-key-v1",
@@ -586,6 +588,7 @@ def test_expired_execution_upload_remains_a_deletion_blocker(
             CollectionUploadRecord(
                 collection_id=3,
                 idempotency_key=EXECUTION_ID,
+                creation_identity_sha256="a" * 64,
                 ingest_source=f"transform:{EXECUTION_ID}",
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",

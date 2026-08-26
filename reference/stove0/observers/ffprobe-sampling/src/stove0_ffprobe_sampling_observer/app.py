@@ -8,7 +8,7 @@ import importlib.metadata
 import os
 import secrets
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import uvicorn
@@ -16,6 +16,11 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPBearer
 from http_api_contracts import ErrorResponse, HealthResponse, error_payload, operation_openapi
+from stove0_media_sampling_observer_contracts import (
+    MEDIA_SAMPLING_FACTS_SEMANTICS,
+    validate_media_sampling_facts,
+)
+from stove0_observer_protocol import ObservationRequest
 from stove0_observer_support import OBSERVER_HTTP_OPERATIONS, ObserverHttpBinding
 
 from stove0_ffprobe_sampling_observer.observer import FfprobeSamplingObserver
@@ -25,11 +30,23 @@ _PUBLIC_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
 _bearer = HTTPBearer(auto_error=False)
 
 
+def _validate_observed_facts(
+    request: ObservationRequest,
+    facts: Mapping[str, object],
+) -> None:
+    validate_media_sampling_facts(facts, request.subjects)
+
+
 def create_app(*, token: str, observer: FfprobeSamplingObserver) -> FastAPI:
     credential = token.strip()
     if not credential:
         raise ValueError("FFprobe observer token must be nonempty")
-    binding = ObserverHttpBinding(observer)
+    binding = ObserverHttpBinding(
+        observer,
+        facts_semantic_validators={
+            MEDIA_SAMPLING_FACTS_SEMANTICS.profile_sha256: _validate_observed_facts
+        },
+    )
     app = FastAPI(
         title="Stove0 FFprobe sampling observer", version="1", openapi_url="/v1/openapi.json"
     )

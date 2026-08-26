@@ -51,6 +51,7 @@ from stove0_protocol import (
 )
 from stove0_target_support import (
     EFFECT_TARGET_PROTOCOL,
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     EffectPlan,
     EffectPlanPayload,
     ExternalEffectReceipt,
@@ -144,6 +145,7 @@ def _target_contracts() -> tuple[OperationContract, TargetContract, TransformPla
                     "additionalProperties": False,
                 },
             ),
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             inputs=(
                 InputArtifactContract(
                     role="fixture.source/v1",
@@ -354,6 +356,7 @@ def _active_effect_work(
                 "fixture.external-index-intent/v1",
                 {"type": "object", "additionalProperties": False},
             ),
+            intent_semantics=JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
             inputs=(
                 InputArtifactContract(
                     role="fixture.source/v1",
