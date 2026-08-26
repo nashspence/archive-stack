@@ -45,12 +45,10 @@ COPY packages/stove0-target-client packages/stove0-target-client
 COPY packages/stove0-target-protocol packages/stove0-target-protocol
 COPY packages/state-schema packages/state-schema
 COPY packages/time-formats packages/time-formats
-RUN uv sync --frozen \
-    --package stove0-server \
+RUN uv sync --frozen --package stove0-server \
     --package stove0-media-metadata-observer-contracts \
     --package stove0-media-sampling-observer-contracts \
-    --no-dev \
-    --no-editable
+    --no-dev --no-editable
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 
