@@ -112,7 +112,9 @@ class _Adapter:
             entity_token="entity-small",
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
-            completed_at="2026-08-21T00:00:00Z",
+            verified_identity_assertions=request.required_identity_assertions,
+            verified_placement=request.placement,
+            completed_at="2026-08-21T00:00:00.000000Z",
         )
 
     def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
@@ -132,7 +134,7 @@ class _Adapter:
             stored_bytes=11,
             verified_identity_assertions=request.required_identity_assertions,
             verified_placement=request.expected_placement,
-            completed_at="2026-08-21T00:00:00Z",
+            completed_at="2026-08-21T00:00:00.000000Z",
         )
 
 

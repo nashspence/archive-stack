@@ -718,7 +718,7 @@ def test_workflow_preview_rejects_observer_result_that_does_not_bind_request() -
 
     assert preview.state == "failed"
     assert preview.outcome is not None
-    assert "subjects differ" in preview.outcome.message
+    assert "does not bind" in preview.outcome.message
     assert len(riverhog.abandoned) == 1
 
 

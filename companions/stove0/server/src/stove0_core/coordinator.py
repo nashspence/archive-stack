@@ -20,7 +20,6 @@ from stove0_observer_protocol import (
     ObservationResult,
     ObserverDescriptor,
     ObserverRuntimeAuthority,
-    validate_observation_result,
 )
 from stove0_protocol import (
     ArtifactSelection,
@@ -599,7 +598,6 @@ class Stove0Coordinator:
         return self.work.record_observation(
             record.work_id,
             result,
-            descriptor=descriptor,
             expected_revision=record.revision,
         )
 
@@ -630,7 +628,6 @@ class Stove0Coordinator:
                 ),
                 descriptor=descriptor,
             )
-            validate_observation_result(result, request, descriptor)
             if result.state == "inapplicable":
                 assert result.inapplicable is not None
                 raise PlanningObservationTerminal(

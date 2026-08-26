@@ -1509,6 +1509,9 @@ def _archive_wait_status(payload: Mapping[str, object]) -> str:
     latest_failure = payload.get("latest_failure")
     if latest_failure:
         status += f", latest_failure={latest_failure}"
+    next_attempt = payload.get("archive_next_attempt_at")
+    if next_attempt:
+        status += f", archive_next_attempt_at={next_attempt}"
     return status
 
 

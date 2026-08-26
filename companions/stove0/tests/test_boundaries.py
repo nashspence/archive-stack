@@ -238,6 +238,14 @@ def test_stove0_core_does_not_import_maintained_review_semantics() -> None:
     assert "stove0_review_target_contracts" not in imports
 
 
+def test_stove0_core_does_not_define_a_second_observer_acceptance_domain() -> None:
+    assert not {
+        path
+        for path in STOVE0_CORE.rglob("*.py")
+        if "accept_observation_result" in _identifiers(path)
+    }
+
+
 def test_stove0_server_consumes_component_boundaries_only_as_protocols_and_callers() -> None:
     imports = {root for path in STOVE0_SERVER.rglob("*.py") for root in _import_roots(path)}
     assert not imports & {

@@ -151,7 +151,9 @@ class _Adapter:
             entity_token="entity-small",
             stored_bytes=len(content),
             stored_sha256=request.stored_sha256,
-            completed_at="2026-08-21T00:00:00Z",
+            verified_identity_assertions=request.required_identity_assertions,
+            verified_placement=request.placement,
+            completed_at="2026-08-21T00:00:00.000000Z",
         )
 
     def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
@@ -184,7 +186,7 @@ class _Adapter:
             stored_bytes=len(self.objects[object_path]),
             verified_identity_assertions=identity_assertions,
             verified_placement=placement,
-            completed_at="2026-08-21T00:00:00Z",
+            completed_at="2026-08-21T00:00:00.000000Z",
         )
 
 
@@ -241,7 +243,7 @@ def test_cache_verification_and_reads_keep_exact_integrity_and_range_contracts()
         revision="version-1",
         entity_token="entity",
         bytes=len(content),
-        completed_at="2026-08-21T00:00:00Z",
+        completed_at="2026-08-21T00:00:00.000000Z",
     )
     segments = (
         WriteSegmentReceipt(1, "one", 10, hashlib.sha256(b"first-part").hexdigest()),

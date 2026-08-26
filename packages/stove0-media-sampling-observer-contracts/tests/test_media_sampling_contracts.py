@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 from stove0_media_sampling_observer_contracts import (
+    MEDIA_SAMPLING_FACTS_CONFORMANCE_VECTORS,
+    MEDIA_SAMPLING_FACTS_SEMANTICS,
     MEDIA_SAMPLING_OBSERVER_CONTRACT,
     MediaSamplingArtifactFacts,
     MediaSamplingFacts,
@@ -27,10 +29,25 @@ def test_media_sampling_contract_has_no_artifact_or_duration_ceiling() -> None:
     assert MEDIA_SAMPLING_OBSERVER_CONTRACT.id == "stove0.review.media-sampling/v1"
     assert (
         MEDIA_SAMPLING_OBSERVER_CONTRACT.contract_sha256
-        == "d8019a517bd28316135887f2c56bf638121a9d5c8db58457e192b9e28e8fa74b"
+        == "3dffcfc9c44a555400cff878e6cda59e7d9722557a0905391658777eae637e0b"
     )
     assert len(facts.artifacts) == 257
     assert schema["properties"]["artifacts"].get("maxItems") is None
+
+
+def test_media_sampling_semantic_vectors_are_bound_and_executable() -> None:
+    assert MEDIA_SAMPLING_FACTS_CONFORMANCE_VECTORS.profile_id == (
+        MEDIA_SAMPLING_FACTS_SEMANTICS.id
+    )
+    assert MEDIA_SAMPLING_FACTS_SEMANTICS.conformance_vectors_sha256 == (
+        MEDIA_SAMPLING_FACTS_CONFORMANCE_VECTORS.sha256
+    )
+    for vector in MEDIA_SAMPLING_FACTS_CONFORMANCE_VECTORS.vectors:
+        if vector.accepted:
+            validate_media_sampling_facts(vector.facts, vector.subjects)
+        else:
+            with pytest.raises(ValueError):
+                validate_media_sampling_facts(vector.facts, vector.subjects)
 
 
 def test_media_sampling_semantics_bind_ranges_and_exact_request_subjects() -> None:

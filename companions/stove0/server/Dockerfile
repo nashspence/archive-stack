@@ -36,6 +36,8 @@ COPY packages/riverhog-provenance-windows-contracts packages/riverhog-provenance
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/stove0-observer-client packages/stove0-observer-client
 COPY packages/stove0-observer-protocol packages/stove0-observer-protocol
+COPY packages/stove0-media-metadata-observer-contracts packages/stove0-media-metadata-observer-contracts
+COPY packages/stove0-media-sampling-observer-contracts packages/stove0-media-sampling-observer-contracts
 COPY packages/stove0-operator-contracts packages/stove0-operator-contracts
 COPY packages/stove0-protocol packages/stove0-protocol
 COPY packages/stove0-recipe-config packages/stove0-recipe-config
@@ -43,7 +45,7 @@ COPY packages/stove0-target-client packages/stove0-target-client
 COPY packages/stove0-target-protocol packages/stove0-target-protocol
 COPY packages/state-schema packages/state-schema
 COPY packages/time-formats packages/time-formats
-RUN uv sync --frozen --package stove0-server --no-dev --no-editable
+RUN uv sync --frozen --package stove0-server --extra first-party-observer-contracts --no-dev --no-editable
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 

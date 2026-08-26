@@ -26,6 +26,7 @@ from riverhog_protocol import (
 )
 from riverhog_protocol.paths import CanonicalTag
 from riverhog_provenance_contracts import ProvenanceJournalId, ProvenanceStateId
+from time_formats import format_utc_timestamp, parse_utc_timestamp
 
 from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.common import RiverhogModel
@@ -89,6 +90,85 @@ _UPLOAD_CUSTODY_STATE_SCHEMA: list[dict[str, Any]] = [
         },
     },
 ]
+CollectionUploadArchivePhase = Literal[
+    "planning",
+    "uploading",
+    "finalization_queued",
+    "finalizing",
+    "retry_wait",
+    "completed",
+    "canceled",
+    "orphaned",
+    "discarding",
+]
+_CANONICAL_UTC_TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$"
+_UPLOAD_ARCHIVE_STATE_PHASES: dict[str, tuple[str, ...]] = {
+    "open": ("planning",),
+    "uploading": ("uploading",),
+    "finalizing": ("finalization_queued", "finalizing", "retry_wait"),
+    "finalized": ("completed",),
+    "canceled": ("canceled",),
+    "orphaned": ("orphaned",),
+    "discarding": ("discarding",),
+}
+_UPLOAD_ARCHIVE_PHASE_SCHEMA: list[dict[str, Any]] = [
+    *(
+        {
+            "if": {
+                "properties": {"state": {"const": state}},
+                "required": ["state"],
+            },
+            "then": {
+                "properties": {"archive_phase": {"enum": list(phases)}},
+                "required": ["archive_phase"],
+            },
+        }
+        for state, phases in _UPLOAD_ARCHIVE_STATE_PHASES.items()
+    ),
+    {
+        "if": {
+            "properties": {"archive_phase": {"const": "retry_wait"}},
+            "required": ["archive_phase"],
+        },
+        "then": {
+            "properties": {
+                "latest_failure": {"type": "string", "minLength": 1},
+                "archive_next_attempt_at": {"type": "string", "minLength": 1},
+            }
+        },
+    },
+    {
+        "if": {
+            "properties": {"archive_phase": {"const": "finalization_queued"}},
+            "required": ["archive_phase"],
+        },
+        "then": {
+            "properties": {
+                "latest_failure": {"type": "null"},
+                "archive_next_attempt_at": {"type": "string", "minLength": 1},
+            }
+        },
+    },
+    {
+        "if": {
+            "properties": {
+                "archive_phase": {"not": {"enum": ["finalization_queued", "retry_wait"]}}
+            },
+            "required": ["archive_phase"],
+        },
+        "then": {"properties": {"archive_next_attempt_at": {"type": "null"}}},
+    },
+]
+
+
+def _canonical_timestamp(value: str) -> str:
+    try:
+        parsed = parse_utc_timestamp(value)
+    except ValueError as exc:
+        raise ValueError("timestamp must include UTC context") from exc
+    if format_utc_timestamp(parsed) != value:
+        raise ValueError("timestamp must use the canonical UTC representation")
+    return value
 
 
 def _validate_upload_custody_state(
@@ -411,6 +491,7 @@ class CollectionUploadSessionOut(RiverhogModel):
                     },
                 },
                 *_UPLOAD_CUSTODY_STATE_SCHEMA,
+                *_UPLOAD_ARCHIVE_PHASE_SCHEMA,
             ]
         }
     )
@@ -448,15 +529,21 @@ class CollectionUploadSessionOut(RiverhogModel):
     custodied_files: int
     custodied_bytes: int
     orphaned_at: str | None
-    latest_failure: str | None = None
-    archive_phase: str | None = None
-    archive_phase_updated_at: str | None = None
+    latest_failure: str | None = Field(min_length=1, max_length=1000)
+    archive_phase: CollectionUploadArchivePhase
+    archive_phase_updated_at: str = Field(pattern=_CANONICAL_UTC_TIMESTAMP_PATTERN)
+    archive_next_attempt_at: str | None = Field(pattern=_CANONICAL_UTC_TIMESTAMP_PATTERN)
     archive_storage_prefix: str | None = None
     archive_uploaded_bytes: int | None = None
     archive_total_bytes: int | None = None
     archive_uploaded_units: int | None = None
     archive_total_units: int | None = None
     collection: CollectionSummaryOut | None
+
+    @field_validator("archive_phase_updated_at", "archive_next_attempt_at")
+    @classmethod
+    def canonical_archive_timestamp(cls, value: str | None) -> str | None:
+        return _canonical_timestamp(value) if value is not None else None
 
     @model_validator(mode="after")
     def validate_terminal_evidence(self) -> CollectionUploadSessionOut:
@@ -480,6 +567,16 @@ class CollectionUploadSessionOut(RiverhogModel):
             upload_state_expires_at=self.upload_state_expires_at,
             orphaned_at=self.orphaned_at,
         )
+        if self.archive_phase == "retry_wait":
+            if self.latest_failure is None or self.archive_next_attempt_at is None:
+                raise ValueError("retry-wait archive phase requires failure and retry schedule")
+        elif self.archive_phase == "finalization_queued":
+            if self.latest_failure is not None or self.archive_next_attempt_at is None:
+                raise ValueError("queued finalization requires only its eligibility time")
+        elif self.archive_next_attempt_at is not None:
+            raise ValueError("only queued or retry-wait archive phases may be scheduled")
+        if self.archive_phase not in _UPLOAD_ARCHIVE_STATE_PHASES[self.state]:
+            raise ValueError("archive phase differs from collection upload state")
         return self
 
 

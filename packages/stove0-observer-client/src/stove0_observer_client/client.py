@@ -12,7 +12,9 @@ from stove0_observer_protocol import (
     ObservationInvocation,
     ObservationResult,
     ObserverDescriptor,
-    validate_observation_result,
+    SemanticValidatorProvider,
+    accept_observation_result,
+    require_semantic_validators,
 )
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -46,6 +48,7 @@ class ContentObserverClient:
         token: str | None = None,
         timeout: float | None = 300.0,
         allow_insecure_http: bool = False,
+        semantic_validators: SemanticValidatorProvider | None = None,
     ) -> None:
         self.base_url = safe_http_base_url(
             base_url,
@@ -54,9 +57,18 @@ class ContentObserverClient:
         )
         self.timeout = timeout
         self.token = token.strip() if token and token.strip() else None
+        self.semantic_validators = semantic_validators
 
     def descriptor(self) -> ObserverDescriptor:
-        return self._request("GET", "/v1/observer", ObserverDescriptor)
+        descriptor = self._request("GET", "/v1/observer", ObserverDescriptor)
+        try:
+            require_semantic_validators(self.semantic_validators, descriptor)
+        except ValueError as exc:
+            raise ObserverProtocolError(
+                "observer semantic acceptance profile is not enabled",
+                code="unsupported_observer_semantics",
+            ) from exc
+        return descriptor
 
     def observe(
         self,
@@ -71,7 +83,12 @@ class ContentObserverClient:
             invocation,
         )
         try:
-            validate_observation_result(result, invocation.request, descriptor)
+            accept_observation_result(
+                result,
+                invocation.request,
+                descriptor,
+                self.semantic_validators,
+            )
         except (TypeError, ValueError) as exc:
             raise ObserverProtocolError(
                 "observer returned a response inconsistent with the invocation",

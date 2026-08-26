@@ -2012,10 +2012,14 @@ version = "0.1.0"
 source = { editable = "packages/riverhog-storage-adapter-protocol" }
 dependencies = [
     { name = "pydantic" },
+    { name = "time-formats" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.7,<3.0" }]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
+    { name = "time-formats", editable = "packages/time-formats" },
+]
 
 [[package]]
 name = "riverhog-storage-adapter-s3-support"
@@ -2558,12 +2562,14 @@ version = "0.1.0"
 source = { editable = "packages/stove0-observer-protocol" }
 dependencies = [
     { name = "jsonschema" },
+    { name = "pydantic" },
     { name = "stove0-protocol" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "jsonschema", specifier = ">=4.25,<5.0" },
+    { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "stove0-protocol", editable = "packages/stove0-protocol" },
 ]
 
@@ -2861,6 +2867,12 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+first-party-observer-contracts = [
+    { name = "stove0-media-metadata-observer-contracts" },
+    { name = "stove0-media-sampling-observer-contracts" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.18.5,<2.0" },
@@ -2873,6 +2885,8 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
     { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "state-schema", editable = "packages/state-schema" },
+    { name = "stove0-media-metadata-observer-contracts", marker = "extra == 'first-party-observer-contracts'", editable = "packages/stove0-media-metadata-observer-contracts" },
+    { name = "stove0-media-sampling-observer-contracts", marker = "extra == 'first-party-observer-contracts'", editable = "packages/stove0-media-sampling-observer-contracts" },
     { name = "stove0-observer-client", editable = "packages/stove0-observer-client" },
     { name = "stove0-observer-protocol", editable = "packages/stove0-observer-protocol" },
     { name = "stove0-operator-contracts", editable = "packages/stove0-operator-contracts" },
@@ -2883,6 +2897,7 @@ requires-dist = [
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
+provides-extras = ["first-party-observer-contracts"]
 
 [[package]]
 name = "stove0-target-client"

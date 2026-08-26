@@ -588,7 +588,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: 8ba39e38fd400b4c5f172e7ec0dc4229692840d1e398de6b843a99be07799fc2
+    contract_sha256: e7c4c52d0913f738ea813949066cd59fba6e1c680f5d54d9795404de03ee0435
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1
@@ -636,7 +636,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: 8ba39e38fd400b4c5f172e7ec0dc4229692840d1e398de6b843a99be07799fc2
+    contract_sha256: e7c4c52d0913f738ea813949066cd59fba6e1c680f5d54d9795404de03ee0435
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1
@@ -798,7 +798,7 @@ recipes:
   observers:
   - registration_id: ffprobe-sampling
     contract_id: stove0.review.media-sampling/v1
-    contract_sha256: d8019a517bd28316135887f2c56bf638121a9d5c8db58457e192b9e28e8fa74b
+    contract_sha256: 3dffcfc9c44a555400cff878e6cda59e7d9722557a0905391658777eae637e0b
     artifact_rules:
     - glob: '*'
       role: stove0.review.source/v1
@@ -842,7 +842,7 @@ recipes:
   observers:
   - registration_id: ffprobe-sampling
     contract_id: stove0.review.media-sampling/v1
-    contract_sha256: d8019a517bd28316135887f2c56bf638121a9d5c8db58457e192b9e28e8fa74b
+    contract_sha256: 3dffcfc9c44a555400cff878e6cda59e7d9722557a0905391658777eae637e0b
     artifact_rules:
     - glob: '*'
       role: stove0.review.source/v1

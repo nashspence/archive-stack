@@ -19,6 +19,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from time_formats import format_utc_timestamp, parse_utc_timestamp
 
 STORAGE_ADAPTER_PROTOCOL: Literal["riverhog-storage-adapter/v1"] = "riverhog-storage-adapter/v1"
 ADAPTER_PRIVATE_ASSERTION_PREFIX = "riverhog-adapter-"
@@ -182,11 +183,30 @@ class WriteSegmentReceipt(StorageAdapterModel):
     stored_sha256: Sha256 | None = None
 
 
-def _canonical_segments(
+def _listed_segments(
+    value: tuple[WriteSegmentReceipt, ...],
+) -> tuple[WriteSegmentReceipt, ...]:
+    numbers = [segment.number for segment in value]
+    if numbers != sorted(numbers) or len(numbers) != len(set(numbers)):
+        raise ValueError("listed write segments must be unique and strictly ordered")
+    return value
+
+
+def _completion_segments(
     value: tuple[WriteSegmentReceipt, ...],
 ) -> tuple[WriteSegmentReceipt, ...]:
     if [segment.number for segment in value] != list(range(1, len(value) + 1)):
         raise ValueError("write segments must be contiguous and ordered from one")
+    return value
+
+
+def _canonical_utc_timestamp(value: str) -> str:
+    try:
+        parsed = parse_utc_timestamp(value)
+    except ValueError as exc:
+        raise ValueError("timestamp must include UTC context") from exc
+    if format_utc_timestamp(parsed) != value:
+        raise ValueError("timestamp must use the canonical UTC representation")
     return value
 
 
@@ -200,7 +220,7 @@ class WriteSegmentSet(StorageAdapterModel):
         cls,
         value: tuple[WriteSegmentReceipt, ...],
     ) -> tuple[WriteSegmentReceipt, ...]:
-        return _canonical_segments(value)
+        return _listed_segments(value)
 
 
 class WriteSegmentRequest(StorageAdapterModel):
@@ -222,7 +242,7 @@ class WriteCompleteRequest(StorageAdapterModel):
         cls,
         value: tuple[WriteSegmentReceipt, ...],
     ) -> tuple[WriteSegmentReceipt, ...]:
-        return _canonical_segments(value)
+        return _completion_segments(value)
 
     @field_validator("required_identity_assertions")
     @classmethod
@@ -271,6 +291,11 @@ class CompletedObjectReceipt(StorageAdapterModel):
     def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
         return _canonical_identity_assertions(value)
 
+    @field_validator("completed_at")
+    @classmethod
+    def canonical_completed_at(cls, value: str) -> str:
+        return _canonical_utc_timestamp(value)
+
 
 class SmallObjectWriteRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
@@ -298,12 +323,24 @@ class ImmutableObjectReceipt(StorageAdapterModel):
     entity_token: str | None = Field(default=None, min_length=1, max_length=4000)
     stored_bytes: int = Field(ge=0)
     stored_sha256: Sha256
+    verified_identity_assertions: RequiredIdentityAssertions
+    verified_placement: ObjectPlacement
     completed_at: str = Field(min_length=1, max_length=100)
 
     @field_validator("object_path")
     @classmethod
     def canonical_path(cls, value: str) -> str:
         return normalize_object_path(value)
+
+    @field_validator("verified_identity_assertions")
+    @classmethod
+    def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
+        return _canonical_identity_assertions(value)
+
+    @field_validator("completed_at")
+    @classmethod
+    def canonical_completed_at(cls, value: str) -> str:
+        return _canonical_utc_timestamp(value)
 
 
 class ObjectMetadataReceipt(StorageAdapterModel):
@@ -314,6 +351,7 @@ class ObjectMetadataReceipt(StorageAdapterModel):
     stored_bytes: int = Field(ge=0)
     stored_sha256: Sha256 | None = None
     required_identity_assertions: RequiredIdentityAssertions
+    verified_placement: ObjectPlacement
     completed_at: str = Field(min_length=1, max_length=100)
 
     @field_validator("object_path")
@@ -325,6 +363,11 @@ class ObjectMetadataReceipt(StorageAdapterModel):
     @classmethod
     def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
         return _canonical_identity_assertions(value)
+
+    @field_validator("completed_at")
+    @classmethod
+    def canonical_completed_at(cls, value: str) -> str:
+        return _canonical_utc_timestamp(value)
 
 
 class ObjectHeadRequest(StorageAdapterModel):
@@ -387,10 +430,20 @@ class ReadRequested(StorageAdapterModel):
     state: Literal["requested"] = "requested"
     estimated_ready_at: str | None = Field(default=None, min_length=1, max_length=100)
 
+    @field_validator("estimated_ready_at")
+    @classmethod
+    def canonical_estimated_ready_at(cls, value: str | None) -> str | None:
+        return _canonical_utc_timestamp(value) if value is not None else None
+
 
 class ReadReady(StorageAdapterModel):
     state: Literal["ready"] = "ready"
     available_until: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @field_validator("available_until")
+    @classmethod
+    def canonical_available_until(cls, value: str | None) -> str | None:
+        return _canonical_utc_timestamp(value) if value is not None else None
 
 
 class ReadExpired(StorageAdapterModel):
@@ -425,6 +478,11 @@ class AbortIncompleteWritesRequest(StorageAdapterModel):
     @classmethod
     def canonical_prefix(cls, value: str) -> str:
         return normalize_object_path(value, allow_prefix=True)
+
+    @field_validator("initiated_before")
+    @classmethod
+    def canonical_initiated_before(cls, value: str) -> str:
+        return _canonical_utc_timestamp(value)
 
 
 class StorageAdapterErrorBody(StorageAdapterModel):
@@ -468,9 +526,14 @@ def validate_write_segment_response(
 def validate_write_segment_set_response(
     request: WriteSession,
     response: WriteSegmentSet,
+    descriptor: AdapterDescriptor,
 ) -> None:
     if response.session != request:
         raise ValueError("adapter segment set differs from its write session")
+    if descriptor.maximum_segment_count is not None and any(
+        segment.number > descriptor.maximum_segment_count for segment in response.segments
+    ):
+        raise ValueError("adapter segment set exceeds its advertised segment-count limit")
 
 
 def validate_completed_write_response(
@@ -503,6 +566,8 @@ def validate_small_object_response(
         response.object_path != request.object_path
         or response.stored_bytes != request.stored_bytes
         or response.stored_sha256 != request.stored_sha256
+        or response.verified_identity_assertions != request.required_identity_assertions
+        or response.verified_placement != request.placement
     ):
         raise ValueError("adapter immutable-object receipt differs from its request")
 
@@ -515,6 +580,8 @@ def validate_object_metadata_response(
         raise ValueError("adapter object metadata differs from its request")
     if request.object.revision is not None and response.revision != request.object.revision:
         raise ValueError("adapter object metadata revision differs from its request")
+    if response.verified_placement != request.expected_placement:
+        raise ValueError("adapter object metadata placement differs from its request")
 
 
 def validate_read_status_response(

@@ -387,7 +387,6 @@ def test_one_record_carries_observation_plan_execution_verification_and_completi
     record = service.record_observation(
         work.work_id,
         result,
-        descriptor=descriptor,
         expected_revision=record.revision,
     )
     assert record.phase == "planning"
@@ -676,7 +675,6 @@ def test_terminal_observation_results_converge_without_entering_planning(
     record = service.record_observation(
         work.work_id,
         result,
-        descriptor=descriptor,
         expected_revision=record.revision,
     )
 

@@ -135,7 +135,7 @@ class MemoryAdapter:
             stored_bytes=len(content),
             verified_identity_assertions=request.required_identity_assertions,
             verified_placement=request.expected_placement,
-            completed_at="2026-08-21T00:00:00Z",
+            completed_at="2026-08-21T00:00:00.000000Z",
         )
 
     def find_completed_write(
@@ -155,7 +155,7 @@ class MemoryAdapter:
             stored_bytes=len(content),
             verified_identity_assertions=metadata,
             verified_placement=placement,
-            completed_at="2026-08-21T00:00:00Z",
+            completed_at="2026-08-21T00:00:00.000000Z",
         )
 
     def abort_write(self, session: WriteSession) -> None:
@@ -181,7 +181,9 @@ class MemoryAdapter:
                 entity_token="small-token",
                 stored_bytes=len(existing_content),
                 stored_sha256=hashlib.sha256(existing_content).hexdigest(),
-                completed_at="2026-08-21T00:00:00Z",
+                verified_identity_assertions=request.required_identity_assertions,
+                verified_placement=request.placement,
+                completed_at="2026-08-21T00:00:00.000000Z",
             )
         self.objects[request.object_path] = (
             content,
@@ -196,7 +198,9 @@ class MemoryAdapter:
             entity_token="small-token",
             stored_bytes=len(content),
             stored_sha256=hashlib.sha256(content).hexdigest(),
-            completed_at="2026-08-21T00:00:00Z",
+            verified_identity_assertions=request.required_identity_assertions,
+            verified_placement=request.placement,
+            completed_at="2026-08-21T00:00:00.000000Z",
         )
 
     def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None:
@@ -217,7 +221,8 @@ class MemoryAdapter:
                 else None
             ),
             required_identity_assertions=metadata,
-            completed_at="2026-08-21T00:00:00Z",
+            verified_placement=request.expected_placement,
+            completed_at="2026-08-21T00:00:00.000000Z",
         )
 
     def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
@@ -714,6 +719,7 @@ def test_consumer_runnable_conformance_uses_only_the_public_http_contract() -> N
             "exact-metadata",
             "exact-range",
             "identity-conflict",
+            "sparse-write-reconciliation",
             "write-continuation-replay",
             "write-reconciliation",
             "write-completion-recovery",

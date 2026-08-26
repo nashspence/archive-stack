@@ -1,0 +1,111 @@
+{
+  "format": "stove0-semantic-facts-conformance/v1",
+  "profile_id": "stove0.media.metadata-facts-semantics/v1",
+  "vectors": [
+    {
+      "accepted": true,
+      "facts": {
+        "artifacts": [
+          {
+            "artifact_id": "camera",
+            "facts": [
+              {
+                "evidence": {
+                  "artifact_id": "camera",
+                  "field": "EXIF:Model"
+                },
+                "name": "device-model",
+                "value": "fixture-camera"
+              }
+            ],
+            "state": "observed"
+          }
+        ]
+      },
+      "id": "accepted-exact-subject-and-evidence",
+      "options": {},
+      "subjects": [
+        {
+          "bytes": 7,
+          "collection": {
+            "archive_root_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "collection_id": 1,
+            "content_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "id": "camera",
+          "media_type": "video/mp4",
+          "path": "camera.mp4",
+          "role": "stove0.source/v1",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ]
+    },
+    {
+      "accepted": false,
+      "facts": {
+        "artifacts": [
+          {
+            "artifact_id": "camera",
+            "facts": [
+              {
+                "evidence": {
+                  "artifact_id": "other",
+                  "field": "EXIF:Model"
+                },
+                "name": "device-model",
+                "value": "fixture-camera"
+              }
+            ],
+            "state": "observed"
+          }
+        ]
+      },
+      "id": "rejected-cross-artifact-evidence",
+      "options": {},
+      "subjects": [
+        {
+          "bytes": 7,
+          "collection": {
+            "archive_root_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "collection_id": 1,
+            "content_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "id": "camera",
+          "media_type": "video/mp4",
+          "path": "camera.mp4",
+          "role": "stove0.source/v1",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ]
+    },
+    {
+      "accepted": false,
+      "facts": {
+        "artifacts": [
+          {
+            "artifact_id": "other",
+            "facts": [],
+            "state": "unsupported"
+          }
+        ]
+      },
+      "id": "rejected-incomplete-request-subjects",
+      "options": {},
+      "subjects": [
+        {
+          "bytes": 7,
+          "collection": {
+            "archive_root_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "collection_id": 1,
+            "content_identity": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "id": "camera",
+          "media_type": "video/mp4",
+          "path": "camera.mp4",
+          "role": "stove0.source/v1",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ]
+    }
+  ]
+}

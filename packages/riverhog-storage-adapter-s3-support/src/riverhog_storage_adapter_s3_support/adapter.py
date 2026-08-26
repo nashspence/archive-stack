@@ -406,7 +406,12 @@ class S3StorageAdapter:
         persisted = self._head(request.object_path)
         if persisted is None:
             raise RuntimeError("S3 put succeeded but the object is not readable")
-        receipt = self._immutable_receipt(request.object_path, persisted)
+        receipt = self._immutable_receipt(
+            request.object_path,
+            persisted,
+            verified_identity_assertions=request.required_identity_assertions,
+            verified_placement=request.placement,
+        )
         if (
             receipt.stored_bytes != request.stored_bytes
             or receipt.stored_sha256 != request.stored_sha256
@@ -436,6 +441,7 @@ class S3StorageAdapter:
             required_identity_assertions={
                 key: value for key, value in metadata.items() if key not in _RESERVED_METADATA
             },
+            verified_placement=request.expected_placement,
             completed_at=_provider_timestamp(head),
         )
 
@@ -595,7 +601,12 @@ class S3StorageAdapter:
         ):
             return None
         self._validate_placement(head, request.placement)
-        receipt = self._immutable_receipt(request.object_path, head)
+        receipt = self._immutable_receipt(
+            request.object_path,
+            head,
+            verified_identity_assertions=request.required_identity_assertions,
+            verified_placement=request.placement,
+        )
         if (
             receipt.stored_bytes != request.stored_bytes
             or receipt.stored_sha256 != request.stored_sha256
@@ -698,6 +709,9 @@ class S3StorageAdapter:
     def _immutable_receipt(
         object_path: str,
         head: dict[str, Any],
+        *,
+        verified_identity_assertions: dict[str, str],
+        verified_placement: ObjectPlacement,
     ) -> ImmutableObjectReceipt:
         stored_sha256 = _normalized_metadata(head).get(_STORED_SHA256_METADATA, "")
         if not _valid_sha256(stored_sha256):
@@ -708,6 +722,8 @@ class S3StorageAdapter:
             entity_token=_provider_entity_token(head),
             stored_bytes=int(str(head["ContentLength"])),
             stored_sha256=stored_sha256,
+            verified_identity_assertions=verified_identity_assertions,
+            verified_placement=verified_placement,
             completed_at=_provider_timestamp(head),
         )
 

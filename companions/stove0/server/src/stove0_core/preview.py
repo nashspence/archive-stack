@@ -15,7 +15,6 @@ from stove0_observer_protocol import (
     ObservationInvocation,
     ObservationRequest,
     ObserverRuntimeAuthority,
-    validate_observation_result,
 )
 from stove0_protocol import (
     BranchSetDecision,
@@ -210,7 +209,6 @@ class WorkflowPreviewService:
                 ),
                 descriptor=descriptor,
             )
-            validate_observation_result(result, observation_request, descriptor)
             if result.state == "inapplicable":
                 assert result.inapplicable is not None
                 raise PlanningObservationTerminal(

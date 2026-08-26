@@ -823,7 +823,9 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert queued["state"] == "finalizing"
     assert queued["upload_state_expires_at"] is None
     assert queued["orphaned_at"] is None
-    assert queued["archive_phase"] == "retry_wait"
+    assert queued["archive_phase"] == "finalization_queued"
+    assert queued["latest_failure"] is None
+    assert queued["archive_next_attempt_at"] is not None
     assert service.process_due_finalizations() == 1
     finalized = service.get(collection_id)
     assert finalized["state"] == "finalized"
@@ -1318,6 +1320,7 @@ def test_startup_reconciles_interrupted_finalization_from_its_durable_checkpoint
     assert recovered["state"] == "finalizing"
     assert recovered["archive_phase"] == "retry_wait"
     assert recovered["latest_failure"] == "archive finalization interrupted before completion"
+    assert recovered["archive_next_attempt_at"] is not None
     assert service.process_due_finalizations() == 1
     assert service.get(collection_id)["state"] == "finalized"
 
@@ -1361,6 +1364,7 @@ def test_due_finalization_retries_a_temporary_publication_failure(tmp_path: Path
     assert retry_wait["state"] == "finalizing"
     assert retry_wait["archive_phase"] == "retry_wait"
     assert retry_wait["latest_failure"] == ("RuntimeError: temporary proof service failure")
+    assert retry_wait["archive_next_attempt_at"] is not None
     with session_scope(make_session_factory(config.database_url)) as session:
         upload = session.get(CollectionUploadRecord, collection_id)
         assert upload is not None

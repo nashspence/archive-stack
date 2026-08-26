@@ -17,7 +17,7 @@ x-stove0-environment: &stove0-environment
   STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS: ${STOVE0_OPERATIONAL_STATE_RETENTION_SECONDS:-2592000}
   RIVERHOG_BASE_URL: ${STOVE0_RIVERHOG_BASE_URL:-http://app:8000}
   RIVERHOG_ALLOW_INSECURE_HTTP: "true"
-  STOVE0_OBSERVERS_JSON: '{"exiftool":{"base_url":"http://exiftool-observer:8080","token_env":"STOVE0_EXIFTOOL_OBSERVER_TOKEN","allow_insecure_http":true},"ffprobe-sampling":{"base_url":"http://ffprobe-sampling-observer:8080","token_env":"STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN","allow_insecure_http":true}}'
+  STOVE0_OBSERVERS_JSON: '{"exiftool":{"base_url":"http://exiftool-observer:8080","token_env":"STOVE0_EXIFTOOL_OBSERVER_TOKEN","allow_insecure_http":true,"semantic_validator_providers":["media-metadata"]},"ffprobe-sampling":{"base_url":"http://ffprobe-sampling-observer:8080","token_env":"STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN","allow_insecure_http":true,"semantic_validator_providers":["media-sampling"]}}'
   STOVE0_TARGETS_JSON: '{"nvenc-av1-opus":{"base_url":"http://nvenc-av1-opus-target:8080","token_env":"STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN","allow_insecure_http":true},"opus":{"base_url":"http://opus-target:8080","token_env":"STOVE0_OPUS_TARGET_TOKEN","allow_insecure_http":true},"review":{"base_url":"http://review-target:8080","token_env":"STOVE0_REVIEW_TARGET_TOKEN","allow_insecure_http":true},"review-effect":{"base_url":"http://review-effect-target:8080","token_env":"STOVE0_REVIEW_EFFECT_TARGET_TOKEN","allow_insecure_http":true}}'
   STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE: /run/secrets/stove0_ffprobe_sampling_observer_token
   STOVE0_EXIFTOOL_OBSERVER_TOKEN_FILE: /run/secrets/stove0_exiftool_observer_token

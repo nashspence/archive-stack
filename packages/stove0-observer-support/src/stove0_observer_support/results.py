@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import JsonValue
 from stove0_observer_protocol import (
     ObservationFailure,
@@ -13,9 +15,9 @@ from stove0_observer_protocol import (
     ObservationResultPayload,
     ObserverDescriptor,
     ObserverImplementation,
+    canonical_json_bytes,
     canonical_json_sha256,
     validate_observation_request,
-    validate_observation_result,
 )
 
 
@@ -39,6 +41,10 @@ class ObservationResultBuilder:
         execution_evidence: Mapping[str, JsonValue] | None = None,
     ) -> ObservationResult:
         document = dict(facts)
+        try:
+            Draft202012Validator(self.support.facts_schema.document).validate(document)
+        except JsonSchemaValidationError as exc:
+            raise ValueError("observation facts violate their advertised schema") from exc
         return self._seal(
             state="observed",
             facts_schema=self.support.facts_schema,
@@ -103,7 +109,10 @@ class ObservationResultBuilder:
         }
         payload.update(updates)
         result = ObservationResult.seal(ObservationResultPayload.model_validate(payload))
-        validate_observation_result(result, self.request, self.descriptor)
+        if len(canonical_json_bytes(result.model_dump(mode="json", exclude_none=True))) > (
+            self.request.maximum_result_bytes
+        ):
+            raise ValueError("observation result exceeds the requested result-size limit")
         return result
 
 

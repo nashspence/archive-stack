@@ -633,7 +633,11 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
         REPO / "reference/riverhog/storage/backblaze/Dockerfile": (
             "riverhog-storage-adapter-backblaze"
         ),
-        REPO / "companions/stove0/server/Dockerfile": "stove0-server",
+        REPO / "companions/stove0/server/Dockerfile": (
+            "stove0-server",
+            "stove0-media-metadata-observer-contracts",
+            "stove0-media-sampling-observer-contracts",
+        ),
         REPO / "reference/stove0/observers/exiftool/Dockerfile": ("stove0-exiftool-observer"),
         REPO / "reference/stove0/observers/ffprobe-sampling/Dockerfile": (
             "stove0-ffprobe-sampling-observer"

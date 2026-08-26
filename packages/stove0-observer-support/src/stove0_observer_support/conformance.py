@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from jsonschema import Draft202012Validator
-from stove0_observer_client.client import ContentObserverClient
+from stove0_observer_client import ContentObserverClient, load_semantic_validator_registry
 from stove0_observer_protocol import (
     ObservationInvocation,
     ObserverDescriptor,
+    SemanticValidatorProvider,
+    accept_observation_result,
     canonical_json_bytes,
-    validate_observation_result,
 )
 
 
@@ -33,6 +34,7 @@ def conformance_report(
     client: ObserverClient,
     *,
     invocation: ObservationInvocation | None = None,
+    semantic_validators: SemanticValidatorProvider | None = None,
 ) -> dict[str, Any]:
     descriptor = client.descriptor()
     report: dict[str, Any] = {
@@ -49,6 +51,11 @@ def conformance_report(
                 "contract_sha256": support.contract_sha256,
                 "options_schema_sha256": support.options_schema.sha256,
                 "facts_schema_sha256": support.facts_schema.sha256,
+                "facts_semantics_id": support.facts_semantics.id,
+                "facts_semantics_sha256": support.facts_semantics.profile_sha256,
+                "facts_semantics_conformance_vectors_sha256": (
+                    support.facts_semantics.conformance_vectors_sha256
+                ),
                 "preferred_subject_batch_size": support.preferred_subject_batch_size,
                 "maximum_result_bytes": support.maximum_result_bytes,
             }
@@ -63,7 +70,12 @@ def conformance_report(
         raise RuntimeError("invocation does not bind the observer's published contract")
     Draft202012Validator(support.options_schema.document).validate(request.options)
     result = client.observe(invocation, descriptor=descriptor)
-    validate_observation_result(result, request, descriptor)
+    accept_observation_result(
+        result,
+        request,
+        descriptor,
+        semantic_validators,
+    )
     if result.state == "observed":
         Draft202012Validator(support.facts_schema.document).validate(result.facts)
     if len(canonical_json_bytes(result.model_dump(mode="json", exclude_none=True))) > (
@@ -85,6 +97,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="optional JSON ObservationInvocation used for a complete black-box check",
     )
+    parser.add_argument(
+        "--semantic-validator-provider",
+        action="append",
+        default=[],
+        help="installed contract-validator provider entry point to enable (repeatable)",
+    )
     return parser
 
 
@@ -95,9 +113,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         invocation = ObservationInvocation.model_validate_json(
             args.invocation.read_text(encoding="utf-8")
         )
+    semantic_validators = load_semantic_validator_registry(args.semantic_validator_provider)
     report = conformance_report(
-        ContentObserverClient(args.base_url),
+        ContentObserverClient(
+            args.base_url,
+            semantic_validators=semantic_validators,
+        ),
         invocation=invocation,
+        semantic_validators=semantic_validators,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

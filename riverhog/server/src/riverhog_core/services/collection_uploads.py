@@ -1092,6 +1092,14 @@ class SqlAlchemyCollectionUploadService:
             if any(current.state == "sealed" for current in upload.archive_objects):
                 raise Conflict("collection upload with sealed archive volumes cannot be canceled")
             payload = _upload_payload(session, upload, state="canceled")
+            payload.update(
+                {
+                    "latest_failure": None,
+                    "archive_phase": "canceled",
+                    "archive_phase_updated_at": utc_timestamp_now(),
+                    "archive_next_attempt_at": None,
+                }
+            )
             store_name = upload.archive_store
             prefix = upload.archive_storage_prefix
             passphrase_id = upload.passphrase_id
@@ -1397,11 +1405,13 @@ class SqlAlchemyCollectionUploadService:
                 if not interrupted and not _ready_for_finalization(upload):
                     continue
                 upload.state = "finalizing"
-                upload.archive_phase = "retry_wait"
+                upload.archive_phase = "retry_wait" if interrupted else "finalization_queued"
                 upload.archive_next_attempt_at = now
                 upload.archive_phase_updated_at = now
                 if interrupted:
                     upload.archive_failure = "archive finalization interrupted before completion"
+                else:
+                    upload.archive_failure = None
                 requeued += 1
         return requeued
 
@@ -1480,7 +1490,7 @@ class SqlAlchemyCollectionUploadService:
                 select(CollectionUploadRecord)
                 .where(
                     CollectionUploadRecord.state == "finalizing",
-                    CollectionUploadRecord.archive_phase == "retry_wait",
+                    CollectionUploadRecord.archive_phase.in_(("finalization_queued", "retry_wait")),
                     CollectionUploadRecord.archive_next_attempt_at.is_not(None),
                     CollectionUploadRecord.archive_next_attempt_at <= now,
                 )
@@ -2384,9 +2394,10 @@ def _ready_for_finalization(upload: CollectionUploadRecord) -> bool:
 
 def _mark_finalization_ready(upload: CollectionUploadRecord, *, now: str) -> None:
     upload.state = "finalizing"
-    upload.archive_phase = "retry_wait"
+    upload.archive_phase = "finalization_queued"
     upload.archive_phase_updated_at = now
     upload.archive_next_attempt_at = now
+    upload.archive_failure = None
 
 
 def _registration_constraints_payload(policy: CollectionVolumePolicy) -> dict[str, int]:
@@ -2870,6 +2881,7 @@ def _upload_payload(
         "latest_failure": upload.archive_failure,
         "archive_phase": upload.archive_phase,
         "archive_phase_updated_at": upload.archive_phase_updated_at,
+        "archive_next_attempt_at": upload.archive_next_attempt_at,
         "archive_storage_prefix": upload.archive_storage_prefix,
         "archive_uploaded_bytes": int(archive_progress[0]),
         "archive_total_bytes": None,
@@ -2944,6 +2956,7 @@ def _finalized_payload(
         "latest_failure": None,
         "archive_phase": "completed",
         "archive_phase_updated_at": copy.last_verified_at if copy else None,
+        "archive_next_attempt_at": None,
         "archive_storage_prefix": copy.archive_storage_prefix if copy else None,
         "archive_uploaded_bytes": stored_bytes,
         "archive_total_bytes": stored_bytes,

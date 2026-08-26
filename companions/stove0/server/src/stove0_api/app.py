@@ -51,7 +51,7 @@ from stove0_core import (
     scheduler_role,
     stove0_state_schema,
 )
-from stove0_observer_client import ContentObserverClient
+from stove0_observer_client import ContentObserverClient, load_semantic_validator_registry
 from stove0_operator_contracts import (
     ArtifactSelectionPage,
     EvaluationPage,
@@ -130,6 +130,9 @@ class Stove0Composition:
                     value.base_url,
                     token=value.token,
                     allow_insecure_http=value.allow_insecure_http,
+                    semantic_validators=load_semantic_validator_registry(
+                        value.semantic_validator_providers
+                    ),
                 )
                 for key, value in config.observers.items()
             }

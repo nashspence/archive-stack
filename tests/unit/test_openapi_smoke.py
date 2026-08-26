@@ -323,6 +323,29 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
     assert "created_at" in schemas["CollectionSummaryOut"]["required"]
     assert "remote_storage_bytes" in schemas["CollectionSummaryOut"]["required"]
     assert "created_at" in schemas["CollectionUploadSessionOut"]["required"]
+    assert {
+        "archive_phase",
+        "archive_phase_updated_at",
+        "archive_next_attempt_at",
+        "latest_failure",
+    } <= set(schemas["CollectionUploadSessionOut"]["properties"])
+    assert {
+        "archive_phase",
+        "archive_phase_updated_at",
+        "archive_next_attempt_at",
+        "latest_failure",
+    } <= set(schemas["CollectionUploadSessionOut"]["required"])
+    assert schemas["CollectionUploadSessionOut"]["properties"]["archive_phase"]["enum"] == [
+        "planning",
+        "uploading",
+        "finalization_queued",
+        "finalizing",
+        "retry_wait",
+        "completed",
+        "canceled",
+        "orphaned",
+        "discarding",
+    ]
     for schema in (
         "CollectionSummaryOut",
         "CollectionUploadListItemOut",

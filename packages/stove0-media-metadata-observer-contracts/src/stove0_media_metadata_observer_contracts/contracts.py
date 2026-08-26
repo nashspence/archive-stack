@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from importlib.resources import files
 from typing import Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from stove0_observer_protocol import (
     ArtifactSubject,
     JsonSchemaDocument,
+    ObservationRequest,
     ObserverContract,
     ObserverContractPayload,
+    SemanticFactsConformanceVectors,
     SemanticValidationProfile,
     SemanticValidationProfilePayload,
+    SemanticValidatorBinding,
     canonical_json_bytes,
 )
 
@@ -124,6 +128,12 @@ MEDIA_METADATA_FACTS_SCHEMA = JsonSchemaDocument.from_schema(
     MediaMetadataFacts.model_json_schema(),
 )
 
+MEDIA_METADATA_FACTS_CONFORMANCE_VECTORS = SemanticFactsConformanceVectors.model_validate_json(
+    files("stove0_media_metadata_observer_contracts")
+    .joinpath("vectors/facts-semantics-v1.json")
+    .read_text(encoding="utf-8")
+)
+
 MEDIA_METADATA_FACTS_SEMANTICS = SemanticValidationProfile.seal(
     SemanticValidationProfilePayload(
         id="stove0.media.metadata-facts-semantics/v1",
@@ -132,6 +142,7 @@ MEDIA_METADATA_FACTS_SEMANTICS = SemanticValidationProfile.seal(
             "stove0.media.metadata-facts.complete-request-subjects/v1",
             "stove0.media.metadata-facts.evidence-artifact-binding/v1",
         ),
+        conformance_vectors_sha256=MEDIA_METADATA_FACTS_CONFORMANCE_VECTORS.sha256,
     )
 )
 
@@ -150,6 +161,21 @@ def validate_media_metadata_facts(
     return document
 
 
+def validate_media_metadata_observation(
+    request: ObservationRequest,
+    facts: Mapping[str, object],
+) -> None:
+    """Execute the advertised profile through the generic consumer signature."""
+
+    validate_media_metadata_facts(facts, request.subjects)
+
+
+MEDIA_METADATA_SEMANTIC_VALIDATOR = SemanticValidatorBinding.from_profile(
+    MEDIA_METADATA_FACTS_SEMANTICS,
+    validate_media_metadata_observation,
+)
+
+
 MEDIA_METADATA_OBSERVER_CONTRACT = ObserverContract.seal(
     ObserverContractPayload(
         id=MEDIA_METADATA_OBSERVATION_ID,
@@ -165,10 +191,12 @@ __all__ = [
     "MEDIA_METADATA_FACTS_SCHEMA",
     "MEDIA_METADATA_FACTS_SCHEMA_ID",
     "MEDIA_METADATA_FACTS_SEMANTICS",
+    "MEDIA_METADATA_FACTS_CONFORMANCE_VECTORS",
     "MEDIA_METADATA_OBSERVATION_ID",
     "MEDIA_METADATA_OBSERVER_CONTRACT",
     "MEDIA_METADATA_OPTIONS_SCHEMA",
     "MEDIA_METADATA_OPTIONS_SCHEMA_ID",
+    "MEDIA_METADATA_SEMANTIC_VALIDATOR",
     "MediaArtifactFacts",
     "MediaArtifactState",
     "MediaFactEvidence",
@@ -176,4 +204,5 @@ __all__ = [
     "MediaMetadataFact",
     "MediaMetadataFacts",
     "validate_media_metadata_facts",
+    "validate_media_metadata_observation",
 ]

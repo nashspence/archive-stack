@@ -41,9 +41,18 @@ from stove0_protocol.models import (
     canonical_json_sha256,
 )
 
+from stove0_observer_protocol.conformance import (
+    SemanticFactsConformanceVector,
+    SemanticFactsConformanceVectors,
+)
 from stove0_observer_protocol.validation import (
+    FactsSemanticValidator,
+    SemanticValidatorBinding,
+    SemanticValidatorProvider,
+    SemanticValidatorRegistry,
+    accept_observation_result,
+    require_semantic_validators,
     validate_observation_request,
-    validate_observation_result,
 )
 
 __all__ = [
@@ -55,6 +64,7 @@ __all__ = [
     "RIVERHOG_CAPABILITY_TRANSPORT",
     "SHA256_PATTERN",
     "ArtifactSubject",
+    "FactsSemanticValidator",
     "CollectionRootRef",
     "JsonSchemaDocument",
     "ObservationEvidence",
@@ -74,11 +84,17 @@ __all__ = [
     "ObserverImplementation",
     "ObserverRuntimeAuthority",
     "SemanticId",
+    "SemanticFactsConformanceVector",
+    "SemanticFactsConformanceVectors",
+    "SemanticValidatorBinding",
+    "SemanticValidatorProvider",
+    "SemanticValidatorRegistry",
     "SemanticValidationProfile",
     "SemanticValidationProfilePayload",
     "Sha256",
     "canonical_json_bytes",
     "canonical_json_sha256",
+    "accept_observation_result",
+    "require_semantic_validators",
     "validate_observation_request",
-    "validate_observation_result",
 ]

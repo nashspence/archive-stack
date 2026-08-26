@@ -23,6 +23,9 @@ dependencies = [
   "stove0-observer-protocol>=0.1,<0.2",
 ]
 
+[project.entry-points."stove0.observer-semantic-validators"]
+media-sampling = "stove0_media_sampling_observer_contracts:MEDIA_SAMPLING_SEMANTIC_VALIDATOR"
+
 [tool.uv.sources]
 stove0-observer-protocol = { workspace = true }
 

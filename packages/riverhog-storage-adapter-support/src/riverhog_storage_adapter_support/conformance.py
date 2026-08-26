@@ -70,6 +70,7 @@ def run_storage_adapter_conformance(
     checks: list[str] = ["descriptor"]
     small_path = f"{normalized_prefix}/small.bin"
     write_path = f"{normalized_prefix}/resumable-write.bin"
+    sparse_write_path = f"{normalized_prefix}/sparse-resumable-write.bin"
     small_content = b"riverhog storage adapter conformance v1\n"
     small_sha256 = hashlib.sha256(small_content).hexdigest()
     small_request = SmallObjectWriteRequest(
@@ -83,6 +84,11 @@ def run_storage_adapter_conformance(
     )
     try:
         first_small = client.put_small_object(small_request, small_content)
+        if (
+            first_small.verified_identity_assertions != small_request.required_identity_assertions
+            or first_small.verified_placement != small_request.placement
+        ):
+            raise AssertionError("small-object receipt does not attest its exact request")
         retried_small = client.put_small_object(small_request, small_content)
         if retried_small != first_small:
             raise AssertionError("create-only retry did not return the original object receipt")
@@ -99,6 +105,7 @@ def run_storage_adapter_conformance(
             or metadata.stored_bytes != len(small_content)
             or metadata.stored_sha256 != small_sha256
             or metadata.required_identity_assertions != small_request.required_identity_assertions
+            or metadata.verified_placement != small_request.placement
         ):
             raise AssertionError("small-object metadata differs from its exact input")
         checks.append("exact-metadata")
@@ -136,6 +143,30 @@ def run_storage_adapter_conformance(
         else:
             raise AssertionError("create-only write accepted a changed identity")
         checks.append("identity-conflict")
+
+        if descriptor.maximum_segment_count is None or descriptor.maximum_segment_count >= 2:
+            sparse_request = WriteStartRequest(
+                object_path=sparse_write_path,
+                content_type="application/octet-stream",
+                required_identity_assertions={"riverhog-conformance": "sparse-resumable-write/v1"},
+                placement="immediate",
+            )
+            sparse_session = client.begin_write(sparse_request)
+            persisted_sparse_session = WriteSession.model_validate_json(
+                sparse_session.model_dump_json()
+            )
+            sparse_content = b"s" * descriptor.minimum_nonfinal_segment_bytes
+            second_segment = continuation_client.write_segment(
+                session=persisted_sparse_session,
+                number=2,
+                stored_bytes=len(sparse_content),
+                content=sparse_content,
+            )
+            sparse_listing = continuation_client.list_segments(persisted_sparse_session)
+            if sparse_listing.segments != (second_segment,):
+                raise AssertionError("sparse write listing differs after continuation restart")
+            continuation_client.abort_write(persisted_sparse_session)
+            checks.append("sparse-write-reconciliation")
 
         segment_count = (
             2

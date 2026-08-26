@@ -185,22 +185,25 @@ def test_reference_observer_registrations_connect_exact_one_role_services() -> N
             "http://exiftool-observer:8080",
             "STOVE0_EXIFTOOL_OBSERVER_TOKEN",
             "stove0_exiftool_observer_token",
+            ["media-metadata"],
         ),
         "ffprobe-sampling": (
             "http://ffprobe-sampling-observer:8080",
             "STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN",
             "stove0_ffprobe_sampling_observer_token",
+            ["media-sampling"],
         ),
     }
     for role in ("api", "controller", "worker"):
         service = services[role]
         registrations = json.loads(service["environment"]["STOVE0_OBSERVERS_JSON"])
         assert set(registrations) == set(expected)
-        for registration, (base_url, token_env, secret) in expected.items():
+        for registration, (base_url, token_env, secret, providers) in expected.items():
             assert registrations[registration] == {
                 "base_url": base_url,
                 "token_env": token_env,
                 "allow_insecure_http": True,
+                "semantic_validator_providers": providers,
             }
             assert service["environment"][f"{token_env}_FILE"] == f"/run/secrets/{secret}"
             assert secret in service["secrets"]
