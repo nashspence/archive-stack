@@ -521,7 +521,27 @@ def _run_gogurt(
     listener_lifecycle: bool,
     listener_lifecycle_repetitions: int,
     gogurt_evidence_dir: Path | None,
+    reference: dict[str, str],
 ) -> str:
+    environment = {
+        **environment,
+        "GOGURT_MOUNT_PROVIDER": reference["mount_provider"],
+        "GOGURT_LISTENER_HOST_PROVIDER": reference["listener_host_provider"],
+    }
+    for kind, name in (
+        ("mount", reference["mount_provider"]),
+        ("listener-host", reference["listener_host_provider"]),
+    ):
+        shown = json.loads(
+            _run(
+                [str(executable), "provider", kind, "show", name, "--json"],
+                cwd=scratch,
+                env=environment,
+                capture=True,
+            ).stdout
+        )
+        if shown.get("name") != name:
+            raise QualificationError(f"installed Gogurt {kind} provider identity differs")
     fixtures = scratch / "gogurt-fixtures"
     shutil.copytree(source_root / "qualification/fixtures/gogurt", fixtures)
     mount = scratch / "gogurt-mount"
@@ -1339,6 +1359,16 @@ def _run_gogurt_listener_lifecycle(
             installed = True
             if installed_payload.get("health") != "healthy":
                 raise QualificationError("installed Gogurt listener did not report healthy")
+            mount_provider = installed_payload.get("mount_provider")
+            listener_host_provider = installed_payload.get("listener_host_provider")
+            if (
+                not isinstance(mount_provider, dict)
+                or mount_provider.get("name") != environment["GOGURT_MOUNT_PROVIDER"]
+                or not isinstance(listener_host_provider, dict)
+                or listener_host_provider.get("name")
+                != environment["GOGURT_LISTENER_HOST_PROVIDER"]
+            ):
+                raise QualificationError("installed Gogurt listener lost exact provider identity")
             if exercise_extended_lifecycle and sys.platform == "win32":
                 _verify_windows_task_definition(
                     executable,
@@ -1800,11 +1830,54 @@ def _qualify_component(
     if "Would make no changes" not in sync.stdout + sync.stderr:
         raise QualificationError(f"{root} is not already synchronized to its PEP 751 lock")
 
+    qualification_first_party: dict[str, str] = {}
+    gogurt_reference: dict[str, str] | None = None
+    if root == "gogurt":
+        raw_reference = manifest["qualification"]["gogurt_reference"]["platforms"][platform]
+        if not isinstance(raw_reference, dict):
+            raise QualificationError("Gogurt reference qualification is invalid")
+        gogurt_reference = {key: str(value) for key, value in raw_reference.items()}
+        distribution = gogurt_reference["distribution"]
+        qualified_version = str(manifest["version"])
+        _run(
+            [
+                "uv",
+                "--no-config",
+                "--allow-insecure-host",
+                "127.0.0.1",
+                "pip",
+                "install",
+                f"{distribution}=={qualified_version}",
+                "--index",
+                str(manifest["index"]["url"]),
+                "--default-index",
+                "https://pypi.org/simple",
+                "--index-strategy",
+                "first-index",
+                "--python",
+                str(python),
+                "--no-build",
+                "--no-deps",
+                "--strict",
+            ],
+            cwd=scratch,
+            env=environment,
+        )
+        qualification_first_party = {distribution: qualified_version}
+        qualified_inventory = _installed_inventory(python, scratch, environment)
+        qualified_first_party = {
+            name: installed_version
+            for name, installed_version in qualified_inventory.items()
+            if name in all_project_names
+        }
+        if qualified_first_party != expected_first_party | qualification_first_party:
+            raise QualificationError("Gogurt reference qualification changed another package")
+
     entry_points = [str(value) for value in component["entry_points"]]
     executables = [_executable(bin_dir, name) for name in entry_points]
     primary = executables[0]
-    version = _run([str(primary), "--version"], cwd=scratch, env=environment, capture=True)
-    if version.stdout.strip() != manifest["version"]:
+    version_result = _run([str(primary), "--version"], cwd=scratch, env=environment, capture=True)
+    if version_result.stdout.strip() != manifest["version"]:
         raise QualificationError(f"{root} --version differs from the installed release")
     _run([str(primary), "--help"], cwd=scratch, env=environment, capture=True)
 
@@ -1817,6 +1890,7 @@ def _qualify_component(
             environment=environment,
         )
     elif root == "gogurt":
+        assert gogurt_reference is not None
         operation = _run_gogurt(
             primary,
             source_root=source_root,
@@ -1825,6 +1899,7 @@ def _qualify_component(
             listener_lifecycle=listener_lifecycle,
             listener_lifecycle_repetitions=listener_lifecycle_repetitions,
             gogurt_evidence_dir=gogurt_evidence_dir,
+            reference=gogurt_reference,
         )
     else:
         operation = _run_recovery(
@@ -1836,7 +1911,8 @@ def _qualify_component(
 
     requests = QualificationHandler.requests[request_offset:]
     wheel_assets = {
-        "/assets/" + str(manifest["wheels"][name]["asset"]) for name in expected_first_party
+        "/assets/" + str(manifest["wheels"][name]["asset"])
+        for name in expected_first_party | qualification_first_party
     }
     if not wheel_assets <= set(requests):
         raise QualificationError(f"{root} did not consume every staged first-party wheel")
@@ -1853,6 +1929,7 @@ def _qualify_component(
     return {
         "root": root,
         "first_party": expected_first_party,
+        "qualification_first_party": qualification_first_party,
         "entry_points": entry_points,
         "operation": operation,
         "python": manifest["toolchain"]["python"],

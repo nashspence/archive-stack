@@ -552,10 +552,7 @@ source = { editable = "utilities/gogurt" }
 dependencies = [
     { name = "config-validation" },
     { name = "gogurt-core" },
-    { name = "gogurt-linux", marker = "sys_platform == 'linux'" },
     { name = "gogurt-listener-runtime" },
-    { name = "gogurt-macos", marker = "sys_platform == 'darwin'" },
-    { name = "gogurt-windows", marker = "sys_platform == 'win32'" },
     { name = "riverhog-cli-support" },
     { name = "typer" },
 ]
@@ -564,10 +561,7 @@ dependencies = [
 requires-dist = [
     { name = "config-validation", editable = "packages/config-validation" },
     { name = "gogurt-core", editable = "packages/gogurt-core" },
-    { name = "gogurt-linux", marker = "sys_platform == 'linux'", editable = "packages/gogurt-linux" },
     { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
-    { name = "gogurt-macos", marker = "sys_platform == 'darwin'", editable = "packages/gogurt-macos" },
-    { name = "gogurt-windows", marker = "sys_platform == 'win32'", editable = "packages/gogurt-windows" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "typer", specifier = ">=0.12,<1.0" },
 ]
@@ -586,13 +580,17 @@ requires-dist = [{ name = "config-validation", editable = "packages/config-valid
 [[package]]
 name = "gogurt-linux"
 version = "0.1.0"
-source = { editable = "packages/gogurt-linux" }
+source = { editable = "reference/gogurt/linux" }
 dependencies = [
+    { name = "gogurt-core" },
     { name = "gogurt-listener-runtime" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" }]
+requires-dist = [
+    { name = "gogurt-core", editable = "packages/gogurt-core" },
+    { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
+]
 
 [[package]]
 name = "gogurt-listener-runtime"
@@ -612,24 +610,32 @@ requires-dist = [
 [[package]]
 name = "gogurt-macos"
 version = "0.1.0"
-source = { editable = "packages/gogurt-macos" }
+source = { editable = "reference/gogurt/macos" }
 dependencies = [
+    { name = "gogurt-core" },
     { name = "gogurt-listener-runtime" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" }]
+requires-dist = [
+    { name = "gogurt-core", editable = "packages/gogurt-core" },
+    { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
+]
 
 [[package]]
 name = "gogurt-windows"
 version = "0.1.0"
-source = { editable = "packages/gogurt-windows" }
+source = { editable = "reference/gogurt/windows" }
 dependencies = [
+    { name = "gogurt-core" },
     { name = "gogurt-listener-runtime" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" }]
+requires-dist = [
+    { name = "gogurt-core", editable = "packages/gogurt-core" },
+    { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
+]
 
 [[package]]
 name = "greenlet"

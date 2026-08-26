@@ -3,9 +3,9 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "gogurt-windows"
+name = "gogurt-linux"
 version = "0.1.0"
-description = "Windows mount and Task Scheduler integration for Gogurt."
+description = "Optional Linux mount and systemd reference implementation for Gogurt."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -14,10 +14,20 @@ authors = [{ name = "Nash Spence" }]
 maintainers = [{ name = "Nash Spence" }]
 classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
-dependencies = ["gogurt-listener-runtime>=0.1,<0.2"]
+dependencies = [
+  "gogurt-core>=0.1,<0.2",
+  "gogurt-listener-runtime>=0.1,<0.2",
+]
+
+[project.entry-points."gogurt.mount-providers"]
+gogurt-linux = "gogurt_linux:MOUNT_PROVIDER_BINDING"
+
+[project.entry-points."gogurt.listener-host-providers"]
+gogurt-linux = "gogurt_linux:LISTENER_HOST_PROVIDER_BINDING"
 
 [tool.uv.sources]
+gogurt-core = { workspace = true }
 gogurt-listener-runtime = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/gogurt_windows"]
+packages = ["src/gogurt_linux"]

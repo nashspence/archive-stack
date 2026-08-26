@@ -64,8 +64,8 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
         "deployed_implementation": 13,
-        "reference_implementation": 3,
-        "reusable_library": 43,
+        "reference_implementation": 6,
+        "reusable_library": 40,
         "internal_build_unit": 4,
     }
     assert {project.name for project in projects} >= {
@@ -76,6 +76,9 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "riverhog-server",
         "riverhog-storage-adapter-aws",
         "riverhog-storage-adapter-backblaze",
+        "gogurt-linux",
+        "gogurt-macos",
+        "gogurt-windows",
         "stove0-server",
         "stove0-client",
         "stove0-exiftool-observer",

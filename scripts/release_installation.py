@@ -24,7 +24,6 @@ from gogurt_listener_runtime.listener import (
     LISTENER_OPERATIONS,
     LISTENER_STATUS_SCHEMA,
 )
-from gogurt_windows import WINDOWS_TASK_RESTART_COUNT, WINDOWS_TASK_RESTART_INTERVAL
 from packaging.markers import Marker, default_environment
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.tags import Tag, compatible_tags, cpython_tags, mac_platforms
@@ -49,13 +48,14 @@ INSTALLATION_POLICY = {
         "scope": "current-user",
         "resume": "next-login",
         "autorun": "explicit-required",
-        "service_managers": ["systemd-user", "launchd-user", "task-scheduler-user"],
+        "provider_selection": "explicit",
+        "provider_identity": "persisted-exactly",
     },
 }
 
 
 def listener_release_contract() -> dict[str, object]:
-    """Return the product contract assembled from portable and native owners."""
+    """Return the portable listener contract; host mechanisms remain provider-owned."""
 
     return {
         "schema": "gogurt-listener-contract/v1",
@@ -64,10 +64,16 @@ def listener_release_contract() -> dict[str, object]:
         "resume": "next-login",
         "autorun": "explicit-required",
         "operations": list(LISTENER_OPERATIONS),
-        "platforms": {
-            "linux-x64": "systemd-user",
-            "macos-arm64": "launchd-user",
-            "windows-x64": "task-scheduler-user",
+        "providers": {
+            "mount": {
+                "entry_point": "gogurt.mount-providers",
+                "selection": "explicit-exact-name",
+            },
+            "listener_host": {
+                "entry_point": "gogurt.listener-host-providers",
+                "selection": "explicit-exact-name",
+            },
+            "identity": "persisted-and-reverified-across-restart",
         },
         "status_schema": LISTENER_STATUS_SCHEMA,
         "health": {
@@ -77,20 +83,14 @@ def listener_release_contract() -> dict[str, object]:
         },
         "replacement": "validated-staged-transaction-with-healthy-rollback",
         "native_registration": {
+            "owner": "selected-listener-host-provider",
             "identity": "current-user",
             "manager_state": "authoritative-independent-of-definition-file",
-            "windows_task_identity": "current-user-sid-sha256",
-            "windows_execution_limit": "indefinite",
-            "windows_battery_operation": "allowed",
-            "windows_restart_on_failure": {
-                "count": WINDOWS_TASK_RESTART_COUNT,
-                "interval": WINDOWS_TASK_RESTART_INTERVAL,
-            },
         },
         "shutdown": "cooperative-bounded-action-custody-settlement",
         "state": {
-            "posix": "private-directory-and-files",
-            "windows": "current-user-native-acl",
+            "portable": "private-listener-runtime-state",
+            "host": "selected-listener-host-provider-owned-registration-and-paths",
         },
         "dispatch": {
             "completed": "not-replayed-across-ordinary-restart",
@@ -235,6 +235,38 @@ def platform_dependency_closures(
         )
         for platform in SUPPORTED_PLATFORMS
     }
+
+
+def gogurt_reference_qualification(
+    root: Path,
+    projects: Sequence[ProjectLike],
+) -> dict[str, dict[str, str]]:
+    """Return explicit reference selections used only by release qualification."""
+
+    release = tomllib.loads((root / "release.toml").read_text(encoding="utf-8"))
+    raw = release.get("qualification", {}).get("gogurt_reference")
+    expected_fields = {"distribution", "mount_provider", "listener_host_provider"}
+    if not isinstance(raw, dict) or set(raw) != {"purpose", *SUPPORTED_PLATFORMS}:
+        raise InstallationError("Gogurt reference qualification is incomplete")
+    purpose = raw.get("purpose")
+    if not isinstance(purpose, str) or "not defaults or recommendations" not in purpose:
+        raise InstallationError("Gogurt reference qualification must remain explicitly optional")
+    project_by_name = {project.name: project for project in projects}
+    result: dict[str, dict[str, str]] = {}
+    for platform in SUPPORTED_PLATFORMS:
+        value = raw.get(platform)
+        if not isinstance(value, dict) or set(value) != expected_fields:
+            raise InstallationError(f"Gogurt reference qualification is invalid for {platform}")
+        item = {key: str(value[key]) for key in expected_fields}
+        if any(not field or field != field.strip() for field in item.values()):
+            raise InstallationError(f"Gogurt reference qualification is invalid for {platform}")
+        project = project_by_name.get(item["distribution"])
+        if project is None or project.role != "reference_implementation":
+            raise InstallationError(
+                f"Gogurt qualification must select a reference implementation for {platform}"
+            )
+        result[platform] = item
+    return result
 
 
 def _platform_marker(platforms: set[str]) -> str | None:
@@ -750,6 +782,7 @@ def build_installation_artifacts(
         )
         for item in roots
     }
+    gogurt_qualification = gogurt_reference_qualification(root, projects)
     required_names = set().union(
         *(
             closure
@@ -757,6 +790,7 @@ def build_installation_artifacts(
             for closure in platform_closures.values()
         )
     )
+    index_names = required_names | {item["distribution"] for item in gogurt_qualification.values()}
     if set(wheels) != set(project_by_name):
         raise InstallationError("release wheel records differ from the coordinated project graph")
 
@@ -893,7 +927,7 @@ def build_installation_artifacts(
     write_index_snapshot(
         snapshot_path,
         simple_index_path=normalized_path,
-        names=required_names,
+        names=index_names,
         wheels=wheels,
         asset_base_url=release_base,
         source_epoch=source_epoch,
@@ -909,7 +943,7 @@ def build_installation_artifacts(
             "version": version,
             "license": "NOASSERTION",
             "dependencies": [
-                {"name": name, "version": project_versions[name]} for name in sorted(required_names)
+                {"name": name, "version": project_versions[name]} for name in sorted(index_names)
             ],
             "_components": [
                 {
@@ -918,7 +952,7 @@ def build_installation_artifacts(
                     "version": project_versions[name],
                     "license": "NOASSERTION",
                 }
-                for name in sorted(required_names)
+                for name in sorted(index_names)
             ],
         }
     )
@@ -963,10 +997,19 @@ def build_installation_artifacts(
             "snapshot_asset": snapshot_name,
             "snapshot_path": snapshot_relative,
             "snapshot_sha256": snapshot_sha256,
-            "first_party_projects": sorted(required_names),
+            "first_party_projects": sorted(index_names),
         },
-        "wheels": {name: wheels[name] for name in sorted(required_names)},
+        "wheels": {name: wheels[name] for name in sorted(index_names)},
         "components": component_items,
+        "qualification": {
+            "gogurt_reference": {
+                "purpose": (
+                    "First-party reference conformance only; these selections are not defaults "
+                    "or recommendations."
+                ),
+                "platforms": gogurt_qualification,
+            }
+        },
         "gogurt_listener": {
             "contract": listener_contract,
             "reference_asset": listener_reference_name,
@@ -982,7 +1025,6 @@ def build_installation_artifacts(
 
 
 def _render_listener_reference(contract: dict[str, object], *, version: str) -> str:
-    platforms = cast(dict[str, str], contract["platforms"])
     dispatch = cast(dict[str, str], contract["dispatch"])
     health = cast(dict[str, str], contract["health"])
     state = cast(dict[str, str], contract["state"])
@@ -991,22 +1033,25 @@ def _render_listener_reference(contract: dict[str, object], *, version: str) -> 
         "Gogurt installs a current-user listener. It resumes at the user's next login; "
         "it is not a pre-login system service. Installation requires explicit `--autorun`.\n\n"
         "## Install and operate\n\n"
+        "Install Gogurt with independently chosen mount-discovery and listener-host provider "
+        "distributions. Provider discovery is metadata only; every operation selects exact "
+        "provider names. Add the chosen distributions to the generated `uv tool install` command "
+        "with `--with <provider-distribution>`; they are not part of Gogurt's default closure.\n\n"
         "```console\n"
         "gogurt listener install --config /absolute/path/gogurt-routes.yaml "
-        "--actions-dir /absolute/path/actions --autorun\n"
-        "gogurt listener status\n"
-        "gogurt listener status --json\n"
-        "gogurt listener start\n"
-        "gogurt listener stop\n"
-        "gogurt listener restart\n"
-        "gogurt listener uninstall\n"
+        "--actions-dir /absolute/path/actions --mount-provider <name> "
+        "--listener-host-provider <name> --autorun\n"
+        "gogurt listener status --listener-host-provider <name>\n"
+        "gogurt listener status --listener-host-provider <name> --json\n"
+        "gogurt listener start --listener-host-provider <name>\n"
+        "gogurt listener stop --listener-host-provider <name>\n"
+        "gogurt listener restart --listener-host-provider <name>\n"
+        "gogurt listener uninstall --listener-host-provider <name>\n"
         "```\n\n"
-        "The registration binds the absolute executable from the independent Gogurt "
-        "installation. It does not depend on shell `PATH`, system Python, administrator "
-        "access, or another Riverhog component's runtime.\n\n"
-        "## Platform registration\n\n"
-        + "".join(f"- `{platform}`: `{manager}`\n" for platform, manager in platforms.items())
-        + "\n## Dispatch and troubleshooting\n\n"
+        "The registration binds the executable and both exact provider identities. The selected "
+        "listener-host provider owns native registration and runtime paths. No provider is "
+        "selected implicitly or designated as authoritative by Gogurt.\n\n"
+        "## Dispatch and troubleshooting\n\n"
         "`gogurt listener status --json` is the authoritative health and durable-dispatch "
         "diagnostic. `healthy` confirms a current versioned heartbeat and valid global "
         "configuration; `stopped` means the registration remains installed but is not "
@@ -1021,8 +1066,9 @@ def _render_listener_reference(contract: dict[str, object], *, version: str) -> 
         f"- Crash-window actions: `{dispatch['running_after_crash']}`.\n"
         f"- Known failures: `{dispatch['known_failure']}`.\n"
         f"- Replay boundary: `{dispatch['downstream']}`.\n\n"
-        f"Replacement contract: `{contract['replacement']}`. POSIX state is "
-        f"`{state['posix']}`; Windows state uses `{state['windows']}`.\n\n"
+        f"Replacement contract: `{contract['replacement']}`. Portable state is "
+        f"`{state['portable']}`; host state is "
+        f"`{state['host']}`.\n\n"
         "Use `restart` for a stale process after reviewing its diagnostic. Use `uninstall` "
         "to remove the native registration, listener database, heartbeat, lock, and bounded "
         "logs. Reinstalling the same version is replacement-safe and retains completed "
@@ -1045,6 +1091,23 @@ def verify_installation_artifacts(output: Path, manifest: dict[str, Any]) -> Non
     wheel_names = set(manifest.get("wheels", {}))
     if wheel_names != set(manifest["index"]["first_party_projects"]):
         raise InstallationError("install manifest wheel and index inventories differ")
+    qualification = manifest.get("qualification", {}).get("gogurt_reference", {})
+    qualification_platforms = qualification.get("platforms", {})
+    if (
+        qualification.get("purpose")
+        != "First-party reference conformance only; these selections are not defaults or "
+        "recommendations."
+        or set(qualification_platforms) != set(SUPPORTED_PLATFORMS)
+    ):
+        raise InstallationError("Gogurt reference qualification differs from release policy")
+    for platform in SUPPORTED_PLATFORMS:
+        reference = qualification_platforms[platform]
+        if (
+            not isinstance(reference, dict)
+            or set(reference) != {"distribution", "mount_provider", "listener_host_provider"}
+            or reference["distribution"] not in wheel_names
+        ):
+            raise InstallationError(f"Gogurt reference qualification is invalid: {platform}")
     for component in components:
         lock = component["lock"]
         path = output / str(lock["path"])

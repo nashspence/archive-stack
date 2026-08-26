@@ -3,10 +3,35 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 MIN_GOGURT_INTERVAL_SECONDS = 0.1
 MAX_GOGURT_INTERVAL_SECONDS = 3600.0
+GOGURT_MOUNT_PROVIDER_ENTRY_POINT_GROUP = "gogurt.mount-providers"
+GOGURT_MOUNT_PROVIDER_BINDING_FORMAT = "gogurt-mount-provider-binding/v1"
+type MountDiscovery = Callable[[], Sequence[Path]]
+
+
+@dataclass(frozen=True, slots=True)
+class MountProviderBinding:
+    """One independently distributed mount-discovery implementation."""
+
+    provider_id: str
+    discover: MountDiscovery
+    format: str = GOGURT_MOUNT_PROVIDER_BINDING_FORMAT
+
+    def __post_init__(self) -> None:
+        if self.format != GOGURT_MOUNT_PROVIDER_BINDING_FORMAT:
+            raise ValueError("unsupported Gogurt mount-provider binding format")
+        if (
+            not self.provider_id
+            or self.provider_id != self.provider_id.strip()
+            or len(self.provider_id) > 255
+        ):
+            raise ValueError("Gogurt mount-provider identity must be canonical")
+        if not callable(self.discover):
+            raise TypeError("Gogurt mount-provider discovery must be callable")
 
 
 def validate_gogurt_interval(value: object) -> float:

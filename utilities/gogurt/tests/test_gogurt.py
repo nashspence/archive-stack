@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import gogurt.cli as cli
 import pytest
@@ -20,6 +21,7 @@ from gogurt_core.core import (
     validate_gogurt_marker_name,
     write_gogurt_marker,
 )
+from gogurt_core.providers import GogurtProviderReference
 from gogurt_listener_runtime.listener import ListenerError
 from typer.testing import CliRunner
 
@@ -397,6 +399,23 @@ def test_gogurt_cli_write_dry_run_does_not_create_marker(tmp_path: Path) -> None
 def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    mount_reference = GogurtProviderReference(
+        kind="mount",
+        name="fixture-mount",
+        provider_id="fixture-mount-provider/v1",
+    )
+    host_reference = GogurtProviderReference(
+        kind="listener-host",
+        name="fixture-host",
+        provider_id="fixture-listener-host-provider/v1",
+    )
+    mount = SimpleNamespace(reference=mount_reference, discover=lambda: ())
+    host = SimpleNamespace(
+        reference=host_reference,
+        paths=lambda: object(),
+        adapter=lambda: object(),
+        executable=lambda: Path(sys.executable),
+    )
     payload = {
         "schema": "gogurt-listener-status/v1",
         "version": "1.0.0",
@@ -413,34 +432,56 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
     monkeypatch.setattr("gogurt.cli.restart_listener", lambda **_kwargs: payload)
     monkeypatch.setattr("gogurt.cli.uninstall_listener", lambda **_kwargs: payload)
     monkeypatch.setattr("gogurt.cli.install_listener", lambda *_args, **_kwargs: payload)
-    monkeypatch.setattr("gogurt.cli.resolve_listener_executable", lambda: Path(sys.executable))
+    monkeypatch.setattr("gogurt.cli._resolve_mount", lambda _name: mount)
+    monkeypatch.setattr("gogurt.cli._resolve_listener_host", lambda _name: host)
+    monkeypatch.setattr("gogurt.cli._installed_listener_composition", lambda _name: (host, mount))
+    expected = payload | {
+        "mount_provider": mount_reference.as_dict(),
+        "listener_host_provider": host_reference.as_dict(),
+    }
 
     for command in ("status", "start", "stop", "restart", "uninstall"):
-        human = RUNNER.invoke(app, ["listener", command])
-        structured = RUNNER.invoke(app, ["listener", command, "--json"])
+        args = ["listener", command, "--listener-host-provider", "fixture-host"]
+        human = RUNNER.invoke(app, args)
+        structured = RUNNER.invoke(app, [*args, "--json"])
         assert human.exit_code == 0
         assert "health: healthy" in human.stdout
         assert structured.exit_code == 0
-        assert json.loads(structured.stdout) == payload
+        assert json.loads(structured.stdout) == expected
 
     installed = RUNNER.invoke(
         app,
-        ["listener", "install", "--config", str(FIXTURE_CONFIG), "--autorun", "--json"],
+        [
+            "listener",
+            "install",
+            "--config",
+            str(FIXTURE_CONFIG),
+            "--autorun",
+            "--mount-provider",
+            "fixture-mount",
+            "--listener-host-provider",
+            "fixture-host",
+            "--json",
+        ],
     )
     assert installed.exit_code == 0
-    assert json.loads(installed.stdout) == payload
+    assert json.loads(installed.stdout) == expected
 
     failed_payload = payload | {
         "health": "failed",
         "diagnostic": "global configuration: ConfigError: routes are invalid",
     }
     monkeypatch.setattr("gogurt.cli.listener_status", lambda **_kwargs: failed_payload)
-    human_failure = RUNNER.invoke(app, ["listener", "status"])
-    json_failure = RUNNER.invoke(app, ["listener", "status", "--json"])
+    status_args = ["listener", "status", "--listener-host-provider", "fixture-host"]
+    human_failure = RUNNER.invoke(app, status_args)
+    json_failure = RUNNER.invoke(app, [*status_args, "--json"])
     assert human_failure.exit_code == 0
     assert "health: failed" in human_failure.stdout
     assert "diagnostic: global configuration" in human_failure.stdout
-    assert json.loads(json_failure.stdout) == failed_payload
+    assert json.loads(json_failure.stdout) == expected | {
+        "health": "failed",
+        "diagnostic": "global configuration: ConfigError: routes are invalid",
+    }
 
     refused = RUNNER.invoke(
         app,
