@@ -45,7 +45,8 @@ def test_composition_binds_every_capability_to_each_configured_archive_store(
     for name in registry.names:
         binding = registry.require(name)
         expected = adapters[name]
-        assert binding.store._adapter is expected  # type: ignore[attr-defined]
-        assert binding.resumable_objects._adapter is expected  # type: ignore[attr-defined]
-        assert binding.immutable_objects._adapter is expected  # type: ignore[attr-defined]
-        assert binding.object_ranges._adapter is expected  # type: ignore[attr-defined]
+        validated = binding.store._adapter  # type: ignore[attr-defined]
+        assert validated._adapter is expected  # type: ignore[attr-defined]
+        assert binding.resumable_objects._adapter is validated  # type: ignore[attr-defined]
+        assert binding.immutable_objects._adapter is validated  # type: ignore[attr-defined]
+        assert binding.object_ranges._adapter is validated  # type: ignore[attr-defined]

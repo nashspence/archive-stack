@@ -73,6 +73,7 @@ from riverhog_core.stores.storage_adapter_archive_objects import (
 from riverhog_core.stores.storage_adapter_archive_store import StorageAdapterArchiveStore
 from riverhog_core.stores.storage_adapter_retrieval_cache import StorageAdapterRetrievalCache
 from riverhog_core.throughput import ArchiveThroughputTuning, ArchiveTransferResources
+from riverhog_storage_adapter_protocol import validated_storage_adapter
 from riverhog_storage_adapter_support import StorageAdapterClient
 from sqlalchemy import select
 
@@ -112,18 +113,25 @@ def _archive_store_registry(
     adapters: dict[str, StorageAdapterClient],
     download_allowance: DownloadAllowance,
 ) -> ArchiveStoreRegistry:
+    validated_adapters = {
+        name: validated_storage_adapter(adapter) for name, adapter in adapters.items()
+    }
     return ArchiveStoreRegistry(
         {
             name: ArchiveStoreBinding(
                 store=StorageAdapterArchiveStore(
                     config,
                     name=name,
-                    adapter=adapters[name],
+                    adapter=validated_adapters[name],
                     download_allowance=download_allowance,
                 ),
-                resumable_objects=StorageAdapterArchiveResumableObjectStore(adapters[name]),
-                immutable_objects=StorageAdapterImmutableArchiveObjectStore(adapters[name]),
-                object_ranges=StorageAdapterArchiveObjectRangeStore(adapters[name]),
+                resumable_objects=StorageAdapterArchiveResumableObjectStore(
+                    validated_adapters[name]
+                ),
+                immutable_objects=StorageAdapterImmutableArchiveObjectStore(
+                    validated_adapters[name]
+                ),
+                object_ranges=StorageAdapterArchiveObjectRangeStore(validated_adapters[name]),
             )
             for name in config.archive_stores
         }

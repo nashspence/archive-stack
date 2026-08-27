@@ -109,6 +109,7 @@ EXTERNAL_DISTRIBUTION_MODULES = {
     "psycopg": set(),
     "pydantic": {"pydantic"},
     "pyyaml": {"yaml"},
+    "referencing": {"referencing"},
     "rfc8785": {"rfc8785"},
     "rich": {"rich"},
     "sqlalchemy": {"sqlalchemy"},
