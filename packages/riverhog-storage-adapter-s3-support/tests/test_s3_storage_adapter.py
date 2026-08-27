@@ -513,7 +513,7 @@ def test_metadata_head_hides_adapter_markers_but_keeps_opaque_identity() -> None
     )
 
     assert head is not None
-    assert head.required_identity_assertions == {"riverhog-logical-identity": "logical/v1"}
+    assert head.observed_identity_assertions == {"riverhog-logical-identity": "logical/v1"}
     assert head.verified_placement == "immediate"
     assert head.stored_sha256 == hashlib.sha256(content).hexdigest()
 

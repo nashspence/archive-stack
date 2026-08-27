@@ -19,8 +19,7 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterRejection,
     WriteCompleteRequest,
     WriteStartRequest,
-    validate_completed_write_response,
-    validate_small_object_response,
+    validated_storage_adapter,
 )
 from riverhog_storage_adapter_protocol import (
     CompletedObjectReceipt as AdapterCompletedObjectReceipt,
@@ -63,7 +62,8 @@ class StorageAdapterRetrievalCache:
         throughput_tuning: ArchiveThroughputTuning,
         transfer_resources: ArchiveTransferResources,
     ) -> None:
-        descriptor = adapter.descriptor()
+        validated_adapter = validated_storage_adapter(adapter)
+        descriptor = validated_adapter.descriptor()
         if descriptor.read_mode != "immediate":
             raise ValueError("retrieval cache adapter must provide immediate reads")
         if write_segment_bytes < descriptor.minimum_nonfinal_segment_bytes or (
@@ -71,7 +71,7 @@ class StorageAdapterRetrievalCache:
             and write_segment_bytes > descriptor.maximum_segment_bytes
         ):
             raise ValueError("retrieval cache write segment size is outside adapter limits")
-        self._adapter = adapter
+        self._adapter = validated_adapter
         self._descriptor = descriptor
         self._segment_bytes = write_segment_bytes
         self._throughput = throughput_tuning
@@ -230,7 +230,6 @@ class StorageAdapterRetrievalCache:
                         stored_sha256=digest.hexdigest(),
                     )
                     receipt = self._adapter.put_small_object(small_request, bytes(body))
-                    validate_small_object_response(small_request, receipt)
                     remote_seconds += time.perf_counter() - remote_started
             finally:
                 if content_length:
@@ -277,7 +276,6 @@ class StorageAdapterRetrievalCache:
                     expected_placement="immediate",
                 )
                 completed = self._adapter.complete_write(completion_request)
-                validate_completed_write_response(completion_request, completed)
                 remote_seconds += time.perf_counter() - remote_started
             except Exception:
                 self._adapter.abort_write(session)
@@ -503,7 +501,7 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
         object_path: str,
         metadata: dict[str, str],
     ) -> None:
-        self._adapter = adapter
+        self._adapter = validated_storage_adapter(adapter)
         self._object_path = object_path
         self._metadata = metadata
 
@@ -604,7 +602,6 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
             expected_placement="immediate",
         )
         receipt = self._adapter.complete_write(request)
-        validate_completed_write_response(request, receipt)
         return _completed(receipt)
 
     def find_completed_write(
@@ -629,7 +626,6 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
             raise
         if receipt is None:
             return None
-        validate_completed_write_response(request, receipt)
         return _completed(receipt)
 
     def abort_write(self, *, session: WriteSession) -> None:

@@ -4,6 +4,8 @@ import inspect
 import subprocess
 import sys
 from collections.abc import Callable
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -26,6 +28,7 @@ from riverhog_storage_adapter_protocol import (
     ReadStatus,
     SmallObjectWriteRequest,
     StorageAdapterPort,
+    ValidatedStorageAdapterPort,
     WriteCompleteRequest,
     WriteSegmentReceipt,
     WriteSegmentSet,
@@ -64,6 +67,76 @@ def test_protocol_matches_the_existing_capability_port_inventory() -> None:
         "read_status",
         "write_segment",
     }
+    assert {
+        name
+        for name, value in ValidatedStorageAdapterPort.__dict__.items()
+        if not name.startswith("_") and inspect.isfunction(value)
+    } == {
+        name
+        for name, value in StorageAdapterPort.__dict__.items()
+        if not name.startswith("_") and inspect.isfunction(value)
+    }
+
+
+def test_validated_port_rejects_direct_response_and_stream_drift() -> None:
+    head_request = ObjectHeadRequest(
+        object=ObjectLocator(object_path="objects/item", revision="revision-1"),
+        expected_placement="immediate",
+    )
+    invalid_head = ObjectMetadataReceipt(
+        object_path="objects/other",
+        revision="revision-1",
+        stored_bytes=1,
+        observed_identity_assertions={},
+        verified_placement="immediate",
+        completed_at="2026-08-25T00:00:00.000000Z",
+    )
+    head_adapter = cast(
+        StorageAdapterPort,
+        SimpleNamespace(head_object=lambda _request: invalid_head),
+    )
+    with pytest.raises(ValueError, match="metadata differs"):
+        ValidatedStorageAdapterPort(head_adapter).head_object(head_request)
+
+    read_adapter = cast(
+        StorageAdapterPort,
+        SimpleNamespace(iter_object=lambda _request: iter((b"short",))),
+    )
+    with pytest.raises(ValueError, match="requested byte count"):
+        b"".join(
+            ValidatedStorageAdapterPort(read_adapter).iter_object(
+                ObjectReadRequest(
+                    object=ObjectLocator(object_path="objects/item"),
+                    expected_bytes=6,
+                )
+            )
+        )
+
+    descriptor = AdapterDescriptor(
+        implementation_id="fixture.storage/v1",
+        implementation_version="1.0.0",
+        read_mode="immediate",
+        minimum_nonfinal_segment_bytes=1,
+    )
+    session = WriteSession(object_path="objects/item", write_token="write-1")
+    segment_adapter = cast(
+        StorageAdapterPort,
+        SimpleNamespace(
+            descriptor=lambda: descriptor,
+            write_segment=lambda **_kwargs: WriteSegmentReceipt(
+                number=1,
+                segment_token="segment-1",
+                stored_bytes=3,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="did not consume"):
+        ValidatedStorageAdapterPort(segment_adapter).write_segment(
+            session=session,
+            number=1,
+            stored_bytes=3,
+            content=iter((b"abc",)),
+        )
 
 
 def test_write_completion_preserves_optional_digests_and_repeated_provider_tokens() -> None:
@@ -252,7 +325,7 @@ def test_object_metadata_keeps_large_object_digest_optional() -> None:
     receipt = ObjectMetadataReceipt(
         object_path="archives/id/volumes/pack.tar.age",
         stored_bytes=100,
-        required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
+        observed_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
         verified_placement="archive",
         completed_at="2026-08-21T00:00:00.000000Z",
     )
@@ -338,7 +411,7 @@ def test_response_validators_bind_exact_requests_and_closed_readiness_states() -
         object_path=start.object_path,
         revision="revision-1",
         stored_bytes=1,
-        required_identity_assertions=start.required_identity_assertions,
+        observed_identity_assertions=start.required_identity_assertions,
         verified_placement="archive",
         completed_at="2026-08-25T00:00:00.000000Z",
     )
@@ -444,7 +517,7 @@ def test_small_write_and_head_success_bind_exact_storage_predicates() -> None:
     metadata = ObjectMetadataReceipt(
         object_path=request.object_path,
         stored_bytes=1,
-        required_identity_assertions=request.required_identity_assertions,
+        observed_identity_assertions=request.required_identity_assertions,
         verified_placement="archive",
         completed_at="2026-08-25T00:00:00.000000Z",
     )

@@ -105,7 +105,7 @@ class _MemoryAdapter:
             content_type=stored.content_type,
             stored_bytes=len(stored.content),
             stored_sha256=hashlib.sha256(stored.content).hexdigest(),
-            required_identity_assertions=stored.identity,
+            observed_identity_assertions=stored.identity,
             verified_placement=request.expected_placement,
             completed_at=stored.completed_at,
         )

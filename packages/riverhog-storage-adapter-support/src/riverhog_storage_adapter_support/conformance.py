@@ -104,7 +104,7 @@ def run_storage_adapter_conformance(
             metadata is None
             or metadata.stored_bytes != len(small_content)
             or metadata.stored_sha256 != small_sha256
-            or metadata.required_identity_assertions != small_request.required_identity_assertions
+            or metadata.observed_identity_assertions != small_request.required_identity_assertions
             or metadata.verified_placement != small_request.placement
         ):
             raise AssertionError("small-object metadata differs from its exact input")

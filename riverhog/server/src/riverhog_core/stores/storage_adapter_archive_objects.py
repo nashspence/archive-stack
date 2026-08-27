@@ -13,7 +13,7 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterRejection,
     WriteCompleteRequest,
     WriteStartRequest,
-    validate_completed_write_response,
+    validated_storage_adapter,
 )
 from riverhog_storage_adapter_protocol import (
     WriteSegmentReceipt as AdapterWriteSegmentReceipt,
@@ -41,7 +41,7 @@ class StorageAdapterArchiveResumableObjectStore:
         *,
         placement: ObjectPlacement = "archive",
     ) -> None:
-        self._adapter = adapter
+        self._adapter = validated_storage_adapter(adapter)
         self._placement = placement
 
     def write_constraints(self) -> ResumableWriteConstraints:
@@ -112,7 +112,6 @@ class StorageAdapterArchiveResumableObjectStore:
         except StorageAdapterRejection as exc:
             _raise_identity_conflict(exc)
             raise
-        validate_completed_write_response(request, receipt)
         return CompletedObjectReceipt(
             object_path=receipt.object_path,
             revision=receipt.revision,
@@ -141,7 +140,6 @@ class StorageAdapterArchiveResumableObjectStore:
             raise
         if receipt is None:
             return None
-        validate_completed_write_response(request, receipt)
         return CompletedObjectReceipt(
             object_path=receipt.object_path,
             revision=receipt.revision,
@@ -158,7 +156,7 @@ class StorageAdapterImmutableArchiveObjectStore:
     """Riverhog's create-only small-object port over one opaque-object adapter."""
 
     def __init__(self, adapter: StorageAdapterPort) -> None:
-        self._adapter = adapter
+        self._adapter = validated_storage_adapter(adapter)
 
     def put_immutable_object(
         self,
@@ -201,7 +199,7 @@ class StorageAdapterArchiveObjectRangeStore:
     """Exact ranged reads through the adapter's validated streaming response."""
 
     def __init__(self, adapter: StorageAdapterPort) -> None:
-        self._adapter = adapter
+        self._adapter = validated_storage_adapter(adapter)
 
     def iter_object_range(
         self,
