@@ -20,6 +20,7 @@ PATH_MARKER_NAME = ".gogurt"
 PATH_MARKER_PUBLICATION_LOCK_NAME = ".gogurt.publish.lock"
 MAX_PATH_MARKER_BYTES = 4096
 PORTABLE_MARKER_MODE = 0o644
+_PUBLICATION_LOCK_MODE = 0o600
 WINDOWS_PROMOTION_SETTLE_SECONDS = 1.0
 WINDOWS_PROMOTION_RETRY_SECONDS = 0.01
 WINDOWS_TRANSIENT_PROMOTION_ERRORS = frozenset({5, 32})
@@ -34,12 +35,13 @@ def _marker_publication_lock(mount_point: Path) -> Iterator[None]:
     flags |= getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(lock_path, flags, PORTABLE_MARKER_MODE)
+    descriptor = os.open(lock_path, flags, _PUBLICATION_LOCK_MODE)
     try:
         info = os.fstat(descriptor)
         if not stat.S_ISREG(info.st_mode):
             raise ConfigError(f"gogurt marker publication lock is not regular: {lock_path}")
-        _set_portable_marker_mode(lock_path)
+        if os.name != "nt":
+            os.fchmod(descriptor, _PUBLICATION_LOCK_MODE)
         if os.name == "nt":
             import msvcrt
 
