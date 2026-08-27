@@ -25,11 +25,9 @@ from typing import Any, cast
 
 from config_validation import ConfigError
 from gogurt_core.core import (
-    DEFAULT_GOGURT_MARKER_NAME,
     plan_gogurt_action,
     revalidate_gogurt_action,
     validate_gogurt_action_executables,
-    validate_gogurt_marker_name,
 )
 from gogurt_core.mounts import MountedVolumeProvider, validate_gogurt_interval
 from gogurt_core.providers import GogurtProviderReference
@@ -117,7 +115,6 @@ class ListenerConfig:
     executable: Path
     routes_file: Path
     actions_dir: Path | None
-    marker_name: str
     interval_seconds: float
     state_dir: Path
     product_version: str
@@ -144,7 +141,6 @@ class ListenerConfig:
             "executable": str(self.executable),
             "routes_file": str(self.routes_file),
             "actions_dir": str(self.actions_dir) if self.actions_dir is not None else None,
-            "marker_name": self.marker_name,
             "interval_seconds": self.interval_seconds,
             "state_dir": str(self.state_dir),
             "mounted_volume_provider": self.mounted_volume_provider.as_dict(),
@@ -180,7 +176,6 @@ class ListenerConfig:
             "executable",
             "routes_file",
             "actions_dir",
-            "marker_name",
             "interval_seconds",
             "state_dir",
             "mounted_volume_provider",
@@ -212,12 +207,6 @@ class ListenerConfig:
             raise ListenerError("Gogurt listener paths must be absolute")
         if actions_dir is not None and not actions_dir.is_absolute():
             raise ListenerError("Gogurt listener actions directory must be absolute")
-        if not isinstance(raw["marker_name"], str):
-            raise ListenerError("installed Gogurt listener marker name must be a string")
-        try:
-            validate_gogurt_marker_name(raw["marker_name"])
-        except ConfigError as exc:
-            raise ListenerError("installed Gogurt listener marker name is invalid") from exc
         try:
             mounted_volume_provider = GogurtProviderReference.from_mapping(
                 raw["mounted_volume_provider"]
@@ -229,7 +218,6 @@ class ListenerConfig:
                 executable=executable,
                 routes_file=routes_file,
                 actions_dir=actions_dir,
-                marker_name=raw["marker_name"],
                 interval_seconds=interval,
                 state_dir=state_dir,
                 product_version=expected_product_version,
@@ -304,7 +292,6 @@ def _require_matching_state(config: ListenerConfig, paths: ListenerRuntimePaths)
 def _validate_global_configuration(config: ListenerConfig, paths: ListenerRuntimePaths) -> None:
     _require_matching_state(config, paths)
     _listener_interval(config.interval_seconds)
-    validate_gogurt_marker_name(config.marker_name)
     if not config.executable.is_file() or (
         sys.platform != "win32" and not os.access(config.executable, os.X_OK)
     ):
@@ -796,7 +783,6 @@ class ListenerRuntime:
                 mount_point,
                 provider=self.mounted_volume_provider,
                 actions_dir=self.config.actions_dir,
-                marker_name=self.config.marker_name,
             )
         except (ConfigError, ListenerError, OSError, UnicodeError, ValueError) as exc:
             diagnostic = _safe_diagnostic("mount input", exc)
@@ -1489,7 +1475,6 @@ def install_listener(
     routes_file: Path,
     *,
     actions_dir: Path | None,
-    marker_name: str = DEFAULT_GOGURT_MARKER_NAME,
     interval_seconds: float = 2.0,
     executable: Path,
     paths: ListenerRuntimePaths,
@@ -1501,7 +1486,6 @@ def install_listener(
 ) -> dict[str, object]:
     expected_product_version = _validated_product_version(product_version)
     routes = routes_file.expanduser().resolve()
-    validate_gogurt_marker_name(marker_name)
     actions = actions_dir.expanduser().resolve() if actions_dir is not None else None
     if actions is not None and not actions.is_dir():
         raise NotADirectoryError(actions)
@@ -1514,7 +1498,6 @@ def install_listener(
         executable=resolved_executable,
         routes_file=routes,
         actions_dir=actions,
-        marker_name=marker_name,
         interval_seconds=interval,
         state_dir=resolved_paths.state_dir,
         product_version=expected_product_version,

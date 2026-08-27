@@ -10,7 +10,6 @@ import typer
 from config_validation import ConfigError
 from gogurt_core.core import (
     DEFAULT_GOGURT_CONFIG_FILENAME,
-    DEFAULT_GOGURT_MARKER_NAME,
     GOGURT_EMOJI,
     execute_gogurt_action,
     load_gogurt_actions,
@@ -291,7 +290,6 @@ def _run_mount(
     provider: ResolvedMountedVolumeProvider,
     config: Path,
     actions_dir: Path | None,
-    marker_name: str,
     autorun: bool,
     dry_run: bool,
 ) -> int:
@@ -300,7 +298,6 @@ def _run_mount(
         mount_point,
         provider=provider,
         actions_dir=actions_dir,
-        marker_name=marker_name,
     )
     if plan["status"] == "unmarked":
         return 0
@@ -344,10 +341,6 @@ def run_cmd(
         Path | None,
         typer.Option("--actions-dir", help="Directory containing configured action commands."),
     ] = None,
-    marker_name: Annotated[
-        str,
-        typer.Option("--marker-name", help="Marker file name at the mount root."),
-    ] = DEFAULT_GOGURT_MARKER_NAME,
     autorun: Annotated[
         bool,
         typer.Option("--autorun", help="Explicitly allow unattended action execution."),
@@ -365,7 +358,6 @@ def run_cmd(
         provider=_resolve_mounted_volume(mounted_volume_provider),
         config=config,
         actions_dir=actions_dir,
-        marker_name=marker_name,
         autorun=autorun,
         dry_run=dry_run,
     )
@@ -400,10 +392,6 @@ def watch_cmd(
         Path | None,
         typer.Option("--actions-dir", help="Directory containing configured action commands."),
     ] = None,
-    marker_name: Annotated[
-        str,
-        typer.Option("--marker-name", help="Marker file name at each mount root."),
-    ] = DEFAULT_GOGURT_MARKER_NAME,
     interval_seconds: Annotated[
         float,
         typer.Option(
@@ -443,7 +431,6 @@ def watch_cmd(
                     provider=provider,
                     config=config,
                     actions_dir=actions_dir,
-                    marker_name=marker_name,
                     autorun=autorun,
                     dry_run=dry_run,
                 )
@@ -475,10 +462,6 @@ def listener_install_cmd(
         Path | None,
         typer.Option("--actions-dir", help="Directory containing configured action commands."),
     ] = None,
-    marker_name: Annotated[
-        str,
-        typer.Option("--marker-name", help="Marker file name at each mount root."),
-    ] = DEFAULT_GOGURT_MARKER_NAME,
     interval_seconds: Annotated[
         float,
         typer.Option(
@@ -505,7 +488,6 @@ def listener_install_cmd(
     payload = install_listener(
         config,
         actions_dir=actions_dir,
-        marker_name=marker_name,
         interval_seconds=interval_seconds,
         executable=host.executable(),
         paths=host.paths(),
@@ -668,10 +650,6 @@ def write_cmd(
         Path,
         typer.Option("--config", help="Gogurt route YAML file."),
     ] = Path(DEFAULT_GOGURT_CONFIG_FILENAME),
-    marker_name: Annotated[
-        str,
-        typer.Option("--marker-name", help="Marker file name written at the mount root."),
-    ] = DEFAULT_GOGURT_MARKER_NAME,
     force: Annotated[
         bool,
         typer.Option("--force", help="Replace a different marker value."),
@@ -683,7 +661,7 @@ def write_cmd(
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     mounted_volume_provider: MountedVolumeProviderOption = None,
 ) -> None:
-    """Write a Gogurt marker file to a mounted volume."""
+    """Publish a logical Gogurt route marker through the selected provider."""
 
     provider = _resolve_mounted_volume(mounted_volume_provider)
 
@@ -693,7 +671,6 @@ def write_cmd(
             route,
             mount_point,
             provider=provider,
-            marker_name=marker_name,
             force=force,
         )
         if json_mode:
@@ -702,18 +679,60 @@ def write_cmd(
         typer.echo("gogurt write dry-run")
         typer.echo(f"status: {plan.get('status', 'unknown')}")
         typer.echo(f"route: {plan.get('route', 'unknown')}")
-        typer.echo(f"marker: {plan.get('marker', 'unknown')}")
-        typer.echo(f"content: {str(plan.get('content', '')).rstrip()}")
+        marker_payload = plan.get("marker")
+        marker_format = (
+            marker_payload.get("format", "unknown")
+            if isinstance(marker_payload, dict)
+            else "unknown"
+        )
+        typer.echo(f"marker format: {marker_format}")
+        typer.echo(f"mount: {plan.get('mount_point', 'unknown')}")
+        provider_payload = plan.get("mounted_volume_provider")
+        if isinstance(provider_payload, dict):
+            typer.echo(f"provider: {provider_payload.get('name', 'unknown')}")
+            typer.echo(f"provider identity: {provider_payload.get('provider_id', 'unknown')}")
+            if provider_payload.get("distribution") is not None:
+                typer.echo(f"provider distribution: {provider_payload['distribution']}")
+                typer.echo(f"provider version: {provider_payload.get('version', 'unknown')}")
+        else:
+            typer.echo("provider: unknown")
+            typer.echo("provider identity: unknown")
+        typer.echo(f"force: {str(bool(plan.get('force'))).lower()}")
+        typer.echo(f"exists: {str(bool(plan.get('exists'))).lower()}")
         return
-    marker = write_gogurt_marker(
+    observation = write_gogurt_marker(
         config,
         route,
         mount_point,
         provider=provider,
-        marker_name=marker_name,
         force=force,
     )
-    emit({"marker": str(marker)} if json_mode else str(marker), json_mode=json_mode)
+    payload = {
+        "mount_point": str(mount_point.expanduser().resolve()),
+        "mounted_volume_provider": provider.reference.as_dict(),
+        "marker": observation.marker.as_dict(),
+        "marker_identity": observation.identity,
+    }
+    human = "\n".join(
+        (
+            "gogurt marker published",
+            f"route: {observation.marker.route}",
+            f"marker format: {observation.marker.format}",
+            f"mount: {payload['mount_point']}",
+            f"provider: {provider.reference.name}",
+            f"provider identity: {provider.reference.provider_id}",
+            *(
+                (
+                    f"provider distribution: {provider.reference.distribution}",
+                    f"provider version: {provider.reference.version}",
+                )
+                if provider.reference.distribution is not None
+                else ()
+            ),
+            f"marker identity: {observation.identity}",
+        )
+    )
+    emit(payload if json_mode else human, json_mode=json_mode)
 
 
 def _json_requested(argv: list[str]) -> bool:

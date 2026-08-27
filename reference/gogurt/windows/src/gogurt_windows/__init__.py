@@ -304,7 +304,7 @@ def discover_mount_points() -> tuple[Path, ...]:
 
 
 MOUNTED_VOLUME_PROVIDER_BINDING = MountedVolumeProviderBinding(
-    provider_id="gogurt-windows-mounted-volume-provider/v1",
+    provider_id="gogurt-windows-path-route-line-provider/v1",
     access=PathMountedVolumeAccess(discover_mount_points),
 )
 LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(

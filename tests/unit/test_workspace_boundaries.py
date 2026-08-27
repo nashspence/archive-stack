@@ -432,6 +432,24 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
         gogurt_native_roots | {"gogurt", "gogurt_path_volume_support"}
     )
 
+    generic_marker_sources = (
+        REPO / "packages/gogurt-core/src/gogurt_core/mounts.py",
+        REPO / "packages/gogurt-core/src/gogurt_core/core.py",
+        REPO / "packages/gogurt-listener-runtime/src/gogurt_listener_runtime/listener.py",
+        REPO / "utilities/gogurt/src/gogurt/cli.py",
+        REPO / "utilities/gogurt/src/gogurt/providers.py",
+    )
+    for source in generic_marker_sources:
+        text = source.read_text(encoding="utf-8")
+        assert "marker_name" not in text
+        assert '".gogurt"' not in text
+
+    path_support = (
+        REPO / "packages/gogurt-path-volume-support/src/gogurt_path_volume_support/__init__.py"
+    ).read_text(encoding="utf-8")
+    assert 'PATH_MARKER_NAME = ".gogurt"' in path_support
+    assert 'f"{document.route}\\n".encode()' in path_support
+
     platform_contracts = {
         "linux": "riverhog-provenance-linux-contracts",
         "macos": "riverhog-provenance-macos-contracts",

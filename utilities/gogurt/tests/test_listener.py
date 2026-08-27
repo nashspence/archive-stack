@@ -137,7 +137,6 @@ def _fixture(tmp_path: Path) -> tuple[ListenerConfig, ListenerRuntimePaths, Path
         executable=Path(sys.executable),
         routes_file=routes,
         actions_dir=None,
-        marker_name=".gogurt",
         interval_seconds=0.1,
         state_dir=paths.state_dir,
         product_version=TEST_PRODUCT_VERSION,
@@ -300,7 +299,6 @@ def test_same_route_marker_write_does_not_create_a_second_dispatch(tmp_path: Pat
     assert store.start_dispatch(dispatch_id, now=2) is not None
     assert store.finish_dispatch(dispatch_id, return_code=0, error=None, now=3) == "completed"
 
-    marker = mount / config.marker_name
     marker_identity = core_plan_gogurt_action(
         config.routes_file,
         mount,
@@ -312,8 +310,8 @@ def test_same_route_marker_write_does_not_create_a_second_dispatch(tmp_path: Pat
             "camera",
             mount,
             provider=provider,
-        )
-        == marker
+        ).identity
+        == marker_identity
     )
     queued = store.observe(
         [mount],
@@ -532,7 +530,6 @@ def test_interrupted_dispatch_becomes_observable_uncertain_state(tmp_path: Path)
             "status": "ready",
             "route": "camera",
             "mount_point": str(value),
-            "marker": str(value / ".gogurt"),
             "marker_identity": "identity",
             "command": [sys.executable, "-c", "pass"],
         },
@@ -716,7 +713,6 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         executable=config.executable,
         routes_file=config.routes_file,
         actions_dir=config.actions_dir,
-        marker_name=config.marker_name,
         interval_seconds=3600,
         state_dir=config.state_dir,
         product_version=TEST_PRODUCT_VERSION,
@@ -1075,30 +1071,6 @@ def test_exact_healthy_install_is_idempotent_without_native_process_churn(
     assert paths.config_file.read_bytes() == existing_content
 
 
-def test_install_rejects_invalid_marker_name_before_registration(tmp_path: Path) -> None:
-    config, paths, _mount, _counter = _fixture(tmp_path)
-    executable = tmp_path / "installed" / "gogurt"
-    executable.parent.mkdir()
-    executable.write_text("fixture", encoding="utf-8")
-    executable.chmod(0o755)
-    adapter = FakeAdapter()
-
-    with pytest.raises(ConfigError, match="invalid gogurt marker name"):
-        install_listener(
-            config.routes_file,
-            actions_dir=None,
-            marker_name="nested/.gogurt",
-            executable=executable,
-            paths=paths,
-            adapter=adapter,
-            wait_for_health=False,
-        )
-
-    assert adapter.register_calls == 0
-    assert adapter.stop_calls == 0
-    assert not paths.config_file.exists()
-
-
 def test_install_rejects_missing_static_action_before_registration(tmp_path: Path) -> None:
     config, paths, _mount, _counter = _fixture(tmp_path)
     config.routes_file.write_text(
@@ -1166,7 +1138,6 @@ def test_impossible_mount_executable_is_rejected_before_and_after_registration(
         executable=executable.resolve(),
         routes_file=config.routes_file,
         actions_dir=None,
-        marker_name=".gogurt",
         interval_seconds=0.1,
         state_dir=paths.state_dir,
         product_version=TEST_PRODUCT_VERSION,
@@ -1209,7 +1180,6 @@ def test_missing_installed_static_action_reports_failed_health_without_dispatch(
         executable=config.executable,
         routes_file=config.routes_file,
         actions_dir=actions_dir,
-        marker_name=config.marker_name,
         interval_seconds=config.interval_seconds,
         state_dir=config.state_dir,
         product_version=TEST_PRODUCT_VERSION,
@@ -1727,7 +1697,6 @@ def test_invalid_and_unavailable_mounts_are_isolated_from_valid_dispatch(
         *,
         provider: FixtureMountedVolumeProvider,
         actions_dir: str | os.PathLike[str] | None = None,
-        marker_name: str = ".gogurt",
     ) -> dict[str, object]:
         if Path(str(mount_point)) == unavailable_mount:
             raise OSError("media disappeared")
@@ -1736,7 +1705,6 @@ def test_invalid_and_unavailable_mounts_are_isolated_from_valid_dispatch(
             mount_point,
             provider=provider,
             actions_dir=actions_dir,
-            marker_name=marker_name,
         )
 
     monkeypatch.setattr(listener_module, "plan_gogurt_action", plan_with_unavailable_mount)

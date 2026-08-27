@@ -9,9 +9,24 @@ from gogurt_core.mounts import (
     iter_new_mounts,
     validate_gogurt_interval,
 )
+from gogurt_linux import MOUNTED_VOLUME_PROVIDER_BINDING as LINUX_MOUNTED_VOLUME_PROVIDER
 from gogurt_linux import linux_mount_points
+from gogurt_macos import MOUNTED_VOLUME_PROVIDER_BINDING as MACOS_MOUNTED_VOLUME_PROVIDER
 from gogurt_macos import macos_mount_points
+from gogurt_windows import MOUNTED_VOLUME_PROVIDER_BINDING as WINDOWS_MOUNTED_VOLUME_PROVIDER
 from gogurt_windows import windows_mount_points
+
+
+def test_reference_provider_identities_seal_the_path_route_line_representation() -> None:
+    assert {
+        LINUX_MOUNTED_VOLUME_PROVIDER.provider_id,
+        MACOS_MOUNTED_VOLUME_PROVIDER.provider_id,
+        WINDOWS_MOUNTED_VOLUME_PROVIDER.provider_id,
+    } == {
+        "gogurt-linux-path-route-line-provider/v1",
+        "gogurt-macos-path-route-line-provider/v1",
+        "gogurt-windows-path-route-line-provider/v1",
+    }
 
 
 def test_linux_mount_discovery_decodes_mountinfo_paths(tmp_path: Path) -> None:

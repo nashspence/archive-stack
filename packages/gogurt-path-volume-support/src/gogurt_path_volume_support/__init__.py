@@ -12,8 +12,10 @@ from hashlib import sha256
 from pathlib import Path
 
 from config_validation import ConfigError
-from gogurt_core.mounts import MountedMarkerSnapshot
+from gogurt_core.mounts import GogurtRouteMarker, MountedMarkerObservation
 
+PATH_MARKER_NAME = ".gogurt"
+MAX_PATH_MARKER_BYTES = 4096
 PORTABLE_MARKER_MODE = 0o644
 WINDOWS_PROMOTION_SETTLE_SECONDS = 1.0
 WINDOWS_PROMOTION_RETRY_SECONDS = 0.01
@@ -84,7 +86,7 @@ def _publish_complete_file(destination: Path, content: bytes) -> None:
 
 @dataclass(frozen=True, slots=True)
 class PathMountedVolumeAccess:
-    """Safe marker mechanics for ordinary local path-mounted volumes."""
+    """Safe `.gogurt` line representation for ordinary local path volumes."""
 
     discover_mounts: Callable[[], Sequence[Path]]
 
@@ -94,20 +96,17 @@ class PathMountedVolumeAccess:
     def observe_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        *,
-        max_bytes: int,
-    ) -> MountedMarkerSnapshot | None:
+    ) -> MountedMarkerObservation | None:
         _require_volume_root(mount_point)
-        marker = mount_point / marker_name
+        marker = mount_point / PATH_MARKER_NAME
         try:
             initial = marker.lstat()
         except FileNotFoundError:
             return None
         if not stat.S_ISREG(initial.st_mode) or marker.is_symlink():
             raise ConfigError(f"gogurt marker must be a regular file: {marker}")
-        if initial.st_size > max_bytes:
-            raise ConfigError(f"gogurt marker exceeds {max_bytes} bytes: {marker}")
+        if initial.st_size > MAX_PATH_MARKER_BYTES:
+            raise ConfigError(f"gogurt path marker exceeds {MAX_PATH_MARKER_BYTES} bytes: {marker}")
 
         flags = os.O_RDONLY
         flags |= getattr(os, "O_BINARY", 0)
@@ -118,14 +117,16 @@ class PathMountedVolumeAccess:
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode):
                 raise ConfigError(f"gogurt marker must be a regular file: {marker}")
-            if opened.st_size > max_bytes:
-                raise ConfigError(f"gogurt marker exceeds {max_bytes} bytes: {marker}")
-            content = os.read(descriptor, max_bytes + 1)
+            if opened.st_size > MAX_PATH_MARKER_BYTES:
+                raise ConfigError(
+                    f"gogurt path marker exceeds {MAX_PATH_MARKER_BYTES} bytes: {marker}"
+                )
+            content = os.read(descriptor, MAX_PATH_MARKER_BYTES + 1)
             final = os.fstat(descriptor)
         finally:
             os.close(descriptor)
-        if len(content) > max_bytes:
-            raise ConfigError(f"gogurt marker exceeds {max_bytes} bytes: {marker}")
+        if len(content) > MAX_PATH_MARKER_BYTES:
+            raise ConfigError(f"gogurt path marker exceeds {MAX_PATH_MARKER_BYTES} bytes: {marker}")
         if (
             initial.st_dev,
             initial.st_ino,
@@ -148,25 +149,49 @@ class PathMountedVolumeAccess:
             final.st_mtime_ns,
         ):
             raise ConfigError(f"gogurt marker changed while it was read: {marker}")
-        return MountedMarkerSnapshot(content=content, identity=_marker_identity(final, content))
+        try:
+            text = content.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ConfigError(f"gogurt path marker must be strict UTF-8: {marker}") from exc
+        lines = text.splitlines()
+        if (
+            len(lines) != 1
+            or not lines[0]
+            or lines[0] != lines[0].strip()
+            or content != f"{lines[0]}\n".encode()
+        ):
+            raise ConfigError(f"gogurt path marker must contain one exact route: {marker}")
+        try:
+            document = GogurtRouteMarker(lines[0])
+        except ValueError as exc:
+            raise ConfigError(f"invalid gogurt route in path marker: {marker}") from exc
+        return MountedMarkerObservation(
+            marker=document,
+            identity=_marker_identity(final, content),
+        )
 
     def publish_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        content: bytes,
-    ) -> MountedMarkerSnapshot:
+        document: GogurtRouteMarker,
+    ) -> MountedMarkerObservation:
         _require_volume_root(mount_point)
-        marker = mount_point / marker_name
+        if not isinstance(document, GogurtRouteMarker):
+            raise TypeError("Gogurt path-volume publication requires a logical route marker")
+        marker = mount_point / PATH_MARKER_NAME
+        content = f"{document.route}\n".encode()
         _publish_complete_file(marker, content)
-        observed = self.observe_marker(
-            mount_point,
-            marker_name,
-            max_bytes=len(content),
-        )
+        observed = self.observe_marker(mount_point)
         if observed is None:
             raise OSError(f"Gogurt marker was absent after publication: {marker}")
+        if observed.marker != document:
+            raise ConfigError(f"Gogurt path marker differs after publication: {marker}")
         return observed
 
 
-__all__ = ["PathMountedVolumeAccess"]
+__all__ = [
+    "MAX_PATH_MARKER_BYTES",
+    "PATH_MARKER_NAME",
+    "PORTABLE_MARKER_MODE",
+    "PathMountedVolumeAccess",
+]

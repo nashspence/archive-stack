@@ -4,7 +4,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from gogurt_core.mounts import MountedMarkerSnapshot
+from gogurt_core.mounts import GogurtRouteMarker, MountedMarkerObservation
 from gogurt_core.providers import GogurtProviderReference
 from gogurt_path_volume_support import PathMountedVolumeAccess
 
@@ -20,26 +20,22 @@ class FixtureMountedVolumeProvider:
     def observe_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        *,
-        max_bytes: int,
-    ) -> MountedMarkerSnapshot | None:
-        return self.access.observe_marker(mount_point, marker_name, max_bytes=max_bytes)
+    ) -> MountedMarkerObservation | None:
+        return self.access.observe_marker(mount_point)
 
     def publish_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        content: bytes,
-    ) -> MountedMarkerSnapshot:
-        return self.access.publish_marker(mount_point, marker_name, content)
+        marker: GogurtRouteMarker,
+    ) -> MountedMarkerObservation:
+        return self.access.publish_marker(mount_point, marker)
 
 
 def path_mounted_volume_provider(
     discover: Callable[[], Sequence[Path]] = tuple,
     *,
     name: str = "test-path-volume",
-    provider_id: str = "test-path-mounted-volume-provider/v1",
+    provider_id: str = "test-path-route-line-provider/v1",
 ) -> FixtureMountedVolumeProvider:
     return FixtureMountedVolumeProvider(
         reference=GogurtProviderReference(
