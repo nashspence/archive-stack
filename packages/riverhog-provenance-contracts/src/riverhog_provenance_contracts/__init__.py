@@ -10,7 +10,12 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 
 import rfc8785
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 
 CANONICAL_UUID_URN_PATTERN = (
     r"^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -44,6 +49,43 @@ def _canonical_json(value: Mapping[str, Any]) -> bytes:
     return rfc8785.dumps(dict(value))
 
 
+def _validate_schema_pack(
+    schemas: Mapping[str, dict[str, Any]],
+    *,
+    owner: str,
+) -> None:
+    resources: list[tuple[str, Any]] = []
+    for identifier, document in schemas.items():
+        try:
+            Draft202012Validator.check_schema(document)
+        except SchemaError as exc:
+            raise ValueError(
+                f"{owner} schema is not valid JSON Schema Draft 2020-12: {identifier}"
+            ) from exc
+        resources.append((identifier, DRAFT202012.create_resource(document)))
+
+    registry = Registry().with_resources(resources)
+
+    def visit(contents: Any, resolver: Any) -> None:
+        if isinstance(contents, dict):
+            for keyword in ("$ref", "$dynamicRef"):
+                reference = contents.get(keyword)
+                if reference is None:
+                    continue
+                try:
+                    resolver.lookup(reference)
+                except Unresolvable as exc:
+                    raise ValueError(
+                        f"{owner} schema reference is outside its sealed contract pack: {reference}"
+                    ) from exc
+        for subcontents in DRAFT202012.subresources_of(contents):
+            subresource = DRAFT202012.create_resource(subcontents)
+            visit(subcontents, resolver.in_subresource(subresource))
+
+    for identifier, document in schemas.items():
+        visit(document, registry.resolver(identifier))
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class ProvenanceContractBinding:
     """One immutable, content-addressed provenance observation contract pack."""
@@ -64,6 +106,7 @@ class ProvenanceContractBinding:
         indexed = index_schema_documents(schemas, owner=contract_id)
         if not indexed:
             raise ValueError("provenance contract pack must contain at least one schema")
+        _validate_schema_pack(indexed, owner=contract_id)
         document = {
             "format": PROVENANCE_CONTRACT_BINDING_FORMAT,
             "contract_id": contract_id,
