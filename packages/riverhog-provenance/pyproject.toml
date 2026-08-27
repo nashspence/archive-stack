@@ -20,6 +20,7 @@ classifiers = [
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "jsonschema>=4.23,<5.0",
+  "referencing>=0.37,<0.38",
   "riverhog-provenance-contracts>=0.1,<0.2",
 ]
 
