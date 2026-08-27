@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
 from config_validation import ConfigError
 from gogurt_core.mounts import GogurtRouteMarker
-from gogurt_path_volume_support import PATH_MARKER_NAME, PathMountedVolumeAccess
+from gogurt_path_volume_support import (
+    PATH_MARKER_NAME,
+    PATH_MARKER_PUBLICATION_LOCK_NAME,
+    PathMountedVolumeAccess,
+)
 
 
 def test_path_provider_owns_the_complete_route_line_representation(tmp_path: Path) -> None:
@@ -18,6 +24,9 @@ def test_path_provider_owns_the_complete_route_line_representation(tmp_path: Pat
     assert (tmp_path / PATH_MARKER_NAME).read_bytes() == b"camera\n"
     assert published.marker == document
     assert restarted == published
+    if os.name != "nt":
+        lock_mode = stat.S_IMODE((tmp_path / PATH_MARKER_PUBLICATION_LOCK_NAME).stat().st_mode)
+        assert lock_mode == 0o600
 
 
 @pytest.mark.parametrize(
