@@ -20,6 +20,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from referencing import Registry
+from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 from riverhog_protocol.collection_workflows import (
     CollectionRootIdentity,
     OperationIdentity,
@@ -80,6 +83,39 @@ def _operation_payload(operation: OperationIdentity) -> dict[str, object]:
     return operation.as_dict()
 
 
+def _validate_local_schema_reference_closure(document: dict[str, JsonValue]) -> None:
+    resource = DRAFT202012.create_resource(document)
+    identifier = document.get("$id")
+    base_uri = (
+        identifier
+        if isinstance(identifier, str)
+        else f"urn:stove0:json-schema:{canonical_json_sha256(document)}"
+    )
+    resolver = Registry().with_resource(base_uri, resource).resolver(base_uri)
+
+    def visit(contents: JsonValue, current_resolver: Any) -> None:
+        if isinstance(contents, dict):
+            for keyword in ("$ref", "$dynamicRef"):
+                reference = contents.get(keyword)
+                if reference is None:
+                    continue
+                if not isinstance(reference, str) or not reference.startswith("#"):
+                    raise ValueError(
+                        "schema references must resolve within the sealed schema document"
+                    )
+                try:
+                    current_resolver.lookup(reference)
+                except Unresolvable as exc:
+                    raise ValueError(
+                        "schema reference does not resolve within the sealed schema document"
+                    ) from exc
+        for subcontents in DRAFT202012.subresources_of(contents):
+            subresource = DRAFT202012.create_resource(subcontents)
+            visit(subcontents, current_resolver.in_subresource(subresource))
+
+    visit(document, resolver)
+
+
 class Stove0ProtocolModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -97,6 +133,7 @@ class JsonSchemaDocument(Stove0ProtocolModel):
             Draft202012Validator.check_schema(self.document)
         except SchemaError as exc:
             raise ValueError("schema is not valid JSON Schema Draft 2020-12") from exc
+        _validate_local_schema_reference_closure(self.document)
         return self
 
     @classmethod

@@ -53,6 +53,10 @@ from stove0_protocol import (
     WorkPayload,
 )
 from stove0_target_client import TargetClient, TargetProtocolError
+from stove0_target_protocol import (
+    SemanticIntentConformanceVector,
+    SemanticIntentConformanceVectors,
+)
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     EFFECT_TARGET_PROTOCOL,
@@ -263,9 +267,10 @@ def _controller_evidence(
     return ControllerEvidence.seal(ControllerEvidencePayload(execution_envelope=envelope))
 
 
-def _request() -> tuple[OperationContract, TargetContract, TargetJobRequest]:
-    operation = _operation()
-    target = _target(operation)
+def _request_for(
+    operation: OperationContract,
+    target: TargetContract,
+) -> TargetJobRequest:
     plan = _plan(operation, target)
     evidence = _controller_evidence(operation, target, plan)
     declaration = TargetJobDeclaration(
@@ -283,7 +288,13 @@ def _request() -> tuple[OperationContract, TargetContract, TargetJobRequest]:
             capability_token="first-secret",
         ),
     )
-    return operation, target, request
+    return request
+
+
+def _request() -> tuple[OperationContract, TargetContract, TargetJobRequest]:
+    operation = _operation()
+    target = _target(operation)
+    return operation, target, _request_for(operation, target)
 
 
 def _effect_request() -> tuple[OperationContract, TargetContract, TargetJobRequest]:
@@ -742,6 +753,150 @@ def test_conformance_report_proves_preflight_and_idempotent_submission() -> None
     )
     assert report["status"] == "conformant"
     assert report["transport"] == "riverhog-capability/v1"
+    assert report["semantic_conformance"]["status"] == "schema-only"
+    assert report["operations"][0]["semantic_conformance"] == "schema-only"
+
+
+def test_contract_only_target_report_does_not_claim_execution_conformance() -> None:
+    operation, target, request = _request()
+    report = conformance_report(
+        FixtureTargetClient(target, request, _success_status(operation, request))
+    )
+
+    assert report["status"] == "contract-inspected"
+    assert report["operations"][0]["semantic_conformance"] == "not-exercised"
+
+
+def test_target_conformance_executes_the_exact_advertised_semantic_vectors() -> None:
+    vectors = SemanticIntentConformanceVectors(
+        profile_id="fixture.copy-intent-semantics/v1",
+        vectors=(
+            SemanticIntentConformanceVector(
+                id="accepted",
+                accepted=True,
+                intent={"suffix": ".accepted"},
+            ),
+            SemanticIntentConformanceVector(
+                id="rejected",
+                accepted=False,
+                intent={"suffix": ".rejected"},
+            ),
+        ),
+    )
+    base = _operation()
+    semantics = SemanticValidationProfile.seal(
+        SemanticValidationProfilePayload(
+            id=vectors.profile_id,
+            rules=("fixture.copy-intent.suffix-policy/v1",),
+            conformance_vectors_sha256=vectors.sha256,
+        )
+    )
+    payload = base.model_dump(mode="python", exclude={"contract_sha256"})
+    payload["intent_semantics"] = semantics
+    operation = OperationContract.seal(OperationContractPayload.model_validate(payload))
+    target = _target(operation)
+    request = _request_for(operation, target)
+    status = _success_status(operation, request)
+
+    class SemanticClient(FixtureTargetClient):
+        def __init__(self) -> None:
+            super().__init__(target, request, status)
+            self.preflight_intents: list[dict[str, object]] = []
+            self.job_submissions = 0
+
+        def preflight(
+            self,
+            received: TargetPreflightRequest,
+        ) -> TargetPreflightResponse:
+            self.preflight_intents.append(dict(received.intent))
+            if received.intent["suffix"] == ".rejected":
+                raise TargetProtocolError(
+                    "fixture semantic rejection",
+                    code="invalid_target_request",
+                    observed_status=400,
+                )
+            plan = TransformPlan.seal(
+                TransformPlanPayload(
+                    target_implementation_id=target.implementation_id,
+                    target_contract_sha256=target.contract_sha256,
+                    operation_id=received.operation_id,
+                    operation_contract_sha256=received.operation_contract_sha256,
+                    inputs=received.inputs,
+                    intent=received.intent,
+                    target_options=received.target_options,
+                    observation_result_sha256s=tuple(
+                        sorted(item.result.result_sha256 for item in received.observations)
+                    ),
+                )
+            )
+            return TargetPreflightResponse(target=target, plan=plan)
+
+        def put_job(
+            self,
+            received: TargetJobRequest,
+            *,
+            operation: OperationContract,
+        ) -> TargetJobStatus:
+            self.job_submissions += 1
+            return super().put_job(received, operation=operation)
+
+    client = SemanticClient()
+    report = conformance_report(
+        client,
+        operation=operation,
+        job_request=request,
+        semantic_vectors=vectors,
+    )
+
+    assert report["status"] == "conformant"
+    assert report["semantic_conformance"] == {
+        "profile_id": semantics.id,
+        "profile_sha256": semantics.profile_sha256,
+        "conformance_vectors_sha256": vectors.sha256,
+        "accepted_vector_ids": ["accepted"],
+        "rejected_vector_ids": ["rejected"],
+        "status": "exercised",
+    }
+    assert client.preflight_intents == [
+        {"suffix": ".accepted"},
+        {"suffix": ".rejected"},
+        {"suffix": ".copy"},
+    ]
+    assert client.job_submissions == 2
+
+
+def test_target_conformance_requires_semantic_vectors_before_any_job() -> None:
+    vectors = SemanticIntentConformanceVectors(
+        profile_id="fixture.copy-intent-semantics/v1",
+        vectors=(
+            SemanticIntentConformanceVector(
+                id="accepted",
+                accepted=True,
+                intent={"suffix": ".copy"},
+            ),
+            SemanticIntentConformanceVector(
+                id="rejected",
+                accepted=False,
+                intent={"suffix": ".rejected"},
+            ),
+        ),
+    )
+    base = _operation()
+    payload = base.model_dump(mode="python", exclude={"contract_sha256"})
+    payload["intent_semantics"] = SemanticValidationProfile.seal(
+        SemanticValidationProfilePayload(
+            id=vectors.profile_id,
+            rules=("fixture.copy-intent.suffix-policy/v1",),
+            conformance_vectors_sha256=vectors.sha256,
+        )
+    )
+    operation = OperationContract.seal(OperationContractPayload.model_validate(payload))
+    target = _target(operation)
+    request = _request_for(operation, target)
+    client = FixtureTargetClient(target, request, _success_status(operation, request))
+
+    with pytest.raises(ValueError, match="requires its exact semantic conformance vectors"):
+        conformance_report(client, operation=operation, job_request=request)
 
 
 def test_target_client_rejects_remote_plain_http_by_default() -> None:

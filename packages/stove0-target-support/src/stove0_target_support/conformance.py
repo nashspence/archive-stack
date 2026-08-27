@@ -9,9 +9,16 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from jsonschema import Draft202012Validator
-from stove0_target_client.client import TargetClient as HttpTargetClient
+from stove0_target_client.client import (
+    TargetClient as HttpTargetClient,
+)
+from stove0_target_client.client import (
+    TargetProtocolError,
+)
 from stove0_target_protocol import (
+    JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     OperationContract,
+    SemanticIntentConformanceVectors,
     TargetContract,
     TargetJobRequest,
     TargetJobStatus,
@@ -48,10 +55,33 @@ def conformance_report(
     *,
     operation: OperationContract | None = None,
     job_request: TargetJobRequest | None = None,
+    semantic_vectors: SemanticIntentConformanceVectors | None = None,
 ) -> dict[str, Any]:
     contract = client.contract()
+    operation_reports: list[dict[str, Any]] = []
+    for item in contract.operations:
+        entry: dict[str, Any] = {
+            "operation_id": item.operation_id,
+            "operation_contract_sha256": item.operation_contract_sha256,
+            "result_kind": item.result_kind,
+            "options_schema_sha256": item.options_schema.sha256,
+            "semantic_conformance": "not-exercised",
+        }
+        if operation is not None and operation.id == item.operation_id:
+            if operation.contract_sha256 != item.operation_contract_sha256:
+                raise RuntimeError("operation contract differs from the deployed target")
+            entry.update(
+                {
+                    "intent_semantics_id": operation.intent_semantics.id,
+                    "intent_semantics_sha256": operation.intent_semantics.profile_sha256,
+                    "intent_semantics_conformance_vectors_sha256": (
+                        operation.intent_semantics.conformance_vectors_sha256
+                    ),
+                }
+            )
+        operation_reports.append(entry)
     report: dict[str, Any] = {
-        "status": "conformant",
+        "status": "contract-inspected",
         "protocol": contract.protocol,
         "implementation_id": contract.implementation_id,
         "implementation_version": contract.implementation_version,
@@ -59,17 +89,11 @@ def conformance_report(
         "image_digest": contract.image_digest,
         "target_contract_sha256": contract.contract_sha256,
         "transport": contract.transport,
-        "operations": [
-            {
-                "operation_id": item.operation_id,
-                "operation_contract_sha256": item.operation_contract_sha256,
-                "result_kind": item.result_kind,
-                "options_schema_sha256": item.options_schema.sha256,
-            }
-            for item in contract.operations
-        ],
+        "operations": operation_reports,
     }
     if job_request is None:
+        if semantic_vectors is not None:
+            raise ValueError("semantic-vector conformance requires a job request")
         return report
     if operation is None:
         raise ValueError("job conformance requires the matching operation contract")
@@ -83,11 +107,72 @@ def conformance_report(
         raise RuntimeError("job request does not bind the deployed target contract")
     Draft202012Validator(operation.intent_schema.document).validate(declaration.plan.intent)
     Draft202012Validator(support.options_schema.document).validate(declaration.plan.target_options)
+    observations = declaration.controller_evidence.execution_envelope.workflow_plan.observations
+
+    semantic_proof: dict[str, Any]
+    if operation.intent_semantics == JSON_SCHEMA_ONLY_SEMANTIC_PROFILE:
+        if semantic_vectors is not None:
+            raise ValueError("schema-only operation does not accept semantic conformance vectors")
+        semantic_proof = {
+            "profile_id": operation.intent_semantics.id,
+            "profile_sha256": operation.intent_semantics.profile_sha256,
+            "status": "schema-only",
+        }
+    else:
+        expected_vectors_sha256 = operation.intent_semantics.conformance_vectors_sha256
+        if semantic_vectors is None:
+            raise ValueError(
+                "non-schema-only operation requires its exact semantic conformance vectors"
+            )
+        if (
+            semantic_vectors.profile_id != operation.intent_semantics.id
+            or semantic_vectors.sha256 != expected_vectors_sha256
+        ):
+            raise ValueError("semantic conformance vectors differ from the operation profile")
+        accepted_ids: list[str] = []
+        rejected_ids: list[str] = []
+        for vector in semantic_vectors.vectors:
+            Draft202012Validator(operation.intent_schema.document).validate(vector.intent)
+            vector_request = TargetPreflightRequest(
+                protocol=declaration.plan.protocol,
+                operation_id=declaration.plan.operation_id,
+                operation_contract_sha256=declaration.plan.operation_contract_sha256,
+                inputs=declaration.plan.inputs,
+                observations=observations,
+                intent=vector.intent,
+                target_options=declaration.plan.target_options,
+            )
+            try:
+                vector_preflight = client.preflight(vector_request)
+                validate_preflight_response_against_request(vector_preflight, vector_request)
+            except TargetProtocolError as exc:
+                if vector.accepted:
+                    raise RuntimeError(
+                        f"target rejected accepted semantic vector: {vector.id}"
+                    ) from exc
+                if exc.observed_status != 400 or exc.code != "invalid_target_request":
+                    raise RuntimeError(
+                        f"target did not semantically reject vector: {vector.id}"
+                    ) from exc
+                rejected_ids.append(vector.id)
+            else:
+                if not vector.accepted:
+                    raise RuntimeError(f"target accepted rejected semantic vector: {vector.id}")
+                accepted_ids.append(vector.id)
+        semantic_proof = {
+            "profile_id": operation.intent_semantics.id,
+            "profile_sha256": operation.intent_semantics.profile_sha256,
+            "conformance_vectors_sha256": semantic_vectors.sha256,
+            "accepted_vector_ids": accepted_ids,
+            "rejected_vector_ids": rejected_ids,
+            "status": "exercised",
+        }
     preflight_request = TargetPreflightRequest(
         protocol=declaration.plan.protocol,
         operation_id=declaration.plan.operation_id,
         operation_contract_sha256=declaration.plan.operation_contract_sha256,
         inputs=declaration.plan.inputs,
+        observations=observations,
         intent=declaration.plan.intent,
         target_options=declaration.plan.target_options,
     )
@@ -113,8 +198,13 @@ def conformance_report(
         second.plan_sha256,
     ):
         raise RuntimeError("target submission did not preserve the accepted job identity")
+    for operation_report in operation_reports:
+        if operation_report["operation_id"] == operation.id:
+            operation_report["semantic_conformance"] = semantic_proof["status"]
     report.update(
         {
+            "status": "conformant",
+            "semantic_conformance": semantic_proof,
             "preflight": preflight.model_dump(mode="json", exclude_none=True),
             "submission": second.model_dump(mode="json", exclude_none=True),
             "job_status": observed.model_dump(mode="json", exclude_none=True),
@@ -131,6 +221,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("base_url")
     parser.add_argument("--operation-contract", type=Path)
     parser.add_argument("--job-request", type=Path)
+    parser.add_argument("--semantic-vectors", type=Path)
     return parser
 
 
@@ -138,16 +229,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     operation = None
     request = None
+    semantic_vectors = None
     if args.operation_contract is not None:
         operation = OperationContract.model_validate_json(
             args.operation_contract.read_text(encoding="utf-8")
         )
     if args.job_request is not None:
         request = TargetJobRequest.model_validate_json(args.job_request.read_text(encoding="utf-8"))
+    if args.semantic_vectors is not None:
+        semantic_vectors = SemanticIntentConformanceVectors.model_validate_json(
+            args.semantic_vectors.read_text(encoding="utf-8")
+        )
     report = conformance_report(
         HttpTargetClient(args.base_url),
         operation=operation,
         job_request=request,
+        semantic_vectors=semantic_vectors,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

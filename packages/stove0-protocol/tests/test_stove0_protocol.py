@@ -61,6 +61,44 @@ def test_json_schema_document_rejects_invalid_draft_2020_12_schema() -> None:
         )
 
 
+def test_json_schema_document_seals_a_complete_local_reference_closure() -> None:
+    document = JsonSchemaDocument.from_schema(
+        "fixture.local-schema/v1",
+        {
+            "$defs": {"value": {"type": "string"}},
+            "properties": {"value": {"$ref": "#/$defs/value"}},
+            "additionalProperties": False,
+        },
+    )
+
+    assert document.document["properties"] == {"value": {"$ref": "#/$defs/value"}}
+
+
+@pytest.mark.parametrize(
+    "reference",
+    ["#/$defs/missing", "https://schemas.example/remote.json"],
+)
+def test_json_schema_document_rejects_unsealed_reference_authority(
+    reference: str,
+) -> None:
+    with pytest.raises(ValueError, match="sealed schema document"):
+        JsonSchemaDocument.from_schema(
+            "fixture.open-schema/v1",
+            {"properties": {"value": {"$ref": reference}}},
+        )
+
+
+def test_json_schema_document_resolves_local_dynamic_references() -> None:
+    JsonSchemaDocument.from_schema(
+        "fixture.dynamic-schema/v1",
+        {
+            "$dynamicAnchor": "node",
+            "type": "object",
+            "properties": {"child": {"$dynamicRef": "#node"}},
+        },
+    )
+
+
 def _sha(character: str) -> str:
     return character * 64
 
