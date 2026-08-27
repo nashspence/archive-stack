@@ -101,7 +101,11 @@ class FixtureMountedVolumeAccess:
         self,
         mount_point: Path,
         marker: GogurtRouteMarker,
+        *,
+        expected: MountedMarkerObservation | None,
     ) -> MountedMarkerObservation:
+        if self.observe_marker(mount_point) != expected:
+            raise ConfigError("gogurt marker changed before publication")
         self.markers[mount_point] = marker
         value = self.observe_marker(mount_point)
         assert value is not None
@@ -126,7 +130,10 @@ class InvalidPublicationAccess(FixtureMountedVolumeAccess):
         self,
         mount_point: Path,
         marker: GogurtRouteMarker,
+        *,
+        expected: MountedMarkerObservation | None,
     ) -> MountedMarkerObservation:
+        del expected
         return MountedMarkerObservation(
             marker=GogurtRouteMarker("different"),
             identity="wrong-publication",
@@ -348,7 +355,7 @@ def test_action_plan_rejects_a_different_provider_before_dispatch(
     _patch_entries(monkeypatch)
     provider = resolve_mounted_volume_provider("external-mount")
     root = _fixture_root("fixture-mount")
-    provider.publish_marker(root, GogurtRouteMarker("camera"))
+    provider.publish_marker(root, GogurtRouteMarker("camera"), expected=None)
     config = tmp_path / "routes.yaml"
     config.write_text(
         "schema_version: 1\nkind: gogurt.routes\nroutes:\n"
@@ -419,7 +426,9 @@ def test_installed_external_distribution_composes_without_workspace_registration
                 "        marker = self.markers.get(mount_point)",
                 "        if marker is None: return None",
                 "        return MountedMarkerObservation(marker, marker.route)",
-                "    def publish_marker(self, mount_point, marker):",
+                "    def publish_marker(self, mount_point, marker, *, expected):",
+                "        if self.observe_marker(mount_point) != expected:",
+                "            raise RuntimeError('marker changed')",
                 "        self.markers[mount_point] = marker",
                 "        return self.observe_marker(mount_point)",
                 "class Adapter:",
@@ -477,7 +486,6 @@ def test_installed_external_distribution_composes_without_workspace_registration
         actions_dir=None,
         interval_seconds=2,
         state_dir=tmp_path,
-        product_version="1.0",
         mounted_volume_provider=mount.reference,
         listener_host_provider=host.reference,
     )
@@ -487,7 +495,7 @@ def test_installed_external_distribution_composes_without_workspace_registration
     sys.modules.pop("external_gogurt", None)
     importlib.invalidate_caches()
 
-    restored = ListenerConfig.read(config_path, product_version="1.0")
+    restored = ListenerConfig.read(config_path)
     assert resolve_mounted_volume_provider(
         restored.mounted_volume_provider.name,
         expected=restored.mounted_volume_provider,

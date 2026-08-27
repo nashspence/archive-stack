@@ -6,20 +6,68 @@ import os
 import stat
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import Any, cast
 
 from config_validation import ConfigError
 from gogurt_core.mounts import GogurtRouteMarker, MountedMarkerObservation
 
 PATH_MARKER_NAME = ".gogurt"
+PATH_MARKER_PUBLICATION_LOCK_NAME = ".gogurt.publish.lock"
 MAX_PATH_MARKER_BYTES = 4096
 PORTABLE_MARKER_MODE = 0o644
 WINDOWS_PROMOTION_SETTLE_SECONDS = 1.0
 WINDOWS_PROMOTION_RETRY_SECONDS = 0.01
 WINDOWS_TRANSIENT_PROMOTION_ERRORS = frozenset({5, 32})
+
+
+@contextmanager
+def _marker_publication_lock(mount_point: Path) -> Iterator[None]:
+    """Serialize conditional publications made through this path provider."""
+
+    lock_path = mount_point / PATH_MARKER_PUBLICATION_LOCK_NAME
+    flags = os.O_RDWR | os.O_CREAT
+    flags |= getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_path, flags, PORTABLE_MARKER_MODE)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise ConfigError(f"gogurt marker publication lock is not regular: {lock_path}")
+        _set_portable_marker_mode(lock_path)
+        if os.name == "nt":
+            import msvcrt
+
+            windows_locking = cast(Any, msvcrt)
+            if info.st_size == 0:
+                os.write(descriptor, b"\0")
+                os.fsync(descriptor)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            windows_locking.locking(descriptor, windows_locking.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                import msvcrt
+
+                windows_locking = cast(Any, msvcrt)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                windows_locking.locking(descriptor, windows_locking.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def _marker_identity(info: os.stat_result, content: bytes) -> str:
@@ -169,14 +217,23 @@ class PathMountedVolumeAccess:
         self,
         mount_point: Path,
         document: GogurtRouteMarker,
+        *,
+        expected: MountedMarkerObservation | None,
     ) -> MountedMarkerObservation:
         _require_volume_root(mount_point)
         if not isinstance(document, GogurtRouteMarker):
             raise TypeError("Gogurt path-volume publication requires a logical route marker")
         marker = mount_point / PATH_MARKER_NAME
         content = f"{document.route}\n".encode()
-        _publish_complete_file(marker, content)
-        observed = self.observe_marker(mount_point)
+        with _marker_publication_lock(mount_point):
+            current = self.observe_marker(mount_point)
+            if expected is None:
+                if current is not None:
+                    raise FileExistsError(f"gogurt marker appeared before publication: {marker}")
+            elif current != expected:
+                raise ConfigError(f"gogurt marker changed before publication: {marker}")
+            _publish_complete_file(marker, content)
+            observed = self.observe_marker(mount_point)
         if observed is None:
             raise OSError(f"Gogurt marker was absent after publication: {marker}")
         if observed.marker != document:
@@ -187,6 +244,7 @@ class PathMountedVolumeAccess:
 __all__ = [
     "MAX_PATH_MARKER_BYTES",
     "PATH_MARKER_NAME",
+    "PATH_MARKER_PUBLICATION_LOCK_NAME",
     "PORTABLE_MARKER_MODE",
     "PathMountedVolumeAccess",
 ]

@@ -103,8 +103,6 @@ def _reference(
         kind=metadata.kind,
         name=metadata.name,
         provider_id=provider_id,
-        distribution=metadata.distribution,
-        version=metadata.version,
     )
 
 
@@ -149,8 +147,14 @@ class ResolvedMountedVolumeProvider:
         self,
         mount_point: Path,
         marker: GogurtRouteMarker,
+        *,
+        expected: MountedMarkerObservation | None,
     ) -> MountedMarkerObservation:
-        value = self.binding.access.publish_marker(mount_point, marker)
+        value = self.binding.access.publish_marker(
+            mount_point,
+            marker,
+            expected=expected,
+        )
         if not isinstance(value, MountedMarkerObservation):
             raise ConfigError(
                 "Gogurt mounted-volume provider returned an invalid marker observation"

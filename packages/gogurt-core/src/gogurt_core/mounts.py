@@ -95,8 +95,10 @@ class MountedVolumeAccess(Protocol):
         self,
         mount_point: Path,
         marker: GogurtRouteMarker,
+        *,
+        expected: MountedMarkerObservation | None,
     ) -> MountedMarkerObservation:
-        """Publish the logical marker and return its resulting observation."""
+        """Publish only if the marker is absent or exactly ``expected``."""
         ...
 
 

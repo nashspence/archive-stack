@@ -385,6 +385,7 @@ def plan_gogurt_marker(
         "exists": current is not None,
     }
     if current is not None:
+        plan["existing_marker"] = current.marker.as_dict()
         plan["existing_marker_identity"] = current.identity
     return plan
 
@@ -415,9 +416,20 @@ def write_gogurt_marker(
         return current
     _require_plan_provider(plan, provider)
     marker = GogurtRouteMarker(str(plan["route"]))
+    expected: MountedMarkerObservation | None = None
+    if plan["status"] == "would_replace":
+        try:
+            existing_marker = GogurtRouteMarker.from_mapping(plan.get("existing_marker"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("gogurt marker plan has no prior logical marker") from exc
+        existing_identity = plan.get("existing_marker_identity")
+        if not isinstance(existing_identity, str):
+            raise ValueError("gogurt marker plan has no prior observation identity")
+        expected = MountedMarkerObservation(existing_marker, existing_identity)
     observation = provider.publish_marker(
         Path(str(plan["mount_point"])),
         marker,
+        expected=expected,
     )
     if not isinstance(observation, MountedMarkerObservation):
         raise TypeError("Gogurt mounted-volume provider returned an invalid marker observation")

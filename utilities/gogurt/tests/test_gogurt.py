@@ -19,7 +19,7 @@ from gogurt_core.core import (
     route_for_gogurt_marker,
     write_gogurt_marker,
 )
-from gogurt_core.mounts import GogurtRouteMarker
+from gogurt_core.mounts import GogurtRouteMarker, MountedMarkerObservation
 from gogurt_core.providers import GogurtProviderReference
 from gogurt_listener_runtime.listener import ListenerError
 from gogurt_path_volume_support import MAX_PATH_MARKER_BYTES, PATH_MARKER_NAME
@@ -244,6 +244,45 @@ def test_write_gogurt_marker_refuses_to_replace_different_route(tmp_path: Path) 
         force=True,
     )
     assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
+
+
+def test_write_transports_the_planned_observation_as_a_provider_precondition(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / PATH_MARKER_NAME
+    marker.write_bytes(b"other\n")
+
+    class RacingProvider:
+        reference = PROVIDER.reference
+
+        @staticmethod
+        def discover() -> tuple[Path, ...]:
+            return ()
+
+        @staticmethod
+        def observe_marker(mount_point: Path) -> MountedMarkerObservation | None:
+            return PROVIDER.observe_marker(mount_point)
+
+        @staticmethod
+        def publish_marker(
+            mount_point: Path,
+            document: GogurtRouteMarker,
+            *,
+            expected: MountedMarkerObservation | None,
+        ) -> MountedMarkerObservation:
+            marker.write_bytes(b"changed\n")
+            return PROVIDER.publish_marker(mount_point, document, expected=expected)
+
+    with pytest.raises(ConfigError, match="changed before publication"):
+        write_gogurt_marker(
+            FIXTURE_CONFIG,
+            "example-camera-card",
+            tmp_path,
+            provider=RacingProvider(),
+            force=True,
+        )
+
+    assert marker.read_bytes() == b"changed\n"
 
 
 def test_same_route_marker_write_is_an_identity_preserving_noop(tmp_path: Path) -> None:
