@@ -14,11 +14,14 @@ members = [
     "file-download",
     "gogurt",
     "gogurt-core",
-    "gogurt-linux",
+    "gogurt-linux-listener-host",
+    "gogurt-linux-mounted-volume",
     "gogurt-listener-runtime",
-    "gogurt-macos",
+    "gogurt-macos-listener-host",
+    "gogurt-macos-mounted-volume",
     "gogurt-path-volume-support",
-    "gogurt-windows",
+    "gogurt-windows-listener-host",
+    "gogurt-windows-mounted-volume",
     "http-api-contracts",
     "lifecycle-events",
     "mango-fish",
@@ -579,19 +582,28 @@ dependencies = [
 requires-dist = [{ name = "config-validation", editable = "packages/config-validation" }]
 
 [[package]]
-name = "gogurt-linux"
+name = "gogurt-linux-listener-host"
 version = "0.1.0"
-source = { editable = "reference/gogurt/linux" }
+source = { editable = "reference/gogurt/listener-host/linux" }
+dependencies = [
+    { name = "gogurt-listener-runtime" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" }]
+
+[[package]]
+name = "gogurt-linux-mounted-volume"
+version = "0.1.0"
+source = { editable = "reference/gogurt/mounted-volume/linux" }
 dependencies = [
     { name = "gogurt-core" },
-    { name = "gogurt-listener-runtime" },
     { name = "gogurt-path-volume-support" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "gogurt-core", editable = "packages/gogurt-core" },
-    { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
     { name = "gogurt-path-volume-support", editable = "packages/gogurt-path-volume-support" },
 ]
 
@@ -611,19 +623,28 @@ requires-dist = [
 ]
 
 [[package]]
-name = "gogurt-macos"
+name = "gogurt-macos-listener-host"
 version = "0.1.0"
-source = { editable = "reference/gogurt/macos" }
+source = { editable = "reference/gogurt/listener-host/macos" }
+dependencies = [
+    { name = "gogurt-listener-runtime" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" }]
+
+[[package]]
+name = "gogurt-macos-mounted-volume"
+version = "0.1.0"
+source = { editable = "reference/gogurt/mounted-volume/macos" }
 dependencies = [
     { name = "gogurt-core" },
-    { name = "gogurt-listener-runtime" },
     { name = "gogurt-path-volume-support" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "gogurt-core", editable = "packages/gogurt-core" },
-    { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
     { name = "gogurt-path-volume-support", editable = "packages/gogurt-path-volume-support" },
 ]
 
@@ -643,19 +664,28 @@ requires-dist = [
 ]
 
 [[package]]
-name = "gogurt-windows"
+name = "gogurt-windows-listener-host"
 version = "0.1.0"
-source = { editable = "reference/gogurt/windows" }
+source = { editable = "reference/gogurt/listener-host/windows" }
+dependencies = [
+    { name = "gogurt-listener-runtime" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" }]
+
+[[package]]
+name = "gogurt-windows-mounted-volume"
+version = "0.1.0"
+source = { editable = "reference/gogurt/mounted-volume/windows" }
 dependencies = [
     { name = "gogurt-core" },
-    { name = "gogurt-listener-runtime" },
     { name = "gogurt-path-volume-support" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "gogurt-core", editable = "packages/gogurt-core" },
-    { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
     { name = "gogurt-path-volume-support", editable = "packages/gogurt-path-volume-support" },
 ]
 

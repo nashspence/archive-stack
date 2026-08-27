@@ -246,9 +246,10 @@ def gogurt_reference_qualification(
     release = tomllib.loads((root / "release.toml").read_text(encoding="utf-8"))
     raw = release.get("qualification", {}).get("gogurt_reference")
     expected_fields = {
-        "distribution",
-        "mounted_volume_provider",
+        "listener_host_distribution",
         "listener_host_provider",
+        "mounted_volume_distribution",
+        "mounted_volume_provider",
     }
     if not isinstance(raw, dict) or set(raw) != {"purpose", *SUPPORTED_PLATFORMS}:
         raise InstallationError("Gogurt reference qualification is incomplete")
@@ -264,11 +265,38 @@ def gogurt_reference_qualification(
         item = {key: str(value[key]) for key in expected_fields}
         if any(not field or field != field.strip() for field in item.values()):
             raise InstallationError(f"Gogurt reference qualification is invalid for {platform}")
-        project = project_by_name.get(item["distribution"])
-        if project is None or project.role != "reference_implementation":
+        capability_fields = (
+            (
+                "mounted_volume_distribution",
+                "mounted_volume_provider",
+                "gogurt.mounted-volume-providers",
+            ),
+            (
+                "listener_host_distribution",
+                "listener_host_provider",
+                "gogurt.listener-host-providers",
+            ),
+        )
+        if len({item[field] for field, _, _ in capability_fields}) != len(capability_fields):
             raise InstallationError(
-                f"Gogurt qualification must select a reference implementation for {platform}"
+                f"Gogurt qualification capabilities share a distribution for {platform}"
             )
+        for distribution_field, provider_field, entry_point_group in capability_fields:
+            project = project_by_name.get(item[distribution_field])
+            if project is None or project.role != "reference_implementation":
+                raise InstallationError(
+                    f"Gogurt qualification must select reference implementations for {platform}"
+                )
+            metadata = tomllib.loads(
+                (root / project.path / "pyproject.toml").read_text(encoding="utf-8")
+            )["project"]
+            entry_points = metadata.get("entry-points", {})
+            if set(entry_points) != {entry_point_group} or set(entry_points[entry_point_group]) != {
+                item[provider_field]
+            }:
+                raise InstallationError(
+                    f"Gogurt qualification capability ownership differs for {platform}"
+                )
         result[platform] = item
     return result
 
@@ -788,10 +816,18 @@ def build_installation_artifacts(
     }
     gogurt_qualification = gogurt_reference_qualification(root, projects)
     gogurt_qualification_closures = {
-        platform: dependency_closure(
-            graph,
-            selection["distribution"],
-            environment=_marker_environment(platform, tools["python"]),
+        platform: set().union(
+            *(
+                dependency_closure(
+                    graph,
+                    selection[field],
+                    environment=_marker_environment(platform, tools["python"]),
+                )
+                for field in (
+                    "mounted_volume_distribution",
+                    "listener_host_distribution",
+                )
+            )
         )
         for platform, selection in gogurt_qualification.items()
     }
@@ -1126,15 +1162,21 @@ def verify_installation_artifacts(output: Path, manifest: dict[str, Any]) -> Non
     for platform in SUPPORTED_PLATFORMS:
         reference = qualification_platforms[platform]
         expected_reference_fields = {
-            "distribution",
-            "mounted_volume_provider",
+            "listener_host_distribution",
             "listener_host_provider",
+            "mounted_volume_distribution",
+            "mounted_volume_provider",
             "first_party_closure",
         }
+        distribution_fields = (
+            "mounted_volume_distribution",
+            "listener_host_distribution",
+        )
         if (
             not isinstance(reference, dict)
             or set(reference) != expected_reference_fields
-            or reference["distribution"] not in wheel_names
+            or any(reference[field] not in wheel_names for field in distribution_fields)
+            or len({reference[field] for field in distribution_fields}) != len(distribution_fields)
         ):
             raise InstallationError(f"Gogurt reference qualification is invalid: {platform}")
         raw_closure = reference["first_party_closure"]
@@ -1145,7 +1187,7 @@ def verify_installation_artifacts(output: Path, manifest: dict[str, Any]) -> Non
         closure = {str(item["name"]): str(item["version"]) for item in raw_closure}
         if (
             len(closure) != len(raw_closure)
-            or reference["distribution"] not in closure
+            or any(reference[field] not in closure for field in distribution_fields)
             or not set(closure) <= wheel_names
         ):
             raise InstallationError(f"Gogurt reference closure is invalid: {platform}")

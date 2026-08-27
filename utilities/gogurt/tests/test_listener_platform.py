@@ -10,14 +10,14 @@ from pathlib import Path
 
 import gogurt_listener_runtime.filesystem as filesystem_module
 import pytest
-from gogurt_linux import (
+from gogurt_linux_listener_host import (
     SystemdUserAdapter,
     render_systemd_unit,
 )
-from gogurt_linux import (
+from gogurt_linux_listener_host import (
     default_listener_paths as linux_listener_paths,
 )
-from gogurt_linux import (
+from gogurt_linux_listener_host import (
     listener_adapter as linux_listener_adapter,
 )
 from gogurt_listener_runtime.platform import (
@@ -25,18 +25,18 @@ from gogurt_listener_runtime.platform import (
     ListenerRuntimePaths,
     NativeListenerStatus,
 )
-from gogurt_macos import (
+from gogurt_macos_listener_host import (
     LISTENER_LABEL,
     LaunchdUserAdapter,
     render_launchd_plist,
 )
-from gogurt_macos import (
+from gogurt_macos_listener_host import (
     default_listener_paths as macos_listener_paths,
 )
-from gogurt_macos import (
+from gogurt_macos_listener_host import (
     listener_adapter as macos_listener_adapter,
 )
-from gogurt_windows import (
+from gogurt_windows_listener_host import (
     WINDOWS_TASK_NOT_FOUND_EXIT,
     WINDOWS_TASK_NOT_FOUND_HRESULT,
     WINDOWS_TASK_RESTART_COUNT,
@@ -46,10 +46,10 @@ from gogurt_windows import (
     render_windows_task_xml,
     windows_task_name,
 )
-from gogurt_windows import (
+from gogurt_windows_listener_host import (
     default_listener_paths as windows_listener_paths,
 )
-from gogurt_windows import (
+from gogurt_windows_listener_host import (
     resolve_listener_executable as resolve_windows_listener_executable,
 )
 
@@ -433,7 +433,7 @@ def test_launchd_stop_waits_until_the_native_job_is_unloaded(
         )
     )
     monkeypatch.setattr(adapter, "_print", lambda: next(observations))
-    monkeypatch.setattr("gogurt_macos.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("gogurt_macos_listener_host.time.sleep", lambda _seconds: None)
 
     adapter.stop(paths)
 
@@ -575,7 +575,7 @@ def test_windows_stop_waits_for_cooperative_listener_settlement(
         return state
 
     monkeypatch.setattr(adapter, "_query_state", settle_after_request)
-    monkeypatch.setattr("gogurt_windows.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("gogurt_windows_listener_host.time.sleep", lambda _seconds: None)
 
     adapter.stop(paths)
 
@@ -590,8 +590,8 @@ def test_windows_stop_fails_closed_without_hard_termination(
     paths = _paths(tmp_path)
     adapter = RecordingTaskAdapter()
     times = iter((0.0, 0.0, 21.0))
-    monkeypatch.setattr("gogurt_windows.time.monotonic", lambda: next(times))
-    monkeypatch.setattr("gogurt_windows.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("gogurt_windows_listener_host.time.monotonic", lambda: next(times))
+    monkeypatch.setattr("gogurt_windows_listener_host.time.sleep", lambda _seconds: None)
 
     with pytest.raises(ListenerPlatformError, match="did not settle"):
         adapter.stop(paths)

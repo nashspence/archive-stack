@@ -83,11 +83,11 @@ def _mounted_volume_provider(
 
 def _native_listener_adapter() -> ListenerAdapter:
     if sys.platform == "linux":
-        from gogurt_linux import listener_adapter
+        from gogurt_linux_listener_host import listener_adapter
     elif sys.platform == "darwin":
-        from gogurt_macos import listener_adapter
+        from gogurt_macos_listener_host import listener_adapter
     elif sys.platform == "win32":
-        from gogurt_windows import listener_adapter
+        from gogurt_windows_listener_host import listener_adapter
     else:  # pragma: no cover - the release matrix owns the supported fixtures
         raise AssertionError(f"no lifecycle fixture for {sys.platform}")
     return listener_adapter()

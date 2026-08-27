@@ -1,16 +1,14 @@
-"""Linux mount discovery and systemd-user integration for Gogurt."""
+"""Linux systemd-user listener-host integration for Gogurt."""
 
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from gogurt_core.mounts import MountedVolumeProviderBinding
 from gogurt_listener_runtime.filesystem import PRIVATE_FILE_MODE, atomic_write
 from gogurt_listener_runtime.platform import (
     ListenerAdapter,
@@ -19,10 +17,8 @@ from gogurt_listener_runtime.platform import (
     ListenerRuntimePaths,
     NativeListenerStatus,
 )
-from gogurt_path_volume_support import PathMountedVolumeAccess
 
 LISTENER_LABEL = "io.github.nashspence.gogurt"
-_MOUNTINFO_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
 
 
 def default_listener_paths(
@@ -186,23 +182,6 @@ def resolve_listener_executable(raw: str | None = None) -> Path:
     raise ListenerPlatformError(f"installed Gogurt executable is absent or not executable: {path}")
 
 
-def linux_mount_points(mountinfo: str) -> tuple[Path, ...]:
-    points = {
-        Path(_MOUNTINFO_ESCAPE_RE.sub(lambda match: chr(int(match.group(1), 8)), fields[4]))
-        for line in mountinfo.splitlines()
-        if len(fields := line.split()) >= 5
-    }
-    return tuple(sorted(points, key=lambda path: str(path)))
-
-
-def discover_mount_points() -> tuple[Path, ...]:
-    return linux_mount_points(Path("/proc/self/mountinfo").read_text(encoding="utf-8"))
-
-
-MOUNTED_VOLUME_PROVIDER_BINDING = MountedVolumeProviderBinding(
-    provider_id="gogurt-linux-path-route-line-provider/v1",
-    access=PathMountedVolumeAccess(discover_mount_points),
-)
 LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(
     provider_id="gogurt-linux-listener-host-provider/v1",
     paths=default_listener_paths,
@@ -213,11 +192,8 @@ LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(
 
 __all__ = [
     "LISTENER_HOST_PROVIDER_BINDING",
-    "MOUNTED_VOLUME_PROVIDER_BINDING",
     "SystemdUserAdapter",
     "default_listener_paths",
-    "discover_mount_points",
-    "linux_mount_points",
     "listener_adapter",
     "render_systemd_unit",
     "resolve_listener_executable",

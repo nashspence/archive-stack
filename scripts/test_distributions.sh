@@ -246,19 +246,30 @@ smoke_workspace_distribution \
 smoke_workspace_distribution \
   gogurt \
   'gogurt-*.whl' \
-  'import importlib.metadata as m; import gogurt.cli; import gogurt_listener_runtime.listener; m.version("gogurt"); names = {d.metadata["Name"].lower() for d in m.distributions()}; assert "gogurt-listener-runtime" in names; providers = {"gogurt-linux", "gogurt-macos", "gogurt-path-volume-support", "gogurt-windows"}; assert names.isdisjoint(providers)' \
+  'import importlib.metadata as m; import gogurt.cli; import gogurt_listener_runtime.listener; m.version("gogurt"); names = {d.metadata["Name"].lower() for d in m.distributions()}; assert "gogurt-listener-runtime" in names; providers = {f"gogurt-{platform}-{capability}" for platform in ("linux", "macos", "windows") for capability in ("listener-host", "mounted-volume")}; assert names.isdisjoint(providers)' \
   gogurt
-linux_gogurt_wheel="$(single_wheel 'gogurt_linux-*.whl')"
-mapfile -t linux_gogurt_wheels < <(
-  workspace_wheel_closure "${linux_gogurt_wheel}"
+linux_mounted_volume_wheel="$(single_wheel 'gogurt_linux_mounted_volume-*.whl')"
+mapfile -t linux_mounted_volume_wheels < <(
+  workspace_wheel_closure "${linux_mounted_volume_wheel}"
 )
 run_uv pip install \
   --strict \
   --python "${SCRATCH}/gogurt/bin/python" \
   --find-links "${DIST_DIR}" \
-  "${linux_gogurt_wheels[@]}"
-"${SCRATCH}/gogurt/bin/gogurt" provider mounted-volume show gogurt-linux --json >/dev/null
-"${SCRATCH}/gogurt/bin/gogurt" provider listener-host show gogurt-linux --json >/dev/null
+  "${linux_mounted_volume_wheels[@]}"
+"${SCRATCH}/gogurt/bin/python" -c \
+  'import importlib.metadata as m; mounted = {e.name for e in m.entry_points(group="gogurt.mounted-volume-providers")}; listeners = {e.name for e in m.entry_points(group="gogurt.listener-host-providers")}; assert "gogurt-linux-mounted-volume" in mounted; assert "gogurt-linux-listener-host" not in listeners'
+"${SCRATCH}/gogurt/bin/gogurt" provider mounted-volume show gogurt-linux-mounted-volume --json >/dev/null
+linux_listener_host_wheel="$(single_wheel 'gogurt_linux_listener_host-*.whl')"
+mapfile -t linux_listener_host_wheels < <(
+  workspace_wheel_closure "${linux_listener_host_wheel}"
+)
+run_uv pip install \
+  --strict \
+  --python "${SCRATCH}/gogurt/bin/python" \
+  --find-links "${DIST_DIR}" \
+  "${linux_listener_host_wheels[@]}"
+"${SCRATCH}/gogurt/bin/gogurt" provider listener-host show gogurt-linux-listener-host --json >/dev/null
 smoke_workspace_distribution \
   mango-fish \
   'mango_fish-*.whl' \

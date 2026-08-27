@@ -20,9 +20,12 @@ MYPY_SOURCES = \
 	packages/gogurt-core/src \
 	packages/gogurt-listener-runtime/src \
 	packages/gogurt-path-volume-support/src \
-	reference/gogurt/linux/src \
-	reference/gogurt/macos/src \
-	reference/gogurt/windows/src \
+	reference/gogurt/listener-host/linux/src \
+	reference/gogurt/listener-host/macos/src \
+	reference/gogurt/listener-host/windows/src \
+	reference/gogurt/mounted-volume/linux/src \
+	reference/gogurt/mounted-volume/macos/src \
+	reference/gogurt/mounted-volume/windows/src \
 	reference/stove0/observers/exiftool/src \
 	reference/stove0/observers/ffprobe-sampling/src \
 	reference/stove0/targets/nvenc-av1-opus/review-sampler/src \
