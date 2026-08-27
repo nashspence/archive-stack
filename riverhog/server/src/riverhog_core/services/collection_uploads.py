@@ -2882,7 +2882,7 @@ def _upload_payload(
         "tags": list(_upload_tags(upload)),
         "ingest_source": upload.ingest_source,
         "provenance_mode": upload.provenance_mode,
-        "provenance_identity": upload.provenance_identity,
+        "provenance_identity": None,
         "archive_store": upload.archive_store,
         "encryption_format": upload.encryption_format,
         "passphrase_id": upload.passphrase_id,
