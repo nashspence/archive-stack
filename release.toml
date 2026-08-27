@@ -125,7 +125,7 @@ macos-arm64 = { mounted_volume_distribution = "gogurt-macos-mounted-volume", mou
 windows-x64 = { mounted_volume_distribution = "gogurt-windows-mounted-volume", mounted_volume_provider = "gogurt-windows-mounted-volume", listener_host_distribution = "gogurt-windows-listener-host", listener_host_provider = "gogurt-windows-listener-host" }
 
 [references]
-policy = "First-party references are optional, nonnormative, maintainer-selected conformance implementations. Their inventory is neither complete nor recommended and is not a support matrix; new mechanisms are independently owned and published."
+policy = "First-party reference components are optional, nonnormative, maintainer-selected conformance examples. Their inventory is neither complete nor recommended and is not a support matrix; new mechanisms are independently owned and published."
 
 [signing]
 checksums = "SHA-256"
@@ -149,12 +149,13 @@ deployed_implementation = [
   "riverhog/server",
   "utilities/mango-fish",
 ]
-reference_implementation = [
+reference_component = [
   "reference/gogurt/listener-host/linux",
   "reference/gogurt/listener-host/macos",
   "reference/gogurt/listener-host/windows",
   "reference/gogurt/mounted-volume/linux",
   "reference/gogurt/mounted-volume/macos",
+  "reference/gogurt/mounted-volume/path-support",
   "reference/gogurt/mounted-volume/windows",
   "reference/riverhog/ingress/ftp",
   "reference/riverhog/ingress/ftp-api-client",
@@ -167,18 +168,26 @@ reference_implementation = [
   "reference/riverhog/storage/aws",
   "reference/riverhog/storage/backblaze",
   "reference/riverhog/storage/s3-support",
+  "reference/stove0/observers/contracts/media-metadata",
+  "reference/stove0/observers/contracts/media-sampling",
   "reference/stove0/observers/exiftool",
   "reference/stove0/observers/ffprobe-sampling",
+  "reference/stove0/targets/media-archive/contracts",
+  "reference/stove0/targets/media-archive/support",
   "reference/stove0/targets/nvenc-av1-opus/review-sampler",
   "reference/stove0/targets/nvenc-av1-opus/target",
   "reference/stove0/targets/opus/review-sampler",
   "reference/stove0/targets/opus/target",
+  "reference/stove0/targets/review/contracts",
+  "reference/stove0/targets/review/planning",
+  "reference/stove0/targets/review/sampler/client",
+  "reference/stove0/targets/review/sampler/protocol",
+  "reference/stove0/targets/review/sampler/support",
   "reference/stove0/targets/review/target",
 ]
 reusable_library = [
   "packages/gogurt-core",
   "packages/gogurt-listener-runtime",
-  "packages/gogurt-path-volume-support",
   "packages/application-access",
   "packages/file-download",
   "packages/http-api-contracts",
@@ -195,20 +204,11 @@ reusable_library = [
   "packages/riverhog-transform-sdk",
   "packages/stove0-observer-protocol",
   "packages/stove0-observer-support",
-  "packages/stove0-media-archive-target-contracts",
-  "packages/stove0-media-archive-target-support",
-  "packages/stove0-media-metadata-observer-contracts",
-  "packages/stove0-media-sampling-observer-contracts",
   "packages/stove0-observer-client",
   "packages/stove0-api-client",
   "packages/stove0-operator-contracts",
   "packages/stove0-protocol",
   "packages/stove0-recipe-config",
-  "packages/stove0-review-planning",
-  "packages/stove0-review-target-contracts",
-  "packages/stove0-review-sampler-client",
-  "packages/stove0-review-sampler-protocol",
-  "packages/stove0-review-sampler-support",
   "packages/stove0-target-client",
   "packages/stove0-target-protocol",
   "packages/stove0-target-support",
@@ -234,7 +234,7 @@ mango-fish = { role = "product", description = "Riverhog CloudEvents utility.", 
 riverhog-ftp-adapter = { role = "reference", description = "Optional nonnormative Riverhog FTP ingress reference.", distributions = ["riverhog-ftp-adapter"], repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
 riverhog-storage-adapter-aws = { role = "reference", description = "Optional nonnormative AWS storage reference for Riverhog.", distributions = ["riverhog-storage-adapter-aws"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-aws" }
 riverhog-storage-adapter-backblaze = { role = "reference", description = "Optional nonnormative Backblaze B2 storage reference for Riverhog.", distributions = ["riverhog-storage-adapter-backblaze"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-backblaze" }
-stove0 = { role = "product", description = "Stove0 transformation companion.", distributions = ["stove0-server", "stove0-media-metadata-observer-contracts", "stove0-media-sampling-observer-contracts"], repository = "ghcr.io/nashspence/riverhog-stove0" }
+stove0 = { role = "product", description = "Stove0 transformation companion.", distributions = ["stove0-server"], repository = "ghcr.io/nashspence/riverhog-stove0" }
 stove0-exiftool-observer = { role = "reference", description = "Optional nonnormative ExifTool observer reference for Stove0.", distributions = ["stove0-exiftool-observer"], repository = "ghcr.io/nashspence/riverhog-stove0-exiftool-observer" }
 stove0-ffprobe-sampling-observer = { role = "reference", description = "Optional nonnormative FFprobe sampling-observer reference for Stove0.", distributions = ["stove0-ffprobe-sampling-observer"], repository = "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer" }
 stove0-nvenc-av1-opus-target = { role = "reference", description = "Optional nonnormative NVENC AV1 and Opus target reference for Stove0.", distributions = ["stove0-nvenc-av1-opus-target", "stove0-nvenc-av1-opus-review-sampler"], repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target" }

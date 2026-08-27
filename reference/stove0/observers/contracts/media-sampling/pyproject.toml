@@ -3,9 +3,9 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "stove0-review-planning"
+name = "stove0-media-sampling-observer-contracts"
 version = "0.1.0"
-description = "Pure planning bridge between maintained Stove0 review observers and targets."
+description = "Optional nonnormative media-sampling contract reference for Stove0 observers."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -20,18 +20,14 @@ classifiers = [
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "pydantic>=2.7,<3.0",
-  "stove0-media-sampling-observer-contracts>=0.1,<0.2",
-  "stove0-protocol>=0.1,<0.2",
-  "stove0-review-target-contracts>=0.1,<0.2",
+  "stove0-observer-protocol>=0.1,<0.2",
 ]
 
-[project.scripts]
-stove0-review-planning = "stove0_review_planning.conformance:main"
+[project.entry-points."stove0.observer-semantic-validators"]
+media-sampling = "stove0_media_sampling_observer_contracts:MEDIA_SAMPLING_SEMANTIC_VALIDATOR"
 
 [tool.uv.sources]
-stove0-media-sampling-observer-contracts = { workspace = true }
-stove0-protocol = { workspace = true }
-stove0-review-target-contracts = { workspace = true }
+stove0-observer-protocol = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/stove0_review_planning"]
+packages = ["src/stove0_media_sampling_observer_contracts"]

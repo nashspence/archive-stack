@@ -51,6 +51,14 @@ IMPLEMENTATION_OWNERS = {
         REPO / "reference/stove0/observers/ffprobe-sampling/src",
         {"stove0_ffprobe_sampling_observer"},
     ),
+    "stove0-media-metadata-observer-contracts": (
+        REPO / "reference/stove0/observers/contracts/media-metadata/src",
+        {"stove0_media_metadata_observer_contracts"},
+    ),
+    "stove0-media-sampling-observer-contracts": (
+        REPO / "reference/stove0/observers/contracts/media-sampling/src",
+        {"stove0_media_sampling_observer_contracts"},
+    ),
     "stove0-nvenc-av1-opus-target": (
         REPO / "reference/stove0/targets/nvenc-av1-opus/target/src",
         {"stove0_nvenc_av1_opus_target"},
@@ -70,6 +78,14 @@ IMPLEMENTATION_OWNERS = {
     "stove0-review-target": (
         REPO / "reference/stove0/targets/review/target/src",
         {"stove0_review_target"},
+    ),
+    "stove0-review-planning": (
+        REPO / "reference/stove0/targets/review/planning/src",
+        {"stove0_review_planning"},
+    ),
+    "stove0-review-sampler-support": (
+        REPO / "reference/stove0/targets/review/sampler/support/src",
+        {"stove0_review_sampler_support"},
     ),
     "mango-fish": (REPO / "utilities/mango-fish/src", {"mango_fish"}),
     "gogurt": (REPO / "utilities/gogurt/src", {"gogurt"}),
@@ -98,8 +114,18 @@ IMPLEMENTATION_OWNERS = {
         {"gogurt_windows_mounted_volume"},
     ),
 }
+REFERENCE_FAMILY_SUPPORT_OWNERS = {
+    "stove0-media-metadata-observer-contracts",
+    "stove0-media-sampling-observer-contracts",
+    "stove0-review-planning",
+    "stove0-review-sampler-support",
+}
 ALL_IMPLEMENTATION_MODULES = set().union(
-    *(modules for _, modules in IMPLEMENTATION_OWNERS.values())
+    *(
+        modules
+        for owner, (_, modules) in IMPLEMENTATION_OWNERS.items()
+        if owner not in REFERENCE_FAMILY_SUPPORT_OWNERS
+    )
 )
 CORE_ROOTS = {
     "riverhog_core": REPO / "riverhog/server/src/riverhog_core",
@@ -443,7 +469,9 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
     )
 
     path_volume_config = tomllib.loads(
-        (REPO / "packages/gogurt-path-volume-support/pyproject.toml").read_text(encoding="utf-8")
+        (REPO / "reference/gogurt/mounted-volume/path-support/pyproject.toml").read_text(
+            encoding="utf-8"
+        )
     )
     assert declared_project_dependencies(path_volume_config) == {
         "config-validation",
@@ -481,7 +509,8 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
         assert '".gogurt"' not in text
 
     path_support = (
-        REPO / "packages/gogurt-path-volume-support/src/gogurt_path_volume_support/__init__.py"
+        REPO
+        / "reference/gogurt/mounted-volume/path-support/src/gogurt_path_volume_support/__init__.py"
     ).read_text(encoding="utf-8")
     assert 'PATH_MARKER_NAME = ".gogurt"' in path_support
     assert 'f"{document.route}\\n".encode()' in path_support
@@ -575,11 +604,25 @@ def test_reference_paths_are_nonnormative_release_units() -> None:
     classified = {path: role for role, paths in release["python"].items() for path in paths}
     for pyproject in (REPO / "reference").rglob("pyproject.toml"):
         relative = pyproject.parent.relative_to(REPO).as_posix()
-        assert classified[relative] == "reference_implementation"
+        assert classified[relative] == "reference_component"
         description = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
             "description"
         ].casefold()
         assert all(word in description for word in ("optional", "nonnormative", "reference"))
+
+
+def test_shared_packages_are_product_owned_or_implementation_neutral() -> None:
+    release = tomllib.loads((REPO / "release.toml").read_text(encoding="utf-8"))
+    classified = {path: role for role, paths in release["python"].items() for path in paths}
+    for pyproject in (REPO / "packages").glob("*/pyproject.toml"):
+        relative = pyproject.parent.relative_to(REPO).as_posix()
+        assert classified[relative] in {"reusable_library", "internal_build_unit"}
+
+    architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
+    assert (
+        "Packages contain product contracts or implementation-neutral tooling; reference contracts "
+        "and support stay with their family." in architecture
+    )
 
 
 def test_core_dependency_graphs_are_acyclic() -> None:
@@ -628,30 +671,54 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
         ),
         REPO / "companions/stove0/server/Dockerfile": "companions/stove0/server",
         REPO / "reference/stove0/observers/exiftool/Dockerfile": (
-            "reference/stove0/observers/exiftool"
+            "reference/stove0/observers/exiftool",
+            "reference/stove0/observers/contracts/media-metadata",
         ),
         REPO / "reference/stove0/observers/ffprobe-sampling/Dockerfile": (
-            "reference/stove0/observers/ffprobe-sampling"
+            "reference/stove0/observers/ffprobe-sampling",
+            "reference/stove0/observers/contracts/media-sampling",
         ),
         REPO / "reference/stove0/targets/nvenc-av1-opus/Dockerfile": (
+            "reference/stove0/observers/contracts/media-metadata",
+            "reference/stove0/targets/media-archive/contracts",
+            "reference/stove0/targets/media-archive/support",
             "reference/stove0/targets/nvenc-av1-opus/target",
             "reference/stove0/targets/nvenc-av1-opus/review-sampler",
             "reference/stove0/targets/nvenc-av1-opus/verify-ffmpeg",
+            "reference/stove0/targets/review/contracts",
+            "reference/stove0/targets/review/sampler/client",
+            "reference/stove0/targets/review/sampler/protocol",
+            "reference/stove0/targets/review/sampler/support",
         ),
         REPO / "reference/stove0/targets/opus/Dockerfile": (
+            "reference/stove0/observers/contracts/media-metadata",
+            "reference/stove0/targets/media-archive/contracts",
+            "reference/stove0/targets/media-archive/support",
             "reference/stove0/targets/opus/target",
             "reference/stove0/targets/opus/review-sampler",
+            "reference/stove0/targets/review/contracts",
+            "reference/stove0/targets/review/sampler/client",
+            "reference/stove0/targets/review/sampler/protocol",
+            "reference/stove0/targets/review/sampler/support",
         ),
         REPO / "reference/stove0/targets/review/Dockerfile": (
-            "reference/stove0/targets/review/target"
+            "reference/stove0/targets/review/contracts",
+            "reference/stove0/targets/review/sampler/client",
+            "reference/stove0/targets/review/sampler/protocol",
+            "reference/stove0/targets/review/target",
         ),
         REPO / "utilities/mango-fish/Dockerfile": "utilities/mango-fish",
     }
     implementation_prefix = re.compile(r"^(?:companions|reference|riverhog|utilities)/")
     for dockerfile, expected in dockerfiles.items():
+        dockerfile_text = dockerfile.read_text()
+        if dockerfile == REPO / "companions/stove0/server/Dockerfile":
+            dockerfile_text = dockerfile_text.split(
+                "FROM build AS reference-qualification-build", 1
+            )[0]
         copied = {
             source
-            for source in re.findall(r"^COPY ([^\s]+)", dockerfile.read_text(), re.MULTILINE)
+            for source in re.findall(r"^COPY ([^\s]+)", dockerfile_text, re.MULTILINE)
             if implementation_prefix.match(source)
         }
         assert copied
@@ -788,11 +855,7 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
         REPO / "reference/riverhog/storage/backblaze/Dockerfile": (
             "riverhog-storage-adapter-backblaze"
         ),
-        REPO / "companions/stove0/server/Dockerfile": (
-            "stove0-server",
-            "stove0-media-metadata-observer-contracts",
-            "stove0-media-sampling-observer-contracts",
-        ),
+        REPO / "companions/stove0/server/Dockerfile": "stove0-server",
         REPO / "reference/stove0/observers/exiftool/Dockerfile": ("stove0-exiftool-observer"),
         REPO / "reference/stove0/observers/ffprobe-sampling/Dockerfile": (
             "stove0-ffprobe-sampling-observer"

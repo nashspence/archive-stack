@@ -40,9 +40,9 @@ COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contrac
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/riverhog-transform-sdk packages/riverhog-transform-sdk
 COPY packages/stove0-protocol packages/stove0-protocol
-COPY packages/stove0-review-target-contracts packages/stove0-review-target-contracts
-COPY packages/stove0-review-sampler-client packages/stove0-review-sampler-client
-COPY packages/stove0-review-sampler-protocol packages/stove0-review-sampler-protocol
+COPY reference/stove0/targets/review/contracts reference/stove0/targets/review/contracts
+COPY reference/stove0/targets/review/sampler/client reference/stove0/targets/review/sampler/client
+COPY reference/stove0/targets/review/sampler/protocol reference/stove0/targets/review/sampler/protocol
 COPY packages/stove0-target-client packages/stove0-target-client
 COPY packages/stove0-target-protocol packages/stove0-target-protocol
 COPY packages/stove0-target-support packages/stove0-target-support

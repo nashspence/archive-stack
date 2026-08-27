@@ -68,6 +68,7 @@ IMAGE_CONTRACTS = {
     "stove0": {
         "dockerfile": "companions/stove0/server/Dockerfile",
         "tag": "stove0:dev",
+        "compose_target": "reference-qualification",
         "title": "stove0",
         "license": "CAL-1.0",
         "compose": (
@@ -287,7 +288,11 @@ def test_every_external_image_input_is_versioned_and_digest_pinned() -> None:
     observed: set[str] = set()
     for contract in IMAGE_CONTRACTS.values():
         dockerfile = (REPO_ROOT / contract["dockerfile"]).read_text(encoding="utf-8")
-        observed.update(re.findall(r"(?m)^FROM (\S+)", dockerfile))
+        observed.update(
+            reference
+            for reference in re.findall(r"(?m)^FROM (\S+)", dockerfile)
+            if "@sha256:" in reference
+        )
         observed.update(
             reference
             for reference in re.findall(r"(?m)^COPY --from=(\S+)", dockerfile)
@@ -365,7 +370,10 @@ def test_production_images_use_the_common_unprivileged_runtime_identity() -> Non
         contract = IMAGE_CONTRACTS[name]
         dockerfile = (REPO_ROOT / contract["dockerfile"]).read_text(encoding="utf-8")
         final_stage = dockerfile.rsplit("\nFROM ", maxsplit=1)[1]
-        assert "\nUSER 65532:65532\n" in final_stage
+        if "\nUSER 65532:65532\n" not in final_stage:
+            assert final_stage.startswith("runtime-base AS ")
+            runtime_base = dockerfile.split(" AS runtime-base", 1)[1].split("\nFROM ", 1)[0]
+            assert "\nUSER 65532:65532\n" in runtime_base
 
     mango_fish = (REPO_ROOT / IMAGE_CONTRACTS["mango-fish"]["dockerfile"]).read_text(
         encoding="utf-8"
@@ -429,6 +437,45 @@ def test_compose_build_services_match_the_canonical_bake_graph() -> None:
             assert compose_dockerfile == target_dockerfile
             assert service["image"] == contract.get("compose_tag", contract["tag"])
             assert build["args"] == {"SOURCE_REVISION": "${SOURCE_REVISION:-unknown}"}
+            assert build.get("target") == contract.get("compose_target")
+
+
+def test_stove0_reference_validators_are_qualification_only() -> None:
+    dockerfile = (REPO_ROOT / IMAGE_CONTRACTS["stove0"]["dockerfile"]).read_text(encoding="utf-8")
+    generic_build, qualification_and_runtime = dockerfile.split(
+        "FROM build AS reference-qualification-build", 1
+    )
+    qualification_build, runtime_stages = qualification_and_runtime.split(
+        "FROM python:3.12-slim@", 1
+    )
+    qualification_runtime, product_runtime = runtime_stages.split("FROM runtime-base AS runtime", 1)
+
+    assert "reference/" not in generic_build
+    assert "--package stove0-server --no-dev --no-editable" in generic_build
+    assert "stove0-media-metadata-observer-contracts" not in generic_build
+    assert "stove0-media-sampling-observer-contracts" not in generic_build
+
+    assert (
+        "COPY reference/stove0/observers/contracts/media-metadata "
+        "reference/stove0/observers/contracts/media-metadata"
+    ) in qualification_build
+    assert (
+        "COPY reference/stove0/observers/contracts/media-sampling "
+        "reference/stove0/observers/contracts/media-sampling"
+    ) in qualification_build
+    assert "--package stove0-media-metadata-observer-contracts" in qualification_build
+    assert "--package stove0-media-sampling-observer-contracts" in qualification_build
+
+    assert "FROM runtime-base AS reference-qualification" in qualification_runtime
+    assert (
+        'io.github.nashspence.riverhog.composition="reference-qualification"'
+        in qualification_runtime
+    )
+    assert "COPY --from=reference-qualification-build /opt/venv /opt/venv" in (
+        qualification_runtime
+    )
+    assert "COPY --from=build /opt/venv /opt/venv" in product_runtime
+    assert "reference-qualification-build" not in product_runtime
 
 
 def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:

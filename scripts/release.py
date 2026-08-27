@@ -39,14 +39,14 @@ NOTICE_POLICY = {
     "required_for": ["wheel", "image"],
 }
 REFERENCE_POLICY = (
-    "First-party references are optional, nonnormative, maintainer-selected conformance "
-    "implementations. Their inventory is neither complete nor recommended and is not a support "
-    "matrix; new mechanisms are independently owned and published."
+    "First-party reference components are optional, nonnormative, maintainer-selected "
+    "conformance examples. Their inventory is neither complete nor recommended and is not a "
+    "support matrix; new mechanisms are independently owned and published."
 )
 RELEASE_ROLES = (
     "end_user_artifact",
     "deployed_implementation",
-    "reference_implementation",
+    "reference_component",
     "reusable_library",
     "internal_build_unit",
     "test_only_artifact",
@@ -100,11 +100,7 @@ RUNTIME_IMAGE_TARGETS = {
     "stove0": {
         "role": "product",
         "description": "Stove0 transformation companion.",
-        "distributions": [
-            "stove0-server",
-            "stove0-media-metadata-observer-contracts",
-            "stove0-media-sampling-observer-contracts",
-        ],
+        "distributions": ["stove0-server"],
         "repository": "ghcr.io/nashspence/riverhog-stove0",
     },
     "stove0-exiftool-observer": {
@@ -307,13 +303,23 @@ def _bake_dockerfile(root: Path, target: str) -> Path:
 
 def _dockerfile_distribution_roots(dockerfile: Path) -> list[str]:
     text = dockerfile.read_text(encoding="utf-8").replace("\\\n", " ")
+    build_stages = re.finditer(
+        r"^FROM (?P<base>[^\n]+) AS [^\n]+\n(?P<body>.*?)(?=^FROM |\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
     commands = [
         line.removeprefix("RUN ")
-        for line in text.splitlines()
+        for stage in build_stages
+        if "@sha256:" in stage.group("base")
+        for line in stage.group("body").splitlines()
         if line.startswith("RUN uv sync --frozen ")
     ]
     if len(commands) != 1:
-        raise ReleaseError(f"runtime Dockerfile must contain one frozen uv sync: {dockerfile}")
+        raise ReleaseError(
+            f"runtime Dockerfile must contain one frozen uv sync in an external build stage: "
+            f"{dockerfile}"
+        )
     words = shlex.split(commands[0])
     roots = [
         _normalize_name(words[index + 1])
@@ -506,7 +512,7 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
 
     for project in projects:
         is_reference_path = project.path.startswith("reference/")
-        if is_reference_path != (project.role == "reference_implementation"):
+        if is_reference_path != (project.role == "reference_component"):
             raise ReleaseError(
                 f"{project.name} path and release role disagree about reference ownership"
             )
@@ -583,16 +589,31 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
     if not image_distributions <= seen_names:
         raise ReleaseError("a runtime image refers to an unknown distribution")
     roles_by_name = {project.name: project.role for project in projects}
+    internal_dependencies, _artifact_dependencies, _licenses = _project_dependency_graph(
+        root,
+        projects,
+    )
     for target, value in runtime_images.items():
         configured_roots = [
             _normalize_name(str(distribution)) for distribution in value["distributions"]
         ]
         if value["role"] == "reference":
-            if any(roles_by_name[root] != "reference_implementation" for root in configured_roots):
+            if any(roles_by_name[root] != "reference_component" for root in configured_roots):
                 raise ReleaseError(f"reference image contains a non-reference root: {target}")
         elif value["role"] == "product":
             if roles_by_name[configured_roots[0]] != "deployed_implementation":
                 raise ReleaseError(f"product image lacks a deployed implementation root: {target}")
+            product_closure = set().union(
+                *(_dependency_closure(internal_dependencies, root) for root in configured_roots)
+            )
+            reference_dependencies = sorted(
+                name for name in product_closure if roles_by_name[name] == "reference_component"
+            )
+            if reference_dependencies:
+                raise ReleaseError(
+                    f"product image contains reference components: {target} "
+                    f"{reference_dependencies}"
+                )
         else:
             raise ReleaseError(f"runtime image has an unknown release role: {target}")
         dockerfile_roots = _dockerfile_distribution_roots(_bake_dockerfile(root, target))

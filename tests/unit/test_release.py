@@ -64,8 +64,8 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
         "deployed_implementation": 3,
-        "reference_implementation": 24,
-        "reusable_library": 36,
+        "reference_component": 34,
+        "reusable_library": 26,
         "internal_build_unit": 4,
     }
     assert {project.name for project in projects} >= {
@@ -138,7 +138,7 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "runtime_images": ["linux/amd64"],
     }
     assert all(
-        project.path.startswith("reference/") == (project.role == "reference_implementation")
+        project.path.startswith("reference/") == (project.role == "reference_component")
         for project in projects
     )
 
@@ -344,11 +344,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert all(image["description"] for image in plan["images"])
     assert next(image for image in plan["images"] if image["target"] == "stove0")[
         "distributions"
-    ] == [
-        "stove0-server",
-        "stove0-media-metadata-observer-contracts",
-        "stove0-media-sampling-observer-contracts",
-    ]
+    ] == ["stove0-server"]
     assert next(
         image for image in plan["images"] if image["target"] == "stove0-nvenc-av1-opus-target"
     )["distributions"] == [

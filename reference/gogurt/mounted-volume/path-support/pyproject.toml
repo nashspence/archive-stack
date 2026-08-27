@@ -3,30 +3,25 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "stove0-media-archive-target-contracts"
+name = "gogurt-path-volume-support"
 version = "0.1.0"
-description = "Target-owned operation and intent contracts for maintained Stove0 media archives."
+description = "Optional nonnormative path-mounted-volume support for Gogurt reference providers."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
 authors = [{ name = "Nash Spence" }]
 maintainers = [{ name = "Nash Spence" }]
-classifiers = [
-  "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.12",
-  "Typing :: Typed",
-]
+classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
-  "pydantic>=2.7,<3.0",
-  "stove0-protocol>=0.1,<0.2",
-  "stove0-target-protocol>=0.1,<0.2",
+  "config-validation>=0.1,<0.2",
+  "gogurt-core>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
-stove0-protocol = { workspace = true }
-stove0-target-protocol = { workspace = true }
+config-validation = { workspace = true }
+gogurt-core = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/stove0_media_archive_target_contracts"]
+packages = ["src/gogurt_path_volume_support"]

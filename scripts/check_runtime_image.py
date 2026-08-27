@@ -68,13 +68,14 @@ def _bake_target(target: str) -> tuple[str, Path]:
     return str(tags[0]), REPO / str(item["dockerfile"])
 
 
-def _requested_distributions(dockerfile: Path) -> set[str]:
-    text = dockerfile.read_text(encoding="utf-8")
-    requested = {
-        _canonical_name(name) for name in re.findall(r"--package\s+([A-Za-z0-9._-]+)", text)
-    }
+def _requested_distributions(target: str) -> set[str]:
+    release = tomllib.loads((REPO / "release.toml").read_text(encoding="utf-8"))
+    runtime = release["images"]["runtime"]
+    if target not in runtime:
+        raise SystemExit(f"{target}: no release runtime image contract")
+    requested = {_canonical_name(str(name)) for name in runtime[target]["distributions"]}
     if not requested:
-        raise SystemExit(f"{dockerfile.relative_to(REPO)}: no runtime package selection")
+        raise SystemExit(f"{target}: no runtime package selection")
     return requested
 
 
@@ -174,7 +175,7 @@ def main() -> int:
     if config["User"] != "65532:65532":
         raise SystemExit(f"{args.target}: final user is {config['User']!r}")
 
-    roots = _requested_distributions(dockerfile)
+    roots = _requested_distributions(args.target)
     workspace = _workspace_distributions()
     installed = _installed_distributions(tag)
     expected = _workspace_dependency_closure(roots, installed, workspace)

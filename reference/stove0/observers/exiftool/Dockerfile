@@ -41,7 +41,7 @@ COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contracts
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/riverhog-transform-sdk packages/riverhog-transform-sdk
-COPY packages/stove0-media-metadata-observer-contracts packages/stove0-media-metadata-observer-contracts
+COPY reference/stove0/observers/contracts/media-metadata reference/stove0/observers/contracts/media-metadata
 COPY packages/stove0-observer-client packages/stove0-observer-client
 COPY packages/stove0-observer-protocol packages/stove0-observer-protocol
 COPY packages/stove0-observer-support packages/stove0-observer-support
