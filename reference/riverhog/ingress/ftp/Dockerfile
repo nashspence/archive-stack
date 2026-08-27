@@ -34,8 +34,10 @@ COPY reference/riverhog/provenance/contracts/linux reference/riverhog/provenance
 COPY reference/riverhog/provenance/observers/linux reference/riverhog/provenance/observers/linux
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/time-formats packages/time-formats
-RUN uv sync --frozen --package riverhog-ftp-adapter \
-    --extra reference-linux-provenance --no-dev --no-editable
+RUN uv sync --frozen \
+    --package riverhog-ftp-adapter \
+    --package riverhog-provenance-linux-observer \
+    --no-dev --no-editable
 
 FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
 

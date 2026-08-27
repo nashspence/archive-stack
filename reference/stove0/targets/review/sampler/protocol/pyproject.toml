@@ -9,7 +9,7 @@ description = "Optional nonnormative sampler-protocol reference for the Stove0 r
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-readme = { text = "Riverhog v1 component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+readme = { text = "Optional nonnormative Riverhog v1 reference component. See the project URL for documentation and releases.", content-type = "text/markdown" }
 authors = [{ name = "Nash Spence" }]
 maintainers = [{ name = "Nash Spence" }]
 classifiers = [

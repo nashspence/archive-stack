@@ -19,7 +19,9 @@ SERVER_PROJECTS = {
     Path("reference/stove0/targets/nvenc-av1-opus/target/pyproject.toml"),
     Path("reference/stove0/targets/opus/target/pyproject.toml"),
     Path("reference/stove0/targets/opus/review-sampler/pyproject.toml"),
-    Path("reference/stove0/targets/review/target/pyproject.toml"),
+    Path("reference/stove0/targets/review/materialize-target/pyproject.toml"),
+    Path("reference/stove0/targets/review/rclone-effect-target/pyproject.toml"),
+    Path("reference/stove0/targets/review/support/pyproject.toml"),
 }
 
 
@@ -79,7 +81,7 @@ def test_every_workspace_distribution_uses_the_canonical_build_system() -> None:
         }
 
 
-def test_reference_recovery_is_independent_and_advertised() -> None:
+def test_recovery_tool_is_independent_and_advertised() -> None:
     config = tomllib.loads(
         (REPO_ROOT / "riverhog/recovery/pyproject.toml").read_text(encoding="utf-8")
     )
@@ -96,7 +98,7 @@ def test_reference_recovery_is_independent_and_advertised() -> None:
     assert contracts["project"]["dependencies"] == []
     assert contracts["project"]["license"] == "Apache-2.0"
     assert config["project"]["scripts"] == {"riverhog-recover": "riverhog_recover.cli:main"}
-    assert "permissively licensed reference" in architecture
+    assert "permissively licensed independent recovery tool" in architecture
     assert "archives remain recoverable with standard tools" in architecture
 
 
@@ -111,7 +113,8 @@ def test_published_images_carry_source_and_license_identity() -> None:
         "reference/stove0/observers/exiftool/Dockerfile": "CAL-1.0",
         "reference/stove0/targets/nvenc-av1-opus/Dockerfile": "CAL-1.0",
         "reference/stove0/targets/opus/Dockerfile": "CAL-1.0",
-        "reference/stove0/targets/review/Dockerfile": "CAL-1.0",
+        "reference/stove0/targets/review/materialize-target/Dockerfile": "CAL-1.0",
+        "reference/stove0/targets/review/rclone-effect-target/Dockerfile": "CAL-1.0",
         "utilities/mango-fish/Dockerfile": "Apache-2.0",
     }
     for relative, expected_license in images.items():
@@ -129,7 +132,9 @@ def test_standalone_runtime_tools_preserve_their_exact_attribution_text() -> Non
     exiftool = (REPO_ROOT / "reference/stove0/observers/exiftool/Dockerfile").read_text(
         encoding="utf-8"
     )
-    review = (REPO_ROOT / "reference/stove0/targets/review/Dockerfile").read_text(encoding="utf-8")
+    review = (
+        REPO_ROOT / "reference/stove0/targets/review/rclone-effect-target/Dockerfile"
+    ).read_text(encoding="utf-8")
     av1 = (REPO_ROOT / "reference/stove0/targets/nvenc-av1-opus/Dockerfile").read_text(
         encoding="utf-8"
     )
@@ -163,7 +168,8 @@ def test_every_first_party_image_build_requests_an_sbom_attestation() -> None:
         "stove0-exiftool-observer",
         "stove0-nvenc-av1-opus-target",
         "stove0-opus-target",
-        "stove0-review-target",
+        "stove0-review-materialize-target",
+        "stove0-review-rclone-effect-target",
         "mango-fish",
         "test",
     ]

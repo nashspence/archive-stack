@@ -26,7 +26,8 @@ required_checks = [
   "build stove0-ffprobe-sampling-observer",
   "build stove0-nvenc-av1-opus-target",
   "build stove0-opus-target",
-  "build stove0-review-target",
+  "build stove0-review-materialize-target",
+  "build stove0-review-rclone-effect-target",
   "build test",
   "client platform (macos-15)",
   "client platform (ubuntu-24.04)",
@@ -124,6 +125,11 @@ linux-x64 = { mounted_volume_distribution = "gogurt-linux-mounted-volume", mount
 macos-arm64 = { mounted_volume_distribution = "gogurt-macos-mounted-volume", mounted_volume_provider = "gogurt-macos-mounted-volume", listener_host_distribution = "gogurt-macos-listener-host", listener_host_provider = "gogurt-macos-listener-host" }
 windows-x64 = { mounted_volume_distribution = "gogurt-windows-mounted-volume", mounted_volume_provider = "gogurt-windows-mounted-volume", listener_host_distribution = "gogurt-windows-listener-host", listener_host_provider = "gogurt-windows-listener-host" }
 
+[qualification.storage_reference]
+purpose = "Selected reference qualification only; these cases are neither defaults nor recommendations and are not a support matrix."
+distributions = ["riverhog-storage-adapter-aws", "riverhog-storage-adapter-backblaze"]
+cases = ["b2-archive", "b2-retrieval-cache", "aws-deep-archive", "aws-cloudfront-egress"]
+
 [references]
 policy = "First-party reference components are optional, nonnormative, maintainer-selected conformance examples. Their inventory is neither complete nor recommended and is not a support matrix; new mechanisms are independently owned and published."
 
@@ -183,7 +189,9 @@ reference_component = [
   "reference/stove0/targets/review/sampler/client",
   "reference/stove0/targets/review/sampler/protocol",
   "reference/stove0/targets/review/sampler/support",
-  "reference/stove0/targets/review/target",
+  "reference/stove0/targets/review/materialize-target",
+  "reference/stove0/targets/review/rclone-effect-target",
+  "reference/stove0/targets/review/support",
 ]
 reusable_library = [
   "packages/gogurt-core",
@@ -231,7 +239,7 @@ platforms = ["linux/amd64"]
 [images.runtime]
 riverhog = { role = "product", description = "Riverhog archive service.", distributions = ["riverhog-server"], repository = "ghcr.io/nashspence/riverhog" }
 mango-fish = { role = "product", description = "Riverhog CloudEvents utility.", distributions = ["mango-fish"], repository = "ghcr.io/nashspence/riverhog-mango-fish" }
-riverhog-ftp-adapter = { role = "reference", description = "Optional nonnormative Riverhog FTP ingress reference.", distributions = ["riverhog-ftp-adapter"], repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
+riverhog-ftp-adapter = { role = "reference", description = "Optional nonnormative Riverhog FTP ingress reference.", distributions = ["riverhog-ftp-adapter", "riverhog-provenance-linux-observer"], repository = "ghcr.io/nashspence/riverhog-ftp-adapter" }
 riverhog-storage-adapter-aws = { role = "reference", description = "Optional nonnormative AWS storage reference for Riverhog.", distributions = ["riverhog-storage-adapter-aws"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-aws" }
 riverhog-storage-adapter-backblaze = { role = "reference", description = "Optional nonnormative Backblaze B2 storage reference for Riverhog.", distributions = ["riverhog-storage-adapter-backblaze"], repository = "ghcr.io/nashspence/riverhog-storage-adapter-backblaze" }
 stove0 = { role = "product", description = "Stove0 transformation companion.", distributions = ["stove0-server"], repository = "ghcr.io/nashspence/riverhog-stove0" }
@@ -239,7 +247,8 @@ stove0-exiftool-observer = { role = "reference", description = "Optional nonnorm
 stove0-ffprobe-sampling-observer = { role = "reference", description = "Optional nonnormative FFprobe sampling-observer reference for Stove0.", distributions = ["stove0-ffprobe-sampling-observer"], repository = "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer" }
 stove0-nvenc-av1-opus-target = { role = "reference", description = "Optional nonnormative NVENC AV1 and Opus target reference for Stove0.", distributions = ["stove0-nvenc-av1-opus-target", "stove0-nvenc-av1-opus-review-sampler"], repository = "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target" }
 stove0-opus-target = { role = "reference", description = "Optional nonnormative Opus target reference for Stove0.", distributions = ["stove0-opus-target", "stove0-opus-review-sampler"], repository = "ghcr.io/nashspence/riverhog-stove0-opus-target" }
-stove0-review-target = { role = "reference", description = "Optional nonnormative review-target reference for Stove0.", distributions = ["stove0-review-target"], repository = "ghcr.io/nashspence/riverhog-stove0-review-target" }
+stove0-review-materialize-target = { role = "reference", description = "Optional nonnormative review materialization target reference for Stove0.", distributions = ["stove0-review-materialize-target"], repository = "ghcr.io/nashspence/riverhog-stove0-review-materialize-target" }
+stove0-review-rclone-effect-target = { role = "reference", description = "Optional nonnormative rclone review-effect target reference for Stove0.", distributions = ["stove0-review-rclone-effect-target"], repository = "ghcr.io/nashspence/riverhog-stove0-review-rclone-effect-target" }
 
 [images.test_only]
 test = { local_tag = "riverhog-test:dev" }

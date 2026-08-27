@@ -219,10 +219,19 @@ smoke_workspace_distribution \
   'import importlib.metadata as m; import stove0_opus_review_sampler.app; m.version("stove0-opus-review-sampler")' \
   stove0-opus-review-sampler
 smoke_workspace_distribution \
-  stove0-review-target \
-  'stove0_review_target-*.whl' \
-  'import importlib.metadata as m; import stove0_review_target.app; m.version("stove0-review-target")' \
-  stove0-review-target
+  stove0-review-target-support \
+  'stove0_review_target_support-*.whl' \
+  'import importlib.metadata as m; import stove0_review_target_support; m.version("stove0-review-target-support")'
+smoke_workspace_distribution \
+  stove0-review-materialize-target \
+  'stove0_review_materialize_target-*.whl' \
+  'import importlib.metadata as m; import stove0_review_materialize_target.app; m.version("stove0-review-materialize-target")' \
+  stove0-review-materialize-target
+smoke_workspace_distribution \
+  stove0-review-rclone-effect-target \
+  'stove0_review_rclone_effect_target-*.whl' \
+  'import importlib.metadata as m; import stove0_review_rclone_effect_target.app; m.version("stove0-review-rclone-effect-target")' \
+  stove0-review-rclone-effect-target
 smoke_workspace_distribution \
   stove0-observer-support \
   'stove0_observer_support-*.whl' \

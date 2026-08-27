@@ -9,7 +9,8 @@ group "default" {
     "stove0-ffprobe-sampling-observer",
     "stove0-nvenc-av1-opus-target",
     "stove0-opus-target",
-    "stove0-review-target",
+    "stove0-review-materialize-target",
+    "stove0-review-rclone-effect-target",
     "mango-fish",
     "test",
   ]
@@ -98,11 +99,19 @@ target "stove0-opus-target" {
   args       = { SOURCE_REVISION = "unknown" }
 }
 
-target "stove0-review-target" {
+target "stove0-review-materialize-target" {
   inherits   = ["image-common"]
   context    = "."
-  dockerfile = "reference/stove0/targets/review/Dockerfile"
-  tags       = ["stove0-review-target:dev"]
+  dockerfile = "reference/stove0/targets/review/materialize-target/Dockerfile"
+  tags       = ["stove0-review-materialize-target:dev"]
+  args       = { SOURCE_REVISION = "unknown" }
+}
+
+target "stove0-review-rclone-effect-target" {
+  inherits   = ["image-common"]
+  context    = "."
+  dockerfile = "reference/stove0/targets/review/rclone-effect-target/Dockerfile"
+  tags       = ["stove0-review-rclone-effect-target:dev"]
   args       = { SOURCE_REVISION = "unknown" }
 }
 

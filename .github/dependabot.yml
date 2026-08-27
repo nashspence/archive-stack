@@ -52,7 +52,8 @@ updates:
       - /reference/stove0/observers/ffprobe-sampling
       - /reference/stove0/targets/nvenc-av1-opus
       - /reference/stove0/targets/opus
-      - /reference/stove0/targets/review
+      - /reference/stove0/targets/review/materialize-target
+      - /reference/stove0/targets/review/rclone-effect-target
       - /reference/riverhog/ingress/ftp
       - /riverhog/server
       - /reference/riverhog/storage/aws

@@ -59,12 +59,12 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
 
     projects = module.validate_release_contract(REPO_ROOT)
 
-    assert len(projects) == 71
+    assert len(projects) == 73
     assert {project.version for project in projects} == {"0.1.0"}
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
         "deployed_implementation": 3,
-        "reference_component": 34,
+        "reference_component": 36,
         "reusable_library": 26,
         "internal_build_unit": 4,
     }
@@ -90,7 +90,9 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "stove0-nvenc-av1-opus-review-sampler",
         "stove0-opus-target",
         "stove0-opus-review-sampler",
-        "stove0-review-target",
+        "stove0-review-materialize-target",
+        "stove0-review-rclone-effect-target",
+        "stove0-review-target-support",
         "stove0-api-client",
         "stove0-observer-protocol",
         "stove0-observer-client",
@@ -141,19 +143,51 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         project.path.startswith("reference/") == (project.role == "reference_component")
         for project in projects
     )
+    qualification = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))[
+        "qualification"
+    ]
+    assert qualification["storage_reference"] == module.STORAGE_REFERENCE_QUALIFICATION
 
 
-def test_optional_dependencies_are_attested_without_becoming_default_closure() -> None:
+def test_non_reference_distributions_do_not_depend_on_reference_components() -> None:
     module = load_script()
     projects = module.validate_release_contract(REPO_ROOT)
 
-    internal, artifact_dependencies, _licenses = module._project_dependency_graph(
+    _internal, artifact_dependencies, _licenses = module._project_dependency_graph(
         REPO_ROOT,
         projects,
     )
+    roles = {project.name: project.role for project in projects}
+    reference = {name for name, role in roles.items() if role == "reference_component"}
 
-    assert "riverhog-provenance-linux-observer" not in internal["riverhog-ftp-adapter"]
-    assert "riverhog-provenance-linux-observer" in artifact_dependencies["riverhog-ftp-adapter"]
+    assert all(
+        not (artifact_dependencies[name] & reference)
+        for name, role in roles.items()
+        if role
+        in {
+            "end_user_artifact",
+            "deployed_implementation",
+            "reusable_library",
+            "internal_build_unit",
+        }
+    )
+
+
+def test_release_contract_rejects_optional_reference_dependency_from_product(
+    tmp_path: Path,
+) -> None:
+    module = load_script()
+    _copy_release_contract(module, tmp_path)
+    pyproject = tmp_path / "riverhog/recovery/pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8")
+        + "\n[project.optional-dependencies]\n"
+        + 'fixture = ["riverhog-provenance-linux-observer>=0.1,<0.2"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(module.ReleaseError, match="depends on independently selected"):
+        module.validate_release_contract(tmp_path)
 
 
 def test_reusable_library_public_annotations_do_not_leak_internal_build_units() -> None:
@@ -336,7 +370,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert plan["tag"] == "v1.0.0"
     assert len(plan["source_sha"]) == 40
     assert all(character in "0123456789abcdef" for character in plan["source_sha"])
-    assert len(plan["python"]) == 71
+    assert len(plan["python"]) == 73
     assert all(len(project["artifacts"]) == 2 for project in plan["python"])
     assert {image["target"] for image in plan["images"]} == set(module.RUNTIME_IMAGE_TARGETS)
     assert plan["reference_policy"] == module.REFERENCE_POLICY

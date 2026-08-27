@@ -128,7 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=int(os.getenv(f"{prefix}_PORT", "8080")))
     args = parser.parse_args(argv)
     sampler = OpusReviewSampler(
-        workspace_root=Path(os.getenv(f"{prefix}_WORKSPACE", "/run/stove0-review-target")),
+        workspace_root=Path(os.getenv(f"{prefix}_WORKSPACE", "/run/stove0-review")),
         ffmpeg=os.getenv("STOVE0_FFMPEG_BIN", "ffmpeg"),
         source_revision=os.getenv(f"{prefix}_SOURCE_REVISION", "unknown"),
         image_digest=_image_digest(prefix),

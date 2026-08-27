@@ -483,7 +483,9 @@ def test_mypy_target_covers_source_and_service_apps(tmp_path: Path) -> None:
         "reference/stove0/targets/nvenc-av1-opus/target/src",
         "reference/stove0/targets/opus/review-sampler/src",
         "reference/stove0/targets/opus/target/src",
-        "reference/stove0/targets/review/target/src",
+        "reference/stove0/targets/review/materialize-target/src",
+        "reference/stove0/targets/review/rclone-effect-target/src",
+        "reference/stove0/targets/review/support/src",
         "companions/stove0/server/src",
         "reference/stove0/targets/media-archive/contracts/src",
         "reference/stove0/targets/media-archive/support/src",
@@ -573,7 +575,8 @@ def test_build_targets_use_the_canonical_bake_graph(tmp_path: Path) -> None:
         "stove0-ffprobe-sampling-observer",
         "stove0-nvenc-av1-opus-target",
         "stove0-opus-target",
-        "stove0-review-target",
+        "stove0-review-materialize-target",
+        "stove0-review-rclone-effect-target",
         "mango-fish",
         "test",
     )
@@ -843,14 +846,16 @@ def test_deployed_application_dockerfiles_use_locked_workspace_dependencies() ->
         REPO_ROOT / "reference/stove0/observers/ffprobe-sampling/Dockerfile",
         REPO_ROOT / "reference/stove0/targets/nvenc-av1-opus/Dockerfile",
         REPO_ROOT / "reference/stove0/targets/opus/Dockerfile",
-        REPO_ROOT / "reference/stove0/targets/review/Dockerfile",
+        REPO_ROOT / "reference/stove0/targets/review/materialize-target/Dockerfile",
+        REPO_ROOT / "reference/stove0/targets/review/rclone-effect-target/Dockerfile",
         REPO_ROOT / "utilities/mango-fish/Dockerfile",
     ]
 
     for path in service_dockerfiles:
         dockerfile = path.read_text(encoding="utf-8")
         assert "COPY pyproject.toml uv.lock ./" in dockerfile
-        assert "uv sync --frozen --package " in dockerfile
+        assert "uv sync --frozen" in dockerfile
+        assert "--package " in dockerfile
         assert "--no-dev --no-editable" in dockerfile
         assert "pip install" not in dockerfile
         assert "PYTHONPATH=/riverhog/src" not in dockerfile
@@ -955,7 +960,8 @@ def test_help_describes_make_targets(tmp_path: Path) -> None:
     assert "make build-stove0-ffprobe-sampling-observer" in completed.stdout
     assert "make build-stove0-nvenc-av1-opus-target" in completed.stdout
     assert "make build-stove0-opus-target" in completed.stdout
-    assert "make build-stove0-review-target" in completed.stdout
+    assert "make build-stove0-review-materialize-target" in completed.stdout
+    assert "make build-stove0-review-rclone-effect-target" in completed.stdout
     assert "make build-mango-fish" in completed.stdout
     assert "make mango-fish-smoke" in completed.stdout
     assert "make stove0-scale-qualification" in completed.stdout

@@ -27,7 +27,8 @@ MISE_CONTAINER_TOOLS = {
     "stove0-ffprobe-sampling-observer": {"uv"},
     "stove0-nvenc-av1-opus-target": {"uv"},
     "stove0-opus-target": {"uv"},
-    "stove0-review-target": {"rclone", "uv"},
+    "stove0-review-materialize-target": {"uv"},
+    "stove0-review-rclone-effect-target": {"rclone", "uv"},
     "mango-fish": {"uv"},
     "test": {"age", "http:exiftool", "minisign", "uv"},
 }
@@ -112,15 +113,19 @@ IMAGE_CONTRACTS = {
             ("companions/stove0/compose.yaml", "opus-review-sampler"),
         ),
     },
-    "stove0-review-target": {
-        "dockerfile": "reference/stove0/targets/review/Dockerfile",
-        "tag": "stove0-review-target:dev",
-        "title": "stove0 review target",
+    "stove0-review-materialize-target": {
+        "dockerfile": "reference/stove0/targets/review/materialize-target/Dockerfile",
+        "tag": "stove0-review-materialize-target:dev",
+        "title": "stove0 review materialize target",
         "license": "CAL-1.0",
-        "compose": (
-            ("companions/stove0/compose.yaml", "review-target"),
-            ("companions/stove0/compose.yaml", "review-effect-target"),
-        ),
+        "compose": (("companions/stove0/compose.yaml", "review-materialize-target"),),
+    },
+    "stove0-review-rclone-effect-target": {
+        "dockerfile": "reference/stove0/targets/review/rclone-effect-target/Dockerfile",
+        "tag": "stove0-review-rclone-effect-target:dev",
+        "title": "stove0 rclone review-effect target",
+        "license": "CAL-1.0",
+        "compose": (("companions/stove0/compose.yaml", "review-rclone-effect-target"),),
     },
     "mango-fish": {
         "dockerfile": "utilities/mango-fish/Dockerfile",

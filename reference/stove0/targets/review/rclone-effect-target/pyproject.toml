@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.31.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stove0-review-rclone-effect-target"
+version = "0.1.0"
+description = "Optional nonnormative rclone review-effect target reference for Stove0."
+requires-python = ">=3.12"
+license = "CAL-1.0"
+license-files = ["LICENSE"]
+readme = { text = "Optional nonnormative Riverhog v1 reference component. See the project URL for documentation and releases.", content-type = "text/markdown" }
+authors = [{ name = "Nash Spence" }]
+maintainers = [{ name = "Nash Spence" }]
+classifiers = ["Programming Language :: Python :: 3 :: Only", "Programming Language :: Python :: 3.12", "Typing :: Typed"]
+urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
+dependencies = [
+  "fastapi>=0.111,<1.0",
+  "pydantic>=2.7,<3.0",
+  "riverhog-protocol>=0.1,<0.2",
+  "riverhog-transform-sdk>=0.1,<0.2",
+  "stove0-review-target-contracts>=0.1,<0.2",
+  "stove0-review-target-support>=0.1,<0.2",
+  "stove0-target-support>=0.1,<0.2",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.scripts]
+stove0-review-rclone-effect-target = "stove0_review_rclone_effect_target.app:main"
+
+[tool.uv.sources]
+riverhog-protocol = { workspace = true }
+riverhog-transform-sdk = { workspace = true }
+stove0-review-target-contracts = { workspace = true }
+stove0-review-target-support = { workspace = true }
+stove0-target-support = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stove0_review_rclone_effect_target"]

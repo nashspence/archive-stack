@@ -75,9 +75,13 @@ IMPLEMENTATION_OWNERS = {
         REPO / "reference/stove0/targets/opus/target/src",
         {"stove0_opus_target"},
     ),
-    "stove0-review-target": (
-        REPO / "reference/stove0/targets/review/target/src",
-        {"stove0_review_target"},
+    "stove0-review-materialize-target": (
+        REPO / "reference/stove0/targets/review/materialize-target/src",
+        {"stove0_review_materialize_target"},
+    ),
+    "stove0-review-rclone-effect-target": (
+        REPO / "reference/stove0/targets/review/rclone-effect-target/src",
+        {"stove0_review_rclone_effect_target"},
     ),
     "stove0-review-planning": (
         REPO / "reference/stove0/targets/review/planning/src",
@@ -701,11 +705,19 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
             "reference/stove0/targets/review/sampler/protocol",
             "reference/stove0/targets/review/sampler/support",
         ),
-        REPO / "reference/stove0/targets/review/Dockerfile": (
+        REPO / "reference/stove0/targets/review/materialize-target/Dockerfile": (
             "reference/stove0/targets/review/contracts",
+            "reference/stove0/targets/review/materialize-target",
             "reference/stove0/targets/review/sampler/client",
             "reference/stove0/targets/review/sampler/protocol",
-            "reference/stove0/targets/review/target",
+            "reference/stove0/targets/review/support",
+        ),
+        REPO / "reference/stove0/targets/review/rclone-effect-target/Dockerfile": (
+            "reference/stove0/targets/review/contracts",
+            "reference/stove0/targets/review/rclone-effect-target",
+            "reference/stove0/targets/review/sampler/client",
+            "reference/stove0/targets/review/sampler/protocol",
+            "reference/stove0/targets/review/support",
         ),
         REPO / "utilities/mango-fish/Dockerfile": "utilities/mango-fish",
     }
@@ -868,7 +880,12 @@ def test_images_copy_their_complete_internal_dependency_closure() -> None:
             "stove0-opus-target",
             "stove0-opus-review-sampler",
         ),
-        REPO / "reference/stove0/targets/review/Dockerfile": "stove0-review-target",
+        REPO / "reference/stove0/targets/review/materialize-target/Dockerfile": (
+            "stove0-review-materialize-target"
+        ),
+        REPO / "reference/stove0/targets/review/rclone-effect-target/Dockerfile": (
+            "stove0-review-rclone-effect-target"
+        ),
         REPO / "utilities/mango-fish/Dockerfile": "mango-fish",
     }
     projects, graph = workspace_project_graph()

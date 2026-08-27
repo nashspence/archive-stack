@@ -32,7 +32,9 @@ MYPY_SOURCES = \
 	reference/stove0/targets/nvenc-av1-opus/target/src \
 	reference/stove0/targets/opus/review-sampler/src \
 	reference/stove0/targets/opus/target/src \
-	reference/stove0/targets/review/target/src \
+	reference/stove0/targets/review/materialize-target/src \
+	reference/stove0/targets/review/rclone-effect-target/src \
+	reference/stove0/targets/review/support/src \
 	companions/stove0/server/src \
 	packages/application-access/src \
 	packages/config-validation/src \
@@ -96,7 +98,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke stove0-scale-qualification mango-fish-smoke transfer-profile stop-spec dist dist-smoke build build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-exiftool-observer build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-target build-mango-fish build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke stove0-scale-qualification mango-fish-smoke transfer-profile stop-spec dist dist-smoke build build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-exiftool-observer build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-materialize-target build-stove0-review-rclone-effect-target build-mango-fish build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -160,7 +162,8 @@ help:
 		'  make build-stove0-ffprobe-sampling-observer Build the FFprobe observer image.' \
 		'  make build-stove0-nvenc-av1-opus-target Build the NVENC AV1 + Opus target/sampler image.' \
 		'  make build-stove0-opus-target Build the slim Opus target/sampler image.' \
-		'  make build-stove0-review-target Build the review target image.' \
+		'  make build-stove0-review-materialize-target Build the review materialization target image.' \
+		'  make build-stove0-review-rclone-effect-target Build the rclone review-effect target image.' \
 		'  make build-mango-fish  Build the Mango Fish image.' \
 		'  make build-test        Build the test image.' \
 		'  make build             Build every application and test image.' \
@@ -313,8 +316,11 @@ build-stove0-nvenc-av1-opus-target:
 build-stove0-opus-target:
 	$(call BAKE_IMAGE,stove0-opus-target)
 
-build-stove0-review-target:
-	$(call BAKE_IMAGE,stove0-review-target)
+build-stove0-review-materialize-target:
+	$(call BAKE_IMAGE,stove0-review-materialize-target)
+
+build-stove0-review-rclone-effect-target:
+	$(call BAKE_IMAGE,stove0-review-rclone-effect-target)
 
 build-mango-fish:
 	$(call BAKE_IMAGE,mango-fish)
@@ -329,7 +335,7 @@ mango-fish-smoke:
 build-test:
 	$(call BAKE_IMAGE,test)
 
-build: build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-exiftool-observer build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-target build-mango-fish build-test
+build: build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-exiftool-observer build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-materialize-target build-stove0-review-rclone-effect-target build-mango-fish build-test
 
 bootstrap-garage:
 	@./scripts/bootstrap_garage.sh
