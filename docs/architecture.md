@@ -20,13 +20,13 @@ Executable contracts define packages; architecture records ownership and placeme
   a reason. Journals and their index are authoritative; database rows are a rebuildable projection.
 - **Collection views.** Collections are immutable namespaces and deletion units; tags are mutable.
   Applications own derived materializations.
-- **Deployment configuration.** Downstream configuration owns identity, credentials, destinations,
+- **Deployment configuration.** Deployments own identity, credentials, destinations,
   topology, and private policy.
 
 ## Boundary model
 
-- **Implementation ownership.** Products own implementations. Focused packages share contracts or
-  behavior without crossing product boundaries.
+- **Implementation ownership.** Products own implementations. Packages contain product contracts or
+  implementation-neutral tooling; reference contracts and support stay with their family.
 - **Public contracts.** Runtime integration crosses published HTTP and CloudEvents contracts.
   Shared models own identity-bearing documents. Exact HTTP/OpenAPI contracts own ordinary CRUD;
   official clients may expose their JSON.
@@ -37,7 +37,7 @@ Executable contracts define packages; architecture records ownership and placeme
 - **Storage adapters.** Storage adapters translate Riverhog's opaque-object capabilities into
   provider mechanisms. Provider policy and mechanisms remain outside Riverhog.
 - **Companions.** Companions consume Riverhog capabilities and own their workflow state. Stove0 is
-  a provided transformation companion; its core does not interpret content.
+  a companion; its core does not interpret content.
 - **Extensions.** Observers report immutable-artifact facts; targets perform declared operations.
   Each explicitly selected distribution owns one capability; shared-dependency image bundles do
   not merge identities or selection. First-party references are optional and nonnormative: their
@@ -56,4 +56,4 @@ Workspace checks enforce ownership boundaries.
 - [`companions`](../companions/): independent Riverhog applications.
 - [`reference/stove0`](../reference/stove0/): Stove0 references.
 - [`utilities`](../utilities/): operator and event utilities.
-- [`packages`](../packages/): shared contracts and implementation-neutral support.
+- [`packages`](../packages/): product-owned contracts and implementation-neutral support.

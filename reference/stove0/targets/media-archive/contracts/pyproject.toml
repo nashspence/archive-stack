@@ -3,9 +3,9 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "stove0-media-metadata-observer-contracts"
+name = "stove0-media-archive-target-contracts"
 version = "0.1.0"
-description = "Observer-owned media metadata contracts for independently implemented Stove0 observers."
+description = "Optional nonnormative media-archive contract reference for Stove0 targets."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -20,14 +20,13 @@ classifiers = [
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "pydantic>=2.7,<3.0",
-  "stove0-observer-protocol>=0.1,<0.2",
+  "stove0-protocol>=0.1,<0.2",
+  "stove0-target-protocol>=0.1,<0.2",
 ]
 
-[project.entry-points."stove0.observer-semantic-validators"]
-media-metadata = "stove0_media_metadata_observer_contracts:MEDIA_METADATA_SEMANTIC_VALIDATOR"
-
 [tool.uv.sources]
-stove0-observer-protocol = { workspace = true }
+stove0-protocol = { workspace = true }
+stove0-target-protocol = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/stove0_media_metadata_observer_contracts"]
+packages = ["src/stove0_media_archive_target_contracts"]

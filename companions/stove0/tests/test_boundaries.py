@@ -19,23 +19,27 @@ OBSERVER_ROOT = REPO_ROOT / "packages" / "stove0-observer-support" / "src"
 TARGET_PROTOCOL_ROOT = REPO_ROOT / "packages" / "stove0-target-protocol" / "src"
 TARGET_ROOT = REPO_ROOT / "packages" / "stove0-target-support" / "src"
 MEDIA_METADATA_OBSERVER_CONTRACT_ROOT = (
-    REPO_ROOT / "packages" / "stove0-media-metadata-observer-contracts" / "src"
+    REPO_ROOT / "reference" / "stove0" / "observers" / "contracts" / "media-metadata" / "src"
 )
 MEDIA_SAMPLING_OBSERVER_CONTRACT_ROOT = (
-    REPO_ROOT / "packages" / "stove0-media-sampling-observer-contracts" / "src"
+    REPO_ROOT / "reference" / "stove0" / "observers" / "contracts" / "media-sampling" / "src"
 )
 MEDIA_ARCHIVE_TARGET_CONTRACT_ROOT = (
-    REPO_ROOT / "packages" / "stove0-media-archive-target-contracts" / "src"
+    REPO_ROOT / "reference" / "stove0" / "targets" / "media-archive" / "contracts" / "src"
 )
 MEDIA_ARCHIVE_TARGET_SUPPORT_ROOT = (
-    REPO_ROOT / "packages" / "stove0-media-archive-target-support" / "src"
+    REPO_ROOT / "reference" / "stove0" / "targets" / "media-archive" / "support" / "src"
 )
-REVIEW_TARGET_CONTRACT_ROOT = REPO_ROOT / "packages" / "stove0-review-target-contracts" / "src"
-REVIEW_PLANNING_ROOT = REPO_ROOT / "packages" / "stove0-review-planning" / "src"
+REVIEW_TARGET_CONTRACT_ROOT = (
+    REPO_ROOT / "reference" / "stove0" / "targets" / "review" / "contracts" / "src"
+)
+REVIEW_PLANNING_ROOT = (
+    REPO_ROOT / "reference" / "stove0" / "targets" / "review" / "planning" / "src"
+)
 CALLER_ROOTS = (
     REPO_ROOT / "packages" / "stove0-observer-client" / "src",
     REPO_ROOT / "packages" / "stove0-target-client" / "src",
-    REPO_ROOT / "packages" / "stove0-review-sampler-client" / "src",
+    REPO_ROOT / "reference" / "stove0" / "targets" / "review" / "sampler" / "client" / "src",
 )
 IMPLEMENTATION_ROOT = REPO_ROOT / "reference" / "stove0"
 MAINTAINED_TARGETS = (
@@ -290,7 +294,7 @@ def test_caller_packages_do_not_pull_in_author_or_implementation_dependencies() 
     }
 
 
-def test_maintained_reference_implementations_do_not_import_product_internals() -> None:
+def test_maintained_reference_components_do_not_import_product_internals() -> None:
     imports = {root for path in IMPLEMENTATION_ROOT.rglob("*.py") for root in _import_roots(path)}
     assert not imports & {"riverhog_api", "riverhog_core", "stove0_api", "stove0_core"}
 

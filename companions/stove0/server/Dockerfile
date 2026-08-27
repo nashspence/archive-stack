@@ -33,8 +33,6 @@ COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contrac
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/stove0-observer-client packages/stove0-observer-client
 COPY packages/stove0-observer-protocol packages/stove0-observer-protocol
-COPY packages/stove0-media-metadata-observer-contracts packages/stove0-media-metadata-observer-contracts
-COPY packages/stove0-media-sampling-observer-contracts packages/stove0-media-sampling-observer-contracts
 COPY packages/stove0-operator-contracts packages/stove0-operator-contracts
 COPY packages/stove0-protocol packages/stove0-protocol
 COPY packages/stove0-recipe-config packages/stove0-recipe-config
@@ -42,12 +40,18 @@ COPY packages/stove0-target-client packages/stove0-target-client
 COPY packages/stove0-target-protocol packages/stove0-target-protocol
 COPY packages/state-schema packages/state-schema
 COPY packages/time-formats packages/time-formats
+RUN uv sync --frozen --package stove0-server --no-dev --no-editable
+
+FROM build AS reference-qualification-build
+
+COPY reference/stove0/observers/contracts/media-metadata reference/stove0/observers/contracts/media-metadata
+COPY reference/stove0/observers/contracts/media-sampling reference/stove0/observers/contracts/media-sampling
 RUN uv sync --frozen --package stove0-server \
     --package stove0-media-metadata-observer-contracts \
     --package stove0-media-sampling-observer-contracts \
     --no-dev --no-editable
 
-FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203
+FROM python:3.12-slim@sha256:090ba77e2958f6af52a5341f788b50b032dd4ca28377d2893dcf1ecbdfdfe203 AS runtime-base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/opt/venv/bin:$PATH \
@@ -76,9 +80,16 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && ! command -v mise
 
-COPY --from=build /opt/venv /opt/venv
-
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["stove0-server", "serve", "--host", "0.0.0.0", "--port", "8080"]
+
+FROM runtime-base AS reference-qualification
+
+LABEL io.github.nashspence.riverhog.composition="reference-qualification"
+COPY --from=reference-qualification-build /opt/venv /opt/venv
+
+FROM runtime-base AS runtime
+
+COPY --from=build /opt/venv /opt/venv

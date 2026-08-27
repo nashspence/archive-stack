@@ -283,9 +283,9 @@ def gogurt_reference_qualification(
             )
         for distribution_field, provider_field, entry_point_group in capability_fields:
             project = project_by_name.get(item[distribution_field])
-            if project is None or project.role != "reference_implementation":
+            if project is None or project.role != "reference_component":
                 raise InstallationError(
-                    f"Gogurt qualification must select reference implementations for {platform}"
+                    f"Gogurt qualification must select reference components for {platform}"
                 )
             metadata = tomllib.loads(
                 (root / project.path / "pyproject.toml").read_text(encoding="utf-8")

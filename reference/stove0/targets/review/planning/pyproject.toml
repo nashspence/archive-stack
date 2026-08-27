@@ -3,9 +3,9 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "stove0-review-target-contracts"
+name = "stove0-review-planning"
 version = "0.1.0"
-description = "Target-owned review contracts for independently implemented Stove0 targets."
+description = "Optional nonnormative planning bridge for maintained Stove0 review references."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -20,13 +20,18 @@ classifiers = [
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "pydantic>=2.7,<3.0",
+  "stove0-media-sampling-observer-contracts>=0.1,<0.2",
   "stove0-protocol>=0.1,<0.2",
-  "stove0-target-protocol>=0.1,<0.2",
+  "stove0-review-target-contracts>=0.1,<0.2",
 ]
 
+[project.scripts]
+stove0-review-planning = "stove0_review_planning.conformance:main"
+
 [tool.uv.sources]
+stove0-media-sampling-observer-contracts = { workspace = true }
 stove0-protocol = { workspace = true }
-stove0-target-protocol = { workspace = true }
+stove0-review-target-contracts = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/stove0_review_target_contracts"]
+packages = ["src/stove0_review_planning"]

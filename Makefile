@@ -19,7 +19,7 @@ MYPY_SOURCES = \
 	companions/stove0/client/src \
 	packages/gogurt-core/src \
 	packages/gogurt-listener-runtime/src \
-	packages/gogurt-path-volume-support/src \
+	reference/gogurt/mounted-volume/path-support/src \
 	reference/gogurt/listener-host/linux/src \
 	reference/gogurt/listener-host/macos/src \
 	reference/gogurt/listener-host/windows/src \
@@ -62,17 +62,17 @@ MYPY_SOURCES = \
 	packages/stove0-observer-protocol/src \
 	packages/stove0-observer-support/src \
 	packages/stove0-operator-contracts/src \
-	packages/stove0-media-archive-target-contracts/src \
-	packages/stove0-media-archive-target-support/src \
-	packages/stove0-media-metadata-observer-contracts/src \
-	packages/stove0-media-sampling-observer-contracts/src \
+	reference/stove0/targets/media-archive/contracts/src \
+	reference/stove0/targets/media-archive/support/src \
+	reference/stove0/observers/contracts/media-metadata/src \
+	reference/stove0/observers/contracts/media-sampling/src \
 	packages/stove0-protocol/src \
 	packages/stove0-recipe-config/src \
-	packages/stove0-review-planning/src \
-	packages/stove0-review-target-contracts/src \
-	packages/stove0-review-sampler-client/src \
-	packages/stove0-review-sampler-protocol/src \
-	packages/stove0-review-sampler-support/src \
+	reference/stove0/targets/review/planning/src \
+	reference/stove0/targets/review/contracts/src \
+	reference/stove0/targets/review/sampler/client/src \
+	reference/stove0/targets/review/sampler/protocol/src \
+	reference/stove0/targets/review/sampler/support/src \
 	packages/stove0-target-client/src \
 	packages/stove0-target-protocol/src \
 	packages/stove0-target-support/src \
