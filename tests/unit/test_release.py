@@ -63,9 +63,9 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     assert {project.version for project in projects} == {"0.1.0"}
     assert Counter(project.role for project in projects) == {
         "end_user_artifact": 4,
-        "deployed_implementation": 13,
-        "reference_implementation": 9,
-        "reusable_library": 41,
+        "deployed_implementation": 3,
+        "reference_implementation": 24,
+        "reusable_library": 36,
         "internal_build_unit": 4,
     }
     assert {project.name for project in projects} >= {
@@ -135,8 +135,12 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     platforms = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))["platforms"]
     assert platforms == {
         "end_user_artifacts": ["linux-x64", "macos-arm64", "windows-x64"],
-        "deployed_implementations": ["linux/amd64"],
+        "runtime_images": ["linux/amd64"],
     }
+    assert all(
+        project.path.startswith("reference/") == (project.role == "reference_implementation")
+        for project in projects
+    )
 
 
 def test_optional_dependencies_are_attested_without_becoming_default_closure() -> None:
@@ -335,6 +339,9 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert len(plan["python"]) == 71
     assert all(len(project["artifacts"]) == 2 for project in plan["python"])
     assert {image["target"] for image in plan["images"]} == set(module.RUNTIME_IMAGE_TARGETS)
+    assert plan["reference_policy"] == module.REFERENCE_POLICY
+    assert {image["role"] for image in plan["images"]} == {"product", "reference"}
+    assert all(image["description"] for image in plan["images"])
     assert next(image for image in plan["images"] if image["target"] == "stove0")[
         "distributions"
     ] == [
@@ -398,6 +405,9 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     markdown = module.render_release_markdown(plan)
     assert markdown.startswith("# Riverhog v1.0.0\n\n")
     assert f"Source: `{plan['source_sha']}`" in markdown
+    assert "## First-party reference policy" in markdown
+    assert module.REFERENCE_POLICY in markdown
+    assert "— reference: Optional nonnormative" in markdown
     assert "Initial v1 release; there is no previous release tag." in markdown
 
 

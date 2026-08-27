@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "riverhog-storage-adapter-aws"
 version = "0.1.0"
-description = "AWS S3, Deep Archive, and CloudFront storage adapter for Riverhog."
+description = "Optional nonnormative AWS storage reference for Riverhog."
 requires-python = ">=3.12"
 license = "CAL-1.0"
 license-files = ["LICENSE"]

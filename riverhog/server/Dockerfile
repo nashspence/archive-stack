@@ -54,11 +54,13 @@ ARG BUILD_CREATED=1970-01-01T00:00:00Z
 ARG RELEASE_VERSION=development
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="Riverhog" \
+      org.opencontainers.image.description="Riverhog archive service." \
       org.opencontainers.image.licenses="CAL-1.0" \
       org.opencontainers.image.source="https://github.com/nashspence/riverhog" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.version="${RELEASE_VERSION}" \
       org.opencontainers.image.created="${BUILD_CREATED}" \
+      io.github.nashspence.riverhog.release-role="product" \
       org.opencontainers.image.documentation="https://nashspence.github.io/riverhog/v1/"
 
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt

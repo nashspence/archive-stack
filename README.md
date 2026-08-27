@@ -20,9 +20,10 @@ limitations in the applicable software license.
 
 ## Contributions
 
-New integrations should be independent applications over Riverhog's published HTTP and
-CloudEvents contracts rather than additions to the platform server implementation. Report
-suspected vulnerabilities privately through [security reporting](SECURITY.md).
+New integrations and capability implementations should be independently published over Riverhog's
+public contracts rather than added to its products. Checked-in references are optional,
+nonnormative, maintainer-selected conformance implementations—not a complete, recommended, or
+supported set. Report suspected vulnerabilities privately through [security reporting](SECURITY.md).
 
 ## Start here
 

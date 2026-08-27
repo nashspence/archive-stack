@@ -232,6 +232,9 @@ def _bake_graph() -> dict[str, object]:
 
 def test_bake_graph_is_the_canonical_image_build_contract() -> None:
     graph = _bake_graph()
+    release_images = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))[
+        "images"
+    ]["runtime"]
 
     assert graph["group"] == {"default": {"targets": list(IMAGE_CONTRACTS)}}
     assert graph["common"] == {
@@ -268,6 +271,16 @@ def test_bake_graph_is_the_canonical_image_build_contract() -> None:
             'org.opencontainers.image.documentation="https://nashspence.github.io/riverhog/v1/"'
             in dockerfile
         )
+        if name in release_images:
+            release_image = release_images[name]
+            assert (
+                f'org.opencontainers.image.description="{release_image["description"]}"'
+                in dockerfile
+            )
+            assert (
+                f'io.github.nashspence.riverhog.release-role="{release_image["role"]}"'
+                in dockerfile
+            )
 
 
 def test_every_external_image_input_is_versioned_and_digest_pinned() -> None:

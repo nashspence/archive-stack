@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "stove0-nvenc-av1-opus-review-sampler"
 version = "0.1.0"
-description = "Terminal NVENC AV1 plus Opus review sampler paired with the maintained archive target image."
+description = "Optional nonnormative NVENC AV1 and Opus review-sampler reference for Stove0."
 requires-python = ">=3.12"
 license = "CAL-1.0"
 license-files = ["LICENSE"]

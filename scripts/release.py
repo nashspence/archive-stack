@@ -38,6 +38,11 @@ NOTICE_POLICY = {
     "basis": "exact-artifact-contents",
     "required_for": ["wheel", "image"],
 }
+REFERENCE_POLICY = (
+    "First-party references are optional, nonnormative, maintainer-selected conformance "
+    "implementations. Their inventory is neither complete nor recommended and is not a support "
+    "matrix; new mechanisms are independently owned and published."
+)
 RELEASE_ROLES = (
     "end_user_artifact",
     "deployed_implementation",
@@ -63,26 +68,38 @@ PROJECT_URLS = {
 }
 RUNTIME_IMAGE_TARGETS = {
     "riverhog": {
+        "role": "product",
+        "description": "Riverhog archive service.",
         "distributions": ["riverhog-server"],
         "repository": "ghcr.io/nashspence/riverhog",
     },
     "riverhog-ftp-adapter": {
+        "role": "reference",
+        "description": "Optional nonnormative Riverhog FTP ingress reference.",
         "distributions": ["riverhog-ftp-adapter"],
         "repository": "ghcr.io/nashspence/riverhog-ftp-adapter",
     },
     "riverhog-storage-adapter-aws": {
+        "role": "reference",
+        "description": "Optional nonnormative AWS storage reference for Riverhog.",
         "distributions": ["riverhog-storage-adapter-aws"],
         "repository": "ghcr.io/nashspence/riverhog-storage-adapter-aws",
     },
     "riverhog-storage-adapter-backblaze": {
+        "role": "reference",
+        "description": "Optional nonnormative Backblaze B2 storage reference for Riverhog.",
         "distributions": ["riverhog-storage-adapter-backblaze"],
         "repository": "ghcr.io/nashspence/riverhog-storage-adapter-backblaze",
     },
     "mango-fish": {
+        "role": "product",
+        "description": "Riverhog CloudEvents utility.",
         "distributions": ["mango-fish"],
         "repository": "ghcr.io/nashspence/riverhog-mango-fish",
     },
     "stove0": {
+        "role": "product",
+        "description": "Stove0 transformation companion.",
         "distributions": [
             "stove0-server",
             "stove0-media-metadata-observer-contracts",
@@ -91,14 +108,20 @@ RUNTIME_IMAGE_TARGETS = {
         "repository": "ghcr.io/nashspence/riverhog-stove0",
     },
     "stove0-exiftool-observer": {
+        "role": "reference",
+        "description": "Optional nonnormative ExifTool observer reference for Stove0.",
         "distributions": ["stove0-exiftool-observer"],
         "repository": "ghcr.io/nashspence/riverhog-stove0-exiftool-observer",
     },
     "stove0-ffprobe-sampling-observer": {
+        "role": "reference",
+        "description": "Optional nonnormative FFprobe sampling-observer reference for Stove0.",
         "distributions": ["stove0-ffprobe-sampling-observer"],
         "repository": "ghcr.io/nashspence/riverhog-stove0-ffprobe-sampling-observer",
     },
     "stove0-nvenc-av1-opus-target": {
+        "role": "reference",
+        "description": "Optional nonnormative NVENC AV1 and Opus target reference for Stove0.",
         "distributions": [
             "stove0-nvenc-av1-opus-target",
             "stove0-nvenc-av1-opus-review-sampler",
@@ -106,10 +129,14 @@ RUNTIME_IMAGE_TARGETS = {
         "repository": "ghcr.io/nashspence/riverhog-stove0-nvenc-av1-opus-target",
     },
     "stove0-opus-target": {
+        "role": "reference",
+        "description": "Optional nonnormative Opus target reference for Stove0.",
         "distributions": ["stove0-opus-target", "stove0-opus-review-sampler"],
         "repository": "ghcr.io/nashspence/riverhog-stove0-opus-target",
     },
     "stove0-review-target": {
+        "role": "reference",
+        "description": "Optional nonnormative review-target reference for Stove0.",
         "distributions": ["stove0-review-target"],
         "repository": "ghcr.io/nashspence/riverhog-stove0-review-target",
     },
@@ -373,6 +400,8 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         raise ReleaseError("release tags must use v{version}")
     if config.get("version_policy") != "coordinated":
         raise ReleaseError("Riverhog requires one coordinated product version")
+    if config.get("references") != {"policy": REFERENCE_POLICY}:
+        raise ReleaseError("release.toml differs from the first-party reference policy")
     governance = config.get("governance")
     if not isinstance(governance, dict) or set(governance) != GOVERNANCE_KEYS:
         raise ReleaseError("release.toml lacks the complete GitHub governance contract")
@@ -475,6 +504,18 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
             )
         )
 
+    for project in projects:
+        is_reference_path = project.path.startswith("reference/")
+        if is_reference_path != (project.role == "reference_implementation"):
+            raise ReleaseError(
+                f"{project.name} path and release role disagree about reference ownership"
+            )
+        if is_reference_path and not all(
+            word in project.description.casefold()
+            for word in ("optional", "nonnormative", "reference")
+        ):
+            raise ReleaseError(f"{project.name} does not describe its nonnormative reference role")
+
     versions = {item.version for item in projects}
     if len(versions) != 1:
         raise ReleaseError(f"coordinated distributions have different versions: {sorted(versions)}")
@@ -511,13 +552,13 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
     platforms_config = config.get("platforms")
     if not isinstance(platforms_config, dict) or set(platforms_config) != {
         "end_user_artifacts",
-        "deployed_implementations",
+        "runtime_images",
     }:
         raise ReleaseError("release.toml lacks the complete platform support contract")
     if platforms_config["end_user_artifacts"] != END_USER_ARTIFACT_PLATFORMS:
         raise ReleaseError("v1 end-user artifacts must support Linux, macOS, and Windows")
-    if platforms_config["deployed_implementations"] != RELEASE_IMAGE_PLATFORMS:
-        raise ReleaseError("v1 deployed implementations must target the release image platforms")
+    if platforms_config["runtime_images"] != RELEASE_IMAGE_PLATFORMS:
+        raise ReleaseError("v1 runtime images must target the release image platforms")
 
     images_config = config.get("images")
     if not isinstance(images_config, dict) or set(images_config) != {
@@ -541,10 +582,19 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
     }
     if not image_distributions <= seen_names:
         raise ReleaseError("a runtime image refers to an unknown distribution")
+    roles_by_name = {project.name: project.role for project in projects}
     for target, value in runtime_images.items():
         configured_roots = [
             _normalize_name(str(distribution)) for distribution in value["distributions"]
         ]
+        if value["role"] == "reference":
+            if any(roles_by_name[root] != "reference_implementation" for root in configured_roots):
+                raise ReleaseError(f"reference image contains a non-reference root: {target}")
+        elif value["role"] == "product":
+            if roles_by_name[configured_roots[0]] != "deployed_implementation":
+                raise ReleaseError(f"product image lacks a deployed implementation root: {target}")
+        else:
+            raise ReleaseError(f"runtime image has an unknown release role: {target}")
         dockerfile_roots = _dockerfile_distribution_roots(_bake_dockerfile(root, target))
         if configured_roots != dockerfile_roots:
             raise ReleaseError(
@@ -742,6 +792,8 @@ def build_release_plan(root: Path, version: str, *, allow_dirty: bool = False) -
         images.append(
             {
                 "target": target,
+                "role": value["role"],
+                "description": value["description"],
                 "distributions": value["distributions"],
                 "repository": repository,
                 "platforms": list(config["images"]["platforms"]),
@@ -769,6 +821,7 @@ def build_release_plan(root: Path, version: str, *, allow_dirty: bool = False) -
         "release_branch": config["release_branch"],
         "version_policy": config["version_policy"],
         "compatibility": config["compatibility"],
+        "reference_policy": config["references"]["policy"],
         "python": python_artifacts,
         "images": images,
         "supporting_artifacts": supporting,
@@ -794,8 +847,12 @@ def render_release_markdown(plan: dict[str, Any]) -> str:
         f"| `{item['name']}` | `{item['role']}` | `{item['release_version']}` |"
         for item in plan["python"]
     )
+    lines.extend(["", "## First-party reference policy", "", plan["reference_policy"]])
     lines.extend(["", "## Runtime images", ""])
-    lines.extend(f"- `{item['tags'][0]}` and `{item['tags'][1]}`" for item in plan["images"])
+    lines.extend(
+        f"- `{item['tags'][0]}` and `{item['tags'][1]}` — {item['role']}: {item['description']}"
+        for item in plan["images"]
+    )
     lines.extend(["", "## Changes", ""])
     commits = plan["release_notes"]["commits"]
     lines.extend(f"- {item['subject']} (`{item['sha'][:12]}`)" for item in commits)
@@ -1566,11 +1623,13 @@ def _build_release_images(
             raise ReleaseError(f"semantic and source image tags differ: {target}")
         labels = cast(dict[str, str], image_data.get("Config", {}).get("Labels") or {})
         expected_labels = {
+            "org.opencontainers.image.description": str(image["description"]),
             "org.opencontainers.image.source": "https://github.com/nashspence/riverhog",
             "org.opencontainers.image.revision": source_sha,
             "org.opencontainers.image.version": version,
             "org.opencontainers.image.created": created,
             "org.opencontainers.image.documentation": ("https://nashspence.github.io/riverhog/v1/"),
+            "io.github.nashspence.riverhog.release-role": str(image["role"]),
         }
         if any(labels.get(key) != value for key, value in expected_labels.items()):
             raise ReleaseError(f"release image labels differ from the release plan: {target}")
@@ -1669,6 +1728,8 @@ def _build_release_images(
             {
                 "kind": "image",
                 "name": repository,
+                "role": str(image["role"]),
+                "description": str(image["description"]),
                 "sha256": digest.removeprefix("sha256:"),
                 "size": int(image_data.get("Size", 0)),
                 "distributions": distributions,

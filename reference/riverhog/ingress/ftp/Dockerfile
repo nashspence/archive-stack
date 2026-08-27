@@ -22,16 +22,16 @@ COPY --from=locked-tools /opt/riverhog-tools/bin/uv /usr/local/bin/uv
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
 COPY reference/riverhog/ingress/ftp reference/riverhog/ingress/ftp
+COPY reference/riverhog/ingress/ftp-api-client reference/riverhog/ingress/ftp-api-client
 COPY packages/application-access packages/application-access
 COPY packages/file-download packages/file-download
 COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/lifecycle-events packages/lifecycle-events
-COPY packages/riverhog-ftp-adapter-api-client packages/riverhog-ftp-adapter-api-client
 COPY packages/riverhog-api-client packages/riverhog-api-client
 COPY packages/riverhog-protocol packages/riverhog-protocol
 COPY packages/riverhog-provenance-contracts packages/riverhog-provenance-contracts
-COPY packages/riverhog-provenance-linux-contracts packages/riverhog-provenance-linux-contracts
-COPY reference/riverhog/provenance/linux reference/riverhog/provenance/linux
+COPY reference/riverhog/provenance/contracts/linux reference/riverhog/provenance/contracts/linux
+COPY reference/riverhog/provenance/observers/linux reference/riverhog/provenance/observers/linux
 COPY packages/riverhog-provenance packages/riverhog-provenance
 COPY packages/time-formats packages/time-formats
 RUN uv sync --frozen --package riverhog-ftp-adapter \
@@ -48,11 +48,13 @@ ARG BUILD_CREATED=1970-01-01T00:00:00Z
 ARG RELEASE_VERSION=development
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="Riverhog FTP adapter" \
+      org.opencontainers.image.description="Optional nonnormative Riverhog FTP ingress reference." \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/nashspence/riverhog" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.version="${RELEASE_VERSION}" \
       org.opencontainers.image.created="${BUILD_CREATED}" \
+      io.github.nashspence.riverhog.release-role="reference" \
       org.opencontainers.image.documentation="https://nashspence.github.io/riverhog/v1/"
 
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt

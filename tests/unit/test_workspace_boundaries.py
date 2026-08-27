@@ -27,15 +27,15 @@ IMPLEMENTATION_OWNERS = {
         {"riverhog_storage_adapter_backblaze"},
     ),
     "riverhog-provenance-linux-observer": (
-        REPO / "reference/riverhog/provenance/linux/src",
+        REPO / "reference/riverhog/provenance/observers/linux/src",
         {"riverhog_provenance_linux_observer"},
     ),
     "riverhog-provenance-macos-observer": (
-        REPO / "reference/riverhog/provenance/macos/src",
+        REPO / "reference/riverhog/provenance/observers/macos/src",
         {"riverhog_provenance_macos_observer"},
     ),
     "riverhog-provenance-windows-observer": (
-        REPO / "reference/riverhog/provenance/windows/src",
+        REPO / "reference/riverhog/provenance/observers/windows/src",
         {"riverhog_provenance_windows_observer"},
     ),
     "stove0-server": (
@@ -289,9 +289,13 @@ def test_every_implementation_project_and_module_has_exactly_one_owner() -> None
         if pyproject.relative_to(REPO).parts[0] == "packages":
             continue
         config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        projects[normalize_distribution_name(str(config["project"]["name"]))] = (
-            pyproject.parent / "src"
-        )
+        project = config["project"]
+        runtime_entry_points = set(project.get("entry-points", {})) - {
+            "riverhog.provenance-contracts"
+        }
+        if not (project.get("scripts") or runtime_entry_points):
+            continue
+        projects[normalize_distribution_name(str(project["name"]))] = pyproject.parent / "src"
 
     assert set(IMPLEMENTATION_OWNERS) == set(projects)
     for owner, (source, owned_modules) in IMPLEMENTATION_OWNERS.items():
@@ -489,7 +493,7 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
     }
     for platform, contract in platform_contracts.items():
         observer_config = tomllib.loads(
-            (REPO / f"reference/riverhog/provenance/{platform}/pyproject.toml").read_text(
+            (REPO / f"reference/riverhog/provenance/observers/{platform}/pyproject.toml").read_text(
                 encoding="utf-8"
             )
         )
@@ -498,7 +502,9 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
             contract,
         }
         contract_config = tomllib.loads(
-            (REPO / f"packages/{contract}/pyproject.toml").read_text(encoding="utf-8")
+            (REPO / f"reference/riverhog/provenance/contracts/{platform}/pyproject.toml").read_text(
+                encoding="utf-8"
+            )
         )
         assert declared_project_dependencies(contract_config) == {"riverhog-provenance-contracts"}
 
@@ -558,8 +564,22 @@ def test_reference_extension_distributions_each_own_one_selectable_capability() 
 
     assert observed == provider_groups
     architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
-    assert "Each explicitly selected extension distribution owns one capability." in architecture
-    assert "without merging contracts, identities, or selection" in architecture
+    assert "Each explicitly selected distribution owns one capability" in architecture
+    assert "do not merge identities or selection" in architecture
+    assert "First-party references are optional and nonnormative" in architecture
+    assert "defines no support matrix" in architecture
+
+
+def test_reference_paths_are_nonnormative_release_units() -> None:
+    release = tomllib.loads((REPO / "release.toml").read_text(encoding="utf-8"))
+    classified = {path: role for role, paths in release["python"].items() for path in paths}
+    for pyproject in (REPO / "reference").rglob("pyproject.toml"):
+        relative = pyproject.parent.relative_to(REPO).as_posix()
+        assert classified[relative] == "reference_implementation"
+        description = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
+            "description"
+        ].casefold()
+        assert all(word in description for word in ("optional", "nonnormative", "reference"))
 
 
 def test_core_dependency_graphs_are_acyclic() -> None:
@@ -594,11 +614,17 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
         REPO / "riverhog/server/Dockerfile": "riverhog/server",
         REPO / "reference/riverhog/ingress/ftp/Dockerfile": (
             "reference/riverhog/ingress/ftp",
-            "reference/riverhog/provenance/linux",
+            "reference/riverhog/ingress/ftp-api-client",
+            "reference/riverhog/provenance/contracts/linux",
+            "reference/riverhog/provenance/observers/linux",
         ),
-        REPO / "reference/riverhog/storage/aws/Dockerfile": "reference/riverhog/storage/aws",
+        REPO / "reference/riverhog/storage/aws/Dockerfile": (
+            "reference/riverhog/storage/aws",
+            "reference/riverhog/storage/s3-support",
+        ),
         REPO / "reference/riverhog/storage/backblaze/Dockerfile": (
-            "reference/riverhog/storage/backblaze"
+            "reference/riverhog/storage/backblaze",
+            "reference/riverhog/storage/s3-support",
         ),
         REPO / "companions/stove0/server/Dockerfile": "companions/stove0/server",
         REPO / "reference/stove0/observers/exiftool/Dockerfile": (

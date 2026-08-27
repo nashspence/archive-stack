@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gogurt-linux-mounted-volume"
 version = "0.1.0"
-description = "Optional Linux mounted-volume reference provider for Gogurt."
+description = "Optional nonnormative Linux mounted-volume reference for Gogurt."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
