@@ -21,6 +21,7 @@ from riverhog_storage_adapter_protocol import (
     ReadPreparationRequest,
     SmallObjectWriteRequest,
     StorageAdapterPort,
+    validated_storage_adapter,
 )
 from time_formats import format_utc_timestamp, utc_now, utc_timestamp_now
 
@@ -64,8 +65,8 @@ class StorageAdapterArchiveStore:
             raise ValueError("storage adapter registration name must be nonempty")
         self._config = config
         self._name = normalized_name
-        self._adapter = adapter
-        self._descriptor = adapter.descriptor()
+        self._adapter = validated_storage_adapter(adapter)
+        self._descriptor = self._adapter.descriptor()
         self._download_allowance = download_allowance
 
     @property
@@ -256,7 +257,7 @@ class StorageAdapterArchiveStore:
             _PLAINTEXT_SHA256_METADATA: plaintext_sha256,
         }
         if existing is not None and (
-            archive_root_sha256 := existing.required_identity_assertions.get(
+            archive_root_sha256 := existing.observed_identity_assertions.get(
                 "riverhog-archive-root-sha256"
             )
         ):
@@ -512,12 +513,12 @@ class StorageAdapterArchiveStore:
                     object_id=object_id,
                     kind=object_id,
                     plaintext_bytes=int(
-                        existing.required_identity_assertions.get(
+                        existing.observed_identity_assertions.get(
                             _PLAINTEXT_BYTES_METADATA,
                             existing.stored_bytes,
                         )
                     ),
-                    plaintext_sha256=existing.required_identity_assertions.get(
+                    plaintext_sha256=existing.observed_identity_assertions.get(
                         _PLAINTEXT_SHA256_METADATA,
                         _required_stored_sha256(existing, object_path=object_path),
                     ),
@@ -680,7 +681,7 @@ def _verify_metadata(
 
 def _metadata_contains(receipt: ObjectMetadataReceipt, expected: dict[str, str]) -> bool:
     return all(
-        receipt.required_identity_assertions.get(key) == value for key, value in expected.items()
+        receipt.observed_identity_assertions.get(key) == value for key, value in expected.items()
     )
 
 

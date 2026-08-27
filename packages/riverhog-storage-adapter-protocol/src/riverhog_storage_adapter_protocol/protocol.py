@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Iterator
-from typing import Annotated, Literal, Protocol, Self
+from hashlib import sha256
+from typing import Annotated, Literal, Protocol, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -354,7 +355,7 @@ class ObjectMetadataReceipt(StorageAdapterModel):
     content_type: str | None = Field(default=None, min_length=1, max_length=255)
     stored_bytes: int = Field(ge=0)
     stored_sha256: Sha256 | None = None
-    required_identity_assertions: RequiredIdentityAssertions
+    observed_identity_assertions: RequiredIdentityAssertions
     verified_placement: ObjectPlacement
     completed_at: str = Field(min_length=1, max_length=100)
 
@@ -363,7 +364,7 @@ class ObjectMetadataReceipt(StorageAdapterModel):
     def canonical_path(cls, value: str) -> str:
         return normalize_object_path(value)
 
-    @field_validator("required_identity_assertions")
+    @field_validator("observed_identity_assertions")
     @classmethod
     def canonical_metadata(cls, value: dict[str, str]) -> dict[str, str]:
         return _canonical_identity_assertions(value)
@@ -657,6 +658,236 @@ class StorageAdapterPort(Protocol):
     def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int: ...
 
 
+class _ContentValidation:
+    def __init__(self, content: BinaryContent, *, expected_bytes: int) -> None:
+        self._content = content
+        self.expected_bytes = expected_bytes
+        self.observed_bytes = 0
+        self.digest = sha256()
+        self.exhausted = False
+        self.started = False
+
+    def content(self) -> BinaryContent:
+        if isinstance(self._content, bytes):
+            if self._content:
+                self._observe(self._content)
+            self.exhausted = True
+            return self._content
+        return self._iter_content()
+
+    def _observe(self, chunk: bytes) -> None:
+        if not isinstance(chunk, bytes) or not chunk:
+            raise ValueError("adapter content chunks must be nonempty bytes")
+        self.observed_bytes += len(chunk)
+        if self.observed_bytes > self.expected_bytes:
+            raise ValueError("adapter content exceeds its declared byte count")
+        self.digest.update(chunk)
+
+    def _iter_content(self) -> Iterator[bytes]:
+        if self.started:
+            raise ValueError("adapter content may be consumed only once")
+        self.started = True
+        for chunk in cast(Iterable[bytes], self._content):
+            self._observe(chunk)
+            yield chunk
+        self.exhausted = True
+
+    def require_complete(self) -> None:
+        if not self.exhausted or self.observed_bytes != self.expected_bytes:
+            raise ValueError("adapter did not consume the declared content bytes")
+
+
+def _response[ModelT: StorageAdapterModel](
+    value: object,
+    expected: type[ModelT],
+    label: str,
+) -> ModelT:
+    if not isinstance(value, expected):
+        raise TypeError(f"adapter returned an invalid {label}")
+    return value
+
+
+class ValidatedStorageAdapterPort:
+    """One exact response-acceptance domain for every transport-neutral adapter."""
+
+    def __init__(self, adapter: StorageAdapterPort) -> None:
+        self._adapter = adapter
+        self._descriptor: AdapterDescriptor | None = None
+
+    def descriptor(self) -> AdapterDescriptor:
+        if self._descriptor is None:
+            self._descriptor = _response(
+                self._adapter.descriptor(),
+                AdapterDescriptor,
+                "descriptor",
+            )
+        return self._descriptor
+
+    def begin_write(self, request: WriteStartRequest) -> WriteSession:
+        response = _response(self._adapter.begin_write(request), WriteSession, "write session")
+        validate_write_session_response(request, response)
+        return response
+
+    def write_segment(
+        self,
+        *,
+        session: WriteSession,
+        number: int,
+        stored_bytes: int,
+        content: BinaryContent,
+    ) -> WriteSegmentReceipt:
+        request = WriteSegmentRequest(
+            session=session,
+            number=number,
+            stored_bytes=stored_bytes,
+        )
+        descriptor = self.descriptor()
+        if (
+            descriptor.maximum_segment_bytes is not None
+            and stored_bytes > descriptor.maximum_segment_bytes
+        ) or (
+            descriptor.maximum_segment_count is not None
+            and number > descriptor.maximum_segment_count
+        ):
+            raise ValueError("write segment exceeds the adapter's advertised limits")
+        validation = _ContentValidation(content, expected_bytes=stored_bytes)
+        response = _response(
+            self._adapter.write_segment(
+                session=session,
+                number=number,
+                stored_bytes=stored_bytes,
+                content=validation.content(),
+            ),
+            WriteSegmentReceipt,
+            "write segment receipt",
+        )
+        validation.require_complete()
+        validate_write_segment_response(request, response)
+        if (
+            response.stored_sha256 is not None
+            and response.stored_sha256 != validation.digest.hexdigest()
+        ):
+            raise ValueError("adapter segment digest differs from the supplied content")
+        return response
+
+    def list_segments(self, session: WriteSession) -> WriteSegmentSet:
+        response = _response(
+            self._adapter.list_segments(session),
+            WriteSegmentSet,
+            "write segment set",
+        )
+        validate_write_segment_set_response(session, response, self.descriptor())
+        return response
+
+    def complete_write(self, request: WriteCompleteRequest) -> CompletedObjectReceipt:
+        response = _response(
+            self._adapter.complete_write(request),
+            CompletedObjectReceipt,
+            "completed-object receipt",
+        )
+        validate_completed_write_response(request, response)
+        return response
+
+    def find_completed_write(
+        self,
+        request: CompletedWriteLookupRequest,
+    ) -> CompletedObjectReceipt | None:
+        response = self._adapter.find_completed_write(request)
+        if response is None:
+            return None
+        validated = _response(response, CompletedObjectReceipt, "completed-object receipt")
+        validate_completed_write_response(request, validated)
+        return validated
+
+    def abort_write(self, session: WriteSession) -> None:
+        self._adapter.abort_write(session)
+
+    def put_small_object(
+        self,
+        request: SmallObjectWriteRequest,
+        content: BinaryContent,
+    ) -> ImmutableObjectReceipt:
+        validation = _ContentValidation(content, expected_bytes=request.stored_bytes)
+        response = _response(
+            self._adapter.put_small_object(request, validation.content()),
+            ImmutableObjectReceipt,
+            "immutable-object receipt",
+        )
+        validation.require_complete()
+        if validation.digest.hexdigest() != request.stored_sha256:
+            raise ValueError("small-object content digest differs from its request")
+        validate_small_object_response(request, response)
+        return response
+
+    def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None:
+        response = self._adapter.head_object(request)
+        if response is None:
+            return None
+        validated = _response(response, ObjectMetadataReceipt, "object metadata receipt")
+        validate_object_metadata_response(request, validated)
+        return validated
+
+    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
+        expected = request.size if request.size is not None else request.expected_bytes
+        observed = 0
+        for chunk in self._adapter.iter_object(request):
+            if not isinstance(chunk, bytes) or not chunk:
+                raise ValueError("adapter read chunks must be nonempty bytes")
+            observed += len(chunk)
+            if observed > expected:
+                raise ValueError("adapter read exceeds the requested byte count")
+            yield chunk
+        if observed != expected:
+            raise ValueError("adapter read differs from the requested byte count")
+
+    def delete_object(self, request: DeleteObjectRequest) -> None:
+        self._adapter.delete_object(request)
+
+    def delete_prefix(self, request: DeletePrefixRequest) -> int:
+        return self._affected(self._adapter.delete_prefix(request), "delete-prefix")
+
+    def prepare_read(self, request: ReadPreparationRequest) -> ReadStatus:
+        response = _response(
+            self._adapter.prepare_read(request),
+            ReadStatus,
+            "read status",
+        )
+        validate_read_status_response(request, response)
+        return response
+
+    def read_status(self, request: ReadPreparationRequest) -> ReadStatus:
+        response = _response(
+            self._adapter.read_status(request),
+            ReadStatus,
+            "read status",
+        )
+        validate_read_status_response(request, response)
+        return response
+
+    def cleanup_read(self, request: ReadPreparationRequest) -> None:
+        self._adapter.cleanup_read(request)
+
+    def abort_incomplete_writes(self, request: AbortIncompleteWritesRequest) -> int:
+        return self._affected(
+            self._adapter.abort_incomplete_writes(request),
+            "abort-incomplete-writes",
+        )
+
+    @staticmethod
+    def _affected(value: object, operation: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise TypeError(f"adapter {operation} response must be a nonnegative integer")
+        return value
+
+
+def validated_storage_adapter(adapter: StorageAdapterPort) -> ValidatedStorageAdapterPort:
+    """Return the shared validation boundary without nesting it."""
+
+    if isinstance(adapter, ValidatedStorageAdapterPort):
+        return adapter
+    return ValidatedStorageAdapterPort(adapter)
+
+
 __all__ = [
     "ADAPTER_PRIVATE_ASSERTION_PREFIX",
     "STORAGE_ADAPTER_PROTOCOL",
@@ -696,6 +927,7 @@ __all__ = [
     "StorageAdapterErrorCode",
     "StorageAdapterModel",
     "StorageAdapterPort",
+    "ValidatedStorageAdapterPort",
     "StorageAdapterRejection",
     "normalize_object_path",
     "validate_completed_write_response",
@@ -705,4 +937,5 @@ __all__ = [
     "validate_write_segment_response",
     "validate_write_segment_set_response",
     "validate_write_session_response",
+    "validated_storage_adapter",
 ]

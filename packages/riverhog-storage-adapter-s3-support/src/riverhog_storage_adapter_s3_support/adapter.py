@@ -445,7 +445,7 @@ class S3StorageAdapter:
             ),
             stored_bytes=int(str(head["ContentLength"])),
             stored_sha256=stored_sha256,
-            required_identity_assertions={
+            observed_identity_assertions={
                 key: value for key, value in metadata.items() if key not in _RESERVED_METADATA
             },
             verified_placement=request.expected_placement,

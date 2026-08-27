@@ -34,6 +34,7 @@ from riverhog_storage_adapter_protocol.protocol import (
     StorageAdapterModel,
     StorageAdapterPort,
     StorageAdapterRejection,
+    ValidatedStorageAdapterPort,
     WriteCompleteRequest,
     WriteSegmentReceipt,
     WriteSegmentRequest,
@@ -48,6 +49,7 @@ from riverhog_storage_adapter_protocol.protocol import (
     validate_write_segment_response,
     validate_write_segment_set_response,
     validate_write_session_response,
+    validated_storage_adapter,
 )
 
 __all__ = [
@@ -90,6 +92,7 @@ __all__ = [
     "StorageAdapterModel",
     "StorageAdapterPort",
     "StorageAdapterRejection",
+    "ValidatedStorageAdapterPort",
     "normalize_object_path",
     "validate_completed_write_response",
     "validate_object_metadata_response",
@@ -98,4 +101,5 @@ __all__ = [
     "validate_write_segment_response",
     "validate_write_segment_set_response",
     "validate_write_session_response",
+    "validated_storage_adapter",
 ]

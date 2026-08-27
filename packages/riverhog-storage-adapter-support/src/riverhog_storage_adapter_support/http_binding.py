@@ -42,6 +42,7 @@ from riverhog_storage_adapter_protocol import (
     validate_write_segment_response,
     validate_write_segment_set_response,
     validate_write_session_response,
+    validated_storage_adapter,
 )
 
 from riverhog_storage_adapter_support.framing import (
@@ -96,7 +97,7 @@ class StorageAdapterHttpBinding:
     ) -> None:
         if maximum_control_bytes < 1:
             raise ValueError("storage adapter control request limit must be positive")
-        self.adapter = adapter
+        self.adapter = validated_storage_adapter(adapter)
         self.maximum_control_bytes = maximum_control_bytes
 
     def handle(

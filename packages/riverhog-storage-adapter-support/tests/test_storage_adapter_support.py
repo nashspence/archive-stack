@@ -237,7 +237,7 @@ class MemoryAdapter:
                 if request.object.object_path in self.small_objects
                 else None
             ),
-            required_identity_assertions=metadata,
+            observed_identity_assertions=metadata,
             verified_placement=request.expected_placement,
             completed_at="2026-08-21T00:00:00.000000Z",
         )
