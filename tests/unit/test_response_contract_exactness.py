@@ -275,6 +275,89 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
     CollectionUploadSessionOut.model_validate(open_payload)
     schema_validator.validate(open_payload)
 
+    for state, archive_phase, next_attempt_at in (
+        ("closing", "uploading", None),
+        ("finalizing", "finalization_queued", "2026-08-25T00:00:01.000000Z"),
+    ):
+        construction_payload = deepcopy(open_payload)
+        construction_payload.update(
+            {
+                "state": state,
+                "archive_phase": archive_phase,
+                "archive_next_attempt_at": next_attempt_at,
+            }
+        )
+        CollectionUploadSessionOut.model_validate(construction_payload)
+        schema_validator.validate(construction_payload)
+
+    nonfinal_provenance_identity = deepcopy(open_payload)
+    nonfinal_provenance_identity["provenance_identity"] = "c" * 64
+    with pytest.raises(ValidationError, match="nonfinal.*provenance identity"):
+        CollectionUploadSessionOut.model_validate(nonfinal_provenance_identity)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(nonfinal_provenance_identity)
+
+    finalized_payload = deepcopy(payload)
+    finalized_payload.update(
+        {
+            "content_identity": "a" * 64,
+            "archive_root_sha256": "b" * 64,
+            "collection": {
+                "id": 1,
+                "created_at": "2026-08-25T00:00:00.000000Z",
+                "tags": [],
+                "content_identity": "a" * 64,
+                "archive_root_sha256": "b" * 64,
+                "encryption_format": "age-x25519/v1",
+                "passphrase_id": "0123456789abcdef",
+                "files": 0,
+                "bytes": 0,
+                "remote_storage_bytes": 0,
+                "archive_copies": [],
+            },
+        }
+    )
+    CollectionUploadSessionOut.model_validate(finalized_payload)
+    schema_validator.validate(finalized_payload)
+
+    for provenance_mode in ("captured", "mixed"):
+        missing_provenance_identity = deepcopy(finalized_payload)
+        missing_provenance_identity["provenance_mode"] = provenance_mode
+        with pytest.raises(ValidationError, match="captured provenance requires its identity"):
+            CollectionUploadSessionOut.model_validate(missing_provenance_identity)
+        with pytest.raises(JsonSchemaValidationError):
+            schema_validator.validate(missing_provenance_identity)
+
+        captured_payload = deepcopy(missing_provenance_identity)
+        captured_payload["provenance_identity"] = "c" * 64
+        CollectionUploadSessionOut.model_validate(captured_payload)
+        schema_validator.validate(captured_payload)
+
+    omitted_with_identity = deepcopy(finalized_payload)
+    omitted_with_identity["provenance_identity"] = "c" * 64
+    with pytest.raises(ValidationError, match="omitted provenance cannot have an identity"):
+        CollectionUploadSessionOut.model_validate(omitted_with_identity)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(omitted_with_identity)
+
+    for field in ("files_total", "bytes_total", "custodied_files", "custodied_bytes"):
+        negative_count = deepcopy(open_payload)
+        negative_count[field] = -1
+        with pytest.raises(ValidationError):
+            CollectionUploadSessionOut.model_validate(negative_count)
+        with pytest.raises(JsonSchemaValidationError):
+            schema_validator.validate(negative_count)
+
+    for changes in (
+        {"files_total": 1, "custodied_files": 2},
+        {"bytes_total": 1, "custodied_bytes": 2, "custodied_files": 1},
+        {"files_total": 1, "bytes_total": 2, "custodied_files": 1, "custodied_bytes": 1},
+    ):
+        impossible_custody = deepcopy(open_payload)
+        impossible_custody.update(changes)
+        with pytest.raises(ValidationError, match="custody"):
+            CollectionUploadSessionOut.model_validate(impossible_custody)
+
     invalid_phase = deepcopy(open_payload)
     invalid_phase["archive_phase"] = "completed"
     with pytest.raises(ValidationError, match="archive phase differs"):

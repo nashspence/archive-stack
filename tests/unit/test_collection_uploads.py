@@ -563,7 +563,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
             for binding in bindings
         ),
     )
-    service.complete(
+    closing = service.complete(
         collection_id,
         files_total=len(bindings),
         content_identity=collection_content_identity(
@@ -571,6 +571,7 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         ),
         provenance_identity=provenance.identity,
     )
+    assert closing["provenance_identity"] is None
     for volume in service.list_volumes(collection_id)["volumes"]:
         for unit in volume["units"]:
             service.upload_unit(
