@@ -149,7 +149,7 @@ def _installed_listener_composition(
     paths = host.paths()
     if not paths.config_file.is_file():
         return host, None
-    config = ListenerConfig.read(paths.config_file, product_version=_product_version())
+    config = ListenerConfig.read(paths.config_file)
     try:
         exact_host = resolve_listener_host_provider(
             config.listener_host_provider.name,
@@ -627,7 +627,7 @@ def listener_run_cmd(
 ) -> None:
     """Run the registered listener process."""
 
-    config = ListenerConfig.read(runtime_config, product_version=_product_version())
+    config = ListenerConfig.read(runtime_config)
     try:
         mount = resolve_mounted_volume_provider(
             config.mounted_volume_provider.name,
@@ -721,14 +721,6 @@ def write_cmd(
             f"mount: {payload['mount_point']}",
             f"provider: {provider.reference.name}",
             f"provider identity: {provider.reference.provider_id}",
-            *(
-                (
-                    f"provider distribution: {provider.reference.distribution}",
-                    f"provider version: {provider.reference.version}",
-                )
-                if provider.reference.distribution is not None
-                else ()
-            ),
             f"marker identity: {observation.identity}",
         )
     )

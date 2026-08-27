@@ -139,7 +139,6 @@ def _fixture(tmp_path: Path) -> tuple[ListenerConfig, ListenerRuntimePaths, Path
         actions_dir=None,
         interval_seconds=0.1,
         state_dir=paths.state_dir,
-        product_version=TEST_PRODUCT_VERSION,
         mounted_volume_provider=TEST_MOUNTED_VOLUME_PROVIDER,
         listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
@@ -166,10 +165,7 @@ def _wait_for_published_pid(pid_file: Path) -> int:
 
 
 def _heartbeat_payload(paths: ListenerRuntimePaths) -> dict[str, object]:
-    payload = listener_module._read_heartbeat(
-        paths.heartbeat_file,
-        product_version=TEST_PRODUCT_VERSION,
-    )
+    payload = listener_module._read_heartbeat(paths.heartbeat_file)
     assert payload is not None
     return payload
 
@@ -188,7 +184,7 @@ def _wait_for_health_value(
     raise AssertionError(f"Gogurt listener did not report {expected}")
 
 
-def test_listener_config_is_versioned_absolute_and_autorun(tmp_path: Path) -> None:
+def test_listener_config_is_schema_versioned_absolute_and_autorun(tmp_path: Path) -> None:
     config, paths, _mount, _counter = _fixture(tmp_path)
     config.write(paths.config_file)
 
@@ -196,14 +192,12 @@ def test_listener_config_is_versioned_absolute_and_autorun(tmp_path: Path) -> No
     assert payload["schema"] == LISTENER_CONFIG_SCHEMA
     assert payload["autorun"] is True
     assert Path(payload["executable"]).is_absolute()
-    assert ListenerConfig.read(paths.config_file, product_version=TEST_PRODUCT_VERSION) == config
-    with pytest.raises(ListenerError, match="version differs from the executable"):
-        ListenerConfig.read(paths.config_file, product_version="different-product-version")
+    assert ListenerConfig.read(paths.config_file) == config
 
     payload["autorun"] = False
     paths.config_file.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ListenerError, match="explicitly enable autorun"):
-        ListenerConfig.read(paths.config_file, product_version=TEST_PRODUCT_VERSION)
+        ListenerConfig.read(paths.config_file)
 
 
 def test_listener_config_json_and_fields_are_strict(tmp_path: Path) -> None:
@@ -221,17 +215,11 @@ def test_listener_config_json_and_fields_are_strict(tmp_path: Path) -> None:
         paths.config_file.parent.mkdir(parents=True, exist_ok=True)
         paths.config_file.write_text(content, encoding="utf-8")
         with pytest.raises(ListenerError):
-            ListenerConfig.read(paths.config_file, product_version=TEST_PRODUCT_VERSION)
+            ListenerConfig.read(paths.config_file)
 
     bounded = payload | {"interval_seconds": 3600.0}
     paths.config_file.write_text(json.dumps(bounded), encoding="utf-8")
-    assert (
-        ListenerConfig.read(
-            paths.config_file,
-            product_version=TEST_PRODUCT_VERSION,
-        ).interval_seconds
-        == 3600.0
-    )
+    assert ListenerConfig.read(paths.config_file).interval_seconds == 3600.0
 
 
 def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Path) -> None:
@@ -240,6 +228,7 @@ def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Pat
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+        product_version=TEST_PRODUCT_VERSION,
     )
     thread = threading.Thread(target=first.run)
     thread.start()
@@ -264,6 +253,7 @@ def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Pat
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(discover),
+        product_version=TEST_PRODUCT_VERSION,
     )
     thread = threading.Thread(target=second.run)
     thread.start()
@@ -367,6 +357,7 @@ def test_discovery_failure_preserves_mount_generation_without_replay(
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+        product_version=TEST_PRODUCT_VERSION,
     )
     runtime.store.create()
     [dispatch_id] = runtime.store.observe([mount], runtime._planner, now=1)
@@ -426,6 +417,7 @@ def test_per_mount_access_failure_preserves_generation_and_completed_identity(
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+        product_version=TEST_PRODUCT_VERSION,
     )
     runtime.store.create()
     [dispatch_id] = runtime.store.observe([mount], runtime._planner, now=1)
@@ -460,6 +452,7 @@ def test_unexpected_worker_failure_terminates_with_failed_runtime_health(
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(),
+        product_version=TEST_PRODUCT_VERSION,
     )
 
     def fail_worker() -> None:
@@ -563,6 +556,7 @@ def test_controlled_stop_does_not_replay_interrupted_custody(tmp_path: Path) -> 
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+        product_version=TEST_PRODUCT_VERSION,
     )
     thread = threading.Thread(target=runtime.run)
     thread.start()
@@ -578,6 +572,7 @@ def test_controlled_stop_does_not_replay_interrupted_custody(tmp_path: Path) -> 
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+        product_version=TEST_PRODUCT_VERSION,
     )
     thread = threading.Thread(target=restarted.run)
     thread.start()
@@ -597,6 +592,7 @@ def test_process_signal_can_stop_while_heartbeat_samples_action_custody(
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(),
+        product_version=TEST_PRODUCT_VERSION,
     )
     settled = threading.Event()
 
@@ -625,6 +621,7 @@ def test_official_heartbeat_observation_does_not_own_publication(
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(),
+        product_version=TEST_PRODUCT_VERSION,
     )
     runtime.store.create()
     runtime._heartbeat()
@@ -633,10 +630,7 @@ def test_official_heartbeat_observation_does_not_own_publication(
 
     def publish(destination: Path, content: bytes, *, mode: int) -> None:
         nonlocal observed_during_publication
-        observed_during_publication = listener_module._read_heartbeat(
-            paths.heartbeat_file,
-            product_version=TEST_PRODUCT_VERSION,
-        )
+        observed_during_publication = listener_module._read_heartbeat(paths.heartbeat_file)
         real_atomic_write(destination, content, mode=mode)
 
     monkeypatch.setattr(listener_module, "atomic_write", publish)
@@ -677,6 +671,7 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+        product_version=TEST_PRODUCT_VERSION,
     )
     failures: list[BaseException] = []
 
@@ -715,7 +710,6 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         actions_dir=config.actions_dir,
         interval_seconds=3600,
         state_dir=config.state_dir,
-        product_version=TEST_PRODUCT_VERSION,
         mounted_volume_provider=TEST_MOUNTED_VOLUME_PROVIDER,
         listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
@@ -735,6 +729,7 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+        product_version=TEST_PRODUCT_VERSION,
     )
     thread = threading.Thread(target=runtime.run)
     thread.start()
@@ -804,6 +799,7 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
             config,
             paths,
             mounted_volume_provider=_mounted_volume_provider(),
+            product_version=TEST_PRODUCT_VERSION,
         )
         runtime.run_once()
         logger = _logger(paths)
@@ -1046,11 +1042,12 @@ def test_exact_healthy_install_is_idempotent_without_native_process_churn(
         adapter=adapter,
         wait_for_health=False,
     )
-    persisted = ListenerConfig.read(paths.config_file, product_version=TEST_PRODUCT_VERSION)
+    persisted = ListenerConfig.read(paths.config_file)
     runtime = ListenerRuntime(
         persisted,
         paths,
         mounted_volume_provider=_mounted_volume_provider(),
+        product_version=TEST_PRODUCT_VERSION,
     )
     runtime.store.create()
     runtime._heartbeat()
@@ -1140,7 +1137,6 @@ def test_impossible_mount_executable_is_rejected_before_and_after_registration(
         actions_dir=None,
         interval_seconds=0.1,
         state_dir=paths.state_dir,
-        product_version=TEST_PRODUCT_VERSION,
         mounted_volume_provider=TEST_MOUNTED_VOLUME_PROVIDER,
         listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
@@ -1149,6 +1145,7 @@ def test_impossible_mount_executable_is_rejected_before_and_after_registration(
         persisted,
         paths,
         mounted_volume_provider=_mounted_volume_provider(),
+        product_version=TEST_PRODUCT_VERSION,
     )
     runtime.store.create()
     runtime.run_once()
@@ -1182,7 +1179,6 @@ def test_missing_installed_static_action_reports_failed_health_without_dispatch(
         actions_dir=actions_dir,
         interval_seconds=config.interval_seconds,
         state_dir=config.state_dir,
-        product_version=TEST_PRODUCT_VERSION,
         mounted_volume_provider=TEST_MOUNTED_VOLUME_PROVIDER,
         listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
@@ -1191,6 +1187,7 @@ def test_missing_installed_static_action_reports_failed_health_without_dispatch(
         runtime_config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+        product_version=TEST_PRODUCT_VERSION,
     )
     runtime.store.create()
 
@@ -1404,13 +1401,7 @@ def test_failed_replacement_restores_the_previous_listener(
             wait_for_health=False,
         )
 
-    assert (
-        ListenerConfig.read(
-            paths.config_file,
-            product_version=TEST_PRODUCT_VERSION,
-        ).interval_seconds
-        == 0.1
-    )
+    assert ListenerConfig.read(paths.config_file).interval_seconds == 0.1
     assert adapter.installed is True
     assert adapter.running is True
     assert adapter.register_calls == 3
@@ -1657,6 +1648,7 @@ def test_global_route_failure_reports_failed_then_recovers_and_dispatches(
         config,
         paths,
         mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+        product_version=TEST_PRODUCT_VERSION,
     )
     thread = threading.Thread(target=runtime.run)
     thread.start()
@@ -1714,6 +1706,7 @@ def test_invalid_and_unavailable_mounts_are_isolated_from_valid_dispatch(
         mounted_volume_provider=_mounted_volume_provider(
             lambda: [invalid_mount, unavailable_mount, unmarked_mount, valid_mount]
         ),
+        product_version=TEST_PRODUCT_VERSION,
     )
     thread = threading.Thread(target=runtime.run)
     thread.start()
@@ -1750,7 +1743,7 @@ def test_listener_status_reports_health_and_dispatch_attention(tmp_path: Path) -
     config.write(paths.config_file)
     heartbeat = {
         "schema": "gogurt-listener-heartbeat/v1",
-        "version": importlib.metadata.version("gogurt"),
+        "version": "an-earlier-gogurt-build",
         "pid": os.getpid(),
         "started_at": "2026-08-14T00:00:00Z",
         "heartbeat_at": "2026-08-14T00:00:10Z",
@@ -1774,6 +1767,7 @@ def test_listener_status_reports_health_and_dispatch_attention(tmp_path: Path) -
     assert status["health"] == "healthy"
     assert status["installed"] is True
     assert status["running"] is True
+    assert status["heartbeat"]["version"] == "an-earlier-gogurt-build"
 
 
 @pytest.mark.parametrize(

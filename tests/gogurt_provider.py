@@ -27,8 +27,10 @@ class FixtureMountedVolumeProvider:
         self,
         mount_point: Path,
         marker: GogurtRouteMarker,
+        *,
+        expected: MountedMarkerObservation | None,
     ) -> MountedMarkerObservation:
-        return self.access.publish_marker(mount_point, marker)
+        return self.access.publish_marker(mount_point, marker, expected=expected)
 
 
 def path_mounted_volume_provider(
