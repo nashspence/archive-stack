@@ -1785,10 +1785,10 @@ requires-dist = [
     { name = "http-api-contracts", editable = "packages/http-api-contracts" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
-    { name = "riverhog-ftp-adapter-api-client", editable = "packages/riverhog-ftp-adapter-api-client" },
+    { name = "riverhog-ftp-adapter-api-client", editable = "reference/riverhog/ingress/ftp-api-client" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
-    { name = "riverhog-provenance-linux-observer", marker = "extra == 'reference-linux-provenance'", editable = "reference/riverhog/provenance/linux" },
+    { name = "riverhog-provenance-linux-observer", marker = "extra == 'reference-linux-provenance'", editable = "reference/riverhog/provenance/observers/linux" },
     { name = "starlette", specifier = ">=0.37,<2.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
@@ -1797,7 +1797,7 @@ provides-extras = ["reference-linux-provenance"]
 [[package]]
 name = "riverhog-ftp-adapter-api-client"
 version = "0.1.0"
-source = { editable = "packages/riverhog-ftp-adapter-api-client" }
+source = { editable = "reference/riverhog/ingress/ftp-api-client" }
 dependencies = [
     { name = "http-api-contracts" },
     { name = "httpx" },
@@ -1867,7 +1867,7 @@ requires-dist = [
 [[package]]
 name = "riverhog-provenance-linux-contracts"
 version = "0.1.0"
-source = { editable = "packages/riverhog-provenance-linux-contracts" }
+source = { editable = "reference/riverhog/provenance/contracts/linux" }
 dependencies = [
     { name = "riverhog-provenance-contracts" },
 ]
@@ -1878,7 +1878,7 @@ requires-dist = [{ name = "riverhog-provenance-contracts", editable = "packages/
 [[package]]
 name = "riverhog-provenance-linux-observer"
 version = "0.1.0"
-source = { editable = "reference/riverhog/provenance/linux" }
+source = { editable = "reference/riverhog/provenance/observers/linux" }
 dependencies = [
     { name = "riverhog-provenance" },
     { name = "riverhog-provenance-linux-contracts" },
@@ -1887,13 +1887,13 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
-    { name = "riverhog-provenance-linux-contracts", editable = "packages/riverhog-provenance-linux-contracts" },
+    { name = "riverhog-provenance-linux-contracts", editable = "reference/riverhog/provenance/contracts/linux" },
 ]
 
 [[package]]
 name = "riverhog-provenance-macos-contracts"
 version = "0.1.0"
-source = { editable = "packages/riverhog-provenance-macos-contracts" }
+source = { editable = "reference/riverhog/provenance/contracts/macos" }
 dependencies = [
     { name = "riverhog-provenance-contracts" },
 ]
@@ -1904,7 +1904,7 @@ requires-dist = [{ name = "riverhog-provenance-contracts", editable = "packages/
 [[package]]
 name = "riverhog-provenance-macos-observer"
 version = "0.1.0"
-source = { editable = "reference/riverhog/provenance/macos" }
+source = { editable = "reference/riverhog/provenance/observers/macos" }
 dependencies = [
     { name = "riverhog-provenance" },
     { name = "riverhog-provenance-macos-contracts" },
@@ -1913,13 +1913,13 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
-    { name = "riverhog-provenance-macos-contracts", editable = "packages/riverhog-provenance-macos-contracts" },
+    { name = "riverhog-provenance-macos-contracts", editable = "reference/riverhog/provenance/contracts/macos" },
 ]
 
 [[package]]
 name = "riverhog-provenance-windows-contracts"
 version = "0.1.0"
-source = { editable = "packages/riverhog-provenance-windows-contracts" }
+source = { editable = "reference/riverhog/provenance/contracts/windows" }
 dependencies = [
     { name = "riverhog-provenance-contracts" },
 ]
@@ -1930,7 +1930,7 @@ requires-dist = [{ name = "riverhog-provenance-contracts", editable = "packages/
 [[package]]
 name = "riverhog-provenance-windows-observer"
 version = "0.1.0"
-source = { editable = "reference/riverhog/provenance/windows" }
+source = { editable = "reference/riverhog/provenance/observers/windows" }
 dependencies = [
     { name = "riverhog-provenance" },
     { name = "riverhog-provenance-windows-contracts" },
@@ -1939,7 +1939,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
-    { name = "riverhog-provenance-windows-contracts", editable = "packages/riverhog-provenance-windows-contracts" },
+    { name = "riverhog-provenance-windows-contracts", editable = "reference/riverhog/provenance/contracts/windows" },
 ]
 
 [[package]]
@@ -2045,7 +2045,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "riverhog-storage-adapter-asgi-support", editable = "packages/riverhog-storage-adapter-asgi-support" },
     { name = "riverhog-storage-adapter-protocol", editable = "packages/riverhog-storage-adapter-protocol" },
-    { name = "riverhog-storage-adapter-s3-support", editable = "packages/riverhog-storage-adapter-s3-support" },
+    { name = "riverhog-storage-adapter-s3-support", editable = "reference/riverhog/storage/s3-support" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
@@ -2063,7 +2063,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "riverhog-storage-adapter-asgi-support", editable = "packages/riverhog-storage-adapter-asgi-support" },
-    { name = "riverhog-storage-adapter-s3-support", editable = "packages/riverhog-storage-adapter-s3-support" },
+    { name = "riverhog-storage-adapter-s3-support", editable = "reference/riverhog/storage/s3-support" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30,<1.0" },
 ]
 
@@ -2085,7 +2085,7 @@ requires-dist = [
 [[package]]
 name = "riverhog-storage-adapter-s3-support"
 version = "0.1.0"
-source = { editable = "packages/riverhog-storage-adapter-s3-support" }
+source = { editable = "reference/riverhog/storage/s3-support" }
 dependencies = [
     { name = "boto3" },
     { name = "botocore" },

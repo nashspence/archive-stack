@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "stove0-opus-target"
 version = "0.1.0"
-description = "Focused Opus archive target for Stove0."
+description = "Optional nonnormative Opus target reference for Stove0."
 requires-python = ">=3.12"
 license = "CAL-1.0"
 license-files = ["LICENSE"]

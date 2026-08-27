@@ -3,9 +3,9 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "riverhog-storage-adapter-s3-support"
+name = "riverhog-provenance-windows-contracts"
 version = "0.1.0"
-description = "Shared S3 implementation helpers for independently scoped Riverhog storage adapters."
+description = "Optional nonnormative Windows observation-contract reference for Riverhog provenance."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -18,16 +18,16 @@ classifiers = [
   "Typing :: Typed",
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
-dependencies = [
-  "boto3>=1.35,<2.0",
-  "botocore>=1.35,<2.0",
-  "riverhog-storage-adapter-protocol>=0.1,<0.2",
-  "time-formats>=0.1,<0.2",
-]
+dependencies = ["riverhog-provenance-contracts>=0.1,<0.2"]
+
+[project.entry-points."riverhog.provenance-contracts"]
+riverhog-windows = "riverhog_provenance_windows_contracts:CONTRACT_BINDING"
 
 [tool.uv.sources]
-riverhog-storage-adapter-protocol = { workspace = true }
-time-formats = { workspace = true }
+riverhog-provenance-contracts = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/riverhog_storage_adapter_s3_support"]
+packages = ["src/riverhog_provenance_windows_contracts"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"NOTICE" = "riverhog_provenance_windows_contracts/NOTICE"

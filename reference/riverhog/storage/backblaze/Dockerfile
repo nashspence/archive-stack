@@ -25,7 +25,7 @@ COPY reference/riverhog/storage/backblaze reference/riverhog/storage/backblaze
 COPY packages/http-api-contracts packages/http-api-contracts
 COPY packages/riverhog-storage-adapter-asgi-support packages/riverhog-storage-adapter-asgi-support
 COPY packages/riverhog-storage-adapter-protocol packages/riverhog-storage-adapter-protocol
-COPY packages/riverhog-storage-adapter-s3-support packages/riverhog-storage-adapter-s3-support
+COPY reference/riverhog/storage/s3-support reference/riverhog/storage/s3-support
 COPY packages/riverhog-storage-adapter-support packages/riverhog-storage-adapter-support
 COPY packages/time-formats packages/time-formats
 RUN uv sync --frozen --package riverhog-storage-adapter-backblaze --no-dev --no-editable
@@ -41,11 +41,13 @@ ARG BUILD_CREATED=1970-01-01T00:00:00Z
 ARG RELEASE_VERSION=development
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="Riverhog Backblaze storage adapter" \
+      org.opencontainers.image.description="Optional nonnormative Backblaze B2 storage reference for Riverhog." \
       org.opencontainers.image.licenses="CAL-1.0" \
       org.opencontainers.image.source="https://github.com/nashspence/riverhog" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.version="${RELEASE_VERSION}" \
       org.opencontainers.image.created="${BUILD_CREATED}" \
+      io.github.nashspence.riverhog.release-role="reference" \
       org.opencontainers.image.documentation="https://nashspence.github.io/riverhog/v1/"
 
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt

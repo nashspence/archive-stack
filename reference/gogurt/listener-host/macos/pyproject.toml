@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "gogurt-macos-listener-host"
 version = "0.1.0"
-description = "Optional macOS launchd listener-host reference provider for Gogurt."
+description = "Optional nonnormative macOS launchd listener-host reference for Gogurt."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

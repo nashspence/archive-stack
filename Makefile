@@ -41,21 +41,21 @@ MYPY_SOURCES = \
 	packages/lifecycle-events/src \
 	packages/riverhog-age/src \
 	packages/riverhog-archive-contracts/src \
-	packages/riverhog-ftp-adapter-api-client/src \
+	reference/riverhog/ingress/ftp-api-client/src \
 	packages/riverhog-api-client/src \
 	packages/riverhog-cli-support/src \
 	packages/riverhog-protocol/src \
 	packages/riverhog-provenance-contracts/src \
-	packages/riverhog-provenance-linux-contracts/src \
-	reference/riverhog/provenance/linux/src \
-	packages/riverhog-provenance-macos-contracts/src \
-	reference/riverhog/provenance/macos/src \
-	packages/riverhog-provenance-windows-contracts/src \
-	reference/riverhog/provenance/windows/src \
+	reference/riverhog/provenance/contracts/linux/src \
+	reference/riverhog/provenance/observers/linux/src \
+	reference/riverhog/provenance/contracts/macos/src \
+	reference/riverhog/provenance/observers/macos/src \
+	reference/riverhog/provenance/contracts/windows/src \
+	reference/riverhog/provenance/observers/windows/src \
 	packages/riverhog-transform-sdk/src \
 	packages/riverhog-storage-adapter-asgi-support/src \
 	packages/riverhog-storage-adapter-protocol/src \
-	packages/riverhog-storage-adapter-s3-support/src \
+	reference/riverhog/storage/s3-support/src \
 	packages/riverhog-storage-adapter-support/src \
 	packages/stove0-api-client/src \
 	packages/stove0-observer-client/src \

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "riverhog-storage-adapter-backblaze"
 version = "0.1.0"
-description = "Backblaze B2 storage adapter for Riverhog."
+description = "Optional nonnormative Backblaze B2 storage reference for Riverhog."
 requires-python = ">=3.12"
 license = "CAL-1.0"
 license-files = ["LICENSE"]

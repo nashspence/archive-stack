@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "stove0-exiftool-observer"
 version = "0.1.0"
-description = "ExifTool implementation of the Stove0 media-metadata observer contract."
+description = "Optional nonnormative ExifTool observer reference for Stove0."
 requires-python = ">=3.12"
 license = "CAL-1.0"
 license-files = ["LICENSE"]

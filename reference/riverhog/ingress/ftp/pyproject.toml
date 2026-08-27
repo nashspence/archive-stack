@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "riverhog-ftp-adapter"
 version = "0.1.0"
-description = "Content-opaque FTP producer for finalized Riverhog collections."
+description = "Optional nonnormative FTP ingress reference for Riverhog."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

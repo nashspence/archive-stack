@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "stove0-review-target"
 version = "0.1.0"
-description = "Review materialization target over explicitly configured terminal samplers."
+description = "Optional nonnormative review-target reference for Stove0."
 requires-python = ">=3.12"
 license = "CAL-1.0"
 license-files = ["LICENSE"]

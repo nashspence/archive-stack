@@ -39,9 +39,9 @@ Executable contracts define packages; architecture records ownership and placeme
 - **Companions.** Companions consume Riverhog capabilities and own their workflow state. Stove0 is
   a provided transformation companion; its core does not interpret content.
 - **Extensions.** Observers report immutable-artifact facts; targets perform declared operations.
-  Each explicitly selected extension distribution owns one capability. Bundles may co-locate
-  separate distributions sharing runtime dependencies without merging contracts, identities, or
-  selection.
+  Each explicitly selected distribution owns one capability; shared-dependency image bundles do
+  not merge identities or selection. First-party references are optional and nonnormative: their
+  inventory is neither complete nor recommended and defines no support matrix.
 - **Transfer path.** Payload loops exclude control-plane status and reporting work.
 
 Workspace checks enforce ownership boundaries.
@@ -51,11 +51,9 @@ Workspace checks enforce ownership boundaries.
 - [`riverhog/server`](../riverhog/server/): archive service.
 - [`riverhog/client`](../riverhog/client/): official client.
 - [`riverhog/recovery`](../riverhog/recovery/): permissively licensed reference for recovery.
-- [`reference/gogurt`](../reference/gogurt/): optional Gogurt host references.
-- [`reference/riverhog/ingress`](../reference/riverhog/ingress/): maintained ingress adapters.
-- [`reference/riverhog/provenance`](../reference/riverhog/provenance/): provenance observer references.
-- [`reference/riverhog/storage`](../reference/riverhog/storage/): maintained storage adapters.
+- [`reference/gogurt`](../reference/gogurt/): Gogurt references.
+- [`reference/riverhog`](../reference/riverhog/): Riverhog references.
 - [`companions`](../companions/): independent Riverhog applications.
-- [`reference/stove0`](../reference/stove0/): maintained Stove0 components.
+- [`reference/stove0`](../reference/stove0/): Stove0 references.
 - [`utilities`](../utilities/): operator and event utilities.
 - [`packages`](../packages/): shared contracts and implementation-neutral support.
