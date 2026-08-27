@@ -22,7 +22,7 @@ def test_path_provider_owns_the_complete_route_line_representation(tmp_path: Pat
 
 @pytest.mark.parametrize(
     "content",
-    [b"camera", b"camera\r\n", b" camera\n", b"camera\nextra\n", b"\xff\n"],
+    [b" camera\n", b"camera\nextra\n", b"\xff\n"],
 )
 def test_path_provider_rejects_noncanonical_physical_representations(
     tmp_path: Path,
@@ -32,6 +32,19 @@ def test_path_provider_rejects_noncanonical_physical_representations(
 
     with pytest.raises(ConfigError):
         PathMountedVolumeAccess(tuple).observe_marker(tmp_path)
+
+
+@pytest.mark.parametrize("content", [b"camera", b"camera\n", b"camera\r\n"])
+def test_path_provider_accepts_portable_single_line_terminations(
+    tmp_path: Path,
+    content: bytes,
+) -> None:
+    (tmp_path / PATH_MARKER_NAME).write_bytes(content)
+
+    observation = PathMountedVolumeAccess(tuple).observe_marker(tmp_path)
+
+    assert observation is not None
+    assert observation.marker == GogurtRouteMarker("camera")
 
 
 def test_path_provider_identity_changes_with_relevant_physical_state(tmp_path: Path) -> None:

@@ -154,12 +154,7 @@ class PathMountedVolumeAccess:
         except UnicodeDecodeError as exc:
             raise ConfigError(f"gogurt path marker must be strict UTF-8: {marker}") from exc
         lines = text.splitlines()
-        if (
-            len(lines) != 1
-            or not lines[0]
-            or lines[0] != lines[0].strip()
-            or content != f"{lines[0]}\n".encode()
-        ):
+        if len(lines) != 1 or not lines[0] or lines[0] != lines[0].strip():
             raise ConfigError(f"gogurt path marker must contain one exact route: {marker}")
         try:
             document = GogurtRouteMarker(lines[0])
