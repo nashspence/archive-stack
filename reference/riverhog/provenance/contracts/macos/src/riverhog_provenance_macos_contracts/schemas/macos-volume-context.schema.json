@@ -13,7 +13,11 @@
     "filesystem_subtype": {"type": "integer", "minimum": 0},
     "io_size": {"type": "integer", "minimum": 0},
     "block_size": {"type": "integer", "minimum": 0},
-    "volume_uuid": {"type": "string", "format": "uuid"},
+    "volume_uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+    },
     "capabilities": {"type": "array", "items": {"type": "integer", "minimum": 0}},
     "valid_capabilities": {"type": "array", "items": {"type": "integer", "minimum": 0}}
   }

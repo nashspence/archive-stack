@@ -163,12 +163,14 @@ class _ChunkCursor:
 
 
 def _declared_content_bytes(model: BaseModel) -> int:
-    stored_bytes = getattr(model, "stored_bytes", None)
-    if isinstance(stored_bytes, bool) or not isinstance(stored_bytes, int):
+    declared_bytes = getattr(model, "stored_bytes", None)
+    if declared_bytes is None:
+        declared_bytes = getattr(model, "read_bytes", None)
+    if isinstance(declared_bytes, bool) or not isinstance(declared_bytes, int):
         raise FramedRequestError("framed request declaration has no byte count")
-    if stored_bytes < 0:
+    if declared_bytes < 0:
         raise FramedRequestError("framed request declaration has a negative byte count")
-    return stored_bytes
+    return declared_bytes
 
 
 def _content_chunks(content: BinaryContent) -> Iterator[bytes]:

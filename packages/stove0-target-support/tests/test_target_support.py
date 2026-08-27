@@ -74,6 +74,7 @@ from stove0_target_support import (
     OutputCollectionRef,
     PersistentTargetService,
     TargetCollectionPublication,
+    TargetConformanceCase,
     TargetContract,
     TargetContractPayload,
     TargetEffectCommitUncertain,
@@ -748,12 +749,12 @@ def test_conformance_report_proves_preflight_and_idempotent_submission() -> None
     status = _success_status(operation, request)
     report = conformance_report(
         FixtureTargetClient(target, request, status),
-        operation=operation,
-        job_request=request,
+        cases=(TargetConformanceCase(operation=operation, job_request=request),),
     )
     assert report["status"] == "conformant"
     assert report["transport"] == "riverhog-capability/v1"
-    assert report["semantic_conformance"]["status"] == "schema-only"
+    assert report["coverage"] == {"advertised": 1, "exercised": 1, "complete": True}
+    assert report["operation_evidence"][0]["semantic_conformance"]["status"] == "schema-only"
     assert report["operations"][0]["semantic_conformance"] == "schema-only"
 
 
@@ -763,8 +764,86 @@ def test_contract_only_target_report_does_not_claim_execution_conformance() -> N
         FixtureTargetClient(target, request, _success_status(operation, request))
     )
 
-    assert report["status"] == "contract-inspected"
+    assert report["status"] == "inspected"
+    assert report["coverage"] == {"advertised": 1, "exercised": 0, "complete": False}
     assert report["operations"][0]["semantic_conformance"] == "not-exercised"
+
+
+def test_target_conformance_requires_every_advertised_operation() -> None:
+    first = _operation()
+    second_payload = first.model_dump(mode="python", exclude={"contract_sha256"})
+    second_payload["id"] = "fixture.second/v1"
+    second = OperationContract.seal(OperationContractPayload.model_validate(second_payload))
+    options = JsonSchemaDocument.from_schema(
+        "fixture.multi-target-options/v1",
+        {"type": "object", "additionalProperties": False},
+    )
+    target = TargetContract.seal(
+        TargetContractPayload(
+            implementation_id="fixture.multi-target/v1",
+            implementation_version="1.0.0",
+            source_revision="fixture",
+            image_digest=_sha("9"),
+            operations=tuple(
+                TargetOperationSupport(
+                    operation_id=operation.id,
+                    operation_contract_sha256=operation.contract_sha256,
+                    options_schema=options,
+                )
+                for operation in (first, second)
+            ),
+        )
+    )
+    requests = {operation.id: _request_for(operation, target) for operation in (first, second)}
+    statuses = {
+        operation.id: _success_status(operation, requests[operation.id])
+        for operation in (first, second)
+    }
+
+    class MultiOperationClient:
+        def contract(self) -> TargetContract:
+            return target
+
+        def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
+            return TargetPreflightResponse(
+                target=target,
+                plan=requests[request.operation_id].declaration.plan,
+            )
+
+        def put_job(
+            self,
+            request: TargetJobRequest,
+            *,
+            operation: OperationContract,
+        ) -> TargetJobStatus:
+            assert request == requests[operation.id]
+            return statuses[operation.id]
+
+        def status(
+            self,
+            request: TargetJobRequest,
+            *,
+            operation: OperationContract,
+        ) -> TargetJobStatus:
+            return self.put_job(request, operation=operation)
+
+    client = MultiOperationClient()
+    partial = conformance_report(
+        client,
+        cases=(TargetConformanceCase(operation=first, job_request=requests[first.id]),),
+    )
+    assert partial["status"] == "partially-exercised"
+    assert partial["coverage"] == {"advertised": 2, "exercised": 1, "complete": False}
+
+    complete = conformance_report(
+        client,
+        cases=tuple(
+            TargetConformanceCase(operation=operation, job_request=requests[operation.id])
+            for operation in (first, second)
+        ),
+    )
+    assert complete["status"] == "conformant"
+    assert complete["coverage"] == {"advertised": 2, "exercised": 2, "complete": True}
 
 
 def test_target_conformance_executes_the_exact_advertised_semantic_vectors() -> None:
@@ -843,13 +922,17 @@ def test_target_conformance_executes_the_exact_advertised_semantic_vectors() -> 
     client = SemanticClient()
     report = conformance_report(
         client,
-        operation=operation,
-        job_request=request,
-        semantic_vectors=vectors,
+        cases=(
+            TargetConformanceCase(
+                operation=operation,
+                job_request=request,
+                semantic_vectors=vectors,
+            ),
+        ),
     )
 
     assert report["status"] == "conformant"
-    assert report["semantic_conformance"] == {
+    assert report["operation_evidence"][0]["semantic_conformance"] == {
         "profile_id": semantics.id,
         "profile_sha256": semantics.profile_sha256,
         "conformance_vectors_sha256": vectors.sha256,
@@ -896,7 +979,10 @@ def test_target_conformance_requires_semantic_vectors_before_any_job() -> None:
     client = FixtureTargetClient(target, request, _success_status(operation, request))
 
     with pytest.raises(ValueError, match="requires its exact semantic conformance vectors"):
-        conformance_report(client, operation=operation, job_request=request)
+        conformance_report(
+            client,
+            cases=(TargetConformanceCase(operation=operation, job_request=request),),
+        )
 
 
 def test_target_client_rejects_remote_plain_http_by_default() -> None:

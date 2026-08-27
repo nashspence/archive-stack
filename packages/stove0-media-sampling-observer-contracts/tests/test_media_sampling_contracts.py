@@ -29,7 +29,7 @@ def test_media_sampling_contract_has_no_artifact_or_duration_ceiling() -> None:
     assert MEDIA_SAMPLING_OBSERVER_CONTRACT.id == "stove0.review.media-sampling/v1"
     assert (
         MEDIA_SAMPLING_OBSERVER_CONTRACT.contract_sha256
-        == "3dffcfc9c44a555400cff878e6cda59e7d9722557a0905391658777eae637e0b"
+        == "beb0c37e896b0b2e3a8818f667ff59628614a461b06dc9f83560db434525a5be"
     )
     assert len(facts.artifacts) == 257
     assert schema["properties"]["artifacts"].get("maxItems") is None

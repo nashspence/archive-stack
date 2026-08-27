@@ -31,8 +31,9 @@ def conformance_report(
     request: SamplerRequest | None = None,
 ) -> dict[str, Any]:
     descriptor = client.descriptor()
+    exercised = request is not None
     report: dict[str, Any] = {
-        "status": "conformant",
+        "status": "conformant" if exercised else "inspected",
         "protocol": descriptor.protocol,
         "implementation_id": descriptor.implementation_id,
         "implementation_version": descriptor.implementation_version,
@@ -43,6 +44,12 @@ def conformance_report(
         "primary_operation_contract_sha256": (descriptor.primary_operation_contract_sha256),
         "portable_intent_schema_sha256": descriptor.portable_intent_schema.sha256,
         "output_role": descriptor.output_role,
+        "coverage": {
+            "advertised": 1,
+            "exercised": 1 if exercised else 0,
+            "complete": exercised,
+        },
+        "sampling": "exercised" if exercised else "not-exercised",
     }
     if request is None:
         return report

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -50,7 +51,7 @@ class TargetClient(Protocol):
     ) -> TargetJobStatus: ...
 
 
-def conformance_report(
+def _single_operation_report(
     client: TargetClient,
     *,
     operation: OperationContract | None = None,
@@ -213,41 +214,132 @@ def conformance_report(
     return report
 
 
+@dataclass(frozen=True, slots=True)
+class TargetConformanceCase:
+    """One advertised operation's complete black-box conformance input."""
+
+    operation: OperationContract
+    job_request: TargetJobRequest
+    semantic_vectors: SemanticIntentConformanceVectors | None = None
+
+
+def conformance_report(
+    client: TargetClient,
+    *,
+    cases: Sequence[TargetConformanceCase] = (),
+) -> dict[str, Any]:
+    """Report exact coverage, claiming conformance only for all advertised operations."""
+
+    contract = client.contract()
+    case_by_operation = {case.operation.id: case for case in cases}
+    if len(case_by_operation) != len(cases):
+        raise ValueError("target conformance cases must name unique operations")
+    advertised_ids = {item.operation_id for item in contract.operations}
+    if set(case_by_operation) - advertised_ids:
+        raise ValueError("target conformance case names an unadvertised operation")
+
+    report = _single_operation_report(client)
+    evidence: list[dict[str, Any]] = []
+    operation_reports = {str(item["operation_id"]): item for item in report["operations"]}
+    for operation_id in sorted(case_by_operation):
+        case = case_by_operation[operation_id]
+        exercised = _single_operation_report(
+            client,
+            operation=case.operation,
+            job_request=case.job_request,
+            semantic_vectors=case.semantic_vectors,
+        )
+        operation_entry = next(
+            item for item in exercised["operations"] if item["operation_id"] == operation_id
+        )
+        operation_reports[operation_id].update(operation_entry)
+        evidence.append(
+            {
+                "operation_id": operation_id,
+                "semantic_conformance": exercised["semantic_conformance"],
+                "preflight": exercised["preflight"],
+                "submission": exercised["submission"],
+                "job_status": exercised["job_status"],
+            }
+        )
+
+    exercised_count = len(evidence)
+    complete = exercised_count == len(contract.operations)
+    report.update(
+        {
+            "status": (
+                "conformant"
+                if complete
+                else "partially-exercised"
+                if exercised_count
+                else "inspected"
+            ),
+            "coverage": {
+                "advertised": len(contract.operations),
+                "exercised": exercised_count,
+                "complete": complete,
+            },
+            "operations": [operation_reports[item.operation_id] for item in contract.operations],
+        }
+    )
+    if evidence:
+        report["operation_evidence"] = evidence
+    return report
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="stove0-target-conformance",
         description="Check a deployed stove0 transform target's v1 contract.",
     )
     parser.add_argument("base_url")
-    parser.add_argument("--operation-contract", type=Path)
-    parser.add_argument("--job-request", type=Path)
-    parser.add_argument("--semantic-vectors", type=Path)
+    parser.add_argument(
+        "--case",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "JSON object containing operation, job_request, and optional semantic_vectors "
+            "(repeat once per advertised operation)"
+        ),
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    operation = None
-    request = None
-    semantic_vectors = None
-    if args.operation_contract is not None:
-        operation = OperationContract.model_validate_json(
-            args.operation_contract.read_text(encoding="utf-8")
-        )
-    if args.job_request is not None:
-        request = TargetJobRequest.model_validate_json(args.job_request.read_text(encoding="utf-8"))
-    if args.semantic_vectors is not None:
-        semantic_vectors = SemanticIntentConformanceVectors.model_validate_json(
-            args.semantic_vectors.read_text(encoding="utf-8")
+    cases: list[TargetConformanceCase] = []
+    for path in args.case:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or set(payload)
+            - {
+                "operation",
+                "job_request",
+                "semantic_vectors",
+            }
+            or not {"operation", "job_request"} <= set(payload)
+        ):
+            raise ValueError("target conformance case fields are invalid")
+        vectors_payload = payload.get("semantic_vectors")
+        cases.append(
+            TargetConformanceCase(
+                operation=OperationContract.model_validate(payload["operation"]),
+                job_request=TargetJobRequest.model_validate(payload["job_request"]),
+                semantic_vectors=(
+                    None
+                    if vectors_payload is None
+                    else SemanticIntentConformanceVectors.model_validate(vectors_payload)
+                ),
+            )
         )
     report = conformance_report(
         HttpTargetClient(args.base_url),
-        operation=operation,
-        job_request=request,
-        semantic_vectors=semantic_vectors,
+        cases=cases,
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
 
-__all__ = ["TargetClient", "conformance_report", "main"]
+__all__ = ["TargetClient", "TargetConformanceCase", "conformance_report", "main"]

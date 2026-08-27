@@ -21,7 +21,9 @@ from riverhog_storage_adapter_protocol import (
     ObjectHeadRequest,
     ObjectLocator,
     ObjectMetadataReceipt,
+    ObjectReadReceipt,
     ObjectReadRequest,
+    ObjectReadStream,
     ReadPreparationRequest,
     ReadReady,
     ReadRequested,
@@ -37,8 +39,10 @@ from riverhog_storage_adapter_protocol import (
     normalize_object_path,
     validate_completed_write_response,
     validate_object_metadata_response,
+    validate_object_read_response,
     validate_read_status_response,
     validate_small_object_response,
+    validate_write_completion_request,
     validate_write_segment_set_response,
     validate_write_session_response,
 )
@@ -60,7 +64,7 @@ def test_protocol_matches_the_existing_capability_port_inventory() -> None:
         "descriptor",
         "find_completed_write",
         "head_object",
-        "iter_object",
+        "read_object",
         "list_segments",
         "prepare_read",
         "put_small_object",
@@ -100,16 +104,28 @@ def test_validated_port_rejects_direct_response_and_stream_drift() -> None:
 
     read_adapter = cast(
         StorageAdapterPort,
-        SimpleNamespace(iter_object=lambda _request: iter((b"short",))),
+        SimpleNamespace(
+            read_object=lambda request: ObjectReadStream(
+                receipt=ObjectReadReceipt(
+                    object=request.object,
+                    total_bytes=request.expected_bytes,
+                    offset=0,
+                    read_bytes=request.expected_bytes,
+                ),
+                content=iter((b"short",)),
+            )
+        ),
     )
-    with pytest.raises(ValueError, match="requested byte count"):
+    with pytest.raises(ValueError, match="observed byte count"):
         b"".join(
-            ValidatedStorageAdapterPort(read_adapter).iter_object(
+            ValidatedStorageAdapterPort(read_adapter)
+            .read_object(
                 ObjectReadRequest(
                     object=ObjectLocator(object_path="objects/item"),
                     expected_bytes=6,
                 )
             )
+            .content
         )
 
     descriptor = AdapterDescriptor(
@@ -343,6 +359,32 @@ def test_range_requires_both_offset_and_size() -> None:
         ObjectReadRequest(object=locator, expected_bytes=10, offset=8, size=3)
 
 
+def test_object_read_receipt_binds_observed_locator_and_range() -> None:
+    request = ObjectReadRequest(
+        object=ObjectLocator(object_path="archives/id/volume.age", revision="revision-1"),
+        expected_bytes=10,
+        offset=2,
+        size=4,
+    )
+    receipt = ObjectReadReceipt(
+        object=request.object,
+        total_bytes=10,
+        offset=2,
+        read_bytes=4,
+    )
+    validate_object_read_response(request, receipt)
+
+    with pytest.raises(ValueError, match="revision differs"):
+        validate_object_read_response(
+            request,
+            receipt.model_copy(
+                update={"object": request.object.model_copy(update={"revision": "revision-2"})}
+            ),
+        )
+    with pytest.raises(ValueError, match="range differs"):
+        validate_object_read_response(request, receipt.model_copy(update={"offset": 3}))
+
+
 def test_descriptor_exposes_only_runtime_facts_needed_by_riverhog() -> None:
     descriptor = AdapterDescriptor(
         implementation_id="fixture.storage/v1",
@@ -454,7 +496,7 @@ def test_listed_write_segments_allow_sparse_restart_state_but_completion_does_no
             required_identity_assertions={"identity": "exact"},
             expected_placement="archive",
         )
-    with pytest.raises(ValueError, match="segment-count limit"):
+    with pytest.raises(ValueError, match="count limit"):
         validate_write_segment_set_response(
             session,
             WriteSegmentSet(
@@ -471,6 +513,39 @@ def test_listed_write_segments_allow_sparse_restart_state_but_completion_does_no
                 WriteSegmentReceipt(number=1, segment_token="one", stored_bytes=1),
             ),
         )
+
+
+def test_segment_constraints_are_shared_by_listing_and_completion() -> None:
+    session = WriteSession(object_path="archives/id/object.age", write_token="opaque")
+    descriptor = AdapterDescriptor(
+        implementation_id="fixture.storage/v1",
+        implementation_version="1.0.0",
+        read_mode="immediate",
+        minimum_nonfinal_segment_bytes=5,
+        maximum_segment_bytes=8,
+        maximum_segment_count=2,
+    )
+    oversized = WriteSegmentReceipt(number=1, segment_token="one", stored_bytes=9)
+    with pytest.raises(ValueError, match="byte limit"):
+        validate_write_segment_set_response(
+            session,
+            WriteSegmentSet(session=session, segments=(oversized,)),
+            descriptor,
+        )
+
+    completion = WriteCompleteRequest(
+        session=session,
+        segments=(
+            WriteSegmentReceipt(number=1, segment_token="one", stored_bytes=4),
+            WriteSegmentReceipt(number=2, segment_token="two", stored_bytes=1),
+        ),
+        expected_bytes=5,
+        expected_content_type="application/octet-stream",
+        required_identity_assertions={},
+        expected_placement="archive",
+    )
+    with pytest.raises(ValueError, match="undersized non-final"):
+        validate_write_completion_request(completion, descriptor)
 
 
 def test_small_write_and_head_success_bind_exact_storage_predicates() -> None:

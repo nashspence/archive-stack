@@ -33,13 +33,13 @@ def test_review_target_contracts_retain_exact_result_and_retirement_semantics() 
     assert REVIEW_MATERIALIZE_OPERATION.id == "stove0.review.materialize/v1"
     assert (
         REVIEW_MATERIALIZE_OPERATION.contract_sha256
-        == "4be8075379efc3b1cc7ff30f3458ad895e855e0d18357b5caf39d7997f4ec3f4"
+        == "5517370bb1016dfadd236f0f06300999e18de90537bbdad46b87f274958ab06d"
     )
     assert REVIEW_MATERIALIZE_OPERATION.result_kind == "collection"
     assert REVIEW_RCLONE_DELIVER_OPERATION.id == "stove0.review.rclone-deliver/v1"
     assert (
         REVIEW_RCLONE_DELIVER_OPERATION.contract_sha256
-        == "6295e22ff6cd95f1c5657d427ebb47622f3625112c831ef0e51c366bfaf38ed2"
+        == "1716dda4f6b7948762712a30a434a4bfefdfec6aadd5123f637eed0cd33f5639"
     )
     assert REVIEW_RCLONE_DELIVER_OPERATION.result_kind == "external-effect"
     assert REVIEW_MATERIALIZE_OPERATION.source_retirement_permitted is False
@@ -50,7 +50,9 @@ def test_review_target_contracts_retain_exact_result_and_retirement_semantics() 
         "variant": {"id": "opus-96", "portable_intent": {"bitrate_kbps": 96}},
     }
     assert ReviewMaterializeIntent.model_validate(intent).sample_plan == plan
-    assert REVIEW_MATERIALIZE_INTENT_SCHEMA.document == ReviewMaterializeIntent.model_json_schema()
+    expected_schema = ReviewMaterializeIntent.model_json_schema()
+    expected_schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    assert REVIEW_MATERIALIZE_INTENT_SCHEMA.document == expected_schema
     assert REVIEW_MATERIALIZE_OPERATION.intent_semantics == REVIEW_MATERIALIZE_INTENT_SEMANTICS
     assert REVIEW_RCLONE_DELIVER_OPERATION.intent_semantics == REVIEW_MATERIALIZE_INTENT_SEMANTICS
     validate_review_materialize_intent(intent)

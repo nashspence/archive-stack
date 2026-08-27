@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -21,8 +20,11 @@ from riverhog_storage_adapter_protocol import (
     DeletePrefixRequest,
     ImmutableObjectReceipt,
     ObjectHeadRequest,
+    ObjectLocator,
     ObjectMetadataReceipt,
+    ObjectReadReceipt,
     ObjectReadRequest,
+    ObjectReadStream,
     ReadPreparationRequest,
     ReadReady,
     ReadRequested,
@@ -110,14 +112,25 @@ class _MemoryAdapter:
             completed_at=stored.completed_at,
         )
 
-    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
+    def read_object(self, request: ObjectReadRequest) -> ObjectReadStream:
         self.reads += 1
         stored = self.objects[request.object.object_path]
         assert len(stored.content) == request.expected_bytes
         content = stored.content
         if request.offset is not None and request.size is not None:
             content = content[request.offset : request.offset + request.size]
-        yield content
+        return ObjectReadStream(
+            receipt=ObjectReadReceipt(
+                object=ObjectLocator(
+                    object_path=request.object.object_path,
+                    revision=stored.revision,
+                ),
+                total_bytes=len(stored.content),
+                offset=request.offset or 0,
+                read_bytes=len(content),
+            ),
+            content=iter((content,)) if content else iter(()),
+        )
 
     def prepare_read(self, request: ReadPreparationRequest) -> ReadStatus:
         self.preparations.append(request)

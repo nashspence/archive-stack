@@ -20,9 +20,12 @@ from riverhog_storage_adapter_protocol import (
     DeletePrefixRequest,
     ImmutableObjectReceipt,
     ObjectHeadRequest,
+    ObjectLocator,
     ObjectMetadataReceipt,
     ObjectPlacement,
+    ObjectReadReceipt,
     ObjectReadRequest,
+    ObjectReadStream,
     ReadMode,
     ReadPreparationRequest,
     ReadReadiness,
@@ -102,18 +105,19 @@ class S3ReadPreparation(Protocol):
 class S3ObjectReader(Protocol):
     """Optional provider-owned delivery path such as exact CloudFront reads."""
 
-    def iter_object(
+    def read_object(
         self,
         *,
         client: Any,
         bucket: str,
         key: str,
+        object_path: str,
         revision: str | None,
         offset: int | None,
         size: int | None,
         expected_bytes: int,
         chunk_bytes: int,
-    ) -> Iterator[bytes]: ...
+    ) -> ObjectReadStream: ...
 
 
 class S3StorageAdapter:
@@ -452,11 +456,12 @@ class S3StorageAdapter:
             completed_at=_provider_timestamp(head),
         )
 
-    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
-        yield from self._object_reader.iter_object(
+    def read_object(self, request: ObjectReadRequest) -> ObjectReadStream:
+        return self._object_reader.read_object(
             client=self._client,
             bucket=self._config.bucket,
             key=self._key(request.object.object_path),
+            object_path=request.object.object_path,
             revision=request.object.revision,
             offset=request.offset,
             size=request.size,
@@ -838,50 +843,78 @@ class _ObservedContentReader:
 
 
 class _DirectS3ObjectReader:
-    def iter_object(
+    def read_object(
         self,
         *,
         client: Any,
         bucket: str,
         key: str,
+        object_path: str,
         revision: str | None,
         offset: int | None,
         size: int | None,
         expected_bytes: int,
         chunk_bytes: int,
-    ) -> Iterator[bytes]:
+    ) -> ObjectReadStream:
         request: dict[str, Any] = {"Bucket": bucket, "Key": key}
         if revision is not None:
             request["VersionId"] = revision
+        if offset is not None and size == 0:
+            response = cast(dict[str, Any], client.head_object(**request))
+            if int(str(response.get("ContentLength", -1))) != expected_bytes:
+                raise RuntimeError("S3 object response length differs from its request")
+            return ObjectReadStream(
+                receipt=ObjectReadReceipt(
+                    object=ObjectLocator(
+                        object_path=object_path,
+                        revision=_provider_revision(response),
+                    ),
+                    total_bytes=expected_bytes,
+                    offset=offset,
+                    read_bytes=0,
+                ),
+                content=iter(()),
+            )
         expected = expected_bytes
         if offset is not None and size is not None:
-            if size == 0:
-                return
-            request["Range"] = f"bytes={offset}-{offset + size - 1}"
+            if size > 0:
+                request["Range"] = f"bytes={offset}-{offset + size - 1}"
             expected = size
         response = cast(dict[str, Any], client.get_object(**request))
         if int(str(response.get("ContentLength", -1))) != expected:
             raise RuntimeError("S3 object response length differs from its request")
-        if offset is not None and size is not None:
+        if offset is not None and size is not None and size > 0:
             expected_range = f"bytes {offset}-{offset + size - 1}/{expected_bytes}"
             if str(response.get("ContentRange", "")) != expected_range:
                 raise RuntimeError("S3 object response range differs from its request")
         body = response["Body"]
-        emitted = 0
-        try:
-            for chunk in body.iter_chunks(chunk_size=chunk_bytes):
-                if not chunk:
-                    continue
-                emitted += len(chunk)
-                if emitted > expected:
-                    raise RuntimeError("S3 object response contains trailing bytes")
-                yield bytes(chunk)
-        finally:
+
+        def close_body() -> None:
             close = getattr(body, "close", None)
             if callable(close):
                 close()
-        if emitted != expected:
-            raise RuntimeError("S3 object response ended before its declared length")
+
+        def content() -> Iterator[bytes]:
+            try:
+                yield from (
+                    bytes(chunk) for chunk in body.iter_chunks(chunk_size=chunk_bytes) if chunk
+                )
+            finally:
+                close_body()
+
+        return ObjectReadStream(
+            receipt=ObjectReadReceipt(
+                object=ObjectLocator(
+                    object_path=object_path,
+                    revision=_provider_revision(response),
+                ),
+                total_bytes=expected_bytes,
+                offset=offset or 0,
+                read_bytes=expected,
+            ),
+            content=content(),
+            close=close_body,
+        )
 
 
 def _normalized_metadata(head: dict[str, Any]) -> dict[str, str]:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator
 
 import pytest
 from riverhog_core.ports.archive_objects import ArchiveObjectIdentityConflict
@@ -15,7 +14,10 @@ from riverhog_storage_adapter_protocol import (
     CompletedObjectReceipt,
     CompletedWriteLookupRequest,
     ImmutableObjectReceipt,
+    ObjectLocator,
+    ObjectReadReceipt,
     ObjectReadRequest,
+    ObjectReadStream,
     SmallObjectWriteRequest,
     StorageAdapterRejection,
     WriteCompleteRequest,
@@ -118,11 +120,23 @@ class _Adapter:
             completed_at="2026-08-21T00:00:00.000000Z",
         )
 
-    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
+    def read_object(self, request: ObjectReadRequest) -> ObjectReadStream:
         content = self.objects[request.object.object_path]
         assert request.expected_bytes == len(content)
         assert request.offset is not None and request.size is not None
-        yield content[request.offset : request.offset + request.size]
+        selected = content[request.offset : request.offset + request.size]
+        return ObjectReadStream(
+            receipt=ObjectReadReceipt(
+                object=ObjectLocator(
+                    object_path=request.object.object_path,
+                    revision=request.object.revision,
+                ),
+                total_bytes=len(content),
+                offset=request.offset,
+                read_bytes=len(selected),
+            ),
+            content=iter((selected,)) if selected else iter(()),
+        )
 
     @staticmethod
     def _completed(

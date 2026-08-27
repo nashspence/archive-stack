@@ -116,7 +116,7 @@ class StorageAdapterRetrievalCache:
         completed: CompletedObjectReceipt,
         segments: tuple[WriteSegmentReceipt, ...] = (),
     ) -> RetrievalCacheReceipt:
-        content = self._adapter.iter_object(
+        content = self._adapter.read_object(
             ObjectReadRequest(
                 object=ObjectLocator(
                     object_path=completed.object_path,
@@ -124,7 +124,7 @@ class StorageAdapterRetrievalCache:
                 ),
                 expected_bytes=completed.bytes,
             )
-        )
+        ).content
         digest = hashlib.sha256()
         size = 0
         expected_segments = tuple(sorted(segments, key=lambda current: current.number))
@@ -454,12 +454,12 @@ class StorageAdapterRetrievalCache:
     ) -> Iterator[bytes]:
         digest = hashlib.sha256()
         size = 0
-        for chunk in self._adapter.iter_object(
+        for chunk in self._adapter.read_object(
             ObjectReadRequest(
                 object=ObjectLocator(object_path=object_path, revision=revision),
                 expected_bytes=expected_bytes,
             )
-        ):
+        ).content:
             digest.update(chunk)
             size += len(chunk)
             yield chunk
@@ -475,14 +475,14 @@ class StorageAdapterRetrievalCache:
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
-        return self._adapter.iter_object(
+        return self._adapter.read_object(
             ObjectReadRequest(
                 object=ObjectLocator(object_path=object_path, revision=revision),
                 expected_bytes=expected_bytes,
                 offset=offset,
                 size=size,
             )
-        )
+        ).content
 
     def delete(self, *, object_path: str, revision: str | None) -> None:
         self._adapter.delete_object(

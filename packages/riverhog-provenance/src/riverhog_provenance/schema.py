@@ -9,7 +9,8 @@ from importlib.resources.abc import Traversable
 from typing import Any, cast
 
 from jsonschema import Draft202012Validator, FormatChecker
-from referencing import Registry, Resource
+from referencing import Registry
+from referencing.jsonschema import DRAFT202012
 from riverhog_provenance_contracts import index_schema_documents
 
 from .common import canonical_json
@@ -96,13 +97,13 @@ def _validators_for_schemas(
     schemas: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Draft202012Validator]:
     registry = Registry().with_resources(
-        (schema_id, Resource.from_contents(dict(schema))) for schema_id, schema in schemas.items()
+        (schema_id, DRAFT202012.create_resource(dict(schema)))
+        for schema_id, schema in schemas.items()
     )
     return {
         schema_id: Draft202012Validator(
             dict(schema),
             registry=registry,
-            format_checker=FormatChecker(),
         )
         for schema_id, schema in schemas.items()
     }

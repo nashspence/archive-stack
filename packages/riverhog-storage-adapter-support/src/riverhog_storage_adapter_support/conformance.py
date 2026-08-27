@@ -46,6 +46,8 @@ class StorageAdapterConformanceResult(BaseModel):
         STORAGE_ADAPTER_CONFORMANCE_RESULT
     )
     protocol: Literal["riverhog-storage-adapter/v1"] = STORAGE_ADAPTER_PROTOCOL
+    status: Literal["conformant"] = "conformant"
+    coverage: Literal["complete"] = "complete"
     implementation_id: str
     implementation_version: str
     checks: tuple[str, ...]
@@ -111,7 +113,7 @@ def run_storage_adapter_conformance(
         checks.append("exact-metadata")
 
         range_content = b"".join(
-            client.iter_object(
+            client.read_object(
                 ObjectReadRequest(
                     object=ObjectLocator(
                         object_path=small_path,
@@ -121,7 +123,7 @@ def run_storage_adapter_conformance(
                     offset=9,
                     size=15,
                 )
-            )
+            ).content
         )
         if range_content != small_content[9:24]:
             raise AssertionError("exact range differs from the stored object")
@@ -243,7 +245,7 @@ def run_storage_adapter_conformance(
 
         write_content = b"".join(segment_contents)
         stored_write = b"".join(
-            continuation_client.iter_object(
+            continuation_client.read_object(
                 ObjectReadRequest(
                     object=ObjectLocator(
                         object_path=write_path,
@@ -251,7 +253,7 @@ def run_storage_adapter_conformance(
                     ),
                     expected_bytes=total_bytes,
                 )
-            )
+            ).content
         )
         if stored_write != write_content:
             raise AssertionError("completed write bytes differ from its segments")

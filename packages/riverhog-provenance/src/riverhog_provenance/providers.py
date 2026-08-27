@@ -112,6 +112,8 @@ class ResolvedProvenanceObserver:
             "contract_provider": self.binding.contract_provider,
             "contract_id": self.contract.contract_id,
             "contract_sha256": self.contract.contract_sha256,
+            "schema_dialect": self.contract.schema_dialect,
+            "format_policy": self.contract.format_policy,
             "schema_ids": sorted(self.contract.schemas),
         }
 

@@ -184,10 +184,14 @@ def _validated_collection_upload_idempotency_key(
 def _validated_collection_upload_file_response(
     collection_id: int,
     payload: dict[str, Any],
+    *,
+    expected_state: str | None = None,
 ) -> dict[str, Any]:
     try:
         if _COLLECTION_ID.validate_python(payload.get("collection_id")) != collection_id:
             raise ValueError("collection upload file response differs from its request")
+        if expected_state is not None and payload.get("state") != expected_state:
+            raise ValueError("collection upload file response has an impossible state")
         rows = payload.get("files")
         if not isinstance(rows, list):
             raise ValueError("collection upload file response has no file inventory")
@@ -977,6 +981,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 f"/v1/collection-upload-sessions/{str(normalized_collection_id)}/files",
                 json=batch.model_dump(mode="json"),
             ),
+            expected_state="open",
         )
 
     def list_collection_upload_session_files(

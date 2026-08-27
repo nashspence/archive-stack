@@ -4,12 +4,12 @@ import os
 import stat
 from pathlib import Path
 
+import gogurt_path_volume_support as path_volume_support
 import pytest
 from config_validation import ConfigError
 from gogurt_core.mounts import GogurtRouteMarker
 from gogurt_path_volume_support import (
     PATH_MARKER_NAME,
-    PATH_MARKER_PUBLICATION_LOCK_NAME,
     PathMountedVolumeAccess,
 )
 
@@ -25,8 +25,9 @@ def test_path_provider_owns_the_complete_route_line_representation(tmp_path: Pat
     assert published.marker == document
     assert restarted == published
     if os.name != "nt":
-        lock_mode = stat.S_IMODE((tmp_path / PATH_MARKER_PUBLICATION_LOCK_NAME).stat().st_mode)
-        assert lock_mode == 0o600
+        lock_mode = stat.S_IMODE((tmp_path / ".gogurt.publish.lock").stat().st_mode)
+        assert lock_mode == 0o666
+    assert "PATH_MARKER_PUBLICATION_LOCK_NAME" not in path_volume_support.__all__
 
 
 @pytest.mark.parametrize(

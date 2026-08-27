@@ -72,6 +72,19 @@ def test_json_schema_document_seals_a_complete_local_reference_closure() -> None
     )
 
     assert document.document["properties"] == {"value": {"$ref": "#/$defs/value"}}
+    assert document.document["$schema"] == document.dialect
+    assert document.format_policy == "annotation-only"
+
+
+def test_json_schema_document_rejects_a_conflicting_dialect() -> None:
+    with pytest.raises(ValueError, match="exact JSON Schema Draft 2020-12"):
+        JsonSchemaDocument.from_schema(
+            "fixture.conflicting-dialect/v1",
+            {
+                "$schema": "https://json-schema.org/draft/2019-09/schema",
+                "type": "object",
+            },
+        )
 
 
 @pytest.mark.parametrize(

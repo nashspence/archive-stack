@@ -154,7 +154,7 @@ def resume(path: Path) -> dict[str, object]:
         if recovered != completed:
             raise RuntimeError("restart completion reconciliation changed its receipt")
         stored = b"".join(
-            client.iter_object(
+            client.read_object(
                 ObjectReadRequest(
                     object=ObjectLocator(
                         object_path=completed.object_path,
@@ -162,7 +162,7 @@ def resume(path: Path) -> dict[str, object]:
                     ),
                     expected_bytes=completed.stored_bytes,
                 )
-            )
+            ).content
         )
         if stored != b"a" * first_segment_bytes + _SECOND_SEGMENT:
             raise RuntimeError("restart continuation changed the stored bytes")

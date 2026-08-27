@@ -21,7 +21,9 @@ from riverhog_storage_adapter_protocol import (
     MaintenanceResult,
     ObjectHeadRequest,
     ObjectMetadataReceipt,
+    ObjectReadReceipt,
     ObjectReadRequest,
+    ObjectReadStream,
     ReadPreparationRequest,
     ReadStatus,
     SmallObjectWriteRequest,
@@ -36,8 +38,11 @@ from riverhog_storage_adapter_protocol import (
     WriteStartRequest,
     validate_completed_write_response,
     validate_object_metadata_response,
+    validate_object_read_response,
     validate_read_status_response,
     validate_small_object_response,
+    validate_write_completion_request,
+    validate_write_segment_request,
     validate_write_segment_response,
     validate_write_segment_set_response,
     validate_write_session_response,
@@ -47,6 +52,7 @@ from riverhog_storage_adapter_support.framing import (
     FRAMED_REQUEST_MEDIA_TYPE,
     framed_request,
     framed_request_length,
+    parse_framed_stream,
 )
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -151,6 +157,7 @@ class StorageAdapterClient:
             number=number,
             stored_bytes=stored_bytes,
         )
+        self._validate_request(validate_write_segment_request, request, self.descriptor())
         response = self._model(
             "POST",
             "/v1/writes/segment",
@@ -178,6 +185,7 @@ class StorageAdapterClient:
         self,
         request: WriteCompleteRequest,
     ) -> CompletedObjectReceipt:
+        self._validate_request(validate_write_completion_request, request, self.descriptor())
         response = self._model(
             "POST",
             "/v1/writes/complete",
@@ -233,50 +241,66 @@ class StorageAdapterClient:
             self._validate(validate_object_metadata_response, request, response)
         return response
 
-    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
-        if request.size == 0:
-            return
-        expected = request.size if request.size is not None else request.expected_bytes
-        expected_status = 206 if request.size is not None else 200
-        with self._client.stream(
+    def read_object(self, request: ObjectReadRequest) -> ObjectReadStream:
+        expected_status = 206 if request.size is not None and request.size > 0 else 200
+        context = self._client.stream(
             "POST",
             f"{self.base_url}/v1/objects/read",
             headers=self._headers,
             json=request.model_dump(mode="json", exclude_none=True),
-        ) as response:
+        )
+        response = context.__enter__()
+        try:
             if response.status_code != expected_status:
                 self._raise_response(response)
             raw_length = response.headers.get("Content-Length")
-            if raw_length is None or int(raw_length) != expected:
-                raise StorageAdapterProtocolError(
-                    "adapter object response length differs from the request"
-                )
+            if raw_length is None:
+                raise StorageAdapterProtocolError("adapter object response has no framed length")
+            receipt, content = parse_framed_stream(
+                response.iter_bytes(),
+                ObjectReadReceipt,
+                content_length=int(raw_length),
+            )
+            self._validate(validate_object_read_response, request, receipt)
             if (
-                request.object.revision is not None
-                and response.headers.get("X-Riverhog-Object-Revision") != request.object.revision
+                receipt.object.revision is not None
+                and response.headers.get("X-Riverhog-Object-Revision") != receipt.object.revision
             ):
                 raise StorageAdapterProtocolError("adapter object revision differs")
-            if request.offset is not None and request.size is not None:
-                end = request.offset + request.size - 1
-                expected_range = f"bytes {request.offset}-{end}/{request.expected_bytes}"
+            if response.headers.get("X-Riverhog-Object-Bytes") != str(receipt.total_bytes):
+                raise StorageAdapterProtocolError("adapter object byte identity differs")
+            if receipt.read_bytes > 0 and request.offset is not None:
+                end = receipt.offset + receipt.read_bytes - 1
+                expected_range = f"bytes {receipt.offset}-{end}/{receipt.total_bytes}"
                 if response.headers.get("Content-Range") != expected_range:
                     raise StorageAdapterProtocolError(
                         "adapter object range differs from the request"
                     )
-            emitted = 0
-            for chunk in response.iter_bytes():
-                if not chunk:
-                    continue
-                emitted += len(chunk)
-                if emitted > expected:
-                    raise StorageAdapterProtocolError(
-                        "adapter object response contains trailing bytes"
-                    )
-                yield chunk
-            if emitted != expected:
-                raise StorageAdapterProtocolError(
-                    "adapter object response ended before its declared length"
-                )
+        except BaseException:
+            context.__exit__(None, None, None)
+            raise
+
+        closed = False
+
+        def close_response() -> None:
+            nonlocal closed
+            if closed:
+                return
+            closed = True
+            context.__exit__(None, None, None)
+
+        def iter_content() -> Iterator[bytes]:
+            try:
+                yield from content
+                content.require_consumed()
+            finally:
+                close_response()
+
+        return ObjectReadStream(
+            receipt=receipt,
+            content=iter_content(),
+            close=close_response,
+        )
 
     def delete_object(self, request: DeleteObjectRequest) -> None:
         self._empty("POST", "/v1/objects/delete", request)
@@ -369,6 +393,16 @@ class StorageAdapterClient:
             raise StorageAdapterProtocolError(
                 "adapter returned a response inconsistent with its request"
             ) from exc
+
+    @staticmethod
+    def _validate_request(
+        validator: Callable[..., None],
+        *arguments: object,
+    ) -> None:
+        try:
+            validator(*arguments)
+        except ValueError as exc:
+            raise StorageAdapterProtocolError(str(exc), code="invalid_request") from exc
 
     def _request(
         self,

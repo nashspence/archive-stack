@@ -210,14 +210,14 @@ class StorageAdapterArchiveObjectRangeStore:
         offset: int,
         size: int,
     ) -> Iterator[bytes]:
-        return self._adapter.iter_object(
+        return self._adapter.read_object(
             ObjectReadRequest(
                 object=ObjectLocator(object_path=object_path, revision=revision),
                 expected_bytes=expected_bytes,
                 offset=offset,
                 size=size,
             )
-        )
+        ).content
 
 
 def _adapter_session(session: WriteSession) -> AdapterWriteSession:

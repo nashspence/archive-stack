@@ -477,20 +477,22 @@ def test_full_and_exact_range_reads_preserve_version_and_length() -> None:
 
     assert (
         b"".join(
-            adapter.iter_object(ObjectReadRequest(object=locator, expected_bytes=len(content)))
+            adapter.read_object(
+                ObjectReadRequest(object=locator, expected_bytes=len(content))
+            ).content
         )
         == content
     )
     assert (
         b"".join(
-            adapter.iter_object(
+            adapter.read_object(
                 ObjectReadRequest(
                     object=locator,
                     expected_bytes=len(content),
                     offset=3,
                     size=4,
                 )
-            )
+            ).content
         )
         == b"3456"
     )
