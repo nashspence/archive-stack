@@ -25,7 +25,8 @@ from gogurt_core.core import (
 )
 from gogurt_core.mounts import (
     GOGURT_MOUNTED_VOLUME_PROVIDER_ENTRY_POINT_GROUP,
-    MountedMarkerSnapshot,
+    GogurtRouteMarker,
+    MountedMarkerObservation,
     MountedVolumeProviderBinding,
 )
 from gogurt_core.providers import GogurtProviderReference
@@ -73,7 +74,7 @@ class FixtureAdapter:
 
 
 class FixtureMountedVolumeAccess:
-    def __init__(self, markers: dict[tuple[Path, str], bytes] | None = None) -> None:
+    def __init__(self, markers: dict[Path, GogurtRouteMarker] | None = None) -> None:
         self.markers = markers if markers is not None else {}
 
     def discover(self) -> tuple[Path, ...]:
@@ -82,33 +83,27 @@ class FixtureMountedVolumeAccess:
     def observe_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        *,
-        max_bytes: int,
-    ) -> MountedMarkerSnapshot | None:
-        content = self.markers.get((mount_point, marker_name))
-        if content is not None and len(content) > max_bytes:
-            raise ValueError("fixture marker exceeds bound")
-        if content is None:
+    ) -> MountedMarkerObservation | None:
+        marker = self.markers.get(mount_point)
+        if marker is None:
             return None
         identity = sha256(
             b"fixture-mounted-marker/v1\0"
             + str(mount_point).encode("utf-8")
             + b"\0"
-            + marker_name.encode("utf-8")
+            + marker.format.encode("ascii")
             + b"\0"
-            + content
+            + marker.route.encode("ascii")
         ).hexdigest()
-        return MountedMarkerSnapshot(content, identity)
+        return MountedMarkerObservation(marker, identity)
 
     def publish_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        content: bytes,
-    ) -> MountedMarkerSnapshot:
-        self.markers[(mount_point, marker_name)] = content
-        value = self.observe_marker(mount_point, marker_name, max_bytes=len(content))
+        marker: GogurtRouteMarker,
+    ) -> MountedMarkerObservation:
+        self.markers[mount_point] = marker
+        value = self.observe_marker(mount_point)
         assert value is not None
         return value
 
@@ -122,34 +117,19 @@ class InvalidObservationResultAccess(FixtureMountedVolumeAccess):
     def observe_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        *,
-        max_bytes: int,
-    ) -> MountedMarkerSnapshot | None:
-        return "not-a-snapshot"  # type: ignore[return-value]
+    ) -> MountedMarkerObservation | None:
+        return "not-an-observation"  # type: ignore[return-value]
 
 
 class InvalidPublicationAccess(FixtureMountedVolumeAccess):
     def publish_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        content: bytes,
-    ) -> MountedMarkerSnapshot:
-        return MountedMarkerSnapshot(content=b"different\n", identity="wrong-publication")
-
-
-class UnboundedObservationAccess(FixtureMountedVolumeAccess):
-    def observe_marker(
-        self,
-        mount_point: Path,
-        marker_name: str,
-        *,
-        max_bytes: int,
-    ) -> MountedMarkerSnapshot | None:
-        return MountedMarkerSnapshot(
-            content=b"x" * (max_bytes + 1),
-            identity="oversized-observation",
+        marker: GogurtRouteMarker,
+    ) -> MountedMarkerObservation:
+        return MountedMarkerObservation(
+            marker=GogurtRouteMarker("different"),
+            identity="wrong-publication",
         )
 
 
@@ -282,11 +262,9 @@ def test_provider_binding_and_capability_mismatches_fail_closed(
         resolve_mounted_volume_provider("wrong-binding")
     with pytest.raises(ConfigError, match="invalid mount paths"):
         resolve_mounted_volume_provider("wrong-result").discover()
-    with pytest.raises(ConfigError, match="invalid marker snapshot"):
+    with pytest.raises(ConfigError, match="invalid marker observation"):
         resolve_mounted_volume_provider("wrong-snapshot").observe_marker(
-            _fixture_root("fixture-mount"),
-            ".gogurt",
-            max_bytes=4096,
+            _fixture_root("fixture-mount")
         )
 
 
@@ -308,7 +286,7 @@ def test_external_provider_owns_marker_custody_and_restart_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    shared_markers: dict[tuple[Path, str], bytes] = {}
+    shared_markers: dict[Path, GogurtRouteMarker] = {}
     volume_root = tmp_path / "provider-owned-volume-that-is-not-a-local-directory"
     config = tmp_path / "routes.yaml"
     config.write_text(
@@ -343,12 +321,12 @@ def test_external_provider_owns_marker_custody_and_restart_identity(
 
     install_access(FixtureMountedVolumeAccess(shared_markers))
     provider = resolve_mounted_volume_provider("external-volume")
-    marker = write_gogurt_marker(config, "camera", volume_root, provider=provider)
+    observation = write_gogurt_marker(config, "camera", volume_root, provider=provider)
     plan = plan_gogurt_action(config, volume_root, provider=provider)
 
-    assert marker == volume_root / ".gogurt"
+    assert observation.marker == GogurtRouteMarker("camera")
     assert not volume_root.exists()
-    assert shared_markers[(volume_root.resolve(), ".gogurt")] == b"camera\n"
+    assert shared_markers[volume_root.resolve()] == GogurtRouteMarker("camera")
     assert plan["mounted_volume_provider"] == provider.reference.as_dict()
 
     install_access(FixtureMountedVolumeAccess(shared_markers))
@@ -358,7 +336,7 @@ def test_external_provider_owns_marker_custody_and_restart_identity(
     )
     assert revalidate_gogurt_action(plan, provider=restarted) == plan["command"]
 
-    shared_markers[(volume_root.resolve(), ".gogurt")] = b"otherx\n"
+    shared_markers[volume_root.resolve()] = GogurtRouteMarker("otherx")
     with pytest.raises(ConfigError, match="changed before action execution"):
         revalidate_gogurt_action(plan, provider=restarted)
 
@@ -370,7 +348,7 @@ def test_action_plan_rejects_a_different_provider_before_dispatch(
     _patch_entries(monkeypatch)
     provider = resolve_mounted_volume_provider("external-mount")
     root = _fixture_root("fixture-mount")
-    provider.publish_marker(root, ".gogurt", b"camera\n")
+    provider.publish_marker(root, GogurtRouteMarker("camera"))
     config = tmp_path / "routes.yaml"
     config.write_text(
         "schema_version: 1\nkind: gogurt.routes\nroutes:\n"
@@ -392,19 +370,11 @@ def test_action_plan_rejects_a_different_provider_before_dispatch(
         revalidate_gogurt_action(plan, provider=wrong)
 
 
-@pytest.mark.parametrize(
-    ("access", "message"),
-    [
-        (InvalidPublicationAccess(), "did not publish the requested marker"),
-        (UnboundedObservationAccess(), "marker exceeds"),
-    ],
-)
-def test_core_revalidates_provider_marker_results(
+def test_core_revalidates_provider_publication_result(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    access: FixtureMountedVolumeAccess,
-    message: str,
 ) -> None:
+    access = InvalidPublicationAccess()
     entry = FixtureEntryPoint(
         "external-volume",
         "external:VOLUME",
@@ -426,14 +396,8 @@ def test_core_revalidates_provider_marker_results(
         encoding="utf-8",
     )
 
-    operation = (
-        write_gogurt_marker if isinstance(access, InvalidPublicationAccess) else plan_gogurt_action
-    )
-    with pytest.raises((ConfigError, ValueError), match=message):
-        if operation is write_gogurt_marker:
-            write_gogurt_marker(config, "camera", tmp_path / "volume", provider=provider)
-        else:
-            plan_gogurt_action(config, tmp_path / "volume", provider=provider)
+    with pytest.raises(ConfigError, match="did not publish the requested logical marker"):
+        write_gogurt_marker(config, "camera", tmp_path / "volume", provider=provider)
 
 
 def test_installed_external_distribution_composes_without_workspace_registration(
@@ -445,21 +409,19 @@ def test_installed_external_distribution_composes_without_workspace_registration
             (
                 "from pathlib import Path",
                 "from gogurt_core.mounts import ("
-                "MountedMarkerSnapshot, MountedVolumeProviderBinding)",
+                "GogurtRouteMarker, MountedMarkerObservation, MountedVolumeProviderBinding)",
                 "from gogurt_listener_runtime.platform import (",
                 "    ListenerHostProviderBinding, ListenerRuntimePaths, NativeListenerStatus)",
                 "class VolumeAccess:",
+                "    markers = {}",
                 "    def discover(self): return (Path.cwd().resolve() / 'external-mount',)",
-                "    def observe_marker(self, mount_point, marker_name, *, max_bytes):",
-                "        marker = mount_point / marker_name",
-                "        if not marker.exists(): return None",
-                "        content = marker.read_bytes()",
-                "        if len(content) > max_bytes: raise ValueError('marker exceeds bound')",
-                "        return MountedMarkerSnapshot(content, str(marker.stat().st_mtime_ns))",
-                "    def publish_marker(self, mount_point, marker_name, content):",
-                "        marker = mount_point / marker_name; marker.write_bytes(content)",
-                "        return self.observe_marker("
-                "mount_point, marker_name, max_bytes=len(content))",
+                "    def observe_marker(self, mount_point):",
+                "        marker = self.markers.get(mount_point)",
+                "        if marker is None: return None",
+                "        return MountedMarkerObservation(marker, marker.route)",
+                "    def publish_marker(self, mount_point, marker):",
+                "        self.markers[mount_point] = marker",
+                "        return self.observe_marker(mount_point)",
                 "class Adapter:",
                 "    def register(self, paths, command): pass",
                 "    def status(self, paths):",
@@ -513,7 +475,6 @@ def test_installed_external_distribution_composes_without_workspace_registration
         executable=tmp_path / "gogurt",
         routes_file=tmp_path / "routes.yaml",
         actions_dir=None,
-        marker_name=".gogurt",
         interval_seconds=2,
         state_dir=tmp_path,
         product_version="1.0",

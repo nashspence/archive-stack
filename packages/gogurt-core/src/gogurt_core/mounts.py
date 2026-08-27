@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import math
+import re
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -13,25 +14,55 @@ MIN_GOGURT_INTERVAL_SECONDS = 0.1
 MAX_GOGURT_INTERVAL_SECONDS = 3600.0
 GOGURT_MOUNTED_VOLUME_PROVIDER_ENTRY_POINT_GROUP = "gogurt.mounted-volume-providers"
 GOGURT_MOUNTED_VOLUME_PROVIDER_BINDING_FORMAT = "gogurt-mounted-volume-provider-binding/v1"
+GOGURT_ROUTE_MARKER_FORMAT = "gogurt-route-marker/v1"
+GOGURT_ROUTE_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
 MAX_GOGURT_MARKER_IDENTITY_CHARS = 1024
+_GOGURT_ROUTE_RE = re.compile(GOGURT_ROUTE_PATTERN)
 type MountDiscovery = Callable[[], Sequence[Path]]
 
 
 @dataclass(frozen=True, slots=True)
-class MountedMarkerSnapshot:
-    """Raw marker bytes and a provider-owned restart-stable observation identity.
+class GogurtRouteMarker:
+    """Portable logical route marker owned by Gogurt core."""
+
+    route: str
+    format: str = GOGURT_ROUTE_MARKER_FORMAT
+
+    def __post_init__(self) -> None:
+        if self.format != GOGURT_ROUTE_MARKER_FORMAT:
+            raise ValueError("unsupported Gogurt route marker format")
+        if not isinstance(self.route, str) or _GOGURT_ROUTE_RE.fullmatch(self.route) is None:
+            raise ValueError(f"invalid Gogurt route: {self.route!r}")
+
+    def as_dict(self) -> dict[str, str]:
+        return {"format": self.format, "route": self.route}
+
+    @classmethod
+    def from_mapping(cls, value: object) -> GogurtRouteMarker:
+        if not isinstance(value, Mapping) or set(value) != {"format", "route"}:
+            raise ValueError("Gogurt route marker fields are invalid")
+        route = value["route"]
+        format_value = value["format"]
+        if not isinstance(route, str) or not isinstance(format_value, str):
+            raise ValueError("Gogurt route marker fields are invalid")
+        return cls(route=route, format=format_value)
+
+
+@dataclass(frozen=True, slots=True)
+class MountedMarkerObservation:
+    """Logical marker and a provider-owned restart-stable observation identity.
 
     An unchanged marker at the same mounted root must retain this opaque identity
     across provider and process restarts. Any change relevant to Gogurt's
     unchanged-before-dispatch check must change it.
     """
 
-    content: bytes
+    marker: GogurtRouteMarker
     identity: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.content, bytes):
-            raise TypeError("Gogurt mounted marker content must be bytes")
+        if not isinstance(self.marker, GogurtRouteMarker):
+            raise TypeError("Gogurt mounted marker document is invalid")
         if (
             not isinstance(self.identity, str)
             or not self.identity
@@ -43,11 +74,12 @@ class MountedMarkerSnapshot:
 
 @runtime_checkable
 class MountedVolumeAccess(Protocol):
-    """Complete physical custody of path-mounted marker observation and publication.
+    """Complete physical custody of mounted marker observation and publication.
 
     Gogurt treats returned roots as opaque mounted-volume identifiers except when
     rendering them into an action argv. The provider alone owns discovery, root
-    viability, safe bounded observation, and complete marker publication.
+    viability, marker location and representation, safe observation, and complete
+    publication of Gogurt's logical marker document.
     """
 
     def discover(self) -> Sequence[Path]: ...
@@ -55,20 +87,16 @@ class MountedVolumeAccess(Protocol):
     def observe_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        *,
-        max_bytes: int,
-    ) -> MountedMarkerSnapshot | None:
-        """Return one complete bounded snapshot, or ``None`` when absent."""
+    ) -> MountedMarkerObservation | None:
+        """Return one complete logical observation, or ``None`` when absent."""
         ...
 
     def publish_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        content: bytes,
-    ) -> MountedMarkerSnapshot:
-        """Publish the complete content and return its resulting snapshot."""
+        marker: GogurtRouteMarker,
+    ) -> MountedMarkerObservation:
+        """Publish the logical marker and return its resulting observation."""
         ...
 
 
@@ -82,7 +110,11 @@ class MountedVolumeProvider(MountedVolumeAccess, Protocol):
 
 @dataclass(frozen=True, slots=True)
 class MountedVolumeProviderBinding:
-    """One independently distributed mounted-volume implementation."""
+    """One exact mounted-volume implementation and representation contract.
+
+    ``provider_id`` must change when representation or relevant configuration
+    changes so a persisted listener fails closed rather than reinterpreting media.
+    """
 
     provider_id: str
     access: MountedVolumeAccess

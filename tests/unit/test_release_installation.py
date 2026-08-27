@@ -106,6 +106,8 @@ def test_installation_artifacts_are_derived_and_mutually_consistent(
     assert reference.is_file()
     reference_text = reference.read_text(encoding="utf-8")
     assert "gogurt listener status --listener-host-provider <name> --json" in reference_text
+    assert "Gogurt core owns the logical `gogurt-route-marker/v1` document" in reference_text
+    assert "the mounted-volume provider owns its location" in reference_text
     assert "No provider is selected implicitly" in reference_text
     for component in manifest["components"]:
         lock = tomllib.loads((tmp_path / component["lock"]["path"]).read_text(encoding="utf-8"))

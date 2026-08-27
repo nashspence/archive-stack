@@ -546,7 +546,29 @@ def _run_gogurt(
     shutil.copytree(source_root / "qualification/fixtures/gogurt", fixtures)
     mount = scratch / "gogurt-mount"
     mount.mkdir()
-    (mount / ".gogurt").write_text("example-camera-card\n", encoding="utf-8")
+    publication = json.loads(
+        _run(
+            [
+                str(executable),
+                "write",
+                "example-camera-card",
+                str(mount),
+                "--config",
+                str(fixtures / "gogurt-routes.yaml"),
+                "--json",
+            ],
+            cwd=scratch,
+            env=environment,
+            capture=True,
+        ).stdout
+    )
+    if publication.get("marker") != {
+        "format": "gogurt-route-marker/v1",
+        "route": "example-camera-card",
+    }:
+        raise QualificationError("installed Gogurt did not publish its logical route marker")
+    if (mount / ".gogurt").read_bytes() != b"example-camera-card\n":
+        raise QualificationError("reference Gogurt provider representation differs")
     completed = _run(
         [
             str(executable),

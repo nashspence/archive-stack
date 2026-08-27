@@ -9,7 +9,8 @@ from pathlib import Path
 from config_validation import ConfigError
 from gogurt_core.mounts import (
     GOGURT_MOUNTED_VOLUME_PROVIDER_ENTRY_POINT_GROUP,
-    MountedMarkerSnapshot,
+    GogurtRouteMarker,
+    MountedMarkerObservation,
     MountedVolumeProviderBinding,
 )
 from gogurt_core.providers import GogurtProviderKind, GogurtProviderReference
@@ -136,28 +137,24 @@ class ResolvedMountedVolumeProvider:
     def observe_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        *,
-        max_bytes: int,
-    ) -> MountedMarkerSnapshot | None:
-        value = self.binding.access.observe_marker(
-            mount_point,
-            marker_name,
-            max_bytes=max_bytes,
-        )
-        if value is not None and not isinstance(value, MountedMarkerSnapshot):
-            raise ConfigError("Gogurt mounted-volume provider returned an invalid marker snapshot")
+    ) -> MountedMarkerObservation | None:
+        value = self.binding.access.observe_marker(mount_point)
+        if value is not None and not isinstance(value, MountedMarkerObservation):
+            raise ConfigError(
+                "Gogurt mounted-volume provider returned an invalid marker observation"
+            )
         return value
 
     def publish_marker(
         self,
         mount_point: Path,
-        marker_name: str,
-        content: bytes,
-    ) -> MountedMarkerSnapshot:
-        value = self.binding.access.publish_marker(mount_point, marker_name, content)
-        if not isinstance(value, MountedMarkerSnapshot):
-            raise ConfigError("Gogurt mounted-volume provider returned an invalid marker snapshot")
+        marker: GogurtRouteMarker,
+    ) -> MountedMarkerObservation:
+        value = self.binding.access.publish_marker(mount_point, marker)
+        if not isinstance(value, MountedMarkerObservation):
+            raise ConfigError(
+                "Gogurt mounted-volume provider returned an invalid marker observation"
+            )
         return value
 
     def as_dict(self) -> dict[str, object]:
