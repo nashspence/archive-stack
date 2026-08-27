@@ -31,7 +31,7 @@ from gogurt_core.core import (
     validate_gogurt_action_executables,
     validate_gogurt_marker_name,
 )
-from gogurt_core.mounts import validate_gogurt_interval
+from gogurt_core.mounts import MountedVolumeProvider, validate_gogurt_interval
 from gogurt_core.providers import GogurtProviderReference
 
 from gogurt_listener_runtime.filesystem import (
@@ -121,7 +121,7 @@ class ListenerConfig:
     interval_seconds: float
     state_dir: Path
     product_version: str
-    mount_provider: GogurtProviderReference
+    mounted_volume_provider: GogurtProviderReference
     listener_host_provider: GogurtProviderReference
     autorun: bool = True
 
@@ -132,8 +132,8 @@ class ListenerConfig:
             "product_version",
             _validated_product_version(self.product_version),
         )
-        if self.mount_provider.kind != "mount":
-            raise ListenerError("Gogurt listener config requires a mount provider")
+        if self.mounted_volume_provider.kind != "mounted-volume":
+            raise ListenerError("Gogurt listener config requires a mounted-volume provider")
         if self.listener_host_provider.kind != "listener-host":
             raise ListenerError("Gogurt listener config requires a listener-host provider")
 
@@ -147,7 +147,7 @@ class ListenerConfig:
             "marker_name": self.marker_name,
             "interval_seconds": self.interval_seconds,
             "state_dir": str(self.state_dir),
-            "mount_provider": self.mount_provider.as_dict(),
+            "mounted_volume_provider": self.mounted_volume_provider.as_dict(),
             "listener_host_provider": self.listener_host_provider.as_dict(),
             "autorun": self.autorun,
         }
@@ -183,7 +183,7 @@ class ListenerConfig:
             "marker_name",
             "interval_seconds",
             "state_dir",
-            "mount_provider",
+            "mounted_volume_provider",
             "listener_host_provider",
             "autorun",
         }
@@ -219,7 +219,9 @@ class ListenerConfig:
         except ConfigError as exc:
             raise ListenerError("installed Gogurt listener marker name is invalid") from exc
         try:
-            mount_provider = GogurtProviderReference.from_mapping(raw["mount_provider"])
+            mounted_volume_provider = GogurtProviderReference.from_mapping(
+                raw["mounted_volume_provider"]
+            )
             listener_host_provider = GogurtProviderReference.from_mapping(
                 raw["listener_host_provider"]
             )
@@ -231,7 +233,7 @@ class ListenerConfig:
                 interval_seconds=interval,
                 state_dir=state_dir,
                 product_version=expected_product_version,
-                mount_provider=mount_provider,
+                mounted_volume_provider=mounted_volume_provider,
                 listener_host_provider=listener_host_provider,
             )
         except (TypeError, ValueError) as exc:
@@ -702,14 +704,18 @@ class ListenerRuntime:
         config: ListenerConfig,
         paths: ListenerRuntimePaths,
         *,
-        discover: Callable[[], Sequence[Path]],
+        mounted_volume_provider: MountedVolumeProvider,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         logger: logging.Logger | None = None,
     ) -> None:
         self.config = config
         self.paths = paths
-        self.discover = discover
+        if mounted_volume_provider.reference != config.mounted_volume_provider:
+            raise ListenerError(
+                "Gogurt mounted-volume provider differs from persisted listener identity"
+            )
+        self.mounted_volume_provider = mounted_volume_provider
         self.clock = clock
         self.sleep = sleep
         self.logger = logger or logging.getLogger("gogurt.listener")
@@ -788,6 +794,7 @@ class ListenerRuntime:
             return plan_gogurt_action(
                 self.config.routes_file,
                 mount_point,
+                provider=self.mounted_volume_provider,
                 actions_dir=self.config.actions_dir,
                 marker_name=self.config.marker_name,
             )
@@ -901,7 +908,10 @@ class ListenerRuntime:
                 if self.stop_event.is_set():
                     error = "listener stopped before the action process acquired custody"
                 else:
-                    command = revalidate_gogurt_action(plan)
+                    command = revalidate_gogurt_action(
+                        plan,
+                        provider=self.mounted_volume_provider,
+                    )
                     process = subprocess.Popen(
                         command,
                         stdin=subprocess.DEVNULL,
@@ -976,7 +986,7 @@ class ListenerRuntime:
         with self._health_lock:
             self._configuration_diagnostic = None
         try:
-            mount_points = self.discover()
+            mount_points = self.mounted_volume_provider.discover()
         except (OSError, ValueError) as exc:
             diagnostic = _safe_diagnostic("mount discovery", exc)
             with self._health_lock:
@@ -1068,7 +1078,7 @@ def _fatal_signal_log(paths: ListenerRuntimePaths) -> Iterator[None]:
 def run_listener(
     config_file: Path,
     *,
-    discover: Callable[[], Sequence[Path]],
+    mounted_volume_provider: MountedVolumeProvider,
     product_version: str,
 ) -> None:
     state_dir = config_file.parent
@@ -1094,7 +1104,12 @@ def run_listener(
     )
     _require_matching_state(config, paths)
     _secure_listener_state(paths)
-    runtime = ListenerRuntime(config, paths, discover=discover, logger=_logger(paths))
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=mounted_volume_provider,
+        logger=_logger(paths),
+    )
 
     def stop(_signum: int, _frame: object) -> None:
         runtime.request_stop()
@@ -1339,7 +1354,9 @@ def listener_status(
         "config_file": str(resolved_paths.config_file),
         "state_dir": str(resolved_paths.state_dir),
         "executable": str(config.executable) if config is not None else None,
-        "mount_provider": config.mount_provider.as_dict() if config is not None else None,
+        "mounted_volume_provider": config.mounted_volume_provider.as_dict()
+        if config is not None
+        else None,
         "listener_host_provider": (
             config.listener_host_provider.as_dict() if config is not None else None
         ),
@@ -1478,7 +1495,7 @@ def install_listener(
     paths: ListenerRuntimePaths,
     adapter: ListenerAdapter,
     product_version: str,
-    mount_provider: GogurtProviderReference,
+    mounted_volume_provider: GogurtProviderReference,
     listener_host_provider: GogurtProviderReference,
     wait_for_health: bool = True,
 ) -> dict[str, object]:
@@ -1501,7 +1518,7 @@ def install_listener(
         interval_seconds=interval,
         state_dir=resolved_paths.state_dir,
         product_version=expected_product_version,
-        mount_provider=mount_provider,
+        mounted_volume_provider=mounted_volume_provider,
         listener_host_provider=listener_host_provider,
     )
     _secure_listener_state(resolved_paths)

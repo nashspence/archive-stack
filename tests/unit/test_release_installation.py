@@ -158,8 +158,20 @@ def test_installation_artifacts_are_derived_and_mutually_consistent(
         assert gogurt_closure.isdisjoint(all_gogurt_native)
         assert manifest["qualification"]["gogurt_reference"]["platforms"][platform] == {
             "distribution": gogurt_native,
-            "mount_provider": gogurt_native,
+            "mounted_volume_provider": gogurt_native,
             "listener_host_provider": gogurt_native,
+            "first_party_closure": [
+                {"name": name, "version": "0.1.0"}
+                for name in sorted(
+                    {
+                        "config-validation",
+                        "gogurt-core",
+                        gogurt_native,
+                        "gogurt-listener-runtime",
+                        "gogurt-path-volume-support",
+                    }
+                )
+            ],
         }
 
         client_closure = {

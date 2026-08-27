@@ -19,6 +19,7 @@ MYPY_SOURCES = \
 	companions/stove0/client/src \
 	packages/gogurt-core/src \
 	packages/gogurt-listener-runtime/src \
+	packages/gogurt-path-volume-support/src \
 	reference/gogurt/linux/src \
 	reference/gogurt/macos/src \
 	reference/gogurt/windows/src \

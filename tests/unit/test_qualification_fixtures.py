@@ -8,6 +8,8 @@ from gogurt_core.core import execute_gogurt_action, load_gogurt_actions, plan_go
 from riverhog_ftp_adapter.config import load_config as load_adapter_config
 from stove0_core import RecipeCatalog
 
+from tests.gogurt_provider import path_mounted_volume_provider
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 QUALIFICATION_INPUTS = {
     REPO_ROOT / "qualification/fixtures/gogurt/gogurt-routes.yaml",
@@ -36,8 +38,13 @@ def test_every_checked_qualification_input_runs_through_its_real_consumer(
     mounted_device = tmp_path / "mounted-device"
     mounted_device.mkdir()
     (mounted_device / ".gogurt").write_text("example-camera-card\n", encoding="utf-8")
-    action_plan = plan_gogurt_action(gogurt_root / "gogurt-routes.yaml", mounted_device)
-    completed = execute_gogurt_action(action_plan, capture_output=True)
+    provider = path_mounted_volume_provider(lambda: [mounted_device])
+    action_plan = plan_gogurt_action(
+        gogurt_root / "gogurt-routes.yaml",
+        mounted_device,
+        provider=provider,
+    )
+    completed = execute_gogurt_action(action_plan, provider=provider, capture_output=True)
     assert completed.returncode == 0
     assert "archive example-camera" in completed.stdout
 

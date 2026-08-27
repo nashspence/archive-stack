@@ -15,6 +15,7 @@ members = [
 [tool.uv.sources]
 gogurt-core = { workspace = true }
 gogurt-listener-runtime = { workspace = true }
+gogurt-path-volume-support = { workspace = true }
 gogurt-linux = { workspace = true }
 gogurt-macos = { workspace = true }
 gogurt-windows = { workspace = true }

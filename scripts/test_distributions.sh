@@ -246,7 +246,7 @@ smoke_workspace_distribution \
 smoke_workspace_distribution \
   gogurt \
   'gogurt-*.whl' \
-  'import importlib.metadata as m; import gogurt.cli; import gogurt_listener_runtime.listener; m.version("gogurt"); names = {d.metadata["Name"].lower() for d in m.distributions()}; assert "gogurt-listener-runtime" in names; native = {"gogurt-linux", "gogurt-macos", "gogurt-windows"}; assert names.isdisjoint(native)' \
+  'import importlib.metadata as m; import gogurt.cli; import gogurt_listener_runtime.listener; m.version("gogurt"); names = {d.metadata["Name"].lower() for d in m.distributions()}; assert "gogurt-listener-runtime" in names; providers = {"gogurt-linux", "gogurt-macos", "gogurt-path-volume-support", "gogurt-windows"}; assert names.isdisjoint(providers)' \
   gogurt
 linux_gogurt_wheel="$(single_wheel 'gogurt_linux-*.whl')"
 mapfile -t linux_gogurt_wheels < <(
@@ -257,7 +257,7 @@ run_uv pip install \
   --python "${SCRATCH}/gogurt/bin/python" \
   --find-links "${DIST_DIR}" \
   "${linux_gogurt_wheels[@]}"
-"${SCRATCH}/gogurt/bin/gogurt" provider mount show gogurt-linux --json >/dev/null
+"${SCRATCH}/gogurt/bin/gogurt" provider mounted-volume show gogurt-linux --json >/dev/null
 "${SCRATCH}/gogurt/bin/gogurt" provider listener-host show gogurt-linux --json >/dev/null
 smoke_workspace_distribution \
   mango-fish \

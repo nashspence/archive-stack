@@ -16,7 +16,7 @@ from hashlib import sha256
 from pathlib import Path, PureWindowsPath
 from typing import Any, cast
 
-from gogurt_core.mounts import MountProviderBinding
+from gogurt_core.mounts import MountedVolumeProviderBinding
 from gogurt_listener_runtime.filesystem import PRIVATE_FILE_MODE, atomic_write, stage_bytes
 from gogurt_listener_runtime.platform import (
     ListenerAdapter,
@@ -25,6 +25,7 @@ from gogurt_listener_runtime.platform import (
     ListenerRuntimePaths,
     NativeListenerStatus,
 )
+from gogurt_path_volume_support import PathMountedVolumeAccess
 
 WINDOWS_TASK_NAME_PREFIX = "Riverhog.Gogurt"
 WINDOWS_TASK_STATE_DISABLED = 1
@@ -302,9 +303,9 @@ def discover_mount_points() -> tuple[Path, ...]:
     return windows_mount_points()
 
 
-MOUNT_PROVIDER_BINDING = MountProviderBinding(
-    provider_id="gogurt-windows-mount-provider/v1",
-    discover=discover_mount_points,
+MOUNTED_VOLUME_PROVIDER_BINDING = MountedVolumeProviderBinding(
+    provider_id="gogurt-windows-mounted-volume-provider/v1",
+    access=PathMountedVolumeAccess(discover_mount_points),
 )
 LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(
     provider_id="gogurt-windows-listener-host-provider/v1",
@@ -316,7 +317,7 @@ LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(
 
 __all__ = [
     "LISTENER_HOST_PROVIDER_BINDING",
-    "MOUNT_PROVIDER_BINDING",
+    "MOUNTED_VOLUME_PROVIDER_BINDING",
     "TaskSchedulerUserAdapter",
     "WINDOWS_TASK_RESTART_COUNT",
     "WINDOWS_TASK_RESTART_INTERVAL",

@@ -9,7 +9,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from functools import partial
 from pathlib import Path
@@ -47,11 +47,13 @@ from gogurt_listener_runtime.platform import (
     NativeListenerStatus,
 )
 
+from tests.gogurt_provider import FixtureMountedVolumeProvider, path_mounted_volume_provider
+
 TEST_PRODUCT_VERSION = importlib.metadata.version("gogurt")
-TEST_MOUNT_PROVIDER = GogurtProviderReference(
-    kind="mount",
+TEST_MOUNTED_VOLUME_PROVIDER = GogurtProviderReference(
+    kind="mounted-volume",
     name="test-mount",
-    provider_id="test-mount-provider/v1",
+    provider_id="test-mounted-volume-provider/v1",
 )
 TEST_LISTENER_HOST_PROVIDER = GogurtProviderReference(
     kind="listener-host",
@@ -61,12 +63,22 @@ TEST_LISTENER_HOST_PROVIDER = GogurtProviderReference(
 install_listener = partial(
     _install_listener,
     product_version=TEST_PRODUCT_VERSION,
-    mount_provider=TEST_MOUNT_PROVIDER,
+    mounted_volume_provider=TEST_MOUNTED_VOLUME_PROVIDER,
     listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
 )
 listener_status = partial(_listener_status, product_version=TEST_PRODUCT_VERSION)
 stop_listener = partial(_stop_listener, product_version=TEST_PRODUCT_VERSION)
 uninstall_listener = partial(_uninstall_listener, product_version=TEST_PRODUCT_VERSION)
+
+
+def _mounted_volume_provider(
+    discover: Callable[[], Sequence[Path]] = tuple,
+) -> FixtureMountedVolumeProvider:
+    return path_mounted_volume_provider(
+        discover,
+        name=TEST_MOUNTED_VOLUME_PROVIDER.name,
+        provider_id=TEST_MOUNTED_VOLUME_PROVIDER.provider_id,
+    )
 
 
 def _native_listener_adapter() -> ListenerAdapter:
@@ -129,7 +141,7 @@ def _fixture(tmp_path: Path) -> tuple[ListenerConfig, ListenerRuntimePaths, Path
         interval_seconds=0.1,
         state_dir=paths.state_dir,
         product_version=TEST_PRODUCT_VERSION,
-        mount_provider=TEST_MOUNT_PROVIDER,
+        mounted_volume_provider=TEST_MOUNTED_VOLUME_PROVIDER,
         listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
     return config, paths, mount, counter
@@ -225,7 +237,11 @@ def test_listener_config_json_and_fields_are_strict(tmp_path: Path) -> None:
 
 def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Path) -> None:
     config, paths, mount, counter = _fixture(tmp_path)
-    first = ListenerRuntime(config, paths, discover=lambda: [mount])
+    first = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+    )
     thread = threading.Thread(target=first.run)
     thread.start()
     try:
@@ -245,7 +261,11 @@ def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Pat
         absence_observed.set()
         return []
 
-    second = ListenerRuntime(config, paths, discover=discover)
+    second = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(discover),
+    )
     thread = threading.Thread(target=second.run)
     thread.start()
     try:
@@ -265,38 +285,71 @@ def test_listener_runs_once_across_restart_and_again_after_remount(tmp_path: Pat
 
 def test_same_route_marker_write_does_not_create_a_second_dispatch(tmp_path: Path) -> None:
     config, paths, mount, _counter = _fixture(tmp_path)
+    provider = _mounted_volume_provider(lambda: [mount])
     store = ListenerStore(paths.database_file)
     store.create()
     [dispatch_id] = store.observe(
         [mount],
-        lambda point: core_plan_gogurt_action(config.routes_file, point),
+        lambda point: core_plan_gogurt_action(
+            config.routes_file,
+            point,
+            provider=provider,
+        ),
         now=1,
     )
     assert store.start_dispatch(dispatch_id, now=2) is not None
     assert store.finish_dispatch(dispatch_id, return_code=0, error=None, now=3) == "completed"
 
     marker = mount / config.marker_name
-    marker_identity = core_plan_gogurt_action(config.routes_file, mount)["marker_identity"]
-    assert write_gogurt_marker(config.routes_file, "camera", mount) == marker
+    marker_identity = core_plan_gogurt_action(
+        config.routes_file,
+        mount,
+        provider=provider,
+    )["marker_identity"]
+    assert (
+        write_gogurt_marker(
+            config.routes_file,
+            "camera",
+            mount,
+            provider=provider,
+        )
+        == marker
+    )
     queued = store.observe(
         [mount],
-        lambda point: core_plan_gogurt_action(config.routes_file, point),
+        lambda point: core_plan_gogurt_action(
+            config.routes_file,
+            point,
+            provider=provider,
+        ),
         now=4,
     )
 
     assert queued == []
-    assert core_plan_gogurt_action(config.routes_file, mount)["marker_identity"] == marker_identity
+    assert (
+        core_plan_gogurt_action(
+            config.routes_file,
+            mount,
+            provider=provider,
+        )["marker_identity"]
+        == marker_identity
+    )
     with closing(sqlite3.connect(paths.database_file)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (1,)
 
 
 def test_retry_cannot_start_before_its_durable_eligibility_time(tmp_path: Path) -> None:
     config, paths, mount, _counter = _fixture(tmp_path)
+    provider = _mounted_volume_provider(lambda: [mount])
     store = ListenerStore(paths.database_file)
     store.create()
     [dispatch_id] = store.observe(
         [mount],
-        lambda point: core_plan_gogurt_action(config.routes_file, point),
+        lambda point: core_plan_gogurt_action(
+            config.routes_file,
+            point,
+            provider=provider,
+        ),
         now=1,
     )
     assert store.start_dispatch(dispatch_id, now=2) is not None
@@ -312,7 +365,11 @@ def test_discovery_failure_preserves_mount_generation_without_replay(
     dispatch_state: str,
 ) -> None:
     config, paths, mount, _counter = _fixture(tmp_path)
-    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+    )
     runtime.store.create()
     [dispatch_id] = runtime.store.observe([mount], runtime._planner, now=1)
     assert runtime.store.start_dispatch(dispatch_id, now=2) is not None
@@ -330,7 +387,7 @@ def test_discovery_failure_preserves_mount_generation_without_replay(
     def fail_discovery() -> Sequence[Path]:
         raise OSError("temporary discovery failure")
 
-    runtime.discover = fail_discovery
+    runtime.mounted_volume_provider = _mounted_volume_provider(fail_discovery)
     runtime.run_once()
     with closing(sqlite3.connect(paths.database_file)) as connection:
         assert connection.execute("SELECT present, generation FROM observed_mounts").fetchone() == (
@@ -339,7 +396,7 @@ def test_discovery_failure_preserves_mount_generation_without_replay(
         )
         assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (1,)
 
-    runtime.discover = lambda: [mount]
+    runtime.mounted_volume_provider = _mounted_volume_provider(lambda: [mount])
     runtime.run_once()
     with closing(sqlite3.connect(paths.database_file)) as connection:
         assert connection.execute("SELECT present, generation FROM observed_mounts").fetchone() == (
@@ -349,9 +406,9 @@ def test_discovery_failure_preserves_mount_generation_without_replay(
         assert connection.execute("SELECT COUNT(*) FROM dispatches").fetchone() == (1,)
     assert runtime.dispatch_queue.empty()
 
-    runtime.discover = lambda: []
+    runtime.mounted_volume_provider = _mounted_volume_provider()
     runtime.run_once()
-    runtime.discover = lambda: [mount]
+    runtime.mounted_volume_provider = _mounted_volume_provider(lambda: [mount])
     runtime.run_once()
     with closing(sqlite3.connect(paths.database_file)) as connection:
         assert connection.execute("SELECT present, generation FROM observed_mounts").fetchone() == (
@@ -367,7 +424,11 @@ def test_per_mount_access_failure_preserves_generation_and_completed_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, paths, mount, _counter = _fixture(tmp_path)
-    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+    )
     runtime.store.create()
     [dispatch_id] = runtime.store.observe([mount], runtime._planner, now=1)
     assert runtime.store.start_dispatch(dispatch_id, now=2) is not None
@@ -397,7 +458,11 @@ def test_unexpected_worker_failure_terminates_with_failed_runtime_health(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, paths, _mount, _counter = _fixture(tmp_path)
-    runtime = ListenerRuntime(config, paths, discover=lambda: [])
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(),
+    )
 
     def fail_worker() -> None:
         raise sqlite3.OperationalError("worker state failed")
@@ -439,7 +504,7 @@ def test_listener_process_logs_an_unhandled_runtime_failure(
     with pytest.raises(ListenerError, match="qualification fatal fixture"):
         listener_module.run_listener(
             paths.config_file,
-            discover=lambda: [],
+            mounted_volume_provider=_mounted_volume_provider(),
             product_version=TEST_PRODUCT_VERSION,
         )
 
@@ -497,7 +562,11 @@ def test_controlled_stop_does_not_replay_interrupted_custody(tmp_path: Path) -> 
         "time.sleep(30)\n",
         encoding="utf-8",
     )
-    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+    )
     thread = threading.Thread(target=runtime.run)
     thread.start()
     try:
@@ -508,7 +577,11 @@ def test_controlled_stop_does_not_replay_interrupted_custody(tmp_path: Path) -> 
     assert not thread.is_alive()
     assert ListenerStore(paths.database_file).summary()["counts"] == {"uncertain": 1}
 
-    restarted = ListenerRuntime(config, paths, discover=lambda: [mount])
+    restarted = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+    )
     thread = threading.Thread(target=restarted.run)
     thread.start()
     try:
@@ -523,7 +596,11 @@ def test_process_signal_can_stop_while_heartbeat_samples_action_custody(
     tmp_path: Path,
 ) -> None:
     config, paths, _mount, _counter = _fixture(tmp_path)
-    runtime = ListenerRuntime(config, paths, discover=lambda: [])
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(),
+    )
     settled = threading.Event()
 
     def interrupt_heartbeat_sample() -> None:
@@ -547,7 +624,11 @@ def test_official_heartbeat_observation_does_not_own_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config, paths, _mount, _counter = _fixture(tmp_path)
-    runtime = ListenerRuntime(config, paths, discover=lambda: [])
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(),
+    )
     runtime.store.create()
     runtime._heartbeat()
     real_atomic_write = listener_module.atomic_write
@@ -595,7 +676,11 @@ def test_shutdown_force_settles_an_action_that_ignores_termination(
     )
     monkeypatch.setattr(listener_module, "LISTENER_ACTION_TERMINATE_SECONDS", 0.1)
     monkeypatch.setattr(listener_module, "LISTENER_ACTION_KILL_SECONDS", 0.5)
-    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+    )
     failures: list[BaseException] = []
 
     def run() -> None:
@@ -635,7 +720,7 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
         interval_seconds=3600,
         state_dir=config.state_dir,
         product_version=TEST_PRODUCT_VERSION,
-        mount_provider=TEST_MOUNT_PROVIDER,
+        mounted_volume_provider=TEST_MOUNTED_VOLUME_PROVIDER,
         listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
     action = Path(load_gogurt_actions(config.routes_file)[0].command[1])
@@ -650,7 +735,11 @@ def test_cooperative_stop_request_settles_active_custody_independently_of_poll_i
     )
     monkeypatch.setattr(listener_module, "LISTENER_ACTION_TERMINATE_SECONDS", 0.1)
     monkeypatch.setattr(listener_module, "LISTENER_ACTION_KILL_SECONDS", 0.5)
-    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+    )
     thread = threading.Thread(target=runtime.run)
     thread.start()
     action_pid: int | None = None
@@ -715,7 +804,11 @@ def test_listener_state_is_private_from_creation_and_normalizes_existing_files(
         ListenerStore(paths.database_file).create()
         with ListenerLock(paths.lock_file):
             pass
-        runtime = ListenerRuntime(config, paths, discover=lambda: [])
+        runtime = ListenerRuntime(
+            config,
+            paths,
+            mounted_volume_provider=_mounted_volume_provider(),
+        )
         runtime.run_once()
         logger = _logger(paths)
         logger.info("private log proof")
@@ -958,7 +1051,11 @@ def test_exact_healthy_install_is_idempotent_without_native_process_churn(
         wait_for_health=False,
     )
     persisted = ListenerConfig.read(paths.config_file, product_version=TEST_PRODUCT_VERSION)
-    runtime = ListenerRuntime(persisted, paths, discover=lambda: [])
+    runtime = ListenerRuntime(
+        persisted,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(),
+    )
     runtime.store.create()
     runtime._heartbeat()
     existing_content = paths.config_file.read_bytes()
@@ -1073,11 +1170,15 @@ def test_impossible_mount_executable_is_rejected_before_and_after_registration(
         interval_seconds=0.1,
         state_dir=paths.state_dir,
         product_version=TEST_PRODUCT_VERSION,
-        mount_provider=TEST_MOUNT_PROVIDER,
+        mounted_volume_provider=TEST_MOUNTED_VOLUME_PROVIDER,
         listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
     persisted.write(paths.config_file)
-    runtime = ListenerRuntime(persisted, paths, discover=lambda: [])
+    runtime = ListenerRuntime(
+        persisted,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(),
+    )
     runtime.store.create()
     runtime.run_once()
     heartbeat = _heartbeat_payload(paths)
@@ -1112,11 +1213,15 @@ def test_missing_installed_static_action_reports_failed_health_without_dispatch(
         interval_seconds=config.interval_seconds,
         state_dir=config.state_dir,
         product_version=TEST_PRODUCT_VERSION,
-        mount_provider=TEST_MOUNT_PROVIDER,
+        mounted_volume_provider=TEST_MOUNTED_VOLUME_PROVIDER,
         listener_host_provider=TEST_LISTENER_HOST_PROVIDER,
     )
     runtime_config.write(paths.config_file)
-    runtime = ListenerRuntime(runtime_config, paths, discover=lambda: [mount])
+    runtime = ListenerRuntime(
+        runtime_config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+    )
     runtime.store.create()
 
     action.unlink()
@@ -1578,7 +1683,11 @@ def test_global_route_failure_reports_failed_then_recovers_and_dispatches(
     adapter = FakeAdapter()
     adapter.installed = True
     adapter.running = True
-    runtime = ListenerRuntime(config, paths, discover=lambda: [mount])
+    runtime = ListenerRuntime(
+        config,
+        paths,
+        mounted_volume_provider=_mounted_volume_provider(lambda: [mount]),
+    )
     thread = threading.Thread(target=runtime.run)
     thread.start()
     try:
@@ -1616,6 +1725,7 @@ def test_invalid_and_unavailable_mounts_are_isolated_from_valid_dispatch(
         config_file: str | os.PathLike[str],
         mount_point: str | os.PathLike[str],
         *,
+        provider: FixtureMountedVolumeProvider,
         actions_dir: str | os.PathLike[str] | None = None,
         marker_name: str = ".gogurt",
     ) -> dict[str, object]:
@@ -1624,6 +1734,7 @@ def test_invalid_and_unavailable_mounts_are_isolated_from_valid_dispatch(
         return original_plan(
             config_file,
             mount_point,
+            provider=provider,
             actions_dir=actions_dir,
             marker_name=marker_name,
         )
@@ -1632,7 +1743,9 @@ def test_invalid_and_unavailable_mounts_are_isolated_from_valid_dispatch(
     runtime = ListenerRuntime(
         config,
         paths,
-        discover=lambda: [invalid_mount, unavailable_mount, unmarked_mount, valid_mount],
+        mounted_volume_provider=_mounted_volume_provider(
+            lambda: [invalid_mount, unavailable_mount, unmarked_mount, valid_mount]
+        ),
     )
     thread = threading.Thread(target=runtime.run)
     thread.start()
@@ -2008,11 +2121,16 @@ def test_listener_stop_reports_settled_native_state(tmp_path: Path) -> None:
 
 def test_listener_stop_waits_for_durable_action_custody_settlement(tmp_path: Path) -> None:
     config, paths, mount, _counter = _fixture(tmp_path)
+    provider = _mounted_volume_provider(lambda: [mount])
     store = ListenerStore(paths.database_file)
     store.create()
     [dispatch_id] = store.observe(
         [mount],
-        lambda point: core_plan_gogurt_action(config.routes_file, point),
+        lambda point: core_plan_gogurt_action(
+            config.routes_file,
+            point,
+            provider=provider,
+        ),
         now=1,
     )
     assert store.start_dispatch(dispatch_id, now=2) is not None

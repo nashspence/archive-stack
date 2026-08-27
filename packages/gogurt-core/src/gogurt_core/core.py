@@ -3,19 +3,18 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from hashlib import sha256
 from os import PathLike
 from pathlib import Path
 from typing import Any
 
 from config_validation import ConfigError, load_yaml_config, validate_json_schema
 
-from gogurt_core.filesystem import PORTABLE_FILE_MODE, atomic_write
+from gogurt_core.mounts import MountedMarkerSnapshot, MountedVolumeProvider
+from gogurt_core.providers import GogurtProviderReference
 
 DEFAULT_GOGURT_MARKER_NAME = ".gogurt"
 DEFAULT_GOGURT_CONFIG_FILENAME = "gogurt-routes.yaml"
@@ -77,81 +76,59 @@ class GogurtMarker:
     identity: str
 
 
-def _marker_identity(info: os.stat_result, content: bytes) -> str:
-    payload = "\0".join(
-        (
-            str(info.st_dev),
-            str(info.st_ino),
-            str(info.st_size),
-            str(info.st_mtime_ns),
-            sha256(content).hexdigest(),
-        )
-    )
-    return sha256(payload.encode("ascii")).hexdigest()
-
-
-def read_gogurt_marker(marker: PathInput) -> GogurtMarker:
-    path = Path(marker)
-    try:
-        initial = path.lstat()
-    except FileNotFoundError:
-        raise
-    if not stat.S_ISREG(initial.st_mode) or path.is_symlink():
-        raise ConfigError(f"gogurt marker must be a regular file: {path}")
-    if initial.st_size > MAX_GOGURT_MARKER_BYTES:
-        raise ConfigError(f"gogurt marker exceeds {MAX_GOGURT_MARKER_BYTES} bytes: {path}")
-
-    flags = os.O_RDONLY
-    flags |= getattr(os, "O_BINARY", 0)
-    flags |= getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode):
-            raise ConfigError(f"gogurt marker must be a regular file: {path}")
-        if opened.st_size > MAX_GOGURT_MARKER_BYTES:
-            raise ConfigError(f"gogurt marker exceeds {MAX_GOGURT_MARKER_BYTES} bytes: {path}")
-        content = os.read(descriptor, MAX_GOGURT_MARKER_BYTES + 1)
-        final = os.fstat(descriptor)
-    finally:
-        os.close(descriptor)
+def _parse_gogurt_marker(snapshot: MountedMarkerSnapshot, marker: Path) -> GogurtMarker:
+    content = snapshot.content
     if len(content) > MAX_GOGURT_MARKER_BYTES:
-        raise ConfigError(f"gogurt marker exceeds {MAX_GOGURT_MARKER_BYTES} bytes: {path}")
-    if (
-        initial.st_dev,
-        initial.st_ino,
-        initial.st_size,
-        initial.st_mtime_ns,
-    ) != (
-        opened.st_dev,
-        opened.st_ino,
-        opened.st_size,
-        opened.st_mtime_ns,
-    ) or (
-        opened.st_dev,
-        opened.st_ino,
-        opened.st_size,
-        opened.st_mtime_ns,
-    ) != (
-        final.st_dev,
-        final.st_ino,
-        final.st_size,
-        final.st_mtime_ns,
-    ):
-        raise ConfigError(f"gogurt marker changed while it was read: {path}")
-
+        raise ConfigError(f"gogurt marker exceeds {MAX_GOGURT_MARKER_BYTES} bytes: {marker}")
     try:
         marker_text = content.decode("utf-8", errors="strict")
     except UnicodeDecodeError as exc:
-        raise ConfigError(f"gogurt marker must be strict UTF-8: {path}") from exc
+        raise ConfigError(f"gogurt marker must be strict UTF-8: {marker}") from exc
     marker_lines = marker_text.splitlines()
     if len(marker_lines) != 1 or not marker_lines[0].strip():
-        raise ConfigError(f"gogurt marker must contain one route name: {path}")
+        raise ConfigError(f"gogurt marker must contain one route name: {marker}")
     route = marker_lines[0].strip()
     if route != marker_lines[0]:
-        raise ConfigError(f"gogurt marker route may not have surrounding whitespace: {path}")
-    return GogurtMarker(route=route, identity=_marker_identity(final, content))
+        raise ConfigError(f"gogurt marker route may not have surrounding whitespace: {marker}")
+    return GogurtMarker(route=route, identity=snapshot.identity)
+
+
+def _read_gogurt_marker(
+    provider: MountedVolumeProvider,
+    mount_point: Path,
+    marker_name: str,
+) -> GogurtMarker:
+    marker = mount_point / marker_name
+    snapshot = provider.observe_marker(
+        mount_point,
+        marker_name,
+        max_bytes=MAX_GOGURT_MARKER_BYTES,
+    )
+    if snapshot is None:
+        raise FileNotFoundError(marker)
+    if not isinstance(snapshot, MountedMarkerSnapshot):
+        raise TypeError("Gogurt mounted-volume provider returned an invalid marker snapshot")
+    return _parse_gogurt_marker(snapshot, marker)
+
+
+def _provider_payload(provider: MountedVolumeProvider) -> dict[str, str]:
+    reference = provider.reference
+    if reference.kind != "mounted-volume":
+        raise ValueError("Gogurt action requires a mounted-volume provider")
+    return reference.as_dict()
+
+
+def _require_plan_provider(
+    plan: Mapping[str, object],
+    provider: MountedVolumeProvider,
+) -> None:
+    raw = plan.get("mounted_volume_provider")
+    try:
+        planned = GogurtProviderReference.from_mapping(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("gogurt action plan has no mounted-volume provider identity") from exc
+    if planned != provider.reference:
+        raise ConfigError("gogurt action plan mounted-volume provider identity changed")
 
 
 def default_gogurt_config_file(
@@ -349,23 +326,23 @@ def plan_gogurt_action(
     config_file: PathInput,
     mount_point: PathInput,
     *,
+    provider: MountedVolumeProvider,
     actions_dir: PathInput | None = None,
     marker_name: str = DEFAULT_GOGURT_MARKER_NAME,
 ) -> dict[str, object]:
     validate_gogurt_marker_name(marker_name)
     config_path = Path(config_file).expanduser().resolve()
     root = Path(mount_point).expanduser().resolve()
-    if not root.is_dir():
-        raise NotADirectoryError(root)
 
     marker = root / marker_name
     base: dict[str, object] = {
         "mount_point": str(root),
         "marker": str(marker),
         "marker_name": marker_name,
+        "mounted_volume_provider": _provider_payload(provider),
     }
     try:
-        marker_value = read_gogurt_marker(marker)
+        marker_value = _read_gogurt_marker(provider, root, marker_name)
     except FileNotFoundError:
         return {**base, "status": "unmarked"}
     action = _action_for_route(config_path, marker_value.route)
@@ -388,9 +365,10 @@ def plan_gogurt_action(
 def execute_gogurt_action(
     plan: Mapping[str, object],
     *,
+    provider: MountedVolumeProvider,
     capture_output: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    command = revalidate_gogurt_action(plan)
+    command = revalidate_gogurt_action(plan, provider=provider)
     return subprocess.run(
         command,
         check=False,
@@ -399,21 +377,36 @@ def execute_gogurt_action(
     )
 
 
-def revalidate_gogurt_action(plan: Mapping[str, object]) -> list[str]:
+def revalidate_gogurt_action(
+    plan: Mapping[str, object],
+    *,
+    provider: MountedVolumeProvider,
+) -> list[str]:
     """Return a planned argv only while its marker retains the observed identity."""
 
     if plan.get("status") != "ready":
         raise ValueError("gogurt action plan is not ready")
+    _require_plan_provider(plan, provider)
     raw_command = plan.get("command")
     if not isinstance(raw_command, list) or any(
         not isinstance(token, str) for token in raw_command
     ):
         raise ValueError("gogurt action plan has no command")
+    raw_mount = plan.get("mount_point")
+    raw_marker_name = plan.get("marker_name")
     raw_marker = plan.get("marker")
     raw_identity = plan.get("marker_identity")
-    if not isinstance(raw_marker, str) or not isinstance(raw_identity, str):
+    if (
+        not isinstance(raw_mount, str)
+        or not isinstance(raw_marker_name, str)
+        or not isinstance(raw_marker, str)
+        or not isinstance(raw_identity, str)
+    ):
         raise ValueError("gogurt action plan has no marker identity")
-    current = read_gogurt_marker(raw_marker)
+    mount_point = Path(raw_mount)
+    if mount_point / raw_marker_name != Path(raw_marker):
+        raise ValueError("gogurt action plan marker path is inconsistent")
+    current = _read_gogurt_marker(provider, mount_point, raw_marker_name)
     if current.identity != raw_identity:
         raise ConfigError(f"gogurt marker changed before action execution: {raw_marker}")
     return list(raw_command)
@@ -424,19 +417,18 @@ def plan_gogurt_marker(
     route_name: str,
     mount_point: PathInput,
     *,
+    provider: MountedVolumeProvider,
     marker_name: str = DEFAULT_GOGURT_MARKER_NAME,
     force: bool = False,
 ) -> dict[str, object]:
     validate_gogurt_marker_name(marker_name)
     marker_route = route_for_gogurt_marker(config_file, route_name)
     root = Path(mount_point).expanduser().resolve()
-    if not root.is_dir():
-        raise NotADirectoryError(root)
 
     marker = root / marker_name
     text = f"{marker_route}\n"
     try:
-        current = read_gogurt_marker(marker)
+        current = _read_gogurt_marker(provider, root, marker_name)
     except FileNotFoundError:
         current = None
     if current is not None and current.route != marker_route and not force:
@@ -454,6 +446,7 @@ def plan_gogurt_marker(
         "mount_point": str(root),
         "marker": str(marker),
         "marker_name": marker_name,
+        "mounted_volume_provider": _provider_payload(provider),
         "content": text,
         "force": force,
         "exists": current is not None,
@@ -465,6 +458,7 @@ def write_gogurt_marker(
     route_name: str,
     mount_point: PathInput,
     *,
+    provider: MountedVolumeProvider,
     marker_name: str = DEFAULT_GOGURT_MARKER_NAME,
     force: bool = False,
 ) -> Path:
@@ -472,16 +466,25 @@ def write_gogurt_marker(
         config_file,
         route_name,
         mount_point,
+        provider=provider,
         marker_name=marker_name,
         force=force,
     )
     marker = Path(str(plan["marker"]))
     if plan["status"] == "would_keep":
         return marker
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(
-        marker,
-        str(plan["content"]).encode("utf-8"),
-        mode=PORTABLE_FILE_MODE,
+    _require_plan_provider(plan, provider)
+    content = str(plan["content"]).encode("utf-8")
+    snapshot = provider.publish_marker(
+        Path(str(plan["mount_point"])),
+        str(plan["marker_name"]),
+        content,
     )
+    if not isinstance(snapshot, MountedMarkerSnapshot):
+        raise TypeError("Gogurt mounted-volume provider returned an invalid marker snapshot")
+    if snapshot.content != content:
+        raise ConfigError(f"gogurt provider did not publish the requested marker: {marker}")
+    published = _parse_gogurt_marker(snapshot, marker)
+    if published.route != plan["route"]:
+        raise ConfigError(f"gogurt provider published an invalid marker route: {marker}")
     return marker

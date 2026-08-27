@@ -17,6 +17,7 @@ members = [
     "gogurt-linux",
     "gogurt-listener-runtime",
     "gogurt-macos",
+    "gogurt-path-volume-support",
     "gogurt-windows",
     "http-api-contracts",
     "lifecycle-events",
@@ -584,12 +585,14 @@ source = { editable = "reference/gogurt/linux" }
 dependencies = [
     { name = "gogurt-core" },
     { name = "gogurt-listener-runtime" },
+    { name = "gogurt-path-volume-support" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "gogurt-core", editable = "packages/gogurt-core" },
     { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
+    { name = "gogurt-path-volume-support", editable = "packages/gogurt-path-volume-support" },
 ]
 
 [[package]]
@@ -614,12 +617,29 @@ source = { editable = "reference/gogurt/macos" }
 dependencies = [
     { name = "gogurt-core" },
     { name = "gogurt-listener-runtime" },
+    { name = "gogurt-path-volume-support" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "gogurt-core", editable = "packages/gogurt-core" },
     { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
+    { name = "gogurt-path-volume-support", editable = "packages/gogurt-path-volume-support" },
+]
+
+[[package]]
+name = "gogurt-path-volume-support"
+version = "0.1.0"
+source = { editable = "packages/gogurt-path-volume-support" }
+dependencies = [
+    { name = "config-validation" },
+    { name = "gogurt-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "config-validation", editable = "packages/config-validation" },
+    { name = "gogurt-core", editable = "packages/gogurt-core" },
 ]
 
 [[package]]
@@ -629,12 +649,14 @@ source = { editable = "reference/gogurt/windows" }
 dependencies = [
     { name = "gogurt-core" },
     { name = "gogurt-listener-runtime" },
+    { name = "gogurt-path-volume-support" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "gogurt-core", editable = "packages/gogurt-core" },
     { name = "gogurt-listener-runtime", editable = "packages/gogurt-listener-runtime" },
+    { name = "gogurt-path-volume-support", editable = "packages/gogurt-path-volume-support" },
 ]
 
 [[package]]
