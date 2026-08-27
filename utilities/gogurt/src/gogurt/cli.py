@@ -39,29 +39,29 @@ from riverhog_cli_support.output import json_text
 
 from gogurt.providers import (
     ResolvedListenerHostProvider,
-    ResolvedMountProvider,
+    ResolvedMountedVolumeProvider,
     list_listener_host_providers,
-    list_mount_providers,
+    list_mounted_volume_providers,
     resolve_listener_host_provider,
-    resolve_mount_provider,
+    resolve_mounted_volume_provider,
 )
 
 app = typer.Typer(help="Portable mounted-volume marker actions.")
 listener_app = typer.Typer(help="Install and manage the per-user Gogurt listener.")
 provider_app = typer.Typer(help="Inspect explicitly composable host providers.")
-mount_provider_app = typer.Typer(help="Inspect mount-discovery providers.")
+mounted_volume_provider_app = typer.Typer(help="Inspect mounted-volume providers.")
 listener_host_provider_app = typer.Typer(help="Inspect listener-host providers.")
 app.add_typer(listener_app, name="listener")
 app.add_typer(provider_app, name="provider")
-provider_app.add_typer(mount_provider_app, name="mount")
+provider_app.add_typer(mounted_volume_provider_app, name="mounted-volume")
 provider_app.add_typer(listener_host_provider_app, name="listener-host")
 
-MountProviderOption = Annotated[
+MountedVolumeProviderOption = Annotated[
     str | None,
     typer.Option(
-        "--mount-provider",
-        envvar="GOGURT_MOUNT_PROVIDER",
-        help="Exact installed mount-provider name.",
+        "--mounted-volume-provider",
+        envvar="GOGURT_MOUNTED_VOLUME_PROVIDER",
+        help="Exact installed mounted-volume provider name.",
     ),
 ]
 ListenerHostProviderOption = Annotated[
@@ -116,7 +116,7 @@ def _emit_listener(payload: dict[str, object], *, json_mode: bool, operation: st
     typer.echo(f"installed: {str(bool(payload.get('installed'))).lower()}")
     typer.echo(f"enabled: {str(bool(payload.get('enabled'))).lower()}")
     typer.echo(f"running: {str(bool(payload.get('running'))).lower()}")
-    for field in ("mount_provider", "listener_host_provider"):
+    for field in ("mounted_volume_provider", "listener_host_provider"):
         reference = payload.get(field)
         if isinstance(reference, dict):
             typer.echo(f"{field.replace('_', ' ')}: {reference.get('name', 'unknown')}")
@@ -125,11 +125,11 @@ def _emit_listener(payload: dict[str, object], *, json_mode: bool, operation: st
         typer.echo(f"diagnostic: {diagnostic}")
 
 
-def _resolve_mount(name: str | None) -> ResolvedMountProvider:
+def _resolve_mounted_volume(name: str | None) -> ResolvedMountedVolumeProvider:
     if name is None:
-        raise ConfigError("an explicit --mount-provider is required")
+        raise ConfigError("an explicit --mounted-volume-provider is required")
     try:
-        return resolve_mount_provider(name)
+        return resolve_mounted_volume_provider(name)
     except (TypeError, ValueError) as exc:
         raise ConfigError(str(exc)) from exc
 
@@ -145,7 +145,7 @@ def _resolve_listener_host(name: str | None) -> ResolvedListenerHostProvider:
 
 def _installed_listener_composition(
     name: str | None,
-) -> tuple[ResolvedListenerHostProvider, ResolvedMountProvider | None]:
+) -> tuple[ResolvedListenerHostProvider, ResolvedMountedVolumeProvider | None]:
     host = _resolve_listener_host(name)
     paths = host.paths()
     if not paths.config_file.is_file():
@@ -156,9 +156,9 @@ def _installed_listener_composition(
             config.listener_host_provider.name,
             expected=config.listener_host_provider,
         )
-        mount = resolve_mount_provider(
-            config.mount_provider.name,
-            expected=config.mount_provider,
+        mount = resolve_mounted_volume_provider(
+            config.mounted_volume_provider.name,
+            expected=config.mounted_volume_provider,
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(str(exc)) from exc
@@ -171,11 +171,11 @@ def _with_provider_status(
     payload: dict[str, object],
     *,
     host: ResolvedListenerHostProvider,
-    mount: ResolvedMountProvider | None,
+    mount: ResolvedMountedVolumeProvider | None,
 ) -> dict[str, object]:
     return {
         **payload,
-        "mount_provider": mount.reference.as_dict() if mount is not None else None,
+        "mounted_volume_provider": mount.reference.as_dict() if mount is not None else None,
         "listener_host_provider": host.reference.as_dict(),
     }
 
@@ -202,16 +202,16 @@ def _provider_list(
     emit(payload if json_mode else "\n".join(human), json_mode=json_mode)
 
 
-@mount_provider_app.command("list")
-def mount_provider_list_cmd(
+@mounted_volume_provider_app.command("list")
+def mounted_volume_provider_list_cmd(
     ids: Annotated[bool, typer.Option("--ids", help="Emit one provider name per line.")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    """List installed mount-provider metadata without loading provider code."""
+    """List installed mounted-volume-provider metadata without loading provider code."""
 
     _provider_list(
-        [item.as_dict() for item in list_mount_providers()],
-        kind="mount",
+        [item.as_dict() for item in list_mounted_volume_providers()],
+        kind="mounted-volume",
         ids=ids,
         json_mode=json_mode,
     )
@@ -246,14 +246,14 @@ def _provider_show(payload: dict[str, object], *, json_mode: bool) -> None:
     emit(payload if json_mode else human, json_mode=json_mode)
 
 
-@mount_provider_app.command("show")
-def mount_provider_show_cmd(
+@mounted_volume_provider_app.command("show")
+def mounted_volume_provider_show_cmd(
     name: Annotated[str, typer.Argument(help="Exact installed provider name.")],
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    """Load and report one exact mount provider."""
+    """Load and report one exact mounted-volume provider."""
 
-    _provider_show(_resolve_mount(name).as_dict(), json_mode=json_mode)
+    _provider_show(_resolve_mounted_volume(name).as_dict(), json_mode=json_mode)
 
 
 @listener_host_provider_app.command("show")
@@ -288,6 +288,7 @@ def list_cmd(
 def _run_mount(
     mount_point: Path,
     *,
+    provider: ResolvedMountedVolumeProvider,
     config: Path,
     actions_dir: Path | None,
     marker_name: str,
@@ -297,6 +298,7 @@ def _run_mount(
     plan = plan_gogurt_action(
         config,
         mount_point,
+        provider=provider,
         actions_dir=actions_dir,
         marker_name=marker_name,
     )
@@ -328,7 +330,7 @@ def _run_mount(
             return 0
 
     typer.echo(f"{GOGURT_EMOJI} gogurt launching: route={route} mount={mount_point}", err=True)
-    return execute_gogurt_action(plan).returncode
+    return execute_gogurt_action(plan, provider=provider).returncode
 
 
 @app.command("run")
@@ -354,11 +356,13 @@ def run_cmd(
         bool,
         typer.Option("--dry-run", help="Resolve and report the action without executing it."),
     ] = False,
+    mounted_volume_provider: MountedVolumeProviderOption = None,
 ) -> None:
     """Run the configured action for one marked mounted volume."""
 
     return_code = _run_mount(
         mount_point,
+        provider=_resolve_mounted_volume(mounted_volume_provider),
         config=config,
         actions_dir=actions_dir,
         marker_name=marker_name,
@@ -371,12 +375,14 @@ def run_cmd(
 
 @app.command("mounts")
 def mounts_cmd(
-    mount_provider: MountProviderOption = None,
+    mounted_volume_provider: MountedVolumeProviderOption = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
-    """List mounted roots observed through the native platform adapter."""
+    """List mounted roots observed through the selected provider."""
 
-    mount_points = [str(path) for path in _resolve_mount(mount_provider).discover()]
+    mount_points = [
+        str(path) for path in _resolve_mounted_volume(mounted_volume_provider).discover()
+    ]
     if json_mode:
         emit(mount_points, json_mode=True)
         return
@@ -419,12 +425,12 @@ def watch_cmd(
         bool,
         typer.Option("--dry-run", help="Resolve and report actions without executing them."),
     ] = False,
-    mount_provider: MountProviderOption = None,
+    mounted_volume_provider: MountedVolumeProviderOption = None,
 ) -> None:
     """Watch for newly mounted volumes and apply their configured routes."""
 
     typer.echo(f"{GOGURT_EMOJI} gogurt watcher started", err=True)
-    provider = _resolve_mount(mount_provider)
+    provider = _resolve_mounted_volume(mounted_volume_provider)
     try:
         for mount_point in iter_new_mounts(
             discover=provider.discover,
@@ -434,6 +440,7 @@ def watch_cmd(
             try:
                 return_code = _run_mount(
                     mount_point,
+                    provider=provider,
                     config=config,
                     actions_dir=actions_dir,
                     marker_name=marker_name,
@@ -485,7 +492,7 @@ def listener_install_cmd(
         bool,
         typer.Option("--autorun", help="Explicitly enable unattended action execution."),
     ] = False,
-    mount_provider: MountProviderOption = None,
+    mounted_volume_provider: MountedVolumeProviderOption = None,
     listener_host_provider: ListenerHostProviderOption = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
@@ -493,7 +500,7 @@ def listener_install_cmd(
 
     if not autorun:
         raise ConfigError("gogurt listener install requires explicit --autorun")
-    mount = _resolve_mount(mount_provider)
+    mount = _resolve_mounted_volume(mounted_volume_provider)
     host = _resolve_listener_host(listener_host_provider)
     payload = install_listener(
         config,
@@ -504,7 +511,7 @@ def listener_install_cmd(
         paths=host.paths(),
         adapter=host.adapter(),
         product_version=_product_version(),
-        mount_provider=mount.reference,
+        mounted_volume_provider=mount.reference,
         listener_host_provider=host.reference,
     )
     _emit_listener(
@@ -640,15 +647,15 @@ def listener_run_cmd(
 
     config = ListenerConfig.read(runtime_config, product_version=_product_version())
     try:
-        mount = resolve_mount_provider(
-            config.mount_provider.name,
-            expected=config.mount_provider,
+        mount = resolve_mounted_volume_provider(
+            config.mounted_volume_provider.name,
+            expected=config.mounted_volume_provider,
         )
     except (TypeError, ValueError) as exc:
         raise ConfigError(str(exc)) from exc
     run_listener(
         runtime_config,
-        discover=mount.discover,
+        mounted_volume_provider=mount,
         product_version=_product_version(),
     )
 
@@ -674,14 +681,18 @@ def write_cmd(
         typer.Option("--dry-run", help="Preview the marker write without changing the volume."),
     ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+    mounted_volume_provider: MountedVolumeProviderOption = None,
 ) -> None:
     """Write a Gogurt marker file to a mounted volume."""
+
+    provider = _resolve_mounted_volume(mounted_volume_provider)
 
     if dry_run:
         plan = plan_gogurt_marker(
             config,
             route,
             mount_point,
+            provider=provider,
             marker_name=marker_name,
             force=force,
         )
@@ -694,7 +705,14 @@ def write_cmd(
         typer.echo(f"marker: {plan.get('marker', 'unknown')}")
         typer.echo(f"content: {str(plan.get('content', '')).rstrip()}")
         return
-    marker = write_gogurt_marker(config, route, mount_point, marker_name=marker_name, force=force)
+    marker = write_gogurt_marker(
+        config,
+        route,
+        mount_point,
+        provider=provider,
+        marker_name=marker_name,
+        force=force,
+    )
     emit({"marker": str(marker)} if json_mode else str(marker), json_mode=json_mode)
 
 

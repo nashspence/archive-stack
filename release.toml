@@ -120,9 +120,9 @@ provider_identity = "persisted-exactly"
 
 [qualification.gogurt_reference]
 purpose = "First-party reference conformance only; these selections are not defaults or recommendations."
-linux-x64 = { distribution = "gogurt-linux", mount_provider = "gogurt-linux", listener_host_provider = "gogurt-linux" }
-macos-arm64 = { distribution = "gogurt-macos", mount_provider = "gogurt-macos", listener_host_provider = "gogurt-macos" }
-windows-x64 = { distribution = "gogurt-windows", mount_provider = "gogurt-windows", listener_host_provider = "gogurt-windows" }
+linux-x64 = { distribution = "gogurt-linux", mounted_volume_provider = "gogurt-linux", listener_host_provider = "gogurt-linux" }
+macos-arm64 = { distribution = "gogurt-macos", mounted_volume_provider = "gogurt-macos", listener_host_provider = "gogurt-macos" }
+windows-x64 = { distribution = "gogurt-windows", mounted_volume_provider = "gogurt-windows", listener_host_provider = "gogurt-windows" }
 
 [signing]
 checksums = "SHA-256"
@@ -167,6 +167,7 @@ reference_implementation = [
 reusable_library = [
   "packages/gogurt-core",
   "packages/gogurt-listener-runtime",
+  "packages/gogurt-path-volume-support",
   "packages/application-access",
   "packages/file-download",
   "packages/http-api-contracts",

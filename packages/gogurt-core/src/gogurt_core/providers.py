@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal, cast
 
 GOGURT_PROVIDER_REFERENCE_FORMAT = "gogurt-provider-reference/v1"
-type GogurtProviderKind = Literal["mount", "listener-host"]
+type GogurtProviderKind = Literal["mounted-volume", "listener-host"]
 
 
 def _canonical(value: object, field: str) -> str:
@@ -30,7 +30,7 @@ class GogurtProviderReference:
     def __post_init__(self) -> None:
         if self.format != GOGURT_PROVIDER_REFERENCE_FORMAT:
             raise ValueError("unsupported Gogurt provider reference format")
-        if self.kind not in {"mount", "listener-host"}:
+        if self.kind not in {"mounted-volume", "listener-host"}:
             raise ValueError("unsupported Gogurt provider kind")
         _canonical(self.name, "name")
         _canonical(self.provider_id, "identity")

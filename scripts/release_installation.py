@@ -65,8 +65,8 @@ def listener_release_contract() -> dict[str, object]:
         "autorun": "explicit-required",
         "operations": list(LISTENER_OPERATIONS),
         "providers": {
-            "mount": {
-                "entry_point": "gogurt.mount-providers",
+            "mounted_volume": {
+                "entry_point": "gogurt.mounted-volume-providers",
                 "selection": "explicit-exact-name",
             },
             "listener_host": {
@@ -245,7 +245,11 @@ def gogurt_reference_qualification(
 
     release = tomllib.loads((root / "release.toml").read_text(encoding="utf-8"))
     raw = release.get("qualification", {}).get("gogurt_reference")
-    expected_fields = {"distribution", "mount_provider", "listener_host_provider"}
+    expected_fields = {
+        "distribution",
+        "mounted_volume_provider",
+        "listener_host_provider",
+    }
     if not isinstance(raw, dict) or set(raw) != {"purpose", *SUPPORTED_PLATFORMS}:
         raise InstallationError("Gogurt reference qualification is incomplete")
     purpose = raw.get("purpose")
@@ -783,6 +787,14 @@ def build_installation_artifacts(
         for item in roots
     }
     gogurt_qualification = gogurt_reference_qualification(root, projects)
+    gogurt_qualification_closures = {
+        platform: dependency_closure(
+            graph,
+            selection["distribution"],
+            environment=_marker_environment(platform, tools["python"]),
+        )
+        for platform, selection in gogurt_qualification.items()
+    }
     required_names = set().union(
         *(
             closure
@@ -790,7 +802,7 @@ def build_installation_artifacts(
             for closure in platform_closures.values()
         )
     )
-    index_names = required_names | {item["distribution"] for item in gogurt_qualification.values()}
+    index_names = required_names | set().union(*gogurt_qualification_closures.values())
     if set(wheels) != set(project_by_name):
         raise InstallationError("release wheel records differ from the coordinated project graph")
 
@@ -1007,7 +1019,16 @@ def build_installation_artifacts(
                     "First-party reference conformance only; these selections are not defaults "
                     "or recommendations."
                 ),
-                "platforms": gogurt_qualification,
+                "platforms": {
+                    platform: {
+                        **gogurt_qualification[platform],
+                        "first_party_closure": [
+                            {"name": name, "version": project_versions[name]}
+                            for name in sorted(gogurt_qualification_closures[platform])
+                        ],
+                    }
+                    for platform in SUPPORTED_PLATFORMS
+                },
             }
         },
         "gogurt_listener": {
@@ -1033,13 +1054,13 @@ def _render_listener_reference(contract: dict[str, object], *, version: str) -> 
         "Gogurt installs a current-user listener. It resumes at the user's next login; "
         "it is not a pre-login system service. Installation requires explicit `--autorun`.\n\n"
         "## Install and operate\n\n"
-        "Install Gogurt with independently chosen mount-discovery and listener-host provider "
+        "Install Gogurt with independently chosen mounted-volume and listener-host provider "
         "distributions. Provider discovery is metadata only; every operation selects exact "
         "provider names. Add the chosen distributions to the generated `uv tool install` command "
         "with `--with <provider-distribution>`; they are not part of Gogurt's default closure.\n\n"
         "```console\n"
         "gogurt listener install --config /absolute/path/gogurt-routes.yaml "
-        "--actions-dir /absolute/path/actions --mount-provider <name> "
+        "--actions-dir /absolute/path/actions --mounted-volume-provider <name> "
         "--listener-host-provider <name> --autorun\n"
         "gogurt listener status --listener-host-provider <name>\n"
         "gogurt listener status --listener-host-provider <name> --json\n"
@@ -1102,12 +1123,30 @@ def verify_installation_artifacts(output: Path, manifest: dict[str, Any]) -> Non
         raise InstallationError("Gogurt reference qualification differs from release policy")
     for platform in SUPPORTED_PLATFORMS:
         reference = qualification_platforms[platform]
+        expected_reference_fields = {
+            "distribution",
+            "mounted_volume_provider",
+            "listener_host_provider",
+            "first_party_closure",
+        }
         if (
             not isinstance(reference, dict)
-            or set(reference) != {"distribution", "mount_provider", "listener_host_provider"}
+            or set(reference) != expected_reference_fields
             or reference["distribution"] not in wheel_names
         ):
             raise InstallationError(f"Gogurt reference qualification is invalid: {platform}")
+        raw_closure = reference["first_party_closure"]
+        if not isinstance(raw_closure, list) or any(
+            not isinstance(item, dict) or set(item) != {"name", "version"} for item in raw_closure
+        ):
+            raise InstallationError(f"Gogurt reference closure is invalid: {platform}")
+        closure = {str(item["name"]): str(item["version"]) for item in raw_closure}
+        if (
+            len(closure) != len(raw_closure)
+            or reference["distribution"] not in closure
+            or not set(closure) <= wheel_names
+        ):
+            raise InstallationError(f"Gogurt reference closure is invalid: {platform}")
     for component in components:
         lock = component["lock"]
         path = output / str(lock["path"])

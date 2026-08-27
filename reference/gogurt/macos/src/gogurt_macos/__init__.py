@@ -11,7 +11,7 @@ import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from gogurt_core.mounts import MountProviderBinding
+from gogurt_core.mounts import MountedVolumeProviderBinding
 from gogurt_listener_runtime.filesystem import PRIVATE_FILE_MODE, atomic_write
 from gogurt_listener_runtime.platform import (
     ListenerAdapter,
@@ -20,6 +20,7 @@ from gogurt_listener_runtime.platform import (
     ListenerRuntimePaths,
     NativeListenerStatus,
 )
+from gogurt_path_volume_support import PathMountedVolumeAccess
 
 LISTENER_LABEL = "io.github.nashspence.gogurt"
 LAUNCHD_SETTLE_SECONDS = 20.0
@@ -206,9 +207,9 @@ def discover_mount_points() -> tuple[Path, ...]:
     return macos_mount_points()
 
 
-MOUNT_PROVIDER_BINDING = MountProviderBinding(
-    provider_id="gogurt-macos-mount-provider/v1",
-    discover=discover_mount_points,
+MOUNTED_VOLUME_PROVIDER_BINDING = MountedVolumeProviderBinding(
+    provider_id="gogurt-macos-mounted-volume-provider/v1",
+    access=PathMountedVolumeAccess(discover_mount_points),
 )
 LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(
     provider_id="gogurt-macos-listener-host-provider/v1",
@@ -220,7 +221,7 @@ LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(
 
 __all__ = [
     "LISTENER_HOST_PROVIDER_BINDING",
-    "MOUNT_PROVIDER_BINDING",
+    "MOUNTED_VOLUME_PROVIDER_BINDING",
     "LaunchdUserAdapter",
     "default_listener_paths",
     "discover_mount_points",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,9 +26,17 @@ from gogurt_core.providers import GogurtProviderReference
 from gogurt_listener_runtime.listener import ListenerError
 from typer.testing import CliRunner
 
+from tests.gogurt_provider import path_mounted_volume_provider
+
 RUNNER = CliRunner()
 FIXTURE_ROOT = Path(__file__).resolve().parents[3] / "qualification/fixtures/gogurt"
 FIXTURE_CONFIG = FIXTURE_ROOT / "gogurt-routes.yaml"
+PROVIDER = path_mounted_volume_provider()
+
+
+@pytest.fixture(autouse=True)
+def _mounted_volume_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_resolve_mounted_volume", lambda _name: PROVIDER)
 
 
 def test_console_main_reports_listener_errors_without_a_traceback(
@@ -68,9 +77,9 @@ def test_loads_portable_gogurt_actions_from_qualification_fixture() -> None:
 def test_plans_and_executes_one_direct_argv_action(tmp_path: Path) -> None:
     mount = tmp_path / "mount"
     mount.mkdir()
-    write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", mount)
+    write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", mount, provider=PROVIDER)
 
-    plan = plan_gogurt_action(FIXTURE_CONFIG, mount)
+    plan = plan_gogurt_action(FIXTURE_CONFIG, mount, provider=PROVIDER)
 
     assert plan == {
         "status": "ready",
@@ -78,6 +87,7 @@ def test_plans_and_executes_one_direct_argv_action(tmp_path: Path) -> None:
         "mount_point": str(mount.resolve()),
         "marker": str((mount / DEFAULT_GOGURT_MARKER_NAME).resolve()),
         "marker_name": DEFAULT_GOGURT_MARKER_NAME,
+        "mounted_volume_provider": PROVIDER.reference.as_dict(),
         "command": [
             sys.executable,
             str((FIXTURE_ROOT / "scripts" / "fake_archive_device.py").resolve()),
@@ -86,14 +96,22 @@ def test_plans_and_executes_one_direct_argv_action(tmp_path: Path) -> None:
         ],
         "marker_identity": plan["marker_identity"],
     }
-    completed = execute_gogurt_action(plan, capture_output=True)
+    completed = execute_gogurt_action(plan, provider=PROVIDER, capture_output=True)
     assert completed.returncode == 0
     assert completed.stdout == f"archive example-camera from {mount.resolve()}\n"
     assert completed.stderr == ""
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX portable marker mode")
+def test_marker_is_portably_readable_nonsecret_metadata(tmp_path: Path) -> None:
+    write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path, provider=PROVIDER)
+
+    marker = tmp_path / DEFAULT_GOGURT_MARKER_NAME
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o644
+
+
 def test_action_plan_reports_an_unmarked_mount(tmp_path: Path) -> None:
-    plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
+    plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path, provider=PROVIDER)
 
     assert plan["status"] == "unmarked"
     assert plan["mount_point"] == str(tmp_path.resolve())
@@ -106,32 +124,32 @@ def test_action_plan_rejects_unsafe_markers(tmp_path: Path) -> None:
     target.write_text("example-camera-card\n", encoding="utf-8")
     marker.symlink_to(target)
     with pytest.raises(ConfigError, match="regular file"):
-        plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
+        plan_gogurt_action(FIXTURE_CONFIG, tmp_path, provider=PROVIDER)
 
     marker.unlink()
     marker.write_bytes(b"x" * (MAX_GOGURT_MARKER_BYTES + 1))
     with pytest.raises(ConfigError, match="exceeds"):
-        plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
+        plan_gogurt_action(FIXTURE_CONFIG, tmp_path, provider=PROVIDER)
 
     marker.write_bytes(b"\xff\n")
     with pytest.raises(ConfigError, match="strict UTF-8"):
-        plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
+        plan_gogurt_action(FIXTURE_CONFIG, tmp_path, provider=PROVIDER)
 
     marker.write_text(" example-camera-card\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="surrounding whitespace"):
-        plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
+        plan_gogurt_action(FIXTURE_CONFIG, tmp_path, provider=PROVIDER)
 
 
 def test_action_execution_revalidates_marker_identity(tmp_path: Path) -> None:
-    write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
-    plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
+    write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path, provider=PROVIDER)
+    plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path, provider=PROVIDER)
     marker = tmp_path / DEFAULT_GOGURT_MARKER_NAME
     replacement = tmp_path / ".replacement"
     replacement.write_text("example-camera-card\n", encoding="utf-8")
     os.replace(replacement, marker)
 
     with pytest.raises(ConfigError, match="changed before action execution"):
-        execute_gogurt_action(plan)
+        execute_gogurt_action(plan, provider=PROVIDER)
 
 
 def test_action_directory_resolves_private_style_commands(tmp_path: Path) -> None:
@@ -157,7 +175,7 @@ def test_action_directory_resolves_private_style_commands(tmp_path: Path) -> Non
     )
     (mount / DEFAULT_GOGURT_MARKER_NAME).write_text("camera\n", encoding="utf-8")
 
-    plan = plan_gogurt_action(config, mount, actions_dir=actions)
+    plan = plan_gogurt_action(config, mount, provider=PROVIDER, actions_dir=actions)
 
     assert plan["command"] == [str(executable.resolve()), str(mount.resolve())]
 
@@ -199,7 +217,12 @@ def test_route_command_rejects_mount_directory_as_the_executable(tmp_path: Path)
 
 
 def test_write_gogurt_marker_refuses_to_replace_different_route(tmp_path: Path) -> None:
-    marker = write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
+    marker = write_gogurt_marker(
+        FIXTURE_CONFIG,
+        "example-camera-card",
+        tmp_path,
+        provider=PROVIDER,
+    )
 
     assert marker == tmp_path / DEFAULT_GOGURT_MARKER_NAME
     assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
@@ -207,22 +230,48 @@ def test_write_gogurt_marker_refuses_to_replace_different_route(tmp_path: Path) 
 
     marker.write_text("other\n", encoding="utf-8")
     with pytest.raises(FileExistsError):
-        write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
+        write_gogurt_marker(
+            FIXTURE_CONFIG,
+            "example-camera-card",
+            tmp_path,
+            provider=PROVIDER,
+        )
 
-    write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path, force=True)
+    write_gogurt_marker(
+        FIXTURE_CONFIG,
+        "example-camera-card",
+        tmp_path,
+        provider=PROVIDER,
+        force=True,
+    )
     assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
 
 
 def test_same_route_marker_write_is_an_identity_preserving_noop(tmp_path: Path) -> None:
-    marker = write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
+    marker = write_gogurt_marker(
+        FIXTURE_CONFIG,
+        "example-camera-card",
+        tmp_path,
+        provider=PROVIDER,
+    )
     before = marker.stat()
-    before_plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
+    before_plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path, provider=PROVIDER)
 
-    preview = plan_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
-    repeated = write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
+    preview = plan_gogurt_marker(
+        FIXTURE_CONFIG,
+        "example-camera-card",
+        tmp_path,
+        provider=PROVIDER,
+    )
+    repeated = write_gogurt_marker(
+        FIXTURE_CONFIG,
+        "example-camera-card",
+        tmp_path,
+        provider=PROVIDER,
+    )
 
     after = marker.stat()
-    after_plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path)
+    after_plan = plan_gogurt_action(FIXTURE_CONFIG, tmp_path, provider=PROVIDER)
     assert preview["status"] == "would_keep"
     assert repeated == marker
     assert marker.read_bytes() == b"example-camera-card\n"
@@ -270,7 +319,13 @@ def test_write_gogurt_marker_refuses_a_symlink_target(tmp_path: Path) -> None:
     (tmp_path / DEFAULT_GOGURT_MARKER_NAME).symlink_to(target)
 
     with pytest.raises(ConfigError, match="regular file"):
-        write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path, force=True)
+        write_gogurt_marker(
+            FIXTURE_CONFIG,
+            "example-camera-card",
+            tmp_path,
+            provider=PROVIDER,
+            force=True,
+        )
 
 
 def test_write_gogurt_marker_uses_exclusive_temporary_creation(tmp_path: Path) -> None:
@@ -279,7 +334,12 @@ def test_write_gogurt_marker_uses_exclusive_temporary_creation(tmp_path: Path) -
     former_temporary = tmp_path / (f".{DEFAULT_GOGURT_MARKER_NAME}.{os.getpid()}.tmp")
     former_temporary.symlink_to(protected)
 
-    marker = write_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
+    marker = write_gogurt_marker(
+        FIXTURE_CONFIG,
+        "example-camera-card",
+        tmp_path,
+        provider=PROVIDER,
+    )
 
     assert marker.read_text(encoding="utf-8") == "example-camera-card\n"
     assert protected.read_text(encoding="utf-8") == "unchanged\n"
@@ -295,6 +355,7 @@ def test_write_gogurt_marker_accepts_the_exact_portable_component_limit(
         FIXTURE_CONFIG,
         "example-camera-card",
         tmp_path,
+        provider=PROVIDER,
         marker_name=marker_name,
     )
 
@@ -303,7 +364,12 @@ def test_write_gogurt_marker_accepts_the_exact_portable_component_limit(
 
 
 def test_plan_gogurt_marker_does_not_write(tmp_path: Path) -> None:
-    plan = plan_gogurt_marker(FIXTURE_CONFIG, "example-camera-card", tmp_path)
+    plan = plan_gogurt_marker(
+        FIXTURE_CONFIG,
+        "example-camera-card",
+        tmp_path,
+        provider=PROVIDER,
+    )
 
     assert plan["dry_run"] is True
     assert plan["status"] == "would_write"
@@ -317,6 +383,7 @@ def test_plan_gogurt_marker_reports_invalid_marker_name(tmp_path: Path) -> None:
             FIXTURE_CONFIG,
             "example-camera-card",
             tmp_path,
+            provider=PROVIDER,
             marker_name="nested/.gogurt",
         )
 
@@ -399,17 +466,17 @@ def test_gogurt_cli_write_dry_run_does_not_create_marker(tmp_path: Path) -> None
 def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mount_reference = GogurtProviderReference(
-        kind="mount",
+    mounted_volume_reference = GogurtProviderReference(
+        kind="mounted-volume",
         name="fixture-mount",
-        provider_id="fixture-mount-provider/v1",
+        provider_id="fixture-mounted-volume-provider/v1",
     )
     host_reference = GogurtProviderReference(
         kind="listener-host",
         name="fixture-host",
         provider_id="fixture-listener-host-provider/v1",
     )
-    mount = SimpleNamespace(reference=mount_reference, discover=lambda: ())
+    mounted_volume = SimpleNamespace(reference=mounted_volume_reference, discover=lambda: ())
     host = SimpleNamespace(
         reference=host_reference,
         paths=lambda: object(),
@@ -432,11 +499,14 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
     monkeypatch.setattr("gogurt.cli.restart_listener", lambda **_kwargs: payload)
     monkeypatch.setattr("gogurt.cli.uninstall_listener", lambda **_kwargs: payload)
     monkeypatch.setattr("gogurt.cli.install_listener", lambda *_args, **_kwargs: payload)
-    monkeypatch.setattr("gogurt.cli._resolve_mount", lambda _name: mount)
+    monkeypatch.setattr("gogurt.cli._resolve_mounted_volume", lambda _name: mounted_volume)
     monkeypatch.setattr("gogurt.cli._resolve_listener_host", lambda _name: host)
-    monkeypatch.setattr("gogurt.cli._installed_listener_composition", lambda _name: (host, mount))
+    monkeypatch.setattr(
+        "gogurt.cli._installed_listener_composition",
+        lambda _name: (host, mounted_volume),
+    )
     expected = payload | {
-        "mount_provider": mount_reference.as_dict(),
+        "mounted_volume_provider": mounted_volume_reference.as_dict(),
         "listener_host_provider": host_reference.as_dict(),
     }
 
@@ -457,7 +527,7 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
             "--config",
             str(FIXTURE_CONFIG),
             "--autorun",
-            "--mount-provider",
+            "--mounted-volume-provider",
             "fixture-mount",
             "--listener-host-provider",
             "fixture-host",

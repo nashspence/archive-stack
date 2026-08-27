@@ -6,9 +6,11 @@ import importlib.metadata
 from dataclasses import dataclass
 from pathlib import Path
 
+from config_validation import ConfigError
 from gogurt_core.mounts import (
-    GOGURT_MOUNT_PROVIDER_ENTRY_POINT_GROUP,
-    MountProviderBinding,
+    GOGURT_MOUNTED_VOLUME_PROVIDER_ENTRY_POINT_GROUP,
+    MountedMarkerSnapshot,
+    MountedVolumeProviderBinding,
 )
 from gogurt_core.providers import GogurtProviderKind, GogurtProviderReference
 from gogurt_listener_runtime.platform import (
@@ -67,10 +69,13 @@ def _list(group: str, *, kind: GogurtProviderKind) -> tuple[GogurtProviderMetada
     )
 
 
-def list_mount_providers() -> tuple[GogurtProviderMetadata, ...]:
-    """List mount-provider metadata without loading provider code."""
+def list_mounted_volume_providers() -> tuple[GogurtProviderMetadata, ...]:
+    """List mounted-volume provider metadata without loading provider code."""
 
-    return _list(GOGURT_MOUNT_PROVIDER_ENTRY_POINT_GROUP, kind="mount")
+    return _list(
+        GOGURT_MOUNTED_VOLUME_PROVIDER_ENTRY_POINT_GROUP,
+        kind="mounted-volume",
+    )
 
 
 def list_listener_host_providers() -> tuple[GogurtProviderMetadata, ...]:
@@ -114,19 +119,46 @@ def _require_expected(
 
 
 @dataclass(frozen=True, slots=True)
-class ResolvedMountProvider:
+class ResolvedMountedVolumeProvider:
     metadata: GogurtProviderMetadata
-    binding: MountProviderBinding
+    binding: MountedVolumeProviderBinding
     reference: GogurtProviderReference
 
     def discover(self) -> tuple[Path, ...]:
-        discovered = self.binding.discover()
+        discovered = self.binding.access.discover()
         if isinstance(discovered, (str, bytes)):
-            raise TypeError("Gogurt mount provider returned invalid mount paths")
+            raise ConfigError("Gogurt mounted-volume provider returned invalid mount paths")
         values = tuple(discovered)
         if any(not isinstance(value, Path) for value in values):
-            raise TypeError("Gogurt mount provider returned invalid mount paths")
+            raise ConfigError("Gogurt mounted-volume provider returned invalid mount paths")
         return values
+
+    def observe_marker(
+        self,
+        mount_point: Path,
+        marker_name: str,
+        *,
+        max_bytes: int,
+    ) -> MountedMarkerSnapshot | None:
+        value = self.binding.access.observe_marker(
+            mount_point,
+            marker_name,
+            max_bytes=max_bytes,
+        )
+        if value is not None and not isinstance(value, MountedMarkerSnapshot):
+            raise ConfigError("Gogurt mounted-volume provider returned an invalid marker snapshot")
+        return value
+
+    def publish_marker(
+        self,
+        mount_point: Path,
+        marker_name: str,
+        content: bytes,
+    ) -> MountedMarkerSnapshot:
+        value = self.binding.access.publish_marker(mount_point, marker_name, content)
+        if not isinstance(value, MountedMarkerSnapshot):
+            raise ConfigError("Gogurt mounted-volume provider returned an invalid marker snapshot")
+        return value
 
     def as_dict(self) -> dict[str, object]:
         return {**self.metadata.as_dict(), "reference": self.reference.as_dict()}
@@ -160,19 +192,23 @@ class ResolvedListenerHostProvider:
         return {**self.metadata.as_dict(), "reference": self.reference.as_dict()}
 
 
-def resolve_mount_provider(
+def resolve_mounted_volume_provider(
     name: str,
     *,
     expected: GogurtProviderReference | None = None,
-) -> ResolvedMountProvider:
-    entry_point = _resolve_entry_point(GOGURT_MOUNT_PROVIDER_ENTRY_POINT_GROUP, name)
+) -> ResolvedMountedVolumeProvider:
+    entry_point = _resolve_entry_point(GOGURT_MOUNTED_VOLUME_PROVIDER_ENTRY_POINT_GROUP, name)
     binding = entry_point.load()
-    if not isinstance(binding, MountProviderBinding):
-        raise TypeError(f"Gogurt mount provider has an invalid binding: {name}")
-    metadata = _metadata(entry_point, kind="mount")
+    if not isinstance(binding, MountedVolumeProviderBinding):
+        raise TypeError(f"Gogurt mounted-volume provider has an invalid binding: {name}")
+    metadata = _metadata(entry_point, kind="mounted-volume")
     reference = _reference(metadata, provider_id=binding.provider_id)
     _require_expected(reference, expected)
-    return ResolvedMountProvider(metadata=metadata, binding=binding, reference=reference)
+    return ResolvedMountedVolumeProvider(
+        metadata=metadata,
+        binding=binding,
+        reference=reference,
+    )
 
 
 def resolve_listener_host_provider(
@@ -193,9 +229,9 @@ def resolve_listener_host_provider(
 __all__ = [
     "GogurtProviderMetadata",
     "ResolvedListenerHostProvider",
-    "ResolvedMountProvider",
+    "ResolvedMountedVolumeProvider",
     "list_listener_host_providers",
-    "list_mount_providers",
+    "list_mounted_volume_providers",
     "resolve_listener_host_provider",
-    "resolve_mount_provider",
+    "resolve_mounted_volume_provider",
 ]

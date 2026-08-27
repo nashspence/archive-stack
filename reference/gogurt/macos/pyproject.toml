@@ -17,10 +17,11 @@ urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "
 dependencies = [
   "gogurt-core>=0.1,<0.2",
   "gogurt-listener-runtime>=0.1,<0.2",
+  "gogurt-path-volume-support>=0.1,<0.2",
 ]
 
-[project.entry-points."gogurt.mount-providers"]
-gogurt-macos = "gogurt_macos:MOUNT_PROVIDER_BINDING"
+[project.entry-points."gogurt.mounted-volume-providers"]
+gogurt-macos = "gogurt_macos:MOUNTED_VOLUME_PROVIDER_BINDING"
 
 [project.entry-points."gogurt.listener-host-providers"]
 gogurt-macos = "gogurt_macos:LISTENER_HOST_PROVIDER_BINDING"
@@ -28,6 +29,7 @@ gogurt-macos = "gogurt_macos:LISTENER_HOST_PROVIDER_BINDING"
 [tool.uv.sources]
 gogurt-core = { workspace = true }
 gogurt-listener-runtime = { workspace = true }
+gogurt-path-volume-support = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gogurt_macos"]

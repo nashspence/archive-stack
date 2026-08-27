@@ -525,11 +525,11 @@ def _run_gogurt(
 ) -> str:
     environment = {
         **environment,
-        "GOGURT_MOUNT_PROVIDER": reference["mount_provider"],
+        "GOGURT_MOUNTED_VOLUME_PROVIDER": reference["mounted_volume_provider"],
         "GOGURT_LISTENER_HOST_PROVIDER": reference["listener_host_provider"],
     }
     for kind, name in (
-        ("mount", reference["mount_provider"]),
+        ("mounted-volume", reference["mounted_volume_provider"]),
         ("listener-host", reference["listener_host_provider"]),
     ):
         shown = json.loads(
@@ -1359,11 +1359,12 @@ def _run_gogurt_listener_lifecycle(
             installed = True
             if installed_payload.get("health") != "healthy":
                 raise QualificationError("installed Gogurt listener did not report healthy")
-            mount_provider = installed_payload.get("mount_provider")
+            mounted_volume_provider = installed_payload.get("mounted_volume_provider")
             listener_host_provider = installed_payload.get("listener_host_provider")
             if (
-                not isinstance(mount_provider, dict)
-                or mount_provider.get("name") != environment["GOGURT_MOUNT_PROVIDER"]
+                not isinstance(mounted_volume_provider, dict)
+                or mounted_volume_provider.get("name")
+                != environment["GOGURT_MOUNTED_VOLUME_PROVIDER"]
                 or not isinstance(listener_host_provider, dict)
                 or listener_host_provider.get("name")
                 != environment["GOGURT_LISTENER_HOST_PROVIDER"]
@@ -1836,7 +1837,22 @@ def _qualify_component(
         raw_reference = manifest["qualification"]["gogurt_reference"]["platforms"][platform]
         if not isinstance(raw_reference, dict):
             raise QualificationError("Gogurt reference qualification is invalid")
-        gogurt_reference = {key: str(value) for key, value in raw_reference.items()}
+        reference_fields = (
+            "distribution",
+            "mounted_volume_provider",
+            "listener_host_provider",
+        )
+        gogurt_reference = {key: str(raw_reference[key]) for key in reference_fields}
+        raw_reference_closure = raw_reference.get("first_party_closure")
+        if not isinstance(raw_reference_closure, list):
+            raise QualificationError("Gogurt reference qualification closure is invalid")
+        qualification_first_party = {
+            str(item["name"]): str(item["version"])
+            for item in raw_reference_closure
+            if isinstance(item, dict) and set(item) == {"name", "version"}
+        }
+        if len(qualification_first_party) != len(raw_reference_closure):
+            raise QualificationError("Gogurt reference qualification closure is invalid")
         distribution = gogurt_reference["distribution"]
         qualified_version = str(manifest["version"])
         _run(
@@ -1857,13 +1873,11 @@ def _qualify_component(
                 "--python",
                 str(python),
                 "--no-build",
-                "--no-deps",
                 "--strict",
             ],
             cwd=scratch,
             env=environment,
         )
-        qualification_first_party = {distribution: qualified_version}
         qualified_inventory = _installed_inventory(python, scratch, environment)
         qualified_first_party = {
             name: installed_version
