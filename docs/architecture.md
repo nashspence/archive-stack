@@ -38,9 +38,10 @@ Executable contracts define packages; architecture records ownership and placeme
   provider mechanisms. Provider policy and mechanisms remain outside Riverhog.
 - **Companions.** Companions consume Riverhog capabilities and own their workflow state. Stove0 is
   a provided transformation companion; its core does not interpret content.
-- **Extensions.** Observers report bounded facts about exact immutable artifacts. Targets perform
-  one operation through an exact derived-collection capability. Applications explicitly compose
-  extensions; no platform or provider set is authoritative or implicit.
+- **Extensions.** Observers report immutable-artifact facts; targets perform declared operations.
+  Each explicitly selected extension distribution owns one capability. Bundles may co-locate
+  separate distributions sharing runtime dependencies without merging contracts, identities, or
+  selection.
 - **Transfer path.** Payload loops exclude control-plane status and reporting work.
 
 Workspace checks enforce ownership boundaries.

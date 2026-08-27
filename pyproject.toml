@@ -3,7 +3,8 @@ members = [
   "companions/*/client",
   "companions/*/server",
   "packages/*",
-  "reference/gogurt/*",
+  "reference/gogurt/listener-host/*",
+  "reference/gogurt/mounted-volume/*",
   "reference/riverhog/*/*",
   "reference/stove0/observers/*",
   "reference/stove0/targets/*/target",
@@ -16,9 +17,12 @@ members = [
 gogurt-core = { workspace = true }
 gogurt-listener-runtime = { workspace = true }
 gogurt-path-volume-support = { workspace = true }
-gogurt-linux = { workspace = true }
-gogurt-macos = { workspace = true }
-gogurt-windows = { workspace = true }
+gogurt-linux-listener-host = { workspace = true }
+gogurt-linux-mounted-volume = { workspace = true }
+gogurt-macos-listener-host = { workspace = true }
+gogurt-macos-mounted-volume = { workspace = true }
+gogurt-windows-listener-host = { workspace = true }
+gogurt-windows-mounted-volume = { workspace = true }
 riverhog-ftp-adapter-api-client = { workspace = true }
 riverhog-archive-contracts = { workspace = true }
 riverhog-provenance = { workspace = true }

@@ -5,11 +5,11 @@ import sys
 
 def _discover_mount_points():
     if sys.platform == "linux":
-        from gogurt_linux import MOUNTED_VOLUME_PROVIDER_BINDING
+        from gogurt_linux_mounted_volume import MOUNTED_VOLUME_PROVIDER_BINDING
     elif sys.platform == "darwin":
-        from gogurt_macos import MOUNTED_VOLUME_PROVIDER_BINDING
+        from gogurt_macos_mounted_volume import MOUNTED_VOLUME_PROVIDER_BINDING
     elif sys.platform == "win32":
-        from gogurt_windows import MOUNTED_VOLUME_PROVIDER_BINDING
+        from gogurt_windows_mounted_volume import MOUNTED_VOLUME_PROVIDER_BINDING
     else:  # pragma: no cover - the release matrix owns the reference fixtures
         raise AssertionError(f"no reference mounted-volume provider for {sys.platform}")
     return MOUNTED_VOLUME_PROVIDER_BINDING.access.discover()

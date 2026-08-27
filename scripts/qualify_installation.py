@@ -1860,9 +1860,10 @@ def _qualify_component(
         if not isinstance(raw_reference, dict):
             raise QualificationError("Gogurt reference qualification is invalid")
         reference_fields = (
-            "distribution",
-            "mounted_volume_provider",
+            "listener_host_distribution",
             "listener_host_provider",
+            "mounted_volume_distribution",
+            "mounted_volume_provider",
         )
         gogurt_reference = {key: str(raw_reference[key]) for key in reference_fields}
         raw_reference_closure = raw_reference.get("first_party_closure")
@@ -1875,7 +1876,10 @@ def _qualify_component(
         }
         if len(qualification_first_party) != len(raw_reference_closure):
             raise QualificationError("Gogurt reference qualification closure is invalid")
-        distribution = gogurt_reference["distribution"]
+        distributions = (
+            gogurt_reference["mounted_volume_distribution"],
+            gogurt_reference["listener_host_distribution"],
+        )
         qualified_version = str(manifest["version"])
         _run(
             [
@@ -1885,7 +1889,7 @@ def _qualify_component(
                 "127.0.0.1",
                 "pip",
                 "install",
-                f"{distribution}=={qualified_version}",
+                *(f"{distribution}=={qualified_version}" for distribution in distributions),
                 "--index",
                 str(manifest["index"]["url"]),
                 "--default-index",

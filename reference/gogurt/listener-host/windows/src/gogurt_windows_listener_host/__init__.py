@@ -1,4 +1,4 @@
-"""Windows mount discovery and Task Scheduler integration for Gogurt."""
+"""Windows Task Scheduler listener-host integration for Gogurt."""
 
 from __future__ import annotations
 
@@ -6,17 +6,15 @@ import ctypes
 import os
 import re
 import shutil
-import string
 import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from hashlib import sha256
 from pathlib import Path, PureWindowsPath
 from typing import Any, cast
 
-from gogurt_core.mounts import MountedVolumeProviderBinding
 from gogurt_listener_runtime.filesystem import PRIVATE_FILE_MODE, atomic_write, stage_bytes
 from gogurt_listener_runtime.platform import (
     ListenerAdapter,
@@ -25,7 +23,6 @@ from gogurt_listener_runtime.platform import (
     ListenerRuntimePaths,
     NativeListenerStatus,
 )
-from gogurt_path_volume_support import PathMountedVolumeAccess
 
 WINDOWS_TASK_NAME_PREFIX = "Riverhog.Gogurt"
 WINDOWS_TASK_STATE_DISABLED = 1
@@ -281,32 +278,6 @@ def resolve_listener_executable(raw: str | None = None) -> Path:
     )
 
 
-def _windows_logical_drive_mask() -> int:
-    mask = int(cast(Any, ctypes).windll.kernel32.GetLogicalDrives())
-    if mask == 0:
-        raise OSError("Windows logical-drive enumeration failed")
-    return mask
-
-
-def windows_mount_points(
-    logical_drives: Callable[[], int] = _windows_logical_drive_mask,
-) -> tuple[Path, ...]:
-    mask = logical_drives()
-    return tuple(
-        Path(f"{letter}:\\")
-        for index, letter in enumerate(string.ascii_uppercase)
-        if mask & (1 << index)
-    )
-
-
-def discover_mount_points() -> tuple[Path, ...]:
-    return windows_mount_points()
-
-
-MOUNTED_VOLUME_PROVIDER_BINDING = MountedVolumeProviderBinding(
-    provider_id="gogurt-windows-path-route-line-provider/v1",
-    access=PathMountedVolumeAccess(discover_mount_points),
-)
 LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(
     provider_id="gogurt-windows-listener-host-provider/v1",
     paths=default_listener_paths,
@@ -317,16 +288,13 @@ LISTENER_HOST_PROVIDER_BINDING = ListenerHostProviderBinding(
 
 __all__ = [
     "LISTENER_HOST_PROVIDER_BINDING",
-    "MOUNTED_VOLUME_PROVIDER_BINDING",
     "TaskSchedulerUserAdapter",
     "WINDOWS_TASK_RESTART_COUNT",
     "WINDOWS_TASK_RESTART_INTERVAL",
     "WINDOWS_TASK_XML_NAMESPACE",
     "default_listener_paths",
-    "discover_mount_points",
     "listener_adapter",
     "render_windows_task_xml",
     "resolve_listener_executable",
-    "windows_mount_points",
     "windows_task_name",
 ]

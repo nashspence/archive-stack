@@ -9,12 +9,18 @@ from gogurt_core.mounts import (
     iter_new_mounts,
     validate_gogurt_interval,
 )
-from gogurt_linux import MOUNTED_VOLUME_PROVIDER_BINDING as LINUX_MOUNTED_VOLUME_PROVIDER
-from gogurt_linux import linux_mount_points
-from gogurt_macos import MOUNTED_VOLUME_PROVIDER_BINDING as MACOS_MOUNTED_VOLUME_PROVIDER
-from gogurt_macos import macos_mount_points
-from gogurt_windows import MOUNTED_VOLUME_PROVIDER_BINDING as WINDOWS_MOUNTED_VOLUME_PROVIDER
-from gogurt_windows import windows_mount_points
+from gogurt_linux_mounted_volume import (
+    MOUNTED_VOLUME_PROVIDER_BINDING as LINUX_MOUNTED_VOLUME_PROVIDER,
+)
+from gogurt_linux_mounted_volume import linux_mount_points
+from gogurt_macos_mounted_volume import (
+    MOUNTED_VOLUME_PROVIDER_BINDING as MACOS_MOUNTED_VOLUME_PROVIDER,
+)
+from gogurt_macos_mounted_volume import macos_mount_points
+from gogurt_windows_mounted_volume import (
+    MOUNTED_VOLUME_PROVIDER_BINDING as WINDOWS_MOUNTED_VOLUME_PROVIDER,
+)
+from gogurt_windows_mounted_volume import windows_mount_points
 
 
 def test_reference_provider_identities_seal_the_path_route_line_representation() -> None:

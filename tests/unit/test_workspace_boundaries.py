@@ -73,9 +73,30 @@ IMPLEMENTATION_OWNERS = {
     ),
     "mango-fish": (REPO / "utilities/mango-fish/src", {"mango_fish"}),
     "gogurt": (REPO / "utilities/gogurt/src", {"gogurt"}),
-    "gogurt-linux": (REPO / "reference/gogurt/linux/src", {"gogurt_linux"}),
-    "gogurt-macos": (REPO / "reference/gogurt/macos/src", {"gogurt_macos"}),
-    "gogurt-windows": (REPO / "reference/gogurt/windows/src", {"gogurt_windows"}),
+    "gogurt-linux-listener-host": (
+        REPO / "reference/gogurt/listener-host/linux/src",
+        {"gogurt_linux_listener_host"},
+    ),
+    "gogurt-linux-mounted-volume": (
+        REPO / "reference/gogurt/mounted-volume/linux/src",
+        {"gogurt_linux_mounted_volume"},
+    ),
+    "gogurt-macos-listener-host": (
+        REPO / "reference/gogurt/listener-host/macos/src",
+        {"gogurt_macos_listener_host"},
+    ),
+    "gogurt-macos-mounted-volume": (
+        REPO / "reference/gogurt/mounted-volume/macos/src",
+        {"gogurt_macos_mounted_volume"},
+    ),
+    "gogurt-windows-listener-host": (
+        REPO / "reference/gogurt/listener-host/windows/src",
+        {"gogurt_windows_listener_host"},
+    ),
+    "gogurt-windows-mounted-volume": (
+        REPO / "reference/gogurt/mounted-volume/windows/src",
+        {"gogurt_windows_mounted_volume"},
+    ),
 }
 ALL_IMPLEMENTATION_MODULES = set().union(
     *(modules for _, modules in IMPLEMENTATION_OWNERS.values())
@@ -370,20 +391,26 @@ def test_portable_products_do_not_select_provider_implementations() -> None:
     gogurt = tomllib.loads((REPO / "utilities/gogurt/pyproject.toml").read_text(encoding="utf-8"))
     assert declared_project_dependencies(gogurt).isdisjoint(
         {
-            "gogurt-linux",
-            "gogurt-macos",
+            "gogurt-linux-listener-host",
+            "gogurt-linux-mounted-volume",
+            "gogurt-macos-listener-host",
+            "gogurt-macos-mounted-volume",
             "gogurt-path-volume-support",
-            "gogurt-windows",
+            "gogurt-windows-listener-host",
+            "gogurt-windows-mounted-volume",
         }
     )
     gogurt_sources = tuple((REPO / "utilities/gogurt/src").rglob("*.py"))
     gogurt_imports = set().union(*(imported_roots(path) for path in gogurt_sources))
     assert gogurt_imports.isdisjoint(
         {
-            "gogurt_linux",
-            "gogurt_macos",
+            "gogurt_linux_listener_host",
+            "gogurt_linux_mounted_volume",
+            "gogurt_macos_listener_host",
+            "gogurt_macos_mounted_volume",
             "gogurt_path_volume_support",
-            "gogurt_windows",
+            "gogurt_windows_listener_host",
+            "gogurt_windows_mounted_volume",
         }
     )
     assert all("sys.platform" not in path.read_text(encoding="utf-8") for path in gogurt_sources)
@@ -399,7 +426,11 @@ def test_portable_products_do_not_select_provider_implementations() -> None:
 
 
 def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exact() -> None:
-    gogurt_native_roots = {"gogurt_linux", "gogurt_macos", "gogurt_windows"}
+    gogurt_native_roots = {
+        f"gogurt_{platform}_{capability}"
+        for platform in ("linux", "macos", "windows")
+        for capability in ("listener_host", "mounted_volume")
+    }
     gogurt_core_imports = set().union(
         *(imported_roots(path) for path in (REPO / "packages/gogurt-core/src").rglob("*.py"))
     )
@@ -471,13 +502,27 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
         )
         assert declared_project_dependencies(contract_config) == {"riverhog-provenance-contracts"}
 
-        gogurt_config = tomllib.loads(
-            (REPO / f"reference/gogurt/{platform}/pyproject.toml").read_text(encoding="utf-8")
+        mounted_volume_config = tomllib.loads(
+            (REPO / f"reference/gogurt/mounted-volume/{platform}/pyproject.toml").read_text(
+                encoding="utf-8"
+            )
         )
-        assert declared_project_dependencies(gogurt_config) == {
+        assert declared_project_dependencies(mounted_volume_config) == {
             "gogurt-core",
-            "gogurt-listener-runtime",
             "gogurt-path-volume-support",
+        }
+        listener_host_config = tomllib.loads(
+            (REPO / f"reference/gogurt/listener-host/{platform}/pyproject.toml").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert declared_project_dependencies(listener_host_config) == {"gogurt-listener-runtime"}
+
+        assert set(mounted_volume_config["project"]["entry-points"]) == {
+            "gogurt.mounted-volume-providers"
+        }
+        assert set(listener_host_config["project"]["entry-points"]) == {
+            "gogurt.listener-host-providers"
         }
 
     provenance_config = tomllib.loads(
@@ -495,6 +540,26 @@ def test_portable_core_listener_runtime_and_platform_dependency_direction_is_exa
     assert provenance_imports.isdisjoint(
         {f"riverhog_provenance_{platform}_observer" for platform in platform_contracts}
     )
+
+
+def test_reference_extension_distributions_each_own_one_selectable_capability() -> None:
+    provider_groups = {
+        "gogurt.listener-host-providers",
+        "gogurt.mounted-volume-providers",
+        "riverhog.provenance-observers",
+    }
+    observed: set[str] = set()
+    for pyproject in (REPO / "reference").rglob("pyproject.toml"):
+        config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        groups = set(config["project"].get("entry-points", {})) & provider_groups
+        if groups:
+            assert len(groups) == 1, pyproject.relative_to(REPO)
+            observed.update(groups)
+
+    assert observed == provider_groups
+    architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
+    assert "Each explicitly selected extension distribution owns one capability." in architecture
+    assert "without merging contracts, identities, or selection" in architecture
 
 
 def test_core_dependency_graphs_are_acyclic() -> None:
