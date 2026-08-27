@@ -5,6 +5,9 @@ runner is authoritative; GitHub Actions is one scheduler adapter. Every run uses
 database and deterministic synthetic data. It must never connect to a live Riverhog database
 or use an operator corpus.
 
+The checked cases are selected reference qualification only: they are neither defaults nor
+recommendations and are not a support matrix.
+
 Run `make provider-qualification args="--help"` for the command surface. The checked input is
 [`config.toml`](config.toml). A typical run starts with `infrastructure apply`, verifies the
 manual B2 boundary with `b2-check`, and advances with repeated `operate` invocations while AWS

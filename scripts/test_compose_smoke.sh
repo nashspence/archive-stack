@@ -168,8 +168,8 @@ printf '%s\n' 'stove0-compose-nvenc-target-token' > "${secret_root}/stove0-nvenc
 printf '%s\n' 'stove0-compose-nvenc-sampler-token' > "${secret_root}/stove0-nvenc-av1-opus-review-sampler-token"
 printf '%s\n' 'stove0-compose-opus-target-token' > "${secret_root}/stove0-opus-target-token"
 printf '%s\n' 'stove0-compose-opus-review-sampler-token' > "${secret_root}/stove0-opus-review-sampler-token"
-printf '%s\n' 'stove0-compose-review-target-token' > "${secret_root}/stove0-review-target-token"
-printf '%s\n' 'stove0-compose-review-effect-target-token' > "${secret_root}/stove0-review-effect-target-token"
+printf '%s\n' 'stove0-compose-review-materialize-target-token' > "${secret_root}/stove0-review-materialize-target-token"
+printf '%s\n' 'stove0-compose-review-rclone-effect-target-token' > "${secret_root}/stove0-review-rclone-effect-target-token"
 printf '%s\n' "${smoke_token}" > "${secret_root}/adapter-riverhog-token"
 printf '%s\n' 'riverhog-ftp-adapter-compose-smoke-token' > "${secret_root}/ftp-adapter-api-token"
 printf '%s\n' 'riverhog-ftp-adapter-compose-smoke-password' > "${secret_root}/ftp-adapter-password"
@@ -216,13 +216,14 @@ export STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE="${secret_root}/stove0-nvenc-av1-
 export STOVE0_NVENC_AV1_OPUS_REVIEW_SAMPLER_TOKEN_FILE="${secret_root}/stove0-nvenc-av1-opus-review-sampler-token"
 export STOVE0_OPUS_TARGET_TOKEN_FILE="${secret_root}/stove0-opus-target-token"
 export STOVE0_OPUS_REVIEW_SAMPLER_TOKEN_FILE="${secret_root}/stove0-opus-review-sampler-token"
-export STOVE0_REVIEW_TARGET_TOKEN_FILE="${secret_root}/stove0-review-target-token"
-export STOVE0_REVIEW_EFFECT_TARGET_TOKEN_FILE="${secret_root}/stove0-review-effect-target-token"
+export STOVE0_REVIEW_MATERIALIZE_TARGET_TOKEN_FILE="${secret_root}/stove0-review-materialize-target-token"
+export STOVE0_REVIEW_RCLONE_EFFECT_TARGET_TOKEN_FILE="${secret_root}/stove0-review-rclone-effect-target-token"
 export STOVE0_FFPROBE_IMAGE_DIGEST="$(printf '1%.0s' {1..64})"
 export STOVE0_EXIFTOOL_IMAGE_DIGEST="$(printf '6%.0s' {1..64})"
 export STOVE0_NVENC_AV1_OPUS_IMAGE_DIGEST="$(printf '2%.0s' {1..64})"
 export STOVE0_OPUS_IMAGE_DIGEST="$(printf '3%.0s' {1..64})"
-export STOVE0_REVIEW_IMAGE_DIGEST="$(printf '4%.0s' {1..64})"
+export STOVE0_REVIEW_MATERIALIZE_IMAGE_DIGEST="$(printf '4%.0s' {1..64})"
+export STOVE0_REVIEW_RCLONE_EFFECT_IMAGE_DIGEST="$(printf '7%.0s' {1..64})"
 # Compose interpolates the complete model before it selects services.  The
 # review targets are created only after this bootstrap value is replaced with
 # the running sampler's exact descriptor identity below.
@@ -260,10 +261,10 @@ print(json.load(urllib.request.urlopen(request))['descriptor_sha256'])"
 export STOVE0_OPUS_REVIEW_SAMPLER_DESCRIPTOR_SHA256="$(
   stove0_compose exec -T opus-review-sampler python -c "${sampler_descriptor_code}"
 )"
-stove0_compose up --detach --build --wait review-target review-effect-target
-stove0_compose exec -T review-target python -c "import json, urllib.request; request = urllib.request.Request('http://127.0.0.1:8080/v1/target', headers={'Authorization': 'Bearer stove0-compose-review-target-token'}); assert json.load(urllib.request.urlopen(request))['protocol'] == 'stove0-transform-target/v1'"
-stove0_compose exec -T review-effect-target python -c "import json, urllib.request; request = urllib.request.Request('http://127.0.0.1:8080/v1/target', headers={'Authorization': 'Bearer stove0-compose-review-effect-target-token'}); assert json.load(urllib.request.urlopen(request))['protocol'] == 'stove0-effect-target/v1'"
-stove0_compose exec -T review-effect-target python -c "from pathlib import Path; import subprocess; source = Path('/tmp/rclone-probe'); source.write_bytes(b'riverhog-review-effect-probe'); destination = Path('/var/lib/stove0-review-delivery/qualification/probe'); subprocess.run(['rclone', 'copyto', str(source), str(destination)], check=True); assert destination.read_bytes() == source.read_bytes(); source.unlink(); destination.unlink()"
+stove0_compose up --detach --build --wait review-materialize-target review-rclone-effect-target
+stove0_compose exec -T review-materialize-target python -c "import json, urllib.request; request = urllib.request.Request('http://127.0.0.1:8080/v1/target', headers={'Authorization': 'Bearer stove0-compose-review-materialize-target-token'}); assert json.load(urllib.request.urlopen(request))['protocol'] == 'stove0-transform-target/v1'"
+stove0_compose exec -T review-rclone-effect-target python -c "import json, urllib.request; request = urllib.request.Request('http://127.0.0.1:8080/v1/target', headers={'Authorization': 'Bearer stove0-compose-review-rclone-effect-target-token'}); assert json.load(urllib.request.urlopen(request))['protocol'] == 'stove0-effect-target/v1'"
+stove0_compose exec -T review-rclone-effect-target python -c "from pathlib import Path; import subprocess; source = Path('/tmp/rclone-probe'); source.write_bytes(b'riverhog-review-effect-probe'); destination = Path('/var/lib/stove0-review-delivery/qualification/probe'); subprocess.run(['rclone', 'copyto', str(source), str(destination)], check=True); assert destination.read_bytes() == source.read_bytes(); source.unlink(); destination.unlink()"
 adapter_compose up --detach --build --wait intake-init ftp-adapter ftp-daemon
 
 adapter_run_code="from ftplib import FTP, all_errors
@@ -538,8 +539,8 @@ fi
 
 stove0_compose restart \
   api controller worker ffprobe-sampling-observer exiftool-observer \
-  opus-target opus-review-sampler review-target review-effect-target
+  opus-target opus-review-sampler review-materialize-target review-rclone-effect-target
 stove0_compose up --detach --wait \
   api controller worker ffprobe-sampling-observer exiftool-observer \
-  opus-target opus-review-sampler review-target review-effect-target
+  opus-target opus-review-sampler review-materialize-target review-rclone-effect-target
 stove0_compose exec -T api python -c "${wait_code}"

@@ -43,6 +43,46 @@ REFERENCE_POLICY = (
     "conformance examples. Their inventory is neither complete nor recommended and is not a "
     "support matrix; new mechanisms are independently owned and published."
 )
+GOGURT_REFERENCE_QUALIFICATION = {
+    "purpose": (
+        "First-party reference conformance only; these selections are not defaults or "
+        "recommendations."
+    ),
+    "linux-x64": {
+        "mounted_volume_distribution": "gogurt-linux-mounted-volume",
+        "mounted_volume_provider": "gogurt-linux-mounted-volume",
+        "listener_host_distribution": "gogurt-linux-listener-host",
+        "listener_host_provider": "gogurt-linux-listener-host",
+    },
+    "macos-arm64": {
+        "mounted_volume_distribution": "gogurt-macos-mounted-volume",
+        "mounted_volume_provider": "gogurt-macos-mounted-volume",
+        "listener_host_distribution": "gogurt-macos-listener-host",
+        "listener_host_provider": "gogurt-macos-listener-host",
+    },
+    "windows-x64": {
+        "mounted_volume_distribution": "gogurt-windows-mounted-volume",
+        "mounted_volume_provider": "gogurt-windows-mounted-volume",
+        "listener_host_distribution": "gogurt-windows-listener-host",
+        "listener_host_provider": "gogurt-windows-listener-host",
+    },
+}
+STORAGE_REFERENCE_QUALIFICATION = {
+    "purpose": (
+        "Selected reference qualification only; these cases are neither defaults nor "
+        "recommendations and are not a support matrix."
+    ),
+    "distributions": [
+        "riverhog-storage-adapter-aws",
+        "riverhog-storage-adapter-backblaze",
+    ],
+    "cases": [
+        "b2-archive",
+        "b2-retrieval-cache",
+        "aws-deep-archive",
+        "aws-cloudfront-egress",
+    ],
+}
 RELEASE_ROLES = (
     "end_user_artifact",
     "deployed_implementation",
@@ -53,6 +93,13 @@ RELEASE_ROLES = (
 )
 PROJECT_README = {
     "text": "Riverhog v1 component. See the project URL for documentation and releases.",
+    "content-type": "text/markdown",
+}
+REFERENCE_PROJECT_README = {
+    "text": (
+        "Optional nonnormative Riverhog v1 reference component. "
+        "See the project URL for documentation and releases."
+    ),
     "content-type": "text/markdown",
 }
 PROJECT_PEOPLE = [{"name": "Nash Spence"}]
@@ -76,7 +123,7 @@ RUNTIME_IMAGE_TARGETS = {
     "riverhog-ftp-adapter": {
         "role": "reference",
         "description": "Optional nonnormative Riverhog FTP ingress reference.",
-        "distributions": ["riverhog-ftp-adapter"],
+        "distributions": ["riverhog-ftp-adapter", "riverhog-provenance-linux-observer"],
         "repository": "ghcr.io/nashspence/riverhog-ftp-adapter",
     },
     "riverhog-storage-adapter-aws": {
@@ -130,11 +177,17 @@ RUNTIME_IMAGE_TARGETS = {
         "distributions": ["stove0-opus-target", "stove0-opus-review-sampler"],
         "repository": "ghcr.io/nashspence/riverhog-stove0-opus-target",
     },
-    "stove0-review-target": {
+    "stove0-review-materialize-target": {
         "role": "reference",
-        "description": "Optional nonnormative review-target reference for Stove0.",
-        "distributions": ["stove0-review-target"],
-        "repository": "ghcr.io/nashspence/riverhog-stove0-review-target",
+        "description": "Optional nonnormative review materialization target reference for Stove0.",
+        "distributions": ["stove0-review-materialize-target"],
+        "repository": "ghcr.io/nashspence/riverhog-stove0-review-materialize-target",
+    },
+    "stove0-review-rclone-effect-target": {
+        "role": "reference",
+        "description": "Optional nonnormative rclone review-effect target reference for Stove0.",
+        "distributions": ["stove0-review-rclone-effect-target"],
+        "repository": "ghcr.io/nashspence/riverhog-stove0-review-rclone-effect-target",
     },
 }
 TEST_IMAGE_TARGETS = {"test": {"local_tag": "riverhog-test:dev"}}
@@ -408,6 +461,11 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         raise ReleaseError("Riverhog requires one coordinated product version")
     if config.get("references") != {"policy": REFERENCE_POLICY}:
         raise ReleaseError("release.toml differs from the first-party reference policy")
+    if config.get("qualification") != {
+        "gogurt_reference": GOGURT_REFERENCE_QUALIFICATION,
+        "storage_reference": STORAGE_REFERENCE_QUALIFICATION,
+    }:
+        raise ReleaseError("release.toml differs from the selected reference qualifications")
     governance = config.get("governance")
     if not isinstance(governance, dict) or set(governance) != GOVERNANCE_KEYS:
         raise ReleaseError("release.toml lacks the complete GitHub governance contract")
@@ -490,7 +548,12 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         _version(version)
         if expected_version is not None and version != expected_version:
             raise ReleaseError(f"{name} is {version}, expected {expected_version}")
-        if metadata.get("readme") != PROJECT_README:
+        expected_readme = (
+            REFERENCE_PROJECT_README
+            if classified[relative] == "reference_component"
+            else PROJECT_README
+        )
+        if metadata.get("readme") != expected_readme:
             raise ReleaseError(f"{name} does not carry the common package README")
         if metadata.get("authors") != PROJECT_PEOPLE:
             raise ReleaseError(f"{name} does not carry canonical authorship")
@@ -589,10 +652,28 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
     if not image_distributions <= seen_names:
         raise ReleaseError("a runtime image refers to an unknown distribution")
     roles_by_name = {project.name: project.role for project in projects}
-    internal_dependencies, _artifact_dependencies, _licenses = _project_dependency_graph(
+    internal_dependencies, artifact_dependencies, _licenses = _project_dependency_graph(
         root,
         projects,
     )
+    reference_names = {
+        project.name for project in projects if project.role == "reference_component"
+    }
+    reference_forbidden_roles = {
+        "end_user_artifact",
+        "deployed_implementation",
+        "reusable_library",
+        "internal_build_unit",
+    }
+    for project in projects:
+        if project.role not in reference_forbidden_roles:
+            continue
+        references = sorted(artifact_dependencies[project.name] & reference_names)
+        if references:
+            raise ReleaseError(
+                f"{project.name} depends on independently selected reference components: "
+                f"{references}"
+            )
     for target, value in runtime_images.items():
         configured_roots = [
             _normalize_name(str(distribution)) for distribution in value["distributions"]

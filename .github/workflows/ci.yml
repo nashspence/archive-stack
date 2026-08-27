@@ -136,7 +136,8 @@ jobs:
           - stove0-ffprobe-sampling-observer
           - stove0-nvenc-av1-opus-target
           - stove0-opus-target
-          - stove0-review-target
+          - stove0-review-materialize-target
+          - stove0-review-rclone-effect-target
           - mango-fish
           - test
     steps:

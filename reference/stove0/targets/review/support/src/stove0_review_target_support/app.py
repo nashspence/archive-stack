@@ -1,40 +1,32 @@
-"""Authenticated one-role review target service."""
+"""Shared HTTP and sampler-configuration support for exact review targets."""
 
 from __future__ import annotations
 
-import argparse
-import contextlib
-import importlib.metadata
 import json
-import os
 import secrets
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal, cast
+from typing import Protocol
 
-import uvicorn
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPBearer
 from http_api_contracts import ErrorResponse, HealthResponse, error_payload, operation_openapi
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from stove0_review_sampler_client import ReviewSamplerClient
-from stove0_target_support import (
-    TARGET_HTTP_OPERATIONS,
-    TargetHttpBinding,
-    terminal_state_retention_seconds,
-)
+from stove0_target_support import TARGET_HTTP_OPERATIONS, TargetHttpBinding
 
-from stove0_review_target.target import (
-    RcloneReviewDestination,
-    ReviewTargetService,
-    SamplerRegistration,
-)
+from stove0_review_target_support.target import SamplerRegistration
 
-SERVICE = "stove0-review-target"
 _PUBLIC_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
 _bearer = HTTPBearer(auto_error=False)
+
+
+class ReviewTarget(Protocol):
+    def close(self) -> None: ...
+
+    def readiness(self) -> dict[str, str]: ...
 
 
 class SamplerConfig(BaseModel):
@@ -95,21 +87,17 @@ def parse_sampler_registrations(document: str) -> tuple[SamplerRegistration, ...
     return tuple(registrations)
 
 
-def _sampler_registrations() -> tuple[SamplerRegistration, ...]:
-    direct = os.getenv("STOVE0_REVIEW_TARGET_SAMPLERS_JSON")
-    path = os.getenv("STOVE0_REVIEW_TARGET_SAMPLERS_JSON_FILE")
-    if bool(direct) == bool(path):
-        raise ValueError("set exactly one review target sampler configuration source")
-    if direct is not None:
-        return parse_sampler_registrations(direct)
-    return load_sampler_registrations(Path(str(path)))
-
-
-def create_app(*, token: str, target: ReviewTargetService) -> FastAPI:
+def create_target_app(
+    *,
+    service: str,
+    title: str,
+    token: str,
+    target: ReviewTarget,
+) -> FastAPI:
     credential = token.strip()
     if not credential:
         raise ValueError("review target token must be nonempty")
-    binding = TargetHttpBinding(target)
+    binding = TargetHttpBinding(target)  # type: ignore[arg-type]
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -118,13 +106,11 @@ def create_app(*, token: str, target: ReviewTargetService) -> FastAPI:
         finally:
             target.close()
 
-    app = FastAPI(
-        title="Stove0 review target", version="1", lifespan=lifespan, openapi_url="/v1/openapi.json"
-    )
+    app = FastAPI(title=title, version="1", lifespan=lifespan, openapi_url="/v1/openapi.json")
 
     @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     def live() -> dict[str, str]:
-        return {"service": SERVICE, "status": "ok"}
+        return {"service": service, "status": "ok"}
 
     @app.get(
         "/health/ready",
@@ -138,7 +124,7 @@ def create_app(*, token: str, target: ReviewTargetService) -> FastAPI:
         except Exception:
             return _error(503, "service_unavailable", "configured review samplers are not ready")
         return Response(
-            content=b'{"service":"stove0-review-target","status":"ok"}',
+            content=json.dumps({"service": service, "status": "ok"}, separators=(",", ":")),
             media_type="application/json",
         )
 
@@ -182,92 +168,10 @@ def _error(status: int, code: str, message: str) -> Response:
     )
 
 
-def _secret() -> str:
-    direct = os.getenv("STOVE0_REVIEW_TARGET_TOKEN")
-    path = os.getenv("STOVE0_REVIEW_TARGET_TOKEN_FILE")
-    if bool(direct) == bool(path):
-        raise ValueError("set exactly one review target token source")
-    value = direct if direct is not None else Path(str(path)).read_text(encoding="utf-8")
-    if not value.strip():
-        raise ValueError("review target token must be nonempty")
-    return value.strip()
-
-
-def _image_digest() -> str:
-    value = os.getenv("STOVE0_REVIEW_TARGET_IMAGE_DIGEST", "").strip()
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-        raise ValueError("STOVE0_REVIEW_TARGET_IMAGE_DIGEST must be a lowercase SHA-256")
-    return value
-
-
-def _mode() -> Literal["collection", "rclone-effect"]:
-    value = os.getenv("STOVE0_REVIEW_TARGET_MODE", "").strip()
-    if value not in {"collection", "rclone-effect"}:
-        raise ValueError("STOVE0_REVIEW_TARGET_MODE must be collection or rclone-effect")
-    return cast(Literal["collection", "rclone-effect"], value)
-
-
-def _effect_destination(
-    mode: Literal["collection", "rclone-effect"],
-) -> RcloneReviewDestination | None:
-    identity = os.getenv("STOVE0_REVIEW_TARGET_DESTINATION_IDENTITY", "").strip()
-    remote = os.getenv("STOVE0_REVIEW_TARGET_RCLONE_REMOTE", "").strip()
-    config = os.getenv("STOVE0_REVIEW_TARGET_RCLONE_CONFIG_FILE", "").strip()
-    if mode == "collection":
-        if identity or remote or config:
-            raise ValueError("collection review mode cannot configure an rclone destination")
-        return None
-    if not identity or not remote:
-        raise ValueError("rclone-effect review mode requires destination identity and remote")
-    timeout = int(os.getenv("STOVE0_REVIEW_TARGET_RCLONE_TIMEOUT_SECONDS", "86400"))
-    return RcloneReviewDestination(
-        identity=identity,
-        remote=remote,
-        config_path=Path(config) if config else None,
-        executable=os.getenv("STOVE0_REVIEW_TARGET_RCLONE_BIN", "rclone").strip(),
-        timeout_seconds=timeout,
-    )
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog=SERVICE)
-    parser.add_argument("--version", action="version", version=importlib.metadata.version(SERVICE))
-    parser.add_argument("--host", default=os.getenv("STOVE0_REVIEW_TARGET_HOST", "127.0.0.1"))
-    parser.add_argument(
-        "--port", type=int, default=int(os.getenv("STOVE0_REVIEW_TARGET_PORT", "8080"))
-    )
-    args = parser.parse_args(argv)
-    mode = _mode()
-    target = ReviewTargetService(
-        state_root=Path(
-            os.getenv("STOVE0_REVIEW_TARGET_STATE_ROOT", "/var/lib/stove0-review-target")
-        ),
-        workspace_root=Path(
-            os.getenv("STOVE0_REVIEW_TARGET_WORKSPACE", "/run/stove0-review-target")
-        ),
-        samplers=_sampler_registrations(),
-        source_revision=os.getenv("STOVE0_REVIEW_TARGET_SOURCE_REVISION", "unknown"),
-        image_digest=_image_digest(),
-        mode=mode,
-        destination=_effect_destination(mode),
-        terminal_state_retention_seconds=terminal_state_retention_seconds(),
-    )
-    token = _secret()
-    with contextlib.suppress(KeyError):
-        os.environ.pop("STOVE0_REVIEW_TARGET_TOKEN")
-    uvicorn.run(create_app(token=token, target=target), host=args.host, port=args.port)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 __all__ = [
     "ReviewTargetConfig",
     "SamplerConfig",
-    "create_app",
+    "create_target_app",
     "load_sampler_registrations",
-    "main",
     "parse_sampler_registrations",
 ]

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "riverhog-recover"
 version = "0.1.0"
-description = "Independent reference recovery for Riverhog archive copies."
+description = "Independent recovery tool for Riverhog archive copies."
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

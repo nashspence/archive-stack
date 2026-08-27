@@ -60,9 +60,9 @@ MAINTAINED_TARGETS = (
     IMPLEMENTATION_ROOT
     / "targets"
     / "review"
-    / "target"
+    / "materialize-target"
     / "src"
-    / "stove0_review_target"
+    / "stove0_review_materialize_target"
     / "target.py",
 )
 EXTENSION_ROOTS = (
@@ -268,7 +268,9 @@ def test_stove0_server_consumes_component_boundaries_only_as_protocols_and_calle
         "stove0_nvenc_av1_opus_target",
         "stove0_opus_review_sampler",
         "stove0_opus_target",
-        "stove0_review_target",
+        "stove0_review_materialize_target",
+        "stove0_review_rclone_effect_target",
+        "stove0_review_target_support",
     }
 
 

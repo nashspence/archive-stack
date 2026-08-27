@@ -20,11 +20,12 @@ from stove0_nvenc_av1_opus_target.app import create_target_app as create_nvenc_t
 from stove0_observer_support import OBSERVER_HTTP_OPERATIONS
 from stove0_opus_review_sampler.app import create_app as create_opus_sampler_app
 from stove0_opus_target.app import create_target_app as create_opus_target_app
+from stove0_review_materialize_target.app import create_app as create_review_materialize_app
+from stove0_review_rclone_effect_target.app import create_app as create_review_effect_app
 from stove0_review_sampler_support import (
     SAMPLER_HTTP_OPERATIONS,
     SamplerHttpBinding,
 )
-from stove0_review_target.app import create_app as create_review_target_app
 from stove0_target_support import TARGET_HTTP_OPERATIONS, TargetHttpBinding, TargetServiceError
 
 
@@ -71,7 +72,12 @@ def _applications() -> tuple[
             ("DELETE", "/v1/target"),
         ),
         (
-            create_review_target_app(token="secret", target=review),
+            create_review_materialize_app(token="secret", target=review),
+            TARGET_HTTP_OPERATIONS,
+            ("DELETE", "/v1/target"),
+        ),
+        (
+            create_review_effect_app(token="secret", target=review),
             TARGET_HTTP_OPERATIONS,
             ("DELETE", "/v1/target"),
         ),

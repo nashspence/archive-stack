@@ -22,8 +22,8 @@ limitations in the applicable software license.
 
 New integrations and capability implementations should be independently published over Riverhog's
 public contracts rather than added to its products. Checked-in reference components are optional,
-nonnormative, maintainer-selected conformance examples—not a complete, recommended, or supported
-set. Report suspected vulnerabilities privately through [security reporting](SECURITY.md).
+nonnormative, maintainer-selected conformance examples; their inventory is not a support matrix.
+Report suspected vulnerabilities privately through [security reporting](SECURITY.md).
 
 ## Start here
 

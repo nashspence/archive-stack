@@ -25,6 +25,15 @@ from stove0_protocol import (
     WorkIdentity,
     WorkPayload,
 )
+from stove0_review_materialize_target import ReviewMaterializeTargetService
+from stove0_review_materialize_target import app as materialize_app
+from stove0_review_materialize_target.app import create_app
+from stove0_review_rclone_effect_target import (
+    RcloneReviewDestination,
+    ReviewRcloneEffectTargetService,
+)
+from stove0_review_rclone_effect_target import app as effect_app
+from stove0_review_rclone_effect_target import target as effect_target
 from stove0_review_sampler_client import ReviewSamplerClient
 from stove0_review_sampler_protocol import (
     SamplerDescriptor,
@@ -35,10 +44,6 @@ from stove0_review_sampler_protocol import (
     SamplerResult,
     SamplerResultPayload,
 )
-from stove0_review_target import RcloneReviewDestination, ReviewTargetService, SamplerRegistration
-from stove0_review_target import app as review_app
-from stove0_review_target import target as review_target
-from stove0_review_target.app import ReviewTargetConfig, SamplerConfig, create_app
 from stove0_review_target_contracts import (
     REVIEW_MATERIALIZE_OPERATION,
     REVIEW_RCLONE_DELIVER_OPERATION,
@@ -47,6 +52,8 @@ from stove0_review_target_contracts import (
     ReviewSamplePlanPayload,
     ReviewSampleWindow,
 )
+from stove0_review_target_support import ReviewTargetConfig, SamplerConfig, SamplerRegistration
+from stove0_review_target_support import target as review_support
 from stove0_target_support import (
     InputArtifact,
     OutputArtifact,
@@ -133,12 +140,13 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
     tmp_path: Path,
 ) -> None:
     registration, sampler_client = _sampler()
-    target = ReviewTargetService(
+    target = ReviewMaterializeTargetService(
         state_root=tmp_path / "state",
         workspace_root=tmp_path / "workspace",
         samplers=(registration,),
         source_revision="fixture",
         image_digest=_sha("9"),
+        implementation_version="0.1.0",
     )
     try:
         request = TargetPreflightRequest(
@@ -204,12 +212,13 @@ def test_review_preflight_seals_exact_sampler_identity_and_one_operation(
 
 def test_review_process_exposes_only_target_contract(tmp_path: Path) -> None:
     registration, _sampler_client = _sampler()
-    target = ReviewTargetService(
+    target = ReviewMaterializeTargetService(
         state_root=tmp_path / "state",
         workspace_root=tmp_path / "workspace",
         samplers=(registration,),
         source_revision="fixture",
         image_digest=_sha("9"),
+        implementation_version="0.1.0",
     )
     with TestClient(create_app(token="review-secret", target=target)) as client:
         response = client.get(
@@ -217,7 +226,7 @@ def test_review_process_exposes_only_target_contract(tmp_path: Path) -> None:
             headers={"Authorization": "Bearer review-secret"},
         )
         assert response.status_code == 200
-        assert response.json()["implementation_id"] == "stove0.review-collection-target/v1"
+        assert response.json()["implementation_id"] == "stove0.review-materialize-target/v1"
         assert (
             client.get(
                 "/v1/sampler",
@@ -227,7 +236,7 @@ def test_review_process_exposes_only_target_contract(tmp_path: Path) -> None:
         )
 
 
-def test_review_target_preserves_sampler_terminal_classification() -> None:
+def test_review_support_preserves_sampler_terminal_classification() -> None:
     registration, _client = _sampler()
     common = {
         "request_sha256": _sha("1"),
@@ -257,12 +266,12 @@ def test_review_target_preserves_sampler_terminal_classification() -> None:
     canceled = SamplerResult.seal(SamplerResultPayload(**common, state="canceled"))
 
     with pytest.raises(TargetExecutionFailure) as retryable_error:
-        review_target._require_sampler_success(retryable)
+        review_support._require_sampler_success(retryable)
     assert retryable_error.value.retryable is True
     with pytest.raises(TargetExecutionInapplicable, match="fixture content"):
-        review_target._require_sampler_success(inapplicable)
+        review_support._require_sampler_success(inapplicable)
     with pytest.raises(TargetExecutionCanceled, match="canceled"):
-        review_target._require_sampler_success(canceled)
+        review_support._require_sampler_success(canceled)
 
 
 def test_review_execution_identity_is_the_canonical_semantic_result() -> None:
@@ -286,7 +295,7 @@ def test_review_execution_identity_is_the_canonical_semantic_result() -> None:
     )
 
     assert (
-        review_target._execution_sha256(
+        review_support._execution_sha256(
             _sha("1"),
             _sha("2"),
             _sha("3"),
@@ -302,31 +311,32 @@ def test_review_process_environment_is_connected(
 ) -> None:
     token_file = tmp_path / "review.token"
     token_file.write_text("file-secret\n", encoding="utf-8")
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_TOKEN_FILE", str(token_file))
-    monkeypatch.delenv("STOVE0_REVIEW_TARGET_TOKEN", raising=False)
-    assert review_app._secret() == "file-secret"
-    monkeypatch.delenv("STOVE0_REVIEW_TARGET_TOKEN_FILE")
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_TOKEN", "direct-secret")
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_TOKEN_FILE", str(token_file))
+    monkeypatch.delenv("STOVE0_REVIEW_MATERIALIZE_TARGET_TOKEN", raising=False)
+    assert materialize_app._secret() == "file-secret"
+    monkeypatch.delenv("STOVE0_REVIEW_MATERIALIZE_TARGET_TOKEN_FILE")
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_TOKEN", "direct-secret")
 
     registrations = (_sampler()[0],)
     sampler_file = tmp_path / "samplers.json"
     sampler_file.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_SAMPLERS_JSON_FILE", str(sampler_file))
-    monkeypatch.delenv("STOVE0_REVIEW_TARGET_SAMPLERS_JSON", raising=False)
-    monkeypatch.setattr(review_app, "load_sampler_registrations", lambda path: registrations)
-    assert review_app._sampler_registrations() == registrations
-    monkeypatch.delenv("STOVE0_REVIEW_TARGET_SAMPLERS_JSON_FILE")
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_SAMPLERS_JSON", "{}")
-    monkeypatch.setattr(review_app, "parse_sampler_registrations", lambda document: registrations)
-    assert review_app._sampler_registrations() == registrations
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_SAMPLERS_JSON_FILE", str(sampler_file))
+    monkeypatch.delenv("STOVE0_REVIEW_MATERIALIZE_TARGET_SAMPLERS_JSON", raising=False)
+    monkeypatch.setattr(materialize_app, "load_sampler_registrations", lambda path: registrations)
+    assert materialize_app._sampler_registrations() == registrations
+    monkeypatch.delenv("STOVE0_REVIEW_MATERIALIZE_TARGET_SAMPLERS_JSON_FILE")
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_SAMPLERS_JSON", "{}")
+    monkeypatch.setattr(
+        materialize_app, "parse_sampler_registrations", lambda document: registrations
+    )
+    assert materialize_app._sampler_registrations() == registrations
 
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_HOST", "127.0.0.8")
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_PORT", "8188")
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_STATE_ROOT", str(tmp_path / "state"))
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_WORKSPACE", str(tmp_path / "workspace"))
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_SOURCE_REVISION", "fixture-revision")
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_IMAGE_DIGEST", _sha("9"))
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_MODE", "collection")
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_HOST", "127.0.0.8")
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_PORT", "8188")
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_STATE_ROOT", str(tmp_path / "state"))
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_WORKSPACE", str(tmp_path / "workspace"))
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_SOURCE_REVISION", "fixture-revision")
+    monkeypatch.setenv("STOVE0_REVIEW_MATERIALIZE_TARGET_IMAGE_DIGEST", _sha("9"))
     configured: dict[str, object] = {}
 
     class ConfiguredTarget:
@@ -343,25 +353,24 @@ def test_review_process_environment_is_connected(
         configured["host"] = host
         configured["port"] = port
 
-    monkeypatch.setattr(review_app, "ReviewTargetService", ConfiguredTarget)
-    monkeypatch.setattr(review_app.uvicorn, "run", run)
+    monkeypatch.setattr(materialize_app, "ReviewMaterializeTargetService", ConfiguredTarget)
+    monkeypatch.setattr(materialize_app.uvicorn, "run", run)
 
-    assert review_app.main([]) == 0
+    assert materialize_app.main([]) == 0
     assert configured == {
         "state_root": tmp_path / "state",
         "workspace_root": tmp_path / "workspace",
         "samplers": registrations,
         "source_revision": "fixture-revision",
         "image_digest": _sha("9"),
-        "mode": "collection",
-        "destination": None,
+        "implementation_version": "0.1.0",
         "terminal_state_retention_seconds": 2_592_000,
         "host": "127.0.0.8",
         "port": 8188,
     }
 
 
-def test_review_target_registration_count_is_defined_by_deployment(tmp_path: Path) -> None:
+def test_review_support_registration_count_is_defined_by_deployment(tmp_path: Path) -> None:
     samplers = tuple(
         SamplerConfig(
             id=f"sampler-{index:03}",
@@ -382,13 +391,13 @@ def test_review_effect_deployment_has_one_fixed_effect_contract(tmp_path: Path) 
         identity=_sha("d"),
         remote=str(tmp_path / "delivery"),
     )
-    target = ReviewTargetService(
+    target = ReviewRcloneEffectTargetService(
         state_root=tmp_path / "state",
         workspace_root=tmp_path / "workspace",
         samplers=(registration,),
         source_revision="fixture",
         image_digest=_sha("9"),
-        mode="rclone-effect",
+        implementation_version="0.1.0",
         destination=destination,
     )
     try:
@@ -445,7 +454,7 @@ def test_rclone_review_destination_commits_manifest_last_and_returns_opaque_rece
         calls.append(arguments)
         return object()
 
-    monkeypatch.setattr(review_target.subprocess, "run", run)
+    monkeypatch.setattr(effect_target.subprocess, "run", run)
     destination = RcloneReviewDestination(identity=_sha("d"), remote="fixture:review")
     result = destination.commit(
         delivery_id=_sha("e"),
@@ -476,13 +485,12 @@ def test_review_effect_environment_binds_nonsecret_identity_and_private_destinat
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = tmp_path / "rclone.conf"
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_DESTINATION_IDENTITY", _sha("d"))
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_RCLONE_REMOTE", "private:review")
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_RCLONE_CONFIG_FILE", str(config))
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_RCLONE_TIMEOUT_SECONDS", "7200")
-    monkeypatch.setenv("STOVE0_REVIEW_TARGET_RCLONE_BIN", "/opt/tools/rclone")
-    destination = review_app._effect_destination("rclone-effect")
-    assert destination is not None
+    monkeypatch.setenv("STOVE0_REVIEW_RCLONE_EFFECT_TARGET_DESTINATION_IDENTITY", _sha("d"))
+    monkeypatch.setenv("STOVE0_REVIEW_RCLONE_EFFECT_TARGET_RCLONE_REMOTE", "private:review")
+    monkeypatch.setenv("STOVE0_REVIEW_RCLONE_EFFECT_TARGET_RCLONE_CONFIG_FILE", str(config))
+    monkeypatch.setenv("STOVE0_REVIEW_RCLONE_EFFECT_TARGET_RCLONE_TIMEOUT_SECONDS", "7200")
+    monkeypatch.setenv("STOVE0_REVIEW_RCLONE_EFFECT_TARGET_RCLONE_BIN", "/opt/tools/rclone")
+    destination = effect_app._effect_destination()
     assert destination.identity == _sha("d")
     assert destination.remote == "private:review"
     assert destination.config_path == config
@@ -536,13 +544,13 @@ def test_review_effect_executes_sampling_delivery_and_canonical_receipt_end_to_e
         image_digest=descriptor.image_digest,
     )
     destination = RcloneReviewDestination(identity=_sha("d"), remote="fixture:review")
-    target = ReviewTargetService(
+    target = ReviewRcloneEffectTargetService(
         state_root=tmp_path / "state",
         workspace_root=workspace_root,
         samplers=(registration,),
         source_revision="fixture",
         image_digest=_sha("9"),
-        mode="rclone-effect",
+        implementation_version="0.1.0",
         destination=destination,
     )
     sample_plan = ReviewSamplePlan.seal(
@@ -670,13 +678,13 @@ def test_review_effect_executes_sampling_delivery_and_canonical_receipt_end_to_e
 
     execution = Execution()
     monkeypatch.setattr(
-        review_target.TargetExecutionRuntime,
+        review_support.TargetExecutionRuntime,
         "from_request",
         lambda *_args, **_kwargs: execution,
     )
     commands: list[list[str]] = []
     monkeypatch.setattr(
-        review_target.subprocess,
+        effect_target.subprocess,
         "run",
         lambda arguments, **_kwargs: commands.append(arguments),
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tomllib
 from pathlib import Path
 
 from gogurt_core.core import execute_gogurt_action, load_gogurt_actions, plan_gogurt_action
@@ -76,4 +77,9 @@ def test_every_checked_qualification_input_runs_through_its_real_consumer(
         "b2-archive",
         "b2-retrieval-cache",
         "aws-deep-archive",
+    }
+    release = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))
+    assert set(release["qualification"]["storage_reference"]["cases"]) == {
+        *(bucket.logical_name for bucket in qualification.buckets),
+        "aws-cloudfront-egress",
     }

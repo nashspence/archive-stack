@@ -1,16 +1,14 @@
-"""Review collection authority that delegates only terminal sample rendering."""
+"""Shared rendering mechanics for exact review publication targets."""
 
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import os
-import subprocess
 import threading
-from collections.abc import Sequence
+from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
 
 from jsonschema import Draft202012Validator
 from pydantic import JsonValue
@@ -29,18 +27,17 @@ from stove0_review_sampler_protocol import (
 )
 from stove0_review_target_contracts import (
     REVIEW_INDEX_ROLE,
-    REVIEW_MATERIALIZE_OPERATION,
-    REVIEW_RCLONE_DELIVER_OPERATION,
     ReviewMaterializeIntent,
     validate_review_materialize_intent,
 )
 from stove0_target_support import (
     DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
+    OperationContract,
     OutputArtifact,
     PersistentTargetService,
+    TargetCollectionPublication,
     TargetContract,
     TargetContractPayload,
-    TargetEffectCommitUncertain,
     TargetExecutionCanceled,
     TargetExecutionFailure,
     TargetExecutionInapplicable,
@@ -70,37 +67,25 @@ _SAMPLER_OPTION_PROPERTIES: dict[str, JsonValue] = {
     "sampler_image_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
 }
 
-COLLECTION_OPTIONS = JsonSchemaDocument.from_schema(
-    "stove0.review-target-options/v1",
-    {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "required": ["sampler_registration_id"],
-        "properties": _SAMPLER_OPTION_PROPERTIES,
-        "additionalProperties": False,
-    },
-)
 
-EFFECT_OPTIONS = JsonSchemaDocument.from_schema(
-    "stove0.review-rclone-target-options/v1",
-    {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "required": ["sampler_registration_id", "destination_identity"],
-        "properties": {
-            **_SAMPLER_OPTION_PROPERTIES,
-            "destination_identity": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+def review_options_schema(
+    schema_id: str,
+    *,
+    required: tuple[str, ...] = (),
+    properties: Mapping[str, JsonValue] | None = None,
+) -> JsonSchemaDocument:
+    """Build one exact target-owned schema over shared sampler selection options."""
+
+    return JsonSchemaDocument.from_schema(
+        schema_id,
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "required": ["sampler_registration_id", *required],
+            "properties": {**_SAMPLER_OPTION_PROPERTIES, **dict(properties or {})},
+            "additionalProperties": False,
         },
-        "additionalProperties": False,
-    },
-)
-
-
-def _version() -> str:
-    try:
-        return importlib.metadata.version("stove0-review-target")
-    except importlib.metadata.PackageNotFoundError:
-        return "development"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,76 +104,9 @@ class SamplerRegistration:
         return descriptor
 
 
-@dataclass(frozen=True, slots=True)
-class RcloneReviewDestination:
-    """Deployment-owned rclone destination for one fixed effect target."""
+class ReviewTargetServiceBase(PersistentTargetService, ABC):
+    """Common sampler orchestration with publication owned by an exact target."""
 
-    identity: str
-    remote: str
-    config_path: Path | None = None
-    executable: str = "rclone"
-    timeout_seconds: int = 86400
-
-    def __post_init__(self) -> None:
-        if len(self.identity) != 64 or any(
-            value not in "0123456789abcdef" for value in self.identity
-        ):
-            raise ValueError("review destination identity must be a lowercase SHA-256")
-        if not self.remote or self.remote != self.remote.strip():
-            raise ValueError("review rclone destination must be nonempty and canonical")
-        if not self.executable or self.executable != self.executable.strip():
-            raise ValueError("review rclone executable must be nonempty and canonical")
-        if self.config_path is not None and not self.config_path.is_absolute():
-            raise ValueError("review rclone config path must be absolute")
-        if self.timeout_seconds < 1:
-            raise ValueError("review rclone timeout must be positive")
-
-    def commit(
-        self,
-        *,
-        delivery_id: str,
-        output_root: Path,
-        artifacts: Sequence[OutputArtifact],
-        manifest_path: Path,
-    ) -> dict[str, JsonValue]:
-        """Commit exact review objects, then publish their manifest marker last."""
-
-        destination = f"{self.remote.rstrip('/')}/{delivery_id}"
-        common = [self.executable]
-        if self.config_path is not None:
-            common.extend(("--config", str(self.config_path)))
-        try:
-            subprocess.run(
-                [*common, "copy", str(output_root), f"{destination}/objects"],
-                check=True,
-                capture_output=True,
-                timeout=self.timeout_seconds,
-            )
-            subprocess.run(
-                [*common, "copyto", str(manifest_path), f"{destination}/manifest.json"],
-                check=True,
-                capture_output=True,
-                timeout=self.timeout_seconds,
-            )
-        except FileNotFoundError:
-            raise
-        except Exception as exc:
-            raise TargetEffectCommitUncertain(
-                "review delivery may have committed; inspect the configured destination"
-            ) from exc
-        manifest_bytes, archive_root_sha256 = _identity(manifest_path)
-        del manifest_bytes
-        return {
-            "format": "stove0-review-rclone-receipt/v1",
-            "destination_identity": self.identity,
-            "delivery_id": delivery_id,
-            "artifact_archive_root_sha256": archive_root_sha256,
-            "artifact_count": len(artifacts),
-            "total_bytes": sum(item.bytes for item in artifacts),
-        }
-
-
-class ReviewTargetService(PersistentTargetService):
     def __init__(
         self,
         *,
@@ -197,8 +115,11 @@ class ReviewTargetService(PersistentTargetService):
         samplers: tuple[SamplerRegistration, ...],
         source_revision: str = "unknown",
         image_digest: str,
-        mode: Literal["collection", "rclone-effect"] = "collection",
-        destination: RcloneReviewDestination | None = None,
+        implementation_version: str,
+        protocol: TargetProtocol,
+        implementation_id: str,
+        operation: OperationContract,
+        options_schema: JsonSchemaDocument,
         terminal_state_retention_seconds: int = DEFAULT_TERMINAL_STATE_RETENTION_SECONDS,
     ) -> None:
         if not samplers or [item.id for item in samplers] != sorted(item.id for item in samplers):
@@ -210,27 +131,13 @@ class ReviewTargetService(PersistentTargetService):
         os.chmod(self.workspace_root, 0o700)
         self.samplers = {item.id: item for item in samplers}
         self.image_digest = image_digest
-        self.mode = mode
-        self.destination = destination
-        if (mode == "rclone-effect") != (destination is not None):
-            raise ValueError("rclone-effect review mode requires exactly one destination")
-        operation = (
-            REVIEW_RCLONE_DELIVER_OPERATION
-            if mode == "rclone-effect"
-            else REVIEW_MATERIALIZE_OPERATION
-        )
-        protocol: TargetProtocol = (
-            "stove0-effect-target/v1" if mode == "rclone-effect" else "stove0-transform-target/v1"
-        )
+        self.implementation_version = implementation_version
+        self.operation = operation
         contract = TargetContract.seal(
             TargetContractPayload(
                 protocol=protocol,
-                implementation_id=(
-                    "stove0.review-rclone-effect-target/v1"
-                    if mode == "rclone-effect"
-                    else "stove0.review-collection-target/v1"
-                ),
-                implementation_version=_version(),
+                implementation_id=implementation_id,
+                implementation_version=implementation_version,
                 source_revision=source_revision,
                 image_digest=image_digest,
                 operations=(
@@ -238,9 +145,7 @@ class ReviewTargetService(PersistentTargetService):
                         operation_id=operation.id,
                         operation_contract_sha256=operation.contract_sha256,
                         result_kind=operation.result_kind,
-                        options_schema=(
-                            EFFECT_OPTIONS if mode == "rclone-effect" else COLLECTION_OPTIONS
-                        ),
+                        options_schema=options_schema,
                     ),
                 ),
             )
@@ -292,12 +197,11 @@ class ReviewTargetService(PersistentTargetService):
                 "invalid_target_request",
                 "review variant intent is invalid for the selected sampler",
             ) from exc
-        expected = {
+        expected: dict[str, JsonValue] = {
             "sampler_descriptor_sha256": descriptor.descriptor_sha256,
             "sampler_image_digest": descriptor.image_digest,
+            **self._fixed_target_options(),
         }
-        if self.destination is not None:
-            expected["destination_identity"] = self.destination.identity
         for key, value in expected.items():
             supplied = request.target_options.get(key)
             if supplied is not None and supplied != value:
@@ -322,6 +226,37 @@ class ReviewTargetService(PersistentTargetService):
             for registration in self.samplers.values()
         }
 
+    def _fixed_target_options(self) -> dict[str, JsonValue]:
+        return {}
+
+    def _validate_sealed_target_options(self, options: Mapping[str, JsonValue]) -> None:
+        for key, value in self._fixed_target_options().items():
+            if options.get(key) != value:
+                raise RuntimeError(f"sealed review plan differs from configured {key}")
+
+    @abstractmethod
+    def _open_collection_publication(
+        self,
+        execution: TargetExecutionRuntime,
+    ) -> TargetCollectionPublication | None:
+        """Open the exact publication mechanism owned by this target."""
+
+    @abstractmethod
+    def _finish_publication(
+        self,
+        *,
+        execution: TargetExecutionRuntime,
+        workspace: TransformWorkspace,
+        request: TargetJobRequest,
+        publication: TargetCollectionPublication | None,
+        artifacts: tuple[OutputArtifact, ...],
+        dispositions: tuple[ArtifactDisposition, ...],
+        execution_sha256: str,
+        attempt: int,
+        runtime_evidence: dict[str, JsonValue],
+    ) -> TargetJobStatus:
+        """Publish the exact result shape owned by this target."""
+
     def _execute(
         self,
         request: TargetJobRequest,
@@ -334,10 +269,7 @@ class ReviewTargetService(PersistentTargetService):
         portable_intent = intent.variant.portable_intent
         variant_id = intent.variant.id
         options = request.declaration.plan.target_options
-        if self.destination is not None and (
-            options.get("destination_identity") != self.destination.identity
-        ):
-            raise RuntimeError("sealed review plan differs from the configured destination")
+        self._validate_sealed_target_options(options)
         sampler_id = str(options["sampler_registration_id"])
         try:
             registration = self.samplers[sampler_id]
@@ -366,7 +298,7 @@ class ReviewTargetService(PersistentTargetService):
         with TargetExecutionRuntime.from_request(
             request,
             cancellation_check=check,
-            producer_version=_version(),
+            producer_version=self.implementation_version,
             session=session,
         ) as execution:
             workspace = execution.open_workspace(self.workspace_root)
@@ -383,9 +315,7 @@ class ReviewTargetService(PersistentTargetService):
                     for index, window in enumerate(sample_plan.windows, start=1)
                 )
                 artifacts: list[OutputArtifact] = []
-                publication = (
-                    execution.open_collection_publication() if self.destination is None else None
-                )
+                publication = self._open_collection_publication(execution)
                 samples: list[dict[str, object]] = []
                 sampler_requests: list[SamplerRequest] = []
                 sampler_results: list[SamplerResult] = []
@@ -503,7 +433,7 @@ class ReviewTargetService(PersistentTargetService):
                         }
                     )
                 )
-                index_bytes, index_sha = _identity(index_path)
+                index_bytes, index_sha = file_identity(index_path)
                 index = OutputArtifact(
                     id="review-index",
                     role=REVIEW_INDEX_ROLE,
@@ -535,42 +465,14 @@ class ReviewTargetService(PersistentTargetService):
                     sampler_result_sha256,
                     declared,
                 )
-                if self.destination is not None:
-                    manifest_path = workspace.resolve("control/delivery-manifest.json")
-                    manifest_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    manifest_path.write_bytes(
-                        canonical_json_bytes(
-                            {
-                                "format": "stove0-review-delivery-manifest/v1",
-                                "delivery_id": request.declaration.job_id,
-                                "artifacts": [item.model_dump(mode="json") for item in declared],
-                            }
-                        )
-                    )
-                    result = self.destination.commit(
-                        delivery_id=request.declaration.job_id,
-                        output_root=workspace.resolve("output"),
-                        artifacts=declared,
-                        manifest_path=manifest_path,
-                    )
-                    return execution.effect_success(
-                        result,
-                        operation=REVIEW_RCLONE_DELIVER_OPERATION,
-                        execution_sha256=execution_sha256,
-                        attempt=attempt,
-                        runtime_evidence={
-                            "image_digest": self.image_digest,
-                            "sampler_descriptor_sha256": descriptor.descriptor_sha256,
-                            "sampler_image_digest": descriptor.image_digest,
-                            "sampler_result_set_sha256": sampler_result_sha256,
-                        },
-                    )
-                if publication is None:
-                    raise RuntimeError("review collection publication was not initialized")
-                return publication.finish_success(
-                    operation=REVIEW_MATERIALIZE_OPERATION,
-                    execution_sha256=execution_sha256,
+                return self._finish_publication(
+                    execution=execution,
+                    workspace=workspace,
+                    request=request,
+                    publication=publication,
+                    artifacts=declared,
                     dispositions=dispositions,
+                    execution_sha256=execution_sha256,
                     attempt=attempt,
                     runtime_evidence={
                         "image_digest": self.image_digest,
@@ -656,7 +558,7 @@ def _execution_sha256(
     )
 
 
-def _identity(path: Path) -> tuple[int, str]:
+def file_identity(path: Path) -> tuple[int, str]:
     digest = hashlib.sha256()
     size = 0
     with path.open("rb") as stream:
@@ -667,7 +569,7 @@ def _identity(path: Path) -> tuple[int, str]:
 
 
 def _verify_file(path: Path, expected_bytes: int, expected_sha256: str) -> None:
-    size, sha256 = _identity(path)
+    size, sha256 = file_identity(path)
     if (size, sha256) != (expected_bytes, expected_sha256):
         raise RuntimeError("sampler output differs from its declared identity")
 
@@ -689,9 +591,8 @@ def _verify_output_set(
 
 
 __all__ = [
-    "COLLECTION_OPTIONS",
-    "EFFECT_OPTIONS",
-    "RcloneReviewDestination",
-    "ReviewTargetService",
+    "ReviewTargetServiceBase",
     "SamplerRegistration",
+    "file_identity",
+    "review_options_schema",
 ]
