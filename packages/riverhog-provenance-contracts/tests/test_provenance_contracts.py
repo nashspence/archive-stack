@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter, ValidationError
 from riverhog_provenance_contracts import (
+    ProvenanceContractBinding,
     ProvenanceEntryId,
     ProvenanceJournalStateReference,
     index_schema_documents,
@@ -65,3 +66,62 @@ def test_schema_contract_pack_rejects_duplicate_and_missing_identities() -> None
         index_schema_documents((first, dict(first)), owner="fixture")
     with pytest.raises(ValueError, match="canonical \\$id"):
         index_schema_documents(({"type": "object"},), owner="fixture")
+
+
+def test_schema_contract_binding_seals_valid_cross_document_reference_closure() -> None:
+    value_id = "https://schemas.example/provenance/value/v1"
+    observation_id = "https://schemas.example/provenance/observation/v1"
+    binding = ProvenanceContractBinding(
+        contract_id="fixture.provenance/v1",
+        schemas=(
+            {
+                "$id": value_id,
+                "$defs": {"value": {"type": "string", "minLength": 1}},
+            },
+            {
+                "$id": observation_id,
+                "type": "object",
+                "properties": {"value": {"$ref": f"{value_id}#/$defs/value"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+        ),
+    )
+
+    assert tuple(binding.schemas) == (observation_id, value_id)
+    assert binding.reference("fixture-provider")["contract_sha256"] == binding.contract_sha256
+
+
+def test_schema_contract_binding_rejects_invalid_draft_2020_12_schema() -> None:
+    with pytest.raises(ValueError, match="not valid JSON Schema Draft 2020-12"):
+        ProvenanceContractBinding(
+            contract_id="fixture.invalid/v1",
+            schemas=(
+                {
+                    "$id": "https://schemas.example/provenance/invalid/v1",
+                    "type": "not-a-json-schema-type",
+                },
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    (
+        "#/$defs/missing",
+        "https://schemas.example/provenance/not-in-pack/v1",
+    ),
+)
+def test_schema_contract_binding_rejects_references_outside_exact_pack(
+    reference: str,
+) -> None:
+    with pytest.raises(ValueError, match="outside its sealed contract pack"):
+        ProvenanceContractBinding(
+            contract_id="fixture.open/v1",
+            schemas=(
+                {
+                    "$id": "https://schemas.example/provenance/open/v1",
+                    "properties": {"value": {"$ref": reference}},
+                },
+            ),
+        )

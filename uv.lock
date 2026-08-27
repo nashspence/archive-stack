@@ -1818,13 +1818,17 @@ name = "riverhog-provenance-contracts"
 version = "0.1.0"
 source = { editable = "packages/riverhog-provenance-contracts" }
 dependencies = [
+    { name = "jsonschema" },
     { name = "pydantic" },
+    { name = "referencing" },
     { name = "rfc8785" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "jsonschema", specifier = ">=4.25,<5.0" },
     { name = "pydantic", specifier = ">=2.12,<3.0" },
+    { name = "referencing", specifier = ">=0.37,<0.38" },
     { name = "rfc8785", specifier = ">=0.1,<0.2" },
 ]
 
