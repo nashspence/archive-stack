@@ -37,6 +37,7 @@ class RecordingClient(ApiClient):
         if method == "POST" and path.endswith("/files"):
             payload = {
                 "collection_id": int(path.split("/")[-2]),
+                "state": "open",
                 "files": [{**item, "custody_receipt": None} for item in kwargs["json"]["files"]],
             }
         return httpx.Response(200, json=payload, request=httpx.Request(method, path))
@@ -61,6 +62,16 @@ class WrongCustodyReceiptClient(RecordingClient):
                 ),
             ),
         ).model_dump(mode="json")
+        return httpx.Response(200, json=payload, request=httpx.Request(method, path))
+
+
+class ImpossibleRegistrationStateClient(RecordingClient):
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        response = super()._request(method, path, **kwargs)
+        if method != "POST" or not path.endswith("/files"):
+            return response
+        payload = response.json()
+        payload["state"] = "uploading"
         return httpx.Response(200, json=payload, request=httpx.Request(method, path))
 
 
@@ -256,6 +267,27 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
 
 def test_collection_upload_client_rejects_a_custody_receipt_for_another_artifact() -> None:
     client = WrongCustodyReceiptClient()
+
+    with pytest.raises(InvalidState, match="invalid collection upload file response"):
+        client.register_collection_upload_session_files(
+            1,
+            [
+                {
+                    "path": "one.txt",
+                    "bytes": 1,
+                    "sha256": "a" * 64,
+                    "provenance": {
+                        "status": "omitted",
+                        "omission_reason": "fixture source has no provenance",
+                    },
+                }
+            ],
+            registration_constraints=UPLOAD_REGISTRATION_CONSTRAINTS,
+        )
+
+
+def test_collection_upload_client_rejects_an_impossible_registration_state() -> None:
+    client = ImpossibleRegistrationStateClient()
 
     with pytest.raises(InvalidState, match="invalid collection upload file response"):
         client.register_collection_upload_session_files(

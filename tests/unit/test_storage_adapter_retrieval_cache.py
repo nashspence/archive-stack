@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import threading
-from collections.abc import Iterator
 
 import pytest
 from riverhog_core.ports.archive_objects import CompletedObjectReceipt, WriteSegmentReceipt
@@ -15,8 +14,11 @@ from riverhog_storage_adapter_protocol import (
     CompletedWriteLookupRequest,
     DeleteObjectRequest,
     ImmutableObjectReceipt,
+    ObjectLocator,
     ObjectPlacement,
+    ObjectReadReceipt,
     ObjectReadRequest,
+    ObjectReadStream,
     SmallObjectWriteRequest,
     WriteCompleteRequest,
     WriteStartRequest,
@@ -159,13 +161,24 @@ class _Adapter:
             completed_at="2026-08-21T00:00:00.000000Z",
         )
 
-    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
+    def read_object(self, request: ObjectReadRequest) -> ObjectReadStream:
         self.reads += 1
         content = self.objects[request.object.object_path]
         assert len(content) == request.expected_bytes
         if request.offset is not None and request.size is not None:
             content = content[request.offset : request.offset + request.size]
-        yield content
+        return ObjectReadStream(
+            receipt=ObjectReadReceipt(
+                object=ObjectLocator(
+                    object_path=request.object.object_path,
+                    revision=self.revisions[request.object.object_path],
+                ),
+                total_bytes=request.expected_bytes,
+                offset=request.offset or 0,
+                read_bytes=len(content),
+            ),
+            content=iter((content,)) if content else iter(()),
+        )
 
     def delete_object(self, request: DeleteObjectRequest) -> None:
         self.deleted.append(request)

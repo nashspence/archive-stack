@@ -22,6 +22,7 @@ from riverhog_storage_adapter_protocol import (
     ObjectHeadRequest,
     ObjectLocator,
     ObjectMetadataReceipt,
+    ObjectReadReceipt,
     ObjectReadRequest,
     ReadPreparationRequest,
     ReadStatus,
@@ -53,6 +54,7 @@ _SCHEMA_MODELS: tuple[type[BaseModel], ...] = (
     ObjectLocator,
     ObjectHeadRequest,
     ObjectMetadataReceipt,
+    ObjectReadReceipt,
     ObjectReadRequest,
     ReadPreparationRequest,
     ReadStatus,
@@ -85,7 +87,9 @@ def storage_adapter_schema_bundle() -> dict[str, Any]:
                 "framed SmallObjectWriteRequest + bytes -> ImmutableObjectReceipt"
             ),
             "POST /v1/objects/head": "ObjectHeadRequest -> ObjectMetadataReceipt|404",
-            "POST /v1/objects/read": "ObjectReadRequest -> byte stream",
+            "POST /v1/objects/read": (
+                "ObjectReadRequest -> framed ObjectReadReceipt + byte stream"
+            ),
             "POST /v1/objects/delete": "DeleteObjectRequest -> 204",
             "POST /v1/objects/delete-prefix": "DeletePrefixRequest -> MaintenanceResult",
             "POST /v1/reads/prepare": "ReadPreparationRequest -> ReadStatus",

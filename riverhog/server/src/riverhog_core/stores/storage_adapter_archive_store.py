@@ -414,7 +414,7 @@ class StorageAdapterArchiveStore:
         status = self._adapter.read_status(_read_request((object,)))
         if status.readiness.state != "ready":
             raise RuntimeError(f"Archive object is not readable yet: {object.object_path}")
-        content = self._adapter.iter_object(
+        content = self._adapter.read_object(
             ObjectReadRequest(
                 object=ObjectLocator(
                     object_path=object.object_path,
@@ -422,7 +422,7 @@ class StorageAdapterArchiveStore:
                 ),
                 expected_bytes=object.stored_bytes,
             )
-        )
+        ).content
         if self._download_allowance is None:
             return content
         return self._download_allowance.track(

@@ -17,10 +17,10 @@ from config_validation import ConfigError
 from gogurt_core.mounts import GogurtRouteMarker, MountedMarkerObservation
 
 PATH_MARKER_NAME = ".gogurt"
-PATH_MARKER_PUBLICATION_LOCK_NAME = ".gogurt.publish.lock"
+_PATH_MARKER_PUBLICATION_LOCK_NAME = ".gogurt.publish.lock"
 MAX_PATH_MARKER_BYTES = 4096
 PORTABLE_MARKER_MODE = 0o644
-_PUBLICATION_LOCK_MODE = 0o600
+_PUBLICATION_LOCK_MODE = 0o666
 WINDOWS_PROMOTION_SETTLE_SECONDS = 1.0
 WINDOWS_PROMOTION_RETRY_SECONDS = 0.01
 WINDOWS_TRANSIENT_PROMOTION_ERRORS = frozenset({5, 32})
@@ -30,7 +30,7 @@ WINDOWS_TRANSIENT_PROMOTION_ERRORS = frozenset({5, 32})
 def _marker_publication_lock(mount_point: Path) -> Iterator[None]:
     """Serialize conditional publications made through this path provider."""
 
-    lock_path = mount_point / PATH_MARKER_PUBLICATION_LOCK_NAME
+    lock_path = mount_point / _PATH_MARKER_PUBLICATION_LOCK_NAME
     flags = os.O_RDWR | os.O_CREAT
     flags |= getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -246,7 +246,6 @@ class PathMountedVolumeAccess:
 __all__ = [
     "MAX_PATH_MARKER_BYTES",
     "PATH_MARKER_NAME",
-    "PATH_MARKER_PUBLICATION_LOCK_NAME",
     "PORTABLE_MARKER_MODE",
     "PathMountedVolumeAccess",
 ]

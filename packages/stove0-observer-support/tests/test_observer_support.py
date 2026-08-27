@@ -33,6 +33,8 @@ from stove0_observer_protocol import (
     ObserverDescriptorPayload,
     ObserverImplementation,
     ObserverRuntimeAuthority,
+    SemanticFactsConformanceVector,
+    SemanticFactsConformanceVectors,
     SemanticValidatorBinding,
     SemanticValidatorRegistry,
 )
@@ -309,6 +311,9 @@ def test_conformance_report_checks_contract_schemas_and_result_binding() -> None
     descriptor = _descriptor(contract)
     request = _request(contract, descriptor, api)
     result = _result(request, contract, descriptor, len(api.data))
+    inspected = conformance_report(FixtureObserverClient(descriptor, result))
+    assert inspected["status"] == "inspected"
+    assert inspected["coverage"] == {"advertised": 1, "exercised": 0, "complete": False}
     invocation = ObservationInvocation(
         request=request,
         claim_id="claim-1",
@@ -322,11 +327,12 @@ def test_conformance_report_checks_contract_schemas_and_result_binding() -> None
 
     report = conformance_report(
         FixtureObserverClient(descriptor, result),
-        invocation=invocation,
+        invocations=(invocation,),
     )
 
     assert report["status"] == "conformant"
-    assert report["observation"]["facts"] == {"bytes": len(api.data)}
+    assert report["coverage"] == {"advertised": 1, "exercised": 1, "complete": True}
+    assert report["observations"][0]["facts"] == {"bytes": len(api.data)}
     assert report["contracts"] == [
         {
             "contract_id": contract.id,
@@ -338,8 +344,91 @@ def test_conformance_report_checks_contract_schemas_and_result_binding() -> None
             "facts_semantics_conformance_vectors_sha256": None,
             "preferred_subject_batch_size": 128,
             "maximum_result_bytes": contract.maximum_result_bytes,
+            "execution": "exercised",
+            "semantic_conformance": "schema-only",
         }
     ]
+
+
+def test_conformance_report_exercises_semantics_locally_not_as_observer_calls() -> None:
+    api = RetrievalApi()
+    base = _contract()
+    base_descriptor = _descriptor(base)
+    base_request = _request(base, base_descriptor, api)
+    vectors = SemanticFactsConformanceVectors(
+        profile_id="fixture.bytes-semantics/v1",
+        vectors=(
+            SemanticFactsConformanceVector(
+                id="accepted",
+                accepted=True,
+                subjects=base_request.subjects,
+                options=base_request.options,
+                facts={"bytes": 1},
+            ),
+            SemanticFactsConformanceVector(
+                id="rejected",
+                accepted=False,
+                subjects=base_request.subjects,
+                options=base_request.options,
+                facts={"bytes": 0},
+            ),
+        ),
+    )
+    semantics = SemanticValidationProfile.seal(
+        SemanticValidationProfilePayload(
+            id=vectors.profile_id,
+            rules=("fixture.bytes.positive/v1",),
+            conformance_vectors_sha256=vectors.sha256,
+        )
+    )
+    payload = base.model_dump(mode="python", exclude={"contract_sha256"})
+    payload["facts_semantics"] = semantics
+    contract = ObserverContract.seal(ObserverContractPayload.model_validate(payload))
+    descriptor = _descriptor(contract)
+    request = _request(contract, descriptor, api)
+    invocation = ObservationInvocation(
+        request=request,
+        claim_id="claim-1",
+        fence=3,
+        runtime=ObserverRuntimeAuthority(
+            riverhog_base_url="https://riverhog.invalid",
+            capability_token="secret-capability",
+            workspace_assurance="ephemeral",
+        ),
+    )
+    result = _result(request, contract, descriptor, len(api.data))
+    observed_calls = 0
+
+    class CountingClient(FixtureObserverClient):
+        def observe(
+            self,
+            invocation: ObservationInvocation,
+            *,
+            descriptor: ObserverDescriptor,
+        ) -> ObservationResult:
+            nonlocal observed_calls
+            observed_calls += 1
+            return super().observe(invocation, descriptor=descriptor)
+
+    def validate_positive(
+        _request: ObservationRequest,
+        facts: Mapping[str, object],
+    ) -> None:
+        if int(facts["bytes"]) < 1:
+            raise ValueError("bytes must be positive")
+
+    report = conformance_report(
+        CountingClient(descriptor, result),
+        invocations=(invocation,),
+        semantic_vectors=(vectors,),
+        semantic_validators=SemanticValidatorRegistry(
+            (SemanticValidatorBinding.from_profile(semantics, validate_positive),)
+        ),
+    )
+
+    assert report["status"] == "conformant"
+    assert report["contracts"][0]["semantic_conformance"] == "exercised"
+    assert observed_calls == 1
 
 
 def test_result_builder_binds_schema_identity_and_size_limits() -> None:

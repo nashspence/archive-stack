@@ -18,6 +18,7 @@ from riverhog_api.schemas.collections import (
     CollectionDeletionPlanOut,
     CollectionUploadFileOut,
     CollectionUploadListItemOut,
+    CollectionUploadSessionFilesRegistrationOut,
     CollectionUploadSessionOut,
 )
 from riverhog_api.schemas.provenance import (
@@ -275,9 +276,21 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
     CollectionUploadSessionOut.model_validate(open_payload)
     schema_validator.validate(open_payload)
 
-    for state, archive_phase, next_attempt_at in (
-        ("closing", "uploading", None),
-        ("finalizing", "finalization_queued", "2026-08-25T00:00:01.000000Z"),
+    for state, archive_phase, next_attempt_at, custody_mode, lease in (
+        (
+            "closing",
+            "uploading",
+            None,
+            "custody-transfer",
+            "2026-08-25T00:05:00.000000Z",
+        ),
+        (
+            "finalizing",
+            "finalization_queued",
+            "2026-08-25T00:00:01.000000Z",
+            "producer-retained",
+            None,
+        ),
     ):
         construction_payload = deepcopy(open_payload)
         construction_payload.update(
@@ -285,6 +298,8 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
                 "state": state,
                 "archive_phase": archive_phase,
                 "archive_next_attempt_at": next_attempt_at,
+                "custody_mode": custody_mode,
+                "upload_state_expires_at": lease,
             }
         )
         CollectionUploadSessionOut.model_validate(construction_payload)
@@ -296,6 +311,13 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         CollectionUploadSessionOut.model_validate(nonfinal_provenance_identity)
     with pytest.raises(JsonSchemaValidationError):
         schema_validator.validate(nonfinal_provenance_identity)
+
+    nonfinal_mixed = deepcopy(open_payload)
+    nonfinal_mixed["provenance_mode"] = "mixed"
+    with pytest.raises(ValidationError, match="mixed provenance"):
+        CollectionUploadSessionOut.model_validate(nonfinal_mixed)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(nonfinal_mixed)
 
     finalized_payload = deepcopy(payload)
     finalized_payload.update(
@@ -384,6 +406,7 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
     "changes",
     (
         {"custody_mode": "producer-retained", "upload_state_expires_at": "later"},
+        {"custody_mode": "producer-retained", "state": "closing"},
         {
             "custody_mode": "producer-retained",
             "state": "orphaned",
@@ -431,6 +454,30 @@ def test_upload_session_list_states_reject_impossible_custody_lifecycles(
         CollectionUploadListItemOut.model_validate(invalid)
     with pytest.raises(JsonSchemaValidationError):
         schema_validator.validate(invalid)
+
+
+def test_file_registration_response_has_one_reachable_state() -> None:
+    payload = {
+        "collection_id": 1,
+        "ingest_source": None,
+        "archive_store": "archive",
+        "encryption_format": "age-x25519/v1",
+        "passphrase_id": "0123456789abcdef",
+        "state": "open",
+        "files": [],
+        "volumes": [],
+    }
+    schema_validator = Draft202012Validator(
+        CollectionUploadSessionFilesRegistrationOut.model_json_schema()
+    )
+    CollectionUploadSessionFilesRegistrationOut.model_validate(payload)
+    schema_validator.validate(payload)
+
+    impossible = {**payload, "state": "uploading"}
+    with pytest.raises(ValidationError):
+        CollectionUploadSessionFilesRegistrationOut.model_validate(impossible)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(impossible)
 
 
 @pytest.mark.parametrize(

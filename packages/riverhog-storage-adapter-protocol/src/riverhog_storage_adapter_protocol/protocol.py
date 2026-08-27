@@ -8,7 +8,7 @@ configuration model.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from hashlib import sha256
 from typing import Annotated, Literal, Protocol, Self, cast
 
@@ -396,6 +396,55 @@ class ObjectReadRequest(StorageAdapterModel):
         return self
 
 
+class ObjectReadReceipt(StorageAdapterModel):
+    """Adapter-observed identity and range for one single-pass read."""
+
+    object: ObjectLocator
+    total_bytes: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    read_bytes: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_range(self) -> Self:
+        if self.offset + self.read_bytes > self.total_bytes:
+            raise ValueError("object read range exceeds the observed object bytes")
+        return self
+
+
+class ObjectReadStream:
+    """A bounded receipt beside its opaque single-pass byte stream."""
+
+    __slots__ = ("_close", "_closed", "content", "receipt")
+
+    def __init__(
+        self,
+        *,
+        receipt: ObjectReadReceipt,
+        content: Iterator[bytes],
+        close: Callable[[], None] | None = None,
+    ) -> None:
+        self.receipt = receipt
+        self.content = content
+        self._close = close
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close_content = getattr(self.content, "close", None)
+        if callable(close_content):
+            close_content()
+        if self._close is not None:
+            self._close()
+
+    def __enter__(self) -> ObjectReadStream:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
 class DeleteObjectRequest(StorageAdapterModel):
     object: ObjectLocator
     mode: Literal["current", "exact_revision", "all_versions"]
@@ -528,6 +577,55 @@ def validate_write_segment_response(
         raise ValueError("adapter segment receipt differs from its request")
 
 
+def validate_write_segment_request(
+    request: WriteSegmentRequest,
+    descriptor: AdapterDescriptor,
+) -> None:
+    if (
+        descriptor.maximum_segment_bytes is not None
+        and request.stored_bytes > descriptor.maximum_segment_bytes
+    ):
+        raise ValueError("write segment exceeds the adapter's advertised byte limit")
+    if (
+        descriptor.maximum_segment_count is not None
+        and request.number > descriptor.maximum_segment_count
+    ):
+        raise ValueError("write segment number exceeds the adapter's advertised count limit")
+
+
+def _validate_segment_receipts(
+    segments: tuple[WriteSegmentReceipt, ...],
+    descriptor: AdapterDescriptor,
+    *,
+    completion: bool,
+) -> None:
+    if (
+        descriptor.maximum_segment_count is not None
+        and len(segments) > descriptor.maximum_segment_count
+    ):
+        raise ValueError("write segment set exceeds the adapter's advertised count limit")
+    if descriptor.maximum_segment_count is not None and any(
+        segment.number > descriptor.maximum_segment_count for segment in segments
+    ):
+        raise ValueError("write segment set exceeds the adapter's advertised count limit")
+    if descriptor.maximum_segment_bytes is not None and any(
+        segment.stored_bytes > descriptor.maximum_segment_bytes for segment in segments
+    ):
+        raise ValueError("write segment set exceeds the adapter's advertised byte limit")
+    if completion and any(
+        segment.stored_bytes < descriptor.minimum_nonfinal_segment_bytes
+        for segment in segments[:-1]
+    ):
+        raise ValueError("write completion contains an undersized non-final segment")
+
+
+def validate_write_completion_request(
+    request: WriteCompleteRequest,
+    descriptor: AdapterDescriptor,
+) -> None:
+    _validate_segment_receipts(request.segments, descriptor, completion=True)
+
+
 def validate_write_segment_set_response(
     request: WriteSession,
     response: WriteSegmentSet,
@@ -535,10 +633,7 @@ def validate_write_segment_set_response(
 ) -> None:
     if response.session != request:
         raise ValueError("adapter segment set differs from its write session")
-    if descriptor.maximum_segment_count is not None and any(
-        segment.number > descriptor.maximum_segment_count for segment in response.segments
-    ):
-        raise ValueError("adapter segment set exceeds its advertised segment-count limit")
+    _validate_segment_receipts(response.segments, descriptor, completion=False)
 
 
 def validate_completed_write_response(
@@ -592,6 +687,24 @@ def validate_object_metadata_response(
         raise ValueError("adapter object metadata placement differs from its request")
 
 
+def validate_object_read_response(
+    request: ObjectReadRequest,
+    response: ObjectReadReceipt,
+) -> None:
+    expected_offset = request.offset if request.offset is not None else 0
+    expected_read_bytes = request.size if request.size is not None else request.expected_bytes
+    if response.object.object_path != request.object.object_path:
+        raise ValueError("adapter object read path differs from its request")
+    if request.object.revision is not None and response.object.revision != request.object.revision:
+        raise ValueError("adapter object read revision differs from its request")
+    if (
+        response.total_bytes != request.expected_bytes
+        or response.offset != expected_offset
+        or response.read_bytes != expected_read_bytes
+    ):
+        raise ValueError("adapter object read range differs from its request")
+
+
 def validate_read_status_response(
     request: ReadPreparationRequest,
     response: ReadStatus,
@@ -643,7 +756,7 @@ class StorageAdapterPort(Protocol):
 
     def head_object(self, request: ObjectHeadRequest) -> ObjectMetadataReceipt | None: ...
 
-    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]: ...
+    def read_object(self, request: ObjectReadRequest) -> ObjectReadStream: ...
 
     def delete_object(self, request: DeleteObjectRequest) -> None: ...
 
@@ -742,14 +855,7 @@ class ValidatedStorageAdapterPort:
             stored_bytes=stored_bytes,
         )
         descriptor = self.descriptor()
-        if (
-            descriptor.maximum_segment_bytes is not None
-            and stored_bytes > descriptor.maximum_segment_bytes
-        ) or (
-            descriptor.maximum_segment_count is not None
-            and number > descriptor.maximum_segment_count
-        ):
-            raise ValueError("write segment exceeds the adapter's advertised limits")
+        validate_write_segment_request(request, descriptor)
         validation = _ContentValidation(content, expected_bytes=stored_bytes)
         response = _response(
             self._adapter.write_segment(
@@ -780,6 +886,7 @@ class ValidatedStorageAdapterPort:
         return response
 
     def complete_write(self, request: WriteCompleteRequest) -> CompletedObjectReceipt:
+        validate_write_completion_request(request, self.descriptor())
         response = _response(
             self._adapter.complete_write(request),
             CompletedObjectReceipt,
@@ -827,18 +934,33 @@ class ValidatedStorageAdapterPort:
         validate_object_metadata_response(request, validated)
         return validated
 
-    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
-        expected = request.size if request.size is not None else request.expected_bytes
-        observed = 0
-        for chunk in self._adapter.iter_object(request):
-            if not isinstance(chunk, bytes) or not chunk:
-                raise ValueError("adapter read chunks must be nonempty bytes")
-            observed += len(chunk)
-            if observed > expected:
-                raise ValueError("adapter read exceeds the requested byte count")
-            yield chunk
-        if observed != expected:
-            raise ValueError("adapter read differs from the requested byte count")
+    def read_object(self, request: ObjectReadRequest) -> ObjectReadStream:
+        response = self._adapter.read_object(request)
+        if not isinstance(response, ObjectReadStream):
+            raise TypeError("adapter returned an invalid object read stream")
+        receipt = _response(response.receipt, ObjectReadReceipt, "object read receipt")
+        validate_object_read_response(request, receipt)
+
+        def validated_content() -> Iterator[bytes]:
+            try:
+                observed = 0
+                for chunk in response.content:
+                    if not isinstance(chunk, bytes) or not chunk:
+                        raise ValueError("adapter read chunks must be nonempty bytes")
+                    observed += len(chunk)
+                    if observed > receipt.read_bytes:
+                        raise ValueError("adapter read exceeds its observed byte count")
+                    yield chunk
+                if observed != receipt.read_bytes:
+                    raise ValueError("adapter read differs from its observed byte count")
+            finally:
+                response.close()
+
+        return ObjectReadStream(
+            receipt=receipt,
+            content=validated_content(),
+            close=response.close,
+        )
 
     def delete_object(self, request: DeleteObjectRequest) -> None:
         self._adapter.delete_object(request)
@@ -911,6 +1033,8 @@ __all__ = [
     "ObjectMetadataReceipt",
     "ObjectPlacement",
     "ObjectReadRequest",
+    "ObjectReadReceipt",
+    "ObjectReadStream",
     "RequiredIdentityAssertions",
     "ReadPreparationRequest",
     "ReadMode",
@@ -932,10 +1056,13 @@ __all__ = [
     "normalize_object_path",
     "validate_completed_write_response",
     "validate_object_metadata_response",
+    "validate_object_read_response",
     "validate_read_status_response",
     "validate_small_object_response",
     "validate_write_segment_response",
+    "validate_write_segment_request",
     "validate_write_segment_set_response",
+    "validate_write_completion_request",
     "validate_write_session_response",
     "validated_storage_adapter",
 ]

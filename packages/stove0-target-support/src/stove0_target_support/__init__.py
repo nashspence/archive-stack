@@ -52,7 +52,11 @@ from stove0_target_support.configuration import (
     TARGET_TERMINAL_STATE_RETENTION_ENV,
     terminal_state_retention_seconds,
 )
-from stove0_target_support.conformance import TargetClient, conformance_report
+from stove0_target_support.conformance import (
+    TargetClient,
+    TargetConformanceCase,
+    conformance_report,
+)
 from stove0_target_support.execution import TargetExecutionSession
 from stove0_target_support.http_binding import (
     TARGET_HTTP_OPERATIONS,
@@ -108,6 +112,7 @@ __all__ = [
     "SemanticId",
     "Sha256",
     "TargetClient",
+    "TargetConformanceCase",
     "TargetContract",
     "TargetContractPayload",
     "TargetExecutionEvidence",

@@ -805,7 +805,7 @@ class ListenerRuntime:
             mount_attention = list(self._mount_attention)
         payload = {
             "schema": LISTENER_HEARTBEAT_SCHEMA,
-            "version": self.product_version,
+            "runtime_version": self.product_version,
             "pid": os.getpid(),
             "started_at": _now_text(self.started_at),
             "heartbeat_at": _now_text(self.clock()),
@@ -1131,7 +1131,7 @@ def _heartbeat_timestamp(value: object, *, field: str) -> float:
 def _validate_heartbeat(value: object) -> dict[str, object]:
     expected = {
         "schema",
-        "version",
+        "runtime_version",
         "pid",
         "started_at",
         "heartbeat_at",
@@ -1146,9 +1146,9 @@ def _validate_heartbeat(value: object) -> dict[str, object]:
         raise ListenerError("Gogurt listener heartbeat fields are invalid")
     if value["schema"] != LISTENER_HEARTBEAT_SCHEMA:
         raise ListenerError("Gogurt listener heartbeat schema is invalid")
-    if not isinstance(value["version"], str):
-        raise ListenerError("Gogurt listener heartbeat version is invalid")
-    _validated_product_version(value["version"])
+    if not isinstance(value["runtime_version"], str):
+        raise ListenerError("Gogurt listener heartbeat runtime version is invalid")
+    _validated_product_version(value["runtime_version"])
     pid = value["pid"]
     if isinstance(pid, bool) or not isinstance(pid, int) or not 0 < pid <= LISTENER_MAX_PID:
         raise ListenerError("Gogurt listener heartbeat PID is invalid")
@@ -1313,7 +1313,7 @@ def listener_status(
         health = "healthy" if healthy else "stale"
     return {
         "schema": LISTENER_STATUS_SCHEMA,
-        "version": expected_product_version,
+        "manager_version": expected_product_version,
         "platform": sys.platform,
         "installed": native.installed,
         "enabled": native.enabled,

@@ -4,8 +4,10 @@ operations:
   result_kind: collection
   intent_schema:
     id: stove0.media.audio-archive-intent/v1
-    sha256: ca8f0aa963958b27701a2b5a59429d23e242d2315c6d5361a9177c5a69d52456
-    document:
+    sha256: f0ca11ca0f2f4979c32d65fba82ad1755a20b2b268237af0df29e2c1e3a0a10c
+    dialect: https://json-schema.org/draft/2020-12/schema
+    format_policy: annotation-only
+    schema:
       $defs:
         MediaFieldPreference:
           additionalProperties: false
@@ -113,6 +115,7 @@ operations:
           $ref: '#/$defs/MediaProjectionPolicy'
       title: AudioArchiveIntent
       type: object
+      $schema: https://json-schema.org/draft/2020-12/schema
   intent_semantics:
     id: stove0.media.audio-archive-intent-semantics/v1
     rules:
@@ -145,13 +148,15 @@ operations:
     derived_from_roles:
     - stove0.media.xmp-source/v1
   source_retirement_permitted: false
-  contract_sha256: 1279bebeccaac66474d95c48750eb6911beeba51c20c05c51509236caafda707
+  contract_sha256: e756d97c1b30f97d64fe82b1279c6605f7eac15af8677aecd429dc328b539d25
 - id: stove0.media.av1-opus-archive/v1
   result_kind: collection
   intent_schema:
     id: stove0.media.av1-opus-archive-intent/v1
-    sha256: 3f8fff646a6b9081f6724972b146e71d8f20995d9a96c6da30e53b9bcb18094e
-    document:
+    sha256: a1fd89ba7a0bdce9827aa87084df114a453c425d4da8990f6b34ceaccde21c53
+    dialect: https://json-schema.org/draft/2020-12/schema
+    format_policy: annotation-only
+    schema:
       $defs:
         MediaFieldPreference:
           additionalProperties: false
@@ -280,6 +285,7 @@ operations:
           $ref: '#/$defs/MediaProjectionPolicy'
       title: Av1OpusArchiveIntent
       type: object
+      $schema: https://json-schema.org/draft/2020-12/schema
   intent_semantics:
     id: stove0.media.av1-opus-archive-intent-semantics/v1
     rules:
@@ -313,13 +319,15 @@ operations:
     - stove0.media.source/v1
     - stove0.media.xmp-source/v1
   source_retirement_permitted: true
-  contract_sha256: 932b9104233bc3f2d0d4288c67649fce66a41a92ea6905ca271f14444387ee5f
+  contract_sha256: 1823db9b9ec9c99e44ec740e6d56a8d6e3096c9d42b19897e0a7750e18d9835b
 - id: stove0.review.materialize/v1
   result_kind: collection
   intent_schema:
     id: stove0.review.materialize-intent/v1
-    sha256: 4f40aec33b76e3333c7c3860975aebee92e0f66bf1eb7310b9f734a9b497b706
-    document:
+    sha256: dacf9977497657d10678176bb83ecf7783db08114b417390d577810d47ef2b30
+    dialect: https://json-schema.org/draft/2020-12/schema
+    format_policy: annotation-only
+    schema:
       $defs:
         JsonValue: {}
         ReviewSamplePlan:
@@ -410,6 +418,7 @@ operations:
       - variant
       title: ReviewMaterializeIntent
       type: object
+      $schema: https://json-schema.org/draft/2020-12/schema
   intent_semantics:
     id: stove0.review.materialize-intent-semantics/v1
     rules:
@@ -438,13 +447,15 @@ operations:
     derived_from_roles:
     - stove0.review.source/v1
   source_retirement_permitted: false
-  contract_sha256: 4be8075379efc3b1cc7ff30f3458ad895e855e0d18357b5caf39d7997f4ec3f4
+  contract_sha256: 5517370bb1016dfadd236f0f06300999e18de90537bbdad46b87f274958ab06d
 - id: stove0.review.rclone-deliver/v1
   result_kind: external-effect
   intent_schema:
     id: stove0.review.materialize-intent/v1
-    sha256: 4f40aec33b76e3333c7c3860975aebee92e0f66bf1eb7310b9f734a9b497b706
-    document:
+    sha256: dacf9977497657d10678176bb83ecf7783db08114b417390d577810d47ef2b30
+    dialect: https://json-schema.org/draft/2020-12/schema
+    format_policy: annotation-only
+    schema:
       $defs:
         JsonValue: {}
         ReviewSamplePlan:
@@ -535,6 +546,7 @@ operations:
       - variant
       title: ReviewMaterializeIntent
       type: object
+      $schema: https://json-schema.org/draft/2020-12/schema
   intent_semantics:
     id: stove0.review.materialize-intent-semantics/v1
     rules:
@@ -548,8 +560,10 @@ operations:
   outputs: []
   effect_receipt_schema:
     id: stove0.review.rclone-receipt/v1
-    sha256: 063b0413fa84c41a596b8b1bd4c26d5b38c6c046b40a7742530a95c47912b79d
-    document:
+    sha256: 10234918310d650a4ddeddd3b95567750c355c54ac5003bca70085c5fcf31c0e
+    dialect: https://json-schema.org/draft/2020-12/schema
+    format_policy: annotation-only
+    schema:
       $schema: https://json-schema.org/draft/2020-12/schema
       type: object
       required:
@@ -579,7 +593,7 @@ operations:
           minimum: 0
       additionalProperties: false
   source_retirement_permitted: false
-  contract_sha256: 6295e22ff6cd95f1c5657d427ebb47622f3625112c831ef0e51c366bfaf38ed2
+  contract_sha256: 1716dda4f6b7948762712a30a434a4bfefdfec6aadd5123f637eed0cd33f5639
 recipes:
 - id: stove0.audio-archive/v1
   revision: 1
@@ -592,7 +606,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: e7c4c52d0913f738ea813949066cd59fba6e1c680f5d54d9795404de03ee0435
+    contract_sha256: fe77acb2f29d4c9af2f824f9a3f167a403cfe8d6219bac888b86c79b3310bcd4
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1
@@ -640,7 +654,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: e7c4c52d0913f738ea813949066cd59fba6e1c680f5d54d9795404de03ee0435
+    contract_sha256: fe77acb2f29d4c9af2f824f9a3f167a403cfe8d6219bac888b86c79b3310bcd4
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1
@@ -802,7 +816,7 @@ recipes:
   observers:
   - registration_id: ffprobe-sampling
     contract_id: stove0.review.media-sampling/v1
-    contract_sha256: 3dffcfc9c44a555400cff878e6cda59e7d9722557a0905391658777eae637e0b
+    contract_sha256: beb0c37e896b0b2e3a8818f667ff59628614a461b06dc9f83560db434525a5be
     artifact_rules:
     - glob: '*'
       role: stove0.review.source/v1
@@ -846,7 +860,7 @@ recipes:
   observers:
   - registration_id: ffprobe-sampling
     contract_id: stove0.review.media-sampling/v1
-    contract_sha256: 3dffcfc9c44a555400cff878e6cda59e7d9722557a0905391658777eae637e0b
+    contract_sha256: beb0c37e896b0b2e3a8818f667ff59628614a461b06dc9f83560db434525a5be
     artifact_rules:
     - glob: '*'
       role: stove0.review.source/v1
@@ -893,7 +907,7 @@ recipes:
   observers:
   - registration_id: exiftool
     contract_id: stove0.media.metadata/v1
-    contract_sha256: c58f17cb8503ad730684d7fb00c374d5bbe1a346e44befb02bf5fa496c3e958e
+    contract_sha256: fe77acb2f29d4c9af2f824f9a3f167a403cfe8d6219bac888b86c79b3310bcd4
     artifact_rules:
     - glob: '*.XMP'
       role: stove0.media.xmp-source/v1

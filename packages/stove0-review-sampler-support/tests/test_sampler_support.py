@@ -189,9 +189,13 @@ def test_binding_client_and_conformance_share_the_exact_two_endpoint_contract() 
         allow_insecure_http=True,
         transport=httpx.MockTransport(transport),
     ) as client:
+        inspected = conformance_report(client)
         report = conformance_report(client, request=request)
 
+    assert inspected["status"] == "inspected"
+    assert inspected["coverage"] == {"advertised": 1, "exercised": 0, "complete": False}
     assert report["status"] == "conformant"
+    assert report["coverage"] == {"advertised": 1, "exercised": 1, "complete": True}
     assert report["image_digest"] == _sha("9")
     assert report["sample"]["state"] == "succeeded"
     assert sampler_schema_bundle()["endpoints"] == {

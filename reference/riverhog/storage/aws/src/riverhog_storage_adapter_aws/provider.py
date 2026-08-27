@@ -16,6 +16,9 @@ from botocore.signers import CloudFrontSigner
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from riverhog_storage_adapter_protocol import (
+    ObjectLocator,
+    ObjectReadReceipt,
+    ObjectReadStream,
     ReadExpired,
     ReadReadiness,
     ReadReady,
@@ -161,21 +164,37 @@ class AwsCloudFrontObjectReader:
         if self._owns_client:
             self._client.close()
 
-    def iter_object(
+    def read_object(
         self,
         *,
         client: Any,
         bucket: str,
         key: str,
+        object_path: str,
         revision: str | None,
         offset: int | None,
         size: int | None,
         expected_bytes: int,
         chunk_bytes: int,
-    ) -> Iterator[bytes]:
-        _ = client, bucket
+    ) -> ObjectReadStream:
+        head_request: dict[str, Any] = {"Bucket": bucket, "Key": key}
+        if revision is not None:
+            head_request["VersionId"] = revision
+        head = cast(dict[str, Any], client.head_object(**head_request))
+        if int(str(head.get("ContentLength", -1))) != expected_bytes:
+            raise RuntimeError("CloudFront source object length differs from its request")
+        observed_revision = head.get("VersionId")
+        receipt = ObjectReadReceipt(
+            object=ObjectLocator(
+                object_path=object_path,
+                revision=str(observed_revision) if observed_revision is not None else None,
+            ),
+            total_bytes=expected_bytes,
+            offset=offset or 0,
+            read_bytes=size if size is not None else expected_bytes,
+        )
         if size == 0:
-            return
+            return ObjectReadStream(receipt=receipt, content=iter(()))
         object_url = f"{self._config.base_url.rstrip('/')}/{quote(key, safe='/')}"
         if revision is not None:
             object_url = f"{object_url}?versionId={quote(revision, safe='')}"
@@ -193,30 +212,34 @@ class AwsCloudFrontObjectReader:
             expected_status = 206
             expected_range = f"bytes {offset}-{offset + size - 1}/{expected_bytes}"
         try:
-            with self._client.stream("GET", signed_url, headers=headers) as response:
-                if response.status_code != expected_status:
-                    raise RuntimeError(
-                        f"CloudFront returned unexpected HTTP {response.status_code}"
-                    )
-                content_length = response.headers.get("content-length")
-                if content_length is None or int(content_length) != expected:
-                    raise RuntimeError("CloudFront response length differs from its request")
-                if expected_range is not None and response.headers.get("content-range") != (
-                    expected_range
-                ):
-                    raise RuntimeError("CloudFront response range differs from its request")
-                emitted = 0
-                for chunk in response.iter_bytes(chunk_size=chunk_bytes):
-                    if not chunk:
-                        continue
-                    emitted += len(chunk)
-                    if emitted > expected:
-                        raise RuntimeError("CloudFront response contains trailing bytes")
-                    yield chunk
-                if emitted != expected:
-                    raise RuntimeError("CloudFront response ended before its declared length")
+            response = self._client.send(
+                self._client.build_request("GET", signed_url, headers=headers),
+                stream=True,
+            )
         except httpx.HTTPError:
             raise RuntimeError("CloudFront object delivery failed") from None
+        if response.status_code != expected_status:
+            response.close()
+            raise RuntimeError(f"CloudFront returned unexpected HTTP {response.status_code}")
+        content_length = response.headers.get("content-length")
+        if content_length is None or int(content_length) != expected:
+            response.close()
+            raise RuntimeError("CloudFront response length differs from its request")
+        if expected_range is not None and response.headers.get("content-range") != expected_range:
+            response.close()
+            raise RuntimeError("CloudFront response range differs from its request")
+
+        def content() -> Iterator[bytes]:
+            try:
+                yield from (chunk for chunk in response.iter_bytes(chunk_size=chunk_bytes) if chunk)
+            finally:
+                response.close()
+
+        return ObjectReadStream(
+            receipt=receipt,
+            content=content(),
+            close=response.close,
+        )
 
 
 def _object_status(

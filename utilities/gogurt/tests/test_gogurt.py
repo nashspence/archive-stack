@@ -529,7 +529,8 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
     )
     payload = {
         "schema": "gogurt-listener-status/v1",
-        "version": "1.0.0",
+        "manager_version": "1.0.0",
+        "heartbeat": {"runtime_version": "an-earlier-gogurt-build"},
         "platform": "linux",
         "installed": True,
         "enabled": True,
@@ -559,6 +560,8 @@ def test_listener_cli_has_matching_human_and_json_lifecycle_surfaces(
         human = RUNNER.invoke(app, args)
         structured = RUNNER.invoke(app, [*args, "--json"])
         assert human.exit_code == 0
+        assert "manager version: 1.0.0" in human.stdout
+        assert "runtime version: an-earlier-gogurt-build" in human.stdout
         assert "health: healthy" in human.stdout
         assert structured.exit_code == 0
         assert json.loads(structured.stdout) == expected

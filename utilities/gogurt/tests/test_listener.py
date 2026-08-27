@@ -1743,7 +1743,7 @@ def test_listener_status_reports_health_and_dispatch_attention(tmp_path: Path) -
     config.write(paths.config_file)
     heartbeat = {
         "schema": "gogurt-listener-heartbeat/v1",
-        "version": "an-earlier-gogurt-build",
+        "runtime_version": "an-earlier-gogurt-build",
         "pid": os.getpid(),
         "started_at": "2026-08-14T00:00:00Z",
         "heartbeat_at": "2026-08-14T00:00:10Z",
@@ -1767,7 +1767,8 @@ def test_listener_status_reports_health_and_dispatch_attention(tmp_path: Path) -
     assert status["health"] == "healthy"
     assert status["installed"] is True
     assert status["running"] is True
-    assert status["heartbeat"]["version"] == "an-earlier-gogurt-build"
+    assert status["manager_version"] == TEST_PRODUCT_VERSION
+    assert status["heartbeat"]["runtime_version"] == "an-earlier-gogurt-build"
 
 
 @pytest.mark.parametrize(
@@ -1790,7 +1791,7 @@ def test_listener_status_bounds_malformed_heartbeat_representations(
     config.write(paths.config_file)
     heartbeat: dict[str, object] = {
         "schema": "gogurt-listener-heartbeat/v1",
-        "version": importlib.metadata.version("gogurt"),
+        "runtime_version": importlib.metadata.version("gogurt"),
         "pid": os.getpid(),
         "started_at": "2026-08-14T00:00:00Z",
         "heartbeat_at": "2026-08-14T00:00:10Z",
@@ -1822,7 +1823,7 @@ def test_listener_status_rejects_a_future_heartbeat_as_false_liveness(tmp_path: 
     config.write(paths.config_file)
     heartbeat = {
         "schema": "gogurt-listener-heartbeat/v1",
-        "version": importlib.metadata.version("gogurt"),
+        "runtime_version": importlib.metadata.version("gogurt"),
         "pid": os.getpid(),
         "started_at": "2026-08-14T00:00:00Z",
         "heartbeat_at": "2026-08-14T01:00:00Z",
@@ -1879,7 +1880,7 @@ def test_listener_status_reports_corrupt_state_without_crashing(tmp_path: Path) 
         json.dumps(
             {
                 "schema": "gogurt-listener-heartbeat/v1",
-                "version": importlib.metadata.version("gogurt"),
+                "runtime_version": importlib.metadata.version("gogurt"),
                 "pid": os.getpid(),
                 "started_at": "2026-08-14T00:00:00Z",
                 "heartbeat_at": "2026-08-14T00:00:10Z",
@@ -1973,7 +1974,7 @@ def test_restarted_native_process_cannot_reuse_a_predecessor_heartbeat(
         json.dumps(
             {
                 "schema": "gogurt-listener-heartbeat/v1",
-                "version": importlib.metadata.version("gogurt"),
+                "runtime_version": importlib.metadata.version("gogurt"),
                 "pid": 4321,
                 "started_at": "2026-08-14T00:00:00Z",
                 "heartbeat_at": "2026-08-14T00:00:10Z",

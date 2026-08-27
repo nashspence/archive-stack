@@ -6,6 +6,7 @@ import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import GeneratorType
 
 import httpx
 import pytest
@@ -20,7 +21,9 @@ from riverhog_storage_adapter_protocol import (
     ObjectHeadRequest,
     ObjectLocator,
     ObjectMetadataReceipt,
+    ObjectReadReceipt,
     ObjectReadRequest,
+    ObjectReadStream,
     ReadPreparationRequest,
     ReadReady,
     ReadStatus,
@@ -242,11 +245,23 @@ class MemoryAdapter:
             completed_at="2026-08-21T00:00:00.000000Z",
         )
 
-    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
-        content = self.objects[request.object.object_path][0]
+    def read_object(self, request: ObjectReadRequest) -> ObjectReadStream:
+        stored = self.objects[request.object.object_path]
+        content = stored[0]
         if request.offset is not None and request.size is not None:
             content = content[request.offset : request.offset + request.size]
-        yield content
+        return ObjectReadStream(
+            receipt=ObjectReadReceipt(
+                object=ObjectLocator(
+                    object_path=request.object.object_path,
+                    revision=stored[3],
+                ),
+                total_bytes=request.expected_bytes,
+                offset=request.offset or 0,
+                read_bytes=len(content),
+            ),
+            content=iter((content,)) if content else iter(()),
+        )
 
     def delete_object(self, request: DeleteObjectRequest) -> None:
         self.objects.pop(request.object.object_path, None)
@@ -526,7 +541,7 @@ def test_small_object_and_exact_range_round_trip() -> None:
             )
         )
         ranged = b"".join(
-            client.iter_object(
+            client.read_object(
                 ObjectReadRequest(
                     object=ObjectLocator(
                         object_path="README.md",
@@ -536,7 +551,7 @@ def test_small_object_and_exact_range_round_trip() -> None:
                     offset=7,
                     size=6,
                 )
-            )
+            ).content
         )
 
         assert metadata is not None
@@ -564,6 +579,39 @@ def test_read_preparation_sends_no_provider_restore_mechanics() -> None:
     finally:
         client.close()
         http.close()
+
+
+def test_binding_closes_provider_read_when_consumer_stops_after_receipt() -> None:
+    class ClosingAdapter(MemoryAdapter):
+        closed = False
+
+        def read_object(self, request: ObjectReadRequest) -> ObjectReadStream:
+            return ObjectReadStream(
+                receipt=ObjectReadReceipt(
+                    object=request.object,
+                    total_bytes=request.expected_bytes,
+                    offset=0,
+                    read_bytes=request.expected_bytes,
+                ),
+                content=iter((b"payload",)),
+                close=lambda: setattr(self, "closed", True),
+            )
+
+    adapter = ClosingAdapter()
+    request = ObjectReadRequest(
+        object=ObjectLocator(object_path="archives/id/object", revision="version-1"),
+        expected_bytes=7,
+    )
+    response = StorageAdapterHttpBinding(adapter).handle(
+        "POST",
+        "/v1/objects/read",
+        request.model_dump_json(exclude_none=True).encode(),
+    )
+    assert isinstance(response.body, GeneratorType)
+    assert next(response.body)
+    response.body.close()
+
+    assert adapter.closed is True
 
 
 def test_transport_security_requires_explicit_non_loopback_http_opt_in() -> None:

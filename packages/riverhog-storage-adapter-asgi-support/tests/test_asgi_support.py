@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncIterator, Iterable
 from typing import cast
 
 import pytest
@@ -13,11 +13,17 @@ from riverhog_storage_adapter_protocol import (
     AdapterDescriptor,
     ImmutableObjectReceipt,
     ObjectLocator,
+    ObjectReadReceipt,
     ObjectReadRequest,
+    ObjectReadStream,
     SmallObjectWriteRequest,
     StorageAdapterPort,
 )
-from riverhog_storage_adapter_support import framed_request, framed_request_length
+from riverhog_storage_adapter_support import (
+    framed_request,
+    framed_request_length,
+    parse_framed_stream,
+)
 
 
 class _Adapter:
@@ -36,10 +42,17 @@ class _Adapter:
             maximum_segment_count=10,
         )
 
-    def iter_object(self, request: ObjectReadRequest) -> Iterator[bytes]:
+    def read_object(self, request: ObjectReadRequest) -> ObjectReadStream:
         assert request.object.object_path == "objects/item"
-        yield b"streamed"
-        yield b"-bytes"
+        return ObjectReadStream(
+            receipt=ObjectReadReceipt(
+                object=request.object,
+                total_bytes=request.expected_bytes,
+                offset=0,
+                read_bytes=request.expected_bytes,
+            ),
+            content=iter((b"streamed", b"-bytes")),
+        )
 
     def put_small_object(
         self,
@@ -106,8 +119,13 @@ def test_asgi_shell_streams_exact_adapter_responses() -> None:
     )
 
     assert response.status_code == 200
-    assert response.headers["content-length"] == "14"
-    assert response.content == b"streamed-bytes"
+    receipt, content = parse_framed_stream(
+        (response.content,),
+        ObjectReadReceipt,
+        content_length=int(response.headers["content-length"]),
+    )
+    assert receipt.object == request.object
+    assert b"".join(content) == b"streamed-bytes"
 
 
 def test_asgi_health_is_public_but_readiness_fails_closed() -> None:

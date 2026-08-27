@@ -270,6 +270,38 @@ def test_contract_pack_validation_resolves_references_within_the_exact_pack() ->
         )
 
 
+def test_contract_format_keywords_are_annotations_without_portable_constraints() -> None:
+    schema_id = "https://example.invalid/provenance/format-annotation/v1"
+    contract = ProvenanceContractBinding(
+        contract_id="example-format-policy/v1",
+        schemas=(
+            {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": schema_id,
+                "type": "string",
+                "format": "uuid",
+            },
+        ),
+    )
+    fragment = {
+        "extensions": [
+            {
+                "value": {
+                    "type": "json",
+                    "schema": schema_id,
+                    "data": "portable-format-annotation",
+                }
+            }
+        ]
+    }
+
+    schema_module.validate_embedded_typed_values(
+        fragment,
+        contract_schemas=contract.schemas,
+        require_known=True,
+    )
+
+
 def test_first_party_reference_uses_the_public_composition_and_contract_path(
     tmp_path: Path,
 ) -> None:

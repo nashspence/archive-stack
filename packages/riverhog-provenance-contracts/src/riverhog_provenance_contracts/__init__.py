@@ -23,6 +23,8 @@ CANONICAL_UUID_URN_PATTERN = (
 PROVENANCE_CONTRACT_ENTRY_POINT_GROUP = "riverhog.provenance-contracts"
 PROVENANCE_CONTRACT_BINDING_FORMAT = "riverhog-provenance-contract-binding/v1"
 PROVENANCE_CONTRACT_REFERENCE_FORMAT = "riverhog-provenance-contract-reference/v1"
+PROVENANCE_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+PROVENANCE_SCHEMA_FORMAT_POLICY = "annotation-only"
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
@@ -56,6 +58,11 @@ def _validate_schema_pack(
 ) -> None:
     resources: list[tuple[str, Any]] = []
     for identifier, document in schemas.items():
+        if document.get("$schema") != PROVENANCE_SCHEMA_DIALECT:
+            raise ValueError(
+                f"{owner} schema must declare the exact JSON Schema Draft 2020-12 "
+                f"dialect: {identifier}"
+            )
         try:
             Draft202012Validator.check_schema(document)
         except SchemaError as exc:
@@ -93,6 +100,8 @@ class ProvenanceContractBinding:
     format: str
     contract_id: str
     contract_sha256: str
+    schema_dialect: str
+    format_policy: str
     _schemas_json: bytes
 
     def __init__(
@@ -110,11 +119,15 @@ class ProvenanceContractBinding:
         document = {
             "format": PROVENANCE_CONTRACT_BINDING_FORMAT,
             "contract_id": contract_id,
+            "schema_dialect": PROVENANCE_SCHEMA_DIALECT,
+            "format_policy": PROVENANCE_SCHEMA_FORMAT_POLICY,
             "schemas": indexed,
         }
         encoded = _canonical_json(document)
         object.__setattr__(self, "format", PROVENANCE_CONTRACT_BINDING_FORMAT)
         object.__setattr__(self, "contract_id", contract_id)
+        object.__setattr__(self, "schema_dialect", PROVENANCE_SCHEMA_DIALECT)
+        object.__setattr__(self, "format_policy", PROVENANCE_SCHEMA_FORMAT_POLICY)
         object.__setattr__(self, "contract_sha256", hashlib.sha256(encoded).hexdigest())
         object.__setattr__(self, "_schemas_json", _canonical_json(indexed))
 
@@ -199,6 +212,8 @@ __all__ = [
     "PROVENANCE_CONTRACT_BINDING_FORMAT",
     "PROVENANCE_CONTRACT_ENTRY_POINT_GROUP",
     "PROVENANCE_CONTRACT_REFERENCE_FORMAT",
+    "PROVENANCE_SCHEMA_DIALECT",
+    "PROVENANCE_SCHEMA_FORMAT_POLICY",
     "ProvenanceJournalId",
     "ProvenanceEntryId",
     "ProvenanceContractBinding",

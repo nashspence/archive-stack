@@ -111,6 +111,10 @@ def _emit_listener(payload: dict[str, object], *, json_mode: bool, operation: st
         emit(payload, json_mode=True)
         return
     typer.echo(f"gogurt listener {operation}")
+    typer.echo(f"manager version: {payload.get('manager_version', 'unknown')}")
+    heartbeat = payload.get("heartbeat")
+    runtime_version = heartbeat.get("runtime_version") if isinstance(heartbeat, dict) else None
+    typer.echo(f"runtime version: {runtime_version or 'unavailable'}")
     typer.echo(f"health: {payload.get('health', 'unknown')}")
     typer.echo(f"installed: {str(bool(payload.get('installed'))).lower()}")
     typer.echo(f"enabled: {str(bool(payload.get('enabled'))).lower()}")

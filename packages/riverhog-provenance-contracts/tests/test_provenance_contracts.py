@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 from pydantic import TypeAdapter, ValidationError
 from riverhog_provenance_contracts import (
+    PROVENANCE_SCHEMA_DIALECT,
+    PROVENANCE_SCHEMA_FORMAT_POLICY,
     ProvenanceContractBinding,
     ProvenanceEntryId,
     ProvenanceJournalStateReference,
@@ -75,10 +77,12 @@ def test_schema_contract_binding_seals_valid_cross_document_reference_closure() 
         contract_id="fixture.provenance/v1",
         schemas=(
             {
+                "$schema": PROVENANCE_SCHEMA_DIALECT,
                 "$id": value_id,
                 "$defs": {"value": {"type": "string", "minLength": 1}},
             },
             {
+                "$schema": PROVENANCE_SCHEMA_DIALECT,
                 "$id": observation_id,
                 "type": "object",
                 "properties": {"value": {"$ref": f"{value_id}#/$defs/value"}},
@@ -89,6 +93,8 @@ def test_schema_contract_binding_seals_valid_cross_document_reference_closure() 
     )
 
     assert tuple(binding.schemas) == (observation_id, value_id)
+    assert binding.schema_dialect == PROVENANCE_SCHEMA_DIALECT
+    assert binding.format_policy == PROVENANCE_SCHEMA_FORMAT_POLICY
     assert binding.reference("fixture-provider")["contract_sha256"] == binding.contract_sha256
 
 
@@ -98,6 +104,7 @@ def test_schema_contract_binding_rejects_invalid_draft_2020_12_schema() -> None:
             contract_id="fixture.invalid/v1",
             schemas=(
                 {
+                    "$schema": PROVENANCE_SCHEMA_DIALECT,
                     "$id": "https://schemas.example/provenance/invalid/v1",
                     "type": "not-a-json-schema-type",
                 },
@@ -120,8 +127,24 @@ def test_schema_contract_binding_rejects_references_outside_exact_pack(
             contract_id="fixture.open/v1",
             schemas=(
                 {
+                    "$schema": PROVENANCE_SCHEMA_DIALECT,
                     "$id": "https://schemas.example/provenance/open/v1",
                     "properties": {"value": {"$ref": reference}},
                 },
             ),
         )
+
+
+def test_schema_contract_binding_rejects_missing_or_conflicting_dialect() -> None:
+    for dialect in (None, "https://json-schema.org/draft/2019-09/schema"):
+        schema = {
+            "$id": "https://schemas.example/provenance/dialect/v1",
+            "type": "object",
+        }
+        if dialect is not None:
+            schema["$schema"] = dialect
+        with pytest.raises(ValueError, match="exact JSON Schema Draft 2020-12"):
+            ProvenanceContractBinding(
+                contract_id="fixture.dialect/v1",
+                schemas=(schema,),
+            )

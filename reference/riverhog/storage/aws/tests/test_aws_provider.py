@@ -31,6 +31,16 @@ class _RestoreClient:
         self.head["Restore"] = 'ongoing-request="true"'
 
 
+class _DeliverySource:
+    def head_object(self, **request: Any) -> dict[str, Any]:
+        assert request == {
+            "Bucket": "private-bucket",
+            "Key": "archives/path with space/object.age",
+            "VersionId": "provider/version+id=",
+        }
+        return {"ContentLength": 10, "VersionId": "provider/version+id="}
+
+
 def test_aws_restore_mechanics_are_adapter_configuration() -> None:
     client = _RestoreClient()
     preparation = AwsDeepArchiveReadPreparation(tier="Bulk", days=3)
@@ -114,16 +124,17 @@ def test_cloudfront_delivery_binds_exact_version_range_and_length(tmp_path: Path
     )
     try:
         content = b"".join(
-            reader.iter_object(
-                client=object(),
+            reader.read_object(
+                client=_DeliverySource(),
                 bucket="private-bucket",
                 key="archives/path with space/object.age",
+                object_path="archives/path with space/object.age",
                 revision="provider/version+id=",
                 offset=3,
                 size=4,
                 expected_bytes=10,
                 chunk_bytes=64 * 1024,
-            )
+            ).content
         )
     finally:
         reader.close()

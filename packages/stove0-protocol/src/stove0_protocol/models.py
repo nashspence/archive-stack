@@ -52,6 +52,13 @@ EVALUATION_DEFINITION_FORMAT: Literal["stove0-evaluation-definition/v1"] = (
     "stove0-evaluation-definition/v1"
 )
 RIVERHOG_CAPABILITY_TRANSPORT: Literal["riverhog-capability/v1"] = "riverhog-capability/v1"
+JSON_SCHEMA_DIALECT: Literal["https://json-schema.org/draft/2020-12/schema"] = (
+    "https://json-schema.org/draft/2020-12/schema"
+)
+JSON_SCHEMA_FORMAT_POLICY: Literal["annotation-only"] = "annotation-only"
+JSON_SCHEMA_PROFILE_FORMAT: Literal["stove0-json-schema-profile/v1"] = (
+    "stove0-json-schema-profile/v1"
+)
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 SEMANTIC_ID_PATTERN = r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$"
@@ -123,12 +130,22 @@ class Stove0ProtocolModel(BaseModel):
 class JsonSchemaDocument(Stove0ProtocolModel):
     id: SemanticId
     sha256: Sha256
+    dialect: Literal["https://json-schema.org/draft/2020-12/schema"] = JSON_SCHEMA_DIALECT
+    format_policy: Literal["annotation-only"] = JSON_SCHEMA_FORMAT_POLICY
     document: dict[str, JsonValue] = Field(alias="schema")
 
     @model_validator(mode="after")
     def verify_digest(self) -> Self:
-        if canonical_json_sha256(self.document) != self.sha256:
-            raise ValueError("schema sha256 does not match its canonical JSON")
+        if self.document.get("$schema") != self.dialect:
+            raise ValueError("schema must declare the exact JSON Schema Draft 2020-12 dialect")
+        profile = {
+            "format": JSON_SCHEMA_PROFILE_FORMAT,
+            "dialect": self.dialect,
+            "format_policy": self.format_policy,
+            "schema": self.document,
+        }
+        if canonical_json_sha256(profile) != self.sha256:
+            raise ValueError("schema sha256 does not match its complete execution profile")
         try:
             Draft202012Validator.check_schema(self.document)
         except SchemaError as exc:
@@ -138,7 +155,15 @@ class JsonSchemaDocument(Stove0ProtocolModel):
 
     @classmethod
     def from_schema(cls, schema_id: str, schema: dict[str, JsonValue]) -> JsonSchemaDocument:
-        return cls(id=schema_id, sha256=canonical_json_sha256(schema), schema=schema)
+        document = dict(schema)
+        document.setdefault("$schema", JSON_SCHEMA_DIALECT)
+        profile = {
+            "format": JSON_SCHEMA_PROFILE_FORMAT,
+            "dialect": JSON_SCHEMA_DIALECT,
+            "format_policy": JSON_SCHEMA_FORMAT_POLICY,
+            "schema": document,
+        }
+        return cls(id=schema_id, sha256=canonical_json_sha256(profile), schema=document)
 
 
 class CollectionRootRef(Stove0ProtocolModel):

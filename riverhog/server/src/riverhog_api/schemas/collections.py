@@ -41,9 +41,7 @@ _UPLOAD_CUSTODY_STATE_SCHEMA: list[dict[str, Any]] = [
         },
         "then": {
             "properties": {
-                "state": {
-                    "enum": ["open", "closing", "uploading", "finalizing", "canceled", "finalized"]
-                },
+                "state": {"enum": ["open", "uploading", "finalizing", "canceled", "finalized"]},
                 "upload_state_expires_at": {"type": "null"},
                 "orphaned_at": {"type": "null"},
             }
@@ -190,7 +188,12 @@ _UPLOAD_PROVENANCE_STATE_SCHEMA: list[dict[str, Any]] = [
                 },
             ]
         },
-        "else": {"properties": {"provenance_identity": {"type": "null"}}},
+        "else": {
+            "properties": {
+                "provenance_mode": {"enum": ["captured", "omitted"]},
+                "provenance_identity": {"type": "null"},
+            }
+        },
     }
 ]
 
@@ -217,8 +220,10 @@ def _validate_upload_custody_state(
             raise ValueError("noncustody upload states cannot retain custody lease state")
         return
     if custody_mode == "producer-retained":
-        if state in {"orphaned", "discarding"}:
-            raise ValueError("producer-retained upload sessions cannot become custody orphans")
+        if state in {"closing", "orphaned", "discarding"}:
+            raise ValueError(
+                "producer-retained upload sessions cannot enter custody-transfer states"
+            )
         if upload_state_expires_at is not None or orphaned_at is not None:
             raise ValueError("producer-retained upload sessions cannot have custody lease state")
         return
@@ -426,7 +431,7 @@ class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
     archive_store: ArchiveStoreName
     encryption_format: str
     passphrase_id: str = Field(pattern=r"^[A-Za-z0-9_-]{16,128}$")
-    state: Literal["open", "uploading"]
+    state: Literal["open"]
     files: list[CollectionUploadFileOut]
     volumes: list[CollectionUploadVolumeSummaryOut]
 
@@ -640,6 +645,8 @@ class CollectionUploadSessionOut(RiverhogModel):
                 raise ValueError("finalized omitted provenance cannot have an identity")
         elif self.provenance_identity is not None:
             raise ValueError("nonfinal upload sessions cannot have a provenance identity")
+        if self.state != "finalized" and self.provenance_mode == "mixed":
+            raise ValueError("mixed provenance is only a finalized collection result")
         _validate_upload_custody_state(
             state=self.state,
             custody_mode=self.custody_mode,

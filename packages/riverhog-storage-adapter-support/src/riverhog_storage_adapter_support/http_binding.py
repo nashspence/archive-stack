@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TypeVar
 
@@ -21,6 +21,7 @@ from riverhog_storage_adapter_protocol import (
     ObjectHeadRequest,
     ObjectMetadataReceipt,
     ObjectReadRequest,
+    ObjectReadStream,
     ReadPreparationRequest,
     ReadStatus,
     SmallObjectWriteRequest,
@@ -37,8 +38,11 @@ from riverhog_storage_adapter_protocol import (
     WriteStartRequest,
     validate_completed_write_response,
     validate_object_metadata_response,
+    validate_object_read_response,
     validate_read_status_response,
     validate_small_object_response,
+    validate_write_completion_request,
+    validate_write_segment_request,
     validate_write_segment_response,
     validate_write_segment_set_response,
     validate_write_session_response,
@@ -46,13 +50,15 @@ from riverhog_storage_adapter_protocol import (
 )
 
 from riverhog_storage_adapter_support.framing import (
+    FRAMED_REQUEST_MEDIA_TYPE,
     FramedContent,
     FramedRequestError,
+    framed_request,
+    framed_request_length,
     parse_framed_stream,
 )
 
 _JSON_CONTENT_TYPE = "application/json"
-_BINARY_CONTENT_TYPE = "application/octet-stream"
 # This is an operational parser bound, not a semantic object/member limit. It
 # accommodates a large write-segment receipt set even when provider
 # tokens are unusually large.
@@ -144,35 +150,11 @@ class StorageAdapterHttpBinding:
                 return _model_response(segment_set)
             if normalized_method == "POST" and path == "/v1/writes/complete":
                 complete_request = self._parse(body, WriteCompleteRequest)
-                descriptor = self.adapter.descriptor()
-                if (
-                    descriptor.maximum_segment_count is not None
-                    and len(complete_request.segments) > descriptor.maximum_segment_count
-                ):
-                    raise StorageAdapterServiceError(
-                        400,
-                        "invalid_request",
-                        "write completion exceeds the adapter segment-count limit",
-                    )
-                if any(
-                    segment.stored_bytes > descriptor.maximum_segment_bytes
-                    for segment in complete_request.segments
-                    if descriptor.maximum_segment_bytes is not None
-                ):
-                    raise StorageAdapterServiceError(
-                        400,
-                        "invalid_request",
-                        "write completion contains an oversized segment",
-                    )
-                if any(
-                    segment.stored_bytes < descriptor.minimum_nonfinal_segment_bytes
-                    for segment in complete_request.segments[:-1]
-                ):
-                    raise StorageAdapterServiceError(
-                        400,
-                        "invalid_request",
-                        "write completion contains an undersized non-final segment",
-                    )
+                self._validate_constraints(
+                    validate_write_completion_request,
+                    complete_request,
+                    self.adapter.descriptor(),
+                )
                 completed_receipt = self.adapter.complete_write(complete_request)
                 validate_completed_write_response(complete_request, completed_receipt)
                 return _model_response(completed_receipt)
@@ -195,35 +177,30 @@ class StorageAdapterHttpBinding:
                 return _model_response(metadata_receipt)
             if normalized_method == "POST" and path == "/v1/objects/read":
                 read_request = self._parse(body, ObjectReadRequest)
-                expected = (
-                    read_request.size
-                    if read_request.size is not None
-                    else read_request.expected_bytes
-                )
+                read_stream = self.adapter.read_object(read_request)
+                validate_object_read_response(read_request, read_stream.receipt)
+                receipt = read_stream.receipt
                 headers: list[tuple[str, str]] = [
-                    ("Content-Type", _BINARY_CONTENT_TYPE),
-                    ("Content-Length", str(expected)),
+                    ("Content-Type", FRAMED_REQUEST_MEDIA_TYPE),
+                    ("Content-Length", str(framed_request_length(receipt))),
+                    ("X-Riverhog-Object-Bytes", str(receipt.total_bytes)),
                 ]
-                if read_request.object.revision is not None:
-                    headers.append(("X-Riverhog-Object-Revision", read_request.object.revision))
+                if receipt.object.revision is not None:
+                    headers.append(("X-Riverhog-Object-Revision", receipt.object.revision))
                 status = 200
-                if (
-                    read_request.offset is not None
-                    and read_request.size is not None
-                    and read_request.size > 0
-                ):
+                if read_request.offset is not None and receipt.read_bytes > 0:
                     status = 206
-                    end = read_request.offset + read_request.size - 1
+                    end = receipt.offset + receipt.read_bytes - 1
                     headers.append(
                         (
                             "Content-Range",
-                            f"bytes {read_request.offset}-{end}/{read_request.expected_bytes}",
+                            f"bytes {receipt.offset}-{end}/{receipt.total_bytes}",
                         )
                     )
                 return StorageAdapterHttpResponse(
                     status=status,
                     headers=tuple(headers),
-                    body=_validated_stream(self.adapter.iter_object(read_request), expected),
+                    body=_framed_read_stream(read_stream),
                 )
             if normalized_method == "POST" and path == "/v1/objects/delete":
                 self.adapter.delete_object(self._parse(body, DeleteObjectRequest))
@@ -303,25 +280,11 @@ class StorageAdapterHttpBinding:
                     WriteSegmentRequest,
                     content_length=content_length,
                 )
-                descriptor = self.adapter.descriptor()
-                if (
-                    descriptor.maximum_segment_count is not None
-                    and segment_request.number > descriptor.maximum_segment_count
-                ):
-                    raise StorageAdapterServiceError(
-                        400,
-                        "invalid_request",
-                        "write segment number exceeds the adapter limit",
-                    )
-                if (
-                    descriptor.maximum_segment_bytes is not None
-                    and segment_request.stored_bytes > descriptor.maximum_segment_bytes
-                ):
-                    raise StorageAdapterServiceError(
-                        413,
-                        "request_too_large",
-                        "write segment exceeds the adapter byte limit",
-                    )
+                self._validate_constraints(
+                    validate_write_segment_request,
+                    segment_request,
+                    self.adapter.descriptor(),
+                )
                 segment_receipt = self.adapter.write_segment(
                     session=segment_request.session,
                     number=segment_request.number,
@@ -384,6 +347,17 @@ class StorageAdapterHttpBinding:
                 400,
                 "invalid_request",
                 "adapter request is invalid",
+            ) from exc
+
+    @staticmethod
+    def _validate_constraints(validator: Callable[..., None], *args: object) -> None:
+        try:
+            validator(*args)
+        except ValueError as exc:
+            raise StorageAdapterServiceError(
+                400,
+                "invalid_request",
+                "adapter request violates its descriptor",
             ) from exc
 
     def _parse_framed_stream(
@@ -661,17 +635,13 @@ def _error(
     )
 
 
-def _validated_stream(content: Iterator[bytes], expected_bytes: int) -> Iterator[bytes]:
-    emitted = 0
-    for chunk in content:
-        if not chunk:
-            continue
-        emitted += len(chunk)
-        if emitted > expected_bytes:
-            raise RuntimeError("adapter object stream exceeds its declared length")
-        yield chunk
-    if emitted != expected_bytes:
-        raise RuntimeError("adapter object stream ended before its declared length")
+def _framed_read_stream(read_stream: ObjectReadStream) -> Iterator[bytes]:
+    """Frame one read while closing provider custody on every exit path."""
+
+    try:
+        yield from framed_request(read_stream.receipt, read_stream.content)
+    finally:
+        read_stream.close()
 
 
 __all__ = [
