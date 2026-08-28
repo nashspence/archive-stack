@@ -296,7 +296,6 @@ def test_retrieval_cache_contract_exposes_indexer_state_and_filters() -> None:
         "expires_after",
         "sort",
         "order",
-        "all",
     } <= {parameter["name"] for parameter in operation["parameters"]}
 
 

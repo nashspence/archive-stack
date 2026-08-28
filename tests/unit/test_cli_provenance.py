@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -34,17 +36,12 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     }
 
     class FakeClient:
-        def list_collection_provenance(self, collection_id: int, **kwargs: Any) -> dict[str, Any]:
-            calls.append(("list", (collection_id, kwargs)))
-            return {
-                "collection_id": collection_id,
-                "provenance_mode": "captured",
-                "files": [shown],
-                "page": 1,
-                "per_page": 1,
-                "total": 1,
-                "pages": 1,
-            }
+        @contextmanager
+        def stream_collection_provenance(
+            self, collection_id: int, **kwargs: Any
+        ) -> Iterator[Iterator[dict[str, Any]]]:
+            calls.append(("stream", (collection_id, kwargs)))
+            yield iter((shown,))
 
         def get_collection_file_provenance(self, collection_id: int, path: str) -> dict[str, Any]:
             calls.append(("show", (collection_id, path)))
@@ -150,17 +147,14 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     assert json.loads(verified.stdout)["valid"] is True
     assert calls == [
         (
-            "list",
+            "stream",
             (
                 41,
                 {
-                    "page": 1,
-                    "per_page": 25,
                     "q": "movie",
                     "status": "captured",
                     "sort": "path",
                     "order": "asc",
-                    "all_items": True,
                 },
             ),
         ),
@@ -184,15 +178,17 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
 
 def test_provenance_list_selectors_match_other_file_list_commands(monkeypatch) -> None:
     class FakeClient:
-        def list_collection_provenance(self, collection_id: int, **kwargs: Any) -> dict[str, Any]:
+        @contextmanager
+        def stream_collection_provenance(
+            self, collection_id: int, **kwargs: Any
+        ) -> Iterator[Iterator[dict[str, Any]]]:
             assert collection_id == 41
-            assert kwargs["all_items"] is True
-            return {
-                "files": [
+            yield iter(
+                (
                     {"collection_id": 41, "path": "one.mov"},
                     {"collection_id": 41, "path": "nested/two.mov"},
-                ]
-            }
+                )
+            )
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 

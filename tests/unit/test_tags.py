@@ -84,21 +84,23 @@ def test_tag_list_uses_catalog_scoping_and_standard_page_projection(tmp_path: Pa
     assert reader is not None
 
     page = tags.list(
-        page=9,
-        per_page=1,
+        page=1,
+        per_page=25,
         q="cam",
         sort="id",
         order="asc",
-        all_items=True,
         principal=reader,
     )
+    rows = list(
+        tags.iter_tags(
+            q="cam",
+            sort="id",
+            order="asc",
+            principal=reader,
+        )
+    )
 
-    assert {key: page[key] for key in ("page", "per_page", "total", "pages")} == {
-        "page": 1,
-        "per_page": 1,
-        "total": 1,
-        "pages": 1,
-    }
+    assert [row["id"] for row in rows] == ["camera"]
     assert {key: page[key] for key in ("sort", "order", "query")} == {
         "sort": "id",
         "order": "asc",

@@ -109,6 +109,10 @@ class RetrievalApi:
             ]
         }
 
+    @contextmanager
+    def stream_search(self, _query: str | None = None, **kwargs: Any) -> Iterator[Any]:
+        yield iter(self.search(_query, **kwargs)["files"])
+
     def list_collection_provenance(
         self,
         collection_id: int,
@@ -129,6 +133,10 @@ class RetrievalApi:
                 }
             ]
         }
+
+    @contextmanager
+    def stream_collection_provenance(self, collection_id: int, **kwargs: Any) -> Iterator[Any]:
+        yield iter(self.list_collection_provenance(collection_id, **kwargs)["files"])
 
     def _rows(self, files: Sequence[tuple[int, str]]) -> list[dict[str, object]]:
         return [
@@ -293,6 +301,12 @@ class UploadApi:
     ) -> dict[str, Any]:
         return {"files": [dict(item) for item in self.registered]}
 
+    @contextmanager
+    def stream_collection_upload_session_files(
+        self, collection_id: int
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        yield iter(self.list_collection_upload_session_files(collection_id)["files"])
+
     def heartbeat_collection_upload_session(self, _collection_id: int) -> dict[str, Any]:
         return {"state": "open"}
 
@@ -415,6 +429,10 @@ class ProvenanceTransformApi(UploadApi):
             ]
         }
 
+    @contextmanager
+    def stream_search(self, _query: str | None = None, **kwargs: Any) -> Iterator[Any]:
+        yield iter(self.search(_query, **kwargs)["files"])
+
     def list_collection_provenance(
         self,
         collection_id: int,
@@ -441,6 +459,10 @@ class ProvenanceTransformApi(UploadApi):
                 for path, content in self.source_contents.items()
             ]
         }
+
+    @contextmanager
+    def stream_collection_provenance(self, collection_id: int, **kwargs: Any) -> Iterator[Any]:
+        yield iter(self.list_collection_provenance(collection_id, **kwargs)["files"])
 
     def export_collection_provenance_journal(
         self,

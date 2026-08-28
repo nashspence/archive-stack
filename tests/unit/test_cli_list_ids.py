@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import riverhog_cli.main
@@ -12,22 +14,13 @@ runner = CliRunner()
 
 def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) -> None:
     class FakeClient:
-        def list_collections(self, **kwargs: Any) -> dict[str, object]:
-            assert kwargs["all_items"] is True
+        @contextmanager
+        def stream_collections(self, **kwargs: Any) -> Iterator[Iterator[dict[str, object]]]:
             assert kwargs["q"] == "camera"
             assert kwargs["tag"] == "photos"
             assert kwargs["encryption_format"] == "age-v1-scrypt"
             assert kwargs["passphrase_id"] == "fixture-archive-key-v2"
-            return {
-                "page": 1,
-                "per_page": 2,
-                "total": 2,
-                "pages": 1,
-                "collections": [
-                    {"id": 41},
-                    {"id": 42},
-                ],
-            }
+            yield iter(({"id": 41}, {"id": 42}))
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
@@ -55,27 +48,18 @@ def test_collection_list_all_ids_emits_pipeable_database_results(monkeypatch) ->
 
 def test_collection_upload_list_all_ids_forwards_database_filters(monkeypatch) -> None:
     class FakeClient:
-        def list_collection_upload_sessions(self, **kwargs: Any) -> dict[str, object]:
+        @contextmanager
+        def stream_collection_upload_sessions(
+            self, **kwargs: Any
+        ) -> Iterator[Iterator[dict[str, object]]]:
             assert kwargs == {
-                "page": 1,
-                "per_page": 25,
                 "q": "camera",
                 "tag": "photos",
                 "state": "uploading",
                 "sort": "created_at",
                 "order": "desc",
-                "all_items": True,
             }
-            return {
-                "page": 1,
-                "per_page": 2,
-                "total": 2,
-                "pages": 1,
-                "uploads": [
-                    {"collection_id": 41},
-                    {"collection_id": 42},
-                ],
-            }
+            yield iter(({"collection_id": 41}, {"collection_id": 42}))
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
@@ -102,11 +86,13 @@ def test_collection_upload_list_all_ids_forwards_database_filters(monkeypatch) -
 
 def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
     class FakeClient:
-        def search(self, query: str | None, **kwargs: Any) -> dict[str, object]:
+        @contextmanager
+        def stream_search(
+            self, query: str | None, **kwargs: Any
+        ) -> Iterator[Iterator[dict[str, object]]]:
             assert query == "invoice"
-            assert kwargs["all_items"] is True
-            return {
-                "files": [
+            yield iter(
+                (
                     {
                         "collection_id": 41,
                         "path": "tax/invoice.pdf",
@@ -117,8 +103,8 @@ def test_find_all_selectors_emits_pipeable_file_identities(monkeypatch) -> None:
                         "path": "tax/invoice.pdf",
                         "file_ref": "42/tax/invoice.pdf",
                     },
-                ]
-            }
+                )
+            )
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
@@ -150,3 +136,24 @@ def test_riverhog_closes_its_shared_api_client(monkeypatch) -> None:
     assert result.exit_code == 0
     assert closed == [True]
     assert riverhog_cli.main._API_CLIENT is None
+
+
+def test_collection_list_all_reports_a_truncated_stream_without_claiming_completion(
+    monkeypatch,
+) -> None:
+    class FakeClient:
+        @contextmanager
+        def stream_collections(self, **_kwargs: Any) -> Iterator[Iterator[dict[str, object]]]:
+            def truncated() -> Iterator[dict[str, object]]:
+                yield {"id": 41}
+                raise ValueError("complete-enumeration stream has no terminal frame")
+
+            yield truncated()
+
+    monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
+
+    result = runner.invoke(app, ["collection", "list", "--all", "--json"])
+
+    assert result.exit_code != 0
+    assert '"collections":[{"id":41}' in result.stdout
+    assert '"total"' not in result.stdout

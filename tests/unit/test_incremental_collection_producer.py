@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -73,6 +74,14 @@ class _CustodyApi:
         **_kwargs: object,
     ) -> dict[str, object]:
         return {"files": list(self.rows.values())}
+
+    @contextmanager
+    def stream_collection_upload_session_files(
+        self,
+        collection_id: int,
+    ) -> Iterator[Iterator[dict[str, object]]]:
+        payload = self.list_collection_upload_session_files(collection_id)
+        yield iter(payload["files"])  # type: ignore[arg-type]
 
     def register_collection_upload_session_files(
         self,
@@ -306,7 +315,7 @@ class _ServiceApi:
         collection_id: int,
         **_kwargs: object,
     ) -> dict[str, object]:
-        payload = self.service.list_files(collection_id, page=1, per_page=100, all_items=True)
+        payload = self.service.list_files(collection_id, page=1, per_page=100)
         raw_files = payload["files"]
         assert isinstance(raw_files, list)
         files = []
@@ -318,6 +327,14 @@ class _ServiceApi:
                 row["custody_receipt"] = receipt.model_dump(mode="json")
             files.append(row)
         return {**payload, "files": files}
+
+    @contextmanager
+    def stream_collection_upload_session_files(
+        self,
+        collection_id: int,
+    ) -> Iterator[Iterator[dict[str, object]]]:
+        payload = self.list_collection_upload_session_files(collection_id)
+        yield iter(payload["files"])  # type: ignore[arg-type]
 
     def register_collection_upload_session_files(
         self,

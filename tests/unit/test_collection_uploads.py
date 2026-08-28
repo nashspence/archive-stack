@@ -674,7 +674,6 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
         status=None,
         sort="path",
         order="asc",
-        all_items=True,
         principal=reader,
     )
     assert listed["provenance_mode"] == "mixed"
@@ -1047,7 +1046,7 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
         plan_sha256=str(volume["plan_sha256"]),
         content=b"".join(contents[str(source["path"])] for source in unit["sources"]),
     )
-    files = service.list_files(collection_id, page=1, per_page=100, all_items=True)["files"]
+    files = service.list_files(collection_id, page=1, per_page=100)["files"]
     by_path = {str(item["path"]): item for item in files}
     assert by_path["a.txt"]["custody_receipt"] is not None
     assert by_path["b.txt"]["custody_receipt"] is None
@@ -1074,7 +1073,6 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
             state=None,
             sort="id",
             order="asc",
-            all_items=True,
             principal=_DELETER,
         )["total"]
         == 1
@@ -1088,7 +1086,6 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
             state=None,
             sort="id",
             order="asc",
-            all_items=True,
             principal=_DOCS_DELETER,
         )["total"]
         == 1
@@ -1102,7 +1099,6 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
             state=None,
             sort="id",
             order="asc",
-            all_items=True,
             principal=_OTHER_DELETER,
         )["total"]
         == 0

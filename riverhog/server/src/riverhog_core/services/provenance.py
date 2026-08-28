@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from riverhog_protocol.errors import BadRequest, InvalidState, NotFound
@@ -17,6 +17,7 @@ from riverhog_provenance import (
 )
 from sqlalchemy import asc, delete, desc, func, select
 from sqlalchemy.orm import Session, undefer
+from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import (
     CATALOG_READ,
@@ -61,7 +62,6 @@ class SqlAlchemyProvenanceService:
         status: str | None,
         sort: str,
         order: str,
-        all_items: bool,
         principal: ApplicationPrincipal,
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
@@ -70,55 +70,23 @@ class SqlAlchemyProvenanceService:
             raise BadRequest("status must be captured or omitted")
         with session_scope(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
-            joined = (
-                select(CollectionFileRecord, CollectionFileProvenanceRecord)
-                .outerjoin(
-                    CollectionFileProvenanceRecord,
-                    (
-                        CollectionFileProvenanceRecord.collection_id
-                        == CollectionFileRecord.collection_id
-                    )
-                    & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
-                )
-                .where(CollectionFileRecord.collection_id == collection_id)
+            joined = _provenance_file_statement(
+                collection_id=collection_id,
+                collection=collection,
+                principal=principal,
+                q=q,
+                status=status,
+                sort=sort,
+                order=order,
             )
-            if principal.artifact_scope is not None:
-                paths = sorted(
-                    path
-                    for scoped_collection_id, path in principal.artifact_scope
-                    if scoped_collection_id == collection_id
-                )
-                joined = joined.where(CollectionFileRecord.path.in_(paths))
-            if q:
-                joined = joined.where(
-                    func.lower(CollectionFileRecord.path).like(
-                        _like_pattern(q.casefold()), escape="\\"
-                    )
-                )
-            effective_status = func.coalesce(
-                CollectionFileProvenanceRecord.status,
-                "omitted" if collection.provenance_mode == "omitted" else "missing",
-            )
-            if status is not None:
-                joined = joined.where(effective_status == status)
             total = int(session.scalar(select(func.count()).select_from(joined.subquery())) or 0)
-            sort_column = {
-                "path": CollectionFileRecord.path,
-                "bytes": CollectionFileRecord.bytes,
-                "status": effective_status,
-            }[sort]
-            direction = desc(sort_column) if order == "desc" else asc(sort_column)
-            joined = joined.order_by(direction, CollectionFileRecord.path.asc())
-            if not all_items:
-                joined = joined.offset((page - 1) * per_page).limit(per_page)
+            joined = joined.offset((page - 1) * per_page).limit(per_page)
             rows = session.execute(joined).all()
             return {
-                "page": 1 if all_items else page,
-                "per_page": total if all_items else per_page,
+                "page": page,
+                "per_page": per_page,
                 "total": total,
-                "pages": (1 if total else 0)
-                if all_items
-                else ((total + per_page - 1) // per_page if total else 0),
+                "pages": ((total + per_page - 1) // per_page if total else 0),
                 "sort": sort,
                 "order": order,
                 "query": q,
@@ -128,6 +96,34 @@ class SqlAlchemyProvenanceService:
                 "provenance_identity": collection.provenance_identity,
                 "files": [_file_payload(file, binding, collection) for file, binding in rows],
             }
+
+    def iter_files(
+        self,
+        collection_id: int,
+        *,
+        q: str | None,
+        status: str | None,
+        sort: str,
+        order: str,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[dict[str, Any]]:
+        collection_id = _collection_id(collection_id)
+        _page_options(1, 100, sort, order)
+        if status is not None and status not in {"captured", "omitted"}:
+            raise BadRequest("status must be captured or omitted")
+        with read_snapshot(self._session_factory) as session:
+            collection = _authorized_collection(session, collection_id, principal)
+            statement = _provenance_file_statement(
+                collection_id=collection_id,
+                collection=collection,
+                principal=principal,
+                q=q,
+                status=status,
+                sort=sort,
+                order=order,
+            ).execution_options(yield_per=100)
+            for file, binding in session.execute(statement):
+                yield _file_payload(file, binding, collection)
 
     def show_file(
         self,
@@ -558,6 +554,51 @@ class SqlAlchemyProvenanceService:
                 "journals": len(journal_records),
                 "entities": entities,
             }
+
+
+def _provenance_file_statement(
+    *,
+    collection_id: int,
+    collection: CollectionRecord,
+    principal: ApplicationPrincipal,
+    q: str | None,
+    status: str | None,
+    sort: str,
+    order: str,
+) -> Any:
+    joined = (
+        select(CollectionFileRecord, CollectionFileProvenanceRecord)
+        .outerjoin(
+            CollectionFileProvenanceRecord,
+            (CollectionFileProvenanceRecord.collection_id == CollectionFileRecord.collection_id)
+            & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
+        )
+        .where(CollectionFileRecord.collection_id == collection_id)
+    )
+    if principal.artifact_scope is not None:
+        paths = sorted(
+            path
+            for scoped_collection_id, path in principal.artifact_scope
+            if scoped_collection_id == collection_id
+        )
+        joined = joined.where(CollectionFileRecord.path.in_(paths))
+    if q:
+        joined = joined.where(
+            func.lower(CollectionFileRecord.path).like(_like_pattern(q.casefold()), escape="\\")
+        )
+    effective_status = func.coalesce(
+        CollectionFileProvenanceRecord.status,
+        "omitted" if collection.provenance_mode == "omitted" else "missing",
+    )
+    if status is not None:
+        joined = joined.where(effective_status == status)
+    sort_column = {
+        "path": CollectionFileRecord.path,
+        "bytes": CollectionFileRecord.bytes,
+        "status": effective_status,
+    }[sort]
+    direction = desc(sort_column) if order == "desc" else asc(sort_column)
+    return joined.order_by(direction, CollectionFileRecord.path.asc())
 
 
 def _authorized_collection(

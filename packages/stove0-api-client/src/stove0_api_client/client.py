@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import math
 import os
-from collections.abc import Mapping, Sequence
-from typing import Any, Literal, Self
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from typing import Any, Literal, Self, cast
 from urllib.parse import quote
 
 import httpx
 from http_api_contracts import (
-    HealthResponse as HealthResponse,
-)
-from http_api_contracts import (
+    JSON_SEQUENCE_MEDIA_TYPE,
+    CompleteEnumerationItemSchema,
+    CompleteEnumerationReader,
     parse_error_payload,
     safe_http_base_url,
+)
+from http_api_contracts import (
+    HealthResponse as HealthResponse,
 )
 from stove0_operator_contracts import (
     ArtifactSelectionPage,
@@ -35,11 +39,30 @@ from stove0_operator_contracts import (
     WorkPhase,
     WorkView,
 )
-from stove0_protocol import BranchSetEvaluation, EvaluationDefinition, WorkflowPreview
+from stove0_protocol import (
+    ArtifactSubject,
+    BranchSetEvaluation,
+    EvaluationDefinition,
+    WorkflowPreview,
+)
 
 type _WorkSort = Literal["updated_at", "phase", "work_id"]
 type _EvaluationSort = Literal["updated_at", "phase", "evaluation_id"]
 type _SortOrder = Literal["asc", "desc"]
+_STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
+    "stove0.work-view/v1": CompleteEnumerationItemSchema(
+        id="stove0.work-view/v1",
+        sha256="7b788bf608658dc55e5d00a333e491f010ab2076a1b684c013071258d6f1f4c1",
+    ),
+    "stove0.evaluation-view/v1": CompleteEnumerationItemSchema(
+        id="stove0.evaluation-view/v1",
+        sha256="cac11576d6501d999cc52f3a6eb7b9749f72f524c0bb8797e80bc27396840637",
+    ),
+    "stove0.artifact-subject/v1": CompleteEnumerationItemSchema(
+        id="stove0.artifact-subject/v1",
+        sha256="e232a8cd82feef9c0182803e046cc2d761c6cc9a66de08fcb1aa58eb275a86c6",
+    ),
+}
 
 
 def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
@@ -142,7 +165,6 @@ class Stove0ApiClient:
         query: str | None = None,
         sort: _WorkSort = "updated_at",
         order: _SortOrder = "desc",
-        all_items: bool = False,
     ) -> WorkPage:
         return WorkPage.model_validate(
             self._json(
@@ -164,11 +186,35 @@ class Stove0ApiClient:
                             frozenset({"asc", "desc"}),
                             "sort order",
                         ),
-                        "all": all_items,
                     }
                 ),
             )
         )
+
+    @contextmanager
+    def stream_work(
+        self,
+        *,
+        phase: WorkPhase | None = None,
+        query: str | None = None,
+        sort: _WorkSort = "updated_at",
+        order: _SortOrder = "desc",
+    ) -> Iterator[Iterator[WorkView]]:
+        normalized_sort = _one_of(sort, frozenset({"updated_at", "phase", "work_id"}), "work sort")
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        expected_query = {
+            "phase": phase,
+            "q": query,
+            "sort": normalized_sort,
+            "order": normalized_order,
+        }
+        with self._stream_objects(
+            "/v1/work/stream",
+            params=_params(**expected_query),
+            query=expected_query,
+            schema_id="stove0.work-view/v1",
+        ) as items:
+            yield (WorkView.model_validate(item) for item in items)
 
     def create_work(
         self,
@@ -211,15 +257,27 @@ class Stove0ApiClient:
         *,
         page: int = 1,
         per_page: int = 100,
-        all_items: bool = False,
     ) -> ArtifactSelectionPage:
         return ArtifactSelectionPage.model_validate(
             self._json(
                 "GET",
                 f"/v1/artifact-selections/{quote(selection_sha256, safe='')}",
-                params=_params(page=page, per_page=per_page, **{"all": all_items}),
+                params=_params(page=page, per_page=per_page),
             )
         )
+
+    @contextmanager
+    def stream_artifact_selection(
+        self,
+        selection_sha256: str,
+    ) -> Iterator[Iterator[ArtifactSubject]]:
+        with self._stream_objects(
+            f"/v1/artifact-selections/{quote(selection_sha256, safe='')}/stream",
+            params={},
+            query={"selection_sha256": selection_sha256},
+            schema_id="stove0.artifact-subject/v1",
+        ) as items:
+            yield (ArtifactSubject.model_validate(item) for item in items)
 
     def step_work(self, work_id: str) -> WorkView:
         return WorkView.model_validate(
@@ -267,7 +325,6 @@ class Stove0ApiClient:
         query: str | None = None,
         sort: _EvaluationSort = "updated_at",
         order: _SortOrder = "desc",
-        all_items: bool = False,
     ) -> EvaluationPage:
         return EvaluationPage.model_validate(
             self._json(
@@ -289,11 +346,39 @@ class Stove0ApiClient:
                             frozenset({"asc", "desc"}),
                             "sort order",
                         ),
-                        "all": all_items,
                     }
                 ),
             )
         )
+
+    @contextmanager
+    def stream_evaluations(
+        self,
+        *,
+        phase: EvaluationPhase | None = None,
+        query: str | None = None,
+        sort: _EvaluationSort = "updated_at",
+        order: _SortOrder = "desc",
+    ) -> Iterator[Iterator[EvaluationView]]:
+        normalized_sort = _one_of(
+            sort,
+            frozenset({"updated_at", "phase", "evaluation_id"}),
+            "evaluation sort",
+        )
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        expected_query = {
+            "phase": phase,
+            "q": query,
+            "sort": normalized_sort,
+            "order": normalized_order,
+        }
+        with self._stream_objects(
+            "/v1/evaluations/stream",
+            params=_params(**expected_query),
+            query=expected_query,
+            schema_id="stove0.evaluation-view/v1",
+        ) as items:
+            yield (EvaluationView.model_validate(item) for item in items)
 
     def create_evaluation(self, definition: Mapping[str, Any]) -> EvaluationView:
         request = EvaluationDefinition.model_validate(definition)
@@ -389,28 +474,76 @@ class Stove0ApiClient:
         except httpx.HTTPError as exc:
             raise Stove0ApiError(f"stove0 request failed: {exc}") from exc
         if response.status_code >= 400:
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = None
-            code, message, details = parse_error_payload(
-                payload,
-                fallback_message=(
-                    str(payload.get("detail"))
-                    if isinstance(payload, dict) and payload.get("detail")
-                    else response.text or f"stove0 returned HTTP {response.status_code}"
-                ),
-            )
-            raise Stove0ApiError(
-                message,
-                code=code,
-                observed_status=response.status_code,
-                details=details,
-            )
+            self._raise_for_error(response)
         value = response.json()
         if not isinstance(value, dict):
             raise Stove0ApiError("stove0 returned a non-object JSON response")
         return value
+
+    @staticmethod
+    def _raise_for_error(response: httpx.Response) -> None:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        code, message, details = parse_error_payload(
+            payload,
+            fallback_message=(
+                str(payload.get("detail"))
+                if isinstance(payload, dict) and payload.get("detail")
+                else response.text or f"stove0 returned HTTP {response.status_code}"
+            ),
+        )
+        raise Stove0ApiError(
+            message,
+            code=code,
+            observed_status=response.status_code,
+            details=details,
+        )
+
+    @contextmanager
+    def _stream_objects(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, object],
+        query: Mapping[str, object],
+        schema_id: str,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        if not self.token:
+            raise Stove0ApiError("STOVE0_TOKEN is required")
+        schema = _STREAM_ITEM_SCHEMAS.get(schema_id)
+        if schema is None:
+            raise RuntimeError(f"complete-enumeration schema is not sealed: {schema_id}")
+        headers = {
+            "Accept": JSON_SEQUENCE_MEDIA_TYPE,
+            "Authorization": f"Bearer {self.token}",
+        }
+        try:
+            with self._persistent_client().stream(
+                "GET", path, headers=headers, params=cast(Any, params)
+            ) as response:
+                if response.status_code >= 400:
+                    response.read()
+                    self._raise_for_error(response)
+                media_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+                if media_type != JSON_SEQUENCE_MEDIA_TYPE:
+                    raise Stove0ApiError("stove0 returned an invalid enumeration media type")
+                reader = CompleteEnumerationReader(
+                    response.iter_bytes(),
+                    item_type=dict[str, Any],
+                    expected_query=query,
+                    expected_item_schema=schema,
+                )
+                try:
+                    yield iter(reader)
+                    reader.require_complete()
+                except ValueError as exc:
+                    raise Stove0ApiError(
+                        "stove0 returned an invalid complete-enumeration stream"
+                    ) from exc
+        except httpx.HTTPError as exc:
+            raise Stove0ApiError(f"stove0 request failed: {exc}") from exc
 
     def _persistent_client(self) -> httpx.Client:
         if self._client is None:

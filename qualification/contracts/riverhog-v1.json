@@ -4181,7 +4181,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/stove0.postgresql.sql",
-              "sha256": "badf22973128b4e1cece7bbe1e88fdab4790e6b627b1b4d8814a3114cfc2561f"
+              "sha256": "5fa4a552e0cbecda1260e7a03933523c4a156ae2cf8aaae3e618872e68edab62"
             }
           ],
           "format": "state-schema/postgresql",
@@ -16878,7 +16878,12 @@
               "tags": [
                 "catalog"
               ],
-              "x-riverhog-interface": "standard-tool/protocol"
+              "x-riverhog-interface": "standard-tool/protocol",
+              "x-riverhog-read-collection": {
+                "cursor_parameter": "after",
+                "fixed_limit": 1000,
+                "kind": "cursor-feed"
+              }
             }
           },
           "/resourcesync/resourcelist.xml": {
@@ -17191,16 +17196,6 @@
                     ],
                     "title": "Active"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -17282,7 +17277,222 @@
                     "keys:manage"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_app_key_access"
+              }
+            }
+          },
+          "/v1/app-key-access/stream": {
+            "get": {
+              "operationId": "stream_app_key_access",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/ApplicationAccessSort",
+                    "default": "permission"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "asc"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "app",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ApplicationName"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "App"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "key",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ApplicationKeyId"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Key"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "permission",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ApplicationPermission"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Permission"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "resource",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ApplicationResource"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Resource"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "active",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Active"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream App Key Access",
+              "tags": [
+                "apps"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "keys:manage"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.application-key-access/v1",
+                  "sha256": "215dbaea68445d51b633d8b647d018d627b5aebfc6671ad333ada3f5d7673336"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_app_key_access"
+              }
             }
           },
           "/v1/apps": {
@@ -17360,16 +17570,6 @@
                       }
                     ],
                     "title": "Active"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
                   }
                 }
               ],
@@ -17452,7 +17652,158 @@
                     "keys:manage"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_apps"
+              }
+            }
+          },
+          "/v1/apps/stream": {
+            "get": {
+              "operationId": "stream_apps",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/ApplicationSort",
+                    "default": "name"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "asc"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "active",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Active"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Apps",
+              "tags": [
+                "apps"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "keys:manage"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.application-summary/v1",
+                  "sha256": "e3137364b6798503b1b1e2c6708136ac7e398c6efceb5d6c334bbe011ececcb1"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_apps"
+              }
             }
           },
           "/v1/apps/{app}/keys": {
@@ -17541,16 +17892,6 @@
                     ],
                     "title": "Active"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -17632,7 +17973,11 @@
                     "keys:manage"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_app_keys"
+              }
             },
             "post": {
               "operationId": "create_app_key",
@@ -17751,6 +18096,163 @@
                   ]
                 }
               ]
+            }
+          },
+          "/v1/apps/{app}/keys/stream": {
+            "get": {
+              "operationId": "stream_app_keys",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "app",
+                  "required": true,
+                  "schema": {
+                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                    "title": "App",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/ApplicationKeySort",
+                    "default": "created_at"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "desc"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "active",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Active"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream App Keys",
+              "tags": [
+                "apps"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "keys:manage"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.application-key/v1",
+                  "sha256": "0b79e068e1718273f0510dcb21dc591496d9d006d9a19433b3e8b11c48881ce4"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_app_keys"
+              }
             }
           },
           "/v1/apps/{app}/keys/{key_id}/access": {
@@ -18611,16 +19113,6 @@
                     "$ref": "#/components/schemas/SortOrder",
                     "default": "desc"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -18702,7 +19194,11 @@
                     "archives:manage"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_archive_copy_jobs"
+              }
             },
             "post": {
               "operationId": "create_or_resume_archive_copy",
@@ -19081,6 +19577,153 @@
               ]
             }
           },
+          "/v1/archive/copies/stream": {
+            "get": {
+              "operationId": "stream_archive_copy_jobs",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "state",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ArchiveCopyState"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "State"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/ArchiveCopySort",
+                    "default": "requested_at"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "desc"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Archive Copy Jobs",
+              "tags": [
+                "archive"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "archives:manage"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.archive-copy-job/v1",
+                  "sha256": "4575819fc947e6a6e9320951372290c376967adf1de8d6cc1a4515621622c18e"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_archive_copy_jobs"
+              }
+            }
+          },
           "/v1/archive/copies/{collection_id}/{destination_store}": {
             "delete": {
               "operationId": "cancel_archive_copy_job",
@@ -19392,16 +20035,6 @@
                     "$ref": "#/components/schemas/SortOrder",
                     "default": "asc"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -19483,7 +20116,142 @@
                     "archives:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_archive_stores"
+              }
+            }
+          },
+          "/v1/archive/stores/stream": {
+            "get": {
+              "operationId": "stream_archive_stores",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/ArchiveStoreSort",
+                    "default": "store"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "asc"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Archive Stores",
+              "tags": [
+                "archive"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "archives:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.archive-store/v1",
+                  "sha256": "7c281f059dd3f175ed3a79a789a08954dd8377a1e01fc07ea724b862ec87f543"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_archive_stores"
+              }
             }
           },
           "/v1/archive/stores/{store}": {
@@ -19933,16 +20701,6 @@
                     "title": "Order",
                     "type": "string"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -20038,7 +20796,11 @@
                     "collection-transforms:control"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_processing_claims"
+              }
             },
             "post": {
               "operationId": "create_or_resume_processing_claim",
@@ -20160,6 +20922,159 @@
                   ]
                 }
               ]
+            }
+          },
+          "/v1/collection-processing-claims/stream": {
+            "get": {
+              "operationId": "stream_processing_claims",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "state",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "active",
+                          "settled",
+                          "retiring",
+                          "abandoned",
+                          "released"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "State"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "default": "updated_at",
+                    "enum": [
+                      "created_at",
+                      "updated_at",
+                      "expires_at",
+                      "state",
+                      "work_id",
+                      "execution_id"
+                    ],
+                    "title": "Sort",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "default": "desc",
+                    "enum": [
+                      "asc",
+                      "desc"
+                    ],
+                    "title": "Order",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Processing Claims",
+              "tags": [
+                "collection-workflows"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "collection-transforms:control"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.collection-processing-claim/v1",
+                  "sha256": "f48a24af35bddcbeeda930b4744ebfd08dbfa4f50fc8b433d43d4cfa95f903d8"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_processing_claims"
+              }
             }
           },
           "/v1/collection-processing-claims/{claim_id}": {
@@ -21594,16 +22509,6 @@
                     "$ref": "#/components/schemas/SortOrder",
                     "default": "desc"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -21686,7 +22591,11 @@
                     "collections:delete"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collection_upload_sessions"
+              }
             },
             "post": {
               "operationId": "create_or_resume_collection_upload_session",
@@ -21794,6 +22703,170 @@
                   ]
                 }
               ]
+            }
+          },
+          "/v1/collection-upload-sessions/stream": {
+            "get": {
+              "operationId": "stream_collection_upload_sessions",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "tag",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/CanonicalTag"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Tag"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "state",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/CollectionUploadState"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "State"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/CollectionUploadSort",
+                    "default": "created_at"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "desc"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collection Upload Sessions",
+              "tags": [
+                "collections"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "collections:create",
+                    "collections:delete"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.collection-upload-session-summary/v1",
+                  "sha256": "ef2cda8f966706686359707a590e18cba25b91ad2ed952e8e40595e19a694449"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_collection_upload_sessions"
+              }
             }
           },
           "/v1/collection-upload-sessions/{collection_id}": {
@@ -22404,16 +23477,6 @@
                     "title": "Per Page",
                     "type": "integer"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -22509,7 +23572,11 @@
                     "collections:delete"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collection_upload_session_files"
+              }
             },
             "post": {
               "operationId": "register_collection_upload_session_files",
@@ -22642,6 +23709,114 @@
                   ]
                 }
               ]
+            }
+          },
+          "/v1/collection-upload-sessions/{collection_id}/files/stream": {
+            "get": {
+              "operationId": "stream_collection_upload_session_files",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collection Upload Session Files",
+              "tags": [
+                "collections"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "collections:create",
+                    "collections:delete"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.collection-upload-file/v1",
+                  "sha256": "2fe28658c73b3747b895eb065466aca5e77aa00d374040b820d9965e258c46b1"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_collection_upload_session_files"
+              }
             }
           },
           "/v1/collection-upload-sessions/{collection_id}/heartbeat": {
@@ -23667,16 +24842,6 @@
                 },
                 {
                   "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
-                },
-                {
-                  "in": "query",
                   "name": "tag",
                   "required": false,
                   "schema": {
@@ -23803,7 +24968,190 @@
                     "catalog:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collections"
+              }
+            }
+          },
+          "/v1/collections/stream": {
+            "get": {
+              "operationId": "stream_collections",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/CollectionSort",
+                    "default": "id"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "asc"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "tag",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/CanonicalTag"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Tag"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "encryption_format",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Encryption Format"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "passphrase_id",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Passphrase Id"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collections",
+              "tags": [
+                "collections"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "catalog:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.collection-summary/v1",
+                  "sha256": "00970fab0f6d1db917c86d998ae82ae06fafdb72031288aaeba076ca6f1154fe"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_collections"
+              }
             }
           },
           "/v1/collections/{collection_id}": {
@@ -24399,16 +25747,6 @@
                     "title": "Order",
                     "type": "string"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -24516,7 +25854,179 @@
                     "provenance:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collection_provenance"
+              }
+            }
+          },
+          "/v1/collections/{collection_id}/provenance/files/stream": {
+            "get": {
+              "operationId": "stream_collection_provenance",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "status",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ProvenanceStatus"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Status"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "default": "path",
+                    "enum": [
+                      "path",
+                      "bytes",
+                      "status"
+                    ],
+                    "title": "Sort",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "default": "asc",
+                    "enum": [
+                      "asc",
+                      "desc"
+                    ],
+                    "title": "Order",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collection Provenance",
+              "tags": [
+                "provenance"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "provenance:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.collection-file-provenance/v1",
+                  "sha256": "796dce760f006e232cd5bbe3963139c6b2ecbf795fcacfc1fff83e4449b5970f"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_collection_provenance"
+              }
             }
           },
           "/v1/collections/{collection_id}/provenance/files/{path}": {
@@ -25786,16 +27296,6 @@
                     ],
                     "title": "Active"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -25877,7 +27377,174 @@
                     "quotas:manage"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_download_quotas"
+              }
+            }
+          },
+          "/v1/download-quotas/stream": {
+            "get": {
+              "operationId": "stream_download_quotas",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/DownloadQuotaSort",
+                    "default": "app"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "asc"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "app",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ApplicationName"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "App"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "active",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Active"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Download Quotas",
+              "tags": [
+                "download quotas"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "quotas:manage"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.key-download-quota/v1",
+                  "sha256": "d2a70802fd8fd7dba6cfde017471d7107aad39f5cf0cb7165a9be056db81fb8c"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_download_quotas"
+              }
             }
           },
           "/v1/events": {
@@ -25992,7 +27659,12 @@
                     "events:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "cursor_parameter": "after",
+                "kind": "cursor-feed",
+                "limit_parameter": "limit"
+              }
             }
           },
           "/v1/retrieval-cache": {
@@ -26252,16 +27924,6 @@
                     "$ref": "#/components/schemas/SortOrder",
                     "default": "desc"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -26343,7 +28005,254 @@
                     "catalog:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_retrieval_cache_objects"
+              }
+            }
+          },
+          "/v1/retrieval-cache/objects/stream": {
+            "get": {
+              "operationId": "stream_retrieval_cache_objects",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "tag",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/CanonicalTag"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Tag"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "collection_id",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/CollectionIdParameter"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Collection Id"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "source_store",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/ArchiveStoreName"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Source Store"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "state",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/RetrievalCacheState"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "State"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "protection",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/RetrievalCacheProtection"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Protection"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "expires_before",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Expires Before"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "expires_after",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Expires After"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/RetrievalCacheSort",
+                    "default": "cached_at"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "desc"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Retrieval Cache Objects",
+              "tags": [
+                "retrieval"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "catalog:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.retrieval-cache-object/v1",
+                  "sha256": "943345fd5d47c91314d843ca5bdbbc8d34542bb0c528b1a8c5bb6182fcc8ec85"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_retrieval_cache_objects"
+              }
             }
           },
           "/v1/retrieval-cache/objects/{collection_id}/{source_store}/{object_id}": {
@@ -27486,16 +29395,6 @@
                     ],
                     "title": "Collection"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -27577,7 +29476,159 @@
                     "catalog:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_search"
+              }
+            }
+          },
+          "/v1/search/stream": {
+            "get": {
+              "operationId": "stream_search",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SearchSort",
+                    "default": "file_ref"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "asc"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "collection",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/CollectionIdParameter"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Collection"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Search",
+              "tags": [
+                "search"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "catalog:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.search-file/v1",
+                  "sha256": "a6511a5dbf39316830647871f9ebca0b896cc93d42636ddb0c776faf67153a76"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "search"
+              }
             }
           },
           "/v1/tags": {
@@ -27639,16 +29690,6 @@
                   "schema": {
                     "$ref": "#/components/schemas/SortOrder",
                     "default": "asc"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
                   }
                 }
               ],
@@ -27731,7 +29772,11 @@
                     "catalog:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_tags"
+              }
             },
             "post": {
               "operationId": "create_tag",
@@ -27838,6 +29883,137 @@
                   ]
                 }
               ]
+            }
+          },
+          "/v1/tags/stream": {
+            "get": {
+              "operationId": "stream_tags",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/TagSort",
+                    "default": "id"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "$ref": "#/components/schemas/SortOrder",
+                    "default": "asc"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Tags",
+              "tags": [
+                "tags"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "catalog:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.tag/v1",
+                  "sha256": "10fee7b9ba5804b39832fb09053c0e9b1f85e037afd722d72c914e0592b5c048"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_tags"
+              }
             }
           },
           "/v1/tags/{tag}": {
@@ -34482,16 +36658,6 @@
                     "title": "Per Page",
                     "type": "integer"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -34574,7 +36740,105 @@
               "summary": "Get Artifact Selection",
               "tags": [
                 "artifact-selections"
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_artifact_selection"
+              }
+            }
+          },
+          "/v1/artifact-selections/{selection_sha256}/stream": {
+            "get": {
+              "operationId": "stream_artifact_selection",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "selection_sha256",
+                  "required": true,
+                  "schema": {
+                    "title": "Selection Sha256",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "summary": "Stream Artifact Selection",
+              "tags": [
+                "artifact-selections"
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "stove0.artifact-subject/v1",
+                  "sha256": "e232a8cd82feef9c0182803e046cc2d761c6cc9a66de08fcb1aa58eb275a86c6"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "get_artifact_selection"
+              }
             }
           },
           "/v1/evaluations": {
@@ -34672,16 +36936,6 @@
                     "title": "Order",
                     "type": "string"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -34751,7 +37005,11 @@
               "summary": "List Evaluations",
               "tags": [
                 "evaluations"
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_evaluations"
+              }
             },
             "post": {
               "operationId": "create_evaluation",
@@ -34846,6 +37104,160 @@
               "tags": [
                 "evaluations"
               ]
+            }
+          },
+          "/v1/evaluations/stream": {
+            "get": {
+              "operationId": "stream_evaluations",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "phase",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "planning",
+                          "running",
+                          "partially_complete",
+                          "complete",
+                          "failed",
+                          "canceled"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Phase"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "default": "updated_at",
+                    "enum": [
+                      "updated_at",
+                      "phase",
+                      "evaluation_id"
+                    ],
+                    "title": "Sort",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "default": "desc",
+                    "enum": [
+                      "asc",
+                      "desc"
+                    ],
+                    "title": "Order",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "summary": "Stream Evaluations",
+              "tags": [
+                "evaluations"
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "stove0.evaluation-view/v1",
+                  "sha256": "cac11576d6501d999cc52f3a6eb7b9749f72f524c0bb8797e80bc27396840637"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_evaluations"
+              }
             }
           },
           "/v1/evaluations/{evaluation_id}": {
@@ -35526,7 +37938,12 @@
               "summary": "List Events",
               "tags": [
                 "events"
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "cursor_parameter": "after",
+                "kind": "cursor-feed",
+                "limit_parameter": "limit"
+              }
             }
           },
           "/v1/recipes": {
@@ -35821,16 +38238,6 @@
                     "title": "Order",
                     "type": "string"
                   }
-                },
-                {
-                  "in": "query",
-                  "name": "all",
-                  "required": false,
-                  "schema": {
-                    "default": false,
-                    "title": "All",
-                    "type": "boolean"
-                  }
                 }
               ],
               "responses": {
@@ -35900,7 +38307,11 @@
               "summary": "List Work",
               "tags": [
                 "work"
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_work"
+              }
             },
             "post": {
               "operationId": "create_work",
@@ -36008,6 +38419,171 @@
               "tags": [
                 "work"
               ]
+            }
+          },
+          "/v1/work/stream": {
+            "get": {
+              "operationId": "stream_work",
+              "parameters": [
+                {
+                  "in": "query",
+                  "name": "phase",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "eligible",
+                          "claimed",
+                          "observing",
+                          "planning",
+                          "target_preflight",
+                          "queued",
+                          "executing",
+                          "output_finalizing",
+                          "verifying",
+                          "settled",
+                          "retirement_pending",
+                          "coordinating",
+                          "abandon_pending",
+                          "complete",
+                          "inapplicable",
+                          "failed",
+                          "canceled"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Phase"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "q",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Q"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "sort",
+                  "required": false,
+                  "schema": {
+                    "default": "updated_at",
+                    "enum": [
+                      "updated_at",
+                      "phase",
+                      "work_id"
+                    ],
+                    "title": "Sort",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "order",
+                  "required": false,
+                  "schema": {
+                    "default": "desc",
+                    "enum": [
+                      "asc",
+                      "desc"
+                    ],
+                    "title": "Order",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "summary": "Stream Work",
+              "tags": [
+                "work"
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "stove0.work-view/v1",
+                  "sha256": "7b788bf608658dc55e5d00a333e491f010ab2076a1b684c013071258d6f1f4c1"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_work"
+              }
             }
           },
           "/v1/work/{work_id}": {
@@ -36643,6 +39219,7 @@
         "operation_id": "well_known_resourcesync",
         "path": "/.well-known/resourcesync",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "stream-or-empty"
       },
       {
@@ -36654,6 +39231,7 @@
         "operation_id": "health_live",
         "path": "/health/live",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36665,6 +39243,7 @@
         "operation_id": "health_ready",
         "path": "/health/ready",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36676,6 +39255,7 @@
         "operation_id": "resourcesync_capability_list",
         "path": "/resourcesync/capabilitylist.xml",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "stream-or-empty"
       },
       {
@@ -36687,6 +39267,11 @@
         "operation_id": "resourcesync_change_list",
         "path": "/resourcesync/changelist.xml",
         "provider_evidence": null,
+        "read_collection": {
+          "cursor_parameter": "after",
+          "fixed_limit": 1000,
+          "kind": "cursor-feed"
+        },
         "response_authority": "stream-or-empty"
       },
       {
@@ -36698,6 +39283,7 @@
         "operation_id": "resourcesync_resource_list",
         "path": "/resourcesync/resourcelist.xml",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "stream-or-empty"
       },
       {
@@ -36709,6 +39295,7 @@
         "operation_id": "resourcesync_resource_list_page",
         "path": "/resourcesync/resourcelist/{page}.xml",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "stream-or-empty"
       },
       {
@@ -36722,7 +39309,34 @@
         "operation_id": "list_app_key_access",
         "path": "/v1/app-key-access",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_app_key_access"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "app key access list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_app_key_access",
+        "path": "/v1/app-key-access/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.application-key-access/v1",
+            "sha256": "215dbaea68445d51b633d8b647d018d627b5aebfc6671ad333ada3f5d7673336"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_app_key_access"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -36735,7 +39349,34 @@
         "operation_id": "list_apps",
         "path": "/v1/apps",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_apps"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "app list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_apps",
+        "path": "/v1/apps/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.application-summary/v1",
+            "sha256": "e3137364b6798503b1b1e2c6708136ac7e398c6efceb5d6c334bbe011ececcb1"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_apps"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -36748,6 +39389,10 @@
         "operation_id": "list_app_keys",
         "path": "/v1/apps/{app}/keys",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_app_keys"
+        },
         "response_authority": "http-json"
       },
       {
@@ -36761,7 +39406,31 @@
         "operation_id": "create_app_key",
         "path": "/v1/apps/{app}/keys",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "app key list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_app_keys",
+        "path": "/v1/apps/{app}/keys/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.application-key/v1",
+            "sha256": "0b79e068e1718273f0510dcb21dc591496d9d006d9a19433b3e8b11c48881ce4"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_app_keys"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -36774,6 +39443,7 @@
         "operation_id": "remove_app_key_access",
         "path": "/v1/apps/{app}/keys/{key_id}/access",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36787,6 +39457,7 @@
         "operation_id": "add_app_key_access",
         "path": "/v1/apps/{app}/keys/{key_id}/access",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36800,6 +39471,7 @@
         "operation_id": "replace_app_key_access",
         "path": "/v1/apps/{app}/keys/{key_id}/access",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36813,6 +39485,7 @@
         "operation_id": "set_app_key_download_quota",
         "path": "/v1/apps/{app}/keys/{key_id}/download-quota",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36826,6 +39499,7 @@
         "operation_id": "revoke_app_key",
         "path": "/v1/apps/{app}/keys/{key_id}/revoke",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36839,6 +39513,7 @@
         "operation_id": "rotate_app_key",
         "path": "/v1/apps/{app}/keys/{key_id}/rotate",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36852,6 +39527,10 @@
         "operation_id": "list_archive_copy_jobs",
         "path": "/v1/archive/copies",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_archive_copy_jobs"
+        },
         "response_authority": "http-json"
       },
       {
@@ -36865,6 +39544,7 @@
         "operation_id": "create_or_resume_archive_copy",
         "path": "/v1/archive/copies",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36878,6 +39558,7 @@
         "operation_id": "retire_archive_copy",
         "path": "/v1/archive/copies/retire",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36891,7 +39572,31 @@
         "operation_id": "plan_archive_copy_retirement",
         "path": "/v1/archive/copies/retirement-plan",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "archive copy list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_archive_copy_jobs",
+        "path": "/v1/archive/copies/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.archive-copy-job/v1",
+            "sha256": "4575819fc947e6a6e9320951372290c376967adf1de8d6cc1a4515621622c18e"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_archive_copy_jobs"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -36904,6 +39609,7 @@
         "operation_id": "cancel_archive_copy_job",
         "path": "/v1/archive/copies/{collection_id}/{destination_store}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36918,6 +39624,7 @@
         "operation_id": "get_archive_copy_job",
         "path": "/v1/archive/copies/{collection_id}/{destination_store}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36931,7 +39638,34 @@
         "operation_id": "list_archive_stores",
         "path": "/v1/archive/stores",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_archive_stores"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "archive store list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_archive_stores",
+        "path": "/v1/archive/stores/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.archive-store/v1",
+            "sha256": "7c281f059dd3f175ed3a79a789a08954dd8377a1e01fc07ea724b862ec87f543"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_archive_stores"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -36944,6 +39678,7 @@
         "operation_id": "get_archive_store",
         "path": "/v1/archive/stores/{store}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -36959,6 +39694,7 @@
         "operation_id": "get_portable_collection_manifest",
         "path": "/v1/catalog/collections/{collection_id}/manifest",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "stream-or-empty"
       },
       {
@@ -36970,6 +39706,10 @@
         "operation_id": "list_processing_claims",
         "path": "/v1/collection-processing-claims",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_processing_claims"
+        },
         "response_authority": "canonical-document"
       },
       {
@@ -36981,7 +39721,29 @@
         "operation_id": "create_or_resume_processing_claim",
         "path": "/v1/collection-processing-claims",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
+      },
+      {
+        "application": "riverhog",
+        "classification": "client-only-primitive",
+        "cli_commands": [],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_processing_claims",
+        "path": "/v1/collection-processing-claims/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.collection-processing-claim/v1",
+            "sha256": "f48a24af35bddcbeeda930b4744ebfd08dbfa4f50fc8b433d43d4cfa95f903d8"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_processing_claims"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -36992,6 +39754,7 @@
         "operation_id": "get_processing_claim",
         "path": "/v1/collection-processing-claims/{claim_id}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37003,6 +39766,7 @@
         "operation_id": "abandon_processing_claim",
         "path": "/v1/collection-processing-claims/{claim_id}/abandon",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37014,6 +39778,7 @@
         "operation_id": "create_transform_capability",
         "path": "/v1/collection-processing-claims/{claim_id}/capabilities",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37025,6 +39790,7 @@
         "operation_id": "settle_processing_claim_outcomes",
         "path": "/v1/collection-processing-claims/{claim_id}/outcomes/settle",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37036,6 +39802,7 @@
         "operation_id": "seal_processing_claim_plan",
         "path": "/v1/collection-processing-claims/{claim_id}/plan",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37047,6 +39814,7 @@
         "operation_id": "release_processing_claim",
         "path": "/v1/collection-processing-claims/{claim_id}/release",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37058,6 +39826,7 @@
         "operation_id": "renew_processing_claim",
         "path": "/v1/collection-processing-claims/{claim_id}/renew",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37069,6 +39838,7 @@
         "operation_id": "restart_processing_claim",
         "path": "/v1/collection-processing-claims/{claim_id}/restart",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37080,6 +39850,7 @@
         "operation_id": "begin_processing_claim_retirement",
         "path": "/v1/collection-processing-claims/{claim_id}/retirement",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37091,6 +39862,7 @@
         "operation_id": "settle_processing_claim",
         "path": "/v1/collection-processing-claims/{claim_id}/settle",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37104,6 +39876,10 @@
         "operation_id": "list_collection_upload_sessions",
         "path": "/v1/collection-upload-sessions",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collection_upload_sessions"
+        },
         "response_authority": "http-json"
       },
       {
@@ -37117,7 +39893,31 @@
         "operation_id": "create_or_resume_collection_upload_session",
         "path": "/v1/collection-upload-sessions",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection upload list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collection_upload_sessions",
+        "path": "/v1/collection-upload-sessions/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.collection-upload-session-summary/v1",
+            "sha256": "ef2cda8f966706686359707a590e18cba25b91ad2ed952e8e40595e19a694449"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_collection_upload_sessions"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -37132,6 +39932,7 @@
         "operation_id": "get_collection_upload_session",
         "path": "/v1/collection-upload-sessions/{collection_id}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37145,6 +39946,7 @@
         "operation_id": "cancel_collection_upload_session",
         "path": "/v1/collection-upload-sessions/{collection_id}/cancel",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37158,6 +39960,7 @@
         "operation_id": "complete_collection_upload_session",
         "path": "/v1/collection-upload-sessions/{collection_id}/complete",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37171,6 +39974,7 @@
         "operation_id": "discard_collection_upload",
         "path": "/v1/collection-upload-sessions/{collection_id}/discard",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37184,20 +39988,24 @@
         "operation_id": "plan_collection_upload_discard",
         "path": "/v1/collection-upload-sessions/{collection_id}/discard-plan",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
         "application": "riverhog",
         "classification": "human-cli+json",
         "cli_commands": [
-          "collection upload files",
-          "collection upload start"
+          "collection upload files"
         ],
         "client": "ApiClient",
         "method": "GET",
         "operation_id": "list_collection_upload_session_files",
         "path": "/v1/collection-upload-sessions/{collection_id}/files",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collection_upload_session_files"
+        },
         "response_authority": "http-json"
       },
       {
@@ -37211,7 +40019,32 @@
         "operation_id": "register_collection_upload_session_files",
         "path": "/v1/collection-upload-sessions/{collection_id}/files",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection upload files",
+          "collection upload start"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collection_upload_session_files",
+        "path": "/v1/collection-upload-sessions/{collection_id}/files/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.collection-upload-file/v1",
+            "sha256": "2fe28658c73b3747b895eb065466aca5e77aa00d374040b820d9965e258c46b1"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_collection_upload_session_files"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -37222,6 +40055,7 @@
         "operation_id": "heartbeat_collection_upload_session",
         "path": "/v1/collection-upload-sessions/{collection_id}/heartbeat",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37233,6 +40067,7 @@
         "operation_id": "export_collection_upload_session_provenance_journal",
         "path": "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "stream-or-empty"
       },
       {
@@ -37246,6 +40081,7 @@
         "operation_id": "put_collection_upload_session_provenance_journal",
         "path": "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37259,6 +40095,7 @@
         "operation_id": "list_collection_upload_session_volumes",
         "path": "/v1/collection-upload-sessions/{collection_id}/volumes",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37270,6 +40107,7 @@
         "operation_id": "get_collection_upload_session_volume",
         "path": "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37283,6 +40121,7 @@
         "operation_id": "get_collection_upload_session_unit",
         "path": "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37296,6 +40135,7 @@
         "operation_id": "put_collection_upload_session_unit",
         "path": "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37309,7 +40149,34 @@
         "operation_id": "list_collections",
         "path": "/v1/collections",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collections"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collections",
+        "path": "/v1/collections/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.collection-summary/v1",
+            "sha256": "00970fab0f6d1db917c86d998ae82ae06fafdb72031288aaeba076ca6f1154fe"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_collections"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -37325,6 +40192,7 @@
         "operation_id": "get_collection",
         "path": "/v1/collections/{collection_id}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37338,6 +40206,7 @@
         "operation_id": "delete_collection",
         "path": "/v1/collections/{collection_id}/delete",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37351,6 +40220,7 @@
         "operation_id": "plan_collection_deletion",
         "path": "/v1/collections/{collection_id}/deletion-plan",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37362,6 +40232,7 @@
         "operation_id": "get_collection_derivation",
         "path": "/v1/collections/{collection_id}/derivation",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -37375,7 +40246,34 @@
         "operation_id": "list_collection_provenance",
         "path": "/v1/collections/{collection_id}/provenance/files",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collection_provenance"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection provenance list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collection_provenance",
+        "path": "/v1/collections/{collection_id}/provenance/files/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.collection-file-provenance/v1",
+            "sha256": "796dce760f006e232cd5bbe3963139c6b2ecbf795fcacfc1fff83e4449b5970f"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_collection_provenance"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -37388,6 +40286,7 @@
         "operation_id": "get_collection_file_provenance",
         "path": "/v1/collections/{collection_id}/provenance/files/{path}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37401,6 +40300,7 @@
         "operation_id": "export_collection_provenance_journal",
         "path": "/v1/collections/{collection_id}/provenance/journals/{journal_id}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "stream-or-empty"
       },
       {
@@ -37414,6 +40314,7 @@
         "operation_id": "trace_collection_file_provenance",
         "path": "/v1/collections/{collection_id}/provenance/trace/{path}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37427,6 +40328,7 @@
         "operation_id": "verify_collection_provenance",
         "path": "/v1/collections/{collection_id}/provenance/verify",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37440,6 +40342,7 @@
         "operation_id": "get_collection_tags",
         "path": "/v1/collections/{collection_id}/tags",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37453,6 +40356,7 @@
         "operation_id": "replace_collection_tags",
         "path": "/v1/collections/{collection_id}/tags",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37466,6 +40370,7 @@
         "operation_id": "remove_collection_tag",
         "path": "/v1/collections/{collection_id}/tags/{tag}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37479,6 +40384,7 @@
         "operation_id": "add_collection_tag",
         "path": "/v1/collections/{collection_id}/tags/{tag}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37492,6 +40398,7 @@
         "operation_id": "get_download_quota",
         "path": "/v1/download-quota",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37505,7 +40412,34 @@
         "operation_id": "list_download_quotas",
         "path": "/v1/download-quotas",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_download_quotas"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "app key quota list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_download_quotas",
+        "path": "/v1/download-quotas/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.key-download-quota/v1",
+            "sha256": "d2a70802fd8fd7dba6cfde017471d7107aad39f5cf0cb7165a9be056db81fb8c"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_download_quotas"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -37518,6 +40452,11 @@
         "operation_id": "list_lifecycle_events",
         "path": "/v1/events",
         "provider_evidence": null,
+        "read_collection": {
+          "cursor_parameter": "after",
+          "kind": "cursor-feed",
+          "limit_parameter": "limit"
+        },
         "response_authority": "canonical-document"
       },
       {
@@ -37531,6 +40470,7 @@
         "operation_id": "retrieval_cache_status",
         "path": "/v1/retrieval-cache",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37544,7 +40484,34 @@
         "operation_id": "list_retrieval_cache_objects",
         "path": "/v1/retrieval-cache/objects",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_retrieval_cache_objects"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "retrieval cache list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_retrieval_cache_objects",
+        "path": "/v1/retrieval-cache/objects/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.retrieval-cache-object/v1",
+            "sha256": "943345fd5d47c91314d843ca5bdbbc8d34542bb0c528b1a8c5bb6182fcc8ec85"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_retrieval_cache_objects"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -37557,6 +40524,7 @@
         "operation_id": "get_retrieval_cache_object",
         "path": "/v1/retrieval-cache/objects/{collection_id}/{source_store}/{object_id}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37571,6 +40539,7 @@
         "operation_id": "create_retrieval_job",
         "path": "/v1/retrieval-jobs",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37585,6 +40554,7 @@
         "operation_id": "cancel_retrieval_job",
         "path": "/v1/retrieval-jobs/{job_id}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37601,6 +40571,7 @@
         "operation_id": "get_retrieval_job",
         "path": "/v1/retrieval-jobs/{job_id}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37615,6 +40586,7 @@
         "operation_id": "acknowledge_retrieval_job",
         "path": "/v1/retrieval-jobs/{job_id}/ack",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37629,6 +40601,7 @@
         "operation_id": "download_retrieval_file",
         "path": "/v1/retrieval-jobs/{job_id}/content",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "stream-or-empty"
       },
       {
@@ -37640,6 +40613,7 @@
         "operation_id": "head_retrieval_file",
         "path": "/v1/retrieval-jobs/{job_id}/content",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "stream-or-empty"
       },
       {
@@ -37654,6 +40628,7 @@
         "operation_id": "renew_retrieval_job",
         "path": "/v1/retrieval-jobs/{job_id}/renew",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37668,6 +40643,7 @@
         "operation_id": "plan_retrieval",
         "path": "/v1/retrieval-plans",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37681,7 +40657,34 @@
         "operation_id": "search",
         "path": "/v1/search",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_search"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "find"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_search",
+        "path": "/v1/search/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.search-file/v1",
+            "sha256": "a6511a5dbf39316830647871f9ebca0b896cc93d42636ddb0c776faf67153a76"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "search"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -37694,6 +40697,10 @@
         "operation_id": "list_tags",
         "path": "/v1/tags",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_tags"
+        },
         "response_authority": "http-json"
       },
       {
@@ -37707,7 +40714,31 @@
         "operation_id": "create_tag",
         "path": "/v1/tags",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "tag list"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_tags",
+        "path": "/v1/tags/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.tag/v1",
+            "sha256": "10fee7b9ba5804b39832fb09053c0e9b1f85e037afd722d72c914e0592b5c048"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_tags"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -37720,6 +40751,7 @@
         "operation_id": "get_tag",
         "path": "/v1/tags/{tag}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37733,6 +40765,7 @@
         "operation_id": "delete_tag",
         "path": "/v1/tags/{tag}/delete",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37746,6 +40779,7 @@
         "operation_id": "plan_tag_deletion",
         "path": "/v1/tags/{tag}/deletion-plan",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37757,6 +40791,7 @@
         "operation_id": "ftp_adapter_health_live",
         "path": "/health/live",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37768,6 +40803,7 @@
         "operation_id": "ftp_adapter_health_ready",
         "path": "/health/ready",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37781,6 +40817,7 @@
         "operation_id": "run_ftp_adapter_pass",
         "path": "/v1/run",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37794,6 +40831,7 @@
         "operation_id": "flush_ftp_adapter_source",
         "path": "/v1/sources/{source_id}/flush",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37807,6 +40845,7 @@
         "operation_id": "get_ftp_adapter_status",
         "path": "/v1/status",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37820,6 +40859,7 @@
         "operation_id": "health_live",
         "path": "/health/live",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37833,6 +40873,7 @@
         "operation_id": "health_ready",
         "path": "/health/ready",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "http-json"
       },
       {
@@ -37846,6 +40887,7 @@
         "operation_id": "scheduler_status",
         "path": "/v1/admin/scheduler",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -37859,6 +40901,7 @@
         "operation_id": "run_scheduler",
         "path": "/v1/admin/scheduler/run",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -37872,7 +40915,34 @@
         "operation_id": "get_artifact_selection",
         "path": "/v1/artifact-selections/{selection_sha256}",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_artifact_selection"
+        },
         "response_authority": "operator-projection"
+      },
+      {
+        "application": "stove0",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "selection show"
+        ],
+        "client": "Stove0ApiClient",
+        "method": "GET",
+        "operation_id": "stream_artifact_selection",
+        "path": "/v1/artifact-selections/{selection_sha256}/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "stove0.artifact-subject/v1",
+            "sha256": "e232a8cd82feef9c0182803e046cc2d761c6cc9a66de08fcb1aa58eb275a86c6"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "get_artifact_selection"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "stove0",
@@ -37885,6 +40955,10 @@
         "operation_id": "list_evaluations",
         "path": "/v1/evaluations",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_evaluations"
+        },
         "response_authority": "operator-projection"
       },
       {
@@ -37898,7 +40972,31 @@
         "operation_id": "create_evaluation",
         "path": "/v1/evaluations",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
+      },
+      {
+        "application": "stove0",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "evaluation list"
+        ],
+        "client": "Stove0ApiClient",
+        "method": "GET",
+        "operation_id": "stream_evaluations",
+        "path": "/v1/evaluations/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "stove0.evaluation-view/v1",
+            "sha256": "cac11576d6501d999cc52f3a6eb7b9749f72f524c0bb8797e80bc27396840637"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_evaluations"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "stove0",
@@ -37911,6 +41009,7 @@
         "operation_id": "get_evaluation",
         "path": "/v1/evaluations/{evaluation_id}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -37924,6 +41023,7 @@
         "operation_id": "cancel_evaluation",
         "path": "/v1/evaluations/{evaluation_id}/cancel",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -37937,6 +41037,7 @@
         "operation_id": "step_evaluation",
         "path": "/v1/evaluations/{evaluation_id}/step",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -37950,6 +41051,7 @@
         "operation_id": "retry_evaluation_variant",
         "path": "/v1/evaluations/{evaluation_id}/variants/{variant_id}/retry",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -37963,6 +41065,7 @@
         "operation_id": "review_evaluation_variant",
         "path": "/v1/evaluations/{evaluation_id}/variants/{variant_id}/review",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -37976,6 +41079,11 @@
         "operation_id": "list_events",
         "path": "/v1/events",
         "provider_evidence": null,
+        "read_collection": {
+          "cursor_parameter": "after",
+          "kind": "cursor-feed",
+          "limit_parameter": "limit"
+        },
         "response_authority": "operator-projection"
       },
       {
@@ -37989,6 +41097,7 @@
         "operation_id": "list_recipes",
         "path": "/v1/recipes",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -38002,6 +41111,7 @@
         "operation_id": "get_recipe",
         "path": "/v1/recipes/{recipe_id}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -38015,6 +41125,10 @@
         "operation_id": "list_work",
         "path": "/v1/work",
         "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_work"
+        },
         "response_authority": "operator-projection"
       },
       {
@@ -38028,7 +41142,31 @@
         "operation_id": "create_work",
         "path": "/v1/work",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
+      },
+      {
+        "application": "stove0",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "work list"
+        ],
+        "client": "Stove0ApiClient",
+        "method": "GET",
+        "operation_id": "stream_work",
+        "path": "/v1/work/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "stove0.work-view/v1",
+            "sha256": "7b788bf608658dc55e5d00a333e491f010ab2076a1b684c013071258d6f1f4c1"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_work"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "stove0",
@@ -38041,6 +41179,7 @@
         "operation_id": "get_work",
         "path": "/v1/work/{work_id}",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -38054,6 +41193,7 @@
         "operation_id": "cancel_work",
         "path": "/v1/work/{work_id}/cancel",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -38067,6 +41207,7 @@
         "operation_id": "inspect_work_coordination",
         "path": "/v1/work/{work_id}/coordination",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       },
       {
@@ -38080,6 +41221,7 @@
         "operation_id": "retry_work",
         "path": "/v1/work/{work_id}/retry",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -38093,6 +41235,7 @@
         "operation_id": "step_work",
         "path": "/v1/work/{work_id}/step",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "operator-projection"
       },
       {
@@ -38106,6 +41249,7 @@
         "operation_id": "preview_workflow",
         "path": "/v1/workflow-previews",
         "provider_evidence": null,
+        "read_collection": null,
         "response_authority": "canonical-document"
       }
     ],
@@ -54789,9 +57933,43 @@
             "kind": "constant",
             "value": "^\\S(?:[\\s\\S]*\\S)?$"
           },
+          "COMPLETE_ENUMERATION_FORMAT": {
+            "kind": "constant",
+            "value": "riverhog-complete-enumeration/v1"
+          },
           "CanonicalVisibleText": {
             "kind": "object",
             "type": "typing._AnnotatedAlias"
+          },
+          "CompleteEnumerationBegin": {
+            "kind": "class",
+            "schema_sha256": "4054d8f029816615e7be03d4693fd99306f4d234cf8aebb5ffbdc8a59205e38b",
+            "signature": "(*, type: Literal['begin'] = 'begin', format: Literal['riverhog-complete-enumeration/v1'] = 'riverhog-complete-enumeration/v1', query: dict[str, typing.Any], item_schema: http_api_contracts.CompleteEnumerationItemSchema) -> None"
+          },
+          "CompleteEnumerationEnd": {
+            "kind": "class",
+            "schema_sha256": "aa7eb034eae7cd0d44f4ea2d4ad5b5e483c4e3deca7ba7e68068b8c169c53074",
+            "signature": "(*, type: Literal['end'] = 'end', count: Annotated[int, Ge(ge=0)], items_sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
+          },
+          "CompleteEnumerationItem": {
+            "kind": "class",
+            "schema_sha256": "d3d6efc7be329c6df6d1c61f59a3a006e83f415ef43b58313e7b40127b40490f",
+            "signature": "(*, type: Literal['item'] = 'item', ordinal: Annotated[int, Ge(ge=0)], item: Any) -> None"
+          },
+          "CompleteEnumerationItemSchema": {
+            "kind": "class",
+            "schema_sha256": "1e0c51d2ca82180d802d41500b414cbacd32aa1eb4c2ab0dacdb9c2f99cd39a4",
+            "signature": "(*, id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=None, pattern='^\\\\S(?:[\\\\s\\\\S]*\\\\S)?$', ascii_only=None)], sha256: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)]) -> None"
+          },
+          "CompleteEnumerationReader": {
+            "kind": "class",
+            "members": {
+              "require_complete": {
+                "kind": "method",
+                "signature": "(self) -> 'None'"
+              }
+            },
+            "signature": "(chunks: 'Iterable[bytes]', *, item_type: 'object', expected_query: 'Mapping[str, object]', expected_item_schema: 'CompleteEnumerationItemSchema') -> 'None'"
           },
           "ERROR_STATUS_BY_CODE": {
             "kind": "constant",
@@ -54977,6 +58155,10 @@
             "kind": "class",
             "signature": "(name: 'str', value_type: 'object' = <class 'str'>, description: 'str | None' = None) -> None"
           },
+          "JSON_SEQUENCE_MEDIA_TYPE": {
+            "kind": "constant",
+            "value": "application/json-seq"
+          },
           "OperationInterface": {
             "kind": "object",
             "type": "typing._LiteralGenericAlias"
@@ -55011,6 +58193,26 @@
             "kind": "function",
             "signature": "(schema: 'dict[str, Any]', *, operation_error_codes: 'Mapping[str, Collection[str]] | None' = None) -> 'dict[str, Any]'"
           },
+          "bounded_list_operation": {
+            "kind": "function",
+            "signature": "(*, paired_operation_id: 'str') -> 'dict[str, Any]'"
+          },
+          "canonical_json_bytes": {
+            "kind": "function",
+            "signature": "(value: 'object') -> 'bytes'"
+          },
+          "complete_enumeration_operation": {
+            "kind": "function",
+            "signature": "(*, paired_operation_id: 'str', item_type: 'object', schema_id: 'str') -> 'dict[str, Any]'"
+          },
+          "complete_enumeration_schema_identity": {
+            "kind": "function",
+            "signature": "(item_type: 'object', *, schema_id: 'str') -> 'CompleteEnumerationItemSchema'"
+          },
+          "cursor_feed_operation": {
+            "kind": "function",
+            "signature": "(*, cursor_parameter: 'str', limit_parameter: 'str | None', fixed_limit: 'int | None' = None) -> 'dict[str, Any]'"
+          },
           "error_code_for_status": {
             "kind": "function",
             "signature": "(status: 'int') -> 'str'"
@@ -55034,6 +58236,10 @@
           "inline_type_schema": {
             "kind": "function",
             "signature": "(value: 'object') -> 'dict[str, Any]'"
+          },
+          "iter_complete_enumeration": {
+            "kind": "function",
+            "signature": "(items: 'Iterable[object]', *, query: 'Mapping[str, object]', item_schema: 'CompleteEnumerationItemSchema') -> 'Iterator[bytes]'"
           },
           "operation_interface": {
             "kind": "function",
@@ -55528,31 +58734,31 @@
               },
               "list_app_key_access": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationAccessSort' = 'permission', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, key_id: 'ApplicationKeyId | None' = None, permission: 'str | None' = None, resource: 'str | None' = None, active: 'bool | None' = None, all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationAccessSort' = 'permission', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, key_id: 'ApplicationKeyId | None' = None, permission: 'str | None' = None, resource: 'str | None' = None, active: 'bool | None' = None) -> 'dict[str, Any]'"
               },
               "list_app_keys": {
                 "kind": "method",
-                "signature": "(self, app: 'ApplicationName', *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationKeySort' = 'created_at', order: 'SortOrder' = 'desc', active: 'bool | None' = None, all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, app: 'ApplicationName', *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationKeySort' = 'created_at', order: 'SortOrder' = 'desc', active: 'bool | None' = None) -> 'dict[str, Any]'"
               },
               "list_apps": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationSort' = 'name', order: 'SortOrder' = 'asc', active: 'bool | None' = None, all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationSort' = 'name', order: 'SortOrder' = 'asc', active: 'bool | None' = None) -> 'dict[str, Any]'"
               },
               "list_archive_copy_jobs": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, state: 'ArchiveCopyState | None' = None, sort: 'ArchiveCopySort' = 'requested_at', order: 'SortOrder' = 'desc', all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, state: 'ArchiveCopyState | None' = None, sort: 'ArchiveCopySort' = 'requested_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
               },
               "list_archive_stores": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc', all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
               "list_collection_provenance": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, status: 'ProvenanceStatus | None' = None, sort: 'ProvenanceSort' = 'path', order: 'SortOrder' = 'asc', all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, status: 'ProvenanceStatus | None' = None, sort: 'ProvenanceSort' = 'path', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
               "list_collection_upload_session_files": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25, all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
               },
               "list_collection_upload_session_volumes": {
                 "kind": "method",
@@ -55560,15 +58766,15 @@
               },
               "list_collection_upload_sessions": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, state: 'CollectionUploadState | None' = None, tag: 'str | None' = None, sort: 'CollectionUploadSort' = 'created_at', order: 'SortOrder' = 'desc', all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, state: 'CollectionUploadState | None' = None, tag: 'str | None' = None, sort: 'CollectionUploadSort' = 'created_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
               },
               "list_collections": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, tag: 'str | None' = None, encryption_format: 'str | None' = None, passphrase_id: 'str | None' = None, sort: 'CollectionSort' = 'id', order: 'SortOrder' = 'asc', all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, tag: 'str | None' = None, encryption_format: 'str | None' = None, passphrase_id: 'str | None' = None, sort: 'CollectionSort' = 'id', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
               "list_download_quotas": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'DownloadQuotaSort' = 'app', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, active: 'bool | None' = None, all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'DownloadQuotaSort' = 'app', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, active: 'bool | None' = None) -> 'dict[str, Any]'"
               },
               "list_lifecycle_events": {
                 "kind": "method",
@@ -55576,11 +58782,11 @@
               },
               "list_retrieval_cache_objects": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, tag: 'str | None' = None, collection_id: 'CollectionId | None' = None, source_store: 'ArchiveStoreName | None' = None, state: 'RetrievalCacheState | None' = None, protection: 'RetrievalCacheProtection | None' = None, expires_before: 'str | None' = None, expires_after: 'str | None' = None, sort: 'RetrievalCacheSort' = 'cached_at', order: 'SortOrder' = 'desc', all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, tag: 'str | None' = None, collection_id: 'CollectionId | None' = None, source_store: 'ArchiveStoreName | None' = None, state: 'RetrievalCacheState | None' = None, protection: 'RetrievalCacheProtection | None' = None, expires_before: 'str | None' = None, expires_after: 'str | None' = None, sort: 'RetrievalCacheSort' = 'cached_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
               },
               "list_tags": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'TagSort' = 'id', order: 'SortOrder' = 'asc', all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'TagSort' = 'id', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
               "plan_archive_copy_retirement": {
                 "kind": "method",
@@ -55668,7 +58874,7 @@
               },
               "search": {
                 "kind": "method",
-                "signature": "(self, query: 'str | None' = None, *, page: 'int' = 1, per_page: 'int' = 25, sort: 'SearchSort' = 'file_ref', order: 'SortOrder' = 'asc', collection: 'CollectionId | None' = None, all_items: 'bool' = False) -> 'dict[str, Any]'"
+                "signature": "(self, query: 'str | None' = None, *, page: 'int' = 1, per_page: 'int' = 25, sort: 'SearchSort' = 'file_ref', order: 'SortOrder' = 'asc', collection: 'CollectionId | None' = None) -> 'dict[str, Any]'"
               },
               "set_app_key_download_quota": {
                 "kind": "method",
@@ -55678,9 +58884,61 @@
                 "kind": "method",
                 "signature": "(self) -> 'ApiClient'"
               },
+              "stream_app_key_access": {
+                "kind": "method",
+                "signature": "(self, *, q: 'str | None' = None, sort: 'ApplicationAccessSort' = 'permission', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, key_id: 'ApplicationKeyId | None' = None, permission: 'str | None' = None, resource: 'str | None' = None, active: 'bool | None' = None) -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_app_keys": {
+                "kind": "method",
+                "signature": "(self, app: 'ApplicationName', *, q: 'str | None' = None, sort: 'ApplicationKeySort' = 'created_at', order: 'SortOrder' = 'desc', active: 'bool | None' = None) -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_apps": {
+                "kind": "method",
+                "signature": "(self, *, q: 'str | None' = None, sort: 'ApplicationSort' = 'name', order: 'SortOrder' = 'asc', active: 'bool | None' = None) -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_archive_copy_jobs": {
+                "kind": "method",
+                "signature": "(self, *, q: 'str | None' = None, state: 'ArchiveCopyState | None' = None, sort: 'ArchiveCopySort' = 'requested_at', order: 'SortOrder' = 'desc') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_archive_stores": {
+                "kind": "method",
+                "signature": "(self, *, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_collection_provenance": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', *, q: 'str | None' = None, status: 'ProvenanceStatus | None' = None, sort: 'ProvenanceSort' = 'path', order: 'SortOrder' = 'asc') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_collection_upload_session_files": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_collection_upload_sessions": {
+                "kind": "method",
+                "signature": "(self, *, q: 'str | None' = None, state: 'CollectionUploadState | None' = None, tag: 'str | None' = None, sort: 'CollectionUploadSort' = 'created_at', order: 'SortOrder' = 'desc') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_collections": {
+                "kind": "method",
+                "signature": "(self, *, q: 'str | None' = None, tag: 'str | None' = None, encryption_format: 'str | None' = None, passphrase_id: 'str | None' = None, sort: 'CollectionSort' = 'id', order: 'SortOrder' = 'asc') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_download_quotas": {
+                "kind": "method",
+                "signature": "(self, *, q: 'str | None' = None, sort: 'DownloadQuotaSort' = 'app', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, active: 'bool | None' = None) -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_retrieval_cache_objects": {
+                "kind": "method",
+                "signature": "(self, *, q: 'str | None' = None, tag: 'str | None' = None, collection_id: 'CollectionId | None' = None, source_store: 'ArchiveStoreName | None' = None, state: 'RetrievalCacheState | None' = None, protection: 'RetrievalCacheProtection | None' = None, expires_before: 'str | None' = None, expires_after: 'str | None' = None, sort: 'RetrievalCacheSort' = 'cached_at', order: 'SortOrder' = 'desc') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
               "stream_retrieval_file": {
                 "kind": "method",
                 "signature": "(self, job_id: 'str', *, collection_id: 'CollectionId', path: 'str', expected_bytes: 'int', expected_sha256: 'str', start: 'int' = 0, end: 'int | None' = None, chunk_size: 'int' = 8388608) -> 'Iterator[Iterator[bytes]]'"
+              },
+              "stream_search": {
+                "kind": "method",
+                "signature": "(self, query: 'str | None' = None, *, sort: 'SearchSort' = 'file_ref', order: 'SortOrder' = 'asc', collection: 'CollectionId | None' = None) -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_tags": {
+                "kind": "method",
+                "signature": "(self, *, q: 'str | None' = None, sort: 'TagSort' = 'id', order: 'SortOrder' = 'asc') -> 'Iterator[Iterator[dict[str, Any]]]'"
               },
               "trace_collection_file_provenance": {
                 "kind": "method",
@@ -59808,13 +63066,13 @@
                 "kind": "method",
                 "signature": "(self, job_id: 'str', *, lease_seconds: 'int') -> 'dict[str, Any]'"
               },
-              "search": {
-                "kind": "method",
-                "signature": "(self, query: 'str | None' = None, *, page: 'int' = 1, per_page: 'int' = 25, sort: 'str' = 'file_ref', order: 'str' = 'asc', collection: 'CollectionId | None' = None, all_items: 'bool' = False) -> 'dict[str, Any]'"
-              },
               "stream_retrieval_file": {
                 "kind": "method",
                 "signature": "(self, job_id: 'str', *, collection_id: 'CollectionId', path: 'str', expected_bytes: 'int', expected_sha256: 'str', start: 'int' = 0, end: 'int | None' = None, chunk_size: 'int' = 8388608) -> 'AbstractContextManager[Iterator[bytes]]'"
+              },
+              "stream_search": {
+                "kind": "method",
+                "signature": "(self, query: 'str | None' = None, *, sort: 'str' = 'file_ref', order: 'str' = 'asc', collection: 'CollectionId | None' = None) -> 'AbstractContextManager[Iterator[dict[str, Any]]]'"
               }
             },
             "signature": "(*args, **kwargs)"
@@ -60154,7 +63412,7 @@
               },
               "get_artifact_selection": {
                 "kind": "method",
-                "signature": "(self, selection_sha256: 'str', *, page: 'int' = 1, per_page: 'int' = 100, all_items: 'bool' = False) -> 'ArtifactSelectionPage'"
+                "signature": "(self, selection_sha256: 'str', *, page: 'int' = 1, per_page: 'int' = 100) -> 'ArtifactSelectionPage'"
               },
               "get_evaluation": {
                 "kind": "method",
@@ -60182,7 +63440,7 @@
               },
               "list_evaluations": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: '_EvaluationSort' = 'updated_at', order: '_SortOrder' = 'desc', all_items: 'bool' = False) -> 'EvaluationPage'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: '_EvaluationSort' = 'updated_at', order: '_SortOrder' = 'desc') -> 'EvaluationPage'"
               },
               "list_events": {
                 "kind": "method",
@@ -60194,7 +63452,7 @@
               },
               "list_work": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'WorkPhase | None' = None, query: 'str | None' = None, sort: '_WorkSort' = 'updated_at', order: '_SortOrder' = 'desc', all_items: 'bool' = False) -> 'WorkPage'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'WorkPhase | None' = None, query: 'str | None' = None, sort: '_WorkSort' = 'updated_at', order: '_SortOrder' = 'desc') -> 'WorkPage'"
               },
               "preview_workflow": {
                 "kind": "method",
@@ -60227,6 +63485,18 @@
               "step_work": {
                 "kind": "method",
                 "signature": "(self, work_id: 'str') -> 'WorkView'"
+              },
+              "stream_artifact_selection": {
+                "kind": "method",
+                "signature": "(self, selection_sha256: 'str') -> 'Iterator[Iterator[ArtifactSubject]]'"
+              },
+              "stream_evaluations": {
+                "kind": "method",
+                "signature": "(self, *, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: '_EvaluationSort' = 'updated_at', order: '_SortOrder' = 'desc') -> 'Iterator[Iterator[EvaluationView]]'"
+              },
+              "stream_work": {
+                "kind": "method",
+                "signature": "(self, *, phase: 'WorkPhase | None' = None, query: 'str | None' = None, sort: '_WorkSort' = 'updated_at', order: '_SortOrder' = 'desc') -> 'Iterator[Iterator[WorkView]]'"
               }
             },
             "signature": "(base_url: 'str | None' = None, token: 'str | None' = None, *, allow_insecure_http: 'bool | None' = None, timeout_seconds: 'float | None' = None, http2: 'bool | None' = None) -> 'None'"

@@ -257,9 +257,15 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         access=[{"permission": "catalog:read", "resource": "*"}],
     )
     delegated_id = str(delegated["id"])
-    assert operator.list_apps(q="qualification", all_items=True)["total"] == 2
-    assert operator.list_app_keys("qualification-reader", all_items=True)["total"] == 1
-    assert operator.list_app_key_access(key_id=delegated_id, all_items=True)["total"] == 1
+    assert operator.list_apps(q="qualification", page=1, per_page=100)["total"] == 2
+    with operator.stream_apps(q="qualification") as items:
+        assert len(list(items)) == 2
+    assert operator.list_app_keys("qualification-reader", page=1, per_page=100)["total"] == 1
+    with operator.stream_app_keys("qualification-reader") as items:
+        assert len(list(items)) == 1
+    assert operator.list_app_key_access(key_id=delegated_id, page=1, per_page=100)["total"] == 1
+    with operator.stream_app_key_access(key_id=delegated_id) as items:
+        assert len(list(items)) == 1
     operator.replace_app_key_access(
         "qualification-reader",
         delegated_id,
@@ -283,11 +289,13 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         monthly_bytes=1024,
     )
     assert (
-        operator.list_download_quotas(app="qualification-reader", all_items=True)["quotas"][0][
-            "monthly_bytes"
-        ]
+        operator.list_download_quotas(app="qualification-reader", page=1, per_page=100)["quotas"][
+            0
+        ]["monthly_bytes"]
         == 1024
     )
+    with operator.stream_download_quotas(app="qualification-reader") as items:
+        assert list(items)[0]["monthly_bytes"] == 1024
     assert operator.get_download_quota()["app"] == "qualification-operator"
     rotated = operator.rotate_app_key("qualification-reader", delegated_id)
     operator.revoke_app_key("qualification-reader", str(rotated["id"]))
@@ -295,7 +303,9 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     operator.create_tag("docs")
     operator.create_tag("temporary")
     assert operator.get_tag("docs")["id"] == "docs"
-    assert operator.list_tags(q="doc", all_items=True)["total"] == 1
+    assert operator.list_tags(q="doc", page=1, per_page=100)["total"] == 1
+    with operator.stream_tags(q="doc") as items:
+        assert len(list(items)) == 1
     tag_plan = operator.plan_tag_deletion("temporary")
     operator.delete_tag("temporary", challenge=str(tag_plan["challenge"]))
 
@@ -333,7 +343,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     )
     assert opened["resumed"] is False
     collection_id = int(opened["collection_id"])
-    assert operator.list_collection_upload_sessions(all_items=True)["total"] == 1
+    with operator.stream_collection_upload_sessions() as items:
+        assert len(list(items)) == 1
     operator.put_collection_upload_session_provenance_journal(
         collection_id,
         journal_summary.journal_id,
@@ -363,9 +374,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         ],
         registration_constraints=opened["registration_constraints"],
     )
-    assert (
-        operator.list_collection_upload_session_files(collection_id, all_items=True)["total"] == 1
-    )
+    with operator.stream_collection_upload_session_files(collection_id) as items:
+        assert len(list(items)) == 1
     operator.complete_collection_upload_session(
         collection_id,
         files_total=1,
@@ -392,21 +402,26 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
                 plan_sha256=str(volume["plan_sha256"]),
                 content=_unit_content(source_root, current),
             )
-    assert (
-        operator.list_collection_upload_session_files(collection_id, all_items=True)["total"] == 1
-    )
+    with operator.stream_collection_upload_session_files(collection_id) as items:
+        assert len(list(items)) == 1
     assert container.collection_uploads.process_due_finalizations() == 1
     assert operator.get_collection_upload_session(collection_id)["state"] == "finalized"
     assert operator.get_collection(collection_id)["id"] == collection_id
-    assert operator.list_collections(tag="docs", all_items=True)["total"] == 1
-    assert operator.search("document", collection=collection_id, all_items=True)["total"] == 1
+    assert operator.list_collections(tag="docs", page=1, per_page=100)["total"] == 1
+    with operator.stream_collections(tag="docs") as items:
+        assert len(list(items)) == 1
+    assert operator.search("document", collection=collection_id, page=1, per_page=100)["total"] == 1
+    with operator.stream_search("document", collection=collection_id) as items:
+        assert len(list(items)) == 1
     assert operator.get_collection_tags(collection_id)["tags"] == ["docs"]
     operator.create_tag("reviewed")
     operator.add_collection_tag(collection_id, "reviewed")
     operator.remove_collection_tag(collection_id, "docs")
     operator.replace_collection_tags(collection_id, ["docs", "reviewed"])
 
-    assert operator.list_collection_provenance(collection_id, all_items=True)["total"] == 1
+    assert operator.list_collection_provenance(collection_id, page=1, per_page=100)["total"] == 1
+    with operator.stream_collection_provenance(collection_id) as items:
+        assert len(list(items)) == 1
     assert (
         operator.get_collection_file_provenance(collection_id, "document.txt")["journal"][
             "journal_id"
@@ -453,11 +468,15 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert manifest.status_code == 200
     assert manifest.json()["collection"] == collection_id
 
-    stores = operator.list_archive_stores(all_items=True)
-    assert {item["store"] for item in stores["stores"]} == {"primary", "secondary"}
+    assert {
+        item["store"] for item in operator.list_archive_stores(page=1, per_page=100)["stores"]
+    } == {"primary", "secondary"}
+    with operator.stream_archive_stores() as items:
+        assert {item["store"] for item in items} == {"primary", "secondary"}
     assert operator.get_archive_store("primary")["store"] == "primary"
     assert operator.retrieval_cache_status()["configured"] is False
-    assert operator.list_retrieval_cache_objects(all_items=True)["total"] == 0
+    with operator.stream_retrieval_cache_objects() as items:
+        assert list(items) == []
 
     plan = operator.plan_retrieval([(collection_id, "document.txt")], restore_policy="never")
     job = operator.create_retrieval_job(
@@ -538,7 +557,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         operator.get_archive_copy_job(collection_id, destination_store="secondary")["state"]
         == "requested"
     )
-    assert operator.list_archive_copy_jobs(all_items=True)["total"] == 1
+    with operator.stream_archive_copy_jobs() as items:
+        assert len(list(items)) == 1
     assert (
         operator.cancel_archive_copy_job(collection_id, destination_store="secondary")["state"]
         == "canceled"
@@ -649,7 +669,9 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     claim_id = str(claim["id"])
     claim_fence = int(claim["fence"])
     assert operator.get_processing_claim(claim_id)["work_id"] == work_id
-    assert operator.list_processing_claims(all_items=True)["total"] == 3
+    assert operator.list_processing_claims(page=1, per_page=100).total == 3
+    with operator.stream_processing_claims() as items:
+        assert len(list(items)) == 3
     assert (
         operator.renew_processing_claim(
             claim_id,
@@ -769,7 +791,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         journals=output_provenance_journals,
     )
     target = _api(transport, str(output_capability["token"]), observer=observer)
-    assert target.list_collection_provenance(collection_id, all_items=True)["total"] == 1
+    with target.stream_collection_provenance(collection_id) as items:
+        assert len(list(items)) == 1
     assert (
         target.export_collection_provenance_journal(
             collection_id,

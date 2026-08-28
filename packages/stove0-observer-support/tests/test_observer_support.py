@@ -93,6 +93,10 @@ class RetrievalApi:
             ]
         }
 
+    @contextmanager
+    def stream_search(self, _query: str | None = None, **kwargs: Any) -> Iterator[Any]:
+        yield iter(self.search(_query, **kwargs)["files"])
+
     def _rows(self, files: Sequence[tuple[int, str]]) -> list[dict[str, object]]:
         return [
             {

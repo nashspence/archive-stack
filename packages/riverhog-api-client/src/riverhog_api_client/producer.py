@@ -841,16 +841,11 @@ class IncrementalCollectionProducer:
         self._needs_upload_scan = False
 
     def _refresh_registered(self) -> None:
-        payload = self.api.list_collection_upload_session_files(
-            self.collection_id,
-            all_items=True,
-        )
-        rows = payload.get("files")
-        if not isinstance(rows, list):
-            raise RuntimeError("Riverhog upload session returned no registered file inventory")
+        with self.api.stream_collection_upload_session_files(self.collection_id) as rows:
+            self._accept_registered_rows(rows)
+
+    def _accept_registered_rows(self, rows: Iterator[dict[str, Any]]) -> None:
         for row in rows:
-            if not isinstance(row, Mapping):
-                raise RuntimeError("Riverhog upload session returned an invalid file row")
             provenance = row.get("provenance")
             if not isinstance(provenance, Mapping):
                 raise RuntimeError("Riverhog upload file has no provenance binding")

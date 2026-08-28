@@ -9,12 +9,14 @@ import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
+from typing import Any
 
 from riverhog_age import UploadState
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
 from sqlalchemy import String, cast, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
+from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import ARCHIVES_MANAGE, ApplicationPrincipal
@@ -351,7 +353,6 @@ class SqlAlchemyArchiveCopyService:
         q: str | None,
         sort: str,
         order: str,
-        all_items: bool,
         state: str | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
@@ -363,58 +364,12 @@ class SqlAlchemyArchiveCopyService:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
         if order not in {"asc", "desc"}:
             raise BadRequest("order must be asc or desc")
-        query = q.strip().casefold() if q and q.strip() else None
-        normalized_state = state.strip().casefold() if state and state.strip() else None
-        if normalized_state is not None and normalized_state not in ARCHIVE_COPY_STATES:
-            raise BadRequest(f"state must be one of {', '.join(sorted(ARCHIVE_COPY_STATES))}")
-        filters = [
-            collection_access_filter(
-                ArchiveCopyJobRecord.collection_id,
-                principal,
-                ARCHIVES_MANAGE,
-            )
-        ]
-        if normalized_state is not None:
-            filters.append(ArchiveCopyJobRecord.state == normalized_state)
-        if query is not None:
-            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            pattern = f"%{escaped}%"
-            filters.append(
-                or_(
-                    cast(ArchiveCopyJobRecord.collection_id, String).like(
-                        pattern,
-                        escape="\\",
-                    ),
-                    func.lower(ArchiveCopyJobRecord.source_store).like(
-                        pattern,
-                        escape="\\",
-                    ),
-                    func.lower(ArchiveCopyJobRecord.destination_store).like(
-                        pattern,
-                        escape="\\",
-                    ),
-                    func.lower(ArchiveCopyJobRecord.state).like(
-                        pattern,
-                        escape="\\",
-                    ),
-                )
-            )
-        sort_columns = {
-            "collection_id": ArchiveCopyJobRecord.collection_id,
-            "source_store": ArchiveCopyJobRecord.source_store,
-            "destination_store": ArchiveCopyJobRecord.destination_store,
-            "state": ArchiveCopyJobRecord.state,
-            "requested_at": ArchiveCopyJobRecord.requested_at,
-        }
-        direction = sort_columns[sort].desc() if order == "desc" else sort_columns[sort].asc()
-        statement = (
-            select(ArchiveCopyJobRecord)
-            .where(*filters)
-            .order_by(
-                direction,
-                ArchiveCopyJobRecord.collection_id.asc(),
-                ArchiveCopyJobRecord.destination_store.asc(),
-            )
+        query, normalized_state, filters, statement = _archive_copy_list_statement(
+            q=q,
+            state=state,
+            sort=sort,
+            order=order,
+            principal=principal,
         )
         with session_scope(self._session_factory) as session:
             total = int(
@@ -423,24 +378,39 @@ class SqlAlchemyArchiveCopyService:
                 )
                 or 0
             )
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             jobs = [_job_payload(job) for job in session.scalars(statement)]
         return {
-            "page": 1 if all_items else page,
-            "per_page": total if all_items else per_page,
+            "page": page,
+            "per_page": per_page,
             "total": total,
-            "pages": (
-                (1 if total else 0)
-                if all_items
-                else ((total + per_page - 1) // per_page if total else 0)
-            ),
+            "pages": ((total + per_page - 1) // per_page if total else 0),
             "sort": sort,
             "order": order,
             "query": query,
             "filters": ({"state": normalized_state} if normalized_state is not None else {}),
             "copies": jobs,
         }
+
+    def iter_jobs(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        state: str | None = None,
+        principal: ApplicationPrincipal | None = None,
+    ) -> Iterator[dict[str, object]]:
+        _, _, _, statement = _archive_copy_list_statement(
+            q=q,
+            state=state,
+            sort=sort,
+            order=order,
+            principal=principal,
+        )
+        with read_snapshot(self._session_factory) as session:
+            for job in session.scalars(statement.execution_options(yield_per=100)):
+                yield _job_payload(job)
 
     def process_due(self, *, limit: int = 1) -> int:
         if limit < 1:
@@ -1684,6 +1654,62 @@ def _normalize_collection_id(value: str | int) -> int:
         return normalize_collection_id(value)
     except PathNormalizationError as exc:
         raise BadRequest(str(exc)) from exc
+
+
+def _archive_copy_list_statement(
+    *,
+    q: str | None,
+    state: str | None,
+    sort: str,
+    order: str,
+    principal: ApplicationPrincipal | None,
+) -> tuple[str | None, str | None, list[Any], Any]:
+    if sort not in _SORT_FIELDS:
+        raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
+    if order not in {"asc", "desc"}:
+        raise BadRequest("order must be asc or desc")
+    query = q.strip().casefold() if q and q.strip() else None
+    normalized_state = state.strip().casefold() if state and state.strip() else None
+    if normalized_state is not None and normalized_state not in ARCHIVE_COPY_STATES:
+        raise BadRequest(f"state must be one of {', '.join(sorted(ARCHIVE_COPY_STATES))}")
+    filters = [
+        collection_access_filter(
+            ArchiveCopyJobRecord.collection_id,
+            principal,
+            ARCHIVES_MANAGE,
+        )
+    ]
+    if normalized_state is not None:
+        filters.append(ArchiveCopyJobRecord.state == normalized_state)
+    if query is not None:
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{escaped}%"
+        filters.append(
+            or_(
+                cast(ArchiveCopyJobRecord.collection_id, String).like(pattern, escape="\\"),
+                func.lower(ArchiveCopyJobRecord.source_store).like(pattern, escape="\\"),
+                func.lower(ArchiveCopyJobRecord.destination_store).like(pattern, escape="\\"),
+                func.lower(ArchiveCopyJobRecord.state).like(pattern, escape="\\"),
+            )
+        )
+    sort_columns = {
+        "collection_id": ArchiveCopyJobRecord.collection_id,
+        "source_store": ArchiveCopyJobRecord.source_store,
+        "destination_store": ArchiveCopyJobRecord.destination_store,
+        "state": ArchiveCopyJobRecord.state,
+        "requested_at": ArchiveCopyJobRecord.requested_at,
+    }
+    direction = sort_columns[sort].desc() if order == "desc" else sort_columns[sort].asc()
+    statement = (
+        select(ArchiveCopyJobRecord)
+        .where(*filters)
+        .order_by(
+            direction,
+            ArchiveCopyJobRecord.collection_id.asc(),
+            ArchiveCopyJobRecord.destination_store.asc(),
+        )
+    )
+    return query, normalized_state, filters, statement
 
 
 def _job_payload(job: ArchiveCopyJobRecord) -> dict[str, object]:

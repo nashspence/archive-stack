@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from riverhog_protocol import CollectionIdParameter, SortOrder, TagSort
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, CollectionTagManager, TagCreator, TagDeleter
+from riverhog_api.complete_enumeration import (
+    CompleteEnumerationResponse,
+    bounded_list_operation,
+    complete_enumeration_operation,
+    complete_enumeration_response,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.tags import (
     CollectionTagsOut,
@@ -32,7 +38,11 @@ def create_tag(
     return TagOut.model_validate(container.tags.create(request.id, creator=principal))
 
 
-@router.get("/tags", response_model=TagListOut)
+@router.get(
+    "/tags",
+    response_model=TagListOut,
+    openapi_extra=bounded_list_operation(paired_operation_id="stream_tags"),
+)
 def list_tags(
     container: ContainerDep,
     principal: CatalogReader,
@@ -41,7 +51,6 @@ def list_tags(
     q: str | None = Query(None),
     sort: Annotated[TagSort, Query()] = "id",
     order: Annotated[SortOrder, Query()] = "asc",
-    all_items: bool = Query(False, alias="all"),
 ) -> TagListOut:
     return TagListOut.model_validate(
         container.tags.list(
@@ -50,9 +59,33 @@ def list_tags(
             q=q,
             sort=sort,
             order=order,
-            all_items=all_items,
             principal=principal,
         )
+    )
+
+
+@router.get(
+    "/tags/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_tags",
+        item_type=TagOut,
+        schema_id="riverhog.tag/v1",
+    ),
+)
+def stream_tags(
+    container: ContainerDep,
+    principal: CatalogReader,
+    q: str | None = Query(None),
+    sort: Annotated[TagSort, Query()] = "id",
+    order: Annotated[SortOrder, Query()] = "asc",
+) -> Response:
+    query = {"q": q, "sort": sort, "order": order}
+    return complete_enumeration_response(
+        container.tags.iter_tags(q=q, sort=sort, order=order, principal=principal),
+        query=query,
+        item_type=TagOut,
+        schema_id="riverhog.tag/v1",
     )
 
 

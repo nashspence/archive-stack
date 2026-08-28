@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import secrets
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal
 
@@ -12,6 +12,7 @@ from sqlalchemy import asc, desc, exists, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
+from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import (
@@ -200,72 +201,43 @@ class SqlAlchemyTagService:
         q: str | None,
         sort: str,
         order: str,
-        all_items: bool,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
+        query, base, statement = _tag_list_statements(
+            q=q, sort=sort, order=order, principal=principal
+        )
         if page < 1:
             raise BadRequest("page must be greater than or equal to 1")
         if per_page < 1 or per_page > 100:
             raise BadRequest("per_page must be between 1 and 100")
-        if sort not in _SORT_FIELDS:
-            raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
-        if order not in {"asc", "desc"}:
-            raise BadRequest("order must be asc or desc")
-        query = q.strip() if q is not None else None
-        collection_counts = (
-            select(
-                CollectionTagRecord.tag_id,
-                func.count().label("collections"),
-            )
-            .group_by(CollectionTagRecord.tag_id)
-            .subquery()
-        )
-        collections = func.coalesce(collection_counts.c.collections, 0)
-        filters: list[ColumnElement[bool]] = [
-            tag_access_filter(TagRecord.id, principal, CATALOG_READ)
-        ]
-        if query:
-            filters.append(
-                func.lower(TagRecord.id).like(
-                    _like_pattern(query.casefold()),
-                    escape="\\",
-                )
-            )
-        base = (
-            select(
-                TagRecord.id.label("id"),
-                TagRecord.created_by_app.label("created_by_app"),
-                TagRecord.created_by_key_id.label("created_by_key_id"),
-                TagRecord.created_at.label("created_at"),
-                collections.label("collections"),
-            )
-            .outerjoin(collection_counts, collection_counts.c.tag_id == TagRecord.id)
-            .where(*filters)
-        )
-        columns = {
-            "id": TagRecord.id,
-            "created_at": TagRecord.created_at,
-            "collections": collections,
-        }
-        direction = desc if order == "desc" else asc
-        statement = base.order_by(direction(columns[sort]), asc(TagRecord.id))
         with session_scope(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(base.subquery())) or 0)
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = [dict(row) for row in session.execute(statement).mappings().all()]
         return {
-            "page": 1 if all_items else page,
-            "per_page": total if all_items else per_page,
+            "page": page,
+            "per_page": per_page,
             "total": total,
-            "pages": (
-                (1 if total else 0) if all_items else math.ceil(total / per_page) if total else 0
-            ),
+            "pages": math.ceil(total / per_page) if total else 0,
             "sort": sort,
             "order": order,
             "query": query,
             "tags": rows,
         }
+
+    def iter_tags(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[dict[str, object]]:
+        _, _, statement = _tag_list_statements(q=q, sort=sort, order=order, principal=principal)
+        with read_snapshot(self._session_factory) as session:
+            rows = session.execute(statement.execution_options(yield_per=100)).mappings()
+            for row in rows:
+                yield dict(row)
 
     def get_collection(
         self,
@@ -442,6 +414,47 @@ class SqlAlchemyTagService:
                 session=session,
             )
             return _collection_tags_payload(session, collection)
+
+
+def _tag_list_statements(
+    *,
+    q: str | None,
+    sort: str,
+    order: str,
+    principal: ApplicationPrincipal,
+) -> tuple[str | None, Select[Any], Select[Any]]:
+    if sort not in _SORT_FIELDS:
+        raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
+    if order not in {"asc", "desc"}:
+        raise BadRequest("order must be asc or desc")
+    query = q.strip() if q is not None else None
+    collection_counts = (
+        select(CollectionTagRecord.tag_id, func.count().label("collections"))
+        .group_by(CollectionTagRecord.tag_id)
+        .subquery()
+    )
+    collections = func.coalesce(collection_counts.c.collections, 0)
+    filters: list[ColumnElement[bool]] = [tag_access_filter(TagRecord.id, principal, CATALOG_READ)]
+    if query:
+        filters.append(func.lower(TagRecord.id).like(_like_pattern(query.casefold()), escape="\\"))
+    base = (
+        select(
+            TagRecord.id.label("id"),
+            TagRecord.created_by_app.label("created_by_app"),
+            TagRecord.created_by_key_id.label("created_by_key_id"),
+            TagRecord.created_at.label("created_at"),
+            collections.label("collections"),
+        )
+        .outerjoin(collection_counts, collection_counts.c.tag_id == TagRecord.id)
+        .where(*filters)
+    )
+    columns = {
+        "id": TagRecord.id,
+        "created_at": TagRecord.created_at,
+        "collections": collections,
+    }
+    direction = desc if order == "desc" else asc
+    return query, base, base.order_by(direction(columns[sort]), asc(TagRecord.id))
 
 
 def _tag_deletion_plan(

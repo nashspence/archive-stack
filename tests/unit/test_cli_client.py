@@ -142,7 +142,6 @@ def test_search_uses_current_collection_filters() -> None:
         collection=1,
         sort="path",
         order="desc",
-        all_items=True,
     )
 
     assert client.calls == [
@@ -157,7 +156,6 @@ def test_search_uses_current_collection_filters() -> None:
                     "order": "desc",
                     "q": "tax",
                     "collection": 1,
-                    "all": True,
                 }
             },
         )
@@ -467,7 +465,6 @@ def test_retrieval_cache_reads_use_list_and_composite_identity_routes() -> None:
         expires_after="2026-08-14T00:00:00Z",
         sort="stored_bytes",
         order="asc",
-        all_items=True,
     )
     client.get_retrieval_cache_object(42, "deep", "pack-000000000000")
 
@@ -490,7 +487,6 @@ def test_retrieval_cache_reads_use_list_and_composite_identity_routes() -> None:
                     "protection": "protected",
                     "expires_before": "2026-08-15T00:00:00Z",
                     "expires_after": "2026-08-14T00:00:00Z",
-                    "all": True,
                 }
             },
         ),
@@ -588,7 +584,7 @@ def test_one_application_token_reaches_the_complete_client_surface(monkeypatch) 
 def test_client_manages_application_keys_with_explicit_access() -> None:
     client = RecordingClient()
 
-    client.list_apps(q="local", active=True, all_items=True)
+    client.list_apps(q="local", active=True)
     client.create_app_key(
         "local",
         access=[
@@ -597,7 +593,7 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
         ],
         expires_in_seconds=3600,
     )
-    client.list_app_keys("local", active=False, all_items=True)
+    client.list_app_keys("local", active=False)
     client.revoke_app_key("local", "0123456789abcdef")
 
     assert client.calls == [
@@ -612,7 +608,6 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
                     "order": "asc",
                     "q": "local",
                     "active": "true",
-                    "all": True,
                 }
             },
         ),
@@ -639,7 +634,6 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
                     "sort": "created_at",
                     "order": "desc",
                     "active": "false",
-                    "all": True,
                 }
             },
         ),
@@ -655,7 +649,7 @@ def test_client_manages_explicit_tags() -> None:
     client = RecordingClient()
     client.create_tag("photos")
     client.get_tag("photos")
-    client.list_tags(q="photo", all_items=True)
+    client.list_tags(q="photo")
     assert client.calls == [
         ("POST", "/v1/tags", {"json": {"id": "photos"}}),
         ("GET", "/v1/tags/photos", {}),
@@ -669,7 +663,6 @@ def test_client_manages_explicit_tags() -> None:
                     "sort": "id",
                     "order": "asc",
                     "q": "photo",
-                    "all": True,
                 }
             },
         ),
@@ -712,7 +705,6 @@ def test_provenance_client_methods_use_the_collection_scoped_contract() -> None:
         status="captured",
         sort="bytes",
         order="desc",
-        all_items=True,
     )
     client.get_collection_file_provenance(42, "media/movie.mov")
     client.trace_collection_file_provenance(42, "media/movie.mov")
@@ -730,7 +722,6 @@ def test_provenance_client_methods_use_the_collection_scoped_contract() -> None:
                     "order": "desc",
                     "q": "movie",
                     "status": "captured",
-                    "all": True,
                 }
             },
         ),

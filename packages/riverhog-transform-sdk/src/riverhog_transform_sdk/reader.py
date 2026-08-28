@@ -26,17 +26,14 @@ RetrievalPolicy = Literal["available-only", "allow"]
 class ClaimedCollectionApi(Protocol):
     def get_collection(self, collection_id: CollectionId) -> dict[str, Any]: ...
 
-    def search(
+    def stream_search(
         self,
         query: str | None = None,
         *,
-        page: int = 1,
-        per_page: int = 25,
         sort: str = "file_ref",
         order: str = "asc",
         collection: CollectionId | None = None,
-        all_items: bool = False,
-    ) -> dict[str, Any]: ...
+    ) -> AbstractContextManager[Iterator[dict[str, Any]]]: ...
 
     def plan_retrieval(
         self,
@@ -130,37 +127,31 @@ class ClaimedCollectionReader:
         artifacts: list[ClaimedArtifact] = []
         for root in self.inputs:
             self._verify_root(root)
-            payload = self.api.search(
+            with self.api.stream_search(
                 collection=root.collection_id,
-                all_items=True,
                 sort="file_ref",
                 order="asc",
-            )
-            rows = payload.get("files")
-            if not isinstance(rows, list):
-                raise RuntimeError("Riverhog search returned no collection file inventory")
-            for raw in rows:
-                if not isinstance(raw, Mapping):
-                    raise RuntimeError("Riverhog search returned an invalid collection file")
-                collection_id = _positive_int(
-                    raw.get("collection_id"),
-                    "inventory collection id",
-                )
-                if collection_id != root.collection_id:
-                    raise RuntimeError(
-                        "Riverhog search returned a file outside the claimed collection"
+            ) as rows:
+                for raw in rows:
+                    collection_id = _positive_int(
+                        raw.get("collection_id"),
+                        "inventory collection id",
                     )
-                path = str(raw.get("path") or "")
-                control = path in _CONTROL_PATHS or path.startswith("riverhog/")
-                artifact = ClaimedArtifact(
-                    root=root,
-                    path=path,
-                    bytes=_nonnegative_int(raw.get("bytes"), "artifact bytes"),
-                    sha256=str(raw.get("sha256") or ""),
-                    control=control,
-                )
-                if include_control or not control:
-                    artifacts.append(artifact)
+                    if collection_id != root.collection_id:
+                        raise RuntimeError(
+                            "Riverhog search returned a file outside the claimed collection"
+                        )
+                    path = str(raw.get("path") or "")
+                    control = path in _CONTROL_PATHS or path.startswith("riverhog/")
+                    artifact = ClaimedArtifact(
+                        root=root,
+                        path=path,
+                        bytes=_nonnegative_int(raw.get("bytes"), "artifact bytes"),
+                        sha256=str(raw.get("sha256") or ""),
+                        control=control,
+                    )
+                    if include_control or not control:
+                        artifacts.append(artifact)
         result = tuple(sorted(artifacts))
         if len({current.key for current in result}) != len(result):
             raise RuntimeError("claimed collection inventory repeats an artifact identity")

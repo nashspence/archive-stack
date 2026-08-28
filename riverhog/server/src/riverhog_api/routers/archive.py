@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from riverhog_core.app_permissions import ARCHIVES_MANAGE
 from riverhog_protocol import (
     ArchiveCopySort,
@@ -14,6 +14,12 @@ from riverhog_protocol import (
 )
 
 from riverhog_api.auth import ArchiveManager, ArchiveReader
+from riverhog_api.complete_enumeration import (
+    CompleteEnumerationResponse,
+    bounded_list_operation,
+    complete_enumeration_operation,
+    complete_enumeration_response,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_archive_store, map_archive_store_list
 from riverhog_api.schemas.archive import (
@@ -48,7 +54,11 @@ def create_or_resume_archive_copy(
     )
 
 
-@router.get("/archive/copies", response_model=ArchiveCopyJobListOut)
+@router.get(
+    "/archive/copies",
+    response_model=ArchiveCopyJobListOut,
+    openapi_extra=bounded_list_operation(paired_operation_id="stream_archive_copy_jobs"),
+)
 def list_archive_copy_jobs(
     container: ContainerDep,
     principal: ArchiveManager,
@@ -58,7 +68,6 @@ def list_archive_copy_jobs(
     state: Annotated[ArchiveCopyState | None, Query()] = None,
     sort: Annotated[ArchiveCopySort, Query()] = "requested_at",
     order: Annotated[SortOrder, Query()] = "desc",
-    all_items: bool = Query(False, alias="all"),
 ) -> ArchiveCopyJobListOut:
     return ArchiveCopyJobListOut.model_validate(
         container.archive_copies.list(
@@ -68,9 +77,40 @@ def list_archive_copy_jobs(
             state=state,
             sort=sort,
             order=order,
-            all_items=all_items,
             principal=principal,
         )
+    )
+
+
+@router.get(
+    "/archive/copies/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_archive_copy_jobs",
+        item_type=ArchiveCopyJobOut,
+        schema_id="riverhog.archive-copy-job/v1",
+    ),
+)
+def stream_archive_copy_jobs(
+    container: ContainerDep,
+    principal: ArchiveManager,
+    q: str | None = Query(None),
+    state: Annotated[ArchiveCopyState | None, Query()] = None,
+    sort: Annotated[ArchiveCopySort, Query()] = "requested_at",
+    order: Annotated[SortOrder, Query()] = "desc",
+) -> Response:
+    query = {"q": q, "state": state, "sort": sort, "order": order}
+    return complete_enumeration_response(
+        container.archive_copies.iter_jobs(
+            q=q,
+            state=state,
+            sort=sort,
+            order=order,
+            principal=principal,
+        ),
+        query=query,
+        item_type=ArchiveCopyJobOut,
+        schema_id="riverhog.archive-copy-job/v1",
     )
 
 
@@ -151,7 +191,11 @@ def retire_archive_copy(
     )
 
 
-@router.get("/archive/stores", response_model=ArchiveStoreListOut)
+@router.get(
+    "/archive/stores",
+    response_model=ArchiveStoreListOut,
+    openapi_extra=bounded_list_operation(paired_operation_id="stream_archive_stores"),
+)
 def list_archive_stores(
     container: ContainerDep,
     principal: ArchiveReader,
@@ -160,7 +204,6 @@ def list_archive_stores(
     q: str | None = Query(None),
     sort: Annotated[ArchiveStoreSort, Query()] = "store",
     order: Annotated[SortOrder, Query()] = "asc",
-    all_items: bool = Query(False, alias="all"),
 ) -> ArchiveStoreListOut:
     payload = container.archive_stores.list(
         page=page,
@@ -168,10 +211,39 @@ def list_archive_stores(
         q=q,
         sort=sort,
         order=order,
-        all_items=all_items,
         principal=principal,
     )
     return ArchiveStoreListOut.model_validate(map_archive_store_list(payload))
+
+
+@router.get(
+    "/archive/stores/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_archive_stores",
+        item_type=ArchiveStoreOut,
+        schema_id="riverhog.archive-store/v1",
+    ),
+)
+def stream_archive_stores(
+    container: ContainerDep,
+    principal: ArchiveReader,
+    q: str | None = Query(None),
+    sort: Annotated[ArchiveStoreSort, Query()] = "store",
+    order: Annotated[SortOrder, Query()] = "asc",
+) -> Response:
+    items = (
+        ArchiveStoreOut.model_validate(map_archive_store(item))
+        for item in container.archive_stores.iter_stores(
+            q=q, sort=sort, order=order, principal=principal
+        )
+    )
+    return complete_enumeration_response(
+        items,
+        query={"q": q, "sort": sort, "order": order},
+        item_type=ArchiveStoreOut,
+        schema_id="riverhog.archive-store/v1",
+    )
 
 
 @router.get("/archive/stores/{store}", response_model=ArchiveStoreOut)

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import TypeAdapter, ValidationError
@@ -69,6 +70,14 @@ class CollectionWorkflowMethods:
     if TYPE_CHECKING:
 
         def _json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]: ...
+        def _stream_json_objects(
+            self,
+            path: str,
+            *,
+            query: Mapping[str, object],
+            params: Mapping[str, object],
+            schema_id: str,
+        ) -> Any: ...
 
     def create_or_resume_processing_claim(
         self,
@@ -108,7 +117,6 @@ class CollectionWorkflowMethods:
         state: ClaimState | None = None,
         sort: _ClaimSort = "updated_at",
         order: _SortOrder = "desc",
-        all_items: bool = False,
     ) -> ProcessingClaimPageDocument:
         params: dict[str, Any] = {
             "page": page,
@@ -131,11 +139,36 @@ class CollectionWorkflowMethods:
         }
         if state:
             params["state"] = state
-        if all_items:
-            params["all"] = True
         return ProcessingClaimPageDocument.model_validate(
             self._json("GET", "/v1/collection-processing-claims", params=params)
         )
+
+    @contextmanager
+    def stream_processing_claims(
+        self,
+        *,
+        state: ClaimState | None = None,
+        sort: _ClaimSort = "updated_at",
+        order: _SortOrder = "desc",
+    ) -> Iterator[Iterator[ProcessingClaimDocument]]:
+        normalized_sort = _one_of(
+            sort,
+            frozenset(
+                {"created_at", "updated_at", "expires_at", "state", "work_id", "execution_id"}
+            ),
+            "processing-claim sort",
+        )
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        if state:
+            params["state"] = state
+        with self._stream_json_objects(
+            "/v1/collection-processing-claims/stream",
+            query={"state": state, "sort": normalized_sort, "order": normalized_order},
+            params=params,
+            schema_id="riverhog.collection-processing-claim/v1",
+        ) as items:
+            yield (ProcessingClaimDocument.model_validate(item) for item in items)
 
     def renew_processing_claim(
         self,

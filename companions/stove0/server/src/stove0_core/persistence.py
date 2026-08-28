@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from sqlalchemy import (
+    BigInteger,
+    ForeignKey,
     Index,
     Integer,
     String,
@@ -28,7 +30,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.sql import Select
-from state_schema import StateSchema, assert_schema_matches_metadata
+from state_schema import StateSchema, assert_schema_matches_metadata, read_snapshot
 from stove0_operator_contracts import (
     BRANCH_SET_ADMITTED,
     EVALUATION_CREATED,
@@ -41,7 +43,14 @@ from stove0_operator_contracts import (
     parse_stove0_event,
     stove0_event,
 )
-from stove0_protocol import ArtifactSelection, BranchSetDecision, JoinPlan, branch_work
+from stove0_protocol import (
+    ArtifactSelection,
+    ArtifactSelectionRef,
+    ArtifactSubject,
+    BranchSetDecision,
+    JoinPlan,
+    branch_work,
+)
 from time_formats import utc_timestamp_now
 
 from stove0_core.evaluation import (
@@ -82,6 +91,19 @@ class _ArtifactSelectionRow(_Base):
     __tablename__ = "stove0_artifact_selections"
 
     selection_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    artifact_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class _ArtifactSelectionMemberRow(_Base):
+    __tablename__ = "stove0_artifact_selection_members"
+
+    selection_sha256: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_artifact_selections.selection_sha256", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
     document_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
@@ -423,7 +445,49 @@ class SqlAlchemyStateStore:
     def load_selection(self, selection_sha256: str) -> ArtifactSelection | None:
         with self.sessions() as session:
             row = session.get(_ArtifactSelectionRow, selection_sha256)
-            return None if row is None else ArtifactSelection.model_validate_json(row.document_json)
+            if row is None:
+                return None
+            members = session.scalars(
+                select(_ArtifactSelectionMemberRow)
+                .where(_ArtifactSelectionMemberRow.selection_sha256 == selection_sha256)
+                .order_by(_ArtifactSelectionMemberRow.ordinal)
+            )
+            return _selection_from_rows(row, members)
+
+    def load_selection_ref(self, selection_sha256: str) -> ArtifactSelectionRef | None:
+        with self.sessions() as session:
+            row = session.get(_ArtifactSelectionRow, selection_sha256)
+            return None if row is None else _selection_ref(row)
+
+    def selection_artifact_page(
+        self,
+        selection_sha256: str,
+        *,
+        offset: int,
+        limit: int,
+    ) -> tuple[ArtifactSubject, ...]:
+        if offset < 0 or limit < 1 or limit > 1000:
+            raise ValueError("artifact selection page is invalid")
+        with self.sessions() as session:
+            rows = session.scalars(
+                select(_ArtifactSelectionMemberRow)
+                .where(_ArtifactSelectionMemberRow.selection_sha256 == selection_sha256)
+                .order_by(_ArtifactSelectionMemberRow.ordinal)
+                .offset(offset)
+                .limit(limit)
+            )
+            return tuple(ArtifactSubject.model_validate_json(row.document_json) for row in rows)
+
+    def iter_selection_artifacts(self, selection_sha256: str) -> Iterator[ArtifactSubject]:
+        statement = (
+            select(_ArtifactSelectionMemberRow)
+            .where(_ArtifactSelectionMemberRow.selection_sha256 == selection_sha256)
+            .order_by(_ArtifactSelectionMemberRow.ordinal)
+            .execution_options(yield_per=100)
+        )
+        with read_snapshot(self.sessions) as session:
+            for row in session.scalars(statement):
+                yield ArtifactSubject.model_validate_json(row.document_json)
 
     def list_work(
         self,
@@ -434,24 +498,9 @@ class SqlAlchemyStateStore:
         query: str | None = None,
         sort: WorkSort = "updated_at",
         order: SortOrder = "desc",
-        all_items: bool = False,
     ) -> dict[str, object]:
         _pagination(page, per_page)
-        columns = {
-            "updated_at": _WorkRow.updated_at,
-            "phase": _WorkRow.phase,
-            "work_id": _WorkRow.work_id,
-        }
-        filters = []
-        if phase:
-            filters.append(_WorkRow.phase == phase)
-        if query:
-            filters.append(_WorkRow.work_id.contains(query.strip().casefold()))
-        statement = select(_WorkRow).where(*filters)
-        statement = statement.order_by(
-            (desc if order == "desc" else asc)(columns[sort]),
-            asc(_WorkRow.work_id),
-        )
+        filters, statement = _work_list_statement(phase=phase, query=query, sort=sort, order=order)
         with self.sessions() as session:
             total = int(
                 session.scalar(
@@ -461,8 +510,7 @@ class SqlAlchemyStateStore:
                 )
                 or 0
             )
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             records = [
                 WorkRecord.model_validate_json(row.document_json)
                 for row in session.scalars(statement)
@@ -475,9 +523,21 @@ class SqlAlchemyStateStore:
             total=total,
             sort=sort,
             order=order,
-            all_items=all_items,
             filters={"phase": phase, "query": query},
         )
+
+    def iter_work(
+        self,
+        *,
+        phase: str | None = None,
+        query: str | None = None,
+        sort: WorkSort = "updated_at",
+        order: SortOrder = "desc",
+    ) -> Iterator[WorkRecord]:
+        _, statement = _work_list_statement(phase=phase, query=query, sort=sort, order=order)
+        with read_snapshot(self.sessions) as session:
+            for row in session.scalars(statement.execution_options(yield_per=100)):
+                yield WorkRecord.model_validate_json(row.document_json)
 
     def scan_work(
         self,
@@ -643,12 +703,26 @@ class SqlAlchemyStateStore:
                 for row in selection_rows
                 if row.selection_sha256 not in referenced_selections
             }
+            removed_selection_members = (
+                list(
+                    session.scalars(
+                        select(_ArtifactSelectionMemberRow).where(
+                            _ArtifactSelectionMemberRow.selection_sha256.in_(removed_selection_ids)
+                        )
+                    )
+                )
+                if removed_selection_ids
+                else []
+            )
             selection_bytes = sum(
-                len(row.document_json.encode("utf-8"))
-                for row in selection_rows
-                if row.selection_sha256 in removed_selection_ids
+                len(row.document_json.encode("utf-8")) for row in removed_selection_members
             )
             if removed_selection_ids:
+                session.execute(
+                    delete(_ArtifactSelectionMemberRow).where(
+                        _ArtifactSelectionMemberRow.selection_sha256.in_(removed_selection_ids)
+                    )
+                )
                 session.execute(
                     delete(_ArtifactSelectionRow).where(
                         _ArtifactSelectionRow.selection_sha256.in_(removed_selection_ids)
@@ -696,26 +770,10 @@ class SqlAlchemyStateStore:
         query: str | None = None,
         sort: EvaluationSort = "updated_at",
         order: SortOrder = "desc",
-        all_items: bool = False,
     ) -> dict[str, object]:
         _pagination(page, per_page)
-        columns = {
-            "updated_at": _EvaluationRow.updated_at,
-            "phase": _EvaluationRow.phase,
-            "evaluation_id": _EvaluationRow.evaluation_id,
-        }
-        filters = []
-        if phase:
-            filters.append(_EvaluationRow.phase == phase)
-        if query:
-            filters.append(_EvaluationRow.evaluation_id.contains(query.strip().casefold()))
-        statement = (
-            select(_EvaluationRow)
-            .where(*filters)
-            .order_by(
-                (desc if order == "desc" else asc)(columns[sort]),
-                asc(_EvaluationRow.evaluation_id),
-            )
+        filters, statement = _evaluation_list_statement(
+            phase=phase, query=query, sort=sort, order=order
         )
         with self.sessions() as session:
             total = int(
@@ -726,8 +784,7 @@ class SqlAlchemyStateStore:
                 )
                 or 0
             )
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             records = [
                 EvaluationRecord.model_validate_json(row.document_json)
                 for row in session.scalars(statement)
@@ -740,9 +797,21 @@ class SqlAlchemyStateStore:
             total=total,
             sort=sort,
             order=order,
-            all_items=all_items,
             filters={"phase": phase, "query": query},
         )
+
+    def iter_evaluations(
+        self,
+        *,
+        phase: str | None = None,
+        query: str | None = None,
+        sort: EvaluationSort = "updated_at",
+        order: SortOrder = "desc",
+    ) -> Iterator[EvaluationRecord]:
+        _, statement = _evaluation_list_statement(phase=phase, query=query, sort=sort, order=order)
+        with read_snapshot(self.sessions) as session:
+            for row in session.scalars(statement.execution_options(yield_per=100)):
+                yield EvaluationRecord.model_validate_json(row.document_json)
 
     def create_evaluation(self, record: EvaluationRecord) -> EvaluationRecord:
         encoded = _encode(record.model_dump(mode="json", by_alias=True, exclude_none=True))
@@ -948,24 +1017,73 @@ def _insert_or_verify_selection(
     session: Session,
     selection: ArtifactSelection,
 ) -> None:
-    encoded = _encode(selection.model_dump(mode="json", by_alias=True, exclude_none=True))
     table = cast(Table, _ArtifactSelectionRow.__table__)
     values = {
         "selection_sha256": selection.selection_sha256,
-        "document_json": encoded,
+        "artifact_count": selection.artifact_count,
+        "total_bytes": selection.total_bytes,
     }
     dialect = session.get_bind().dialect.name
     if dialect == "postgresql":
-        session.execute(postgresql_insert(table).values(**values).on_conflict_do_nothing())
+        inserted = session.scalar(
+            postgresql_insert(table)
+            .values(**values)
+            .on_conflict_do_nothing()
+            .returning(table.c.selection_sha256)
+        )
     elif dialect == "sqlite":
-        session.execute(sqlite_insert(table).values(**values).on_conflict_do_nothing())
+        inserted = session.scalar(
+            sqlite_insert(table)
+            .values(**values)
+            .on_conflict_do_nothing()
+            .returning(table.c.selection_sha256)
+        )
     else:
         raise RuntimeError(f"unsupported Stove0 state database dialect: {dialect}")
+    if inserted is not None:
+        session.add_all(
+            _ArtifactSelectionMemberRow(
+                selection_sha256=selection.selection_sha256,
+                ordinal=ordinal,
+                document_json=_encode(
+                    artifact.model_dump(mode="json", by_alias=True, exclude_none=True)
+                ),
+            )
+            for ordinal, artifact in enumerate(selection.artifacts)
+        )
+        session.flush()
     existing = session.get(_ArtifactSelectionRow, selection.selection_sha256)
     if existing is None:
         raise RuntimeError("stove0 artifact selection disappeared during admission")
-    if ArtifactSelection.model_validate_json(existing.document_json) != selection:
+    members = session.scalars(
+        select(_ArtifactSelectionMemberRow)
+        .where(_ArtifactSelectionMemberRow.selection_sha256 == selection.selection_sha256)
+        .order_by(_ArtifactSelectionMemberRow.ordinal)
+    )
+    if _selection_from_rows(existing, members) != selection:
         raise ConcurrentWorkUpdate("artifact selection identity was reused")
+
+
+def _selection_ref(row: _ArtifactSelectionRow) -> ArtifactSelectionRef:
+    return ArtifactSelectionRef(
+        selection_sha256=row.selection_sha256,
+        artifact_count=row.artifact_count,
+        total_bytes=row.total_bytes,
+    )
+
+
+def _selection_from_rows(
+    row: _ArtifactSelectionRow,
+    members: Iterator[_ArtifactSelectionMemberRow],
+) -> ArtifactSelection:
+    return ArtifactSelection(
+        artifacts=tuple(
+            ArtifactSubject.model_validate_json(member.document_json) for member in members
+        ),
+        artifact_count=row.artifact_count,
+        total_bytes=row.total_bytes,
+        selection_sha256=row.selection_sha256,
+    )
 
 
 def _insert_work_atomically(
@@ -1098,6 +1216,62 @@ def _contains_secret_field(value: object) -> bool:
     return False
 
 
+def _work_list_statement(
+    *,
+    phase: str | None,
+    query: str | None,
+    sort: WorkSort,
+    order: SortOrder,
+) -> tuple[list[Any], Select[tuple[_WorkRow]]]:
+    columns = {
+        "updated_at": _WorkRow.updated_at,
+        "phase": _WorkRow.phase,
+        "work_id": _WorkRow.work_id,
+    }
+    filters = []
+    if phase:
+        filters.append(_WorkRow.phase == phase)
+    if query:
+        filters.append(_WorkRow.work_id.contains(query.strip().casefold()))
+    statement = (
+        select(_WorkRow)
+        .where(*filters)
+        .order_by(
+            (desc if order == "desc" else asc)(columns[sort]),
+            asc(_WorkRow.work_id),
+        )
+    )
+    return filters, statement
+
+
+def _evaluation_list_statement(
+    *,
+    phase: str | None,
+    query: str | None,
+    sort: EvaluationSort,
+    order: SortOrder,
+) -> tuple[list[Any], Select[tuple[_EvaluationRow]]]:
+    columns = {
+        "updated_at": _EvaluationRow.updated_at,
+        "phase": _EvaluationRow.phase,
+        "evaluation_id": _EvaluationRow.evaluation_id,
+    }
+    filters = []
+    if phase:
+        filters.append(_EvaluationRow.phase == phase)
+    if query:
+        filters.append(_EvaluationRow.evaluation_id.contains(query.strip().casefold()))
+    statement = (
+        select(_EvaluationRow)
+        .where(*filters)
+        .order_by(
+            (desc if order == "desc" else asc)(columns[sort]),
+            asc(_EvaluationRow.evaluation_id),
+        )
+    )
+    return filters, statement
+
+
 def _pagination(page: int, per_page: int) -> None:
     if page < 1 or per_page < 1 or per_page > 100:
         raise ValueError("stove0 pagination is invalid")
@@ -1112,14 +1286,13 @@ def _page(
     total: int,
     sort: str,
     order: str,
-    all_items: bool,
     filters: dict[str, object],
 ) -> dict[str, object]:
     return {
-        "page": 1 if all_items else page,
-        "per_page": total if all_items else per_page,
+        "page": page,
+        "per_page": per_page,
         "total": total,
-        "pages": (1 if total else 0) if all_items else (total + per_page - 1) // per_page,
+        "pages": (total + per_page - 1) // per_page,
         "sort": sort,
         "order": order,
         "filters": filters,
@@ -1138,14 +1311,13 @@ def _model_page(
     total: int,
     sort: str,
     order: str,
-    all_items: bool,
     filters: dict[str, object],
 ) -> dict[str, object]:
     return {
-        "page": 1 if all_items else page,
-        "per_page": total if all_items else per_page,
+        "page": page,
+        "per_page": per_page,
         "total": total,
-        "pages": (1 if total else 0) if all_items else (total + per_page - 1) // per_page,
+        "pages": (total + per_page - 1) // per_page,
         "sort": sort,
         "order": order,
         "filters": filters,

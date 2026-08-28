@@ -23,6 +23,12 @@ from riverhog_api.auth import (
     CollectionDeleter,
     CollectionUploadReader,
 )
+from riverhog_api.complete_enumeration import (
+    CompleteEnumerationResponse,
+    bounded_list_operation,
+    complete_enumeration_operation,
+    complete_enumeration_response,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_collection, map_collection_list_page
 from riverhog_api.schemas.collections import (
@@ -31,6 +37,8 @@ from riverhog_api.schemas.collections import (
     CollectionSummaryOut,
     CollectionUploadDiscardPlanOut,
     CollectionUploadDiscardResultOut,
+    CollectionUploadFileOut,
+    CollectionUploadListItemOut,
     CollectionUploadProvenanceJournalOut,
     CollectionUploadSessionFilesRegistrationOut,
     CollectionUploadSessionOut,
@@ -86,7 +94,11 @@ _PROVENANCE_JOURNAL_RESPONSE: dict[int | str, dict[str, Any]] = {
 }
 
 
-@router.get("/collections", response_model=ListCollectionsResponse)
+@router.get(
+    "/collections",
+    response_model=ListCollectionsResponse,
+    openapi_extra=bounded_list_operation(paired_operation_id="stream_collections"),
+)
 def list_collections(
     container: ContainerDep,
     principal: CatalogReader,
@@ -95,7 +107,6 @@ def list_collections(
     q: str | None = Query(None),
     sort: Annotated[CollectionSort, Query()] = "id",
     order: Annotated[SortOrder, Query()] = "asc",
-    all_items: bool = Query(False, alias="all"),
     tag: Annotated[CanonicalTag | None, Query()] = None,
     encryption_format: str | None = Query(None),
     passphrase_id: str | None = Query(None),
@@ -109,15 +120,60 @@ def list_collections(
         passphrase_id=passphrase_id,
         sort=sort,
         order=order,
-        all_items=all_items,
         principal=principal,
     )
     return ListCollectionsResponse.model_validate(map_collection_list_page(summary))
 
 
 @router.get(
+    "/collections/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_collections",
+        item_type=CollectionSummaryOut,
+        schema_id="riverhog.collection-summary/v1",
+    ),
+)
+def stream_collections(
+    container: ContainerDep,
+    principal: CatalogReader,
+    q: str | None = Query(None),
+    sort: Annotated[CollectionSort, Query()] = "id",
+    order: Annotated[SortOrder, Query()] = "asc",
+    tag: Annotated[CanonicalTag | None, Query()] = None,
+    encryption_format: str | None = Query(None),
+    passphrase_id: str | None = Query(None),
+) -> Response:
+    query = {
+        "q": q,
+        "sort": sort,
+        "order": order,
+        "tag": tag,
+        "encryption_format": encryption_format,
+        "passphrase_id": passphrase_id,
+    }
+    summaries = container.collections.iter_collections(
+        q=q,
+        tag=tag,
+        encryption_format=encryption_format,
+        passphrase_id=passphrase_id,
+        sort=sort,
+        order=order,
+        principal=principal,
+    )
+    items = (CollectionSummaryOut.model_validate(map_collection(item)) for item in summaries)
+    return complete_enumeration_response(
+        items,
+        query=query,
+        item_type=CollectionSummaryOut,
+        schema_id="riverhog.collection-summary/v1",
+    )
+
+
+@router.get(
     "/collection-upload-sessions",
     response_model=ListCollectionUploadSessionsResponse,
+    openapi_extra=bounded_list_operation(paired_operation_id="stream_collection_upload_sessions"),
 )
 def list_collection_upload_sessions(
     container: ContainerDep,
@@ -129,7 +185,6 @@ def list_collection_upload_sessions(
     state: Annotated[CollectionUploadState | None, Query()] = None,
     sort: Annotated[CollectionUploadSort, Query()] = "created_at",
     order: Annotated[SortOrder, Query()] = "desc",
-    all_items: bool = Query(False, alias="all"),
 ) -> ListCollectionUploadSessionsResponse:
     return ListCollectionUploadSessionsResponse.model_validate(
         container.collection_uploads.list(
@@ -140,9 +195,43 @@ def list_collection_upload_sessions(
             state=state,
             sort=sort,
             order=order,
-            all_items=all_items,
             principal=principal,
         )
+    )
+
+
+@router.get(
+    "/collection-upload-sessions/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_collection_upload_sessions",
+        item_type=CollectionUploadListItemOut,
+        schema_id="riverhog.collection-upload-session-summary/v1",
+    ),
+)
+def stream_collection_upload_sessions(
+    container: ContainerDep,
+    principal: CollectionUploadReader,
+    q: str | None = Query(None),
+    tag: Annotated[CanonicalTag | None, Query()] = None,
+    state: Annotated[CollectionUploadState | None, Query()] = None,
+    sort: Annotated[CollectionUploadSort, Query()] = "created_at",
+    order: Annotated[SortOrder, Query()] = "desc",
+) -> Response:
+    query = {"q": q, "tag": tag, "state": state, "sort": sort, "order": order}
+    items = container.collection_uploads.iter_uploads(
+        q=q,
+        tag=tag,
+        state=state,
+        sort=sort,
+        order=order,
+        principal=principal,
+    )
+    return complete_enumeration_response(
+        items,
+        query=query,
+        item_type=CollectionUploadListItemOut,
+        schema_id="riverhog.collection-upload-session-summary/v1",
     )
 
 
@@ -255,6 +344,9 @@ def export_collection_upload_session_provenance_journal(
 @router.get(
     "/collection-upload-sessions/{collection_id}/files",
     response_model=ListCollectionUploadSessionFilesResponse,
+    openapi_extra=bounded_list_operation(
+        paired_operation_id="stream_collection_upload_session_files"
+    ),
 )
 def list_collection_upload_session_files(
     collection_id: CollectionIdParameter,
@@ -262,16 +354,37 @@ def list_collection_upload_session_files(
     principal: CollectionUploadReader,
     page: int = Query(1, ge=1),
     per_page: int = Query(25, ge=1, le=100),
-    all_items: bool = Query(False, alias="all"),
 ) -> ListCollectionUploadSessionFilesResponse:
     container.collection_uploads.require_read_access(collection_id, principal)
     payload = container.collection_uploads.list_files(
         collection_id,
         page=page,
         per_page=per_page,
-        all_items=all_items,
     )
     return ListCollectionUploadSessionFilesResponse.model_validate(payload)
+
+
+@router.get(
+    "/collection-upload-sessions/{collection_id}/files/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_collection_upload_session_files",
+        item_type=CollectionUploadFileOut,
+        schema_id="riverhog.collection-upload-file/v1",
+    ),
+)
+def stream_collection_upload_session_files(
+    collection_id: CollectionIdParameter,
+    container: ContainerDep,
+    principal: CollectionUploadReader,
+) -> Response:
+    container.collection_uploads.require_read_access(collection_id, principal)
+    return complete_enumeration_response(
+        container.collection_uploads.iter_files(collection_id),
+        query={"collection_id": collection_id},
+        item_type=CollectionUploadFileOut,
+        schema_id="riverhog.collection-upload-file/v1",
+    )
 
 
 @router.post(

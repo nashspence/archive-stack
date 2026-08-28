@@ -951,7 +951,7 @@ def test_sql_operational_retention_prunes_only_complete_expired_components(
     assert pruned["work_bytes"] > 0
     assert pruned["selections"] == 1
     assert pruned["events"] > 0
-    assert store.list_work(all_items=True)["total"] == 0
+    assert store.list_work()["total"] == 0
     assert store.load_selection(selection.selection_sha256) is None
 
 

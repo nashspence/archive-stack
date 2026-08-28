@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from riverhog_application_access import ApplicationKeyId, ApplicationName
 from riverhog_protocol import DownloadQuotaSort, SortOrder
 from riverhog_protocol.errors import Forbidden
 
 from riverhog_api.auth import QuotaManager, RetrievalManager
+from riverhog_api.complete_enumeration import (
+    CompleteEnumerationResponse,
+    bounded_list_operation,
+    complete_enumeration_operation,
+    complete_enumeration_response,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.quotas import (
     KeyDownloadQuotaListOut,
@@ -30,7 +36,11 @@ def get_download_quota(
     )
 
 
-@router.get("/download-quotas", response_model=KeyDownloadQuotaListOut)
+@router.get(
+    "/download-quotas",
+    response_model=KeyDownloadQuotaListOut,
+    openapi_extra=bounded_list_operation(paired_operation_id="stream_download_quotas"),
+)
 def list_download_quotas(
     container: ContainerDep,
     _principal: QuotaManager,
@@ -41,7 +51,6 @@ def list_download_quotas(
     q: str | None = Query(None),
     app: Annotated[ApplicationName | None, Query()] = None,
     active: bool | None = Query(None),
-    all_items: bool = Query(False, alias="all"),
 ) -> KeyDownloadQuotaListOut:
     return KeyDownloadQuotaListOut.model_validate(
         container.download_quotas.list_key_quotas(
@@ -52,8 +61,36 @@ def list_download_quotas(
             order=order,
             app=app,
             active=active,
-            all_items=all_items,
         )
+    )
+
+
+@router.get(
+    "/download-quotas/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_download_quotas",
+        item_type=KeyDownloadQuotaOut,
+        schema_id="riverhog.key-download-quota/v1",
+    ),
+)
+def stream_download_quotas(
+    container: ContainerDep,
+    _principal: QuotaManager,
+    sort: Annotated[DownloadQuotaSort, Query()] = "app",
+    order: Annotated[SortOrder, Query()] = "asc",
+    q: str | None = Query(None),
+    app: Annotated[ApplicationName | None, Query()] = None,
+    active: bool | None = Query(None),
+) -> Response:
+    query = {"q": q, "sort": sort, "order": order, "app": app, "active": active}
+    return complete_enumeration_response(
+        container.download_quotas.iter_key_quotas(
+            q=q, sort=sort, order=order, app=app, active=active
+        ),
+        query=query,
+        item_type=KeyDownloadQuotaOut,
+        schema_id="riverhog.key-download-quota/v1",
     )
 
 

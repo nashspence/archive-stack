@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast, get_type_hints
@@ -106,6 +107,9 @@ class _LifecycleState:
             "work": records,
         }
 
+    def iter_work(self, **_kwargs: object) -> Iterator[WorkRecord]:
+        return iter(()) if self.work_record is None else iter((self.work_record,))
+
     def load(self, work_id: str) -> WorkRecord | None:
         if self.work_record is not None and self.work_record.work_id == work_id:
             return self.work_record
@@ -123,6 +127,9 @@ class _LifecycleState:
             "evaluations": [self.evaluation_record],
         }
 
+    def iter_evaluations(self, **_kwargs: object) -> Iterator[EvaluationRecord]:
+        return iter((self.evaluation_record,))
+
     def load_evaluation(self, evaluation_id: str) -> EvaluationRecord | None:
         if self.evaluation_record.evaluation_id == evaluation_id:
             return self.evaluation_record
@@ -131,6 +138,18 @@ class _LifecycleState:
     def load_selection(self, selection_sha256: str) -> ArtifactSelection | None:
         selection = _fixture_selection(_fixture_work())
         return selection if selection.selection_sha256 == selection_sha256 else None
+
+    def load_selection_ref(self, selection_sha256: str):  # type: ignore[no-untyped-def]
+        selection = self.load_selection(selection_sha256)
+        return None if selection is None else selection.ref()
+
+    def selection_artifact_page(self, selection_sha256: str, *, offset: int, limit: int):  # type: ignore[no-untyped-def]
+        selection = self.load_selection(selection_sha256)
+        return () if selection is None else selection.artifacts[offset : offset + limit]
+
+    def iter_selection_artifacts(self, selection_sha256: str):  # type: ignore[no-untyped-def]
+        selection = self.load_selection(selection_sha256)
+        return iter(()) if selection is None else iter(selection.artifacts)
 
     def load_cursor(self, _stream: str) -> None:
         return None
@@ -532,8 +551,9 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert recipe_page.catalog_sha256
         assert recipe_page.recipes[0].sha256
         assert client.get_recipe("stove0.conformance-media/v1").sha256
-        listed = client.list_work(all_items=True)
-        assert listed.total == 0
+        assert client.list_work().total == 0
+        with client.stream_work() as streamed_work:
+            assert list(streamed_work) == []
         preview = client.preview_workflow("stove0.conformance-media/v1", [1])
         created = client.create_work(
             "stove0.conformance-media/v1",
@@ -546,11 +566,15 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
         assert client.inspect_work_coordination(created.work_id).branch_set_succeeded is False
         selection = _fixture_selection(_fixture_work())
         assert client.get_artifact_selection(selection.selection_sha256).total == 1
+        with client.stream_artifact_selection(selection.selection_sha256) as artifacts:
+            assert len(list(artifacts)) == 1
         assert client.step_work(created.work_id).phase == "claimed"
         assert client.retry_work(created.work_id).phase == "eligible"
         assert client.cancel_work(created.work_id).phase == "canceled"
         assert preview.state == "ready"
-        assert client.list_evaluations(all_items=True).total == 1
+        assert client.list_evaluations().total == 1
+        with client.stream_evaluations() as evaluations:
+            assert len(list(evaluations)) == 1
         assert (
             client.create_evaluation(definition.model_dump(mode="json")).evaluation_id
             == evaluation_id
@@ -579,7 +603,7 @@ def test_stove0_official_client_positive_disposable_lifecycle() -> None:
 
 def test_every_stove0_api_operation_has_one_current_official_client_method() -> None:
     operations = _operations()
-    assert len(operations) == 21
+    assert len(operations) == 24
     assert {
         operation_id
         for operation_id in operations
@@ -611,6 +635,13 @@ def test_every_stove0_operation_publishes_an_exact_response_schema() -> None:
                 for status, response in operation["responses"].items()
                 if 200 <= int(status) < 300
             )
+            read_collection = operation.get("x-riverhog-read-collection")
+            if (
+                isinstance(read_collection, dict)
+                and read_collection.get("kind") == "complete-enumeration"
+            ):
+                assert set(success["content"]) == {"application/json-seq"}
+                continue
             response_schema = success["content"]["application/json"]["schema"]
             reference = response_schema.get("$ref")
             assert isinstance(reference, str), (method, path, response_schema)
@@ -720,10 +751,10 @@ def test_stove0_openapi_uses_conventional_errors_health_and_paging() -> None:
         assert {item["name"] for item in operation["parameters"]} >= {
             "page",
             "per_page",
-            "all",
             "sort",
             "order",
         }
+        assert "all" not in {item["name"] for item in operation["parameters"]}
         assert operation["responses"]["200"]["content"]["application/json"]["schema"][
             "$ref"
         ].startswith("#/components/schemas/")
@@ -732,8 +763,8 @@ def test_stove0_openapi_uses_conventional_errors_health_and_paging() -> None:
         "selection_sha256",
         "page",
         "per_page",
-        "all",
     }
+    assert "all" not in {item["name"] for item in selection["parameters"]}
     assert selection["responses"]["200"]["content"]["application/json"]["schema"][
         "$ref"
     ].startswith("#/components/schemas/")

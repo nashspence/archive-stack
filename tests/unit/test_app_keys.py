@@ -242,21 +242,20 @@ def test_rotation_preserves_access_and_access_lists_are_pipeable(tmp_path: Path)
     assert rotated["monthly_download_quota_bytes"] == 123
     assert service.authenticate(str(created["token"])) is None
 
-    listed = service.list_access(
-        app="review",
-        key_id=str(created["id"]),
-        page=1,
-        per_page=25,
-        q="retrieval",
-        sort="permission",
-        order="asc",
-        all_items=True,
+    listed = list(
+        service.iter_access(
+            app="review",
+            key_id=str(created["id"]),
+            q="retrieval",
+            sort="permission",
+            order="asc",
+        )
     )
-    assert listed["total"] == 1
-    assert listed["access"][0]["app"] == "review"
-    assert listed["access"][0]["key_id"] == created["id"]
-    assert listed["access"][0]["permission"] == "retrieval:manage"
-    assert listed["access"][0]["resource"] == "tag:photos"
+    assert len(listed) == 1
+    assert listed[0]["app"] == "review"
+    assert listed[0]["key_id"] == created["id"]
+    assert listed[0]["permission"] == "retrieval:manage"
+    assert listed[0]["resource"] == "tag:photos"
 
 
 def test_access_targets_must_exist(tmp_path: Path) -> None:

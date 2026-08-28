@@ -274,7 +274,6 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
                 "expires_after": None,
                 "sort": "cached_at",
                 "order": "desc",
-                "all_items": False,
             },
         ),
         (
@@ -292,7 +291,6 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
                 "expires_after": None,
                 "sort": "cached_at",
                 "order": "desc",
-                "all_items": False,
             },
         ),
         ("show", (42, "deep", "pack-000000000000")),

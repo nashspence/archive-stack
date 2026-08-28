@@ -197,18 +197,17 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
         ),
         artifact_scope=frozenset({(1, "derivative.tar")}),
     )
-    listed = service.list_files(
-        1,
-        page=1,
-        per_page=25,
-        q=None,
-        status=None,
-        sort="path",
-        order="asc",
-        all_items=True,
-        principal=scoped,
+    listed = list(
+        service.iter_files(
+            1,
+            q=None,
+            status=None,
+            sort="path",
+            order="asc",
+            principal=scoped,
+        )
     )
-    assert [item["path"] for item in listed["files"]] == ["derivative.tar"]
+    assert [item["path"] for item in listed] == ["derivative.tar"]
     scoped_trace = service.trace_file(1, "derivative.tar", principal=scoped)
     assert {item["journal_id"] for item in scoped_trace["journals"]} == {
         derivative_summary.journal_id,

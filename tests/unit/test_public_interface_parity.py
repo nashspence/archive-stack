@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
 import riverhog_api_client
+import riverhog_api_client.client as riverhog_client_module
+import stove0_api_client.client as stove0_client_module
 from fastapi import FastAPI
 from http_api_contracts import (
+    COMPLETE_ENUMERATION_FORMAT,
     ERROR_STATUS_BY_CODE,
+    JSON_SEQUENCE_MEDIA_TYPE,
     safe_http_base_url,
 )
 from http_api_contracts import (
@@ -60,6 +66,7 @@ from scripts.operation_qualification import (
 )
 
 HTTP_METHODS = {"delete", "get", "patch", "post", "put"}
+REPO_ROOT = Path(__file__).resolve().parents[2]
 OPERATION_ERROR_CODES = {
     "riverhog": RIVERHOG_OPERATION_ERROR_CODES,
     "stove0": STOVE0_OPERATION_ERROR_CODES,
@@ -323,35 +330,181 @@ def test_riverhog_client_exports_the_canonical_public_access_types() -> None:
     assert TypeAdapter(ApplicationResource).json_schema()
 
 
+READ_COLLECTION_OPERATIONS = {
+    "riverhog": {
+        "bounded-list": {
+            "list_app_key_access",
+            "list_app_keys",
+            "list_apps",
+            "list_archive_copy_jobs",
+            "list_archive_stores",
+            "list_collection_provenance",
+            "list_collection_upload_session_files",
+            "list_collection_upload_sessions",
+            "list_collections",
+            "list_download_quotas",
+            "list_processing_claims",
+            "list_retrieval_cache_objects",
+            "list_tags",
+            "search",
+        },
+        "complete-enumeration": {
+            "stream_app_key_access",
+            "stream_app_keys",
+            "stream_apps",
+            "stream_archive_copy_jobs",
+            "stream_archive_stores",
+            "stream_collection_provenance",
+            "stream_collection_upload_session_files",
+            "stream_collection_upload_sessions",
+            "stream_collections",
+            "stream_download_quotas",
+            "stream_processing_claims",
+            "stream_retrieval_cache_objects",
+            "stream_search",
+            "stream_tags",
+        },
+        "cursor-feed": {"list_lifecycle_events", "resourcesync_change_list"},
+    },
+    "stove0": {
+        "bounded-list": {
+            "get_artifact_selection",
+            "list_evaluations",
+            "list_work",
+        },
+        "complete-enumeration": {
+            "stream_artifact_selection",
+            "stream_evaluations",
+            "stream_work",
+        },
+        "cursor-feed": {"list_events"},
+    },
+}
+
+
+def _http_operations(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        operation["operationId"]: operation
+        for path_item in schema["paths"].values()
+        for method, operation in path_item.items()
+        if method in HTTP_METHODS
+    }
+
+
+def _parameters(operation: dict[str, Any], *, exclude: set[str] | None = None) -> dict[str, Any]:
+    omitted = exclude or set()
+    return {
+        f"{parameter['in']}:{parameter['name']}": parameter
+        for parameter in operation.get("parameters", [])
+        if parameter["name"] not in omitted
+    }
+
+
 @pytest.mark.parametrize(
-    "app_factory",
-    (create_riverhog_app, create_stove0_contract_app),
+    ("application", "app_factory", "client_schemas"),
+    (
+        (
+            "riverhog",
+            create_riverhog_app,
+            riverhog_client_module._STREAM_ITEM_SCHEMAS,
+        ),
+        (
+            "stove0",
+            create_stove0_contract_app,
+            stove0_client_module._STREAM_ITEM_SCHEMAS,
+        ),
+    ),
 )
-def test_paged_lists_use_the_shared_parameter_and_response_envelope(
+def test_public_read_collection_selectors_are_complete_paired_and_frozen(
+    application: str,
     app_factory: Callable[[], FastAPI],
+    client_schemas: dict[str, Any],
 ) -> None:
     schema = app_factory().openapi()
-    components = schema["components"]["schemas"]
-    paged_operations = 0
-    for path, path_item in schema["paths"].items():
-        if not path.startswith("/v1") or "get" not in path_item:
+    operations = _http_operations(schema)
+    classified: dict[str, set[str]] = {
+        "bounded-list": set(),
+        "complete-enumeration": set(),
+        "cursor-feed": set(),
+    }
+
+    for operation_id, operation in operations.items():
+        parameter_names = {item["name"] for item in operation.get("parameters", [])}
+        assert "all" not in parameter_names, operation_id
+        classification = operation.get("x-riverhog-read-collection")
+        if classification is None:
+            assert not {"page", "per_page"} <= parameter_names, operation_id
+            assert "after" not in parameter_names, operation_id
+            success_media = set(operation.get("responses", {}).get("200", {}).get("content", {}))
+            assert not (
+                operation_id.startswith("stream_") and JSON_SEQUENCE_MEDIA_TYPE in success_media
+            ), operation_id
             continue
-        operation = path_item["get"]
-        response_schema = (
-            operation["responses"]
-            .get("200", {})
-            .get("content", {})
-            .get("application/json", {})
-            .get("schema", {})
-        )
-        response_name = str(response_schema.get("$ref") or "").rsplit("/", 1)[-1]
-        response_properties = components.get(response_name, {}).get("properties", {})
-        if not {"page", "pages", "per_page", "total"} <= response_properties.keys():
+        kind = classification["kind"]
+        classified[kind].add(operation_id)
+        if kind == "cursor-feed":
+            assert classification["cursor_parameter"] in parameter_names
+            limit = classification.get("limit_parameter")
+            if limit is not None:
+                parameter = next(item for item in operation["parameters"] if item["name"] == limit)
+                assert parameter["schema"]["maximum"] >= 1
+            else:
+                assert classification["fixed_limit"] >= 1
             continue
-        paged_operations += 1
-        parameter_names = {parameter["name"] for parameter in operation.get("parameters", [])}
-        assert {"page", "per_page", "all"} <= parameter_names, path
-    assert paged_operations > 0
+        paired = operations[classification["paired_operation_id"]]
+        if kind == "bounded-list":
+            assert {"page", "per_page"} <= parameter_names
+            per_page = next(item for item in operation["parameters"] if item["name"] == "per_page")
+            assert per_page["schema"]["maximum"] >= 1
+            assert _parameters(operation, exclude={"page", "per_page"}) == _parameters(paired)
+            assert paired["x-riverhog-read-collection"]["paired_operation_id"] == operation_id
+            continue
+        assert kind == "complete-enumeration"
+        assert {"page", "per_page", "all"}.isdisjoint(parameter_names)
+        assert _parameters(operation) == _parameters(paired, exclude={"page", "per_page"})
+        assert classification["format"] == COMPLETE_ENUMERATION_FORMAT
+        assert classification["media_type"] == JSON_SEQUENCE_MEDIA_TYPE
+        assert set(operation["responses"]["200"]["content"]) == {JSON_SEQUENCE_MEDIA_TYPE}
+        advertised = classification["item_schema"]
+        assert client_schemas[advertised["id"]].model_dump(mode="json") == advertised
+
+    assert classified == READ_COLLECTION_OPERATIONS[application]
+
+
+def test_no_public_http_operation_exposes_an_all_selector() -> None:
+    for app_factory in (
+        create_riverhog_app,
+        create_stove0_contract_app,
+        create_adapter_contract_app,
+    ):
+        for operation_id, operation in _http_operations(app_factory().openapi()).items():
+            assert "all" not in {
+                parameter["name"] for parameter in operation.get("parameters", [])
+            }, operation_id
+
+
+def test_non_cli_python_interfaces_do_not_reintroduce_an_all_selector() -> None:
+    roots = (
+        REPO_ROOT / "packages",
+        REPO_ROOT / "riverhog" / "server",
+        REPO_ROOT / "companions" / "stove0" / "server",
+    )
+    offenders: list[str] = []
+    for root in roots:
+        for source in root.rglob("*.py"):
+            tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                parameters = (
+                    list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs)
+                )
+                for parameter in parameters:
+                    if parameter.arg in {"all", "all_items"}:
+                        offenders.append(
+                            f"{source.relative_to(REPO_ROOT)}:{node.lineno}:{node.name}"
+                        )
+    assert offenders == []
 
 
 def test_archive_copy_wire_states_match_the_service_state_machine() -> None:

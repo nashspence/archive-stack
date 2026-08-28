@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from http_api_contracts import operation_interface
 from riverhog_protocol import CollectionIdParameter, ProcessingClaimId
 from riverhog_protocol.collection_workflow_transport import ClaimState
@@ -16,6 +16,12 @@ from riverhog_api.auth import (
     CollectionTransformController,
     CollectionTransformExecutor,
     CollectionTransformLeaseManager,
+)
+from riverhog_api.complete_enumeration import (
+    CompleteEnumerationResponse,
+    bounded_list_operation,
+    complete_enumeration_operation,
+    complete_enumeration_response,
 )
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.workflows import (
@@ -70,7 +76,10 @@ def create_or_resume_processing_claim(
 @router.get(
     "/collection-processing-claims",
     response_model=ProcessingClaimPageOut,
-    openapi_extra=operation_interface("client-only-primitive"),
+    openapi_extra={
+        **operation_interface("client-only-primitive"),
+        **bounded_list_operation(paired_operation_id="stream_processing_claims"),
+    },
 )
 def list_processing_claims(
     container: ContainerDep,
@@ -87,7 +96,6 @@ def list_processing_claims(
         "execution_id",
     ] = "updated_at",
     order: Literal["asc", "desc"] = "desc",
-    all_items: Annotated[bool, Query(alias="all")] = False,
 ) -> ProcessingClaimPageOut:
     return ProcessingClaimPageOut.model_validate(
         container.collection_workflows.list_claims(
@@ -96,9 +104,44 @@ def list_processing_claims(
             state=state,
             sort=sort,
             order=order,
-            all_items=all_items,
             principal=principal,
         )
+    )
+
+
+@router.get(
+    "/collection-processing-claims/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra={
+        **operation_interface("client-only-primitive"),
+        **complete_enumeration_operation(
+            paired_operation_id="list_processing_claims",
+            item_type=ProcessingClaimOut,
+            schema_id="riverhog.collection-processing-claim/v1",
+        ),
+    },
+)
+def stream_processing_claims(
+    container: ContainerDep,
+    principal: CollectionTransformController,
+    state: ClaimState | None = None,
+    sort: Literal[
+        "created_at",
+        "updated_at",
+        "expires_at",
+        "state",
+        "work_id",
+        "execution_id",
+    ] = "updated_at",
+    order: Literal["asc", "desc"] = "desc",
+) -> Response:
+    return complete_enumeration_response(
+        container.collection_workflows.iter_claims(
+            state=state, sort=sort, order=order, principal=principal
+        ),
+        query={"state": state, "sort": sort, "order": order},
+        item_type=ProcessingClaimOut,
+        schema_id="riverhog.collection-processing-claim/v1",
     )
 
 

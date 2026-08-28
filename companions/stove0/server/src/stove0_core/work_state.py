@@ -8,7 +8,7 @@ compare-and-swap store; observers and targets remain subordinate execution ports
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from typing import Any, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -19,6 +19,8 @@ from stove0_observer_protocol import (
 from stove0_operator_contracts import validate_work_state_shape
 from stove0_protocol import (
     ArtifactSelection,
+    ArtifactSelectionRef,
+    ArtifactSubject,
     BranchPlan,
     BranchSetDecision,
     BranchSetPlan,
@@ -219,6 +221,14 @@ class WorkStore(Protocol):
     ) -> WorkRecord: ...
 
     def load_selection(self, selection_sha256: str) -> ArtifactSelection | None: ...
+
+    def load_selection_ref(self, selection_sha256: str) -> ArtifactSelectionRef | None: ...
+
+    def selection_artifact_page(
+        self, selection_sha256: str, *, offset: int, limit: int
+    ) -> tuple[ArtifactSubject, ...]: ...
+
+    def iter_selection_artifacts(self, selection_sha256: str) -> Iterator[ArtifactSubject]: ...
 
 
 def _preview_target_expectations(
@@ -438,6 +448,30 @@ class InMemoryWorkStore:
     def load_selection(self, selection_sha256: str) -> ArtifactSelection | None:
         with self._lock:
             return self._selections.get(selection_sha256)
+
+    def load_selection_ref(self, selection_sha256: str) -> ArtifactSelectionRef | None:
+        with self._lock:
+            selection = self._selections.get(selection_sha256)
+            return None if selection is None else selection.ref()
+
+    def selection_artifact_page(
+        self,
+        selection_sha256: str,
+        *,
+        offset: int,
+        limit: int,
+    ) -> tuple[ArtifactSubject, ...]:
+        if offset < 0 or limit < 1 or limit > 1000:
+            raise ValueError("artifact selection page is invalid")
+        with self._lock:
+            selection = self._selections.get(selection_sha256)
+            return () if selection is None else selection.artifacts[offset : offset + limit]
+
+    def iter_selection_artifacts(self, selection_sha256: str) -> Iterator[ArtifactSubject]:
+        with self._lock:
+            selection = self._selections.get(selection_sha256)
+            artifacts = () if selection is None else selection.artifacts
+        yield from artifacts
 
 
 class Stove0WorkService:

@@ -8,7 +8,7 @@ import os
 import re
 import secrets
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
@@ -44,6 +44,7 @@ from riverhog_provenance import (
 )
 from sqlalchemy import asc, desc, exists, func, or_, select, true
 from sqlalchemy.orm import Session, selectinload
+from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc_timestamp_now
 
 from riverhog_core.app_permissions import (
@@ -740,7 +741,6 @@ class SqlAlchemyCollectionUploadService:
         *,
         page: int,
         per_page: int,
-        all_items: bool,
     ) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
         if page < 1 or per_page < 1 or per_page > 100:
@@ -761,17 +761,30 @@ class SqlAlchemyCollectionUploadService:
                 .where(CollectionUploadFileRecord.collection_id == normalized_id)
                 .order_by(CollectionUploadFileRecord.file_order)
             )
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = list(session.scalars(statement))
             return {
                 "collection_id": normalized_id,
-                "page": 1 if all_items else page,
-                "per_page": total if all_items and total else per_page,
+                "page": page,
+                "per_page": per_page,
                 "total": total,
-                "pages": 1 if all_items and total else (total + per_page - 1) // per_page,
+                "pages": (total + per_page - 1) // per_page,
                 "files": [_file_payload(row) for row in rows],
             }
+
+    def iter_files(self, collection_id: int) -> Iterator[dict[str, object]]:
+        normalized_id = _collection_id(collection_id)
+        with read_snapshot(self._session_factory) as session:
+            if session.get(CollectionUploadRecord, normalized_id) is None:
+                raise NotFound(f"collection upload session not found: {normalized_id}")
+            statement = (
+                select(CollectionUploadFileRecord)
+                .where(CollectionUploadFileRecord.collection_id == normalized_id)
+                .order_by(CollectionUploadFileRecord.file_order)
+                .execution_options(yield_per=100)
+            )
+            for row in session.scalars(statement):
+                yield _file_payload(row)
 
     def list_volumes(self, collection_id: int) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
@@ -1006,83 +1019,21 @@ class SqlAlchemyCollectionUploadService:
         state: str | None,
         sort: str,
         order: str,
-        all_items: bool,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
-        if page < 1 or per_page < 1 or per_page > 100:
-            raise BadRequest("invalid collection upload pagination")
-        if sort not in {"id", "created_at", "state", "bytes", "files"}:
-            raise BadRequest("invalid collection upload sort")
-        if order not in {"asc", "desc"}:
-            raise BadRequest("collection upload order must be asc or desc")
+        _validate_upload_list(page=page, per_page=per_page, sort=sort, order=order)
         with session_scope(self._session_factory) as session:
-            filters: list[Any] = [_upload_read_filter(principal)]
-            if q:
-                pattern = f"%{q.casefold()}%"
-                filters.append(
-                    or_(
-                        func.lower(func.coalesce(CollectionUploadRecord.ingest_source, "")).like(
-                            pattern
-                        ),
-                        exists(
-                            select(1).where(
-                                CollectionUploadTagRecord.collection_id
-                                == CollectionUploadRecord.collection_id,
-                                func.lower(CollectionUploadTagRecord.tag_id).like(pattern),
-                            )
-                        ),
-                    )
-                )
-            if tag:
-                filters.append(
-                    exists(
-                        select(1).where(
-                            CollectionUploadTagRecord.collection_id
-                            == CollectionUploadRecord.collection_id,
-                            CollectionUploadTagRecord.tag_id == tag,
-                        )
-                    )
-                )
-            if state:
-                filters.append(CollectionUploadRecord.state == state)
-            stats = (
-                select(
-                    CollectionUploadFileRecord.collection_id.label("collection_id"),
-                    func.count(CollectionUploadFileRecord.path).label("files"),
-                    func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0).label("bytes"),
-                )
-                .group_by(CollectionUploadFileRecord.collection_id)
-                .subquery()
-            )
-            statement = (
-                select(CollectionUploadRecord, stats.c.files, stats.c.bytes)
-                .outerjoin(
-                    stats,
-                    stats.c.collection_id == CollectionUploadRecord.collection_id,
-                )
-                .where(*filters)
+            statement = _upload_list_statement(
+                q=q, tag=tag, state=state, sort=sort, order=order, principal=principal
             )
             total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
-            direction = asc if order == "asc" else desc
-            sort_column = {
-                "id": CollectionUploadRecord.collection_id,
-                "created_at": CollectionUploadRecord.opened_at,
-                "state": CollectionUploadRecord.state,
-                "bytes": stats.c.bytes,
-                "files": stats.c.files,
-            }[sort]
-            statement = statement.order_by(
-                direction(sort_column),
-                asc(CollectionUploadRecord.collection_id),
-            )
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = list(session.execute(statement))
             return {
-                "page": 1 if all_items else page,
-                "per_page": total if all_items else per_page,
+                "page": page,
+                "per_page": per_page,
                 "total": total,
-                "pages": 1 if all_items and total else (total + per_page - 1) // per_page,
+                "pages": (total + per_page - 1) // per_page,
                 "sort": sort,
                 "order": order,
                 "query": q,
@@ -1097,6 +1048,29 @@ class SqlAlchemyCollectionUploadService:
                     for upload, files, byte_count in rows
                 ],
             }
+
+    def iter_uploads(
+        self,
+        *,
+        q: str | None,
+        tag: str | None,
+        state: str | None,
+        sort: str,
+        order: str,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[dict[str, object]]:
+        _validate_upload_list(page=1, per_page=100, sort=sort, order=order)
+        statement = _upload_list_statement(
+            q=q, tag=tag, state=state, sort=sort, order=order, principal=principal
+        ).execution_options(yield_per=100)
+        with read_snapshot(self._session_factory) as session:
+            for upload, files, byte_count in session.execute(statement):
+                yield _upload_list_payload(
+                    session,
+                    upload,
+                    files=int(files or 0),
+                    byte_count=int(byte_count or 0),
+                )
 
     def cancel(self, collection_id: int) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
@@ -2690,6 +2664,75 @@ def _custody_payload(
         "files": custodied_files,
         "bytes": custodied_bytes,
     }
+
+
+def _validate_upload_list(*, page: int, per_page: int, sort: str, order: str) -> None:
+    if page < 1 or per_page < 1 or per_page > 100:
+        raise BadRequest("invalid collection upload pagination")
+    if sort not in {"id", "created_at", "state", "bytes", "files"}:
+        raise BadRequest("invalid collection upload sort")
+    if order not in {"asc", "desc"}:
+        raise BadRequest("collection upload order must be asc or desc")
+
+
+def _upload_list_statement(
+    *,
+    q: str | None,
+    tag: str | None,
+    state: str | None,
+    sort: str,
+    order: str,
+    principal: ApplicationPrincipal,
+) -> Any:
+    filters: list[Any] = [_upload_read_filter(principal)]
+    if q:
+        pattern = f"%{q.casefold()}%"
+        filters.append(
+            or_(
+                func.lower(func.coalesce(CollectionUploadRecord.ingest_source, "")).like(pattern),
+                exists(
+                    select(1).where(
+                        CollectionUploadTagRecord.collection_id
+                        == CollectionUploadRecord.collection_id,
+                        func.lower(CollectionUploadTagRecord.tag_id).like(pattern),
+                    )
+                ),
+            )
+        )
+    if tag:
+        filters.append(
+            exists(
+                select(1).where(
+                    CollectionUploadTagRecord.collection_id == CollectionUploadRecord.collection_id,
+                    CollectionUploadTagRecord.tag_id == tag,
+                )
+            )
+        )
+    if state:
+        filters.append(CollectionUploadRecord.state == state)
+    stats = (
+        select(
+            CollectionUploadFileRecord.collection_id.label("collection_id"),
+            func.count(CollectionUploadFileRecord.path).label("files"),
+            func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0).label("bytes"),
+        )
+        .group_by(CollectionUploadFileRecord.collection_id)
+        .subquery()
+    )
+    statement = (
+        select(CollectionUploadRecord, stats.c.files, stats.c.bytes)
+        .outerjoin(stats, stats.c.collection_id == CollectionUploadRecord.collection_id)
+        .where(*filters)
+    )
+    direction = asc if order == "asc" else desc
+    sort_column = {
+        "id": CollectionUploadRecord.collection_id,
+        "created_at": CollectionUploadRecord.opened_at,
+        "state": CollectionUploadRecord.state,
+        "bytes": stats.c.bytes,
+        "files": stats.c.files,
+    }[sort]
+    return statement.order_by(direction(sort_column), asc(CollectionUploadRecord.collection_id))
 
 
 def _upload_list_payload(
