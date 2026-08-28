@@ -6,9 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from application_access import ApplicationAccessError
 from fastapi.security import HTTPAuthorizationCredentials
 from riverhog_api.auth import require_application, require_permission
+from riverhog_application_access import ApplicationAccessError
 from riverhog_core.app_permissions import (
     CATALOG_READ,
     COLLECTIONS_CREATE,

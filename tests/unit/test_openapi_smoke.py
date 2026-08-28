@@ -382,7 +382,9 @@ def test_collection_contracts_expose_creation_and_encryption_identities() -> Non
     assert mapped["created_at"] == "2026-07-26T20:00:00.000000Z"
 
 
-def test_application_access_openapi_uses_the_public_permission_and_resource_grammar() -> None:
+def test_riverhog_application_access_openapi_uses_the_public_permission_and_resource_grammar() -> (
+    None
+):
     document = create_app().openapi()
     access = document["components"]["schemas"]["ApplicationAccessGrant"]
     schemas = document["components"]["schemas"]

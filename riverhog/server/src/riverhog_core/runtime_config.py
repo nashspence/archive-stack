@@ -28,6 +28,16 @@ DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS = 32
 DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS = 300.0
 DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
+ARCHIVE_STORE_ENVIRONMENT_TEMPLATE = "RIVERHOG_ARCHIVE_STORE_{store}_{setting}"
+ARCHIVE_STORE_ENVIRONMENT_SETTINGS = (
+    "ADAPTER_URL",
+    "ADAPTER_TOKEN_FILE",
+    "ADAPTER_ALLOW_INSECURE_HTTP",
+    "ADAPTER_MAX_CONNECTIONS",
+    "ADAPTER_TIMEOUT_SECONDS",
+    "MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
+    "DOWNLOAD_SAFETY_BUFFER_BYTES",
+)
 
 
 def _parse_bool(value: str) -> bool:
@@ -92,6 +102,15 @@ def _normalize_archive_store_name(value: str) -> str:
 
 def _archive_store_env_suffix(name: str) -> str:
     return name.upper().replace("-", "_")
+
+
+def _archive_store_environment_name(name: str, setting: str) -> str:
+    if setting not in ARCHIVE_STORE_ENVIRONMENT_SETTINGS:
+        raise ValueError(f"unknown archive-store environment setting: {setting}")
+    return ARCHIVE_STORE_ENVIRONMENT_TEMPLATE.format(
+        store=_archive_store_env_suffix(name),
+        setting=setting,
+    )
 
 
 def _parse_command(value: str, *, name: str) -> tuple[str, ...]:
@@ -401,46 +420,51 @@ def _parse_archive_stores(
     )
     stores: dict[str, StorageAdapterRegistration] = {}
     for name in names:
-        prefix = f"RIVERHOG_ARCHIVE_STORE_{_archive_store_env_suffix(name)}_"
-        configured_url = values.get(f"{prefix}ADAPTER_URL", "").strip()
-        configured_token_file = values.get(f"{prefix}ADAPTER_TOKEN_FILE", "").strip()
+        environment_names = {
+            setting: _archive_store_environment_name(name, setting)
+            for setting in ARCHIVE_STORE_ENVIRONMENT_SETTINGS
+        }
+        configured_url = values.get(environment_names["ADAPTER_URL"], "").strip()
+        configured_token_file = values.get(environment_names["ADAPTER_TOKEN_FILE"], "").strip()
         if named_store_configuration or configured_url or configured_token_file:
             if not configured_url or not configured_token_file:
                 raise ValueError(f"archive store {name} adapter connection is incomplete")
         adapter_url = configured_url or "http://127.0.0.1:9081"
         monthly_download_allowance_raw = values.get(
-            f"{prefix}MONTHLY_DOWNLOAD_ALLOWANCE_BYTES", ""
+            environment_names["MONTHLY_DOWNLOAD_ALLOWANCE_BYTES"], ""
         ).strip()
-        download_safety_buffer_raw = values.get(f"{prefix}DOWNLOAD_SAFETY_BUFFER_BYTES", "").strip()
+        download_safety_buffer_raw = values.get(
+            environment_names["DOWNLOAD_SAFETY_BUFFER_BYTES"], ""
+        ).strip()
         stores[name] = StorageAdapterRegistration(
             name=name,
             base_url=adapter_url.rstrip("/"),
             token_file=Path(configured_token_file or "/run/secrets/riverhog_archive_adapter_token"),
             allow_insecure_http=_parse_bool(
                 values.get(
-                    f"{prefix}ADAPTER_ALLOW_INSECURE_HTTP",
+                    environment_names["ADAPTER_ALLOW_INSECURE_HTTP"],
                     "false",
                 )
             ),
             maximum_connections=_parse_int(
                 values.get(
-                    f"{prefix}ADAPTER_MAX_CONNECTIONS",
+                    environment_names["ADAPTER_MAX_CONNECTIONS"],
                     str(DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS),
                 ),
-                name=f"{prefix}ADAPTER_MAX_CONNECTIONS",
+                name=environment_names["ADAPTER_MAX_CONNECTIONS"],
                 minimum=1,
             ),
             timeout_seconds=_parse_float(
                 values.get(
-                    f"{prefix}ADAPTER_TIMEOUT_SECONDS",
+                    environment_names["ADAPTER_TIMEOUT_SECONDS"],
                     str(DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS),
                 ),
-                name=f"{prefix}ADAPTER_TIMEOUT_SECONDS",
+                name=environment_names["ADAPTER_TIMEOUT_SECONDS"],
             ),
             monthly_download_allowance_bytes=(
                 _parse_bytes(
                     monthly_download_allowance_raw,
-                    name=f"{prefix}MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
+                    name=environment_names["MONTHLY_DOWNLOAD_ALLOWANCE_BYTES"],
                     minimum=1,
                 )
                 if monthly_download_allowance_raw
@@ -449,7 +473,7 @@ def _parse_archive_stores(
             download_safety_buffer_bytes=(
                 _parse_bytes(
                     download_safety_buffer_raw,
-                    name=f"{prefix}DOWNLOAD_SAFETY_BUFFER_BYTES",
+                    name=environment_names["DOWNLOAD_SAFETY_BUFFER_BYTES"],
                 )
                 if download_safety_buffer_raw
                 else 0

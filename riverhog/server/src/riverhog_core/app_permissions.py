@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from application_access import (
+from riverhog_application_access import (
     ALL_PERMISSIONS,
     ALL_RESOURCES,
     APPLICATION_PERMISSIONS,
@@ -33,9 +33,9 @@ from application_access import (
     permission_covers,
     resource_covers,
 )
-from application_access import collection_resource as _collection_resource
-from application_access import normalize_access as _normalize_access
-from application_access import tag_resource as _tag_resource
+from riverhog_application_access import collection_resource as _collection_resource
+from riverhog_application_access import normalize_access as _normalize_access
+from riverhog_application_access import tag_resource as _tag_resource
 from riverhog_protocol.errors import BadRequest
 
 

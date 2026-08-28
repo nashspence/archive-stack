@@ -5,8 +5,8 @@ from typing import Annotated
 
 from pydantic import AfterValidator, BeforeValidator, Field
 
-from application_access.access import *  # noqa: F403
-from application_access.access import __all__ as _access_exports
+from riverhog_application_access.access import *  # noqa: F403
+from riverhog_application_access.access import __all__ as _access_exports
 
 APPLICATION_NAME_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 APPLICATION_KEY_ID_PATTERN = r"^[0-9a-f]{16}$"

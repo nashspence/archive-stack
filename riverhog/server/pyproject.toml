@@ -20,7 +20,7 @@ classifiers = [
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
   "alembic>=1.18.5,<2.0",
-  "application-access>=0.1,<0.2",
+  "riverhog-application-access>=0.1,<0.2",
   "fastapi>=0.111,<1.0",
   "http-api-contracts>=0.1,<0.2",
   "lifecycle-events>=0.1,<0.2",
@@ -45,7 +45,7 @@ dependencies = [
 riverhog-api = "riverhog_api.app:main"
 
 [tool.uv.sources]
-application-access = { workspace = true }
+riverhog-application-access = { workspace = true }
 http-api-contracts = { workspace = true }
 lifecycle-events = { workspace = true }
 riverhog-age = { workspace = true }

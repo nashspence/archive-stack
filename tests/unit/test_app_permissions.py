@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from application_access import (
+from riverhog_application_access import (
     CATALOG_READ,
     COLLECTIONS_CREATE,
     RETRIEVAL_MANAGE,

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-from application_access import ApplicationKeyId, ApplicationName, MonthlyDownloadQuotaBytes
 from pydantic import Field
+from riverhog_application_access import ApplicationKeyId, ApplicationName, MonthlyDownloadQuotaBytes
 from riverhog_protocol import DownloadQuotaSort, SortOrder
 
 from riverhog_api.schemas.common import RiverhogModel

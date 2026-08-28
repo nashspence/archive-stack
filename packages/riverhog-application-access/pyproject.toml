@@ -3,7 +3,7 @@ requires = ["hatchling>=1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "application-access"
+name = "riverhog-application-access"
 version = "0.1.0"
 description = "Public Riverhog application-access contracts and canonical grant grammar."
 requires-python = ">=3.12"
@@ -27,4 +27,4 @@ dependencies = [
 riverhog-protocol = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/application_access"]
+packages = ["src/riverhog_application_access"]

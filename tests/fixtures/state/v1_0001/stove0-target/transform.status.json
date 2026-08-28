@@ -1,0 +1,1 @@
+{"protocol":"stove0-transform-target/v1","job_id":"9b1afb79bba82380dfdcb72bf7b679f730db6842c0c07a30065fa68440dd7ded","state":"running","attempt":1,"request_sha256":"423cda53b43aa4cde6427aac2677276390f3e0c8c76e9db6011935a46c462a43","plan_sha256":"6d3ea359aaebec1a7711a13c7db82011e7ba3ec6d7a067d2f25ee63488e601e7","progress":{"phase":"executing","completed":0},"outputs":[]}
