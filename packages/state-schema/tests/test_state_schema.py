@@ -15,12 +15,15 @@ def _write_migrations(path: Path, *, include_second: bool = False) -> None:
         encoding="utf-8",
     )
     (versions / "v1_0001.py").write_text(
+        "from alembic import op\n"
         'revision = "v1_0001"\n'
         "down_revision = None\n"
         "branch_labels = None\n"
         "depends_on = None\n"
         "def upgrade():\n"
-        "    pass\n"
+        "    op.get_bind().exec_driver_sql("
+        '"CREATE TABLE records (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)"'
+        ")\n"
         "def downgrade():\n"
         "    raise RuntimeError('forward-only')\n",
         encoding="utf-8",
@@ -45,11 +48,6 @@ def _write_migrations(path: Path, *, include_second: bool = False) -> None:
 
 
 def _schema(database: Path, migrations: Path) -> StateSchema:
-    def bootstrap(connection: StateConnection) -> None:
-        connection.exec_driver_sql(
-            "CREATE TABLE records (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)"
-        )
-
     def verify(connection: StateConnection) -> None:
         assert "records" in inspect(connection).get_table_names()
 
@@ -57,7 +55,6 @@ def _schema(database: Path, migrations: Path) -> StateSchema:
         name="test",
         engine_factory=lambda: sqlite_engine(database),
         script_location=migrations,
-        bootstrap=bootstrap,
         verify=verify,
         is_empty=lambda: not database.exists() or database.stat().st_size == 0,
     )

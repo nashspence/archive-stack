@@ -1,4 +1,6 @@
-"""Establish the first supported v1 cursor-state revision."""
+"""Create the exact current v1 Mango Fish cursor-state baseline."""
+
+from alembic import op
 
 revision: str = "v1_0001"
 down_revision: str | None = None
@@ -7,7 +9,9 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
-    """The exact v1 baseline is created before this revision is stamped."""
+    op.get_bind().exec_driver_sql(
+        "CREATE TABLE source_cursors (source TEXT PRIMARY KEY, cursor TEXT NOT NULL)"
+    )
 
 
 def downgrade() -> None:

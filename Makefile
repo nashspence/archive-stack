@@ -89,7 +89,6 @@ MYPY_SOURCES = \
 	reference/riverhog/storage/backblaze/src \
 	scripts/operation_qualification.py \
 	scripts/contract_freeze.py \
-	scripts/pre_v1_encryption_cutover.py \
 	scripts/provider_qualification.py \
 	scripts/release.py \
 	scripts/release_installation.py \

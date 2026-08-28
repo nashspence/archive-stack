@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from stove0_core import Stove0RuntimeConfig
+from stove0_core import Stove0RuntimeConfig, database_url_from_environment
 
 
 def _environment(recipes: Path) -> dict[str, str]:
@@ -89,6 +89,16 @@ def test_runtime_secrets_accept_exactly_one_direct_or_file_source(tmp_path: Path
 def test_operator_api_configuration_requires_its_bearer_secret(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="STOVE0_API_TOKEN or STOVE0_API_TOKEN_FILE is required"):
         Stove0RuntimeConfig.from_environment(_environment(tmp_path / "recipes.yaml"))
+
+
+def test_runtime_database_is_postgresql_only(tmp_path: Path) -> None:
+    environment = _environment(tmp_path / "recipes.yaml")
+    environment["STOVE0_DATABASE_URL"] = "sqlite+pysqlite:///:memory:"
+
+    with pytest.raises(ValueError, match="STOVE0_DATABASE_URL must use postgresql"):
+        Stove0RuntimeConfig.from_environment(environment, require_api_token=False)
+    with pytest.raises(ValueError, match="STOVE0_DATABASE_URL must use postgresql"):
+        database_url_from_environment(environment)
 
 
 def test_semantic_validator_providers_are_observer_only_and_unique(tmp_path: Path) -> None:

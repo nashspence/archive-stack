@@ -28,7 +28,7 @@ def _connect(database: Path) -> sqlite3.Connection:
     return connection
 
 
-def test_riverhog_local_v1_fixture_reaches_head_with_selection_and_retrieval_state(
+def test_riverhog_local_current_v1_fixture_restarts_with_selection_and_retrieval_state(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "riverhog-local.sqlite3"
@@ -56,7 +56,7 @@ def test_riverhog_local_v1_fixture_reaches_head_with_selection_and_retrieval_sta
     assert tuple(retrieval) == ("ready", '["notes/fixture.txt"]')
 
 
-def test_mango_fish_v1_fixture_reaches_head_with_source_cursor(tmp_path: Path) -> None:
+def test_mango_fish_current_v1_fixture_restarts_with_source_cursor(tmp_path: Path) -> None:
     database = tmp_path / "mango-fish.sqlite3"
     _restore_sqlite(FIXTURES / "mango-fish.sqlite.sql", database)
 
@@ -107,7 +107,7 @@ def test_release_inventory_accounts_for_every_v1_state_fixture() -> None:
     inventory = release["state"]
     assert inventory["schema"] == "riverhog-durable-state-inventory/v1"
     owners = inventory["owners"]
-    assert all(owner["classification"] == "compatibility-preserved" for owner in owners)
+    assert all("classification" not in owner for owner in owners)
     fixture_paths = {fixture for owner in owners for fixture in owner["fixtures"]}
     assert fixture_paths == {
         path.relative_to(REPO_ROOT).as_posix() for path in FIXTURES.rglob("*") if path.is_file()

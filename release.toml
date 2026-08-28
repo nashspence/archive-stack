@@ -82,7 +82,6 @@ python_api = "Reusable-library top-level exports and public signatures remain ba
 archive = "A valid v1 archive remains independently recoverable throughout the supported v1 lifetime. Pack construction, ingress checkpointing, and resumable-write strategies are not archive-format compatibility promises."
 recovery = "Every later v1 recovery release reads every valid earlier v1 archive and provenance set."
 configuration = "Accepted v1 configuration remains valid throughout v1 unless an unsafe value must be rejected."
-persistent_state = "State upgrades are forward-only; every later v1 schema restores and upgrades every earlier v1 state fixture."
 
 [state]
 schema = "riverhog-durable-state-inventory/v1"
@@ -90,15 +89,13 @@ schema = "riverhog-durable-state-inventory/v1"
 [[state.owners]]
 id = "riverhog-catalog"
 distribution = "riverhog-server"
-classification = "compatibility-preserved"
 format = "state-schema/postgresql"
-head = "v1_0010"
+head = "v1_0001"
 fixtures = ["tests/fixtures/state/v1_0001/riverhog.postgresql.sql"]
 
 [[state.owners]]
 id = "riverhog-local"
 distribution = "riverhog-client"
-classification = "compatibility-preserved"
 format = "state-schema/sqlite"
 head = "v1_0001"
 fixtures = ["tests/fixtures/state/v1_0001/riverhog-local.sqlite.sql"]
@@ -106,7 +103,6 @@ fixtures = ["tests/fixtures/state/v1_0001/riverhog-local.sqlite.sql"]
 [[state.owners]]
 id = "mango-fish-cursor"
 distribution = "mango-fish"
-classification = "compatibility-preserved"
 format = "state-schema/sqlite"
 head = "v1_0001"
 fixtures = ["tests/fixtures/state/v1_0001/mango-fish.sqlite.sql"]
@@ -114,15 +110,13 @@ fixtures = ["tests/fixtures/state/v1_0001/mango-fish.sqlite.sql"]
 [[state.owners]]
 id = "stove0-control"
 distribution = "stove0-server"
-classification = "compatibility-preserved"
 format = "state-schema/postgresql"
-head = "v1_0003"
+head = "v1_0001"
 fixtures = ["tests/fixtures/state/v1_0001/stove0.postgresql.sql"]
 
 [[state.owners]]
 id = "gogurt-listener"
 distribution = "gogurt-listener-runtime"
-classification = "compatibility-preserved"
 format = "gogurt-listener-state/v1"
 head = "1"
 fixtures = ["tests/fixtures/state/v1_0001/gogurt-listener.sqlite.sql"]
@@ -130,7 +124,6 @@ fixtures = ["tests/fixtures/state/v1_0001/gogurt-listener.sqlite.sql"]
 [[state.owners]]
 id = "stove0-target-jobs"
 distribution = "stove0-target-support"
-classification = "compatibility-preserved"
 format = "stove0-target-job-state/v1"
 head = "v1"
 fixtures = [
@@ -143,7 +136,6 @@ fixtures = [
 [[state.owners]]
 id = "riverhog-ftp-custody"
 distribution = "riverhog-ftp-adapter"
-classification = "compatibility-preserved"
 format = "riverhog-ftp-adapter-claim/v1"
 head = "v1"
 fixtures = [
@@ -154,7 +146,6 @@ fixtures = [
 [[state.owners]]
 id = "riverhog-provenance-installation"
 distribution = "riverhog-provenance"
-classification = "compatibility-preserved"
 format = "riverhog-provenance-installation-id/v1"
 head = "v1"
 fixtures = ["tests/fixtures/state/v1_0001/provenance-installation-id"]

@@ -152,7 +152,6 @@ services:
         condition: service_healthy
     environment:
       <<: *riverhog-environment
-      RIVERHOG_STATE_UPGRADE_PASSPHRASE_ID: ${RIVERHOG_STATE_UPGRADE_PASSPHRASE_ID:-}
     command: ["state", "upgrade"]
 
   app:

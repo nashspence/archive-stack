@@ -13,6 +13,8 @@ from alembic.script.revision import ResolutionError
 from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.engine import URL, Connection, Engine
 
+from state_schema.sqlalchemy_schema import assert_schema_matches_metadata
+
 StateCondition = Literal[
     "empty",
     "current",
@@ -20,7 +22,6 @@ StateCondition = Literal[
     "unversioned",
     "incompatible",
 ]
-SchemaBootstrap = Callable[[Connection], None]
 SchemaVerify = Callable[[Connection], None]
 EngineFactory = Callable[[], Engine]
 EmptyStateCheck = Callable[[], bool]
@@ -57,7 +58,6 @@ class StateSchema:
         name: str,
         engine_factory: EngineFactory,
         script_location: Path,
-        bootstrap: SchemaBootstrap,
         verify: SchemaVerify,
         is_empty: EmptyStateCheck | None = None,
         version_table: str = "state_schema_revision",
@@ -65,7 +65,6 @@ class StateSchema:
         self.name = name
         self._engine_factory = engine_factory
         self.script_location = Path(script_location)
-        self._bootstrap = bootstrap
         self._verify = verify
         self._is_empty = is_empty
         self.version_table = version_table
@@ -154,10 +153,7 @@ class StateSchema:
         try:
             with engine.begin() as connection:
                 config.attributes["connection"] = connection
-                if before.condition == "empty":
-                    self._bootstrap(connection)
-                    command.stamp(config, "head")
-                elif before.condition == "upgrade_required":
+                if before.condition in {"empty", "upgrade_required"}:
                     command.upgrade(config, "head")
                 self._verify_database(connection)
         finally:
@@ -264,6 +260,7 @@ __all__ = [
     "StateSchema",
     "StateSchemaError",
     "StateStatus",
+    "assert_schema_matches_metadata",
     "run_migration_environment",
     "sqlite_engine",
 ]

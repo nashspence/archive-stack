@@ -1,4 +1,4 @@
--- Immutable Mango Fish v1.0 database fixture. Add later baselines; do not edit.
+-- Exact current Mango Fish v1 baseline conformance fixture.
 BEGIN TRANSACTION;
 CREATE TABLE source_cursors (
     source TEXT PRIMARY KEY,
