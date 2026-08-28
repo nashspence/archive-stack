@@ -95,6 +95,6 @@ def test_checked_contract_freeze_matches_every_executable_authority() -> None:
         "riverhog-ftp-adapter",
         "stove0",
     }
-    assert len(external["operations"]) == 133
+    assert len(external["operations"]) == 134
     assert len(external["python"]) == 25
     assert len(external["durable_state"]["owners"]) == 8

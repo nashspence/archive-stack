@@ -347,6 +347,7 @@ READ_COLLECTION_OPERATIONS = {
             "list_retrieval_cache_objects",
             "list_tags",
             "search",
+            "trace_collection_file_provenance",
         },
         "complete-enumeration": {
             "stream_app_key_access",
@@ -363,6 +364,7 @@ READ_COLLECTION_OPERATIONS = {
             "stream_retrieval_cache_objects",
             "stream_search",
             "stream_tags",
+            "stream_collection_file_provenance_trace",
         },
         "cursor-feed": {"list_lifecycle_events", "resourcesync_change_list"},
     },
@@ -501,6 +503,7 @@ PUBLIC_QUERY_SELECTORS = {
         },
         "stream_search": {"collection", "order", "q", "sort"},
         "stream_tags": {"order", "q", "sort"},
+        "trace_collection_file_provenance": {"page", "per_page"},
     },
     "stove0": {
         "get_artifact_selection": {"page", "per_page"},

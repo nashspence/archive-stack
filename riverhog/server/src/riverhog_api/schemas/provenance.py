@@ -34,7 +34,6 @@ class ProvenanceJournalOut(RiverhogModel):
     current_bytes: int = Field(ge=0)
     current_sha256: Sha256
     agent_ids: list[str]
-    ancestor_journal_ids: list[ProvenanceJournalId]
     entity_counts: dict[str, int]
 
 
@@ -77,17 +76,42 @@ class ProvenanceExternalStateReferenceOut(RiverhogModel):
     entry_json_sha256: Sha256
 
 
-class CapturedCollectionFileProvenanceTraceOut(CapturedCollectionFileProvenanceDetailOut):
-    journals: list[ProvenanceJournalOut] = Field(min_length=1)
-    external_state_references: list[ProvenanceExternalStateReferenceOut]
+class ProvenanceTraceJournalItemOut(RiverhogModel):
+    kind: Literal["journal"]
+    journal: ProvenanceJournalOut
 
 
-class OmittedCollectionFileProvenanceTraceOut(OmittedCollectionFileProvenanceDetailOut):
-    journals: list[ProvenanceJournalOut] = Field(default_factory=list, max_length=0)
-    external_state_references: list[ProvenanceExternalStateReferenceOut] = Field(
-        default_factory=list,
-        max_length=0,
-    )
+class ProvenanceTraceExternalStateReferenceItemOut(RiverhogModel):
+    kind: Literal["external_state_reference"]
+    reference: ProvenanceExternalStateReferenceOut
+
+
+type ProvenanceTraceItemOut = Annotated[
+    ProvenanceTraceJournalItemOut | ProvenanceTraceExternalStateReferenceItemOut,
+    Field(discriminator="kind"),
+]
+
+
+class _CollectionFileProvenanceTracePage(RiverhogModel):
+    page: int = Field(ge=1)
+    per_page: int = Field(ge=1)
+    total: int = Field(ge=0)
+    pages: int = Field(ge=0)
+    items: list[ProvenanceTraceItemOut]
+
+
+class CapturedCollectionFileProvenanceTraceOut(
+    CapturedCollectionFileProvenanceDetailOut,
+    _CollectionFileProvenanceTracePage,
+):
+    pass
+
+
+class OmittedCollectionFileProvenanceTraceOut(
+    OmittedCollectionFileProvenanceDetailOut,
+    _CollectionFileProvenanceTracePage,
+):
+    pass
 
 
 class CollectionFileProvenanceTraceOut(

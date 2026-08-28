@@ -20,6 +20,7 @@ from riverhog_provenance import (
     load_provenance_index_schema,
     load_provenance_set_schema,
     prepare_file_provenance,
+    reconstruct_provenance_archive_identity,
     validate_journal,
     validate_portable_provenance_set,
     validate_provenance_archive,
@@ -79,6 +80,13 @@ def test_archive_index_and_bundle_round_trip_deterministically(tmp_path: Path, u
     second = build_provenance_archive(bindings=bindings, journals=journals)
 
     assert first == second
+    assert (
+        reconstruct_provenance_archive_identity(
+            bindings=lambda: iter(bindings),
+            journals=lambda: iter(sorted(journals.items())),
+        )
+        == first.identity
+    )
     assert first.bundles[0].relative_path == "provenance/bundle-000000000000.tar.age"
     assert first.journal_summaries == {summary.journal_id: summary}
     validated = validate_provenance_archive(

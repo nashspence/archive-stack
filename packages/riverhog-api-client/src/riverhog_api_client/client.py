@@ -137,6 +137,10 @@ _STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
         id="riverhog.collection-file-provenance/v1",
         sha256="796dce760f006e232cd5bbe3963139c6b2ecbf795fcacfc1fff83e4449b5970f",
     ),
+    "riverhog.provenance-trace-item/v1": CompleteEnumerationItemSchema(
+        id="riverhog.provenance-trace-item/v1",
+        sha256="f4239b405a7d1ccbd9b779ca7812783786b6cccf6c2a261c4a73e88d12bd4df3",
+    ),
     "riverhog.archive-copy-job/v1": CompleteEnumerationItemSchema(
         id="riverhog.archive-copy-job/v1",
         sha256="4575819fc947e6a6e9320951372290c376967adf1de8d6cc1a4515621622c18e",
@@ -1576,12 +1580,33 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         self,
         collection_id: CollectionId,
         path: str,
+        *,
+        page: int = 1,
+        per_page: int = 25,
     ) -> dict[str, Any]:
         return self._json(
             "GET",
             f"/v1/collections/{_collection_id(collection_id)}/provenance/trace/"
             f"{quote(_canonical_relpath(path), safe='/')}",
+            params={"page": page, "per_page": per_page},
         )
+
+    @contextmanager
+    def stream_collection_file_provenance_trace(
+        self,
+        collection_id: CollectionId,
+        path: str,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_id = _collection_id(collection_id)
+        normalized_path = _canonical_relpath(path)
+        with self._stream_json_objects(
+            f"/v1/collections/{normalized_id}/provenance/trace/"
+            f"{quote(normalized_path, safe='/')}/stream",
+            query={"collection_id": normalized_id, "path": normalized_path},
+            params={},
+            schema_id="riverhog.provenance-trace-item/v1",
+        ) as items:
+            yield items
 
     def export_collection_provenance_journal(
         self,

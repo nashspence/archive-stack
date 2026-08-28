@@ -726,7 +726,11 @@ def test_provenance_client_methods_use_the_collection_scoped_contract() -> None:
             },
         ),
         ("GET", "/v1/collections/42/provenance/files/media/movie.mov", {}),
-        ("GET", "/v1/collections/42/provenance/trace/media/movie.mov", {}),
+        (
+            "GET",
+            "/v1/collections/42/provenance/trace/media/movie.mov",
+            {"params": {"page": 1, "per_page": 25}},
+        ),
         ("POST", "/v1/collections/42/provenance/verify", {}),
     ]
 

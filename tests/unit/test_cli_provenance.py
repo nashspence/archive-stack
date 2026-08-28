@@ -47,9 +47,30 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
             calls.append(("show", (collection_id, path)))
             return shown
 
-        def trace_collection_file_provenance(self, collection_id: int, path: str) -> dict[str, Any]:
-            calls.append(("trace", (collection_id, path)))
-            return {**shown, "journals": [shown["journal"]], "external_state_references": []}
+        def trace_collection_file_provenance(
+            self,
+            collection_id: int,
+            path: str,
+            **kwargs: Any,
+        ) -> dict[str, Any]:
+            calls.append(("trace", (collection_id, path, kwargs)))
+            return {
+                **shown,
+                "page": kwargs["page"],
+                "per_page": kwargs["per_page"],
+                "total": 1,
+                "pages": 1,
+                "items": [{"kind": "journal", "journal": shown["journal"]}],
+            }
+
+        @contextmanager
+        def stream_collection_file_provenance_trace(
+            self,
+            collection_id: int,
+            path: str,
+        ) -> Iterator[Iterator[dict[str, Any]]]:
+            calls.append(("trace-stream", (collection_id, path)))
+            yield iter(({"kind": "journal", "journal": shown["journal"]},))
 
         def export_collection_provenance_journal(
             self, collection_id: int, journal_id: str
@@ -96,6 +117,18 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
         app,
         ["collection", "provenance", "trace", "41", "media/movie.mov", "--json"],
     )
+    traced_all = RUNNER.invoke(
+        app,
+        [
+            "collection",
+            "provenance",
+            "trace",
+            "41",
+            "media/movie.mov",
+            "--all",
+            "--json",
+        ],
+    )
     exported = RUNNER.invoke(
         app,
         [
@@ -131,7 +164,11 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     assert shown_result.exit_code == 0
     assert json.loads(shown_result.stdout) == shown
     assert traced.exit_code == 0
-    assert json.loads(traced.stdout)["journals"] == [shown["journal"]]
+    assert json.loads(traced.stdout)["items"] == [{"kind": "journal", "journal": shown["journal"]}]
+    assert traced_all.exit_code == 0
+    assert json.loads(traced_all.stdout)["items"] == [
+        {"kind": "journal", "journal": shown["journal"]}
+    ]
     assert exported.exit_code == 0
     assert output.read_bytes() == JOURNAL
     assert exported_json.exit_code == 0
@@ -159,7 +196,8 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
             ),
         ),
         ("show", (41, "media/movie.mov")),
-        ("trace", (41, "media/movie.mov")),
+        ("trace", (41, "media/movie.mov", {"page": 1, "per_page": 25})),
+        ("trace-stream", (41, "media/movie.mov")),
         ("export", (41, JOURNAL_ID)),
         ("export", (41, JOURNAL_ID)),
         ("verify", 41),
@@ -172,7 +210,7 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
     assert shown_human.exit_code == traced_human.exit_code == verified_human.exit_code == 0
     assert "media/movie.mov" in shown_human.stdout
     assert "media/movie.mov" in traced_human.stdout
-    assert "external state references: 0" in traced_human.stdout
+    assert "trace items" in traced_human.stdout
     assert "valid" in verified_human.stdout
 
 

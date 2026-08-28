@@ -6718,26 +6718,33 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "external_state_references": {
+                "items": {
                   "items": {
-                    "$ref": "#/components/schemas/ProvenanceExternalStateReferenceOut"
+                    "$ref": "#/components/schemas/ProvenanceTraceItemOut"
                   },
-                  "title": "External State References",
+                  "title": "Items",
                   "type": "array"
                 },
                 "journal": {
                   "$ref": "#/components/schemas/ProvenanceJournalOut"
                 },
-                "journals": {
-                  "items": {
-                    "$ref": "#/components/schemas/ProvenanceJournalOut"
-                  },
-                  "minItems": 1,
-                  "title": "Journals",
-                  "type": "array"
+                "page": {
+                  "minimum": 1.0,
+                  "title": "Page",
+                  "type": "integer"
+                },
+                "pages": {
+                  "minimum": 0.0,
+                  "title": "Pages",
+                  "type": "integer"
                 },
                 "path": {
                   "$ref": "#/components/schemas/CanonicalRelPath"
+                },
+                "per_page": {
+                  "minimum": 1.0,
+                  "title": "Per Page",
+                  "type": "integer"
                 },
                 "provenance": {
                   "$ref": "#/components/schemas/CapturedFileProvenanceBinding"
@@ -6746,17 +6753,25 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "title": "Sha256",
                   "type": "string"
+                },
+                "total": {
+                  "minimum": 0.0,
+                  "title": "Total",
+                  "type": "integer"
                 }
               },
               "required": [
+                "page",
+                "per_page",
+                "total",
+                "pages",
+                "items",
                 "path",
                 "bytes",
                 "sha256",
                 "collection_id",
                 "provenance",
-                "journal",
-                "journals",
-                "external_state_references"
+                "journal"
               ],
               "title": "CapturedCollectionFileProvenanceTraceOut",
               "type": "object"
@@ -12008,28 +12023,34 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "external_state_references": {
+                "items": {
                   "items": {
-                    "$ref": "#/components/schemas/ProvenanceExternalStateReferenceOut"
+                    "$ref": "#/components/schemas/ProvenanceTraceItemOut"
                   },
-                  "maxItems": 0,
-                  "title": "External State References",
+                  "title": "Items",
                   "type": "array"
                 },
                 "journal": {
                   "title": "Journal",
                   "type": "null"
                 },
-                "journals": {
-                  "items": {
-                    "$ref": "#/components/schemas/ProvenanceJournalOut"
-                  },
-                  "maxItems": 0,
-                  "title": "Journals",
-                  "type": "array"
+                "page": {
+                  "minimum": 1.0,
+                  "title": "Page",
+                  "type": "integer"
+                },
+                "pages": {
+                  "minimum": 0.0,
+                  "title": "Pages",
+                  "type": "integer"
                 },
                 "path": {
                   "$ref": "#/components/schemas/CanonicalRelPath"
+                },
+                "per_page": {
+                  "minimum": 1.0,
+                  "title": "Per Page",
+                  "type": "integer"
                 },
                 "provenance": {
                   "$ref": "#/components/schemas/OmittedFileProvenanceBinding"
@@ -12038,9 +12059,19 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "title": "Sha256",
                   "type": "string"
+                },
+                "total": {
+                  "minimum": 0.0,
+                  "title": "Total",
+                  "type": "integer"
                 }
               },
               "required": [
+                "page",
+                "per_page",
+                "total",
+                "pages",
+                "items",
                 "path",
                 "bytes",
                 "sha256",
@@ -13202,13 +13233,6 @@
                   "title": "Agent Ids",
                   "type": "array"
                 },
-                "ancestor_journal_ids": {
-                  "items": {
-                    "$ref": "#/components/schemas/ProvenanceJournalId"
-                  },
-                  "title": "Ancestor Journal Ids",
-                  "type": "array"
-                },
                 "bytes": {
                   "minimum": 0.0,
                   "title": "Bytes",
@@ -13261,7 +13285,6 @@
                 "current_bytes",
                 "current_sha256",
                 "agent_ids",
-                "ancestor_journal_ids",
                 "entity_counts"
               ],
               "title": "ProvenanceJournalOut",
@@ -13285,6 +13308,61 @@
                 "omitted"
               ],
               "type": "string"
+            },
+            "ProvenanceTraceExternalStateReferenceItemOut": {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "external_state_reference",
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "reference": {
+                  "$ref": "#/components/schemas/ProvenanceExternalStateReferenceOut"
+                }
+              },
+              "required": [
+                "kind",
+                "reference"
+              ],
+              "title": "ProvenanceTraceExternalStateReferenceItemOut",
+              "type": "object"
+            },
+            "ProvenanceTraceItemOut": {
+              "discriminator": {
+                "mapping": {
+                  "external_state_reference": "#/components/schemas/ProvenanceTraceExternalStateReferenceItemOut",
+                  "journal": "#/components/schemas/ProvenanceTraceJournalItemOut"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ProvenanceTraceJournalItemOut"
+                },
+                {
+                  "$ref": "#/components/schemas/ProvenanceTraceExternalStateReferenceItemOut"
+                }
+              ]
+            },
+            "ProvenanceTraceJournalItemOut": {
+              "additionalProperties": false,
+              "properties": {
+                "journal": {
+                  "$ref": "#/components/schemas/ProvenanceJournalOut"
+                },
+                "kind": {
+                  "const": "journal",
+                  "title": "Kind",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "journal"
+              ],
+              "title": "ProvenanceTraceJournalItemOut",
+              "type": "object"
             },
             "RecipeIdentityDocument": {
               "additionalProperties": false,
@@ -26333,6 +26411,29 @@
                     "title": "Path",
                     "type": "string"
                   }
+                },
+                {
+                  "in": "query",
+                  "name": "page",
+                  "required": false,
+                  "schema": {
+                    "default": 1,
+                    "minimum": 1,
+                    "title": "Page",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "per_page",
+                  "required": false,
+                  "schema": {
+                    "default": 25,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Per Page",
+                    "type": "integer"
+                  }
                 }
               ],
               "responses": {
@@ -26440,7 +26541,143 @@
                     "provenance:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collection_file_provenance_trace"
+              }
+            }
+          },
+          "/v1/collections/{collection_id}/provenance/trace/{path}/stream": {
+            "get": {
+              "operationId": "stream_collection_file_provenance_trace",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "path",
+                  "name": "path",
+                  "required": true,
+                  "schema": {
+                    "allOf": [
+                      {
+                        "not": {
+                          "pattern": "(?:^|/)\\.{1,2}(?:/|$)"
+                        }
+                      },
+                      {
+                        "not": {
+                          "pattern": "^\\s|\\s$"
+                        }
+                      }
+                    ],
+                    "format": "riverhog-canonical-relpath-v1",
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+(?:/[^/\\\\]+)*$",
+                    "title": "Path",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collection File Provenance Trace",
+              "tags": [
+                "provenance"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "provenance:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.provenance-trace-item/v1",
+                  "sha256": "f4239b405a7d1ccbd9b779ca7812783786b6cccf6c2a261c4a73e88d12bd4df3"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "trace_collection_file_provenance"
+              }
             }
           },
           "/v1/collections/{collection_id}/provenance/verify": {
@@ -40314,8 +40551,34 @@
         "operation_id": "trace_collection_file_provenance",
         "path": "/v1/collections/{collection_id}/provenance/trace/{path}",
         "provider_evidence": null,
-        "read_collection": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collection_file_provenance_trace"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection provenance trace"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collection_file_provenance_trace",
+        "path": "/v1/collections/{collection_id}/provenance/trace/{path}/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.provenance-trace-item/v1",
+            "sha256": "f4239b405a7d1ccbd9b779ca7812783786b6cccf6c2a261c4a73e88d12bd4df3"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "trace_collection_file_provenance"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -58904,6 +59167,10 @@
                 "kind": "method",
                 "signature": "(self, *, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc') -> 'Iterator[Iterator[dict[str, Any]]]'"
               },
+              "stream_collection_file_provenance_trace": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', path: 'str') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
               "stream_collection_provenance": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', *, q: 'str | None' = None, status: 'ProvenanceStatus | None' = None, sort: 'ProvenanceSort' = 'path', order: 'SortOrder' = 'asc') -> 'Iterator[Iterator[dict[str, Any]]]'"
@@ -58942,7 +59209,7 @@
               },
               "trace_collection_file_provenance": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', path: 'str') -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', path: 'str', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
               },
               "verify_collection_provenance": {
                 "kind": "method",
@@ -62041,6 +62308,10 @@
           "provenance_journal_filename": {
             "kind": "function",
             "signature": "(journal_id: 'str') -> 'str'"
+          },
+          "reconstruct_provenance_archive_identity": {
+            "kind": "function",
+            "signature": "(*, bindings: 'Callable[[], Iterable[FileProvenanceBinding]]', journals: 'Callable[[], Iterable[tuple[str, bytes]]]') -> 'str'"
           },
           "resolve_provenance_observer": {
             "kind": "function",

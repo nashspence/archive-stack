@@ -86,8 +86,17 @@ class ProvenanceService(Protocol):
         collection_id: int,
         path: str,
         *,
+        page: int,
+        per_page: int,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
+    def iter_trace_file(
+        self,
+        collection_id: int,
+        path: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[JsonObject]: ...
     def export_journal(
         self,
         collection_id: int,

@@ -428,7 +428,12 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         ]
         == journal_summary.journal_id
     )
-    assert operator.trace_collection_file_provenance(collection_id, "document.txt")["journals"]
+    assert operator.trace_collection_file_provenance(collection_id, "document.txt")["items"]
+    with operator.stream_collection_file_provenance_trace(
+        collection_id,
+        "document.txt",
+    ) as items:
+        assert len(list(items)) == 1
     assert (
         operator.export_collection_provenance_journal(collection_id, journal_summary.journal_id)
         == journal
@@ -928,7 +933,11 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         output_collection_id,
         output_relative_path,
     )
-    assert {item["journal_id"] for item in derived_trace["journals"]} == {
+    assert {
+        item["journal"]["journal_id"]
+        for item in derived_trace["items"]
+        if item["kind"] == "journal"
+    } == {
         journal_summary.journal_id,
         output_journal_summary.journal_id,
     }
@@ -1000,11 +1009,13 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         == "deleted"
     )
     assert {
-        item["journal_id"]
+        item["journal"]["journal_id"]
         for item in operator.trace_collection_file_provenance(
             output_collection_id,
             output_relative_path,
-        )["journals"]
+            per_page=100,
+        )["items"]
+        if item["kind"] == "journal"
     } == {
         journal_summary.journal_id,
         output_journal_summary.journal_id,

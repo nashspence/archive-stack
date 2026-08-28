@@ -769,7 +769,6 @@ def test_provenance_read_projections_preserve_captured_mixed_and_omitted_truth()
         "current_bytes": 42,
         "current_sha256": "a" * 64,
         "agent_ids": ["fixture"],
-        "ancestor_journal_ids": [],
         "entity_counts": {"file": 1},
     }
     assert (
@@ -783,8 +782,11 @@ def test_provenance_read_projections_preserve_captured_mixed_and_omitted_truth()
             {
                 **captured,
                 "journal": journal,
-                "journals": [journal],
-                "external_state_references": [],
+                "page": 1,
+                "per_page": 25,
+                "total": 1,
+                "pages": 1,
+                "items": [{"kind": "journal", "journal": journal}],
             }
         ).root.provenance.status
         == "captured"
@@ -793,7 +795,14 @@ def test_provenance_read_projections_preserve_captured_mixed_and_omitted_truth()
     assert CollectionFileProvenanceDetailOut.model_validate(omitted_detail).root.journal is None
     assert (
         CollectionFileProvenanceTraceOut.model_validate(
-            {**omitted_detail, "journals": [], "external_state_references": []}
+            {
+                **omitted_detail,
+                "page": 1,
+                "per_page": 25,
+                "total": 0,
+                "pages": 0,
+                "items": [],
+            }
         ).root.provenance.status
         == "omitted"
     )

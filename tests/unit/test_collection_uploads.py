@@ -683,8 +683,16 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     ]
     shown = provenance_service.show_file(collection_id, "captured.bin", principal=reader)
     assert shown["journal"]["journal_id"] == summary.journal_id
-    traced = provenance_service.trace_file(collection_id, "captured.bin", principal=reader)
-    assert [item["journal_id"] for item in traced["journals"]] == [summary.journal_id]
+    traced = provenance_service.trace_file(
+        collection_id,
+        "captured.bin",
+        page=1,
+        per_page=100,
+        principal=reader,
+    )
+    assert [
+        item["journal"]["journal_id"] for item in traced["items"] if item["kind"] == "journal"
+    ] == [summary.journal_id]
     exported, exported_sha256 = provenance_service.export_journal(
         collection_id,
         summary.journal_id,
