@@ -589,6 +589,54 @@ def test_direct_ingress_openapi_describes_the_binary_unit_body() -> None:
     schema = request_body["content"]["application/octet-stream"]["schema"]
     assert schema["type"] == "string"
     assert schema["format"] == "binary"
+    content_length = next(
+        parameter for parameter in operation["parameters"] if parameter["name"] == "Content-Length"
+    )
+    assert content_length == {
+        "name": "Content-Length",
+        "in": "header",
+        "required": True,
+        "description": "Exact request-body length in bytes.",
+        "schema": {"type": "integer", "minimum": 0},
+    }
+    assert "411" in operation["responses"]
+
+
+def test_staged_provenance_openapi_describes_exact_binary_transfer() -> None:
+    path = create_riverhog_app().openapi()["paths"][
+        "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}"
+    ]
+    upload = path["put"]
+    download = path["get"]
+
+    assert set(upload["requestBody"]["content"]) == {"application/json-seq"}
+    assert upload["requestBody"]["content"]["application/json-seq"]["schema"] == {
+        "type": "string",
+        "format": "binary",
+        "title": "Content",
+        "contentMediaType": "application/octet-stream",
+    }
+    content_length = next(
+        parameter for parameter in upload["parameters"] if parameter["name"] == "Content-Length"
+    )
+    assert content_length["required"] is True
+    assert content_length["schema"] == {"type": "integer", "minimum": 0}
+    assert "411" in upload["responses"]
+
+    response = download["responses"]["200"]
+    assert set(response["content"]) == {"application/json-seq"}
+    assert response["content"]["application/json-seq"]["schema"] == {
+        "type": "string",
+        "format": "binary",
+    }
+    assert response["headers"]["Content-Length"]["schema"] == {
+        "type": "integer",
+        "minimum": 0,
+    }
+    assert response["headers"]["ETag"]["schema"] == {
+        "type": "string",
+        "pattern": '^"[0-9a-f]{64}"$',
+    }
 
 
 @pytest.mark.parametrize(

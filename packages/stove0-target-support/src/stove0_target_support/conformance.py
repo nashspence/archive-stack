@@ -7,9 +7,10 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, Self
 
 from jsonschema import Draft202012Validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from stove0_target_client.client import (
     TargetClient as HttpTargetClient,
 )
@@ -29,6 +30,83 @@ from stove0_target_protocol import (
     validate_preflight_response_against_request,
     validate_status_against_request,
 )
+
+TARGET_CONFORMANCE_RESULT: Literal["stove0-target-conformance-result/v1"] = (
+    "stove0-target-conformance-result/v1"
+)
+
+
+class _TargetConformanceModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class TargetConformanceCoverage(_TargetConformanceModel):
+    advertised: int = Field(ge=0, strict=True)
+    exercised: int = Field(ge=0, strict=True)
+    complete: bool
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> Self:
+        if self.exercised > self.advertised or self.complete != (self.exercised == self.advertised):
+            raise ValueError("target conformance coverage is inconsistent")
+        return self
+
+
+class TargetOperationConformance(_TargetConformanceModel):
+    operation_id: str
+    operation_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result_kind: Literal["collection", "effect"]
+    options_schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    semantic_conformance: Literal["not-exercised", "schema-only", "exercised"]
+    intent_semantics_id: str | None = None
+    intent_semantics_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    intent_semantics_conformance_vectors_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+
+class TargetSemanticConformance(_TargetConformanceModel):
+    profile_id: str
+    profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["schema-only", "exercised"]
+    conformance_vectors_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    accepted_vector_ids: tuple[str, ...] = ()
+    rejected_vector_ids: tuple[str, ...] = ()
+
+
+class TargetOperationConformanceEvidence(_TargetConformanceModel):
+    operation_id: str
+    semantic_conformance: TargetSemanticConformance
+    preflight: TargetPreflightResponse
+    submission: TargetJobStatus
+    job_status: TargetJobStatus
+
+
+class TargetConformanceResult(_TargetConformanceModel):
+    format: Literal["stove0-target-conformance-result/v1"] = TARGET_CONFORMANCE_RESULT
+    status: Literal["conformant", "partially-exercised", "inspected"]
+    target: TargetContract
+    coverage: TargetConformanceCoverage
+    operations: tuple[TargetOperationConformance, ...]
+    operation_evidence: tuple[TargetOperationConformanceEvidence, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_result(self) -> Self:
+        expected_status = (
+            "conformant"
+            if self.coverage.complete
+            else "partially-exercised"
+            if self.coverage.exercised
+            else "inspected"
+        )
+        if self.status != expected_status:
+            raise ValueError("target conformance status differs from its coverage")
+        if self.coverage.advertised != len(self.operations):
+            raise ValueError("target conformance coverage differs from its operations")
+        if self.coverage.exercised != len(self.operation_evidence):
+            raise ValueError("target conformance evidence differs from its coverage")
+        return self
 
 
 class TargetClient(Protocol):
@@ -227,7 +305,7 @@ def conformance_report(
     client: TargetClient,
     *,
     cases: Sequence[TargetConformanceCase] = (),
-) -> dict[str, Any]:
+) -> TargetConformanceResult:
     """Report exact coverage, claiming conformance only for all advertised operations."""
 
     contract = client.contract()
@@ -285,7 +363,15 @@ def conformance_report(
     )
     if evidence:
         report["operation_evidence"] = evidence
-    return report
+    return TargetConformanceResult.model_validate(
+        {
+            "status": report["status"],
+            "target": contract,
+            "coverage": report["coverage"],
+            "operations": report["operations"],
+            "operation_evidence": report.get("operation_evidence", []),
+        }
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -339,8 +425,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         HttpTargetClient(args.base_url),
         cases=cases,
     )
-    print(json.dumps(report, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            report.model_dump(mode="json", exclude_none=True),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
-__all__ = ["TargetClient", "TargetConformanceCase", "conformance_report", "main"]
+__all__ = [
+    "TARGET_CONFORMANCE_RESULT",
+    "TargetClient",
+    "TargetConformanceCase",
+    "TargetConformanceResult",
+    "conformance_report",
+    "main",
+]

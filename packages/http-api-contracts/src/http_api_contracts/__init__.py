@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from http import HTTPStatus
 from ipaddress import ip_address
@@ -160,6 +160,79 @@ def http_operation_for_request(
     if len(matches) > 1:
         raise ValueError("HTTP operation contracts overlap")
     return matches[0] if matches else None
+
+
+def http_operation_inventory(
+    contracts: Sequence[HttpOperationContract],
+) -> list[dict[str, Any]]:
+    """Project exact operation contracts into a stable machine-readable inventory."""
+
+    return [
+        {
+            "method": operation.method,
+            "path": operation.path,
+            "path_parameters": [
+                {
+                    "name": parameter.name,
+                    "schema": inline_type_schema(parameter.value_type),
+                }
+                for parameter in operation.path_parameters
+            ],
+            "request": {
+                "kind": operation.request_kind,
+                "schema": _type_name(operation.request_type),
+            },
+            "response": {
+                "kind": operation.response_kind,
+                "schema": _type_name(operation.response_type),
+                "statuses": list(operation.success_statuses),
+                "headers": [
+                    {
+                        "name": header.name,
+                        "schema": inline_type_schema(header.value_type),
+                        **(
+                            {"description": header.description}
+                            if header.description is not None
+                            else {}
+                        ),
+                    }
+                    for header in operation.response_headers
+                ],
+            },
+            "errors": [{"code": error.code, "status": error.status} for error in operation.errors],
+        }
+        for operation in contracts
+    ]
+
+
+def structural_model_catalog(
+    contracts: Sequence[HttpOperationContract],
+    *,
+    additional_models: Sequence[type[BaseModel]] = (),
+) -> dict[str, dict[str, Any]]:
+    """Return structural schemas used by operations, without claiming semantic completeness."""
+
+    models: set[type[BaseModel]] = set(additional_models)
+    for operation in contracts:
+        for value in (operation.request_type, operation.response_type):
+            if value is None:
+                continue
+            if not isinstance(value, type) or not issubclass(value, BaseModel):
+                raise TypeError("HTTP declaration is not a Pydantic model")
+            models.add(value)
+    return {
+        model.__name__: model.model_json_schema(mode="validation")
+        for model in sorted(models, key=lambda item: item.__name__)
+    }
+
+
+def _type_name(value: object | None) -> str | None:
+    if value is None:
+        return None
+    name = getattr(value, "__name__", None)
+    if not isinstance(name, str) or not name:
+        raise TypeError("HTTP declaration type has no stable public name")
+    return name
 
 
 def inline_type_schema(value: object) -> dict[str, Any]:
@@ -500,6 +573,20 @@ def parse_error_payload(
     return code, message, details
 
 
+def parse_declared_error_payload(
+    contract: HttpOperationContract,
+    *,
+    status: int,
+    payload: object,
+) -> tuple[str, str, dict[str, Any]]:
+    """Accept one exact remote rejection or fail as an invalid peer response."""
+
+    response = ErrorResponse.model_validate(payload)
+    if not contract.accepts_error(status=status, code=response.error.code):
+        raise ValueError("HTTP peer returned an undeclared error code/status pair")
+    return response.error.code, response.error.message, dict(response.error.details or {})
+
+
 __all__ = [
     "CANONICAL_VISIBLE_TEXT_PATTERN",
     "ERROR_STATUS_BY_CODE",
@@ -526,7 +613,10 @@ __all__ = [
     "operation_openapi",
     "inline_type_schema",
     "http_operation_for_request",
+    "http_operation_inventory",
     "parse_error_payload",
+    "parse_declared_error_payload",
     "safe_http_base_url",
     "status_for_error_code",
+    "structural_model_catalog",
 ]

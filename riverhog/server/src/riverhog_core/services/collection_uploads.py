@@ -1204,8 +1204,7 @@ class SqlAlchemyCollectionUploadService:
                     "collection_id": normalized_id,
                     "files": 0,
                     "bytes": 0,
-                    "custodied_files": 0,
-                    "custodied_bytes": 0,
+                    "custody": {"state": "complete"},
                     "archive_objects": 0,
                 }
             plan = _orphan_discard_plan(
@@ -1237,8 +1236,7 @@ class SqlAlchemyCollectionUploadService:
                 "collection_id": normalized_id,
                 "files": plan["files"],
                 "bytes": plan["bytes"],
-                "custodied_files": plan["custodied_files"],
-                "custodied_bytes": plan["custodied_bytes"],
+                "custody": plan["custody"],
                 "archive_objects": plan["archive_objects"],
             }
             now = utc_timestamp_now()
@@ -2668,6 +2666,32 @@ def _custody_stats(session: Session, collection_id: int) -> tuple[int, int]:
     return int(files), int(byte_count)
 
 
+def _custody_payload(
+    *,
+    files: int,
+    byte_count: int,
+    custodied_files: int,
+    custodied_bytes: int,
+) -> dict[str, object]:
+    """Project exact completion separately from non-authoritative progress counters."""
+
+    if (
+        custodied_files < 0
+        or custodied_bytes < 0
+        or custodied_files > files
+        or custodied_bytes > byte_count
+        or (custodied_files == 0 and custodied_bytes != 0)
+    ):
+        raise RuntimeError("collection upload custody projection is inconsistent")
+    if (custodied_files, custodied_bytes) == (files, byte_count):
+        return {"state": "complete"}
+    return {
+        "state": "pending",
+        "files": custodied_files,
+        "bytes": custodied_bytes,
+    }
+
+
 def _upload_list_payload(
     session: Session,
     upload: CollectionUploadRecord,
@@ -2688,8 +2712,12 @@ def _upload_list_payload(
         "custody_mode": upload.custody_mode,
         "files": files,
         "bytes": byte_count,
-        "custodied_files": custodied_files,
-        "custodied_bytes": custodied_bytes,
+        "custody": _custody_payload(
+            files=files,
+            byte_count=byte_count,
+            custodied_files=custodied_files,
+            custodied_bytes=custodied_bytes,
+        ),
         "upload_state_expires_at": upload.lease_expires_at,
         "orphaned_at": upload.orphaned_at,
     }
@@ -2780,8 +2808,12 @@ def _orphan_discard_plan(
         "state": upload.state,
         "files": int(files),
         "bytes": int(byte_count),
-        "custodied_files": custodied_files,
-        "custodied_bytes": custodied_bytes,
+        "custody": _custody_payload(
+            files=int(files),
+            byte_count=int(byte_count),
+            custodied_files=custodied_files,
+            custodied_bytes=custodied_bytes,
+        ),
         "archive_objects": archive_objects,
         "blockers": blockers,
     }
@@ -2894,8 +2926,12 @@ def _upload_payload(
         "files_total": int(files_total),
         "bytes_total": int(bytes_total),
         "upload_state_expires_at": None if state == "canceled" else upload.lease_expires_at,
-        "custodied_files": custodied_files,
-        "custodied_bytes": custodied_bytes,
+        "custody": _custody_payload(
+            files=int(files_total),
+            byte_count=int(bytes_total),
+            custodied_files=custodied_files,
+            custodied_bytes=custodied_bytes,
+        ),
         "orphaned_at": None if state == "canceled" else upload.orphaned_at,
         "latest_failure": upload.archive_failure,
         "archive_phase": upload.archive_phase,
@@ -2964,8 +3000,7 @@ def _finalized_payload(
         "files_total": summary["files"],
         "bytes_total": summary["bytes"],
         "upload_state_expires_at": None,
-        "custodied_files": summary["files"],
-        "custodied_bytes": summary["bytes"],
+        "custody": {"state": "complete"},
         "orphaned_at": None,
         "latest_failure": None,
         "archive_phase": "completed",

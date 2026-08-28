@@ -1,5 +1,10 @@
 """Dependency-light public models for external stove0 targets."""
 
+from http_api_contracts import (
+    HttpErrorContract,
+    HttpOperationContract,
+    HttpPathParameterContract,
+)
 from stove0_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     SemanticValidationProfile,
@@ -59,6 +64,87 @@ from stove0_target_protocol.protocol import (
     validate_status_against_request,
 )
 
+_TARGET_HTTP_ERROR_STATUS: dict[str, int] = {
+    "bad_request": 400,
+    "invalid_target_request": 400,
+    "job_identity_mismatch": 409,
+    "job_not_found": 404,
+    "job_request_mismatch": 409,
+    "operation_contract_mismatch": 409,
+    "request_too_large": 413,
+    "target_contract_mismatch": 409,
+    "target_failed": 500,
+    "target_protocol_mismatch": 409,
+    "target_runtime_mismatch": 409,
+    "unauthorized": 401,
+    "unsupported_operation": 400,
+}
+
+
+def _target_http_errors(*codes: str) -> tuple[HttpErrorContract, ...]:
+    return tuple(HttpErrorContract(code, _TARGET_HTTP_ERROR_STATUS[code]) for code in codes)
+
+
+_JOB_ID_PARAMETER = (HttpPathParameterContract("job_id", Sha256),)
+TARGET_HTTP_OPERATIONS = (
+    HttpOperationContract(
+        "GET",
+        "/v1/target",
+        response_type=TargetContract,
+        errors=_target_http_errors("bad_request", "unauthorized", "target_failed"),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/preflight",
+        TargetPreflightRequest,
+        TargetPreflightResponse,
+        "json",
+        errors=_target_http_errors(
+            "invalid_target_request",
+            "unauthorized",
+            "request_too_large",
+            "target_protocol_mismatch",
+            "operation_contract_mismatch",
+            "unsupported_operation",
+            "target_failed",
+        ),
+    ),
+    HttpOperationContract(
+        "PUT",
+        "/v1/jobs/{job_id}",
+        TargetJobRequest,
+        TargetJobStatus,
+        "json",
+        errors=_target_http_errors(
+            "invalid_target_request",
+            "unauthorized",
+            "request_too_large",
+            "job_identity_mismatch",
+            "target_contract_mismatch",
+            "operation_contract_mismatch",
+            "job_request_mismatch",
+            "target_runtime_mismatch",
+            "unsupported_operation",
+            "target_failed",
+        ),
+        path_parameters=_JOB_ID_PARAMETER,
+    ),
+    HttpOperationContract(
+        "GET",
+        "/v1/jobs/{job_id}",
+        response_type=TargetJobStatus,
+        errors=_target_http_errors("bad_request", "unauthorized", "job_not_found", "target_failed"),
+        path_parameters=_JOB_ID_PARAMETER,
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/jobs/{job_id}/cancel",
+        response_type=TargetJobStatus,
+        errors=_target_http_errors("bad_request", "unauthorized", "job_not_found", "target_failed"),
+        path_parameters=_JOB_ID_PARAMETER,
+    ),
+)
+
 __all__ = [
     "AcceptedTargetJob",
     "ARTIFACT_ID_PATTERN",
@@ -86,6 +172,7 @@ __all__ = [
     "SemanticValidationProfilePayload",
     "Sha256",
     "TargetContract",
+    "TARGET_HTTP_OPERATIONS",
     "TargetContractPayload",
     "TargetExecutionEvidence",
     "TargetFailure",

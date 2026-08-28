@@ -8,8 +8,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from http_api_contracts import http_operation_inventory, structural_model_catalog
 from stove0_observer_protocol import (
+    OBSERVER_HTTP_OPERATIONS,
     OBSERVER_PROTOCOL,
     ObservationInvocation,
     ObservationRequest,
@@ -20,9 +21,11 @@ from stove0_observer_protocol import (
     canonical_json_sha256,
 )
 
+from stove0_observer_support.conformance import ObserverConformanceResult
+
 OBSERVER_SCHEMA_BUNDLE_FORMAT = "stove0-observer-schema-bundle/v1"
 
-_SCHEMA_MODELS: tuple[type[BaseModel], ...] = (
+_ADDITIONAL_MODELS = (
     ObserverContract,
     ObserverDescriptor,
     ObservationRequest,
@@ -32,7 +35,7 @@ _SCHEMA_MODELS: tuple[type[BaseModel], ...] = (
 
 
 def observer_schema_bundle() -> dict[str, Any]:
-    """Return the complete stable v1 observer HTTP wire-schema bundle."""
+    """Return structural models and the exact v1 observer HTTP inventory."""
 
     payload: dict[str, Any] = {
         "format": OBSERVER_SCHEMA_BUNDLE_FORMAT,
@@ -42,16 +45,24 @@ def observer_schema_bundle() -> dict[str, Any]:
             "unknown_protocol_revision": "reject",
             "contract_identity": "canonical-json-sha256",
         },
+        "authorities": {
+            "structural_models": "schemas",
+            "http_operations": "http_binding.operations",
+            "semantic_acceptance": "semantic_acceptance",
+        },
         "http_binding": {
-            "GET /v1/observer": "ObserverDescriptor",
-            "POST /v1/observe": {
-                "request": "ObservationInvocation",
-                "response": "ObservationResult",
-            },
+            "operations": http_operation_inventory(OBSERVER_HTTP_OPERATIONS),
         },
-        "schemas": {
-            model.__name__: model.model_json_schema(mode="validation") for model in _SCHEMA_MODELS
+        "semantic_acceptance": {
+            "kind": "profile-registry",
+            "binding": "ObserverContract.facts_semantics",
+            "identity": ["profile_id", "profile_sha256"],
+            "unavailable_profile": "reject",
         },
+        "schemas": structural_model_catalog(
+            OBSERVER_HTTP_OPERATIONS,
+            additional_models=(*_ADDITIONAL_MODELS, ObserverConformanceResult),
+        ),
     }
     return {**payload, "bundle_sha256": canonical_json_sha256(payload)}
 

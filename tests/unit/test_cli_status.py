@@ -31,15 +31,15 @@ def test_archive_wait_status_reports_the_exact_retry_schedule() -> None:
             "state": "finalizing",
             "files_total": 2,
             "bytes_total": 10,
-            "custodied_files": 1,
-            "custodied_bytes": 5,
+            "custody": {"state": "complete"},
             "archive_phase": "retry_wait",
             "latest_failure": "temporary provider failure",
             "archive_next_attempt_at": "2026-08-26T12:34:56.000000Z",
         }
     )
-    assert "custodied files: 1/2" in rich
-    assert "custodied bytes: 5 B/10 B" in rich
+    assert "custody state: complete" in rich
+    assert "custodied files: 2/2" in rich
+    assert "custodied bytes: 10 B/10 B" in rich
     assert "archive phase: retry_wait" in rich
     assert "failure: temporary provider failure" in rich
     assert "archive next attempt: 2026-08-26T12:34:56.000000Z" in rich

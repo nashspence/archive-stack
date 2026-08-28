@@ -7,9 +7,10 @@ import importlib.metadata
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Literal, Protocol, Self
 
 from jsonschema import Draft202012Validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from stove0_review_sampler_client.client import ReviewSamplerClient
 from stove0_review_sampler_protocol import (
     SamplerDescriptor,
@@ -17,6 +18,46 @@ from stove0_review_sampler_protocol import (
     SamplerResult,
     validate_result,
 )
+
+SAMPLER_CONFORMANCE_RESULT: Literal["stove0-review-sampler-conformance-result/v1"] = (
+    "stove0-review-sampler-conformance-result/v1"
+)
+
+
+class _SamplerConformanceModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class SamplerConformanceCoverage(_SamplerConformanceModel):
+    advertised: Literal[1] = 1
+    exercised: int = Field(ge=0, le=1, strict=True)
+    complete: bool
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> Self:
+        if self.complete != (self.exercised == 1):
+            raise ValueError("sampler conformance coverage is inconsistent")
+        return self
+
+
+class SamplerConformanceResult(_SamplerConformanceModel):
+    format: Literal["stove0-review-sampler-conformance-result/v1"] = SAMPLER_CONFORMANCE_RESULT
+    status: Literal["conformant", "inspected"]
+    sampler: SamplerDescriptor
+    coverage: SamplerConformanceCoverage
+    sampling: Literal["exercised", "not-exercised"]
+    sample: SamplerResult | None = None
+
+    @model_validator(mode="after")
+    def validate_result(self) -> Self:
+        exercised = self.sample is not None
+        if (
+            self.coverage.complete != exercised
+            or self.status != ("conformant" if exercised else "inspected")
+            or self.sampling != ("exercised" if exercised else "not-exercised")
+        ):
+            raise ValueError("sampler conformance result is inconsistent")
+        return self
 
 
 class SamplerClient(Protocol):
@@ -29,21 +70,12 @@ def conformance_report(
     client: SamplerClient,
     *,
     request: SamplerRequest | None = None,
-) -> dict[str, Any]:
+) -> SamplerConformanceResult:
     descriptor = client.descriptor()
     exercised = request is not None
-    report: dict[str, Any] = {
+    report: dict[str, object] = {
         "status": "conformant" if exercised else "inspected",
-        "protocol": descriptor.protocol,
-        "implementation_id": descriptor.implementation_id,
-        "implementation_version": descriptor.implementation_version,
-        "source_revision": descriptor.source_revision,
-        "image_digest": descriptor.image_digest,
-        "descriptor_sha256": descriptor.descriptor_sha256,
-        "primary_operation_id": descriptor.primary_operation_id,
-        "primary_operation_contract_sha256": (descriptor.primary_operation_contract_sha256),
-        "portable_intent_schema_sha256": descriptor.portable_intent_schema.sha256,
-        "output_role": descriptor.output_role,
+        "sampler": descriptor,
         "coverage": {
             "advertised": 1,
             "exercised": 1 if exercised else 0,
@@ -52,7 +84,7 @@ def conformance_report(
         "sampling": "exercised" if exercised else "not-exercised",
     }
     if request is None:
-        return report
+        return SamplerConformanceResult.model_validate(report)
     if request.sampler_descriptor_sha256 != descriptor.descriptor_sha256:
         raise RuntimeError("sampler request does not bind the deployed descriptor")
     Draft202012Validator(descriptor.portable_intent_schema.document).validate(
@@ -60,8 +92,8 @@ def conformance_report(
     )
     result = client.sample(request)
     validate_result(result, request, descriptor)
-    report["sample"] = result.model_dump(mode="json", exclude_none=True)
-    return report
+    report["sample"] = result
+    return SamplerConformanceResult.model_validate(report)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -97,8 +129,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_insecure_http=args.allow_insecure_http,
     ) as client:
         report = conformance_report(client, request=request)
-    print(json.dumps(report, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            report.model_dump(mode="json", exclude_none=True),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
-__all__ = ["SamplerClient", "conformance_report", "main"]
+__all__ = [
+    "SAMPLER_CONFORMANCE_RESULT",
+    "SamplerClient",
+    "SamplerConformanceResult",
+    "conformance_report",
+    "main",
+]

@@ -19,12 +19,14 @@ classifiers = [
 ]
 urls = { Documentation = "https://nashspence.github.io/riverhog/v1/", Issues = "https://github.com/nashspence/riverhog/issues", Repository = "https://github.com/nashspence/riverhog" }
 dependencies = [
+  "http-api-contracts>=0.1,<0.2",
   "jsonschema>=4.25,<5.0",
   "pydantic>=2.7,<3.0",
   "stove0-protocol>=0.1,<0.2",
 ]
 
 [tool.uv.sources]
+http-api-contracts = { workspace = true }
 stove0-protocol = { workspace = true }
 
 [tool.hatch.build.targets.wheel]

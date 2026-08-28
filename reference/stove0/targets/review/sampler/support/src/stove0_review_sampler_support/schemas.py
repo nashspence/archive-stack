@@ -8,11 +8,15 @@ import json
 from collections.abc import Sequence
 from typing import Any, Final
 
+from http_api_contracts import http_operation_inventory, structural_model_catalog
 from stove0_review_sampler_protocol import (
+    SAMPLER_HTTP_OPERATIONS,
     SamplerDescriptor,
     SamplerRequest,
     SamplerResult,
 )
+
+from stove0_review_sampler_support.conformance import SamplerConformanceResult
 
 SAMPLER_SCHEMA_BUNDLE_FORMAT: Final = "stove0-review-sampler-schema-bundle/v1"
 
@@ -21,18 +25,27 @@ def sampler_schema_bundle() -> dict[str, Any]:
     return {
         "format": SAMPLER_SCHEMA_BUNDLE_FORMAT,
         "protocol": "stove0-review-sampler/v1",
-        "endpoints": {
-            "GET /v1/sampler": "SamplerDescriptor",
-            "POST /v1/sample": {
-                "request": "SamplerRequest",
-                "response": "SamplerResult",
-            },
+        "authorities": {
+            "structural_models": "schemas",
+            "http_operations": "http_binding.operations",
+            "semantic_acceptance": "semantic_acceptance",
         },
-        "schemas": {
-            "SamplerDescriptor": SamplerDescriptor.model_json_schema(),
-            "SamplerRequest": SamplerRequest.model_json_schema(),
-            "SamplerResult": SamplerResult.model_json_schema(),
+        "http_binding": {
+            "operations": http_operation_inventory(SAMPLER_HTTP_OPERATIONS),
         },
+        "semantic_acceptance": {
+            "kind": "request-bound-result",
+            "validator": "validate_result",
+        },
+        "schemas": structural_model_catalog(
+            SAMPLER_HTTP_OPERATIONS,
+            additional_models=(
+                SamplerDescriptor,
+                SamplerRequest,
+                SamplerResult,
+                SamplerConformanceResult,
+            ),
+        ),
     }
 
 

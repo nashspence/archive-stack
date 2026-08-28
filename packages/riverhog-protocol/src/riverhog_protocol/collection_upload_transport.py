@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Literal, Self
 
 from http_api_contracts import CanonicalVisibleText
@@ -27,6 +28,7 @@ from riverhog_protocol.transport import COLLECTION_UPLOAD_FILE_BATCH_MAX
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 CollectionUploadCustodyMode = Literal["producer-retained", "custody-transfer"]
+CollectionUploadVolumeKind = Literal["pack", "segment"]
 
 
 def collection_upload_path_order_key(path: str) -> tuple[int, bytes]:
@@ -72,6 +74,63 @@ class CollectionUploadRegistrationConstraintsDocument(CollectionUploadDocument):
 
     pack_member_bytes: int = Field(ge=1)
     raw_part_plaintext_bytes: int = Field(ge=65536, multiple_of=65536)
+
+
+class CollectionUploadUnitSourceDocument(CollectionUploadDocument):
+    """One exact source range supplied in a server-planned upload unit."""
+
+    path: str
+    offset: int = Field(ge=0, strict=True)
+    bytes: int = Field(ge=0, strict=True)
+    sha256: Sha256
+
+    @field_validator("path")
+    @classmethod
+    def canonical_path(cls, value: str) -> str:
+        return normalize_relpath(value)
+
+
+class CollectionUploadUnitDocument(CollectionUploadDocument):
+    """Protocol-owned identity of one server-planned plaintext upload unit."""
+
+    unit: int = Field(ge=0, strict=True)
+    payload_bytes: int = Field(ge=0, strict=True)
+    plaintext_bytes: int = Field(ge=0, strict=True)
+    sources: Sequence[CollectionUploadUnitSourceDocument]
+
+    @model_validator(mode="after")
+    def validate_sources(self) -> Self:
+        if sum(source.bytes for source in self.sources) != self.payload_bytes:
+            raise ValueError("upload unit source bytes differ from its payload bytes")
+        identities = [(source.path, source.offset) for source in self.sources]
+        if len(identities) != len(set(identities)):
+            raise ValueError("upload unit source ranges must be unique")
+        return self
+
+
+class CollectionUploadVolumeDocument(CollectionUploadDocument):
+    """Protocol-owned identity and complete unit plan for one archive volume."""
+
+    volume_id: str
+    sequence: int = Field(ge=0, strict=True)
+    kind: CollectionUploadVolumeKind
+    plan_sha256: Sha256
+    plaintext_bytes: int = Field(ge=0, strict=True)
+    source_bytes: int = Field(ge=0, strict=True)
+    units: Sequence[CollectionUploadUnitDocument] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_volume_plan(self) -> Self:
+        expected_prefix = "pack" if self.kind == "pack" else "segment"
+        if self.volume_id != f"{expected_prefix}-{self.sequence:012d}":
+            raise ValueError("upload volume ID differs from its kind and sequence")
+        if [unit.unit for unit in self.units] != list(range(len(self.units))):
+            raise ValueError("upload volume units must be consecutive from zero")
+        if sum(unit.plaintext_bytes for unit in self.units) != self.plaintext_bytes:
+            raise ValueError("upload volume unit plaintext bytes differ from its total")
+        if sum(unit.payload_bytes for unit in self.units) != self.source_bytes:
+            raise ValueError("upload volume unit payload bytes differ from its source total")
+        return self
 
 
 class CollectionUploadFileIn(ImmutableFileIdentityDocument):
@@ -225,6 +284,10 @@ __all__ = [
     "CollectionUploadCustodyObjectDocument",
     "CollectionUploadRegistrationConstraintsDocument",
     "CollectionUploadRawPartsIn",
+    "CollectionUploadUnitDocument",
+    "CollectionUploadUnitSourceDocument",
+    "CollectionUploadVolumeDocument",
+    "CollectionUploadVolumeKind",
     "FileProvenanceBinding",
     "OmittedFileProvenanceBinding",
     "collection_upload_raw_digest_manifest",
