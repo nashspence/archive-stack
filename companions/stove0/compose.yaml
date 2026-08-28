@@ -3,7 +3,7 @@ x-stove0-image: &stove0-image
   build:
     context: ../..
     dockerfile: companions/stove0/server/Dockerfile
-    target: reference-qualification
+    target: reference-composition
     args:
       SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
 

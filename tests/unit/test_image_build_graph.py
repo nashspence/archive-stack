@@ -69,7 +69,7 @@ IMAGE_CONTRACTS = {
     "stove0": {
         "dockerfile": "companions/stove0/server/Dockerfile",
         "tag": "stove0:dev",
-        "compose_target": "reference-qualification",
+        "compose_target": "reference-composition",
         "title": "stove0",
         "license": "CAL-1.0",
         "compose": (
@@ -445,15 +445,13 @@ def test_compose_build_services_match_the_canonical_bake_graph() -> None:
             assert build.get("target") == contract.get("compose_target")
 
 
-def test_stove0_reference_validators_are_qualification_only() -> None:
+def test_stove0_reference_validators_are_compose_composition_only() -> None:
     dockerfile = (REPO_ROOT / IMAGE_CONTRACTS["stove0"]["dockerfile"]).read_text(encoding="utf-8")
-    generic_build, qualification_and_runtime = dockerfile.split(
-        "FROM build AS reference-qualification-build", 1
+    generic_build, composition_and_runtime = dockerfile.split(
+        "FROM build AS reference-composition-build", 1
     )
-    qualification_build, runtime_stages = qualification_and_runtime.split(
-        "FROM python:3.12-slim@", 1
-    )
-    qualification_runtime, product_runtime = runtime_stages.split("FROM runtime-base AS runtime", 1)
+    composition_build, runtime_stages = composition_and_runtime.split("FROM python:3.12-slim@", 1)
+    composition_runtime, product_runtime = runtime_stages.split("FROM runtime-base AS runtime", 1)
 
     assert "reference/" not in generic_build
     assert "--package stove0-server --no-dev --no-editable" in generic_build
@@ -463,24 +461,21 @@ def test_stove0_reference_validators_are_qualification_only() -> None:
     assert (
         "COPY reference/stove0/observers/contracts/media-metadata "
         "reference/stove0/observers/contracts/media-metadata"
-    ) in qualification_build
+    ) in composition_build
     assert (
         "COPY reference/stove0/observers/contracts/media-sampling "
         "reference/stove0/observers/contracts/media-sampling"
-    ) in qualification_build
-    assert "--package stove0-media-metadata-observer-contracts" in qualification_build
-    assert "--package stove0-media-sampling-observer-contracts" in qualification_build
+    ) in composition_build
+    assert "--package stove0-media-metadata-observer-contracts" in composition_build
+    assert "--package stove0-media-sampling-observer-contracts" in composition_build
 
-    assert "FROM runtime-base AS reference-qualification" in qualification_runtime
+    assert "FROM runtime-base AS reference-composition" in composition_runtime
     assert (
-        'io.github.nashspence.riverhog.composition="reference-qualification"'
-        in qualification_runtime
+        'io.github.nashspence.riverhog.composition="reference-composition"' in composition_runtime
     )
-    assert "COPY --from=reference-qualification-build /opt/venv /opt/venv" in (
-        qualification_runtime
-    )
+    assert "COPY --from=reference-composition-build /opt/venv /opt/venv" in (composition_runtime)
     assert "COPY --from=build /opt/venv /opt/venv" in product_runtime
-    assert "reference-qualification-build" not in product_runtime
+    assert "reference-composition-build" not in product_runtime
 
 
 def test_github_image_matrix_uses_bounded_per_image_bake_caches() -> None:

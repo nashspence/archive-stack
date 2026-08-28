@@ -24,9 +24,9 @@ Contracts define packages; architecture records ownership.
 ## Boundary model
 
 - **Implementation ownership.** Products own implementations. Packages contain product contracts or
-  implementation-neutral tooling; reference contracts and support stay with their family. Products
-  and reusable packages do not depend on references; reference images and qualification compose
-  them explicitly.
+  implementation-neutral tooling; reference contracts and support stay with their family.
+  Non-reference release units do not depend on references; reference images, qualification, and
+  tests compose them explicitly.
 - **Public contracts.** Runtime integration uses published HTTP and CloudEvents contracts.
   Shared models own identity-bearing documents. Exact HTTP/OpenAPI contracts own ordinary CRUD;
   official clients may expose their JSON.
@@ -39,9 +39,9 @@ Contracts define packages; architecture records ownership.
 - **Companions.** Companions use Riverhog capabilities and own workflow state. Stove0 is one; its
   core does not interpret content.
 - **Extensions.** Observers report immutable-artifact facts; targets perform declared operations.
-  Each explicitly selected distribution owns one capability; shared-dependency image bundles do
-  not merge identities or selection. First-party references are optional and nonnormative: their
-  inventory is neither complete nor recommended and defines no support matrix.
+  Each selected distribution owns one capability; shared-dependency image bundles preserve separate
+  identities and selection. Names identify families; only exact digest-bound contracts or selected
+  bindings carry authority. References are optional, nonnormative, and not a support matrix.
 - **Transfer path.** Payload loops exclude control-plane status and reporting work.
 
 Workspace checks enforce ownership boundaries.

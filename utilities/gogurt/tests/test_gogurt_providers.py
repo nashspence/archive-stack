@@ -452,31 +452,40 @@ def test_installed_external_distribution_composes_without_workspace_registration
         ),
         encoding="utf-8",
     )
-    metadata = tmp_path / "external_gogurt-1.0.dist-info"
-    metadata.mkdir()
-    (metadata / "METADATA").write_text(
-        "Metadata-Version: 2.4\nName: external-gogurt\nVersion: 1.0\n",
-        encoding="utf-8",
-    )
-    (metadata / "entry_points.txt").write_text(
-        "\n".join(
-            (
-                "[gogurt.mounted-volume-providers]",
-                "external-freebsd = external_gogurt:VOLUME",
-                "[gogurt.listener-host-providers]",
-                "external-freebsd = external_gogurt:HOST",
-            )
+    distributions = (
+        (
+            "external_gogurt_mounted_volume-1.0.dist-info",
+            "external-gogurt-mounted-volume",
+            "gogurt.mounted-volume-providers",
+            "external_gogurt:VOLUME",
         ),
-        encoding="utf-8",
+        (
+            "external_gogurt_listener_host-1.0.dist-info",
+            "external-gogurt-listener-host",
+            "gogurt.listener-host-providers",
+            "external_gogurt:HOST",
+        ),
     )
+    for directory, distribution, group, entry_point in distributions:
+        metadata = tmp_path / directory
+        metadata.mkdir()
+        (metadata / "METADATA").write_text(
+            f"Metadata-Version: 2.4\nName: {distribution}\nVersion: 1.0\n",
+            encoding="utf-8",
+        )
+        (metadata / "entry_points.txt").write_text(
+            f"[{group}]\nexternal-freebsd = {entry_point}\n",
+            encoding="utf-8",
+        )
     monkeypatch.syspath_prepend(str(tmp_path))
     importlib.invalidate_caches()
 
     mount = resolve_mounted_volume_provider("external-freebsd")
     host = resolve_listener_host_provider("external-freebsd")
 
-    assert mount.metadata.distribution == "external-gogurt"
+    assert mount.metadata.distribution == "external-gogurt-mounted-volume"
     assert mount.discover() == (_fixture_root("external-mount"),)
+    assert host.metadata.distribution == "external-gogurt-listener-host"
     assert host.metadata.version == "1.0"
     assert host.paths().state_dir == _fixture_root("external-gogurt")
 

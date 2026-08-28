@@ -131,7 +131,7 @@ distributions = ["riverhog-storage-adapter-aws", "riverhog-storage-adapter-backb
 cases = ["b2-archive", "b2-retrieval-cache", "aws-deep-archive", "aws-cloudfront-egress"]
 
 [references]
-policy = "First-party reference components are optional, nonnormative, maintainer-selected conformance examples. Their inventory is neither complete nor recommended and is not a support matrix; new mechanisms are independently owned and published."
+policy = "New mechanisms are independently owned and published. First-party reference components are a finite, maintainer-selected, optional, nonnormative conformance set; their inventory is neither complete nor recommended and is not an expansion target or support matrix."
 
 [signing]
 checksums = "SHA-256"

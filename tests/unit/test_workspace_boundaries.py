@@ -585,26 +585,64 @@ def test_reference_extension_distributions_each_own_one_selectable_capability() 
     provider_groups = {
         "gogurt.listener-host-providers",
         "gogurt.mounted-volume-providers",
+        "riverhog.provenance-contracts",
         "riverhog.provenance-observers",
+        "stove0.observer-semantic-validators",
     }
     observed: set[str] = set()
+    projects_by_name: dict[str, tuple[Path, dict[str, object]]] = {}
     for pyproject in (REPO / "reference").rglob("pyproject.toml"):
         config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        groups = set(config["project"].get("entry-points", {})) & provider_groups
+        project = config["project"]
+        projects_by_name[project["name"]] = (pyproject.parent, project)
+        entry_points = project.get("entry-points", {})
+        groups = set(entry_points) & provider_groups
         if groups:
             assert len(groups) == 1, pyproject.relative_to(REPO)
+            group = next(iter(groups))
+            assert len(entry_points[group]) == 1, pyproject.relative_to(REPO)
             observed.update(groups)
 
     assert observed == provider_groups
+    release = tomllib.loads((REPO / "release.toml").read_text(encoding="utf-8"))
+    stove0_extensions = {
+        distribution
+        for image_name, image in release["images"]["runtime"].items()
+        if image_name.startswith("stove0-") and image["role"] == "reference"
+        for distribution in image["distributions"]
+    }
+    for distribution in stove0_extensions:
+        root, project = projects_by_name[distribution]
+        assert set(project.get("scripts", {})) == {distribution}, root.relative_to(REPO)
+        implementation_ids = {
+            keyword.value.value
+            for source in (root / "src").rglob("*.py")
+            for node in ast.walk(ast.parse(source.read_text(encoding="utf-8")))
+            if isinstance(node, ast.Call)
+            for keyword in node.keywords
+            if keyword.arg == "implementation_id"
+            and isinstance(keyword.value, ast.Constant)
+            and isinstance(keyword.value.value, str)
+        }
+        assert len(implementation_ids) == 1, root.relative_to(REPO)
+
     architecture = " ".join((REPO / "docs/architecture.md").read_text(encoding="utf-8").split())
-    assert "Each explicitly selected distribution owns one capability" in architecture
-    assert "do not merge identities or selection" in architecture
-    assert "First-party references are optional and nonnormative" in architecture
-    assert "defines no support matrix" in architecture
+    assert "Each selected distribution owns one capability" in architecture
+    assert "shared-dependency image bundles preserve separate identities and selection" in (
+        architecture
+    )
+    assert "only exact digest-bound contracts or selected bindings carry authority" in architecture
+    assert "References are optional, nonnormative, and not a support matrix" in architecture
 
 
 def test_reference_paths_are_nonnormative_release_units() -> None:
     release = tomllib.loads((REPO / "release.toml").read_text(encoding="utf-8"))
+    reference_policy = release["references"]["policy"]
+    assert "New mechanisms are independently owned and published" in reference_policy
+    assert "not an expansion target or support matrix" in reference_policy
+    readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
+    assert "New mechanisms are independently owned and published" in readme
+    assert "not an expansion target or support matrix" in readme
     classified = {path: role for role, paths in release["python"].items() for path in paths}
     for pyproject in (REPO / "reference").rglob("pyproject.toml"):
         relative = pyproject.parent.relative_to(REPO).as_posix()
@@ -725,9 +763,9 @@ def test_images_copy_only_their_owned_implementation_project() -> None:
     for dockerfile, expected in dockerfiles.items():
         dockerfile_text = dockerfile.read_text()
         if dockerfile == REPO / "companions/stove0/server/Dockerfile":
-            dockerfile_text = dockerfile_text.split(
-                "FROM build AS reference-qualification-build", 1
-            )[0]
+            dockerfile_text = dockerfile_text.split("FROM build AS reference-composition-build", 1)[
+                0
+            ]
         copied = {
             source
             for source in re.findall(r"^COPY ([^\s]+)", dockerfile_text, re.MULTILINE)

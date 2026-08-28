@@ -791,6 +791,7 @@ def test_semantic_validator_entry_points_are_loaded_only_by_explicit_name(
 
     registry = load_semantic_validator_registry(("fixture",))
     assert registry.resolve(binding.profile_id, binding.profile_sha256) is binding.validator
+    assert registry.resolve(binding.profile_id, "0" * 64) is None
     assert (
         load_semantic_validator_registry(()).resolve(binding.profile_id, binding.profile_sha256)
         is None
