@@ -463,7 +463,7 @@ from sqlalchemy import text
 from stove0_core import SqlAlchemyStateStore, database_url_from_environment
 store = SqlAlchemyStateStore(database_url_from_environment(), initialize=False)
 rows = list(store.iter_work(sort='work_id', order='asc'))
-assert rows and all(row['phase'] == 'complete' for row in rows), rows
+assert rows and all(row.phase == 'complete' for row in rows), rows
 table_names = (
     'stove0_artifact_selections',
     'stove0_evaluation_records',
@@ -489,8 +489,11 @@ with store.engine.connect() as connection:
 print(json.dumps({
     'format': 'stove0-operational-scale/v1',
     'database_bytes': sum(table_bytes.values()),
-    'document_bytes': sum(len(json.dumps(row, separators=(',', ':'), sort_keys=True).encode()) for row in rows),
-    'phase_counts': dict(sorted(Counter(row['phase'] for row in rows).items())),
+    'document_bytes': sum(
+        len(row.model_dump_json().encode())
+        for row in rows
+    ),
+    'phase_counts': dict(sorted(Counter(row.phase for row in rows).items())),
     'table_bytes': table_bytes,
     'table_rows': table_rows,
     'work_records': len(rows),
