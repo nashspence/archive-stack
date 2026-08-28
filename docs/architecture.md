@@ -41,7 +41,7 @@ Contracts define packages; architecture records ownership.
 - **Extensions.** Observers report immutable-artifact facts; targets perform declared operations.
   Each selected distribution owns one capability; shared-dependency image bundles preserve separate
   identities and selection. Names identify families; only exact digest-bound contracts or selected
-  bindings carry authority. References are optional, nonnormative, and not a support matrix.
+  bindings carry authority.
 - **Transfer path.** Payload loops exclude control-plane status and reporting work.
 
 Workspace checks enforce ownership boundaries.

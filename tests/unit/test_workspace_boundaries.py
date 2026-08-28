@@ -647,17 +647,19 @@ def test_reference_extension_distributions_each_own_one_selectable_capability() 
         architecture
     )
     assert "only exact digest-bound contracts or selected bindings carry authority" in architecture
-    assert "References are optional, nonnormative, and not a support matrix" in architecture
 
 
-def test_reference_paths_are_nonnormative_release_units() -> None:
+def test_reference_paths_follow_the_closed_nonnormative_release_policy() -> None:
     release = tomllib.loads((REPO / "release.toml").read_text(encoding="utf-8"))
     reference_policy = release["references"]["policy"]
-    assert "New mechanisms are independently owned and published" in reference_policy
-    assert "not an expansion target or support matrix" in reference_policy
+    expected_policy = (
+        "Checked-in references form a closed, tightly scoped, maintainer-selected, "
+        "nonnormative conformance set."
+    )
+    assert reference_policy == expected_policy
     readme = " ".join((REPO / "README.md").read_text(encoding="utf-8").split())
     assert "New mechanisms are independently owned and published" in readme
-    assert "not an expansion target or support matrix" in readme
+    assert expected_policy in readme
     classified = {path: role for role, paths in release["python"].items() for path in paths}
     for pyproject in (REPO / "reference").rglob("pyproject.toml"):
         relative = pyproject.parent.relative_to(REPO).as_posix()
