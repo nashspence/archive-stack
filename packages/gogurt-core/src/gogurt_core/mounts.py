@@ -79,7 +79,8 @@ class MountedVolumeAccess(Protocol):
     Gogurt treats returned roots as opaque mounted-volume identifiers except when
     rendering them into an action argv. The provider alone owns discovery, root
     viability, marker location and representation, safe observation, and complete
-    publication of Gogurt's logical marker document.
+    publication of Gogurt's logical marker document. Other actors must not mutate
+    that provider-owned representation outside the selected provider capability.
     """
 
     def discover(self) -> Sequence[Path]: ...
@@ -98,7 +99,13 @@ class MountedVolumeAccess(Protocol):
         *,
         expected: MountedMarkerObservation | None,
     ) -> MountedMarkerObservation:
-        """Publish only if the marker is absent or exactly ``expected``."""
+        """Conditionally publish against cooperating provider operations.
+
+        Compatible provider instances must serialize publication and publish only
+        when their provider-owned marker is absent or exactly ``expected``. This is
+        not a physical compare-and-swap promise against actors that bypass the
+        provider and mutate its private representation directly.
+        """
         ...
 
 

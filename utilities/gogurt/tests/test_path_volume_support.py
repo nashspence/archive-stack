@@ -105,3 +105,29 @@ def test_path_provider_replacement_requires_the_exact_prior_observation(
         )
 
     assert marker.read_bytes() == b"changed\n"
+
+
+def test_independent_path_provider_instances_reject_a_stale_observation(
+    tmp_path: Path,
+) -> None:
+    first_provider = PathMountedVolumeAccess(tuple)
+    second_provider = PathMountedVolumeAccess(tuple)
+    original = first_provider.publish_marker(
+        tmp_path,
+        GogurtRouteMarker("camera"),
+        expected=None,
+    )
+    changed = second_provider.publish_marker(
+        tmp_path,
+        GogurtRouteMarker("audio"),
+        expected=original,
+    )
+
+    with pytest.raises(ConfigError, match="changed before publication"):
+        first_provider.publish_marker(
+            tmp_path,
+            GogurtRouteMarker("documents"),
+            expected=original,
+        )
+
+    assert first_provider.observe_marker(tmp_path) == changed

@@ -305,6 +305,49 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         CollectionUploadSessionOut.model_validate(construction_payload)
         schema_validator.validate(construction_payload)
 
+    incomplete_finalizing = deepcopy(open_payload)
+    incomplete_finalizing.update(
+        {
+            "state": "finalizing",
+            "archive_phase": "finalization_queued",
+            "archive_next_attempt_at": "2026-08-25T00:00:01.000000Z",
+            "files_total": 1,
+            "bytes_total": 2,
+            "custodied_files": 0,
+            "custodied_bytes": 0,
+        }
+    )
+    with pytest.raises(ValidationError, match="complete Riverhog custody"):
+        CollectionUploadSessionOut.model_validate(incomplete_finalizing)
+
+    incomplete_transferred_upload = deepcopy(open_payload)
+    incomplete_transferred_upload.update(
+        {
+            "state": "uploading",
+            "custody_mode": "custody-transfer",
+            "archive_phase": "uploading",
+            "files_total": 1,
+            "bytes_total": 2,
+            "custodied_files": 0,
+            "custodied_bytes": 0,
+        }
+    )
+    with pytest.raises(ValidationError, match="complete Riverhog custody"):
+        CollectionUploadSessionOut.model_validate(incomplete_transferred_upload)
+
+    producer_retained_upload = deepcopy(incomplete_transferred_upload)
+    producer_retained_upload["custody_mode"] = "producer-retained"
+    CollectionUploadSessionOut.model_validate(producer_retained_upload)
+
+    closing_transfer = deepcopy(incomplete_transferred_upload)
+    closing_transfer.update(
+        {
+            "state": "closing",
+            "upload_state_expires_at": "2026-08-25T00:05:00.000000Z",
+        }
+    )
+    CollectionUploadSessionOut.model_validate(closing_transfer)
+
     nonfinal_provenance_identity = deepcopy(open_payload)
     nonfinal_provenance_identity["provenance_identity"] = "c" * 64
     with pytest.raises(ValidationError, match="nonfinal.*provenance identity"):
@@ -341,6 +384,18 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
     )
     CollectionUploadSessionOut.model_validate(finalized_payload)
     schema_validator.validate(finalized_payload)
+
+    incomplete_finalized = deepcopy(finalized_payload)
+    incomplete_finalized.update({"files_total": 1, "bytes_total": 2})
+    incomplete_collection = incomplete_finalized["collection"]
+    assert isinstance(incomplete_collection, dict)
+    incomplete_collection.update({"files": 1, "bytes": 2})
+    with pytest.raises(ValidationError, match="complete Riverhog custody"):
+        CollectionUploadSessionOut.model_validate(incomplete_finalized)
+
+    complete_finalized = deepcopy(incomplete_finalized)
+    complete_finalized.update({"custodied_files": 1, "custodied_bytes": 2})
+    CollectionUploadSessionOut.model_validate(complete_finalized)
 
     for provenance_mode in ("captured", "mixed"):
         missing_provenance_identity = deepcopy(finalized_payload)
@@ -517,6 +572,46 @@ def test_upload_session_list_states_accept_reachable_custody_lifecycles(
 
     CollectionUploadListItemOut.model_validate(current)
     Draft202012Validator(CollectionUploadListItemOut.model_json_schema()).validate(current)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    (
+        {"state": "finalizing", "custody_mode": "producer-retained"},
+        {"state": "uploading", "custody_mode": "custody-transfer"},
+    ),
+)
+def test_upload_session_list_complete_states_require_complete_custody(
+    changes: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "collection_id": 1,
+        "created_at": "2026-08-25T00:00:00.000000Z",
+        "tags": [],
+        "ingest_source": None,
+        "archive_store": "archive",
+        "encryption_format": "age-x25519/v1",
+        "passphrase_id": "0123456789abcdef",
+        "state": "open",
+        "custody_mode": "producer-retained",
+        "files": 1,
+        "bytes": 2,
+        "custodied_files": 0,
+        "custodied_bytes": 0,
+        "upload_state_expires_at": None,
+        "orphaned_at": None,
+    }
+
+    with pytest.raises(ValidationError, match="complete Riverhog custody"):
+        CollectionUploadListItemOut.model_validate({**payload, **changes})
+
+    complete = {
+        **payload,
+        **changes,
+        "custodied_files": 1,
+        "custodied_bytes": 2,
+    }
+    CollectionUploadListItemOut.model_validate(complete)
 
 
 def test_list_responses_expose_only_closed_sort_and_filter_contracts() -> None:

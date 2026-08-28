@@ -8,7 +8,7 @@ from importlib import resources
 from importlib.resources.abc import Traversable
 from typing import Any, cast
 
-from jsonschema import Draft202012Validator, FormatChecker
+from jsonschema import Draft202012Validator
 from referencing import Registry
 from referencing.jsonschema import DRAFT202012
 from riverhog_provenance_contracts import index_schema_documents
@@ -64,28 +64,22 @@ def graph_fragment_schema() -> dict[str, Any]:
 
 @cache
 def _journal_entry_validator() -> Draft202012Validator:
-    return Draft202012Validator(load_journal_entry_schema(), format_checker=FormatChecker())
+    return Draft202012Validator(load_journal_entry_schema())
 
 
 @cache
 def _graph_fragment_validator() -> Draft202012Validator:
-    return Draft202012Validator(graph_fragment_schema(), format_checker=FormatChecker())
+    return Draft202012Validator(graph_fragment_schema())
 
 
 @cache
 def _provenance_index_validator() -> Draft202012Validator:
-    return Draft202012Validator(
-        load_provenance_index_schema(),
-        format_checker=FormatChecker(),
-    )
+    return Draft202012Validator(load_provenance_index_schema())
 
 
 @cache
 def _provenance_set_validator() -> Draft202012Validator:
-    return Draft202012Validator(
-        load_provenance_set_schema(),
-        format_checker=FormatChecker(),
-    )
+    return Draft202012Validator(load_provenance_set_schema())
 
 
 @cache

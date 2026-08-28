@@ -24,6 +24,7 @@ from riverhog_provenance import (
     validate_portable_provenance_set,
     validate_provenance_archive,
 )
+from riverhog_provenance_contracts import PROVENANCE_SCHEMA_FORMAT_POLICY
 
 from tests.provenance_observer import native_provenance_observer
 
@@ -119,6 +120,19 @@ def test_published_archive_index_schemas_are_valid_and_collection_unbounded() ->
         assert all(
             "maxItems" not in node for node in _all_json_nodes(schema) if isinstance(node, dict)
         )
+
+
+def test_every_builtin_provenance_schema_uses_the_shared_annotation_only_profile() -> None:
+    assert PROVENANCE_SCHEMA_FORMAT_POLICY == "annotation-only"
+    validators = (
+        provenance_schema._journal_entry_validator(),
+        provenance_schema._graph_fragment_validator(),
+        provenance_schema._provenance_index_validator(),
+        provenance_schema._provenance_set_validator(),
+        *provenance_schema._observer_validators().values(),
+    )
+
+    assert all(validator.format_checker is None for validator in validators)
 
 
 def _write_duplicate_schema_pack(path: Path) -> None:

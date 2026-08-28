@@ -49,9 +49,9 @@ from riverhog_storage_adapter_protocol import (
 )
 
 from riverhog_storage_adapter_support.framing import (
-    FRAMED_REQUEST_MEDIA_TYPE,
-    framed_request,
-    framed_request_length,
+    FRAMED_BODY_MEDIA_TYPE,
+    framed_body,
+    framed_body_length,
     parse_framed_stream,
 )
 
@@ -162,10 +162,10 @@ class StorageAdapterClient:
             "POST",
             "/v1/writes/segment",
             WriteSegmentReceipt,
-            content=framed_request(request, content),
+            content=framed_body(request, content),
             headers={
-                "Content-Length": str(framed_request_length(request)),
-                "Content-Type": FRAMED_REQUEST_MEDIA_TYPE,
+                "Content-Length": str(framed_body_length(request)),
+                "Content-Type": FRAMED_BODY_MEDIA_TYPE,
             },
         )
         self._validate(validate_write_segment_response, request, response)
@@ -221,10 +221,10 @@ class StorageAdapterClient:
             "POST",
             "/v1/objects/put",
             ImmutableObjectReceipt,
-            content=framed_request(request, content),
+            content=framed_body(request, content),
             headers={
-                "Content-Length": str(framed_request_length(request)),
-                "Content-Type": FRAMED_REQUEST_MEDIA_TYPE,
+                "Content-Length": str(framed_body_length(request)),
+                "Content-Type": FRAMED_BODY_MEDIA_TYPE,
             },
         )
         self._validate(validate_small_object_response, request, response)

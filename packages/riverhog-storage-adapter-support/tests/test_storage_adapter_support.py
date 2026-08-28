@@ -37,13 +37,14 @@ from riverhog_storage_adapter_protocol import (
     WriteStartRequest,
 )
 from riverhog_storage_adapter_support import (
-    FRAMED_REQUEST_FORMAT,
-    FRAMED_REQUEST_MEDIA_TYPE,
+    FRAMED_BODY_FORMAT,
+    FRAMED_BODY_MEDIA_TYPE,
+    STORAGE_ADAPTER_HTTP_OPERATIONS,
     StorageAdapterClient,
     StorageAdapterConformanceResult,
     StorageAdapterHttpBinding,
     StorageAdapterProtocolError,
-    framed_request,
+    framed_body,
     parse_framed_stream,
     run_storage_adapter_conformance,
     storage_adapter_schema_bundle,
@@ -371,7 +372,7 @@ def test_client_preserves_write_segment_receipts_and_declares_body_lengths() -> 
         )
         assert all("Transfer-Encoding" not in request.headers for request in segment_requests)
         assert all(
-            request.headers["Content-Type"] == FRAMED_REQUEST_MEDIA_TYPE
+            request.headers["Content-Type"] == FRAMED_BODY_MEDIA_TYPE
             for request in segment_requests
         )
     finally:
@@ -385,7 +386,7 @@ def test_named_framing_parses_split_declaration_and_streams_exact_payload() -> N
         number=1,
         stored_bytes=9,
     )
-    wire = b"".join(framed_request(request, (b"opa", b"que", b"123")))
+    wire = b"".join(framed_body(request, (b"opa", b"que", b"123")))
     chunks = (wire[:1], wire[1:4], wire[4:17], wire[17:-2], wire[-2:])
 
     declaration, content = parse_framed_stream(
@@ -394,7 +395,7 @@ def test_named_framing_parses_split_declaration_and_streams_exact_payload() -> N
         content_length=len(wire),
     )
 
-    assert FRAMED_REQUEST_FORMAT == "riverhog-json-opaque-framing/v1"
+    assert FRAMED_BODY_FORMAT == "riverhog-json-opaque-framing/v1"
     assert declaration == request
     assert b"".join(content) == b"opaque123"
     content.require_consumed()
@@ -406,7 +407,7 @@ def test_named_framing_rejects_a_body_length_different_from_its_declaration() ->
         number=1,
         stored_bytes=3,
     )
-    wire = b"".join(framed_request(request, b"abc"))
+    wire = b"".join(framed_body(request, b"abc"))
 
     with pytest.raises(ValueError, match="content length"):
         parse_framed_stream(
@@ -422,7 +423,7 @@ def test_named_framing_rejects_truncated_and_trailing_content() -> None:
         number=1,
         stored_bytes=3,
     )
-    wire = b"".join(framed_request(request, b"abc"))
+    wire = b"".join(framed_body(request, b"abc"))
 
     with pytest.raises(ValueError, match="declaration is truncated"):
         parse_framed_stream(
@@ -465,7 +466,7 @@ def test_framed_binding_requires_length_and_reports_trailing_input_as_invalid() 
         number=1,
         stored_bytes=3,
     )
-    wire = b"".join(framed_request(request, b"abc"))
+    wire = b"".join(framed_body(request, b"abc"))
 
     missing = binding.handle_framed(
         "POST",
@@ -699,12 +700,35 @@ def test_binding_enforces_advertised_write_segment_limits() -> None:
 
 
 def test_schema_and_support_source_remain_provider_and_state_neutral() -> None:
-    bundle = str(storage_adapter_schema_bundle()).casefold()
+    document = storage_adapter_schema_bundle()
+    bundle = str(document).casefold()
     assert "retrieval_tier" not in bundle
     assert "hold_days" not in bundle
     assert "storage_class" not in bundle
     assert "bucket" not in bundle
     assert "cloudfront" not in bundle
+
+    operations = document["http_binding"]["operations"]
+    assert [(item["method"], item["path"]) for item in operations] == [
+        (operation.method, operation.path) for operation in STORAGE_ADAPTER_HTTP_OPERATIONS
+    ]
+    segment_set = next(item for item in operations if item["path"] == "/v1/writes/segments")
+    assert segment_set["response"] == {
+        "kind": "json",
+        "schema": "WriteSegmentSet",
+        "statuses": [200],
+        "headers": [],
+    }
+    read = next(item for item in operations if item["path"] == "/v1/objects/read")
+    assert read["response"]["kind"] == "framed"
+    assert read["response"]["schema"] == "ObjectReadReceipt"
+    assert set(read["response"]["headers"]) == {
+        "Content-Length",
+        "Content-Range",
+        "X-Riverhog-Object-Bytes",
+        "X-Riverhog-Object-Revision",
+    }
+    assert "WriteSegmentSet" in document["schemas"]
 
     source = Path(__file__).resolve().parents[1] / "src/riverhog_storage_adapter_support"
     imported: set[str] = set()

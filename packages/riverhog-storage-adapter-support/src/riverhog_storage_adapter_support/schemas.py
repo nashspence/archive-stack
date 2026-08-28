@@ -9,58 +9,55 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
-from riverhog_storage_adapter_protocol import (
-    STORAGE_ADAPTER_PROTOCOL,
-    AbortIncompleteWritesRequest,
-    AdapterDescriptor,
-    CompletedObjectReceipt,
-    CompletedWriteLookupRequest,
-    DeleteObjectRequest,
-    DeletePrefixRequest,
-    ImmutableObjectReceipt,
-    MaintenanceResult,
-    ObjectHeadRequest,
-    ObjectLocator,
-    ObjectMetadataReceipt,
-    ObjectReadReceipt,
-    ObjectReadRequest,
-    ReadPreparationRequest,
-    ReadStatus,
-    SmallObjectWriteRequest,
-    StorageAdapterError,
-    WriteCompleteRequest,
-    WriteSegmentReceipt,
-    WriteSegmentRequest,
-    WriteSession,
-    WriteStartRequest,
-)
+from riverhog_storage_adapter_protocol import STORAGE_ADAPTER_PROTOCOL, StorageAdapterError
+
+from riverhog_storage_adapter_support.http_binding import STORAGE_ADAPTER_HTTP_OPERATIONS
 
 STORAGE_ADAPTER_SCHEMA_BUNDLE_FORMAT = "riverhog-storage-adapter-schema-bundle/v1"
 
-_SCHEMA_MODELS: tuple[type[BaseModel], ...] = (
-    AbortIncompleteWritesRequest,
-    AdapterDescriptor,
-    CompletedObjectReceipt,
-    DeleteObjectRequest,
-    DeletePrefixRequest,
-    ImmutableObjectReceipt,
-    MaintenanceResult,
-    WriteCompleteRequest,
-    WriteStartRequest,
-    CompletedWriteLookupRequest,
-    WriteSegmentReceipt,
-    WriteSegmentRequest,
-    WriteSession,
-    ObjectLocator,
-    ObjectHeadRequest,
-    ObjectMetadataReceipt,
-    ObjectReadReceipt,
-    ObjectReadRequest,
-    ReadPreparationRequest,
-    ReadStatus,
-    SmallObjectWriteRequest,
-    StorageAdapterError,
-)
+
+def _model_type(value: object | None) -> type[BaseModel] | None:
+    if value is None:
+        return None
+    if not isinstance(value, type) or not issubclass(value, BaseModel):
+        raise TypeError("storage adapter HTTP declaration is not a Pydantic model")
+    return value
+
+
+def _model_name(value: object | None) -> str | None:
+    model = _model_type(value)
+    return model.__name__ if model is not None else None
+
+
+def _schema_models() -> tuple[type[BaseModel], ...]:
+    models: set[type[BaseModel]] = {StorageAdapterError}
+    for operation in STORAGE_ADAPTER_HTTP_OPERATIONS:
+        for model in (operation.request_type, operation.response_type):
+            model_type = _model_type(model)
+            if model_type is not None:
+                models.add(model_type)
+    return tuple(sorted(models, key=lambda model: model.__name__))
+
+
+def _http_operation_inventory() -> list[dict[str, Any]]:
+    return [
+        {
+            "method": operation.method,
+            "path": operation.path,
+            "request": {
+                "kind": operation.request_kind,
+                "schema": _model_name(operation.request_type),
+            },
+            "response": {
+                "kind": operation.response_kind,
+                "schema": _model_name(operation.response_type),
+                "statuses": list(operation.success_statuses),
+                "headers": [header.name for header in operation.response_headers],
+            },
+            "errors": [{"code": error.code, "status": error.status} for error in operation.errors],
+        }
+        for operation in STORAGE_ADAPTER_HTTP_OPERATIONS
+    ]
 
 
 def storage_adapter_schema_bundle() -> dict[str, Any]:
@@ -71,36 +68,9 @@ def storage_adapter_schema_bundle() -> dict[str, Any]:
             "unknown_fields": "reject",
             "provider_ontology": "private",
         },
-        "http_binding": {
-            "GET /v1/adapter": "AdapterDescriptor",
-            "POST /v1/writes/begin": "WriteStartRequest -> WriteSession",
-            "POST /v1/writes/segment": (
-                "framed WriteSegmentRequest + bytes -> WriteSegmentReceipt"
-            ),
-            "POST /v1/writes/segments": "WriteSession -> WriteSegmentReceipt[]",
-            "POST /v1/writes/complete": ("WriteCompleteRequest -> CompletedObjectReceipt"),
-            "POST /v1/writes/completed": (
-                "CompletedWriteLookupRequest -> CompletedObjectReceipt|404"
-            ),
-            "POST /v1/writes/abort": "WriteSession -> 204",
-            "POST /v1/objects/put": (
-                "framed SmallObjectWriteRequest + bytes -> ImmutableObjectReceipt"
-            ),
-            "POST /v1/objects/head": "ObjectHeadRequest -> ObjectMetadataReceipt|404",
-            "POST /v1/objects/read": (
-                "ObjectReadRequest -> framed ObjectReadReceipt + byte stream"
-            ),
-            "POST /v1/objects/delete": "DeleteObjectRequest -> 204",
-            "POST /v1/objects/delete-prefix": "DeletePrefixRequest -> MaintenanceResult",
-            "POST /v1/reads/prepare": "ReadPreparationRequest -> ReadStatus",
-            "POST /v1/reads/status": "ReadPreparationRequest -> ReadStatus",
-            "POST /v1/reads/cleanup": "ReadPreparationRequest -> 204",
-            "POST /v1/maintenance/abort-incomplete-writes": (
-                "AbortIncompleteWritesRequest -> MaintenanceResult"
-            ),
-        },
+        "http_binding": {"operations": _http_operation_inventory()},
         "schemas": {
-            model.__name__: model.model_json_schema(mode="validation") for model in _SCHEMA_MODELS
+            model.__name__: model.model_json_schema(mode="validation") for model in _schema_models()
         },
     }
 

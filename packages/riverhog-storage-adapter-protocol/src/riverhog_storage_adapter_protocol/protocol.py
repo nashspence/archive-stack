@@ -938,8 +938,12 @@ class ValidatedStorageAdapterPort:
         response = self._adapter.read_object(request)
         if not isinstance(response, ObjectReadStream):
             raise TypeError("adapter returned an invalid object read stream")
-        receipt = _response(response.receipt, ObjectReadReceipt, "object read receipt")
-        validate_object_read_response(request, receipt)
+        try:
+            receipt = _response(response.receipt, ObjectReadReceipt, "object read receipt")
+            validate_object_read_response(request, receipt)
+        except BaseException:
+            response.close()
+            raise
 
         def validated_content() -> Iterator[bytes]:
             try:

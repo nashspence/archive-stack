@@ -758,6 +758,32 @@ def test_conformance_report_proves_preflight_and_idempotent_submission() -> None
     assert report["operations"][0]["semantic_conformance"] == "schema-only"
 
 
+def test_conformance_report_uses_one_exact_target_contract_snapshot() -> None:
+    operation, target, request = _request()
+    status = _success_status(operation, request)
+
+    class SnapshotClient(FixtureTargetClient):
+        def __init__(self) -> None:
+            super().__init__(target, request, status)
+            self.contract_calls = 0
+
+        def contract(self) -> TargetContract:
+            self.contract_calls += 1
+            if self.contract_calls > 1:
+                raise AssertionError("conformance report reread its target contract")
+            return super().contract()
+
+    client = SnapshotClient()
+    report = conformance_report(
+        client,
+        cases=(TargetConformanceCase(operation=operation, job_request=request),),
+    )
+
+    assert report["target_contract_sha256"] == target.contract_sha256
+    assert report["coverage"] == {"advertised": 1, "exercised": 1, "complete": True}
+    assert client.contract_calls == 1
+
+
 def test_contract_only_target_report_does_not_claim_execution_conformance() -> None:
     operation, target, request = _request()
     report = conformance_report(

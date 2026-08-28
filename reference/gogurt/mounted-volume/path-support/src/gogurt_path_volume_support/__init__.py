@@ -136,7 +136,12 @@ def _publish_complete_file(destination: Path, content: bytes) -> None:
 
 @dataclass(frozen=True, slots=True)
 class PathMountedVolumeAccess:
-    """Safe `.gogurt` line representation for ordinary local path volumes."""
+    """Safe `.gogurt` line representation for ordinary local path volumes.
+
+    Compatible path-provider instances coordinate conditional publication through
+    the adjacent lock file. Direct writers that bypass this provider are outside
+    that cooperative concurrency domain and must not mutate its representation.
+    """
 
     discover_mounts: Callable[[], Sequence[Path]]
 
