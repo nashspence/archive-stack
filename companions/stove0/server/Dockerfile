@@ -68,7 +68,6 @@ LABEL org.opencontainers.image.title="stove0" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.version="${RELEASE_VERSION}" \
       org.opencontainers.image.created="${BUILD_CREATED}" \
-      io.github.nashspence.riverhog.release-role="product" \
       org.opencontainers.image.documentation="https://nashspence.github.io/riverhog/v1/"
 
 COPY LICENSES/Apache-2.0.txt /usr/share/licenses/riverhog/Apache-2.0.txt
@@ -92,4 +91,5 @@ COPY --from=reference-composition-build /opt/venv /opt/venv
 
 FROM runtime-base AS runtime
 
+LABEL io.github.nashspence.riverhog.release-role="product"
 COPY --from=build /opt/venv /opt/venv

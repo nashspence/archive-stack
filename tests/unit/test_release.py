@@ -149,7 +149,7 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
     assert qualification["storage_reference"] == module.STORAGE_REFERENCE_QUALIFICATION
 
 
-def test_non_reference_distributions_do_not_depend_on_reference_components() -> None:
+def test_release_role_dependency_direction_is_exact() -> None:
     module = load_script()
     projects = module.validate_release_contract(REPO_ROOT)
 
@@ -159,6 +159,11 @@ def test_non_reference_distributions_do_not_depend_on_reference_components() -> 
     )
     roles = {project.name: project.role for project in projects}
     reference = {name for name, role in roles.items() if role == "reference_component"}
+    product = {
+        name
+        for name, role in roles.items()
+        if role in {"end_user_artifact", "deployed_implementation"}
+    }
 
     assert all(
         not (artifact_dependencies[name] & reference)
@@ -170,6 +175,11 @@ def test_non_reference_distributions_do_not_depend_on_reference_components() -> 
             "reusable_library",
             "internal_build_unit",
         }
+    )
+    assert all(
+        not (artifact_dependencies[name] & product)
+        for name, role in roles.items()
+        if role == "reference_component"
     )
     architecture = " ".join(
         (REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8").split()
@@ -192,6 +202,25 @@ def test_release_contract_rejects_optional_reference_dependency_from_product(
     )
 
     with pytest.raises(module.ReleaseError, match="depends on independently selected"):
+        module.validate_release_contract(tmp_path)
+
+
+@pytest.mark.parametrize("dependency", ["stove0-client", "stove0-server"])
+def test_release_contract_rejects_product_dependency_from_reference(
+    tmp_path: Path,
+    dependency: str,
+) -> None:
+    module = load_script()
+    _copy_release_contract(module, tmp_path)
+    pyproject = tmp_path / "reference/stove0/targets/review/planning/pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text(encoding="utf-8")
+        + "\n[project.optional-dependencies]\n"
+        + f'product = ["{dependency}>=0.1,<0.2"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(module.ReleaseError, match="depends on product release units"):
         module.validate_release_contract(tmp_path)
 
 

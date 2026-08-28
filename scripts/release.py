@@ -660,6 +660,11 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
     reference_names = {
         project.name for project in projects if project.role == "reference_component"
     }
+    product_names = {
+        project.name
+        for project in projects
+        if project.role in {"end_user_artifact", "deployed_implementation"}
+    }
     reference_forbidden_roles = {
         "end_user_artifact",
         "deployed_implementation",
@@ -674,6 +679,14 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
             raise ReleaseError(
                 f"{project.name} depends on independently selected reference components: "
                 f"{references}"
+            )
+    for project in projects:
+        if project.role != "reference_component":
+            continue
+        products = sorted(artifact_dependencies[project.name] & product_names)
+        if products:
+            raise ReleaseError(
+                f"{project.name} reference component depends on product release units: {products}"
             )
     for target, value in runtime_images.items():
         configured_roots = [
