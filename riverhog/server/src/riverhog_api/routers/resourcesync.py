@@ -4,7 +4,7 @@ from typing import Annotated, Any, cast
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import APIRouter, Path, Query, Request, Response
-from http_api_contracts import operation_interface
+from http_api_contracts import cursor_feed_operation, operation_interface
 from riverhog_protocol import (
     CollectionIdParameter,
     PortableCollectionRecord,
@@ -151,7 +151,14 @@ def resourcesync_resource_list_page(
     "/resourcesync/changelist.xml",
     response_class=Response,
     responses=_xml_responses(),
-    openapi_extra=operation_interface("standard-tool/protocol"),
+    openapi_extra={
+        **operation_interface("standard-tool/protocol"),
+        **cursor_feed_operation(
+            cursor_parameter="after",
+            limit_parameter=None,
+            fixed_limit=1000,
+        ),
+    },
 )
 def resourcesync_change_list(
     request: Request,

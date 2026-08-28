@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from riverhog_protocol.errors import BadRequest, NotFound
 from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
@@ -83,7 +85,6 @@ class SqlAlchemyArchiveStoreService:
         q: str | None,
         sort: str,
         order: str,
-        all_items: bool = False,
         principal: ApplicationPrincipal | None = None,
     ) -> ArchiveStoreListPage:
         if page < 1:
@@ -127,21 +128,36 @@ class SqlAlchemyArchiveStoreService:
         )
         total = len(summaries)
         pages = (total + per_page - 1) // per_page if total else 0
-        if all_items:
-            selected = summaries
-        else:
-            start = (page - 1) * per_page
-            selected = summaries[start : start + per_page]
+        start = (page - 1) * per_page
+        selected = summaries[start : start + per_page]
         return ArchiveStoreListPage(
-            page=1 if all_items else page,
-            per_page=total if all_items else per_page,
+            page=page,
+            per_page=per_page,
             total=total,
-            pages=(1 if total else 0) if all_items else pages,
+            pages=pages,
             sort=sort,
             order=order,
             query=needle,
             stores=selected,
         )
+
+    def iter_stores(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        principal: ApplicationPrincipal | None = None,
+    ) -> Iterator[ArchiveStoreSummary]:
+        page = self.list(
+            page=1,
+            per_page=max(1, len(self._config.archive_stores)),
+            q=q,
+            sort=sort,
+            order=order,
+            principal=principal,
+        )
+        yield from page.stores
 
     def _allowances(self) -> dict[str, ArchiveDownloadAllowance]:
         return {current.store: current for current in self._download_allowance.get_statuses()}

@@ -109,25 +109,20 @@ def test_search_files_is_paginated_filtered_and_sorted(tmp_path: Path) -> None:
     }
 
 
-def test_search_files_can_return_every_database_match(tmp_path: Path) -> None:
+def test_search_files_can_stream_every_database_match(tmp_path: Path) -> None:
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     _seed(path)
 
-    payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(
-        q="tax",
-        page=9,
-        per_page=1,
-        sort="path",
-        order="asc",
-        all_items=True,
+    rows = list(
+        SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).iter_files(
+            q="tax",
+            sort="path",
+            order="asc",
+        )
     )
 
-    assert payload["page"] == 1
-    assert payload["per_page"] == 2
-    assert payload["total"] == 2
-    assert payload["pages"] == 1
-    assert [file["path"] for file in payload["files"]] == [
+    assert [file["path"] for file in rows] == [
         "tax/invoice.pdf",
         "tax/receipt.pdf",
     ]

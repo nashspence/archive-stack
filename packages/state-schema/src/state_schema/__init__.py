@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from collections.abc import Iterator as CollectionsIterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -12,6 +14,7 @@ from alembic.script import ScriptDirectory
 from alembic.script.revision import ResolutionError
 from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.engine import URL, Connection, Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from state_schema.sqlalchemy_schema import assert_schema_matches_metadata
 
@@ -27,6 +30,7 @@ EngineFactory = Callable[[], Engine]
 EmptyStateCheck = Callable[[], bool]
 StateConnection = Connection
 StateEngine = Engine
+SessionFactory = sessionmaker[Session]
 
 
 class StateSchemaError(RuntimeError):
@@ -253,6 +257,25 @@ def sqlite_engine(path: Path) -> Engine:
     return engine
 
 
+@contextmanager
+def read_snapshot(session_factory: SessionFactory) -> CollectionsIterator[Session]:
+    """Own one read-only, repeatable snapshot for a bounded-memory enumeration."""
+
+    session = session_factory()
+    try:
+        bind = session.get_bind()
+        execution_options = (
+            {"isolation_level": "REPEATABLE READ"} if bind.dialect.name == "postgresql" else {}
+        )
+        connection = session.connection(execution_options=execution_options)
+        if bind.dialect.name == "postgresql":
+            connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+        yield session
+    finally:
+        session.rollback()
+        session.close()
+
+
 __all__ = [
     "StateCondition",
     "StateConnection",
@@ -261,6 +284,7 @@ __all__ = [
     "StateSchemaError",
     "StateStatus",
     "assert_schema_matches_metadata",
+    "read_snapshot",
     "run_migration_environment",
     "sqlite_engine",
 ]

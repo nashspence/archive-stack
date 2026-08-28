@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
 from typing import cast
 
@@ -24,6 +24,9 @@ from riverhog_protocol.collection_workflows import (
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, InvalidState, NotFound
 from sqlalchemy import asc, delete, desc, func, literal, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
+from sqlalchemy.sql.elements import ColumnElement
+from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc_timestamp_now
 
 from riverhog_core.app_permissions import (
@@ -212,24 +215,14 @@ class SqlAlchemyCollectionWorkflowService:
         state: str | None = None,
         sort: str = "updated_at",
         order: str = "desc",
-        all_items: bool = False,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
         if page < 1 or per_page < 1 or per_page > 100:
             raise BadRequest("claim pagination is invalid")
         if sort not in _CLAIM_SORT_FIELDS or order not in {"asc", "desc"}:
             raise BadRequest("claim sorting is invalid")
-        filters = [CollectionProcessingClaimRecord.consumer_app == principal.app]
-        if state:
-            filters.append(CollectionProcessingClaimRecord.state == state)
-        direction = desc if order == "desc" else asc
-        statement = (
-            select(CollectionProcessingClaimRecord)
-            .where(*filters)
-            .order_by(
-                direction(_CLAIM_SORT_FIELDS[sort]),
-                asc(CollectionProcessingClaimRecord.id),
-            )
+        filters, statement = _claim_list_statement(
+            state=state, sort=sort, order=order, principal=principal
         )
         with session_scope(self._session_factory) as session:
             total = int(
@@ -240,19 +233,35 @@ class SqlAlchemyCollectionWorkflowService:
                 )
                 or 0
             )
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = list(session.scalars(statement))
             return {
-                "page": 1 if all_items else page,
-                "per_page": total if all_items else per_page,
+                "page": page,
+                "per_page": per_page,
                 "total": total,
-                "pages": (1 if total else 0) if all_items else (total + per_page - 1) // per_page,
+                "pages": (total + per_page - 1) // per_page,
                 "sort": sort,
                 "order": order,
                 "filters": {"state": state},
                 "claims": [_claim_payload(session, current) for current in rows],
             }
+
+    def iter_claims(
+        self,
+        *,
+        state: str | None = None,
+        sort: str = "updated_at",
+        order: str = "desc",
+        principal: ApplicationPrincipal,
+    ) -> Iterator[dict[str, object]]:
+        if sort not in _CLAIM_SORT_FIELDS or order not in {"asc", "desc"}:
+            raise BadRequest("claim sorting is invalid")
+        _, statement = _claim_list_statement(
+            state=state, sort=sort, order=order, principal=principal
+        )
+        with read_snapshot(self._session_factory) as session:
+            for claim in session.scalars(statement.execution_options(yield_per=100)):
+                yield _claim_payload(session, claim)
 
     def renew_claim(
         self,
@@ -918,6 +927,33 @@ class SqlAlchemyCollectionWorkflowService:
             for claim in rows:
                 _revoke_capabilities(session, claim.id, now=now)
             return len(rows)
+
+
+def _claim_list_statement(
+    *,
+    state: str | None,
+    sort: str,
+    order: str,
+    principal: ApplicationPrincipal,
+) -> tuple[
+    list[ColumnElement[bool]],
+    Select[tuple[CollectionProcessingClaimRecord]],
+]:
+    filters: list[ColumnElement[bool]] = [
+        CollectionProcessingClaimRecord.consumer_app == principal.app
+    ]
+    if state:
+        filters.append(CollectionProcessingClaimRecord.state == state)
+    direction = desc if order == "desc" else asc
+    statement = (
+        select(CollectionProcessingClaimRecord)
+        .where(*filters)
+        .order_by(
+            direction(_CLAIM_SORT_FIELDS[sort]),
+            asc(CollectionProcessingClaimRecord.id),
+        )
+    )
+    return filters, statement
 
 
 def _canonical_roots(

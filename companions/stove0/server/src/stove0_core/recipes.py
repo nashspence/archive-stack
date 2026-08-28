@@ -526,26 +526,23 @@ class RecipePlanner:
                 or str(current.get("content_identity") or "") != root.content_identity
             ):
                 raise RuntimeError(f"collection root changed: {root.collection_id}")
-            page = self.riverhog.search(
+            with self.riverhog.stream_search(
                 collection=root.collection_id,
-                all_items=True,
                 sort="file_ref",
                 order="asc",
-            )
-            for raw in page.get("files", []):
-                if not isinstance(raw, Mapping):
-                    raise RuntimeError("Riverhog returned an invalid artifact inventory")
-                path = str(raw.get("path") or "")
-                if path.startswith("riverhog/"):
-                    continue
-                rows.append(
-                    {
-                        "collection": root,
-                        "path": path,
-                        "bytes": int(raw.get("bytes") or 0),
-                        "sha256": str(raw.get("sha256") or ""),
-                    }
-                )
+            ) as artifacts:
+                for raw in artifacts:
+                    path = str(raw.get("path") or "")
+                    if path.startswith("riverhog/"):
+                        continue
+                    rows.append(
+                        {
+                            "collection": root,
+                            "path": path,
+                            "bytes": int(raw.get("bytes") or 0),
+                            "sha256": str(raw.get("sha256") or ""),
+                        }
+                    )
         return tuple(rows)
 
 

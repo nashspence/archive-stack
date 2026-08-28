@@ -198,7 +198,8 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             assert string_quota.status_code == 422
             quotas = (
                 await client.get(
-                    "/v1/download-quotas?app=reader&all=true",
+                    "/v1/download-quotas",
+                    params={"app": "reader", "page": 1, "per_page": 100},
                     headers=quota_headers,
                 )
             ).json()
@@ -208,7 +209,12 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
             access = (
                 await client.get(
                     "/v1/app-key-access",
-                    params={"app": "reader", "key": delegated_key["id"], "all": "true"},
+                    params={
+                        "app": "reader",
+                        "key": delegated_key["id"],
+                        "page": 1,
+                        "per_page": 100,
+                    },
                     headers=manager_headers,
                 )
             ).json()
@@ -217,7 +223,8 @@ def test_bootstrap_and_application_keys_enforce_permissions_immediately(
 
             listed = (
                 await client.get(
-                    "/v1/apps/manager/keys?all=true",
+                    "/v1/apps/manager/keys",
+                    params={"page": 1, "per_page": 100},
                     headers=manager_headers,
                 )
             ).json()

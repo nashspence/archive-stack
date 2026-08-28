@@ -332,13 +332,15 @@ adapter_compose exec -T \
 
 cache_code="from riverhog_api_client import ApiClient
 with ApiClient() as client:
-    collections = client.list_collections(tag='stove0-audio-archive', all_items=True)['collections']
+    with client.stream_collections(tag='stove0-audio-archive') as rows:
+        collections = list(rows)
     assert len(collections) == 1, collections
     input_id = collections[0]['id']
-    cached = client.list_retrieval_cache_objects(collection_id=input_id, all_items=True)
-    assert cached['objects'], cached
-    assert all(row['state'] == 'ready' for row in cached['objects']), cached
-    assert all('new_archive' in row['lease_categories'] for row in cached['objects']), cached"
+    with client.stream_retrieval_cache_objects(collection_id=input_id) as rows:
+        cached = list(rows)
+    assert cached, cached
+    assert all(row['state'] == 'ready' for row in cached), cached
+    assert all('new_archive' in row['lease_categories'] for row in cached), cached"
 compose run --rm "${COMPOSE_RUN_TTY_ARGS[@]}" "${client_environment[@]}" \
   --entrypoint python test -c "${cache_code}"
 
@@ -363,7 +365,7 @@ deadline = time.monotonic() + 180
 last = None
 while time.monotonic() < deadline:
     request = urllib.request.Request(
-        'http://127.0.0.1:8080/v1/work?all=true&sort=updated_at&order=asc',
+        'http://127.0.0.1:8080/v1/work?per_page=100&sort=updated_at&order=asc',
         headers={'Authorization': 'Bearer stove0-compose-smoke-token'},
     )
     payload = json.load(urllib.request.urlopen(request, timeout=5))
@@ -410,17 +412,15 @@ scale_elapsed_ns=$(( $(date +%s%N) - scale_started_ns ))
 lineage_code="import json, os
 from riverhog_api_client import ApiClient
 with ApiClient() as client:
-    inputs = client.list_collections(tag='stove0-audio-archive', all_items=True)['collections']
-    outputs = client.list_collections(tag='archive-audio', all_items=True)['collections']
+    with client.stream_collections(tag='stove0-audio-archive') as rows:
+        inputs = list(rows)
+    with client.stream_collections(tag='archive-audio') as rows:
+        outputs = list(rows)
     assert len(inputs) == 1 and len(outputs) == 1, (inputs, outputs)
-    input_files = [
-        row for row in client.search(collection=inputs[0]['id'], all_items=True)['files']
-        if not row['path'].startswith('riverhog/')
-    ]
-    output_files = [
-        row for row in client.search(collection=outputs[0]['id'], all_items=True)['files']
-        if not row['path'].startswith('riverhog/')
-    ]
+    with client.stream_search(collection=inputs[0]['id']) as rows:
+        input_files = [row for row in rows if not row['path'].startswith('riverhog/')]
+    with client.stream_search(collection=outputs[0]['id']) as rows:
+        output_files = [row for row in rows if not row['path'].startswith('riverhog/')]
     audio_count = int(os.environ['STOVE0_SMOKE_FILE_COUNT'])
     assert len(input_files) == audio_count + 1
     archive_outputs = [row for row in output_files if row['path'].endswith('.opus')]
@@ -462,8 +462,7 @@ from collections import Counter
 from sqlalchemy import text
 from stove0_core import SqlAlchemyStateStore, database_url_from_environment
 store = SqlAlchemyStateStore(database_url_from_environment(), initialize=False)
-page = store.list_work(all_items=True, sort='work_id', order='asc')
-rows = page['work']
+rows = list(store.iter_work(sort='work_id', order='asc'))
 assert rows and all(row['phase'] == 'complete' for row in rows), rows
 table_names = (
     'stove0_artifact_selections',

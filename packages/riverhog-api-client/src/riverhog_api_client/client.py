@@ -12,7 +12,14 @@ from xml.etree import ElementTree
 
 import httpx
 from file_download import verified_download
-from http_api_contracts import CanonicalVisibleText, parse_error_payload, safe_http_base_url
+from http_api_contracts import (
+    JSON_SEQUENCE_MEDIA_TYPE,
+    CanonicalVisibleText,
+    CompleteEnumerationItemSchema,
+    CompleteEnumerationReader,
+    parse_error_payload,
+    safe_http_base_url,
+)
 from pydantic import Field, TypeAdapter, ValidationError
 from riverhog_application_access import (
     ApplicationAccessGrant,
@@ -101,6 +108,77 @@ _COLLECTION_ID: TypeAdapter[int] = TypeAdapter(CollectionId)
 _CANONICAL_RELPATH: TypeAdapter[str] = TypeAdapter(CanonicalRelPath)
 _MONTHLY_DOWNLOAD_QUOTA_BYTES: TypeAdapter[int] = TypeAdapter(MonthlyDownloadQuotaBytes)
 _PROCESSING_CLAIM_ID: TypeAdapter[str] = TypeAdapter(ProcessingClaimId)
+_JSON_OBJECT_TYPE = dict[str, Any]
+
+# These identities are checked against the server-owned response models in the
+# public-contract parity suite. Clients depend only on the sealed wire identity.
+_STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
+    "riverhog.collection-summary/v1": CompleteEnumerationItemSchema(
+        id="riverhog.collection-summary/v1",
+        sha256="00970fab0f6d1db917c86d998ae82ae06fafdb72031288aaeba076ca6f1154fe",
+    ),
+    "riverhog.collection-upload-session-summary/v1": CompleteEnumerationItemSchema(
+        id="riverhog.collection-upload-session-summary/v1",
+        sha256="ef2cda8f966706686359707a590e18cba25b91ad2ed952e8e40595e19a694449",
+    ),
+    "riverhog.collection-upload-file/v1": CompleteEnumerationItemSchema(
+        id="riverhog.collection-upload-file/v1",
+        sha256="2fe28658c73b3747b895eb065466aca5e77aa00d374040b820d9965e258c46b1",
+    ),
+    "riverhog.search-file/v1": CompleteEnumerationItemSchema(
+        id="riverhog.search-file/v1",
+        sha256="a6511a5dbf39316830647871f9ebca0b896cc93d42636ddb0c776faf67153a76",
+    ),
+    "riverhog.tag/v1": CompleteEnumerationItemSchema(
+        id="riverhog.tag/v1",
+        sha256="10fee7b9ba5804b39832fb09053c0e9b1f85e037afd722d72c914e0592b5c048",
+    ),
+    "riverhog.collection-file-provenance/v1": CompleteEnumerationItemSchema(
+        id="riverhog.collection-file-provenance/v1",
+        sha256="796dce760f006e232cd5bbe3963139c6b2ecbf795fcacfc1fff83e4449b5970f",
+    ),
+    "riverhog.archive-copy-job/v1": CompleteEnumerationItemSchema(
+        id="riverhog.archive-copy-job/v1",
+        sha256="4575819fc947e6a6e9320951372290c376967adf1de8d6cc1a4515621622c18e",
+    ),
+    "riverhog.archive-store/v1": CompleteEnumerationItemSchema(
+        id="riverhog.archive-store/v1",
+        sha256="7c281f059dd3f175ed3a79a789a08954dd8377a1e01fc07ea724b862ec87f543",
+    ),
+    "riverhog.application-summary/v1": CompleteEnumerationItemSchema(
+        id="riverhog.application-summary/v1",
+        sha256="e3137364b6798503b1b1e2c6708136ac7e398c6efceb5d6c334bbe011ececcb1",
+    ),
+    "riverhog.application-key/v1": CompleteEnumerationItemSchema(
+        id="riverhog.application-key/v1",
+        sha256="0b79e068e1718273f0510dcb21dc591496d9d006d9a19433b3e8b11c48881ce4",
+    ),
+    "riverhog.application-key-access/v1": CompleteEnumerationItemSchema(
+        id="riverhog.application-key-access/v1",
+        sha256="215dbaea68445d51b633d8b647d018d627b5aebfc6671ad333ada3f5d7673336",
+    ),
+    "riverhog.key-download-quota/v1": CompleteEnumerationItemSchema(
+        id="riverhog.key-download-quota/v1",
+        sha256="d2a70802fd8fd7dba6cfde017471d7107aad39f5cf0cb7165a9be056db81fb8c",
+    ),
+    "riverhog.retrieval-cache-object/v1": CompleteEnumerationItemSchema(
+        id="riverhog.retrieval-cache-object/v1",
+        sha256="943345fd5d47c91314d843ca5bdbbc8d34542bb0c528b1a8c5bb6182fcc8ec85",
+    ),
+    "riverhog.collection-processing-claim/v1": CompleteEnumerationItemSchema(
+        id="riverhog.collection-processing-claim/v1",
+        sha256="f48a24af35bddcbeeda930b4744ebfd08dbfa4f50fc8b433d43d4cfa95f903d8",
+    ),
+}
+_RETRIEVAL_CACHE_SORTS = {
+    "collection_id",
+    "source_store",
+    "object_id",
+    "stored_bytes",
+    "cached_at",
+    "verified_at",
+    "protected_until",
+}
 
 _COLLECTION_UPLOAD_IDEMPOTENCY_KEY: TypeAdapter[CollectionUploadIdempotencyKey] = TypeAdapter(
     CollectionUploadIdempotencyKey
@@ -428,6 +506,49 @@ class _HttpApiClient:
             raise BadRequest("API returned a non-object JSON payload")
         return payload
 
+    @contextmanager
+    def _stream_json_objects(
+        self,
+        path: str,
+        *,
+        query: Mapping[str, object],
+        params: Mapping[str, object],
+        schema_id: str,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        expected_schema = _STREAM_ITEM_SCHEMAS.get(schema_id)
+        if expected_schema is None:
+            raise RuntimeError(f"complete-enumeration schema is not sealed: {schema_id}")
+        client = self._persistent_client()
+        try:
+            with client.stream(
+                "GET",
+                path,
+                params=cast(Any, params),
+                headers={"Accept": JSON_SEQUENCE_MEDIA_TYPE},
+            ) as response:
+                if not response.is_success:
+                    response.read()
+                    self._raise_for_error(response)
+                media_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+                if media_type != JSON_SEQUENCE_MEDIA_TYPE:
+                    raise InvalidState("API returned an invalid complete-enumeration media type")
+                reader = CompleteEnumerationReader(
+                    response.iter_bytes(),
+                    item_type=_JSON_OBJECT_TYPE,
+                    expected_query=query,
+                    expected_item_schema=expected_schema,
+                )
+                try:
+                    yield iter(reader)
+                    reader.require_complete()
+                except ValueError as exc:
+                    raise InvalidState(
+                        "API returned an invalid complete-enumeration stream"
+                    ) from exc
+        except httpx.TransportError:
+            self.close()
+            raise
+
     def _download(
         self,
         path: str,
@@ -709,7 +830,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         expires_after: str | None = None,
         sort: RetrievalCacheSort = "cached_at",
         order: SortOrder = "desc",
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -755,9 +875,66 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["expires_before"] = expires_before
         if expires_after:
             params["expires_after"] = expires_after
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/retrieval-cache/objects", params=params)
+
+    @contextmanager
+    def stream_retrieval_cache_objects(
+        self,
+        *,
+        q: str | None = None,
+        tag: str | None = None,
+        collection_id: CollectionId | None = None,
+        source_store: ArchiveStoreName | None = None,
+        state: RetrievalCacheState | None = None,
+        protection: RetrievalCacheProtection | None = None,
+        expires_before: str | None = None,
+        expires_after: str | None = None,
+        sort: RetrievalCacheSort = "cached_at",
+        order: SortOrder = "desc",
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        params: dict[str, Any] = {
+            "sort": _one_of(sort, frozenset(_RETRIEVAL_CACHE_SORTS), "retrieval-cache sort"),
+            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+        }
+        query: dict[str, object] = {
+            "q": q if q else None,
+            "tag": None,
+            "collection_id": None,
+            "source_store": None,
+            "state": None,
+            "protection": None,
+            "expires_before": expires_before,
+            "expires_after": expires_after,
+            "sort": params["sort"],
+            "order": params["order"],
+        }
+        if q:
+            params["q"] = q
+        if tag is not None:
+            query["tag"] = params["tag"] = _canonical_tag(tag)
+        if collection_id is not None:
+            query["collection_id"] = params["collection_id"] = _collection_id(collection_id)
+        if source_store is not None:
+            query["source_store"] = params["source_store"] = _archive_store_name(source_store)
+        if state:
+            query["state"] = params["state"] = _one_of(
+                state, frozenset({"ready", "delete_pending", "deleting"}), "retrieval-cache state"
+            )
+        if protection:
+            query["protection"] = params["protection"] = _one_of(
+                protection, frozenset({"protected", "unleased"}), "retrieval-cache protection"
+            )
+        if expires_before:
+            params["expires_before"] = expires_before
+        if expires_after:
+            params["expires_after"] = expires_after
+        with self._stream_json_objects(
+            "/v1/retrieval-cache/objects/stream",
+            query=query,
+            params=params,
+            schema_id="riverhog.retrieval-cache-object/v1",
+        ) as items:
+            yield items
 
     def get_retrieval_cache_object(
         self,
@@ -990,7 +1167,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         *,
         page: int = 1,
         per_page: int = 25,
-        all_items: bool = False,
     ) -> dict[str, Any]:
         normalized_collection_id = _collection_id(collection_id)
         return _validated_collection_upload_file_response(
@@ -1001,10 +1177,23 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 params={
                     "page": page,
                     "per_page": per_page,
-                    "all": str(all_items).lower(),
                 },
             ),
         )
+
+    @contextmanager
+    def stream_collection_upload_session_files(
+        self,
+        collection_id: CollectionId,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized = _collection_id(collection_id)
+        with self._stream_json_objects(
+            f"/v1/collection-upload-sessions/{normalized}/files/stream",
+            query={"collection_id": normalized},
+            params={},
+            schema_id="riverhog.collection-upload-file/v1",
+        ) as items:
+            yield items
 
     def put_collection_upload_session_provenance_journal(
         self,
@@ -1066,7 +1255,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         tag: str | None = None,
         sort: CollectionUploadSort = "created_at",
         order: SortOrder = "desc",
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -1088,9 +1276,49 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             )
         if tag is not None:
             params["tag"] = _canonical_tag(tag)
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/collection-upload-sessions", params=params)
+
+    @contextmanager
+    def stream_collection_upload_sessions(
+        self,
+        *,
+        q: str | None = None,
+        state: CollectionUploadState | None = None,
+        tag: str | None = None,
+        sort: CollectionUploadSort = "created_at",
+        order: SortOrder = "desc",
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_sort = _one_of(
+            sort,
+            frozenset({"id", "created_at", "state", "bytes", "files"}),
+            "collection-upload sort",
+        )
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        params: dict[str, Any] = {"sort": normalized_sort, "order": normalized_order}
+        query: dict[str, object] = {
+            "q": q if q else None,
+            "tag": None,
+            "state": None,
+            "sort": normalized_sort,
+            "order": normalized_order,
+        }
+        if q:
+            params["q"] = q
+        if state:
+            query["state"] = params["state"] = _one_of(
+                state,
+                frozenset({"open", "closing", "uploading", "finalizing", "orphaned", "discarding"}),
+                "collection-upload state",
+            )
+        if tag is not None:
+            query["tag"] = params["tag"] = _canonical_tag(tag)
+        with self._stream_json_objects(
+            "/v1/collection-upload-sessions/stream",
+            query=query,
+            params=params,
+            schema_id="riverhog.collection-upload-session-summary/v1",
+        ) as items:
+            yield items
 
     def complete_collection_upload_session(
         self,
@@ -1206,7 +1434,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         sort: SearchSort = "file_ref",
         order: SortOrder = "asc",
         collection: CollectionId | None = None,
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
             "page": page,
@@ -1222,9 +1449,39 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["q"] = query
         if collection is not None:
             params["collection"] = _collection_id(collection)
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/search", params=params)
+
+    @contextmanager
+    def stream_search(
+        self,
+        query: str | None = None,
+        *,
+        sort: SearchSort = "file_ref",
+        order: SortOrder = "asc",
+        collection: CollectionId | None = None,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_sort = _one_of(
+            sort, frozenset({"file_ref", "collection_id", "path", "bytes"}), "search sort"
+        )
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_collection = _collection_id(collection) if collection is not None else None
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        if query:
+            params["q"] = query
+        if normalized_collection is not None:
+            params["collection"] = normalized_collection
+        with self._stream_json_objects(
+            "/v1/search/stream",
+            query={
+                "q": query if query else None,
+                "sort": normalized_sort,
+                "order": normalized_order,
+                "collection": normalized_collection,
+            },
+            params=params,
+            schema_id="riverhog.search-file/v1",
+        ) as items:
+            yield items
 
     def get_collection(self, collection_id: CollectionId) -> dict[str, Any]:
         return self._json(
@@ -1242,7 +1499,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         status: ProvenanceStatus | None = None,
         sort: ProvenanceSort = "path",
         order: SortOrder = "asc",
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, object] = {
             "page": page,
@@ -1262,13 +1518,48 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 frozenset({"captured", "omitted"}),
                 "provenance status",
             )
-        if all_items:
-            params["all"] = True
         return self._json(
             "GET",
             f"/v1/collections/{_collection_id(collection_id)}/provenance/files",
             params=params,
         )
+
+    @contextmanager
+    def stream_collection_provenance(
+        self,
+        collection_id: CollectionId,
+        *,
+        q: str | None = None,
+        status: ProvenanceStatus | None = None,
+        sort: ProvenanceSort = "path",
+        order: SortOrder = "asc",
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_id = _collection_id(collection_id)
+        normalized_sort = _one_of(sort, frozenset({"path", "bytes", "status"}), "provenance sort")
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_status = (
+            _one_of(status, frozenset({"captured", "omitted"}), "provenance status")
+            if status
+            else None
+        )
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        if q:
+            params["q"] = q
+        if normalized_status is not None:
+            params["status"] = normalized_status
+        with self._stream_json_objects(
+            f"/v1/collections/{normalized_id}/provenance/files/stream",
+            query={
+                "collection_id": normalized_id,
+                "q": q if q else None,
+                "status": normalized_status,
+                "sort": normalized_sort,
+                "order": normalized_order,
+            },
+            params=params,
+            schema_id="riverhog.collection-file-provenance/v1",
+        ) as items:
+            yield items
 
     def get_collection_file_provenance(
         self,
@@ -1368,7 +1659,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         passphrase_id: str | None = None,
         sort: CollectionSort = "id",
         order: SortOrder = "asc",
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -1394,9 +1684,47 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["encryption_format"] = encryption_format
         if passphrase_id:
             params["passphrase_id"] = passphrase_id
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/collections", params=params)
+
+    @contextmanager
+    def stream_collections(
+        self,
+        *,
+        q: str | None = None,
+        tag: str | None = None,
+        encryption_format: str | None = None,
+        passphrase_id: str | None = None,
+        sort: CollectionSort = "id",
+        order: SortOrder = "asc",
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_sort = _one_of(
+            sort, frozenset({"id", "created_at", "bytes", "files"}), "collection sort"
+        )
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_tag = _canonical_tag(tag) if tag is not None else None
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        for key, value in {
+            "q": q if q else None,
+            "tag": normalized_tag,
+            "encryption_format": encryption_format if encryption_format else None,
+            "passphrase_id": passphrase_id if passphrase_id else None,
+        }.items():
+            if value is not None:
+                params[key] = value
+        with self._stream_json_objects(
+            "/v1/collections/stream",
+            query={
+                "q": q if q else None,
+                "sort": normalized_sort,
+                "order": normalized_order,
+                "tag": normalized_tag,
+                "encryption_format": encryption_format if encryption_format else None,
+                "passphrase_id": passphrase_id if passphrase_id else None,
+            },
+            params=params,
+            schema_id="riverhog.collection-summary/v1",
+        ) as items:
+            yield items
 
     def list_archive_stores(
         self,
@@ -1406,7 +1734,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         q: str | None = None,
         sort: ArchiveStoreSort = "store",
         order: SortOrder = "asc",
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -1429,9 +1756,31 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         }
         if q:
             params["q"] = q
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/archive/stores", params=params)
+
+    @contextmanager
+    def stream_archive_stores(
+        self,
+        *,
+        q: str | None = None,
+        sort: ArchiveStoreSort = "store",
+        order: SortOrder = "asc",
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        allowed = frozenset(
+            {"store", "read_mode", "read_priority", "collections", "objects", "stored_bytes"}
+        )
+        normalized_sort = _one_of(sort, allowed, "archive-store sort")
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        if q:
+            params["q"] = q
+        with self._stream_json_objects(
+            "/v1/archive/stores/stream",
+            query={"q": q if q else None, "sort": normalized_sort, "order": normalized_order},
+            params=params,
+            schema_id="riverhog.archive-store/v1",
+        ) as items:
+            yield items
 
     def get_archive_store(self, store: ArchiveStoreName) -> dict[str, Any]:
         return self._json("GET", f"/v1/archive/stores/{quote(_archive_store_name(store), safe='')}")
@@ -1445,7 +1794,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         sort: ApplicationSort = "name",
         order: SortOrder = "asc",
         active: bool | None = None,
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -1461,9 +1809,38 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["q"] = q
         if active is not None:
             params["active"] = str(active).lower()
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/apps", params=params)
+
+    @contextmanager
+    def stream_apps(
+        self,
+        *,
+        q: str | None = None,
+        sort: ApplicationSort = "name",
+        order: SortOrder = "asc",
+        active: bool | None = None,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_sort = _one_of(
+            sort, frozenset({"name", "keys", "active_keys", "last_used_at"}), "application sort"
+        )
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        if q:
+            params["q"] = q
+        if active is not None:
+            params["active"] = str(active).lower()
+        with self._stream_json_objects(
+            "/v1/apps/stream",
+            query={
+                "q": q if q else None,
+                "sort": normalized_sort,
+                "order": normalized_order,
+                "active": active,
+            },
+            params=params,
+            schema_id="riverhog.application-summary/v1",
+        ) as items:
+            yield items
 
     def create_app_key(
         self,
@@ -1491,7 +1868,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         sort: ApplicationKeySort = "created_at",
         order: SortOrder = "desc",
         active: bool | None = None,
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -1507,13 +1883,47 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["q"] = q
         if active is not None:
             params["active"] = str(active).lower()
-        if all_items:
-            params["all"] = True
         return self._json(
             "GET",
             f"/v1/apps/{quote(_application_name(app), safe='')}/keys",
             params=params,
         )
+
+    @contextmanager
+    def stream_app_keys(
+        self,
+        app: ApplicationName,
+        *,
+        q: str | None = None,
+        sort: ApplicationKeySort = "created_at",
+        order: SortOrder = "desc",
+        active: bool | None = None,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_app = _application_name(app)
+        normalized_sort = _one_of(
+            sort,
+            frozenset({"id", "created_at", "expires_at", "last_used_at"}),
+            "application-key sort",
+        )
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        if q:
+            params["q"] = q
+        if active is not None:
+            params["active"] = str(active).lower()
+        with self._stream_json_objects(
+            f"/v1/apps/{quote(normalized_app, safe='')}/keys/stream",
+            query={
+                "app": normalized_app,
+                "q": q if q else None,
+                "sort": normalized_sort,
+                "order": normalized_order,
+                "active": active,
+            },
+            params=params,
+            schema_id="riverhog.application-key/v1",
+        ) as items:
+            yield items
 
     def revoke_app_key(self, app: ApplicationName, key_id: ApplicationKeyId) -> dict[str, Any]:
         return self._json(
@@ -1542,7 +1952,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         permission: str | None = None,
         resource: str | None = None,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -1566,9 +1975,57 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["resource"] = resource
         if active is not None:
             params["active"] = str(active).lower()
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/app-key-access", params=params)
+
+    @contextmanager
+    def stream_app_key_access(
+        self,
+        *,
+        q: str | None = None,
+        sort: ApplicationAccessSort = "permission",
+        order: SortOrder = "asc",
+        app: ApplicationName | None = None,
+        key_id: ApplicationKeyId | None = None,
+        permission: str | None = None,
+        resource: str | None = None,
+        active: bool | None = None,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_sort = _one_of(
+            sort,
+            frozenset({"app", "key_id", "permission", "resource", "created_at"}),
+            "application-access sort",
+        )
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_app = _application_name(app) if app is not None else None
+        normalized_key = _application_key_id(key_id) if key_id is not None else None
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        for key, value in {
+            "q": q if q else None,
+            "app": normalized_app,
+            "key": normalized_key,
+            "permission": permission if permission else None,
+            "resource": resource if resource else None,
+        }.items():
+            if value is not None:
+                params[key] = value
+        if active is not None:
+            params["active"] = str(active).lower()
+        with self._stream_json_objects(
+            "/v1/app-key-access/stream",
+            query={
+                "q": q if q else None,
+                "sort": normalized_sort,
+                "order": normalized_order,
+                "app": normalized_app,
+                "key": normalized_key,
+                "permission": permission if permission else None,
+                "resource": resource if resource else None,
+                "active": active,
+            },
+            params=params,
+            schema_id="riverhog.application-key-access/v1",
+        ) as items:
+            yield items
 
     def replace_app_key_access(
         self,
@@ -1628,7 +2085,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         q: str | None = None,
         sort: TagSort = "id",
         order: SortOrder = "asc",
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -1642,9 +2098,28 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         }
         if q:
             params["q"] = q
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/tags", params=params)
+
+    @contextmanager
+    def stream_tags(
+        self,
+        *,
+        q: str | None = None,
+        sort: TagSort = "id",
+        order: SortOrder = "asc",
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_sort = _one_of(sort, frozenset({"id", "created_at", "collections"}), "tag sort")
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        if q:
+            params["q"] = q
+        with self._stream_json_objects(
+            "/v1/tags/stream",
+            query={"q": q if q else None, "sort": normalized_sort, "order": normalized_order},
+            params=params,
+            schema_id="riverhog.tag/v1",
+        ) as items:
+            yield items
 
     def plan_tag_deletion(self, tag: str) -> dict[str, Any]:
         return self._json(
@@ -1744,7 +2219,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         order: SortOrder = "asc",
         app: ApplicationName | None = None,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -1771,9 +2245,51 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["app"] = _application_name(app)
         if active is not None:
             params["active"] = str(active).lower()
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/download-quotas", params=params)
+
+    @contextmanager
+    def stream_download_quotas(
+        self,
+        *,
+        q: str | None = None,
+        sort: DownloadQuotaSort = "app",
+        order: SortOrder = "asc",
+        app: ApplicationName | None = None,
+        active: bool | None = None,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        allowed = frozenset(
+            {
+                "app",
+                "key_id",
+                "monthly_bytes",
+                "accounted_bytes",
+                "reserved_bytes",
+                "remaining_bytes",
+            }
+        )
+        normalized_sort = _one_of(sort, allowed, "download-quota sort")
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_app = _application_name(app) if app is not None else None
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        if q:
+            params["q"] = q
+        if normalized_app is not None:
+            params["app"] = normalized_app
+        if active is not None:
+            params["active"] = str(active).lower()
+        with self._stream_json_objects(
+            "/v1/download-quotas/stream",
+            query={
+                "q": q if q else None,
+                "sort": normalized_sort,
+                "order": normalized_order,
+                "app": normalized_app,
+                "active": active,
+            },
+            params=params,
+            schema_id="riverhog.key-download-quota/v1",
+        ) as items:
+            yield items
 
     def create_or_resume_archive_copy(
         self,
@@ -1809,7 +2325,6 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         state: ArchiveCopyState | None = None,
         sort: ArchiveCopySort = "requested_at",
         order: SortOrder = "desc",
-        all_items: bool = False,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "page": page,
@@ -1848,9 +2363,59 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 ),
                 "archive-copy state",
             )
-        if all_items:
-            params["all"] = True
         return self._json("GET", "/v1/archive/copies", params=params)
+
+    @contextmanager
+    def stream_archive_copy_jobs(
+        self,
+        *,
+        q: str | None = None,
+        state: ArchiveCopyState | None = None,
+        sort: ArchiveCopySort = "requested_at",
+        order: SortOrder = "desc",
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        allowed_sorts = frozenset(
+            {"collection_id", "source_store", "destination_store", "state", "requested_at"}
+        )
+        normalized_sort = _one_of(sort, allowed_sorts, "archive-copy sort")
+        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_state = (
+            _one_of(
+                state,
+                frozenset(
+                    {
+                        "requested",
+                        "waiting",
+                        "checking",
+                        "copying",
+                        "canceling",
+                        "completed",
+                        "failed",
+                        "canceled",
+                    }
+                ),
+                "archive-copy state",
+            )
+            if state
+            else None
+        )
+        params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
+        if q:
+            params["q"] = q
+        if normalized_state is not None:
+            params["state"] = normalized_state
+        with self._stream_json_objects(
+            "/v1/archive/copies/stream",
+            query={
+                "q": q if q else None,
+                "state": normalized_state,
+                "sort": normalized_sort,
+                "order": normalized_order,
+            },
+            params=params,
+            schema_id="riverhog.archive-copy-job/v1",
+        ) as items:
+            yield items
 
     def get_archive_copy_job(
         self,

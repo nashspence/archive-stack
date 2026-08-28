@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import math
 import secrets
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from datetime import timedelta
+from typing import Any
 
 from riverhog_application_access import (
     validate_application_key_id,
@@ -14,6 +15,7 @@ from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from sqlalchemy import and_, asc, case, delete, desc, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
+from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import (
@@ -101,15 +103,12 @@ def _page_metadata(
     page: int,
     per_page: int,
     total: int,
-    all_items: bool,
 ) -> dict[str, int]:
     return {
-        "page": 1 if all_items else page,
-        "per_page": total if all_items else per_page,
+        "page": page,
+        "per_page": per_page,
         "total": total,
-        "pages": (
-            (1 if total else 0) if all_items else math.ceil(total / per_page) if total else 0
-        ),
+        "pages": math.ceil(total / per_page) if total else 0,
     }
 
 
@@ -389,7 +388,6 @@ class SqlAlchemyAppKeyService:
         permission: str | None = None,
         resource: str | None = None,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> dict[str, object]:
         _validate_list(
             page=page,
@@ -398,64 +396,25 @@ class SqlAlchemyAppKeyService:
             order=order,
             fields=_ACCESS_SORT_FIELDS,
         )
-        normalized_app = normalize_app_name(app) if app is not None else None
-        normalized_key_id = normalize_key_id(key_id) if key_id is not None else None
-        normalized_permission = None
-        if permission is not None:
-            normalized_permission = normalize_access(((permission, "*"),))[0].permission
-        normalized_resource = None
-        if resource is not None:
-            normalized_resource = normalize_access((ApplicationAccess(CATALOG_READ, resource),))[
-                0
-            ].resource
-        query = q.strip() if q is not None else None
         now = format_utc_timestamp(utc_now())
-        filters: list[ColumnElement[bool]] = []
-        if normalized_app is not None:
-            filters.append(AppKeyRecord.app == normalized_app)
-        if normalized_key_id is not None:
-            filters.append(AppKeyRecord.id == normalized_key_id)
-        if normalized_permission is not None:
-            filters.append(AppKeyAccessGrantRecord.permission == normalized_permission)
-        if normalized_resource is not None:
-            filters.append(AppKeyAccessGrantRecord.resource == normalized_resource)
-        if active is not None:
-            filters.append(active_key_filter(now) if active else ~active_key_filter(now))
-        if query:
-            filters.append(
-                or_(
-                    func.lower(AppKeyRecord.app).like(_like_pattern(query.casefold()), escape="\\"),
-                    func.lower(AppKeyRecord.id).like(_like_pattern(query.casefold()), escape="\\"),
-                    func.lower(AppKeyAccessGrantRecord.permission).like(
-                        _like_pattern(query.casefold()), escape="\\"
-                    ),
-                    func.lower(AppKeyAccessGrantRecord.resource).like(
-                        _like_pattern(query.casefold()), escape="\\"
-                    ),
-                )
-            )
-        direction = desc if order == "desc" else asc
-        sort_column = {
-            "app": AppKeyRecord.app,
-            "key_id": AppKeyRecord.id,
-            "permission": AppKeyAccessGrantRecord.permission,
-            "resource": AppKeyAccessGrantRecord.resource,
-            "created_at": AppKeyAccessGrantRecord.created_at,
-        }[sort]
-        statement = (
-            select(AppKeyRecord, AppKeyAccessGrantRecord)
-            .join(
-                AppKeyAccessGrantRecord,
-                AppKeyAccessGrantRecord.key_id == AppKeyRecord.id,
-            )
-            .where(*filters)
-            .order_by(
-                direction(sort_column),
-                asc(AppKeyRecord.app),
-                asc(AppKeyRecord.id),
-                asc(AppKeyAccessGrantRecord.permission),
-                asc(AppKeyAccessGrantRecord.resource),
-            )
+        (
+            query,
+            normalized_app,
+            normalized_key_id,
+            normalized_permission,
+            normalized_resource,
+            filters,
+            statement,
+        ) = _access_list_statement(
+            q=q,
+            sort=sort,
+            order=order,
+            app=app,
+            key_id=key_id,
+            permission=permission,
+            resource=resource,
+            active=active,
+            now=now,
         )
         with session_scope(self._session_factory) as session:
             total = int(
@@ -470,15 +429,13 @@ class SqlAlchemyAppKeyService:
                 )
                 or 0
             )
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             records = session.execute(statement).all()
         return {
             **_page_metadata(
                 page=page,
                 per_page=per_page,
                 total=total,
-                all_items=all_items,
             ),
             "sort": sort,
             "order": order,
@@ -512,7 +469,6 @@ class SqlAlchemyAppKeyService:
         sort: str,
         order: str,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> dict[str, object]:
         _validate_list(
             page=page,
@@ -522,39 +478,18 @@ class SqlAlchemyAppKeyService:
             fields=_APP_SORT_FIELDS,
         )
         now = format_utc_timestamp(utc_now())
-        active_count = func.sum(case((active_key_filter(now), 1), else_=0))
-        query = q.strip() if q is not None else None
-        summary = select(
-            AppKeyRecord.app.label("name"),
-            func.count().label("keys"),
-            active_count.label("active_keys"),
-            func.max(AppKeyRecord.last_used_at).label("last_used_at"),
+        query, grouped, statement = _app_list_statement(
+            q=q, sort=sort, order=order, active=active, now=now
         )
-        if query:
-            summary = summary.where(
-                func.lower(AppKeyRecord.app).like(
-                    _like_pattern(query.casefold()),
-                    escape="\\",
-                )
-            )
-        summary = summary.group_by(AppKeyRecord.app)
-        if active is not None:
-            summary = summary.having(active_count > 0 if active else active_count == 0)
-        grouped = summary.subquery()
-        direction = desc if order == "desc" else asc
-        sort_column = grouped.c[sort]
-        statement = select(grouped).order_by(direction(sort_column), asc(grouped.c.name))
         with session_scope(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(grouped)) or 0)
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = session.execute(statement).mappings().all()
         return {
             **_page_metadata(
                 page=page,
                 per_page=per_page,
                 total=total,
-                all_items=all_items,
             ),
             "sort": sort,
             "order": order,
@@ -573,7 +508,6 @@ class SqlAlchemyAppKeyService:
         sort: str,
         order: str,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> dict[str, object]:
         _validate_list(
             page=page,
@@ -582,35 +516,20 @@ class SqlAlchemyAppKeyService:
             order=order,
             fields=_KEY_SORT_FIELDS,
         )
-        normalized_app = normalize_app_name(app)
         now = format_utc_timestamp(utc_now())
-        query = q.strip() if q is not None else None
-        filters: list[ColumnElement[bool]] = [AppKeyRecord.app == normalized_app]
-        if query:
-            filters.append(
-                func.lower(AppKeyRecord.id).like(
-                    _like_pattern(query.casefold()),
-                    escape="\\",
-                )
-            )
-        if active is not None:
-            filters.append(active_key_filter(now) if active else ~active_key_filter(now))
-        direction = desc if order == "desc" else asc
-        sort_column = getattr(AppKeyRecord, sort)
-        statement = (
-            select(AppKeyRecord)
-            .where(*filters)
-            .order_by(
-                direction(sort_column),
-                asc(AppKeyRecord.id),
-            )
+        normalized_app, query, filters, statement = _key_list_statement(
+            app=app,
+            q=q,
+            sort=sort,
+            order=order,
+            active=active,
+            now=now,
         )
         with session_scope(self._session_factory) as session:
             total = int(
                 session.scalar(select(func.count()).select_from(AppKeyRecord).where(*filters)) or 0
             )
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             records = session.scalars(statement).all()
             access_by_key = _record_access_for_records(records, session=session)
         return {
@@ -618,7 +537,6 @@ class SqlAlchemyAppKeyService:
                 page=page,
                 per_page=per_page,
                 total=total,
-                all_items=all_items,
             ),
             "sort": sort,
             "order": order,
@@ -634,6 +552,83 @@ class SqlAlchemyAppKeyService:
                 for record in records
             ],
         }
+
+    def iter_access(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        app: str | None = None,
+        key_id: str | None = None,
+        permission: str | None = None,
+        resource: str | None = None,
+        active: bool | None = None,
+    ) -> Iterator[dict[str, object]]:
+        _validate_list(page=1, per_page=100, sort=sort, order=order, fields=_ACCESS_SORT_FIELDS)
+        now = format_utc_timestamp(utc_now())
+        *_, statement = _access_list_statement(
+            q=q,
+            sort=sort,
+            order=order,
+            app=app,
+            key_id=key_id,
+            permission=permission,
+            resource=resource,
+            active=active,
+            now=now,
+        )
+        with read_snapshot(self._session_factory) as session:
+            for key, grant in session.execute(statement.execution_options(yield_per=100)):
+                yield {
+                    "app": key.app,
+                    "key_id": key.id,
+                    "key_status": _status(key, now=now),
+                    "permission": grant.permission,
+                    "resource": grant.resource,
+                    "created_at": grant.created_at,
+                }
+
+    def iter_apps(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        active: bool | None = None,
+    ) -> Iterator[dict[str, object]]:
+        _validate_list(page=1, per_page=100, sort=sort, order=order, fields=_APP_SORT_FIELDS)
+        now = format_utc_timestamp(utc_now())
+        _, _, statement = _app_list_statement(q=q, sort=sort, order=order, active=active, now=now)
+        with read_snapshot(self._session_factory) as session:
+            rows = session.execute(statement.execution_options(yield_per=100)).mappings()
+            for row in rows:
+                yield dict(row)
+
+    def iter_keys(
+        self,
+        *,
+        app: str,
+        q: str | None,
+        sort: str,
+        order: str,
+        active: bool | None = None,
+    ) -> Iterator[dict[str, object]]:
+        _validate_list(page=1, per_page=100, sort=sort, order=order, fields=_KEY_SORT_FIELDS)
+        now = format_utc_timestamp(utc_now())
+        _, _, _, statement = _key_list_statement(
+            app=app, q=q, sort=sort, order=order, active=active, now=now
+        )
+        with read_snapshot(self._session_factory) as session:
+            records = session.scalars(statement.execution_options(yield_per=100))
+            for partition in records.partitions():
+                access_by_key = _record_access_for_records(partition, session=session)
+                for record in partition:
+                    yield self._record_payload(
+                        record,
+                        now=now,
+                        access=access_by_key.get(record.id, ()),
+                    )
 
     @staticmethod
     def _record_payload(
@@ -653,6 +648,136 @@ class SqlAlchemyAppKeyService:
             "revoked_at": record.revoked_at,
             "last_used_at": record.last_used_at,
         }
+
+
+def _access_list_statement(
+    *,
+    q: str | None,
+    sort: str,
+    order: str,
+    app: str | None,
+    key_id: str | None,
+    permission: str | None,
+    resource: str | None,
+    active: bool | None,
+    now: str,
+) -> tuple[str | None, str | None, str | None, str | None, str | None, list[Any], Any]:
+    normalized_app = normalize_app_name(app) if app is not None else None
+    normalized_key_id = normalize_key_id(key_id) if key_id is not None else None
+    normalized_permission = (
+        normalize_access(((permission, "*"),))[0].permission if permission is not None else None
+    )
+    normalized_resource = (
+        normalize_access((ApplicationAccess(CATALOG_READ, resource),))[0].resource
+        if resource is not None
+        else None
+    )
+    query = q.strip() if q is not None else None
+    filters: list[Any] = []
+    if normalized_app is not None:
+        filters.append(AppKeyRecord.app == normalized_app)
+    if normalized_key_id is not None:
+        filters.append(AppKeyRecord.id == normalized_key_id)
+    if normalized_permission is not None:
+        filters.append(AppKeyAccessGrantRecord.permission == normalized_permission)
+    if normalized_resource is not None:
+        filters.append(AppKeyAccessGrantRecord.resource == normalized_resource)
+    if active is not None:
+        filters.append(active_key_filter(now) if active else ~active_key_filter(now))
+    if query:
+        pattern = _like_pattern(query.casefold())
+        filters.append(
+            or_(
+                func.lower(AppKeyRecord.app).like(pattern, escape="\\"),
+                func.lower(AppKeyRecord.id).like(pattern, escape="\\"),
+                func.lower(AppKeyAccessGrantRecord.permission).like(pattern, escape="\\"),
+                func.lower(AppKeyAccessGrantRecord.resource).like(pattern, escape="\\"),
+            )
+        )
+    direction = desc if order == "desc" else asc
+    sort_column = {
+        "app": AppKeyRecord.app,
+        "key_id": AppKeyRecord.id,
+        "permission": AppKeyAccessGrantRecord.permission,
+        "resource": AppKeyAccessGrantRecord.resource,
+        "created_at": AppKeyAccessGrantRecord.created_at,
+    }[sort]
+    statement = (
+        select(AppKeyRecord, AppKeyAccessGrantRecord)
+        .join(AppKeyAccessGrantRecord, AppKeyAccessGrantRecord.key_id == AppKeyRecord.id)
+        .where(*filters)
+        .order_by(
+            direction(sort_column),
+            asc(AppKeyRecord.app),
+            asc(AppKeyRecord.id),
+            asc(AppKeyAccessGrantRecord.permission),
+            asc(AppKeyAccessGrantRecord.resource),
+        )
+    )
+    return (
+        query,
+        normalized_app,
+        normalized_key_id,
+        normalized_permission,
+        normalized_resource,
+        filters,
+        statement,
+    )
+
+
+def _app_list_statement(
+    *,
+    q: str | None,
+    sort: str,
+    order: str,
+    active: bool | None,
+    now: str,
+) -> tuple[str | None, Any, Any]:
+    active_count = func.sum(case((active_key_filter(now), 1), else_=0))
+    query = q.strip() if q is not None else None
+    summary = select(
+        AppKeyRecord.app.label("name"),
+        func.count().label("keys"),
+        active_count.label("active_keys"),
+        func.max(AppKeyRecord.last_used_at).label("last_used_at"),
+    )
+    if query:
+        summary = summary.where(
+            func.lower(AppKeyRecord.app).like(_like_pattern(query.casefold()), escape="\\")
+        )
+    summary = summary.group_by(AppKeyRecord.app)
+    if active is not None:
+        summary = summary.having(active_count > 0 if active else active_count == 0)
+    grouped = summary.subquery()
+    direction = desc if order == "desc" else asc
+    statement = select(grouped).order_by(direction(grouped.c[sort]), asc(grouped.c.name))
+    return query, grouped, statement
+
+
+def _key_list_statement(
+    *,
+    app: str,
+    q: str | None,
+    sort: str,
+    order: str,
+    active: bool | None,
+    now: str,
+) -> tuple[str, str | None, list[ColumnElement[bool]], Any]:
+    normalized_app = normalize_app_name(app)
+    query = q.strip() if q is not None else None
+    filters: list[ColumnElement[bool]] = [AppKeyRecord.app == normalized_app]
+    if query:
+        filters.append(
+            func.lower(AppKeyRecord.id).like(_like_pattern(query.casefold()), escape="\\")
+        )
+    if active is not None:
+        filters.append(active_key_filter(now) if active else ~active_key_filter(now))
+    direction = desc if order == "desc" else asc
+    sort_column = getattr(AppKeyRecord, sort)
+    statement = (
+        select(AppKeyRecord).where(*filters).order_by(direction(sort_column), asc(AppKeyRecord.id))
+    )
+    return normalized_app, query, filters, statement
 
 
 def _record_access(session: Session, key_id: str) -> tuple[ApplicationAccess, ...]:

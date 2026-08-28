@@ -1107,16 +1107,16 @@ def test_official_upload_client_writes_directly_and_resumes_after_interruption(
     resolved_root = str(root.resolve())
 
     class _Api:
-        def list_collection_upload_sessions(self, **_kwargs: object) -> dict[str, object]:
-            return {"uploads": [{"collection_id": 42, "ingest_source": resolved_root}]}
+        @contextmanager
+        def stream_collection_upload_sessions(self):  # type: ignore[no-untyped-def]
+            yield iter(({"collection_id": 42, "ingest_source": resolved_root},))
 
         def get_collection_upload_session(self, _collection_id: int) -> dict[str, object]:
             return {"state": "uploading"}
 
-        def list_collection_upload_session_files(
-            self, _collection_id: int, **_kwargs: object
-        ) -> dict[str, object]:
-            return {"files": [{"path": "file.txt"}]}
+        @contextmanager
+        def stream_collection_upload_session_files(self, _collection_id: int):  # type: ignore[no-untyped-def]
+            yield iter(({"path": "file.txt"},))
 
         def list_collection_upload_session_volumes(self, _collection_id: int) -> dict[str, object]:
             return {"volumes": [{"volume_id": "volume-1"}]}

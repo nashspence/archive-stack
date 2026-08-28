@@ -177,6 +177,7 @@ class Operation:
     client: str | None
     cli_commands: tuple[str, ...]
     provider_evidence: str | None
+    read_collection: dict[str, object] | None
 
 
 def _callback_has_json(callback: Callable[..., object]) -> bool:
@@ -429,7 +430,7 @@ def _route_index(app: FastAPI) -> dict[tuple[str, str], APIRoute]:
 
 def _openapi_operations(
     app: FastAPI,
-) -> Iterator[tuple[str, str, str, str | None, str, object]]:
+) -> Iterator[tuple[str, str, str, str | None, str, object, dict[str, object] | None]]:
     routes = _route_index(app)
     documented: set[tuple[str, str]] = set()
     for path, path_item in app.openapi()["paths"].items():
@@ -452,6 +453,10 @@ def _openapi_operations(
                 declared,
                 _response_authority(route.response_model),
                 route.response_model,
+                cast(
+                    dict[str, object] | None,
+                    specification.get("x-riverhog-read-collection"),
+                ),
             )
     for application_route, path in _application_routes(app):
         if not isinstance(application_route, APIRoute) or application_route.include_in_schema:
@@ -477,6 +482,10 @@ def _openapi_operations(
                 declared,
                 _response_authority(application_route.response_model),
                 application_route.response_model,
+                cast(
+                    dict[str, object] | None,
+                    (application_route.openapi_extra or {}).get("x-riverhog-read-collection"),
+                ),
             )
 
 
@@ -619,7 +628,15 @@ def operation_matrix() -> tuple[Operation, ...]:
             ):
                 commands[operation_id].append(command)
 
-        for operation_id, method, path, declared, response_authority, response_model in openapi:
+        for (
+            operation_id,
+            method,
+            path,
+            declared,
+            response_authority,
+            response_model,
+            read_collection,
+        ) in openapi:
             owner = _client_owner(operation_id, surface.client_types)
             _validate_client_response_authority(
                 operation_id,
@@ -679,6 +696,7 @@ def operation_matrix() -> tuple[Operation, ...]:
                     client=owner,
                     cli_commands=operation_commands,
                     provider_evidence=_provider_evidence(surface.name, operation_id),
+                    read_collection=read_collection,
                 )
             )
         available_commands = {command for command, _callback, _has_json in surface.cli_commands}
@@ -712,6 +730,7 @@ def operation_matrix() -> tuple[Operation, ...]:
                     client=supplemental.client_type.__name__,
                     cli_commands=supplemental.cli_commands,
                     provider_evidence=None,
+                    read_collection=None,
                 )
             )
     identities = [(item.application, item.operation_id, item.method, item.path) for item in matrix]

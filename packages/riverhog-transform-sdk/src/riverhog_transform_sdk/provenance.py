@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -30,12 +31,15 @@ _JOURNAL_NAMESPACE = uuid.UUID("d3581958-1067-433c-80a6-a2c60250ba70")
 
 
 class _TransformProvenanceApi(Protocol):
-    def list_collection_provenance(
+    def stream_collection_provenance(
         self,
         collection_id: CollectionId,
         *,
-        all_items: bool = False,
-    ) -> dict[str, Any]: ...
+        q: str | None = None,
+        status: str | None = None,
+        sort: str = "path",
+        order: str = "asc",
+    ) -> AbstractContextManager[Iterator[dict[str, Any]]]: ...
 
     def export_collection_provenance_journal(
         self,
@@ -174,19 +178,14 @@ def prepare_incremental_transform_provenance(
     for collection_id in sorted({item.root.collection_id for item in inventory}):
         if heartbeat is not None:
             heartbeat()
-        payload = api.list_collection_provenance(collection_id, all_items=True)
-        raw_files = payload.get("files")
-        if not isinstance(raw_files, list):
-            raise RuntimeError("Riverhog provenance inventory has no file rows")
-        for raw in raw_files:
-            if not isinstance(raw, Mapping):
-                raise RuntimeError("Riverhog provenance inventory contains an invalid row")
-            key = (
-                _positive_int(raw.get("collection_id"), "provenance collection id"),
-                str(raw.get("path") or ""),
-            )
-            if key in by_key:
-                rows[key] = raw
+        with api.stream_collection_provenance(collection_id, sort="path", order="asc") as raw_files:
+            for raw in raw_files:
+                key = (
+                    _positive_int(raw.get("collection_id"), "provenance collection id"),
+                    str(raw.get("path") or ""),
+                )
+                if key in by_key:
+                    rows[key] = raw
     journals: dict[str, bytes] = {}
     loaded: set[tuple[int, str]] = set()
     current: dict[tuple[int, str], bytes] = {}
@@ -260,23 +259,18 @@ def prepare_transform_provenance(
     for collection_id in sorted({item[0] for item in relevant}):
         if heartbeat is not None:
             heartbeat()
-        payload = api.list_collection_provenance(collection_id, all_items=True)
-        raw_files = payload.get("files")
-        if not isinstance(raw_files, list):
-            raise RuntimeError("Riverhog provenance inventory has no file rows")
-        for raw in raw_files:
-            if not isinstance(raw, Mapping):
-                raise RuntimeError("Riverhog provenance inventory contains an invalid row")
-            row_collection_id = _positive_int(
-                raw.get("collection_id"),
-                "provenance collection id",
-            )
-            path = str(raw.get("path") or "")
-            key = (row_collection_id, path)
-            if key in relevant:
-                if key in rows:
-                    raise RuntimeError("Riverhog provenance inventory repeats an input")
-                rows[key] = raw
+        with api.stream_collection_provenance(collection_id, sort="path", order="asc") as raw_files:
+            for raw in raw_files:
+                row_collection_id = _positive_int(
+                    raw.get("collection_id"),
+                    "provenance collection id",
+                )
+                path = str(raw.get("path") or "")
+                key = (row_collection_id, path)
+                if key in relevant:
+                    if key in rows:
+                        raise RuntimeError("Riverhog provenance inventory repeats an input")
+                    rows[key] = raw
 
     journals: dict[str, bytes] = {}
     loaded_journals: set[tuple[int, str]] = set()

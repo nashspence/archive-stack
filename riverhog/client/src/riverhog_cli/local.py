@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import sqlite3
+import sys
 import time
 from contextlib import closing
 from pathlib import Path
@@ -813,39 +814,41 @@ def list_collections(
                 SELECT * FROM local_collections
                 {filters}
                 """
+        order_column = LOCAL_LIST_SORT_FIELDS[sort]
+        if all_items:
+            rows = db.execute(
+                f"""
+                {base_query}
+                ORDER BY {order_column} {normalized_order.upper()}, collection_id ASC
+                """,
+                params,
+            )
+            _emit_local_collection_enumeration(
+                rows,
+                ids=ids,
+                json_mode=json_mode,
+            )
+            return
         total = int(
             db.execute(
                 f"SELECT COUNT(*) FROM ({base_query})",
                 params,
             ).fetchone()[0]
         )
-        effective_page = 1 if all_items else page
-        effective_per_page = total if all_items and total else per_page
-        offset = (effective_page - 1) * effective_per_page
-        order_column = LOCAL_LIST_SORT_FIELDS[sort]
+        offset = (page - 1) * per_page
         rows = db.execute(
             f"""
             {base_query}
             ORDER BY {order_column} {normalized_order.upper()}, collection_id ASC
             LIMIT ? OFFSET ?
             """,
-            (*params, effective_per_page, offset),
+            (*params, per_page, offset),
         )
-        collections = [
-            {
-                "collection_id": int(row["collection_id"]),
-                "created_at": str(row["created_at"]),
-                "tags": json.loads(str(row["tags_json"])),
-                "status": str(row["status"]),
-                "files": int(row["files"]),
-                "bytes": int(row["bytes"]),
-            }
-            for row in rows
-        ]
-    pages = (total + effective_per_page - 1) // effective_per_page if total else 0
+        collections = [_local_collection_list_item(row) for row in rows]
+    pages = (total + per_page - 1) // per_page if total else 0
     payload = {
-        "page": effective_page,
-        "per_page": effective_per_page,
+        "page": page,
+        "per_page": per_page,
         "total": total,
         "pages": pages,
         "sort": sort,
@@ -860,6 +863,61 @@ def list_collections(
         )
         return
     emit(payload if json_mode else format_local_collections(payload), json_mode=json_mode)
+
+
+def _local_collection_list_item(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "collection_id": int(row["collection_id"]),
+        "created_at": str(row["created_at"]),
+        "tags": json.loads(str(row["tags_json"])),
+        "status": str(row["status"]),
+        "files": int(row["files"]),
+        "bytes": int(row["bytes"]),
+    }
+
+
+def _emit_local_collection_enumeration(
+    rows: sqlite3.Cursor,
+    *,
+    ids: bool,
+    json_mode: bool,
+) -> None:
+    count = 0
+    if json_mode:
+        sys.stdout.write('{"collections":[')
+    first_chunk = True
+    while current := rows.fetchmany(LOCAL_LIST_PAGE_SIZE_MAX):
+        items = [_local_collection_list_item(row) for row in current]
+        if ids:
+            for item in items:
+                typer.echo(str(item["collection_id"]))
+        elif json_mode:
+            for item in items:
+                if count:
+                    sys.stdout.write(",")
+                sys.stdout.write(
+                    json.dumps(
+                        item,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
+                sys.stdout.flush()
+                count += 1
+        else:
+            rendered = format_local_collections(
+                {"collections": items, "_complete_enumeration": True}
+            ).splitlines()
+            if not first_chunk and rendered:
+                rendered = rendered[1:]
+            if rendered:
+                typer.echo("\n".join(rendered))
+            first_chunk = False
+    if json_mode:
+        sys.stdout.write(f'],"total":{count}}}\n')
+    elif not ids and first_chunk:
+        typer.echo(format_local_collections({"collections": [], "_complete_enumeration": True}))
 
 
 @local_app.command("show")

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -98,6 +100,13 @@ class CatalogApi:
                 }
             ]
         }
+
+    @contextmanager
+    def stream_search(self, **kwargs: object) -> Iterator[Iterator[dict[str, object]]]:
+        files = self.search(**kwargs).get("files")
+        if not isinstance(files, list):
+            raise AssertionError("fixture search inventory must be a list")
+        yield iter(files)
 
 
 class Targets:

@@ -199,7 +199,6 @@ def test_archive_copy_preserves_the_independent_object_manifest(
         q="b2",
         sort="requested_at",
         order="desc",
-        all_items=False,
     )
     assert shown["state"] == "completed"
     assert shown["initiated_by_app"] == "operator"
@@ -528,7 +527,6 @@ def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
         state="canceled",
         sort="requested_at",
         order="desc",
-        all_items=False,
     )
     assert filtered["filters"] == {"state": "canceled"}
     assert filtered["copies"] == [canceled]

@@ -10,21 +10,27 @@ import secrets
 import signal
 import sys
 import threading
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from http_api_contracts import (
+    JSON_SEQUENCE_MEDIA_TYPE,
     apply_openapi_error_contract,
+    bounded_list_operation,
+    complete_enumeration_operation,
+    complete_enumeration_schema_identity,
+    cursor_feed_operation,
     error_code_for_status,
     error_payload,
+    iter_complete_enumeration,
 )
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from riverhog_api_client import ApiClient
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -67,6 +73,7 @@ from stove0_operator_contracts import (
     WorkView,
 )
 from stove0_protocol import (
+    ArtifactSubject,
     BranchSetEvaluation,
     CollectionRootRef,
     EvaluationDefinition,
@@ -87,6 +94,31 @@ from stove0_api.schemas import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _CompleteEnumerationResponse(StreamingResponse):
+    media_type = JSON_SEQUENCE_MEDIA_TYPE
+
+
+def _complete_enumeration_response(
+    items: Iterable[object],
+    *,
+    query: Mapping[str, object],
+    item_type: object,
+    schema_id: str,
+) -> _CompleteEnumerationResponse:
+    adapter: TypeAdapter[Any] = TypeAdapter(item_type)
+    return _CompleteEnumerationResponse(
+        iter_complete_enumeration(
+            (
+                adapter.dump_python(adapter.validate_python(item), mode="json", warnings="error")
+                for item in items
+            ),
+            query=query,
+            item_schema=complete_enumeration_schema_identity(item_type, schema_id=schema_id),
+        ),
+        media_type=JSON_SEQUENCE_MEDIA_TYPE,
+    )
 
 
 def _error_response(
@@ -294,6 +326,7 @@ def create_app(
         dependencies=[Depends(authorize)],
         operation_id="list_events",
         tags=["events"],
+        openapi_extra=cursor_feed_operation(cursor_parameter="after", limit_parameter="limit"),
     )
     def list_events(
         after: str | None = None,
@@ -333,6 +366,7 @@ def create_app(
         dependencies=[Depends(authorize)],
         operation_id="list_work",
         tags=["work"],
+        openapi_extra=bounded_list_operation(paired_operation_id="stream_work"),
     )
     def list_work(
         page: int = Query(default=1, ge=1),
@@ -341,7 +375,6 @@ def create_app(
         q: str | None = None,
         sort: Literal["updated_at", "phase", "work_id"] = "updated_at",
         order: Literal["asc", "desc"] = "desc",
-        all_items: bool = Query(default=False, alias="all"),
     ) -> WorkPage:
         return WorkPage.from_page(
             composition.state.list_work(
@@ -351,8 +384,36 @@ def create_app(
                 query=q,
                 sort=sort,
                 order=order,
-                all_items=all_items,
             )
+        )
+
+    @app.get(
+        "/v1/work/stream",
+        response_class=_CompleteEnumerationResponse,
+        dependencies=[Depends(authorize)],
+        operation_id="stream_work",
+        tags=["work"],
+        openapi_extra=complete_enumeration_operation(
+            paired_operation_id="list_work",
+            item_type=WorkView,
+            schema_id="stove0.work-view/v1",
+        ),
+    )
+    def stream_work(
+        phase: WorkPhase | None = None,
+        q: str | None = None,
+        sort: Literal["updated_at", "phase", "work_id"] = "updated_at",
+        order: Literal["asc", "desc"] = "desc",
+    ) -> StreamingResponse:
+        items = (
+            WorkView.from_record(record)
+            for record in composition.state.iter_work(phase=phase, query=q, sort=sort, order=order)
+        )
+        return _complete_enumeration_response(
+            items,
+            query={"phase": phase, "q": q, "sort": sort, "order": order},
+            item_type=WorkView,
+            schema_id="stove0.work-view/v1",
         )
 
     @app.post(
@@ -413,37 +474,56 @@ def create_app(
         dependencies=[Depends(authorize)],
         operation_id="get_artifact_selection",
         tags=["artifact-selections"],
+        openapi_extra=bounded_list_operation(paired_operation_id="stream_artifact_selection"),
     )
     def get_artifact_selection(
         selection_sha256: str,
         page: int = Query(default=1, ge=1),
         per_page: int = Query(default=100, ge=1, le=1000),
-        all_items: bool = Query(default=False, alias="all"),
     ) -> ArtifactSelectionPage:
-        selection = composition.state.load_selection(selection_sha256)
+        selection = composition.state.load_selection_ref(selection_sha256)
         if selection is None:
             raise KeyError(selection_sha256)
-        total = len(selection.artifacts)
-        if all_items:
-            selected = selection.artifacts
-            response_page = 1
-            response_per_page = total
-            pages = 1 if total else 0
-        else:
-            start = (page - 1) * per_page
-            selected = selection.artifacts[start : start + per_page]
-            response_page = page
-            response_per_page = per_page
-            pages = (total + per_page - 1) // per_page
+        total = selection.artifact_count
+        start = (page - 1) * per_page
+        selected = composition.state.selection_artifact_page(
+            selection_sha256,
+            offset=start,
+            limit=per_page,
+        )
+        pages = (total + per_page - 1) // per_page
         return ArtifactSelectionPage(
-            page=response_page,
-            per_page=response_per_page,
+            page=page,
+            per_page=per_page,
             total=total,
             pages=pages,
             filters={},
             selection_sha256=selection.selection_sha256,
             total_bytes=selection.total_bytes,
             artifacts=selected,
+        )
+
+    @app.get(
+        "/v1/artifact-selections/{selection_sha256}/stream",
+        response_class=_CompleteEnumerationResponse,
+        dependencies=[Depends(authorize)],
+        operation_id="stream_artifact_selection",
+        tags=["artifact-selections"],
+        openapi_extra=complete_enumeration_operation(
+            paired_operation_id="get_artifact_selection",
+            item_type=ArtifactSubject,
+            schema_id="stove0.artifact-subject/v1",
+        ),
+    )
+    def stream_artifact_selection(selection_sha256: str) -> StreamingResponse:
+        selection = composition.state.load_selection_ref(selection_sha256)
+        if selection is None:
+            raise KeyError(selection_sha256)
+        return _complete_enumeration_response(
+            composition.state.iter_selection_artifacts(selection_sha256),
+            query={"selection_sha256": selection_sha256},
+            item_type=ArtifactSubject,
+            schema_id="stove0.artifact-subject/v1",
         )
 
     @app.post(
@@ -492,6 +572,7 @@ def create_app(
         dependencies=[Depends(authorize)],
         operation_id="list_evaluations",
         tags=["evaluations"],
+        openapi_extra=bounded_list_operation(paired_operation_id="stream_evaluations"),
     )
     def list_evaluations(
         page: int = Query(default=1, ge=1),
@@ -500,7 +581,6 @@ def create_app(
         q: str | None = None,
         sort: Literal["updated_at", "phase", "evaluation_id"] = "updated_at",
         order: Literal["asc", "desc"] = "desc",
-        all_items: bool = Query(default=False, alias="all"),
     ) -> EvaluationPage:
         return EvaluationPage.from_page(
             composition.state.list_evaluations(
@@ -510,8 +590,38 @@ def create_app(
                 query=q,
                 sort=sort,
                 order=order,
-                all_items=all_items,
             )
+        )
+
+    @app.get(
+        "/v1/evaluations/stream",
+        response_class=_CompleteEnumerationResponse,
+        dependencies=[Depends(authorize)],
+        operation_id="stream_evaluations",
+        tags=["evaluations"],
+        openapi_extra=complete_enumeration_operation(
+            paired_operation_id="list_evaluations",
+            item_type=EvaluationView,
+            schema_id="stove0.evaluation-view/v1",
+        ),
+    )
+    def stream_evaluations(
+        phase: EvaluationPhase | None = None,
+        q: str | None = None,
+        sort: Literal["updated_at", "phase", "evaluation_id"] = "updated_at",
+        order: Literal["asc", "desc"] = "desc",
+    ) -> StreamingResponse:
+        items = (
+            EvaluationView.from_record(record)
+            for record in composition.state.iter_evaluations(
+                phase=phase, query=q, sort=sort, order=order
+            )
+        )
+        return _complete_enumeration_response(
+            items,
+            query={"phase": phase, "q": q, "sort": sort, "order": order},
+            item_type=EvaluationView,
+            schema_id="stove0.evaluation-view/v1",
         )
 
     @app.post(

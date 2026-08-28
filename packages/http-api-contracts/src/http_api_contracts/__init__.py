@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from http import HTTPStatus
 from ipaddress import ip_address
@@ -20,6 +22,11 @@ FRAMED_BODY_FORMAT = "riverhog-json-opaque-framing/v1"
 FRAMED_BODY_MEDIA_TYPE = "application/vnd.riverhog.json-opaque-framing"
 FRAMED_BODY_DECLARATION_LENGTH_BYTES = 4
 FRAMED_BODY_MAXIMUM_DECLARATION_BYTES = 32 * 1024
+JSON_SEQUENCE_MEDIA_TYPE = "application/json-seq"
+COMPLETE_ENUMERATION_FORMAT: Literal["riverhog-complete-enumeration/v1"] = (
+    "riverhog-complete-enumeration/v1"
+)
+_JSON_SEQUENCE_RECORD_SEPARATOR = b"\x1e"
 
 
 class HttpApiModel(BaseModel):
@@ -39,6 +46,219 @@ class ErrorResponse(HttpApiModel):
 class HealthResponse(HttpApiModel):
     service: str = Field(min_length=1)
     status: Literal["ok"]
+
+
+class CompleteEnumerationItemSchema(HttpApiModel):
+    id: CanonicalVisibleText
+    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+class CompleteEnumerationBegin(HttpApiModel):
+    type: Literal["begin"] = "begin"
+    format: Literal["riverhog-complete-enumeration/v1"] = COMPLETE_ENUMERATION_FORMAT
+    query: dict[str, Any]
+    item_schema: CompleteEnumerationItemSchema
+
+
+class CompleteEnumerationItem(HttpApiModel):
+    type: Literal["item"] = "item"
+    ordinal: int = Field(ge=0)
+    item: Any
+
+
+class CompleteEnumerationEnd(HttpApiModel):
+    type: Literal["end"] = "end"
+    count: int = Field(ge=0)
+    items_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+def canonical_json_bytes(value: object) -> bytes:
+    """Encode one bounded protocol value with the repository canonical JSON rules."""
+
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def complete_enumeration_schema_identity(
+    item_type: object,
+    *,
+    schema_id: str,
+) -> CompleteEnumerationItemSchema:
+    """Seal the exact structural item schema advertised by one stream operation."""
+
+    schema = TypeAdapter(item_type).json_schema(mode="validation")
+    return CompleteEnumerationItemSchema(
+        id=schema_id,
+        sha256=hashlib.sha256(canonical_json_bytes(schema)).hexdigest(),
+    )
+
+
+def bounded_list_operation(*, paired_operation_id: str) -> dict[str, Any]:
+    """Classify one public read collection as a bounded interactive page."""
+
+    return {
+        "x-riverhog-read-collection": {
+            "kind": "bounded-list",
+            "paired_operation_id": paired_operation_id,
+        }
+    }
+
+
+def complete_enumeration_operation(
+    *,
+    paired_operation_id: str,
+    item_type: object,
+    schema_id: str,
+) -> dict[str, Any]:
+    """Classify one public read collection as a complete snapshot stream."""
+
+    item_schema = complete_enumeration_schema_identity(item_type, schema_id=schema_id)
+    return {
+        "x-riverhog-read-collection": {
+            "kind": "complete-enumeration",
+            "paired_operation_id": paired_operation_id,
+            "format": COMPLETE_ENUMERATION_FORMAT,
+            "media_type": JSON_SEQUENCE_MEDIA_TYPE,
+            "item_schema": item_schema.model_dump(mode="json"),
+        }
+    }
+
+
+def cursor_feed_operation(
+    *,
+    cursor_parameter: str,
+    limit_parameter: str | None,
+    fixed_limit: int | None = None,
+) -> dict[str, Any]:
+    """Classify one public read collection as a bounded cursor/change feed."""
+
+    if (limit_parameter is None) == (fixed_limit is None):
+        raise ValueError("a cursor feed requires exactly one variable or fixed limit")
+    return {
+        "x-riverhog-read-collection": {
+            "kind": "cursor-feed",
+            "cursor_parameter": cursor_parameter,
+            "limit_parameter": limit_parameter,
+            "fixed_limit": fixed_limit,
+        }
+    }
+
+
+def _json_sequence_record(value: object) -> bytes:
+    return _JSON_SEQUENCE_RECORD_SEPARATOR + canonical_json_bytes(value) + b"\n"
+
+
+def iter_complete_enumeration(
+    items: Iterable[object],
+    *,
+    query: Mapping[str, object],
+    item_schema: CompleteEnumerationItemSchema,
+) -> Iterator[bytes]:
+    """Emit one RFC 7464 complete-enumeration stream without materializing its items."""
+
+    begin = CompleteEnumerationBegin(
+        query=dict(query),
+        item_schema=item_schema,
+    )
+    yield _json_sequence_record(begin.model_dump(mode="json"))
+    digest = hashlib.sha256()
+    count = 0
+    for count, value in enumerate(items, start=1):
+        item = CompleteEnumerationItem(ordinal=count - 1, item=value)
+        encoded = canonical_json_bytes(item.model_dump(mode="json"))
+        digest.update(encoded)
+        yield _JSON_SEQUENCE_RECORD_SEPARATOR + encoded + b"\n"
+    end = CompleteEnumerationEnd(count=count, items_sha256=digest.hexdigest())
+    yield _json_sequence_record(end.model_dump(mode="json"))
+
+
+class CompleteEnumerationReader:
+    """Incrementally validate one exact complete-enumeration stream."""
+
+    def __init__(
+        self,
+        chunks: Iterable[bytes],
+        *,
+        item_type: object,
+        expected_query: Mapping[str, object],
+        expected_item_schema: CompleteEnumerationItemSchema,
+    ) -> None:
+        self._chunks = iter(chunks)
+        self._item_adapter: TypeAdapter[Any] = TypeAdapter(item_type)
+        self._expected_query = dict(expected_query)
+        self._expected_item_schema = expected_item_schema
+        self.complete = False
+        self.count = 0
+        self.items_sha256: str | None = None
+        self._started = False
+
+    def __iter__(self) -> Iterator[Any]:
+        if self._started:
+            raise RuntimeError("complete-enumeration reader is single-use")
+        self._started = True
+        records = _iter_json_sequence_records(self._chunks)
+        try:
+            first = next(records)
+        except StopIteration as exc:
+            raise ValueError("complete-enumeration stream has no begin frame") from exc
+        begin = CompleteEnumerationBegin.model_validate(first)
+        if begin.query != self._expected_query:
+            raise ValueError("complete-enumeration query identity differs")
+        if begin.item_schema != self._expected_item_schema:
+            raise ValueError("complete-enumeration item schema identity differs")
+
+        digest = hashlib.sha256()
+        ordinal = 0
+        for record in records:
+            frame_type = record.get("type") if isinstance(record, Mapping) else None
+            if frame_type == "end":
+                end = CompleteEnumerationEnd.model_validate(record)
+                if end.count != ordinal or end.items_sha256 != digest.hexdigest():
+                    raise ValueError("complete-enumeration terminal proof differs")
+                try:
+                    next(records)
+                except StopIteration:
+                    self.complete = True
+                    self.count = end.count
+                    self.items_sha256 = end.items_sha256
+                    return
+                raise ValueError("complete-enumeration stream continues after its terminal frame")
+            item = CompleteEnumerationItem.model_validate(record)
+            if item.ordinal != ordinal:
+                raise ValueError("complete-enumeration item ordinal is not contiguous")
+            digest.update(canonical_json_bytes(item.model_dump(mode="json")))
+            ordinal += 1
+            yield self._item_adapter.validate_python(item.item)
+        raise ValueError("complete-enumeration stream has no terminal frame")
+
+    def require_complete(self) -> None:
+        if not self.complete:
+            raise ValueError("complete-enumeration terminal proof was not consumed")
+
+
+def _iter_json_sequence_records(chunks: Iterable[bytes]) -> Iterator[dict[str, Any]]:
+    buffer = bytearray()
+    for chunk in chunks:
+        buffer.extend(chunk)
+        while True:
+            newline = buffer.find(b"\n")
+            if newline < 0:
+                break
+            record = bytes(buffer[:newline])
+            del buffer[: newline + 1]
+            if not record.startswith(_JSON_SEQUENCE_RECORD_SEPARATOR):
+                raise ValueError("JSON sequence record has no record separator")
+            parsed = json.loads(record[1:])
+            if not isinstance(parsed, dict):
+                raise ValueError("JSON sequence frame must be an object")
+            yield parsed
+    if buffer:
+        raise ValueError("JSON sequence ends with an incomplete record")
 
 
 HttpBodyKind = Literal["none", "json", "framed", "binary"]
@@ -589,13 +809,20 @@ def parse_declared_error_payload(
 
 __all__ = [
     "CANONICAL_VISIBLE_TEXT_PATTERN",
+    "COMPLETE_ENUMERATION_FORMAT",
     "ERROR_STATUS_BY_CODE",
     "FRAMED_BODY_DECLARATION_LENGTH_BYTES",
     "FRAMED_BODY_FORMAT",
     "FRAMED_BODY_MAXIMUM_DECLARATION_BYTES",
     "FRAMED_BODY_MEDIA_TYPE",
+    "JSON_SEQUENCE_MEDIA_TYPE",
     "PUBLIC_ERROR_CODES",
     "CanonicalVisibleText",
+    "CompleteEnumerationBegin",
+    "CompleteEnumerationEnd",
+    "CompleteEnumerationItem",
+    "CompleteEnumerationItemSchema",
+    "CompleteEnumerationReader",
     "ErrorBody",
     "ErrorResponse",
     "HealthResponse",
@@ -606,6 +833,11 @@ __all__ = [
     "HttpResponseHeaderContract",
     "OperationInterface",
     "apply_openapi_error_contract",
+    "canonical_json_bytes",
+    "bounded_list_operation",
+    "complete_enumeration_operation",
+    "complete_enumeration_schema_identity",
+    "cursor_feed_operation",
     "error_code_for_status",
     "error_payload",
     "error_responses",
@@ -614,6 +846,7 @@ __all__ = [
     "inline_type_schema",
     "http_operation_for_request",
     "http_operation_inventory",
+    "iter_complete_enumeration",
     "parse_error_payload",
     "parse_declared_error_payload",
     "safe_http_base_url",

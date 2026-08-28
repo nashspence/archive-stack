@@ -36,9 +36,19 @@ class CollectionService(Protocol):
         passphrase_id: str | None = None,
         sort: str = "id",
         order: str = "asc",
-        all_items: bool = False,
         principal: ApplicationPrincipal | None = None,
     ) -> CollectionListPage: ...
+    def iter_collections(
+        self,
+        *,
+        q: str | None,
+        tag: str | None = None,
+        encryption_format: str | None = None,
+        passphrase_id: str | None = None,
+        sort: str = "id",
+        order: str = "asc",
+        principal: ApplicationPrincipal | None = None,
+    ) -> Iterator[CollectionSummary]: ...
 
 
 class ProvenanceService(Protocol):
@@ -52,9 +62,18 @@ class ProvenanceService(Protocol):
         status: str | None,
         sort: str,
         order: str,
-        all_items: bool,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
+    def iter_files(
+        self,
+        collection_id: int,
+        *,
+        q: str | None,
+        status: str | None,
+        sort: str,
+        order: str,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[JsonObject]: ...
     def show_file(
         self,
         collection_id: int,
@@ -107,9 +126,16 @@ class TagService(Protocol):
         q: str | None,
         sort: str,
         order: str,
-        all_items: bool,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
+    def iter_tags(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[JsonObject]: ...
     def get_collection(
         self,
         collection_id: int,
@@ -214,9 +240,23 @@ class RetrievalService(Protocol):
         expires_after: str | None = None,
         sort: str,
         order: str,
-        all_items: bool = False,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
+    def iter_cache_objects(
+        self,
+        *,
+        q: str | None,
+        tag: str | None,
+        collection_id: int | None = None,
+        source_store: str | None = None,
+        state: str | None = None,
+        protection: str | None = None,
+        expires_before: str | None = None,
+        expires_after: str | None = None,
+        sort: str,
+        order: str,
+        principal: ApplicationPrincipal | None = None,
+    ) -> Iterator[JsonObject]: ...
     def get_cache_object(
         self,
         *,
@@ -345,8 +385,19 @@ class AppKeyService(Protocol):
         permission: str | None = None,
         resource: str | None = None,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> JsonObject: ...
+    def iter_access(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        app: str | None = None,
+        key_id: str | None = None,
+        permission: str | None = None,
+        resource: str | None = None,
+        active: bool | None = None,
+    ) -> Iterator[JsonObject]: ...
     def list_apps(
         self,
         *,
@@ -356,8 +407,15 @@ class AppKeyService(Protocol):
         sort: str,
         order: str,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> JsonObject: ...
+    def iter_apps(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        active: bool | None = None,
+    ) -> Iterator[JsonObject]: ...
     def list_keys(
         self,
         *,
@@ -368,8 +426,16 @@ class AppKeyService(Protocol):
         sort: str,
         order: str,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> JsonObject: ...
+    def iter_keys(
+        self,
+        *,
+        app: str,
+        q: str | None,
+        sort: str,
+        order: str,
+        active: bool | None = None,
+    ) -> Iterator[JsonObject]: ...
 
 
 class LifecycleEventService(Protocol):
@@ -392,9 +458,17 @@ class SearchService(Protocol):
         sort: str,
         order: str,
         collection: int | None = None,
-        all_items: bool = False,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
+    def iter_files(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        collection: int | None = None,
+        principal: ApplicationPrincipal | None = None,
+    ) -> Iterator[JsonObject]: ...
 
 
 class ArchiveMaintenanceService(Protocol):
@@ -440,10 +514,18 @@ class ArchiveCopyService(Protocol):
         q: str | None,
         sort: str,
         order: str,
-        all_items: bool,
         state: str | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
+    def iter_jobs(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        state: str | None = None,
+        principal: ApplicationPrincipal | None = None,
+    ) -> Iterator[JsonObject]: ...
     def process_due(self, *, limit: int = 1) -> int: ...
 
 
@@ -479,6 +561,13 @@ class ArchiveStoreService(Protocol):
         q: str | None,
         sort: str,
         order: str,
-        all_items: bool = False,
         principal: ApplicationPrincipal | None = None,
     ) -> ArchiveStoreListPage: ...
+    def iter_stores(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        principal: ApplicationPrincipal | None = None,
+    ) -> Iterator[ArchiveStoreSummary]: ...

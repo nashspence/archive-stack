@@ -8,9 +8,16 @@ from riverhog_protocol.paths import CanonicalRelPath
 from riverhog_provenance_contracts import ProvenanceJournalId
 
 from riverhog_api.auth import ProvenanceExporter, ProvenanceReader
+from riverhog_api.complete_enumeration import (
+    CompleteEnumerationResponse,
+    bounded_list_operation,
+    complete_enumeration_operation,
+    complete_enumeration_response,
+)
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.provenance import (
     CollectionFileProvenanceDetailOut,
+    CollectionFileProvenanceOut,
     CollectionFileProvenanceTraceOut,
     CollectionProvenanceVerificationOut,
     ListCollectionFileProvenanceResponse,
@@ -22,6 +29,7 @@ router = APIRouter(tags=["provenance"])
 @router.get(
     "/collections/{collection_id}/provenance/files",
     response_model=ListCollectionFileProvenanceResponse,
+    openapi_extra=bounded_list_operation(paired_operation_id="stream_collection_provenance"),
 )
 def list_collection_provenance(
     collection_id: CollectionIdParameter,
@@ -33,7 +41,6 @@ def list_collection_provenance(
     status: ProvenanceStatus | None = None,
     sort: ProvenanceSort = "path",
     order: SortOrder = "asc",
-    all_items: Annotated[bool, Query(alias="all")] = False,
 ) -> dict[str, Any]:
     return container.provenance.list_files(
         collection_id,
@@ -43,8 +50,47 @@ def list_collection_provenance(
         status=status,
         sort=sort,
         order=order,
-        all_items=all_items,
         principal=principal,
+    )
+
+
+@router.get(
+    "/collections/{collection_id}/provenance/files/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_collection_provenance",
+        item_type=CollectionFileProvenanceOut,
+        schema_id="riverhog.collection-file-provenance/v1",
+    ),
+)
+def stream_collection_provenance(
+    collection_id: CollectionIdParameter,
+    principal: ProvenanceReader,
+    container: ContainerDep,
+    q: str | None = None,
+    status: ProvenanceStatus | None = None,
+    sort: ProvenanceSort = "path",
+    order: SortOrder = "asc",
+) -> Response:
+    query = {
+        "collection_id": collection_id,
+        "q": q,
+        "status": status,
+        "sort": sort,
+        "order": order,
+    }
+    return complete_enumeration_response(
+        container.provenance.iter_files(
+            collection_id,
+            q=q,
+            status=status,
+            sort=sort,
+            order=order,
+            principal=principal,
+        ),
+        query=query,
+        item_type=CollectionFileProvenanceOut,
+        schema_id="riverhog.collection-file-provenance/v1",
     )
 
 

@@ -54,8 +54,17 @@ class DownloadAllowance(Protocol):
         order: str,
         app: str | None = None,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> dict[str, object]: ...
+
+    def iter_key_quotas(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        app: str | None = None,
+        active: bool | None = None,
+    ) -> Iterator[dict[str, object]]: ...
 
     def get_statuses(self) -> tuple[ArchiveDownloadAllowance, ...]: ...
 

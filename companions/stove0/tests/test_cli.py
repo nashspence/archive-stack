@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,6 +21,49 @@ class FakeClient:
 
     def close(self) -> None:
         pass
+
+    @contextmanager
+    def stream_work(self, **_kwargs: Any) -> Iterator[Iterator[Any]]:
+        yield iter(
+            (
+                SimpleNamespace(
+                    model_dump=lambda **_kwargs: {
+                        "work_id": "work-1",
+                        "phase": "complete",
+                        "revision": 3,
+                    }
+                ),
+            )
+        )
+
+    @contextmanager
+    def stream_evaluations(self, **_kwargs: Any) -> Iterator[Iterator[Any]]:
+        yield iter(
+            (
+                SimpleNamespace(
+                    model_dump=lambda **_kwargs: {
+                        "evaluation_id": "evaluation-1",
+                        "phase": "complete",
+                        "revision": 3,
+                    }
+                ),
+            )
+        )
+
+    @contextmanager
+    def stream_artifact_selection(self, _selection_sha256: str) -> Iterator[Iterator[Any]]:
+        yield iter(
+            (
+                SimpleNamespace(
+                    model_dump=lambda **_kwargs: {
+                        "id": "source",
+                        "role": "munchy.source/v1",
+                        "path": "source.bin",
+                        "bytes": 1,
+                    }
+                ),
+            )
+        )
 
     def __getattr__(self, name: str) -> Any:
         if name == "list_events":
@@ -199,6 +245,31 @@ def test_work_list_rich_and_json_preserve_effect_result_identity(
     assert machine.exit_code == 0
     row = json.loads(machine.stdout)["work"][0]
     assert row["target_status"]["effect_receipt"]["receipt_sha256"] == "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("command", "key"),
+    (
+        (["work", "list", "--all"], "work"),
+        (["evaluation", "list", "--all"], "evaluations"),
+        (["selection", "show", "a" * 64, "--all"], "artifacts"),
+    ),
+)
+def test_stove0_complete_enumerations_keep_rich_and_json_cli_parity(
+    command: list[str],
+    key: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(stove0_cli, "Stove0ApiClient", FakeClient)
+    runner = CliRunner()
+
+    human = runner.invoke(stove0_cli.app, command)
+    machine = runner.invoke(stove0_cli.app, ["--json", *command])
+
+    assert human.exit_code == 0, (human.output, human.exception)
+    assert machine.exit_code == 0, (machine.output, machine.exception)
+    assert json.loads(machine.stdout)["total"] == 1
+    assert len(json.loads(machine.stdout)[key]) == 1
 
 
 def test_work_list_rich_projection_identifies_coordination_settlement() -> None:

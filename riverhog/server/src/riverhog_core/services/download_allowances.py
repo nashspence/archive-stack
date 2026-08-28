@@ -4,12 +4,14 @@ import math
 import secrets
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 
 from riverhog_protocol.errors import BadRequest, DownloadAllowanceExceeded, NotFound
 from sqlalchemy import and_, asc, case, delete, desc, func, or_, select
 from sqlalchemy.orm import Session
+from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
@@ -196,131 +198,28 @@ class SqlAlchemyDownloadAllowance:
         order: str,
         app: str | None = None,
         active: bool | None = None,
-        all_items: bool = False,
     ) -> dict[str, object]:
-        fields = {
-            "app",
-            "key_id",
-            "monthly_bytes",
-            "accounted_bytes",
-            "reserved_bytes",
-            "remaining_bytes",
-        }
         if page < 1:
             raise BadRequest("page must be greater than or equal to 1")
         if per_page < 1 or per_page > 100:
             raise BadRequest("per_page must be between 1 and 100")
-        if sort not in fields:
-            raise BadRequest(f"sort must be one of {', '.join(sorted(fields))}")
-        if order not in {"asc", "desc"}:
-            raise BadRequest("order must be asc or desc")
         now = self._current_time()
-        now_text = format_utc_timestamp(now)
-        current_month = format_utc_timestamp(_month_start(now))
-        usage = (
-            select(
-                KeyDownloadUsageRecord.key_id.label("key_id"),
-                KeyDownloadUsageRecord.accounted_bytes.label("accounted_bytes"),
-            )
-            .where(KeyDownloadUsageRecord.month_started_at == current_month)
-            .subquery()
+        now_text, current_month, query, normalized_app, base, statement = _key_quota_statements(
+            now=now, q=q, sort=sort, order=order, app=app, active=active
         )
-        expired_streams = (
-            select(
-                KeyDownloadReservationRecord.key_id.label("key_id"),
-                func.sum(KeyDownloadReservationRecord.reserved_bytes).label("accounted_bytes"),
-            )
-            .where(
-                KeyDownloadReservationRecord.kind == "stream",
-                KeyDownloadReservationRecord.expires_at <= now_text,
-            )
-            .group_by(KeyDownloadReservationRecord.key_id)
-            .subquery()
-        )
-        reservations = (
-            select(
-                KeyDownloadReservationRecord.key_id.label("key_id"),
-                func.sum(KeyDownloadReservationRecord.reserved_bytes).label("reserved_bytes"),
-            )
-            .where(KeyDownloadReservationRecord.expires_at > now_text)
-            .group_by(KeyDownloadReservationRecord.key_id)
-            .subquery()
-        )
-        accounted = func.coalesce(usage.c.accounted_bytes, 0) + func.coalesce(
-            expired_streams.c.accounted_bytes,
-            0,
-        )
-        reserved = func.coalesce(reservations.c.reserved_bytes, 0)
-        remainder = AppKeyRecord.monthly_download_quota_bytes - accounted - reserved
-        remaining = case(
-            (AppKeyRecord.monthly_download_quota_bytes.is_(None), None),
-            (remainder < 0, 0),
-            else_=remainder,
-        )
-        columns = {
-            "app": AppKeyRecord.app,
-            "key_id": AppKeyRecord.id,
-            "monthly_bytes": AppKeyRecord.monthly_download_quota_bytes,
-            "accounted_bytes": accounted,
-            "reserved_bytes": reserved,
-            "remaining_bytes": remaining,
-        }
-        filters = []
-        query = q.strip() if q is not None else None
-        normalized_app = app.strip().casefold() if app is not None else None
-        if normalized_app:
-            filters.append(AppKeyRecord.app == normalized_app)
-        if query:
-            pattern = _like_pattern(query.casefold())
-            filters.append(
-                or_(
-                    func.lower(AppKeyRecord.app).like(pattern, escape="\\"),
-                    func.lower(AppKeyRecord.id).like(pattern, escape="\\"),
-                )
-            )
-        active_expression = and_(
-            AppKeyRecord.revoked_at.is_(None),
-            or_(AppKeyRecord.expires_at.is_(None), AppKeyRecord.expires_at > now_text),
-        )
-        if active is not None:
-            filters.append(active_expression if active else ~active_expression)
-        base = (
-            select(
-                AppKeyRecord.id.label("id"),
-                AppKeyRecord.app.label("app"),
-                AppKeyRecord.id.label("key_id"),
-                AppKeyRecord.monthly_download_quota_bytes.label("monthly_bytes"),
-                accounted.label("accounted_bytes"),
-                reserved.label("reserved_bytes"),
-                remaining.label("remaining_bytes"),
-                AppKeyRecord.expires_at.label("expires_at"),
-                AppKeyRecord.revoked_at.label("revoked_at"),
-            )
-            .outerjoin(usage, usage.c.key_id == AppKeyRecord.id)
-            .outerjoin(expired_streams, expired_streams.c.key_id == AppKeyRecord.id)
-            .outerjoin(reservations, reservations.c.key_id == AppKeyRecord.id)
-            .where(*filters)
-        )
-        direction = desc if order == "desc" else asc
-        statement = base.order_by(direction(columns[sort]), asc(AppKeyRecord.id))
         with session_scope(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(base.subquery())) or 0)
-            if not all_items:
-                statement = statement.offset((page - 1) * per_page).limit(per_page)
+            statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = [dict(row) for row in session.execute(statement).mappings().all()]
-        for row in rows:
-            row["key_status"] = _key_status(row, now_text=now_text)
-            row.pop("expires_at", None)
-            row.pop("revoked_at", None)
-            row["month_started_at"] = current_month
-            row["resets_at"] = format_utc_timestamp(_next_month_start(now))
+        rows = [
+            _key_quota_row(row, now=now, now_text=now_text, current_month=current_month)
+            for row in rows
+        ]
         return {
-            "page": 1 if all_items else page,
-            "per_page": total if all_items else per_page,
+            "page": page,
+            "per_page": per_page,
             "total": total,
-            "pages": (
-                (1 if total else 0) if all_items else math.ceil(total / per_page) if total else 0
-            ),
+            "pages": math.ceil(total / per_page) if total else 0,
             "sort": sort,
             "order": order,
             "query": query,
@@ -328,6 +227,29 @@ class SqlAlchemyDownloadAllowance:
             "active": active,
             "quotas": rows,
         }
+
+    def iter_key_quotas(
+        self,
+        *,
+        q: str | None,
+        sort: str,
+        order: str,
+        app: str | None = None,
+        active: bool | None = None,
+    ) -> Iterator[dict[str, object]]:
+        now = self._current_time()
+        now_text, current_month, _, _, _, statement = _key_quota_statements(
+            now=now, q=q, sort=sort, order=order, app=app, active=active
+        )
+        with read_snapshot(self._session_factory) as session:
+            rows = session.execute(statement.execution_options(yield_per=100)).mappings()
+            for row in rows:
+                yield _key_quota_row(
+                    cast(Mapping[str, object], row),
+                    now=now,
+                    now_text=now_text,
+                    current_month=current_month,
+                )
 
     def get_statuses(self) -> tuple[ArchiveDownloadAllowance, ...]:
         return tuple(self._status(self._policies[name]) for name in sorted(self._policies))
@@ -847,6 +769,133 @@ class SqlAlchemyDownloadAllowance:
         if now.tzinfo is None:
             raise ValueError("download allowance clock must be timezone-aware")
         return now.astimezone(UTC)
+
+
+def _key_quota_statements(
+    *,
+    now: datetime,
+    q: str | None,
+    sort: str,
+    order: str,
+    app: str | None,
+    active: bool | None,
+) -> tuple[str, str, str | None, str | None, Any, Any]:
+    fields = {
+        "app",
+        "key_id",
+        "monthly_bytes",
+        "accounted_bytes",
+        "reserved_bytes",
+        "remaining_bytes",
+    }
+    if sort not in fields:
+        raise BadRequest(f"sort must be one of {', '.join(sorted(fields))}")
+    if order not in {"asc", "desc"}:
+        raise BadRequest("order must be asc or desc")
+    now_text = format_utc_timestamp(now)
+    current_month = format_utc_timestamp(_month_start(now))
+    usage = (
+        select(
+            KeyDownloadUsageRecord.key_id.label("key_id"),
+            KeyDownloadUsageRecord.accounted_bytes.label("accounted_bytes"),
+        )
+        .where(KeyDownloadUsageRecord.month_started_at == current_month)
+        .subquery()
+    )
+    expired_streams = (
+        select(
+            KeyDownloadReservationRecord.key_id.label("key_id"),
+            func.sum(KeyDownloadReservationRecord.reserved_bytes).label("accounted_bytes"),
+        )
+        .where(
+            KeyDownloadReservationRecord.kind == "stream",
+            KeyDownloadReservationRecord.expires_at <= now_text,
+        )
+        .group_by(KeyDownloadReservationRecord.key_id)
+        .subquery()
+    )
+    reservations = (
+        select(
+            KeyDownloadReservationRecord.key_id.label("key_id"),
+            func.sum(KeyDownloadReservationRecord.reserved_bytes).label("reserved_bytes"),
+        )
+        .where(KeyDownloadReservationRecord.expires_at > now_text)
+        .group_by(KeyDownloadReservationRecord.key_id)
+        .subquery()
+    )
+    accounted = func.coalesce(usage.c.accounted_bytes, 0) + func.coalesce(
+        expired_streams.c.accounted_bytes, 0
+    )
+    reserved = func.coalesce(reservations.c.reserved_bytes, 0)
+    remainder = AppKeyRecord.monthly_download_quota_bytes - accounted - reserved
+    remaining = case(
+        (AppKeyRecord.monthly_download_quota_bytes.is_(None), None),
+        (remainder < 0, 0),
+        else_=remainder,
+    )
+    columns = {
+        "app": AppKeyRecord.app,
+        "key_id": AppKeyRecord.id,
+        "monthly_bytes": AppKeyRecord.monthly_download_quota_bytes,
+        "accounted_bytes": accounted,
+        "reserved_bytes": reserved,
+        "remaining_bytes": remaining,
+    }
+    filters = []
+    query = q.strip() if q is not None else None
+    normalized_app = app.strip().casefold() if app is not None else None
+    if normalized_app:
+        filters.append(AppKeyRecord.app == normalized_app)
+    if query:
+        pattern = _like_pattern(query.casefold())
+        filters.append(
+            or_(
+                func.lower(AppKeyRecord.app).like(pattern, escape="\\"),
+                func.lower(AppKeyRecord.id).like(pattern, escape="\\"),
+            )
+        )
+    active_expression = and_(
+        AppKeyRecord.revoked_at.is_(None),
+        or_(AppKeyRecord.expires_at.is_(None), AppKeyRecord.expires_at > now_text),
+    )
+    if active is not None:
+        filters.append(active_expression if active else ~active_expression)
+    base = (
+        select(
+            AppKeyRecord.id.label("id"),
+            AppKeyRecord.app.label("app"),
+            AppKeyRecord.id.label("key_id"),
+            AppKeyRecord.monthly_download_quota_bytes.label("monthly_bytes"),
+            accounted.label("accounted_bytes"),
+            reserved.label("reserved_bytes"),
+            remaining.label("remaining_bytes"),
+            AppKeyRecord.expires_at.label("expires_at"),
+            AppKeyRecord.revoked_at.label("revoked_at"),
+        )
+        .outerjoin(usage, usage.c.key_id == AppKeyRecord.id)
+        .outerjoin(expired_streams, expired_streams.c.key_id == AppKeyRecord.id)
+        .outerjoin(reservations, reservations.c.key_id == AppKeyRecord.id)
+        .where(*filters)
+    )
+    direction = desc if order == "desc" else asc
+    statement = base.order_by(direction(columns[sort]), asc(AppKeyRecord.id))
+    return now_text, current_month, query, normalized_app, base, statement
+
+
+def _key_quota_row(
+    row: Mapping[str, object],
+    *,
+    now: datetime,
+    now_text: str,
+    current_month: str,
+) -> dict[str, object]:
+    payload = dict(row)
+    payload["key_status"] = _key_status(payload, now_text=now_text)
+    payload.pop("expires_at", None)
+    payload.pop("revoked_at", None)
+    payload["month_started_at"] = current_month
+    payload["resets_at"] = format_utc_timestamp(_next_month_start(now))
+    return payload
 
 
 def _effective_limit(policy: StorageAdapterRegistration) -> int:

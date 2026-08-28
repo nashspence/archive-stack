@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -14,23 +16,15 @@ runner = CliRunner()
 
 def test_app_list_matches_pipeable_list_conventions(monkeypatch) -> None:
     class FakeClient:
-        def list_apps(self, **kwargs: Any) -> dict[str, object]:
+        @contextmanager
+        def stream_apps(self, **kwargs: Any) -> Iterator[Iterator[dict[str, object]]]:
             assert kwargs == {
-                "page": 1,
-                "per_page": 25,
                 "q": "review",
                 "sort": "name",
                 "order": "asc",
                 "active": True,
-                "all_items": True,
             }
-            return {
-                "page": 1,
-                "per_page": 1,
-                "total": 1,
-                "pages": 1,
-                "apps": [{"name": "review-station"}],
-            }
+            yield iter(({"name": "review-station"},))
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
@@ -120,17 +114,13 @@ def test_app_key_create_emits_machine_readable_one_time_token(monkeypatch) -> No
 
 def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
     class FakeClient:
-        def list_app_keys(self, app_name: str, **kwargs: Any) -> dict[str, object]:
+        @contextmanager
+        def stream_app_keys(
+            self, app_name: str, **kwargs: Any
+        ) -> Iterator[Iterator[dict[str, object]]]:
             assert app_name == "local"
             assert kwargs["active"] is False
-            return {
-                "app": "local",
-                "page": 1,
-                "per_page": 1,
-                "total": 1,
-                "pages": 1,
-                "keys": [{"id": "0123456789abcdef", "status": "revoked"}],
-            }
+            yield iter(({"id": "0123456789abcdef", "status": "revoked"},))
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
 
@@ -153,13 +143,12 @@ def test_app_key_list_never_requires_or_formats_plaintext(monkeypatch) -> None:
 
 def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
     class FakeClient:
-        def list_app_key_access(
+        @contextmanager
+        def stream_app_key_access(
             self,
             **kwargs: Any,
-        ) -> dict[str, object]:
+        ) -> Iterator[Iterator[dict[str, object]]]:
             assert kwargs == {
-                "page": 1,
-                "per_page": 25,
                 "q": "photos",
                 "sort": "permission",
                 "order": "asc",
@@ -168,41 +157,30 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                 "permission": None,
                 "resource": "tag:photos",
                 "active": True,
-                "all_items": True,
             }
-            return {
-                "page": 1,
-                "per_page": 1,
-                "total": 1,
-                "pages": 1,
-                "access": [
+            yield iter(
+                (
                     {
                         "app": "local",
                         "key_id": "key-one",
                         "key_status": "active",
                         "permission": "catalog:read",
                         "resource": "tag:photos",
-                    }
-                ],
-            }
+                    },
+                )
+            )
 
-        def list_download_quotas(self, **kwargs: Any) -> dict[str, object]:
+        @contextmanager
+        def stream_download_quotas(self, **kwargs: Any) -> Iterator[Iterator[dict[str, object]]]:
             assert kwargs == {
-                "page": 1,
-                "per_page": 25,
                 "q": "review",
                 "sort": "remaining_bytes",
                 "order": "desc",
                 "app": "local",
                 "active": True,
-                "all_items": True,
             }
-            return {
-                "page": 1,
-                "per_page": 1,
-                "total": 1,
-                "pages": 1,
-                "quotas": [
+            yield iter(
+                (
                     {
                         "id": "key-one",
                         "app": "local",
@@ -213,9 +191,9 @@ def test_access_and_quota_lists_match_pipeable_conventions(monkeypatch) -> None:
                         "reserved_bytes": 0,
                         "remaining_bytes": 1024,
                         "resets_at": "2026-09-01T00:00:00Z",
-                    }
-                ],
-            }
+                    },
+                )
+            )
 
         def remove_app_key_access(
             self,

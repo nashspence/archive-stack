@@ -2661,20 +2661,22 @@ def _upload_collection_with_observation(
 
     def observe() -> None:
         nonlocal collection_id
-        page = api.list_collection_upload_sessions(all_items=True)
-        uploads = _page_items(page, "uploads")
-        upload = next(
-            (item for item in uploads if item.get("ingest_source") == resolved_root),
-            None,
-        )
+        upload = None
+        with api.stream_collection_upload_sessions() as stream:
+            for item in stream:
+                if item.get("ingest_source") == resolved_root:
+                    upload = item
         if upload is None:
             return
         collection_id = int(upload["collection_id"])
         session = api.get_collection_upload_session(collection_id)
         if session.get("state") in {"open", "uploading", "finalizing"}:
             observed.add("session-show")
-        files = api.list_collection_upload_session_files(collection_id, all_items=True)
-        if _page_items(files, "files"):
+        has_files = False
+        with api.stream_collection_upload_session_files(collection_id) as files:
+            for _item in files:
+                has_files = True
+        if has_files:
             observed.add("registered-file-list")
         volume_page = api.list_collection_upload_session_volumes(collection_id)
         volumes = _page_items(volume_page, "volumes")
@@ -2790,12 +2792,15 @@ def _wait_archive_copy(
         payload = api.get_archive_copy_job(collection_id, destination_store=destination)
         state = str(payload.get("state", ""))
         if state == "completed":
-            jobs = api.list_archive_copy_jobs(q=destination, all_items=True)
-            if not any(
-                int(item.get("collection_id", 0)) == collection_id
-                and item.get("destination_store") == destination
-                for item in _page_items(jobs, "copies")
-            ):
+            found = False
+            with api.stream_archive_copy_jobs(q=destination) as jobs:
+                for item in jobs:
+                    if (
+                        int(item.get("collection_id", 0)) == collection_id
+                        and item.get("destination_store") == destination
+                    ):
+                        found = True
+            if not found:
                 raise QualificationError("archive-copy list omitted the completed job")
             return cast(dict[str, Any], payload)
         if state in {"failed", "canceled", "expired"}:
@@ -2916,18 +2921,17 @@ def _assert_retrieval_cache_surface(
     }
     if policy != expected_policy:
         raise QualificationError("retrieval-cache status omitted effective qualification policy")
-    page = api.list_retrieval_cache_objects(
+    with api.stream_retrieval_cache_objects(
         q=str(collection_id),
         sort="object_id",
         order="asc",
-        all_items=True,
-    )
-    selected = [
-        item
-        for item in _page_items(page, "objects")
-        if int(item.get("collection_id", 0)) == collection_id
-        and item.get("source_store") == source_store
-    ]
+    ) as objects:
+        selected = [
+            item
+            for item in objects
+            if int(item.get("collection_id", 0)) == collection_id
+            and item.get("source_store") == source_store
+        ]
     if not selected:
         raise QualificationError(f"retrieval-cache list omitted {source_store} objects")
     object_ids: list[str] = []

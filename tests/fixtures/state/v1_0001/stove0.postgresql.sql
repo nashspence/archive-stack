@@ -17,6 +17,13 @@ SET default_table_access_method = heap;
 
 CREATE TABLE stove0_artifact_selections (
     selection_sha256 character varying(64) NOT NULL,
+    artifact_count integer NOT NULL,
+    total_bytes bigint NOT NULL
+);
+
+CREATE TABLE stove0_artifact_selection_members (
+    selection_sha256 character varying(64) NOT NULL,
+    ordinal integer NOT NULL,
     document_json text NOT NULL
 );
 
@@ -68,6 +75,9 @@ ALTER TABLE ONLY stove0_lifecycle_events ALTER COLUMN sequence SET DEFAULT nextv
 ALTER TABLE ONLY stove0_artifact_selections
     ADD CONSTRAINT stove0_artifact_selections_pkey PRIMARY KEY (selection_sha256);
 
+ALTER TABLE ONLY stove0_artifact_selection_members
+    ADD CONSTRAINT stove0_artifact_selection_members_pkey PRIMARY KEY (selection_sha256, ordinal);
+
 ALTER TABLE ONLY stove0_evaluation_records
     ADD CONSTRAINT stove0_evaluation_records_pkey PRIMARY KEY (evaluation_id);
 
@@ -82,6 +92,11 @@ ALTER TABLE ONLY stove0_state_schema_revision
 
 ALTER TABLE ONLY stove0_work_records
     ADD CONSTRAINT stove0_work_records_pkey PRIMARY KEY (work_id);
+
+ALTER TABLE ONLY stove0_artifact_selection_members
+    ADD CONSTRAINT stove0_artifact_selection_members_selection_sha256_fkey
+    FOREIGN KEY (selection_sha256) REFERENCES stove0_artifact_selections(selection_sha256)
+    ON DELETE CASCADE;
 
 CREATE INDEX ix_stove0_evaluation_records_phase ON stove0_evaluation_records USING btree (phase);
 
