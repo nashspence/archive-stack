@@ -473,7 +473,9 @@ def test_stove0_reference_validators_are_compose_composition_only() -> None:
     assert (
         'io.github.nashspence.riverhog.composition="reference-composition"' in composition_runtime
     )
+    assert 'io.github.nashspence.riverhog.release-role="product"' not in composition_runtime
     assert "COPY --from=reference-composition-build /opt/venv /opt/venv" in (composition_runtime)
+    assert 'io.github.nashspence.riverhog.release-role="product"' in product_runtime
     assert "COPY --from=build /opt/venv /opt/venv" in product_runtime
     assert "reference-composition-build" not in product_runtime
 

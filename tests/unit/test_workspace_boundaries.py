@@ -590,11 +590,15 @@ def test_reference_extension_distributions_each_own_one_selectable_capability() 
         "stove0.observer-semantic-validators",
     }
     observed: set[str] = set()
-    projects_by_name: dict[str, tuple[Path, dict[str, object]]] = {}
+    projects_by_name: dict[str, tuple[Path, dict[str, object], set[str]]] = {}
     for pyproject in (REPO / "reference").rglob("pyproject.toml"):
         config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
         project = config["project"]
-        projects_by_name[project["name"]] = (pyproject.parent, project)
+        projects_by_name[project["name"]] = (
+            pyproject.parent,
+            project,
+            declared_project_dependencies(config),
+        )
         entry_points = project.get("entry-points", {})
         groups = set(entry_points) & provider_groups
         if groups:
@@ -604,15 +608,26 @@ def test_reference_extension_distributions_each_own_one_selectable_capability() 
             observed.update(groups)
 
     assert observed == provider_groups
-    release = tomllib.loads((REPO / "release.toml").read_text(encoding="utf-8"))
+    capability_support = {
+        "stove0-observer-support",
+        "stove0-review-sampler-support",
+        "stove0-target-support",
+    }
     stove0_extensions = {
         distribution
-        for image_name, image in release["images"]["runtime"].items()
-        if image_name.startswith("stove0-") and image["role"] == "reference"
-        for distribution in image["distributions"]
+        for distribution, (root, project, dependencies) in projects_by_name.items()
+        if root.relative_to(REPO).is_relative_to("reference/stove0")
+        and project.get("scripts")
+        and dependencies & capability_support
     }
+    assert {
+        support
+        for distribution in stove0_extensions
+        for support in projects_by_name[distribution][2] & capability_support
+    } == capability_support
     for distribution in stove0_extensions:
-        root, project = projects_by_name[distribution]
+        root, project, dependencies = projects_by_name[distribution]
+        assert len(dependencies & capability_support) == 1, root.relative_to(REPO)
         assert set(project.get("scripts", {})) == {distribution}, root.relative_to(REPO)
         implementation_ids = {
             keyword.value.value
