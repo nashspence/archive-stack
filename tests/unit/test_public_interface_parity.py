@@ -381,6 +381,139 @@ READ_COLLECTION_OPERATIONS = {
     },
 }
 
+# Every public query selector is intentional and frozen here.  This is broader
+# than the page/stream classification above: exact-resource operations and
+# cursor feeds also have selectors whose meaning must not appear or drift
+# without an explicit contract decision.
+PUBLIC_QUERY_SELECTORS = {
+    "riverhog": {
+        "download_retrieval_file": {"collection_id", "path"},
+        "list_app_key_access": {
+            "active",
+            "app",
+            "key",
+            "order",
+            "page",
+            "per_page",
+            "permission",
+            "q",
+            "resource",
+            "sort",
+        },
+        "list_app_keys": {"active", "order", "page", "per_page", "q", "sort"},
+        "list_apps": {"active", "order", "page", "per_page", "q", "sort"},
+        "list_archive_copy_jobs": {"order", "page", "per_page", "q", "sort", "state"},
+        "list_archive_stores": {"order", "page", "per_page", "q", "sort"},
+        "list_collection_provenance": {
+            "order",
+            "page",
+            "per_page",
+            "q",
+            "sort",
+            "status",
+        },
+        "list_collection_upload_session_files": {"page", "per_page"},
+        "list_collection_upload_sessions": {
+            "order",
+            "page",
+            "per_page",
+            "q",
+            "sort",
+            "state",
+            "tag",
+        },
+        "list_collections": {
+            "encryption_format",
+            "order",
+            "page",
+            "passphrase_id",
+            "per_page",
+            "q",
+            "sort",
+            "tag",
+        },
+        "list_download_quotas": {
+            "active",
+            "app",
+            "order",
+            "page",
+            "per_page",
+            "q",
+            "sort",
+        },
+        "list_lifecycle_events": {"after", "limit"},
+        "list_processing_claims": {"order", "page", "per_page", "sort", "state"},
+        "list_retrieval_cache_objects": {
+            "collection_id",
+            "expires_after",
+            "expires_before",
+            "order",
+            "page",
+            "per_page",
+            "protection",
+            "q",
+            "sort",
+            "source_store",
+            "state",
+            "tag",
+        },
+        "list_tags": {"order", "page", "per_page", "q", "sort"},
+        "plan_collection_deletion": {"retirement_claim_id"},
+        "resourcesync_change_list": {"after"},
+        "search": {"collection", "order", "page", "per_page", "q", "sort"},
+        "stream_app_key_access": {
+            "active",
+            "app",
+            "key",
+            "order",
+            "permission",
+            "q",
+            "resource",
+            "sort",
+        },
+        "stream_app_keys": {"active", "order", "q", "sort"},
+        "stream_apps": {"active", "order", "q", "sort"},
+        "stream_archive_copy_jobs": {"order", "q", "sort", "state"},
+        "stream_archive_stores": {"order", "q", "sort"},
+        "stream_collection_provenance": {"order", "q", "sort", "status"},
+        "stream_collection_upload_sessions": {"order", "q", "sort", "state", "tag"},
+        "stream_collections": {
+            "encryption_format",
+            "order",
+            "passphrase_id",
+            "q",
+            "sort",
+            "tag",
+        },
+        "stream_download_quotas": {"active", "app", "order", "q", "sort"},
+        "stream_processing_claims": {"order", "sort", "state"},
+        "stream_retrieval_cache_objects": {
+            "collection_id",
+            "expires_after",
+            "expires_before",
+            "order",
+            "protection",
+            "q",
+            "sort",
+            "source_store",
+            "state",
+            "tag",
+        },
+        "stream_search": {"collection", "order", "q", "sort"},
+        "stream_tags": {"order", "q", "sort"},
+    },
+    "stove0": {
+        "get_artifact_selection": {"page", "per_page"},
+        "get_recipe": {"revision"},
+        "list_evaluations": {"order", "page", "per_page", "phase", "q", "sort"},
+        "list_events": {"after", "limit"},
+        "list_work": {"order", "page", "per_page", "phase", "q", "sort"},
+        "stream_evaluations": {"order", "phase", "q", "sort"},
+        "stream_work": {"order", "phase", "q", "sort"},
+    },
+    "riverhog-ftp-adapter": {},
+}
+
 
 def _http_operations(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
@@ -481,6 +614,31 @@ def test_no_public_http_operation_exposes_an_all_selector() -> None:
             assert "all" not in {
                 parameter["name"] for parameter in operation.get("parameters", [])
             }, operation_id
+
+
+@pytest.mark.parametrize(
+    ("application", "app_factory"),
+    (
+        ("riverhog", create_riverhog_app),
+        ("stove0", create_stove0_contract_app),
+        ("riverhog-ftp-adapter", create_adapter_contract_app),
+    ),
+)
+def test_every_public_query_selector_is_intentionally_frozen(
+    application: str,
+    app_factory: Callable[[], FastAPI],
+) -> None:
+    actual = {
+        operation_id: {
+            parameter["name"]
+            for parameter in operation.get("parameters", [])
+            if parameter["in"] == "query"
+        }
+        for operation_id, operation in _http_operations(app_factory().openapi()).items()
+        if any(parameter["in"] == "query" for parameter in operation.get("parameters", []))
+    }
+
+    assert actual == PUBLIC_QUERY_SELECTORS[application]
 
 
 def test_non_cli_python_interfaces_do_not_reintroduce_an_all_selector() -> None:
