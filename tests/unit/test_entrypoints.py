@@ -112,11 +112,33 @@ def test_readme_section_order_is_intentional() -> None:
     readme = (REPO / "README.md").read_text(encoding="utf-8")
 
     assert re.findall(r"^## (.+)$", readme, flags=re.MULTILINE) == [
-        "Deployment scope",
         "Contributions",
         "Start here",
         "Context",
     ]
+
+
+def test_readme_states_archive_and_adapter_authority() -> None:
+    readme_path = REPO / "README.md"
+    readme = " ".join(readme_path.read_text(encoding="utf-8").split())
+
+    assert "self-hosted archive construction, catalog, transfer, and retrieval system" in readme
+    assert "constructs canonical archive layouts, encrypts them" in readme
+    assert "records collection identity and placement in PostgreSQL" in readme
+    assert (
+        "coordinates verified archive transfer and retrieval through published "
+        "storage-adapter capabilities"
+    ) in readme
+    assert "archives remain independently recoverable with standard tools" in readme
+    assert (
+        "Checked-in references form a closed, tightly scoped, maintainer-selected, "
+        "nonnormative conformance set"
+    ) in readme
+    assert _local_links(readme_path) == {
+        REPO / "LICENSE.md",
+        REPO / "SECURITY.md",
+        REPO / "docs/architecture.md",
+    }
 
 
 def test_agents_requires_post_push_github_validation() -> None:

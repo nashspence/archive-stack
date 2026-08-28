@@ -120,18 +120,18 @@ provider_selection = "explicit"
 provider_identity = "persisted-exactly"
 
 [qualification.gogurt_reference]
-purpose = "First-party reference conformance only; these selections are not defaults or recommendations."
+purpose = "Maintainer-selected Gogurt reference conformance."
 linux-x64 = { mounted_volume_distribution = "gogurt-linux-mounted-volume", mounted_volume_provider = "gogurt-linux-mounted-volume", listener_host_distribution = "gogurt-linux-listener-host", listener_host_provider = "gogurt-linux-listener-host" }
 macos-arm64 = { mounted_volume_distribution = "gogurt-macos-mounted-volume", mounted_volume_provider = "gogurt-macos-mounted-volume", listener_host_distribution = "gogurt-macos-listener-host", listener_host_provider = "gogurt-macos-listener-host" }
 windows-x64 = { mounted_volume_distribution = "gogurt-windows-mounted-volume", mounted_volume_provider = "gogurt-windows-mounted-volume", listener_host_distribution = "gogurt-windows-listener-host", listener_host_provider = "gogurt-windows-listener-host" }
 
 [qualification.storage_reference]
-purpose = "Selected reference qualification only; these cases are neither defaults nor recommendations and are not a support matrix."
+purpose = "Maintainer-selected storage-adapter reference conformance."
 distributions = ["riverhog-storage-adapter-aws", "riverhog-storage-adapter-backblaze"]
 cases = ["b2-archive", "b2-retrieval-cache", "aws-deep-archive", "aws-cloudfront-egress"]
 
 [references]
-policy = "New mechanisms are independently owned and published. First-party reference components are a finite, maintainer-selected, optional, nonnormative conformance set; their inventory is neither complete nor recommended and is not an expansion target or support matrix."
+policy = "Checked-in references form a closed, tightly scoped, maintainer-selected, nonnormative conformance set."
 
 [signing]
 checksums = "SHA-256"

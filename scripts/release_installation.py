@@ -254,8 +254,8 @@ def gogurt_reference_qualification(
     if not isinstance(raw, dict) or set(raw) != {"purpose", *SUPPORTED_PLATFORMS}:
         raise InstallationError("Gogurt reference qualification is incomplete")
     purpose = raw.get("purpose")
-    if not isinstance(purpose, str) or "not defaults or recommendations" not in purpose:
-        raise InstallationError("Gogurt reference qualification must remain explicitly optional")
+    if purpose != "Maintainer-selected Gogurt reference conformance.":
+        raise InstallationError("Gogurt reference qualification differs from release policy")
     project_by_name = {project.name: project for project in projects}
     result: dict[str, dict[str, str]] = {}
     for platform in SUPPORTED_PLATFORMS:
@@ -1051,10 +1051,7 @@ def build_installation_artifacts(
         "components": component_items,
         "qualification": {
             "gogurt_reference": {
-                "purpose": (
-                    "First-party reference conformance only; these selections are not defaults "
-                    "or recommendations."
-                ),
+                "purpose": "Maintainer-selected Gogurt reference conformance.",
                 "platforms": {
                     platform: {
                         **gogurt_qualification[platform],
@@ -1152,12 +1149,9 @@ def verify_installation_artifacts(output: Path, manifest: dict[str, Any]) -> Non
         raise InstallationError("install manifest wheel and index inventories differ")
     qualification = manifest.get("qualification", {}).get("gogurt_reference", {})
     qualification_platforms = qualification.get("platforms", {})
-    if (
-        qualification.get("purpose")
-        != "First-party reference conformance only; these selections are not defaults or "
-        "recommendations."
-        or set(qualification_platforms) != set(SUPPORTED_PLATFORMS)
-    ):
+    if qualification.get("purpose") != "Maintainer-selected Gogurt reference conformance." or set(
+        qualification_platforms
+    ) != set(SUPPORTED_PLATFORMS):
         raise InstallationError("Gogurt reference qualification differs from release policy")
     for platform in SUPPORTED_PLATFORMS:
         reference = qualification_platforms[platform]

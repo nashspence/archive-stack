@@ -40,15 +40,11 @@ NOTICE_POLICY = {
 }
 IMAGE_DISTRIBUTION_ROOTS_LABEL = "io.github.nashspence.riverhog.distribution-roots"
 REFERENCE_POLICY = (
-    "New mechanisms are independently owned and published. First-party reference components "
-    "are a finite, maintainer-selected, optional, nonnormative conformance set; their inventory "
-    "is neither complete nor recommended and is not an expansion target or support matrix."
+    "Checked-in references form a closed, tightly scoped, maintainer-selected, nonnormative "
+    "conformance set."
 )
 GOGURT_REFERENCE_QUALIFICATION = {
-    "purpose": (
-        "First-party reference conformance only; these selections are not defaults or "
-        "recommendations."
-    ),
+    "purpose": "Maintainer-selected Gogurt reference conformance.",
     "linux-x64": {
         "mounted_volume_distribution": "gogurt-linux-mounted-volume",
         "mounted_volume_provider": "gogurt-linux-mounted-volume",
@@ -69,10 +65,7 @@ GOGURT_REFERENCE_QUALIFICATION = {
     },
 }
 STORAGE_REFERENCE_QUALIFICATION = {
-    "purpose": (
-        "Selected reference qualification only; these cases are neither defaults nor "
-        "recommendations and are not a support matrix."
-    ),
+    "purpose": "Maintainer-selected storage-adapter reference conformance.",
     "distributions": [
         "riverhog-storage-adapter-aws",
         "riverhog-storage-adapter-backblaze",
