@@ -831,7 +831,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     finalized = service.get(collection_id)
     assert finalized["state"] == "finalized"
     assert finalized["tags"] == list(tags)
-    assert finalized["custodied_bytes"] == len(content)
+    assert finalized["custody"] == {"state": "complete"}
     assert finalized["custody_mode"] == custody_mode
 
     with session_scope(make_session_factory(config.database_url)) as session:
@@ -955,7 +955,7 @@ def test_closed_custody_transfer_keeps_lease_until_final_tail_is_custodied(
     identity = collection_content_identity((("tail.txt", len(content), sha256),))
     closing = service.complete(collection_id, files_total=1, content_identity=identity)
     assert closing["state"] == "closing"
-    assert closing["custodied_files"] == 0
+    assert closing["custody"] == {"state": "pending", "files": 0, "bytes": 0}
     assert closing["upload_state_expires_at"] is not None
 
     with session_scope(make_session_factory(config.database_url)) as session:
@@ -991,7 +991,7 @@ def test_closed_custody_transfer_keeps_lease_until_final_tail_is_custodied(
     )
     queued = service.get(collection_id)
     assert queued["state"] == "finalizing"
-    assert queued["custodied_files"] == 1
+    assert queued["custody"] == {"state": "complete"}
     assert queued["upload_state_expires_at"] is None
 
 
@@ -1051,7 +1051,11 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
     by_path = {str(item["path"]): item for item in files}
     assert by_path["a.txt"]["custody_receipt"] is not None
     assert by_path["b.txt"]["custody_receipt"] is None
-    assert service.get(collection_id)["custodied_files"] == 1
+    assert service.get(collection_id)["custody"] == {
+        "state": "pending",
+        "files": 1,
+        "bytes": 5,
+    }
 
     service.require_read_access(collection_id, _DELETER)
     service.require_read_access(collection_id, _DOCS_DELETER)
@@ -1124,7 +1128,7 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
         custody_mode="custody-transfer",
     )
     assert resumed["state"] == "open"
-    assert resumed["custodied_files"] == 1
+    assert resumed["custody"] == {"state": "pending", "files": 1, "bytes": 5}
     assert service.plan_orphan_discard(collection_id)["status"] == "blocked"
 
     with session_scope(make_session_factory(config.database_url)) as session:
@@ -1171,8 +1175,7 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
         "collection_id": collection_id,
         "files": 2,
         "bytes": 11,
-        "custodied_files": 1,
-        "custodied_bytes": 5,
+        "custody": {"state": "pending", "files": 1, "bytes": 5},
         "archive_objects": 1,
     }
     with pytest.raises(NotFound):

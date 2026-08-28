@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Self
 
+from http_api_contracts import HttpErrorContract, HttpOperationContract
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from riverhog_protocol.paths import normalize_relpath
 from stove0_protocol import JsonSchemaDocument, canonical_json_sha256
@@ -242,8 +243,37 @@ def validate_result(
             raise ValueError("sampler outputs differ from the sealed windows")
 
 
+SAMPLER_HTTP_OPERATIONS = (
+    HttpOperationContract(
+        "GET",
+        "/v1/sampler",
+        response_type=SamplerDescriptor,
+        errors=(
+            HttpErrorContract("bad_request", 400),
+            HttpErrorContract("unauthorized", 401),
+            HttpErrorContract("sampler_failed", 500),
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/sample",
+        SamplerRequest,
+        SamplerResult,
+        "json",
+        errors=(
+            HttpErrorContract("invalid_sampler_request", 400),
+            HttpErrorContract("unauthorized", 401),
+            HttpErrorContract("sampler_changed", 409),
+            HttpErrorContract("request_too_large", 413),
+            HttpErrorContract("sampler_failed", 500),
+        ),
+    ),
+)
+
+
 __all__ = [
     "SAMPLER_PROTOCOL",
+    "SAMPLER_HTTP_OPERATIONS",
     "SamplerDescriptor",
     "SamplerDescriptorPayload",
     "SamplerFailure",

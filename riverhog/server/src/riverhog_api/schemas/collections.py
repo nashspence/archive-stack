@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Literal, cast
+from collections.abc import Sequence
+from typing import Annotated, Any, Literal, cast
 
 from http_api_contracts import CanonicalVisibleText
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -14,6 +15,9 @@ from riverhog_protocol import (
     CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadSort,
     CollectionUploadState,
+    CollectionUploadUnitDocument,
+    CollectionUploadUnitSourceDocument,
+    CollectionUploadVolumeDocument,
     FileProvenanceBinding,
     ImmutableFileIdentityDocument,
     ProcessingClaimId,
@@ -87,6 +91,37 @@ _UPLOAD_CUSTODY_STATE_SCHEMA: list[dict[str, Any]] = [
             "properties": {
                 "upload_state_expires_at": {"type": "null"},
                 "orphaned_at": {"type": "null"},
+            }
+        },
+    },
+    {
+        "if": {
+            "properties": {"state": {"enum": ["finalizing", "finalized"]}},
+            "required": ["state"],
+        },
+        "then": {
+            "properties": {
+                "custody": {
+                    "properties": {"state": {"const": "complete"}},
+                    "required": ["state"],
+                }
+            }
+        },
+    },
+    {
+        "if": {
+            "properties": {
+                "custody_mode": {"const": "custody-transfer"},
+                "state": {"const": "uploading"},
+            },
+            "required": ["custody_mode", "state"],
+        },
+        "then": {
+            "properties": {
+                "custody": {
+                    "properties": {"state": {"const": "complete"}},
+                    "required": ["state"],
+                }
             }
         },
     },
@@ -239,35 +274,47 @@ def _validate_upload_custody_state(
         raise ValueError("active custody-transfer state requires its lease and no orphan time")
 
 
-def _validate_upload_custody_totals(
-    *,
-    files: int,
-    bytes: int,
-    custodied_files: int,
-    custodied_bytes: int,
-) -> None:
-    if custodied_files > files or custodied_bytes > bytes:
-        raise ValueError("upload custody progress cannot exceed collection totals")
-    if custodied_files == 0 and custodied_bytes != 0:
-        raise ValueError("upload custody bytes require at least one custodied file")
-    if custodied_files == files and custodied_bytes != bytes:
-        raise ValueError("complete file custody requires complete byte custody")
-
-
 def _validate_complete_upload_custody(
     *,
     state: str,
     custody_mode: str | None,
-    files: int,
-    bytes: int,
-    custodied_files: int,
-    custodied_bytes: int,
+    custody_state: str,
 ) -> None:
     complete_required = state in {"finalizing", "finalized"} or (
         state == "uploading" and custody_mode == "custody-transfer"
     )
-    if complete_required and (custodied_files, custodied_bytes) != (files, bytes):
+    if complete_required and custody_state != "complete":
         raise ValueError(f"{state} upload state requires complete Riverhog custody")
+
+
+class PendingCollectionUploadCustodyOut(RiverhogModel):
+    state: Literal["pending"]
+    files: int = Field(ge=0, strict=True)
+    bytes: int = Field(ge=0, strict=True)
+
+
+class CompleteCollectionUploadCustodyOut(RiverhogModel):
+    state: Literal["complete"]
+
+
+CollectionUploadCustodyOut = Annotated[
+    PendingCollectionUploadCustodyOut | CompleteCollectionUploadCustodyOut,
+    Field(discriminator="state"),
+]
+
+
+def _validate_upload_custody_progress(
+    *,
+    files: int,
+    bytes: int,
+    custody: PendingCollectionUploadCustodyOut | CompleteCollectionUploadCustodyOut,
+) -> None:
+    if not isinstance(custody, PendingCollectionUploadCustodyOut):
+        return
+    if custody.files > files or custody.bytes > bytes:
+        raise ValueError("upload custody progress cannot exceed collection totals")
+    if custody.files == 0 and custody.bytes != 0:
+        raise ValueError("upload custody bytes require at least one custodied file")
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
@@ -503,19 +550,7 @@ class CollectionUploadListItemOut(RiverhogModel):
     custody_mode: CollectionUploadCustodyMode
     files: int = Field(ge=0, strict=True)
     bytes: int = Field(ge=0, strict=True)
-    custodied_files: int = Field(
-        ge=0,
-        strict=True,
-        description=(
-            "Number of files in Riverhog custody; never greater than files and complete "
-            "for finalizing or custody-transfer uploading states."
-        ),
-    )
-    custodied_bytes: int = Field(
-        ge=0,
-        strict=True,
-        description="Bytes in Riverhog custody; never greater than bytes.",
-    )
+    custody: CollectionUploadCustodyOut
     upload_state_expires_at: str | None
     orphaned_at: str | None
 
@@ -527,19 +562,15 @@ class CollectionUploadListItemOut(RiverhogModel):
             upload_state_expires_at=self.upload_state_expires_at,
             orphaned_at=self.orphaned_at,
         )
-        _validate_upload_custody_totals(
-            files=self.files,
-            bytes=self.bytes,
-            custodied_files=self.custodied_files,
-            custodied_bytes=self.custodied_bytes,
-        )
         _validate_complete_upload_custody(
             state=self.state,
             custody_mode=self.custody_mode,
+            custody_state=self.custody.state,
+        )
+        _validate_upload_custody_progress(
             files=self.files,
             bytes=self.bytes,
-            custodied_files=self.custodied_files,
-            custodied_bytes=self.custodied_bytes,
+            custody=self.custody,
         )
         return self
 
@@ -621,19 +652,7 @@ class CollectionUploadSessionOut(RiverhogModel):
     files_total: int = Field(ge=0, strict=True)
     bytes_total: int = Field(ge=0, strict=True)
     upload_state_expires_at: str | None
-    custodied_files: int = Field(
-        ge=0,
-        strict=True,
-        description=(
-            "Number of files in Riverhog custody; never greater than files_total and "
-            "complete for finalizing, finalized, or custody-transfer uploading states."
-        ),
-    )
-    custodied_bytes: int = Field(
-        ge=0,
-        strict=True,
-        description="Bytes in Riverhog custody; never greater than bytes_total.",
-    )
+    custody: CollectionUploadCustodyOut
     orphaned_at: str | None
     latest_failure: str | None = Field(min_length=1, max_length=1000)
     archive_phase: CollectionUploadArchivePhase
@@ -683,19 +702,15 @@ class CollectionUploadSessionOut(RiverhogModel):
             upload_state_expires_at=self.upload_state_expires_at,
             orphaned_at=self.orphaned_at,
         )
-        _validate_upload_custody_totals(
-            files=self.files_total,
-            bytes=self.bytes_total,
-            custodied_files=self.custodied_files,
-            custodied_bytes=self.custodied_bytes,
-        )
         _validate_complete_upload_custody(
             state=self.state,
             custody_mode=self.custody_mode,
+            custody_state=self.custody.state,
+        )
+        _validate_upload_custody_progress(
             files=self.files_total,
             bytes=self.bytes_total,
-            custodied_files=self.custodied_files,
-            custodied_bytes=self.custodied_bytes,
+            custody=self.custody,
         )
         if self.archive_phase == "retry_wait":
             if self.latest_failure is None or self.archive_next_attempt_at is None:
@@ -715,6 +730,27 @@ class CreateOrResumeCollectionUploadSessionOut(CollectionUploadSessionOut):
 
 
 class CollectionUploadDiscardPlanOut(RiverhogModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "allOf": [
+                {
+                    "if": {
+                        "properties": {"state": {"const": "finalizing"}},
+                        "required": ["state"],
+                    },
+                    "then": {
+                        "properties": {
+                            "custody": {
+                                "properties": {"state": {"const": "complete"}},
+                                "required": ["state"],
+                            }
+                        }
+                    },
+                }
+            ]
+        }
+    )
+
     status: Literal["ready", "blocked"]
     collection_id: CollectionId
     warning: str
@@ -723,8 +759,7 @@ class CollectionUploadDiscardPlanOut(RiverhogModel):
     state: Literal["open", "closing", "uploading", "finalizing", "orphaned", "discarding"]
     files: int = Field(ge=0, strict=True)
     bytes: int = Field(ge=0, strict=True)
-    custodied_files: int = Field(ge=0, strict=True)
-    custodied_bytes: int = Field(ge=0, strict=True)
+    custody: CollectionUploadCustodyOut
     archive_objects: int
     blockers: list[str]
 
@@ -734,19 +769,15 @@ class CollectionUploadDiscardPlanOut(RiverhogModel):
             raise ValueError("ready upload discard plan requires a challenge and no blockers")
         if self.status == "blocked" and (self.challenge is not None or not self.blockers):
             raise ValueError("blocked upload discard plan requires blockers and no challenge")
-        _validate_upload_custody_totals(
-            files=self.files,
-            bytes=self.bytes,
-            custodied_files=self.custodied_files,
-            custodied_bytes=self.custodied_bytes,
-        )
         _validate_complete_upload_custody(
             state=self.state,
             custody_mode=None,
+            custody_state=self.custody.state,
+        )
+        _validate_upload_custody_progress(
             files=self.files,
             bytes=self.bytes,
-            custodied_files=self.custodied_files,
-            custodied_bytes=self.custodied_bytes,
+            custody=self.custody,
         )
         return self
 
@@ -760,45 +791,31 @@ class CollectionUploadDiscardResultOut(RiverhogModel):
     collection_id: CollectionId
     files: int = Field(ge=0, strict=True)
     bytes: int = Field(ge=0, strict=True)
-    custodied_files: int = Field(ge=0, strict=True)
-    custodied_bytes: int = Field(ge=0, strict=True)
+    custody: CollectionUploadCustodyOut
     archive_objects: int
 
     @model_validator(mode="after")
-    def validate_custody_totals(self) -> CollectionUploadDiscardResultOut:
-        _validate_upload_custody_totals(
+    def validate_custody_progress(self) -> CollectionUploadDiscardResultOut:
+        _validate_upload_custody_progress(
             files=self.files,
             bytes=self.bytes,
-            custodied_files=self.custodied_files,
-            custodied_bytes=self.custodied_bytes,
+            custody=self.custody,
         )
         return self
 
 
-class CollectionUploadUnitSourceOut(RiverhogModel):
-    path: str
-    offset: int
-    bytes: int
-    sha256: str
+class CollectionUploadUnitSourceOut(CollectionUploadUnitSourceDocument):
+    pass
 
 
-class CollectionUploadUnitOut(RiverhogModel):
-    unit: int
-    payload_bytes: int
-    plaintext_bytes: int
-    sources: list[CollectionUploadUnitSourceOut]
+class CollectionUploadUnitOut(CollectionUploadUnitDocument):
+    sources: Sequence[CollectionUploadUnitSourceOut]
     state: Literal["pending", "committed"]
 
 
-class CollectionUploadVolumeOut(RiverhogModel):
-    volume_id: str
-    sequence: int
-    kind: Literal["pack", "segment"]
+class CollectionUploadVolumeOut(CollectionUploadVolumeDocument):
     state: Literal["planned", "uploading", "sealed", "failed"]
-    plan_sha256: str
-    plaintext_bytes: int
-    source_bytes: int
-    units: list[CollectionUploadUnitOut]
+    units: Sequence[CollectionUploadUnitOut]
 
 
 class ListCollectionUploadVolumesResponse(RiverhogModel):

@@ -7,43 +7,13 @@ import threading
 from dataclasses import dataclass
 from typing import Protocol
 
-from http_api_contracts import (
-    HttpErrorContract,
-    HttpOperationContract,
-)
 from pydantic import ValidationError
 from stove0_review_sampler_protocol import (
+    SAMPLER_HTTP_OPERATIONS,
     SamplerDescriptor,
     SamplerRequest,
     SamplerResult,
     validate_result,
-)
-
-SAMPLER_HTTP_OPERATIONS = (
-    HttpOperationContract(
-        "GET",
-        "/v1/sampler",
-        response_type=SamplerDescriptor,
-        errors=(
-            HttpErrorContract("bad_request", 400),
-            HttpErrorContract("unauthorized", 401),
-            HttpErrorContract("sampler_failed", 500),
-        ),
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/sample",
-        SamplerRequest,
-        SamplerResult,
-        "json",
-        errors=(
-            HttpErrorContract("invalid_sampler_request", 400),
-            HttpErrorContract("unauthorized", 401),
-            HttpErrorContract("sampler_changed", 409),
-            HttpErrorContract("request_too_large", 413),
-            HttpErrorContract("sampler_failed", 500),
-        ),
-    ),
 )
 
 _SAMPLER_HTTP_ERROR_STATUS = {

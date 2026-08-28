@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import httpx
-from http_api_contracts import parse_error_payload, safe_http_base_url
+from http_api_contracts import (
+    http_operation_for_request,
+    parse_declared_error_payload,
+    safe_http_base_url,
+)
 from pydantic import BaseModel
 from stove0_observer_protocol import (
+    OBSERVER_HTTP_OPERATIONS,
     ObservationInvocation,
     ObservationResult,
     ObserverDescriptor,
@@ -25,14 +30,21 @@ class ObserverProtocolError(RuntimeError):
         self,
         message: str,
         *,
-        code: str = "observer_client_error",
+        failure_kind: Literal[
+            "remote_rejection", "transport", "invalid_response", "unsupported_semantics"
+        ],
+        code: str | None = None,
         observed_status: int | None = None,
         details: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
-        if observed_status is not None and not 400 <= observed_status <= 599:
-            raise ValueError("observed HTTP status must be a 4xx or 5xx response")
+        if failure_kind == "remote_rejection":
+            if code is None or observed_status is None or not 400 <= observed_status <= 599:
+                raise ValueError("remote rejection requires a declared code and error status")
+        elif code is not None or observed_status is not None:
+            raise ValueError("client-local failure must not claim a remote code or status")
         self.message = message
+        self.failure_kind = failure_kind
         self.code = code
         self.observed_status = observed_status
         self.details = dict(details or {})
@@ -66,7 +78,7 @@ class ContentObserverClient:
         except ValueError as exc:
             raise ObserverProtocolError(
                 "observer semantic acceptance profile is not enabled",
-                code="unsupported_observer_semantics",
+                failure_kind="unsupported_semantics",
             ) from exc
         return descriptor
 
@@ -92,7 +104,7 @@ class ContentObserverClient:
         except (TypeError, ValueError) as exc:
             raise ObserverProtocolError(
                 "observer returned a response inconsistent with the invocation",
-                code="invalid_observer_response",
+                failure_kind="invalid_response",
             ) from exc
         return result
 
@@ -103,6 +115,9 @@ class ContentObserverClient:
         model: type[ModelT],
         payload: BaseModel | None = None,
     ) -> ModelT:
+        operation = http_operation_for_request(OBSERVER_HTTP_OPERATIONS, method, path)
+        if operation is None:
+            raise ValueError("observer client request is absent from its HTTP contract")
         try:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.request(
@@ -118,19 +133,23 @@ class ContentObserverClient:
         except httpx.HTTPError as exc:
             raise ObserverProtocolError(
                 f"observer request failed: {exc}",
-                code="observer_transport_error",
+                failure_kind="transport",
             ) from exc
         if response.status_code >= 400:
             try:
-                payload = response.json()
-            except ValueError:
-                payload = None
-            code, message, details = parse_error_payload(
-                payload,
-                fallback_message=response.text or f"HTTP {response.status_code}",
-            )
+                code, message, details = parse_declared_error_payload(
+                    operation,
+                    status=response.status_code,
+                    payload=response.json(),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ObserverProtocolError(
+                    "observer returned an undeclared or invalid error response",
+                    failure_kind="invalid_response",
+                ) from exc
             raise ObserverProtocolError(
                 message,
+                failure_kind="remote_rejection",
                 code=code,
                 observed_status=response.status_code,
                 details=details,
@@ -140,7 +159,7 @@ class ContentObserverClient:
         except (TypeError, ValueError) as exc:
             raise ObserverProtocolError(
                 "observer returned an invalid protocol response",
-                code="invalid_observer_response",
+                failure_kind="invalid_response",
             ) from exc
 
 

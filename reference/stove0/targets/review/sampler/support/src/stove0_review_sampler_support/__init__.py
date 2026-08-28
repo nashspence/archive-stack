@@ -1,4 +1,9 @@
-from stove0_review_sampler_support.conformance import SamplerClient, conformance_report
+from stove0_review_sampler_support.conformance import (
+    SAMPLER_CONFORMANCE_RESULT,
+    SamplerClient,
+    SamplerConformanceResult,
+    conformance_report,
+)
 from stove0_review_sampler_support.http_binding import (
     SAMPLER_HTTP_OPERATIONS,
     ReviewSampler,
@@ -15,7 +20,9 @@ __all__ = [
     "ReviewSampler",
     "SAMPLER_SCHEMA_BUNDLE_FORMAT",
     "SAMPLER_HTTP_OPERATIONS",
+    "SAMPLER_CONFORMANCE_RESULT",
     "SamplerClient",
+    "SamplerConformanceResult",
     "SamplerHttpBinding",
     "SamplerHttpResponse",
     "SamplerWorkspace",

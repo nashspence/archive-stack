@@ -193,7 +193,14 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
                 "unit": 0,
                 "payload_bytes": 3,
                 "plaintext_bytes": 3,
-                "sources": [],
+                "sources": [
+                    {
+                        "path": "camera/clip.bin",
+                        "offset": 0,
+                        "bytes": 3,
+                        "sha256": "b" * 64,
+                    }
+                ],
                 "state": "pending",
             }
 
@@ -213,7 +220,14 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
                 "unit": 0,
                 "payload_bytes": 3,
                 "plaintext_bytes": 3,
-                "sources": [],
+                "sources": [
+                    {
+                        "path": "camera/clip.bin",
+                        "offset": 0,
+                        "bytes": 3,
+                        "sha256": "b" * 64,
+                    }
+                ],
                 "state": "committed",
             }
 

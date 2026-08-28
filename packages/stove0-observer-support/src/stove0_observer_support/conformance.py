@@ -6,21 +6,91 @@ import argparse
 import json
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, Self
 
 from jsonschema import Draft202012Validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from stove0_observer_client import ContentObserverClient, load_semantic_validator_registry
 from stove0_observer_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     ObservationInvocation,
     ObservationRequest,
     ObservationRequestPayload,
+    ObservationResult,
     ObserverDescriptor,
     SemanticFactsConformanceVectors,
     SemanticValidatorProvider,
     accept_observation_result,
     canonical_json_bytes,
 )
+
+OBSERVER_CONFORMANCE_RESULT: Literal["stove0-observer-conformance-result/v1"] = (
+    "stove0-observer-conformance-result/v1"
+)
+
+
+class _ObserverConformanceModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ObserverConformanceCoverage(_ObserverConformanceModel):
+    advertised: int = Field(ge=0, strict=True)
+    exercised: int = Field(ge=0, strict=True)
+    complete: bool
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> Self:
+        if self.exercised > self.advertised or self.complete != (self.exercised == self.advertised):
+            raise ValueError("observer conformance coverage is inconsistent")
+        return self
+
+
+class ObserverSemanticVectorEvidence(_ObserverConformanceModel):
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    accepted_vector_ids: tuple[str, ...]
+    rejected_vector_ids: tuple[str, ...]
+
+
+class ObserverContractConformance(_ObserverConformanceModel):
+    contract_id: str
+    contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    options_schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    facts_schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    facts_semantics_id: str
+    facts_semantics_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    facts_semantics_conformance_vectors_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    preferred_subject_batch_size: int = Field(ge=1, strict=True)
+    maximum_result_bytes: int = Field(ge=1, strict=True)
+    execution: Literal["not-exercised", "exercised"]
+    semantic_conformance: Literal["not-exercised", "schema-only", "exercised"]
+    semantic_vectors: ObserverSemanticVectorEvidence | None = None
+
+
+class ObserverConformanceResult(_ObserverConformanceModel):
+    format: Literal["stove0-observer-conformance-result/v1"] = OBSERVER_CONFORMANCE_RESULT
+    status: Literal["conformant", "partially-exercised", "inspected"]
+    descriptor: ObserverDescriptor
+    coverage: ObserverConformanceCoverage
+    contracts: tuple[ObserverContractConformance, ...]
+    observations: tuple[ObservationResult, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_result(self) -> Self:
+        expected_status = (
+            "conformant"
+            if self.coverage.complete
+            else "partially-exercised"
+            if self.coverage.exercised
+            else "inspected"
+        )
+        if self.status != expected_status:
+            raise ValueError("observer conformance status differs from its coverage")
+        if self.coverage.advertised != len(self.contracts):
+            raise ValueError("observer conformance coverage differs from its contracts")
+        return self
 
 
 class ObserverClient(Protocol):
@@ -40,7 +110,7 @@ def conformance_report(
     invocations: Sequence[ObservationInvocation] = (),
     semantic_vectors: Sequence[SemanticFactsConformanceVectors] = (),
     semantic_validators: SemanticValidatorProvider | None = None,
-) -> dict[str, Any]:
+) -> ObserverConformanceResult:
     descriptor = client.descriptor()
     invocation_by_contract = {item.request.observer_contract_id: item for item in invocations}
     if len(invocation_by_contract) != len(invocations):
@@ -158,26 +228,21 @@ def conformance_report(
         for item in contract_reports
     )
     exercised = sum(item["execution"] == "exercised" for item in contract_reports)
-    report: dict[str, Any] = {
-        "status": (
-            "conformant" if complete else "partially-exercised" if exercised else "inspected"
-        ),
-        "protocol": descriptor.protocol,
-        "implementation_id": descriptor.implementation_id,
-        "implementation_version": descriptor.implementation_version,
-        "source_revision": descriptor.source_revision,
-        "image_digest": descriptor.image_digest,
-        "descriptor_sha256": descriptor.descriptor_sha256,
-        "coverage": {
-            "advertised": len(contract_reports),
-            "exercised": exercised,
-            "complete": complete,
-        },
-        "contracts": contract_reports,
-    }
-    if observations:
-        report["observations"] = observations
-    return report
+    return ObserverConformanceResult.model_validate(
+        {
+            "status": (
+                "conformant" if complete else "partially-exercised" if exercised else "inspected"
+            ),
+            "descriptor": descriptor,
+            "coverage": {
+                "advertised": len(contract_reports),
+                "exercised": exercised,
+                "complete": complete,
+            },
+            "contracts": contract_reports,
+            "observations": observations,
+        }
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -229,8 +294,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         semantic_vectors=semantic_vectors,
         semantic_validators=semantic_validators,
     )
-    print(json.dumps(report, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            report.model_dump(mode="json", exclude_none=True),
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
-__all__ = ["ObserverClient", "conformance_report", "main"]
+__all__ = [
+    "OBSERVER_CONFORMANCE_RESULT",
+    "ObserverClient",
+    "ObserverConformanceResult",
+    "conformance_report",
+    "main",
+]

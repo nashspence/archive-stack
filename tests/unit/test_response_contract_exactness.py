@@ -235,8 +235,7 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         "files_total": 0,
         "bytes_total": 0,
         "upload_state_expires_at": None,
-        "custodied_files": 0,
-        "custodied_bytes": 0,
+        "custody": {"state": "complete"},
         "orphaned_at": None,
         "latest_failure": None,
         "archive_phase": "completed",
@@ -313,8 +312,7 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
             "archive_next_attempt_at": "2026-08-25T00:00:01.000000Z",
             "files_total": 1,
             "bytes_total": 2,
-            "custodied_files": 0,
-            "custodied_bytes": 0,
+            "custody": {"state": "pending", "files": 0, "bytes": 0},
         }
     )
     with pytest.raises(ValidationError, match="complete Riverhog custody"):
@@ -328,8 +326,7 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
             "archive_phase": "uploading",
             "files_total": 1,
             "bytes_total": 2,
-            "custodied_files": 0,
-            "custodied_bytes": 0,
+            "custody": {"state": "pending", "files": 0, "bytes": 0},
         }
     )
     with pytest.raises(ValidationError, match="complete Riverhog custody"):
@@ -386,16 +383,25 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
     schema_validator.validate(finalized_payload)
 
     incomplete_finalized = deepcopy(finalized_payload)
-    incomplete_finalized.update({"files_total": 1, "bytes_total": 2})
+    incomplete_finalized.update(
+        {
+            "files_total": 1,
+            "bytes_total": 2,
+            "custody": {"state": "pending", "files": 0, "bytes": 0},
+        }
+    )
     incomplete_collection = incomplete_finalized["collection"]
     assert isinstance(incomplete_collection, dict)
     incomplete_collection.update({"files": 1, "bytes": 2})
     with pytest.raises(ValidationError, match="complete Riverhog custody"):
         CollectionUploadSessionOut.model_validate(incomplete_finalized)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(incomplete_finalized)
 
     complete_finalized = deepcopy(incomplete_finalized)
-    complete_finalized.update({"custodied_files": 1, "custodied_bytes": 2})
+    complete_finalized["custody"] = {"state": "complete"}
     CollectionUploadSessionOut.model_validate(complete_finalized)
+    schema_validator.validate(complete_finalized)
 
     for provenance_mode in ("captured", "mixed"):
         missing_provenance_identity = deepcopy(finalized_payload)
@@ -417,7 +423,7 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
     with pytest.raises(JsonSchemaValidationError):
         schema_validator.validate(omitted_with_identity)
 
-    for field in ("files_total", "bytes_total", "custodied_files", "custodied_bytes"):
+    for field in ("files_total", "bytes_total"):
         negative_count = deepcopy(open_payload)
         negative_count[field] = -1
         with pytest.raises(ValidationError):
@@ -425,15 +431,22 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         with pytest.raises(JsonSchemaValidationError):
             schema_validator.validate(negative_count)
 
-    for changes in (
-        {"files_total": 1, "custodied_files": 2},
-        {"bytes_total": 1, "custodied_bytes": 2, "custodied_files": 1},
-        {"files_total": 1, "bytes_total": 2, "custodied_files": 1, "custodied_bytes": 1},
+    negative_progress = deepcopy(open_payload)
+    negative_progress["custody"] = {"state": "pending", "files": -1, "bytes": 0}
+    with pytest.raises(ValidationError):
+        CollectionUploadSessionOut.model_validate(negative_progress)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(negative_progress)
+
+    for progress in (
+        {"state": "pending", "files": 2, "bytes": 0},
+        {"state": "pending", "files": 1, "bytes": 3},
+        {"state": "pending", "files": 0, "bytes": 1},
     ):
-        impossible_custody = deepcopy(open_payload)
-        impossible_custody.update(changes)
+        impossible_progress = deepcopy(open_payload)
+        impossible_progress.update({"files_total": 1, "bytes_total": 2, "custody": progress})
         with pytest.raises(ValidationError, match="custody"):
-            CollectionUploadSessionOut.model_validate(impossible_custody)
+            CollectionUploadSessionOut.model_validate(impossible_progress)
 
     invalid_phase = deepcopy(open_payload)
     invalid_phase["archive_phase"] = "completed"
@@ -496,8 +509,7 @@ def test_upload_session_list_states_reject_impossible_custody_lifecycles(
         "custody_mode": "producer-retained",
         "files": 0,
         "bytes": 0,
-        "custodied_files": 0,
-        "custodied_bytes": 0,
+        "custody": {"state": "complete"},
         "upload_state_expires_at": None,
         "orphaned_at": None,
     }
@@ -563,8 +575,7 @@ def test_upload_session_list_states_accept_reachable_custody_lifecycles(
         "custody_mode": "producer-retained",
         "files": 0,
         "bytes": 0,
-        "custodied_files": 0,
-        "custodied_bytes": 0,
+        "custody": {"state": "complete"},
         "upload_state_expires_at": None,
         "orphaned_at": None,
     }
@@ -596,22 +607,25 @@ def test_upload_session_list_complete_states_require_complete_custody(
         "custody_mode": "producer-retained",
         "files": 1,
         "bytes": 2,
-        "custodied_files": 0,
-        "custodied_bytes": 0,
+        "custody": {"state": "pending", "files": 0, "bytes": 0},
         "upload_state_expires_at": None,
         "orphaned_at": None,
     }
 
+    incomplete = {**payload, **changes}
+    schema_validator = Draft202012Validator(CollectionUploadListItemOut.model_json_schema())
     with pytest.raises(ValidationError, match="complete Riverhog custody"):
-        CollectionUploadListItemOut.model_validate({**payload, **changes})
+        CollectionUploadListItemOut.model_validate(incomplete)
+    with pytest.raises(JsonSchemaValidationError):
+        schema_validator.validate(incomplete)
 
     complete = {
         **payload,
         **changes,
-        "custodied_files": 1,
-        "custodied_bytes": 2,
+        "custody": {"state": "complete"},
     }
     CollectionUploadListItemOut.model_validate(complete)
+    schema_validator.validate(complete)
 
 
 def test_list_responses_expose_only_closed_sort_and_filter_contracts() -> None:

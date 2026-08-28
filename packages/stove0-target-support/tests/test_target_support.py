@@ -10,7 +10,11 @@ from typing import Any
 
 import httpx
 import pytest
-from http_api_contracts import http_operation_for_request, operation_openapi
+from http_api_contracts import (
+    http_operation_for_request,
+    http_operation_inventory,
+    operation_openapi,
+)
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError as JsonSchemaValidationError
 from pydantic import ValidationError
@@ -751,11 +755,12 @@ def test_conformance_report_proves_preflight_and_idempotent_submission() -> None
         FixtureTargetClient(target, request, status),
         cases=(TargetConformanceCase(operation=operation, job_request=request),),
     )
-    assert report["status"] == "conformant"
-    assert report["transport"] == "riverhog-capability/v1"
-    assert report["coverage"] == {"advertised": 1, "exercised": 1, "complete": True}
-    assert report["operation_evidence"][0]["semantic_conformance"]["status"] == "schema-only"
-    assert report["operations"][0]["semantic_conformance"] == "schema-only"
+    assert report.format == "stove0-target-conformance-result/v1"
+    assert report.status == "conformant"
+    assert report.target.transport == "riverhog-capability/v1"
+    assert report.coverage.model_dump() == {"advertised": 1, "exercised": 1, "complete": True}
+    assert report.operation_evidence[0].semantic_conformance.status == "schema-only"
+    assert report.operations[0].semantic_conformance == "schema-only"
 
 
 def test_conformance_report_uses_one_exact_target_contract_snapshot() -> None:
@@ -779,8 +784,8 @@ def test_conformance_report_uses_one_exact_target_contract_snapshot() -> None:
         cases=(TargetConformanceCase(operation=operation, job_request=request),),
     )
 
-    assert report["target_contract_sha256"] == target.contract_sha256
-    assert report["coverage"] == {"advertised": 1, "exercised": 1, "complete": True}
+    assert report.target.contract_sha256 == target.contract_sha256
+    assert report.coverage.model_dump() == {"advertised": 1, "exercised": 1, "complete": True}
     assert client.contract_calls == 1
 
 
@@ -790,9 +795,9 @@ def test_contract_only_target_report_does_not_claim_execution_conformance() -> N
         FixtureTargetClient(target, request, _success_status(operation, request))
     )
 
-    assert report["status"] == "inspected"
-    assert report["coverage"] == {"advertised": 1, "exercised": 0, "complete": False}
-    assert report["operations"][0]["semantic_conformance"] == "not-exercised"
+    assert report.status == "inspected"
+    assert report.coverage.model_dump() == {"advertised": 1, "exercised": 0, "complete": False}
+    assert report.operations[0].semantic_conformance == "not-exercised"
 
 
 def test_target_conformance_requires_every_advertised_operation() -> None:
@@ -858,8 +863,8 @@ def test_target_conformance_requires_every_advertised_operation() -> None:
         client,
         cases=(TargetConformanceCase(operation=first, job_request=requests[first.id]),),
     )
-    assert partial["status"] == "partially-exercised"
-    assert partial["coverage"] == {"advertised": 2, "exercised": 1, "complete": False}
+    assert partial.status == "partially-exercised"
+    assert partial.coverage.model_dump() == {"advertised": 2, "exercised": 1, "complete": False}
 
     complete = conformance_report(
         client,
@@ -868,8 +873,8 @@ def test_target_conformance_requires_every_advertised_operation() -> None:
             for operation in (first, second)
         ),
     )
-    assert complete["status"] == "conformant"
-    assert complete["coverage"] == {"advertised": 2, "exercised": 2, "complete": True}
+    assert complete.status == "conformant"
+    assert complete.coverage.model_dump() == {"advertised": 2, "exercised": 2, "complete": True}
 
 
 def test_target_conformance_executes_the_exact_advertised_semantic_vectors() -> None:
@@ -917,6 +922,7 @@ def test_target_conformance_executes_the_exact_advertised_semantic_vectors() -> 
             if received.intent["suffix"] == ".rejected":
                 raise TargetProtocolError(
                     "fixture semantic rejection",
+                    failure_kind="remote_rejection",
                     code="invalid_target_request",
                     observed_status=400,
                 )
@@ -957,8 +963,8 @@ def test_target_conformance_executes_the_exact_advertised_semantic_vectors() -> 
         ),
     )
 
-    assert report["status"] == "conformant"
-    assert report["operation_evidence"][0]["semantic_conformance"] == {
+    assert report.status == "conformant"
+    assert report.operation_evidence[0].semantic_conformance.model_dump(mode="json") == {
         "profile_id": semantics.id,
         "profile_sha256": semantics.profile_sha256,
         "conformance_vectors_sha256": vectors.sha256,
@@ -1358,10 +1364,15 @@ def test_target_schema_bundle_is_deterministic_and_self_validating() -> None:
     assert first == second
     digest = first.pop("bundle_sha256")
     assert canonical_json_sha256(first) == digest
-    assert first["http_binding"]["PUT /v1/jobs/{job_id}"] == {
-        "request": "TargetJobRequest",
-        "response": "TargetJobStatus",
+    assert first["http_binding"]["operations"] == http_operation_inventory(TARGET_HTTP_OPERATIONS)
+    assert first["authorities"] == {
+        "structural_models": "schemas",
+        "http_operations": "http_binding.operations",
+        "semantic_acceptance": "semantic_acceptance",
     }
+    assert first["schemas"]["TargetConformanceResult"]["properties"]["format"]["const"] == (
+        "stove0-target-conformance-result/v1"
+    )
     for schema in first["schemas"].values():
         Draft202012Validator.check_schema(schema)
 

@@ -8,9 +8,11 @@ from pathlib import Path
 
 import httpx
 import pytest
+from http_api_contracts import http_operation_inventory
 from stove0_protocol import JsonSchemaDocument
 from stove0_review_sampler_client import ReviewSamplerClient
 from stove0_review_sampler_protocol import (
+    SAMPLER_HTTP_OPERATIONS,
     SamplerDescriptor,
     SamplerDescriptorPayload,
     SamplerFailure,
@@ -192,19 +194,22 @@ def test_binding_client_and_conformance_share_the_exact_two_endpoint_contract() 
         inspected = conformance_report(client)
         report = conformance_report(client, request=request)
 
-    assert inspected["status"] == "inspected"
-    assert inspected["coverage"] == {"advertised": 1, "exercised": 0, "complete": False}
-    assert report["status"] == "conformant"
-    assert report["coverage"] == {"advertised": 1, "exercised": 1, "complete": True}
-    assert report["image_digest"] == _sha("9")
-    assert report["sample"]["state"] == "succeeded"
-    assert sampler_schema_bundle()["endpoints"] == {
-        "GET /v1/sampler": "SamplerDescriptor",
-        "POST /v1/sample": {
-            "request": "SamplerRequest",
-            "response": "SamplerResult",
-        },
+    assert inspected.format == "stove0-review-sampler-conformance-result/v1"
+    assert inspected.status == "inspected"
+    assert inspected.coverage.model_dump() == {"advertised": 1, "exercised": 0, "complete": False}
+    assert report.status == "conformant"
+    assert report.coverage.model_dump() == {"advertised": 1, "exercised": 1, "complete": True}
+    assert report.sampler.image_digest == _sha("9")
+    assert report.sample is not None and report.sample.state == "succeeded"
+    bundle = sampler_schema_bundle()
+    assert bundle["http_binding"]["operations"] == http_operation_inventory(SAMPLER_HTTP_OPERATIONS)
+    assert bundle["semantic_acceptance"] == {
+        "kind": "request-bound-result",
+        "validator": "validate_result",
     }
+    assert bundle["schemas"]["SamplerConformanceResult"]["properties"]["format"]["const"] == (
+        "stove0-review-sampler-conformance-result/v1"
+    )
 
 
 def test_sampler_binding_serializes_workspace_execution_by_default() -> None:

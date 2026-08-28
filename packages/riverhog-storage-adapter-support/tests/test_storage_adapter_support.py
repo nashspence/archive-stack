@@ -722,12 +722,13 @@ def test_schema_and_support_source_remain_provider_and_state_neutral() -> None:
     read = next(item for item in operations if item["path"] == "/v1/objects/read")
     assert read["response"]["kind"] == "framed"
     assert read["response"]["schema"] == "ObjectReadReceipt"
-    assert set(read["response"]["headers"]) == {
+    assert [header["name"] for header in read["response"]["headers"]] == [
         "Content-Length",
-        "Content-Range",
         "X-Riverhog-Object-Bytes",
         "X-Riverhog-Object-Revision",
-    }
+        "Content-Range",
+    ]
+    assert all(header["schema"] == {"type": "string"} for header in read["response"]["headers"])
     assert "WriteSegmentSet" in document["schemas"]
 
     source = Path(__file__).resolve().parents[1] / "src/riverhog_storage_adapter_support"

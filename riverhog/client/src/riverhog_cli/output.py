@@ -187,13 +187,33 @@ def format_archive_copy_retirement_result(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _upload_custody(
+    payload: Mapping[str, object],
+    *,
+    files_key: str,
+    bytes_key: str,
+) -> tuple[str, object, object]:
+    custody = payload.get("custody")
+    if not isinstance(custody, Mapping):
+        return "unknown", 0, 0
+    state = str(custody.get("state", "unknown"))
+    if state == "complete":
+        return state, payload.get(files_key, 0), payload.get(bytes_key, 0)
+    return state, custody.get("files", 0), custody.get("bytes", 0)
+
+
 def format_collection_upload(payload: Mapping[str, object]) -> str:
+    custody_state, custody_files, custody_bytes = _upload_custody(
+        payload,
+        files_key="files_total",
+        bytes_key="bytes_total",
+    )
     lines = [
         f"collection upload {payload.get('collection_id', 'unknown')}",
         f"state: {payload.get('state', 'unknown')}",
-        f"custodied files: {payload.get('custodied_files', 0)}/{payload.get('files_total', 0)}",
-        f"custodied bytes: {_bytes(payload.get('custodied_bytes'))}/"
-        f"{_bytes(payload.get('bytes_total'))}",
+        f"custody state: {custody_state}",
+        f"custodied files: {custody_files}/{payload.get('files_total', 0)}",
+        f"custodied bytes: {_bytes(custody_bytes)}/{_bytes(payload.get('bytes_total'))}",
         f"custody: {payload.get('custody_mode', 'unknown')}",
         f"encryption: {payload.get('encryption_format', 'unknown')}:"
         f"{payload.get('passphrase_id', 'unknown')}",
@@ -212,14 +232,20 @@ def format_collection_upload(payload: Mapping[str, object]) -> str:
 
 
 def format_collection_upload_discard_plan(payload: Mapping[str, object]) -> str:
+    custody_state, custody_files, custody_bytes = _upload_custody(
+        payload,
+        files_key="files",
+        bytes_key="bytes",
+    )
     lines = [
         f"collection upload discard: {payload.get('status', 'unknown')}",
         f"collection: {payload.get('collection_id', 'unknown')}",
         f"state: {payload.get('state', 'unknown')}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
-        f"custodied files: {payload.get('custodied_files', 0)}",
-        f"custodied bytes: {_bytes(payload.get('custodied_bytes'))}",
+        f"custody state: {custody_state}",
+        f"custodied files: {custody_files}",
+        f"custodied bytes: {_bytes(custody_bytes)}",
         f"archive objects: {payload.get('archive_objects', 0)}",
         f"warning: {payload.get('warning', 'unknown')}",
     ]
@@ -234,14 +260,20 @@ def format_collection_upload_discard_plan(payload: Mapping[str, object]) -> str:
 
 
 def format_collection_upload_discard_result(payload: Mapping[str, object]) -> str:
+    custody_state, custody_files, custody_bytes = _upload_custody(
+        payload,
+        files_key="files",
+        bytes_key="bytes",
+    )
     return "\n".join(
         [
             f"collection upload discard: {payload.get('status', 'unknown')}",
             f"collection: {payload.get('collection_id', 'unknown')}",
             f"files: {payload.get('files', 0)}",
             f"bytes: {_bytes(payload.get('bytes'))}",
-            f"custodied files: {payload.get('custodied_files', 0)}",
-            f"custodied bytes: {_bytes(payload.get('custodied_bytes'))}",
+            f"custody state: {custody_state}",
+            f"custodied files: {custody_files}",
+            f"custodied bytes: {_bytes(custody_bytes)}",
             f"archive objects: {payload.get('archive_objects', 0)}",
         ]
     )
@@ -252,14 +284,19 @@ def format_collection_uploads(payload: Mapping[str, object]) -> str:
     for upload in _items(payload, "uploads"):
         tags = upload.get("tags")
         tag_text = ",".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
+        custody_state, custody_files, custody_bytes = _upload_custody(
+            upload,
+            files_key="files",
+            bytes_key="bytes",
+        )
         lines.append(
             f"- {upload.get('collection_id', 'unknown')}  "
             f"state={upload.get('state', 'unknown')}  "
             f"created={upload.get('created_at', 'unknown')}  "
             f"files={upload.get('files', 0)}  "
             f"bytes={_bytes(upload.get('bytes'))}  "
-            f"custodied={upload.get('custodied_files', 0)}/"
-            f"{upload.get('files', 0)}:{_bytes(upload.get('custodied_bytes'))}  "
+            f"custody={custody_state}:{custody_files}/"
+            f"{upload.get('files', 0)}:{_bytes(custody_bytes)}  "
             f"mode={upload.get('custody_mode', 'unknown')}  "
             f"encryption={upload.get('encryption_format', 'unknown')}:"
             f"{upload.get('passphrase_id', 'unknown')}  "

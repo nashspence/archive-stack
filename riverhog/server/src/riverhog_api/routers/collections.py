@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Response
 from http_api_contracts import operation_interface
@@ -49,6 +49,41 @@ from riverhog_api.schemas.collections import (
 )
 
 router = APIRouter(tags=["collections"])
+
+_CLIENT_BINARY_OPERATION = {
+    **operation_interface("client-only-primitive"),
+    "parameters": [
+        {
+            "name": "Content-Length",
+            "in": "header",
+            "required": True,
+            "description": "Exact request-body length in bytes.",
+            "schema": {"type": "integer", "minimum": 0},
+        }
+    ],
+}
+_PROVENANCE_JOURNAL_RESPONSE: dict[int | str, dict[str, Any]] = {
+    200: {
+        "description": "Exact staged provenance journal.",
+        "headers": {
+            "Content-Length": {
+                "required": True,
+                "description": "Exact response-body length in bytes.",
+                "schema": {"type": "integer", "minimum": 0},
+            },
+            "ETag": {
+                "required": True,
+                "description": "Quoted SHA-256 identity of the journal bytes.",
+                "schema": {"type": "string", "pattern": '^"[0-9a-f]{64}"$'},
+            },
+        },
+        "content": {
+            "application/json-seq": {
+                "schema": {"type": "string", "format": "binary"},
+            }
+        },
+    }
+}
 
 
 @router.get("/collections", response_model=ListCollectionsResponse)
@@ -157,7 +192,7 @@ def register_collection_upload_session_files(
 @router.put(
     "/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
     response_model=CollectionUploadProvenanceJournalOut,
-    openapi_extra=operation_interface("client-only-primitive"),
+    openapi_extra=_CLIENT_BINARY_OPERATION,
 )
 async def put_collection_upload_session_provenance_journal(
     collection_id: CollectionIdParameter,
@@ -192,6 +227,8 @@ async def put_collection_upload_session_provenance_journal(
 
 @router.get(
     "/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
+    response_class=Response,
+    responses=_PROVENANCE_JOURNAL_RESPONSE,
     openapi_extra=operation_interface("client-only-primitive"),
 )
 def export_collection_upload_session_provenance_journal(
@@ -389,7 +426,7 @@ def get_collection_upload_session_unit(
 @router.put(
     "/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
     response_model=CollectionUploadUnitOut,
-    openapi_extra=operation_interface("client-only-primitive"),
+    openapi_extra=_CLIENT_BINARY_OPERATION,
 )
 async def put_collection_upload_session_unit(
     collection_id: CollectionIdParameter,

@@ -7,15 +7,10 @@ import re
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeVar
 
-from http_api_contracts import (
-    HttpErrorContract,
-    HttpOperationContract,
-    HttpPathParameterContract,
-    http_operation_for_request,
-)
+from http_api_contracts import http_operation_for_request
 from pydantic import BaseModel, ValidationError
 from stove0_target_protocol import (
-    Sha256,
+    TARGET_HTTP_OPERATIONS,
     TargetContract,
     TargetJobRequest,
     TargetJobStatus,
@@ -27,7 +22,6 @@ _JSON_CONTENT_TYPE = "application/json"
 _DEFAULT_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 _JOB_PATH = re.compile(r"^/v1/jobs/([0-9a-f]{64})$")
 _CANCEL_PATH = re.compile(r"^/v1/jobs/([0-9a-f]{64})/cancel$")
-_JOB_ID_PARAMETER = (HttpPathParameterContract("job_id", Sha256),)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -66,70 +60,6 @@ _TARGET_HTTP_ERROR_STATUS: dict[str, int] = {
     "unauthorized": 401,
     "unsupported_operation": 400,
 }
-
-
-def _target_errors(*codes: TargetHttpErrorCode) -> tuple[HttpErrorContract, ...]:
-    return tuple(HttpErrorContract(code, _TARGET_HTTP_ERROR_STATUS[code]) for code in codes)
-
-
-TARGET_HTTP_OPERATIONS = (
-    HttpOperationContract(
-        "GET",
-        "/v1/target",
-        response_type=TargetContract,
-        errors=_target_errors("bad_request", "unauthorized", "target_failed"),
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/preflight",
-        TargetPreflightRequest,
-        TargetPreflightResponse,
-        "json",
-        errors=_target_errors(
-            "invalid_target_request",
-            "unauthorized",
-            "request_too_large",
-            "target_protocol_mismatch",
-            "operation_contract_mismatch",
-            "unsupported_operation",
-            "target_failed",
-        ),
-    ),
-    HttpOperationContract(
-        "PUT",
-        "/v1/jobs/{job_id}",
-        TargetJobRequest,
-        TargetJobStatus,
-        "json",
-        errors=_target_errors(
-            "invalid_target_request",
-            "unauthorized",
-            "request_too_large",
-            "job_identity_mismatch",
-            "target_contract_mismatch",
-            "operation_contract_mismatch",
-            "job_request_mismatch",
-            "target_runtime_mismatch",
-            "unsupported_operation",
-            "target_failed",
-        ),
-        path_parameters=_JOB_ID_PARAMETER,
-    ),
-    HttpOperationContract(
-        "GET",
-        "/v1/jobs/{job_id}",
-        response_type=TargetJobStatus,
-        errors=_target_errors("bad_request", "unauthorized", "job_not_found", "target_failed"),
-        path_parameters=_JOB_ID_PARAMETER,
-    ),
-    HttpOperationContract(
-        "POST",
-        "/v1/jobs/{job_id}/cancel",
-        response_type=TargetJobStatus,
-        errors=_target_errors("bad_request", "unauthorized", "job_not_found", "target_failed"),
-        path_parameters=_JOB_ID_PARAMETER,
-    ),
-)
 
 
 class TargetService(Protocol):

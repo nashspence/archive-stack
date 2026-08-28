@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 import pytest
 import stove0_observer_client.providers as observer_provider_module
+from http_api_contracts import http_operation_inventory
 from jsonschema import Draft202012Validator
 from riverhog_protocol.collection_workflows import PRODUCER_EVIDENCE_PATH
 from stove0_observer_client import (
@@ -21,6 +22,7 @@ from stove0_observer_client import (
 )
 from stove0_observer_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
+    OBSERVER_HTTP_OPERATIONS,
     ObservationInvocation,
     ObservationRequest,
     ObservationRequestPayload,
@@ -312,8 +314,13 @@ def test_conformance_report_checks_contract_schemas_and_result_binding() -> None
     request = _request(contract, descriptor, api)
     result = _result(request, contract, descriptor, len(api.data))
     inspected = conformance_report(FixtureObserverClient(descriptor, result))
-    assert inspected["status"] == "inspected"
-    assert inspected["coverage"] == {"advertised": 1, "exercised": 0, "complete": False}
+    assert inspected.format == "stove0-observer-conformance-result/v1"
+    assert inspected.status == "inspected"
+    assert inspected.coverage.model_dump() == {
+        "advertised": 1,
+        "exercised": 0,
+        "complete": False,
+    }
     invocation = ObservationInvocation(
         request=request,
         claim_id="claim-1",
@@ -330,24 +337,15 @@ def test_conformance_report_checks_contract_schemas_and_result_binding() -> None
         invocations=(invocation,),
     )
 
-    assert report["status"] == "conformant"
-    assert report["coverage"] == {"advertised": 1, "exercised": 1, "complete": True}
-    assert report["observations"][0]["facts"] == {"bytes": len(api.data)}
-    assert report["contracts"] == [
-        {
-            "contract_id": contract.id,
-            "contract_sha256": contract.contract_sha256,
-            "options_schema_sha256": contract.options_schema.sha256,
-            "facts_schema_sha256": contract.facts_schema.sha256,
-            "facts_semantics_id": contract.facts_semantics.id,
-            "facts_semantics_sha256": contract.facts_semantics.profile_sha256,
-            "facts_semantics_conformance_vectors_sha256": None,
-            "preferred_subject_batch_size": 128,
-            "maximum_result_bytes": contract.maximum_result_bytes,
-            "execution": "exercised",
-            "semantic_conformance": "schema-only",
-        }
-    ]
+    assert report.status == "conformant"
+    assert report.coverage.complete is True
+    assert report.descriptor == descriptor
+    assert report.observations[0].facts == {"bytes": len(api.data)}
+    contract_result = report.contracts[0]
+    assert contract_result.contract_id == contract.id
+    assert contract_result.contract_sha256 == contract.contract_sha256
+    assert contract_result.execution == "exercised"
+    assert contract_result.semantic_conformance == "schema-only"
 
 
 def test_conformance_report_exercises_semantics_locally_not_as_observer_calls() -> None:
@@ -426,8 +424,8 @@ def test_conformance_report_exercises_semantics_locally_not_as_observer_calls() 
         ),
     )
 
-    assert report["status"] == "conformant"
-    assert report["contracts"][0]["semantic_conformance"] == "exercised"
+    assert report.status == "conformant"
+    assert report.contracts[0].semantic_conformance == "exercised"
     assert observed_calls == 1
 
 
@@ -918,9 +916,14 @@ def test_observer_schema_bundle_is_deterministic_and_self_validating() -> None:
     assert first == second
     digest = first.pop("bundle_sha256")
     assert canonical_json_sha256(first) == digest
-    assert first["http_binding"]["POST /v1/observe"] == {
-        "request": "ObservationInvocation",
-        "response": "ObservationResult",
+    assert first["http_binding"]["operations"] == http_operation_inventory(OBSERVER_HTTP_OPERATIONS)
+    assert first["authorities"] == {
+        "structural_models": "schemas",
+        "http_operations": "http_binding.operations",
+        "semantic_acceptance": "semantic_acceptance",
     }
+    assert first["schemas"]["ObserverConformanceResult"]["properties"]["format"]["const"] == (
+        "stove0-observer-conformance-result/v1"
+    )
     for schema in first["schemas"].values():
         Draft202012Validator.check_schema(schema)

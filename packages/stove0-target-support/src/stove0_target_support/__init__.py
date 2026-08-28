@@ -53,8 +53,10 @@ from stove0_target_support.configuration import (
     terminal_state_retention_seconds,
 )
 from stove0_target_support.conformance import (
+    TARGET_CONFORMANCE_RESULT,
     TargetClient,
     TargetConformanceCase,
+    TargetConformanceResult,
     conformance_report,
 )
 from stove0_target_support.execution import TargetExecutionSession
@@ -94,6 +96,7 @@ __all__ = [
     "SHA256_PATTERN",
     "TRANSFORM_TARGET_PROTOCOL",
     "TARGET_SCHEMA_BUNDLE_FORMAT",
+    "TARGET_CONFORMANCE_RESULT",
     "TARGET_HTTP_OPERATIONS",
     "TARGET_TERMINAL_STATE_RETENTION_ENV",
     "InputArtifact",
@@ -113,6 +116,7 @@ __all__ = [
     "Sha256",
     "TargetClient",
     "TargetConformanceCase",
+    "TargetConformanceResult",
     "TargetContract",
     "TargetContractPayload",
     "TargetExecutionEvidence",

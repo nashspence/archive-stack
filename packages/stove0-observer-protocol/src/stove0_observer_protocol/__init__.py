@@ -6,6 +6,7 @@ the sole top-level observer-author import surface and intentionally excludes the
 HTTP client, Riverhog data plane, and stove0 core.
 """
 
+from http_api_contracts import HttpErrorContract, HttpOperationContract
 from stove0_protocol.models import (
     ARTIFACT_ID_PATTERN,
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
@@ -55,9 +56,36 @@ from stove0_observer_protocol.validation import (
     validate_observation_request,
 )
 
+OBSERVER_HTTP_OPERATIONS = (
+    HttpOperationContract(
+        "GET",
+        "/v1/observer",
+        response_type=ObserverDescriptor,
+        errors=(
+            HttpErrorContract("bad_request", 400),
+            HttpErrorContract("unauthorized", 401),
+            HttpErrorContract("observer_failed", 500),
+        ),
+    ),
+    HttpOperationContract(
+        "POST",
+        "/v1/observe",
+        ObservationInvocation,
+        ObservationResult,
+        "json",
+        errors=(
+            HttpErrorContract("invalid_observation_request", 400),
+            HttpErrorContract("unauthorized", 401),
+            HttpErrorContract("request_too_large", 413),
+            HttpErrorContract("observer_failed", 500),
+        ),
+    ),
+)
+
 __all__ = [
     "ARTIFACT_ID_PATTERN",
     "OBSERVER_PROTOCOL",
+    "OBSERVER_HTTP_OPERATIONS",
     "JSON_SCHEMA_ONLY_SEMANTIC_PROFILE",
     "OBSERVATION_REQUEST_FORMAT",
     "OBSERVATION_RESULT_FORMAT",

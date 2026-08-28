@@ -8,6 +8,8 @@ from riverhog_protocol import (
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
     CollectionUploadRegistrationConstraintsDocument,
+    CollectionUploadUnitDocument,
+    CollectionUploadVolumeDocument,
     validate_collection_upload_artifact_custody_receipt,
     validate_collection_upload_batch_against_registration_constraints,
 )
@@ -189,6 +191,40 @@ def test_direct_ingress_registration_constraints_expose_only_producer_policy() -
         "raw_part_plaintext_bytes",
     }
     assert schema["additionalProperties"] is False
+
+
+def test_server_planned_upload_work_uses_protocol_owned_exact_identities() -> None:
+    volume = CollectionUploadVolumeDocument(
+        volume_id="pack-000000000003",
+        sequence=3,
+        kind="pack",
+        plan_sha256="b" * 64,
+        plaintext_bytes=2048,
+        source_bytes=5,
+        units=[
+            CollectionUploadUnitDocument(
+                unit=0,
+                payload_bytes=5,
+                plaintext_bytes=2048,
+                sources=[
+                    {
+                        "path": "camera/clip.mp4",
+                        "offset": 0,
+                        "bytes": 5,
+                        "sha256": "a" * 64,
+                    }
+                ],
+            )
+        ],
+    )
+
+    assert CollectionUploadVolumeDocument.model_validate_json(volume.model_dump_json()) == volume
+    assert volume.units[0].sources[0].path == "camera/clip.mp4"
+
+    changed = volume.model_dump(mode="python")
+    changed["units"][0]["payload_bytes"] = 4
+    with pytest.raises(ValidationError, match="source bytes"):
+        CollectionUploadVolumeDocument.model_validate(changed)
 
 
 @pytest.mark.parametrize("raw_part_bytes", (1, 65535, 65537, 131071))

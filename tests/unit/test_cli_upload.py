@@ -361,8 +361,7 @@ def test_upload_retry_returns_an_already_finalized_collection(
         "state": "finalized",
         "files_total": 1,
         "bytes_total": 5,
-        "custodied_files": 1,
-        "custodied_bytes": 5,
+        "custody": {"state": "complete"},
         "registration_constraints": None,
     }
 
@@ -451,8 +450,7 @@ def test_collection_upload_control_commands_have_human_json_parity(
             "state": state,
             "files_total": 2,
             "bytes_total": 10,
-            "custodied_files": 2,
-            "custodied_bytes": 10,
+            "custody": {"state": "complete"},
             "tags": ["my-trip"],
             "encryption_format": "age-v1-scrypt",
             "passphrase_id": "fixture-archive-key-v1",
@@ -548,8 +546,7 @@ def test_collection_upload_custody_files_and_guarded_discard_have_human_json_par
                 "state": "orphaned",
                 "files": 1,
                 "bytes": 10,
-                "custodied_files": 1,
-                "custodied_bytes": 10,
+                "custody": {"state": "complete"},
                 "archive_objects": 1,
                 "warning": "This permanently destroys Riverhog-custodied artifacts.",
                 "blockers": [],
@@ -570,8 +567,7 @@ def test_collection_upload_custody_files_and_guarded_discard_have_human_json_par
                 "collection_id": collection_id,
                 "files": 1,
                 "bytes": 10,
-                "custodied_files": 1,
-                "custodied_bytes": 10,
+                "custody": {"state": "complete"},
                 "archive_objects": 1,
             }
 
