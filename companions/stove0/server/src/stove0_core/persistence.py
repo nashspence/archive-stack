@@ -501,7 +501,7 @@ class SqlAlchemyStateStore:
     ) -> dict[str, object]:
         _pagination(page, per_page)
         filters, statement = _work_list_statement(phase=phase, query=query, sort=sort, order=order)
-        with self.sessions() as session:
+        with read_snapshot(self.sessions) as session:
             total = int(
                 session.scalar(
                     select(func.count()).select_from(
@@ -775,7 +775,7 @@ class SqlAlchemyStateStore:
         filters, statement = _evaluation_list_statement(
             phase=phase, query=query, sort=sort, order=order
         )
-        with self.sessions() as session:
+        with read_snapshot(self.sessions) as session:
             total = int(
                 session.scalar(
                     select(func.count()).select_from(

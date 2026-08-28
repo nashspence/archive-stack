@@ -29,6 +29,7 @@ from riverhog_provenance import (
 )
 
 from tests.provenance_observer import native_provenance_observer
+from tests.unit.artifact_scope_fixtures import persisted_artifact_scope
 from tests.unit.db_helpers import sqlite_url
 
 NOW = "2026-01-01T00:00:00.000000Z"
@@ -185,17 +186,21 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
         item["journal_id"] for item in traced["journals"]
     }
 
-    scoped = ApplicationPrincipal(
-        app="claim:fixture",
-        key_id="controller",
-        access=frozenset(
-            {
-                ApplicationAccess(CATALOG_READ, "collection:1"),
-                ApplicationAccess(PROVENANCE_READ, "collection:1"),
-                ApplicationAccess(PROVENANCE_EXPORT, "collection:1"),
-            }
+    scoped = persisted_artifact_scope(
+        database_url,
+        access=(
+            ApplicationAccess(CATALOG_READ, "collection:1"),
+            ApplicationAccess(PROVENANCE_READ, "collection:1"),
+            ApplicationAccess(PROVENANCE_EXPORT, "collection:1"),
         ),
-        artifact_scope=frozenset({(1, "derivative.tar")}),
+        artifacts=(
+            (
+                1,
+                "derivative.tar",
+                derivative_path.stat().st_size,
+                hashlib.sha256(derivative_path.read_bytes()).hexdigest(),
+            ),
+        ),
     )
     listed = list(
         service.iter_files(

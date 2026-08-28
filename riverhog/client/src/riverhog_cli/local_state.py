@@ -38,9 +38,26 @@ SCHEMA_STATEMENTS = (
     """
     CREATE TABLE retrieval_jobs (
         id TEXT PRIMARY KEY,
-        state TEXT NOT NULL,
-        files_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (
+            state IN ('requested', 'ready', 'completed', 'expired', 'failed', 'canceled')
+        ),
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE retrieval_job_files (
+        retrieval_job_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        collection_id INTEGER NOT NULL CHECK (collection_id > 0),
+        path TEXT NOT NULL,
+        bytes INTEGER NOT NULL CHECK (bytes >= 0),
+        sha256 TEXT NOT NULL CHECK (
+            length(sha256) = 64 AND sha256 = lower(sha256) AND sha256 NOT GLOB '*[^0-9a-f]*'
+        ),
+        PRIMARY KEY (retrieval_job_id, ordinal),
+        UNIQUE (retrieval_job_id, collection_id, path),
+        FOREIGN KEY (retrieval_job_id) REFERENCES retrieval_jobs(id)
+            ON DELETE CASCADE
     )
     """,
 )
@@ -55,7 +72,15 @@ EXPECTED_COLUMNS = {
         "remote_deleted",
     ),
     "desired_files": ("collection_id", "path", "bytes", "sha256"),
-    "retrieval_jobs": ("id", "state", "files_json", "updated_at"),
+    "retrieval_jobs": ("id", "state", "updated_at"),
+    "retrieval_job_files": (
+        "retrieval_job_id",
+        "ordinal",
+        "collection_id",
+        "path",
+        "bytes",
+        "sha256",
+    ),
 }
 
 
@@ -80,15 +105,29 @@ def _verify(connection: StateConnection) -> None:
             raise RuntimeError(
                 f"Riverhog local-state table {table} has columns {actual}, expected {expected}"
             )
-    foreign_keys = list(connection.exec_driver_sql("PRAGMA foreign_key_list(desired_files)"))
-    if len(foreign_keys) != 1 or tuple(str(value) for value in foreign_keys[0][2:7]) != (
-        "desired_collections",
-        "collection_id",
-        "collection_id",
-        "NO ACTION",
-        "CASCADE",
-    ):
-        raise RuntimeError("Riverhog local-state desired-file ownership constraint is invalid")
+    expected_foreign_keys = {
+        "desired_files": (
+            "desired_collections",
+            "collection_id",
+            "collection_id",
+            "NO ACTION",
+            "CASCADE",
+        ),
+        "retrieval_job_files": (
+            "retrieval_jobs",
+            "retrieval_job_id",
+            "id",
+            "NO ACTION",
+            "CASCADE",
+        ),
+    }
+    for table, expected in expected_foreign_keys.items():
+        foreign_keys = list(connection.exec_driver_sql(f'PRAGMA foreign_key_list("{table}")'))
+        if (
+            len(foreign_keys) != 1
+            or tuple(str(value) for value in foreign_keys[0][2:7]) != expected
+        ):
+            raise RuntimeError(f"Riverhog local-state {table} ownership constraint is invalid")
 
 
 def state_schema(database: Path) -> StateSchema:

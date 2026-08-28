@@ -68,7 +68,11 @@ class ApplicationPrincipal:
     key_id: str | None
     access: frozenset[ApplicationAccess]
     unrestricted_delegation: bool = False
-    artifact_scope: frozenset[tuple[int, str]] | None = None
+    artifact_scope_capability_id: str | None = None
+
+    @property
+    def has_artifact_scope(self) -> bool:
+        return self.artifact_scope_capability_id is not None
 
     def allows(self, permission: str, resource: str | None = None) -> bool:
         requested_resource = resource if resource is not None else ALL_RESOURCES
@@ -83,11 +87,6 @@ class ApplicationPrincipal:
 
     def allows_tag(self, permission: str, tag: str) -> bool:
         return self.allows(permission, tag_resource(tag))
-
-    def allows_artifact(self, permission: str, collection_id: int, path: str) -> bool:
-        if not self.allows_collection(permission, collection_id):
-            return False
-        return self.artifact_scope is None or (int(collection_id), str(path)) in self.artifact_scope
 
     def can_grant(self, access: Iterable[ApplicationAccess | tuple[str, str]]) -> bool:
         requested = normalize_access(access)

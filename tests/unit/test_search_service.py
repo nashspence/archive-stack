@@ -13,6 +13,7 @@ from riverhog_core.catalog_models import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.search import SqlAlchemySearchService
 
+from tests.unit.artifact_scope_fixtures import persisted_artifact_scope
 from tests.unit.db_helpers import sqlite_url
 
 
@@ -155,11 +156,10 @@ def test_search_returns_only_the_exact_artifact_capability_scope(tmp_path: Path)
     path = tmp_path / "catalog.sqlite3"
     initialize_db(sqlite_url(path))
     _seed(path)
-    principal = ApplicationPrincipal(
-        app="claim:fixture",
-        key_id="controller",
-        access=frozenset({ApplicationAccess(CATALOG_READ, "collection:1")}),
-        artifact_scope=frozenset({(1, "tax/receipt.pdf")}),
+    principal = persisted_artifact_scope(
+        sqlite_url(path),
+        access=(ApplicationAccess(CATALOG_READ, "collection:1"),),
+        artifacts=((1, "tax/receipt.pdf", 21, "c" * 64),),
     )
 
     payload = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path))).search(

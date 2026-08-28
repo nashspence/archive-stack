@@ -4157,7 +4157,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog-local.sqlite.sql",
-              "sha256": "96a41ca966133b85a3b6cdd862f2651f3b1b71bbf46f4f7b4ae26dd1a27ec5b7"
+              "sha256": "917782d79d96c6e51475154f59ff90fa0b3e903767c1884dd35dc7091ca30c04"
             }
           ],
           "format": "state-schema/sqlite",

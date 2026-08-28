@@ -18,6 +18,7 @@ from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
 from riverhog_core.app_permissions import CATALOG_READ, RETRIEVAL_MANAGE, ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
+from riverhog_core.artifact_access import require_artifact_scope
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import catalog_event_projection
 from riverhog_core.catalog_models import (
@@ -132,9 +133,9 @@ class SqlAlchemyRetrievalService:
         principal: ApplicationPrincipal | None = None,
     ) -> tuple[PortableCollectionRecord, str]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
-        if principal is not None and principal.artifact_scope is not None:
+        if principal is not None and principal.has_artifact_scope:
             raise NotFound(f"collection manifest not found: {normalized_id}")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             collection = session.get(CollectionRecord, normalized_id)
             if collection is None:
                 raise NotFound(f"collection not found: {normalized_id}")
@@ -180,7 +181,7 @@ class SqlAlchemyRetrievalService:
         if per_page < 1 or per_page > 10_000:
             raise BadRequest("resource-list page size must be between 1 and 10000")
         visible = collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(select(func.count()).select_from(CollectionRecord).where(visible))
                 or 0
@@ -211,7 +212,7 @@ class SqlAlchemyRetrievalService:
         if per_page < 1 or per_page > 10_000:
             raise BadRequest("resource-list page size must be between 1 and 10000")
         visible = collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(select(func.count()).select_from(CollectionRecord).where(visible))
                 or 0
@@ -229,7 +230,7 @@ class SqlAlchemyRetrievalService:
             raise BadRequest("catalog cursor must be non-negative")
         if limit < 1 or limit > 10_000:
             raise BadRequest("catalog change limit must be between 1 and 10000")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             scanned_sequences = list(
                 session.scalars(
                     select(CatalogEventRecord.sequence)
@@ -456,7 +457,7 @@ class SqlAlchemyRetrievalService:
             RetrievalCacheObjectRecord.source_store,
             RetrievalCacheObjectRecord.object_id,
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
             statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = list(session.execute(statement))
@@ -610,12 +611,7 @@ class SqlAlchemyRetrievalService:
                     RETRIEVAL_MANAGE,
                     collection_id,
                 )
-                if principal is not None and not principal.allows_artifact(
-                    RETRIEVAL_MANAGE,
-                    collection_id,
-                    path,
-                ):
-                    raise NotFound(f"collection file not found: {collection_id}/{path}")
+                require_artifact_scope(session, principal, collection_id, path)
             payload = self._build_plan(
                 session,
                 normalized,

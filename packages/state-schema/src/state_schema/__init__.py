@@ -272,7 +272,10 @@ def read_snapshot(session_factory: SessionFactory) -> CollectionsIterator[Sessio
             connection.exec_driver_sql("SET TRANSACTION READ ONLY")
         yield session
     finally:
-        session.rollback()
+        # ``Session.close()`` rolls the read transaction back while preserving
+        # already-loaded scalar values on objects yielded to response builders.
+        # An explicit rollback expires them first and makes otherwise complete
+        # page rows attempt detached lazy reloads.
         session.close()
 
 

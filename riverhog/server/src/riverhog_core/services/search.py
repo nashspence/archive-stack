@@ -6,12 +6,13 @@ from typing import Any
 
 from riverhog_protocol.errors import BadRequest
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import String, and_, asc, cast, desc, false, func, literal, or_, select
+from sqlalchemy import String, asc, cast, desc, func, literal, select
 from sqlalchemy.sql.elements import ColumnElement
 from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
-from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
+from riverhog_core.artifact_access import artifact_scope_filter
+from riverhog_core.catalog_db import SessionFactory, make_session_factory
 from riverhog_core.catalog_models import CollectionFileRecord
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.runtime_config import RuntimeConfig
@@ -85,7 +86,7 @@ class SqlAlchemySearchService:
         normalized_collection, query, filters = _search_filters(
             q=q, collection=collection, principal=principal
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             if normalized_collection is not None:
                 require_collection_access(
                     session,
@@ -189,21 +190,13 @@ def _search_filters(
     filters: list[ColumnElement[bool]] = [
         collection_access_filter(CollectionFileRecord.collection_id, principal, CATALOG_READ)
     ]
-    if principal is not None and principal.artifact_scope is not None:
-        scoped = tuple(sorted(principal.artifact_scope))
-        filters.append(
-            or_(
-                *(
-                    and_(
-                        CollectionFileRecord.collection_id == collection_id,
-                        CollectionFileRecord.path == path,
-                    )
-                    for collection_id, path in scoped
-                )
-            )
-            if scoped
-            else false()
+    filters.append(
+        artifact_scope_filter(
+            CollectionFileRecord.collection_id,
+            CollectionFileRecord.path,
+            principal,
         )
+    )
     query = q.strip() if q is not None else None
     if query:
         filters.append(func.lower(file_ref_expr).like(_like_pattern(query.casefold()), escape="\\"))

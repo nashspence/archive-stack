@@ -103,7 +103,7 @@ class SqlAlchemyCollectionService:
             raise BadRequest("page must be at least 1")
         if per_page < 1:
             raise BadRequest("per_page must be at least 1")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(select(func.count()).select_from(CollectionRecord).where(*filters))
                 or 0

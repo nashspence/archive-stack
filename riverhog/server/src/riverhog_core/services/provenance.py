@@ -25,6 +25,7 @@ from riverhog_core.app_permissions import (
     PROVENANCE_READ,
     ApplicationPrincipal,
 )
+from riverhog_core.artifact_access import artifact_scope_filter, require_artifact_scope
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionFileProvenanceRecord,
@@ -68,7 +69,7 @@ class SqlAlchemyProvenanceService:
         _page_options(page, per_page, sort, order)
         if status is not None and status not in {"captured", "omitted"}:
             raise BadRequest("status must be captured or omitted")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
             joined = _provenance_file_statement(
                 collection_id=collection_id,
@@ -134,13 +135,9 @@ class SqlAlchemyProvenanceService:
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
         path = _path(path)
-        if not (
-            principal.allows_artifact(CATALOG_READ, collection_id, path)
-            and principal.allows_artifact(PROVENANCE_READ, collection_id, path)
-        ):
-            raise NotFound(f"collection file not found: {collection_id}::{path}")
         with session_scope(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
+            require_artifact_scope(session, principal, collection_id, path)
             row = session.execute(
                 select(CollectionFileRecord, CollectionFileProvenanceRecord)
                 .outerjoin(
@@ -286,7 +283,7 @@ class SqlAlchemyProvenanceService:
         principal: ApplicationPrincipal,
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
-        if principal.artifact_scope is not None:
+        if principal.has_artifact_scope:
             raise NotFound(f"collection not found: {collection_id}")
         with session_scope(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
@@ -575,13 +572,13 @@ def _provenance_file_statement(
         )
         .where(CollectionFileRecord.collection_id == collection_id)
     )
-    if principal.artifact_scope is not None:
-        paths = sorted(
-            path
-            for scoped_collection_id, path in principal.artifact_scope
-            if scoped_collection_id == collection_id
+    joined = joined.where(
+        artifact_scope_filter(
+            CollectionFileRecord.collection_id,
+            CollectionFileRecord.path,
+            principal,
         )
-        joined = joined.where(CollectionFileRecord.path.in_(paths))
+    )
     if q:
         joined = joined.where(
             func.lower(CollectionFileRecord.path).like(_like_pattern(q.casefold()), escape="\\")
@@ -624,21 +621,18 @@ def _journal_is_in_artifact_scope(
     journal_id: str,
     principal: ApplicationPrincipal,
 ) -> bool:
-    if principal.artifact_scope is None:
+    if not principal.has_artifact_scope:
         return True
-    paths = sorted(
-        path
-        for scoped_collection_id, path in principal.artifact_scope
-        if scoped_collection_id == collection_id
-    )
-    if not paths:
-        return False
     reachable = {
         item
         for item in session.scalars(
             select(CollectionFileProvenanceRecord.journal_id).where(
                 CollectionFileProvenanceRecord.collection_id == collection_id,
-                CollectionFileProvenanceRecord.path.in_(paths),
+                artifact_scope_filter(
+                    CollectionFileProvenanceRecord.collection_id,
+                    CollectionFileProvenanceRecord.path,
+                    principal,
+                ),
                 CollectionFileProvenanceRecord.journal_id.is_not(None),
             )
         )

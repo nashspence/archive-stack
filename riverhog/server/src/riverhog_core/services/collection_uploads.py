@@ -745,7 +745,7 @@ class SqlAlchemyCollectionUploadService:
         normalized_id = _collection_id(collection_id)
         if page < 1 or per_page < 1 or per_page > 100:
             raise BadRequest("invalid collection upload file pagination")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             if session.get(CollectionUploadRecord, normalized_id) is None:
                 raise NotFound(f"collection upload session not found: {normalized_id}")
             total = int(
@@ -1022,7 +1022,7 @@ class SqlAlchemyCollectionUploadService:
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
         _validate_upload_list(page=page, per_page=per_page, sort=sort, order=order)
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             statement = _upload_list_statement(
                 q=q, tag=tag, state=state, sort=sort, order=order, principal=principal
             )

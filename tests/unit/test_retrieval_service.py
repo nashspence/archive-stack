@@ -30,6 +30,7 @@ from riverhog_protocol.raw_ingress import hash_raw_source
 
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import MemoryArchiveStore
+from tests.unit.artifact_scope_fixtures import persisted_artifact_scope
 from tests.unit.db_helpers import sqlite_url
 from tests.unit.test_archive_root import MemoryImmutableStore
 from tests.unit.test_pack_upload import MemoryResumableStore
@@ -376,16 +377,20 @@ def test_immediate_retrieval_reads_only_the_selected_pack_member_range(
 def test_retrieval_plan_accepts_the_exact_capability_artifact(tmp_path: Path) -> None:
     files = {"selected.bin": b"selected", "sibling.bin": b"sibling"}
     service, collection_id, _ranges, _store = _seed_collection(tmp_path, files)
-    principal = ApplicationPrincipal(
-        app="claim:fixture",
-        key_id="controller",
-        access=frozenset(
-            {
-                ApplicationAccess(CATALOG_READ, f"collection:{collection_id}"),
-                ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{collection_id}"),
-            }
+    principal = persisted_artifact_scope(
+        sqlite_url(tmp_path / "catalog.sqlite3"),
+        access=(
+            ApplicationAccess(CATALOG_READ, f"collection:{collection_id}"),
+            ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{collection_id}"),
         ),
-        artifact_scope=frozenset({(collection_id, "selected.bin")}),
+        artifacts=(
+            (
+                collection_id,
+                "selected.bin",
+                len(files["selected.bin"]),
+                hashlib.sha256(files["selected.bin"]).hexdigest(),
+            ),
+        ),
     )
 
     plan = service.plan(((collection_id, "selected.bin"),), principal=principal)

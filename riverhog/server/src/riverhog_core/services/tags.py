@@ -210,7 +210,7 @@ class SqlAlchemyTagService:
             raise BadRequest("page must be greater than or equal to 1")
         if per_page < 1 or per_page > 100:
             raise BadRequest("per_page must be between 1 and 100")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(base.subquery())) or 0)
             statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = [dict(row) for row in session.execute(statement).mappings().all()]

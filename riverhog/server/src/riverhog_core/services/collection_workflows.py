@@ -224,7 +224,7 @@ class SqlAlchemyCollectionWorkflowService:
         filters, statement = _claim_list_statement(
             state=state, sort=sort, order=order, principal=principal
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(
                     select(func.count()).select_from(
@@ -540,11 +540,12 @@ class SqlAlchemyCollectionWorkflowService:
                 for tag in json.loads(claim.output_tags_json):
                     grants.add(ApplicationAccess(COLLECTIONS_CREATE, tag_resource(str(tag))))
             app = _capability_app(claim, actions)
-            artifact_scope = frozenset(
-                (item.collection_id, item.path)
-                for item in _capability_artifacts(session, capability.id)
+            has_artifact_scope = session.scalar(
+                select(CollectionTransformCapabilityArtifactRecord.capability_id)
+                .where(CollectionTransformCapabilityArtifactRecord.capability_id == capability.id)
+                .limit(1)
             )
-            if "read-inputs" in actions and not artifact_scope:
+            if "read-inputs" in actions and has_artifact_scope is None:
                 return None
             return ApplicationPrincipal(
                 app=app,
@@ -553,7 +554,7 @@ class SqlAlchemyCollectionWorkflowService:
                 # stable across capability refreshes.
                 key_id=claim.consumer_key_id,
                 access=frozenset(grants),
-                artifact_scope=artifact_scope,
+                artifact_scope_capability_id=(capability.id if "read-inputs" in actions else None),
             )
 
     def settle_claim(
@@ -1522,22 +1523,6 @@ def _claim_artifact_identities(
             sha256=item.sha256,
         )
         for item in _claim_artifacts(session, claim_id)
-    )
-
-
-def _capability_artifacts(
-    session: Session,
-    capability_id: str,
-) -> list[CollectionTransformCapabilityArtifactRecord]:
-    return list(
-        session.scalars(
-            select(CollectionTransformCapabilityArtifactRecord)
-            .where(CollectionTransformCapabilityArtifactRecord.capability_id == capability_id)
-            .order_by(
-                CollectionTransformCapabilityArtifactRecord.collection_id,
-                CollectionTransformCapabilityArtifactRecord.path,
-            )
-        )
     )
 
 

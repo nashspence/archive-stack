@@ -416,7 +416,7 @@ class SqlAlchemyAppKeyService:
             active=active,
             now=now,
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(
                     select(func.count())
@@ -481,7 +481,7 @@ class SqlAlchemyAppKeyService:
         query, grouped, statement = _app_list_statement(
             q=q, sort=sort, order=order, active=active, now=now
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(grouped)) or 0)
             statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = session.execute(statement).mappings().all()
@@ -525,7 +525,7 @@ class SqlAlchemyAppKeyService:
             active=active,
             now=now,
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(select(func.count()).select_from(AppKeyRecord).where(*filters)) or 0
             )

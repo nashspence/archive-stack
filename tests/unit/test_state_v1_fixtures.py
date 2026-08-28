@@ -44,7 +44,11 @@ def test_riverhog_local_current_v1_fixture_restarts_with_selection_and_retrieval
             "SELECT path, bytes, sha256 FROM desired_files WHERE collection_id = 1"
         ).fetchone()
         retrieval = connection.execute(
-            "SELECT state, files_json FROM retrieval_jobs WHERE id = 'fixture-retrieval'"
+            "SELECT state FROM retrieval_jobs WHERE id = 'fixture-retrieval'"
+        ).fetchone()
+        retrieval_file = connection.execute(
+            "SELECT collection_id, path, bytes, sha256 FROM retrieval_job_files "
+            "WHERE retrieval_job_id = 'fixture-retrieval' ORDER BY ordinal"
         ).fetchone()
 
     assert status.condition == "current"
@@ -53,7 +57,9 @@ def test_riverhog_local_current_v1_fixture_restarts_with_selection_and_retrieval
     assert file is not None
     assert tuple(file) == ("notes/fixture.txt", 12, "a" * 64)
     assert retrieval is not None
-    assert tuple(retrieval) == ("ready", '["notes/fixture.txt"]')
+    assert tuple(retrieval) == ("ready",)
+    assert retrieval_file is not None
+    assert tuple(retrieval_file) == (1, "notes/fixture.txt", 12, "a" * 64)
 
 
 def test_mango_fish_current_v1_fixture_restarts_with_source_cursor(tmp_path: Path) -> None:

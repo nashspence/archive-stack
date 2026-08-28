@@ -36,15 +36,37 @@ INSERT INTO desired_files VALUES(
 );
 CREATE TABLE retrieval_jobs (
     id TEXT PRIMARY KEY,
-    state TEXT NOT NULL,
-    files_json TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (
+        state IN ('requested', 'ready', 'completed', 'expired', 'failed', 'canceled')
+    ),
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 INSERT INTO retrieval_jobs VALUES(
     'fixture-retrieval',
     'ready',
-    '["notes/fixture.txt"]',
     '2026-01-01T00:00:00.000000Z'
+);
+CREATE TABLE retrieval_job_files (
+    retrieval_job_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    collection_id INTEGER NOT NULL CHECK (collection_id > 0),
+    path TEXT NOT NULL,
+    bytes INTEGER NOT NULL CHECK (bytes >= 0),
+    sha256 TEXT NOT NULL CHECK (
+        length(sha256) = 64 AND sha256 = lower(sha256) AND sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+    PRIMARY KEY (retrieval_job_id, ordinal),
+    UNIQUE (retrieval_job_id, collection_id, path),
+    FOREIGN KEY (retrieval_job_id) REFERENCES retrieval_jobs(id)
+        ON DELETE CASCADE
+);
+INSERT INTO retrieval_job_files VALUES(
+    'fixture-retrieval',
+    0,
+    1,
+    'notes/fixture.txt',
+    12,
+    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 );
 CREATE TABLE state_schema_revision (
     version_num VARCHAR(32) NOT NULL,

@@ -497,13 +497,33 @@ def _download_job(
         str(job["id"]),
         lease_seconds=lease_seconds,
     )
+    persisted_files = tuple(
+        (
+            int(row["collection_id"]),
+            str(row["path"]),
+            int(row["bytes"]),
+            str(row["sha256"]),
+        )
+        for row in db.execute(
+            "SELECT collection_id, path, bytes, sha256 FROM retrieval_job_files "
+            "WHERE retrieval_job_id = ? ORDER BY ordinal",
+            (str(job["id"]),),
+        )
+    )
+    reported_files = tuple(
+        (
+            normalize_collection_id(current["collection_id"]),
+            normalize_relpath(str(current["path"])),
+            int(current["bytes"]),
+            str(current["sha256"]),
+        )
+        for current in job["files"]
+    )
+    if reported_files != persisted_files:
+        raise InvalidState("retrieval job membership changed after local checkpoint")
     expected: dict[tuple[int, str], tuple[int, str]] = {}
-    for current in job["files"]:
-        collection_id = normalize_collection_id(current["collection_id"])
-        path = normalize_relpath(str(current["path"]))
+    for collection_id, path, expected_bytes, expected_sha256 in persisted_files:
         output = _output_path(target, collection_id, path)
-        expected_bytes = int(current["bytes"])
-        expected_sha256 = str(current["sha256"])
         if output.exists():
             if _matches(output, byte_count=expected_bytes, sha256=expected_sha256):
                 continue
@@ -671,8 +691,26 @@ def _sync(
                     restore_policy=policy,
                 )
                 db.execute(
-                    "INSERT INTO retrieval_jobs (id, state, files_json) VALUES (?, ?, ?)",
-                    (job["id"], job["state"], json.dumps(job["files"])),
+                    "INSERT INTO retrieval_jobs (id, state) VALUES (?, ?)",
+                    (job["id"], job["state"]),
+                )
+                db.executemany(
+                    """
+                    INSERT INTO retrieval_job_files (
+                        retrieval_job_id, ordinal, collection_id, path, bytes, sha256
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        (
+                            job["id"],
+                            ordinal,
+                            current["collection_id"],
+                            current["path"],
+                            current["bytes"],
+                            current["sha256"],
+                        )
+                        for ordinal, current in enumerate(job["files"])
+                    ),
                 )
                 db.commit()
 

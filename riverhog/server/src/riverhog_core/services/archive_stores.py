@@ -5,10 +5,11 @@ from collections.abc import Iterator
 from riverhog_protocol.errors import BadRequest, NotFound
 from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
+from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import ARCHIVES_READ, ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
@@ -64,7 +65,7 @@ class SqlAlchemyArchiveStoreService:
         config = self._config.archive_stores.get(normalized)
         if config is None:
             raise NotFound(f"archive store not found: {normalized}")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             aggregates = _store_aggregates(
                 session,
                 stores=(normalized,),
@@ -106,7 +107,7 @@ class SqlAlchemyArchiveStoreService:
                 (current.name, self._archive_stores.require(current.name).store.read_mode())
             ).casefold()
         ]
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             aggregates = _store_aggregates(
                 session,
                 stores=tuple(current.name for current in configs),

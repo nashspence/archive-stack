@@ -371,7 +371,7 @@ class SqlAlchemyArchiveCopyService:
             order=order,
             principal=principal,
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(
                     select(func.count()).select_from(ArchiveCopyJobRecord).where(*filters)

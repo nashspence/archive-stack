@@ -215,6 +215,8 @@ def test_claim_plan_capabilities_settlement_and_deletion_blocker(
     assert observer is not None
     assert observer.app == f"claim:{claim_id}"
     assert observer.key_id == "stove0-key"
+    assert observer.has_artifact_scope is True
+    assert observer.artifact_scope_capability_id == observer_capability["id"]
     with pytest.raises(Conflict, match="sealed execution plan"):
         service.issue_capability(
             claim_id,
