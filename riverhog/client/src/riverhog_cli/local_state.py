@@ -59,11 +59,6 @@ EXPECTED_COLUMNS = {
 }
 
 
-def _bootstrap(connection: StateConnection) -> None:
-    for statement in SCHEMA_STATEMENTS:
-        connection.exec_driver_sql(statement)
-
-
 def _verify(connection: StateConnection) -> None:
     actual_tables = {
         str(row[0])
@@ -107,7 +102,6 @@ def state_schema(database: Path) -> StateSchema:
         name="riverhog local",
         engine_factory=engine_factory,
         script_location=STATE_MIGRATIONS,
-        bootstrap=_bootstrap,
         verify=_verify,
         is_empty=lambda: not path.exists() or path.stat().st_size == 0,
         version_table=STATE_VERSION_TABLE,

@@ -19,73 +19,9 @@ from riverhog_core.collection_creation_identity import (
     CollectionUploadCreationIdentityDocument,
     CollectionUploadCreationIdentityPayload,
 )
-from riverhog_core.state_migrations.versions import v1_0008, v1_0010
 from sqlalchemy import inspect
 
 from tests.unit.db_helpers import sqlite_url
-
-
-def test_v1_0008_hard_cut_preserves_resumable_checkpoint_identity() -> None:
-    old_part = {
-        "number": 1,
-        "plaintext_start": 0,
-        "plaintext_bytes": 3,
-        "plaintext_sha256": "a" * 64,
-        "stored_bytes": 4,
-        "stored_sha256": "b" * 64,
-        "etag": '"provider-token"',
-    }
-    checkpoint = {
-        "schema": "pack-upload-checkpoint/v1",
-        "upload_id": "provider-write-token",
-        "age_state": {},
-        "parts": [old_part],
-        "completed": {
-            "version_id": "provider-revision",
-            "etag": '"provider-entity"',
-            "bytes": 4,
-            "completed_at": "2026-08-25T00:00:00Z",
-            "retrieval_cache": {
-                "object_path": "objects/item",
-                "version_id": "cache-revision",
-            },
-        },
-    }
-
-    upgraded = v1_0008._checkpoint(checkpoint)
-
-    assert upgraded["write_token"] == "provider-write-token"
-    assert upgraded["archive_parts"] == [
-        {key: value for key, value in old_part.items() if key != "etag"}
-    ]
-    assert upgraded["write_segments"] == [
-        {
-            "number": 1,
-            "segment_token": '"provider-token"',
-            "bytes": 4,
-            "sha256": "b" * 64,
-        }
-    ]
-    assert upgraded["completed"]["revision"] == "provider-revision"
-    assert upgraded["completed"]["entity_token"] == '"provider-entity"'
-    assert upgraded["completed"]["retrieval_cache"]["revision"] == "cache-revision"
-
-
-def test_v1_0010_backfill_uses_the_upload_creation_identity_encoding() -> None:
-    payload = CollectionUploadCreationIdentityPayload(
-        tags=("archive", "camera"),
-        ingest_source="fixture",
-        archive_store="primary",
-        event_context={"device": "fixture"},
-        provenance_mode="omitted",
-        provenance_omission_reason="fixture omission",
-        custody_mode="custody-transfer",
-    )
-    document = payload.model_dump(mode="json", exclude_none=True)
-
-    assert v1_0010._canonical_sha256(document) == (
-        CollectionUploadCreationIdentityDocument.seal(payload).creation_identity_sha256
-    )
 
 
 def test_upload_creation_identity_binds_every_create_or_resume_input() -> None:
@@ -140,7 +76,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
 
     inspector = inspect(create_catalog_engine(database_url))
     assert upgraded.condition == validated.condition == "current"
-    assert upgraded.current_revision == validated.current_revision == "v1_0010"
+    assert upgraded.current_revision == validated.current_revision == "v1_0001"
     assert set(inspector.get_table_names()) == {*Base.metadata.tables, STATE_VERSION_TABLE}
     assert {column["name"] for column in inspector.get_columns("archive_download_usage")} == {
         "store",

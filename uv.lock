@@ -1064,6 +1064,7 @@ name = "mango-fish"
 version = "0.1.0"
 source = { editable = "utilities/mango-fish" }
 dependencies = [
+    { name = "alembic" },
     { name = "httpx" },
     { name = "lifecycle-events" },
     { name = "pydantic" },
@@ -1073,6 +1074,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = ">=1.18.5,<2.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
@@ -1736,6 +1738,7 @@ name = "riverhog-client"
 version = "0.1.0"
 source = { editable = "riverhog/client" }
 dependencies = [
+    { name = "alembic" },
     { name = "httpx" },
     { name = "rich" },
     { name = "riverhog-api-client" },
@@ -1749,6 +1752,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "alembic", specifier = ">=1.18.5,<2.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "rich", specifier = ">=15.0,<16.0" },
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },

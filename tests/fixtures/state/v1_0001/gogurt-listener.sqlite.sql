@@ -1,4 +1,4 @@
--- Immutable Gogurt listener v1.0 state fixture. Add later baselines; do not edit.
+-- Exact current Gogurt listener v1 baseline conformance fixture.
 BEGIN TRANSACTION;
 CREATE TABLE listener_meta (
     key TEXT PRIMARY KEY,

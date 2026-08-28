@@ -770,7 +770,6 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         "archive",
         "recovery",
         "configuration",
-        "persistent_state",
     }:
         raise ReleaseError("release.toml lacks the complete v1 compatibility policy")
     if any(not str(value).strip() for value in compatibility.values()):
@@ -786,7 +785,6 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         if not isinstance(owner, dict) or set(owner) != {
             "id",
             "distribution",
-            "classification",
             "format",
             "head",
             "fixtures",
@@ -799,11 +797,10 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
             not state_id
             or state_id in state_ids
             or distribution not in seen_names
-            or owner["classification"] not in {"compatibility-preserved", "rebuildable-operational"}
             or not str(owner["format"]).strip()
             or not str(owner["head"]).strip()
             or not isinstance(fixtures, list)
-            or (owner["classification"] == "compatibility-preserved" and not fixtures)
+            or not fixtures
         ):
             raise ReleaseError("release.toml durable-state owner is invalid")
         state_ids.add(state_id)

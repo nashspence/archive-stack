@@ -314,7 +314,6 @@ def test_compose_services_publish_the_archive_runtime_configuration() -> None:
         "RIVERHOG_PROOF_MATURATION_SWEEP_INTERVAL",
     }
     compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
-    assert "RIVERHOG_STATE_UPGRADE_PASSPHRASE_ID" in compose["services"]["state"]["environment"]
     for service in ("app", "test"):
         assert required <= set(compose["services"][service]["environment"])
         assert compose["services"][service]["env_file"] == [

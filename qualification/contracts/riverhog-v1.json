@@ -3740,15 +3740,6 @@
       },
       {
         "acceptance_expressions": [
-          "os.environ.get(_CUTOVER_PASSPHRASE_ID_ENV, '')"
-        ],
-        "consumers": [
-          "riverhog-server"
-        ],
-        "name": "RIVERHOG_STATE_UPGRADE_PASSPHRASE_ID"
-      },
-      {
-        "acceptance_expressions": [
           "_secret(values, 'RIVERHOG_TOKEN', required=True)",
           "super().__init__(base_url, token, token_env='RIVERHOG_TOKEN', allow_insecure_http=allow_insecure_http)"
         ],
@@ -4150,25 +4141,23 @@
     "durable_state": {
       "owners": [
         {
-          "classification": "compatibility-preserved",
           "distribution": "riverhog-server",
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-              "sha256": "ee2b70f10726bcd25b9990bdc7c5b1dd0d67546231a7b64e81b8d610df2c513a"
+              "sha256": "c2ecc4c99d0cc01d582965225247118730f8afb7387494bf19ee7ed796beeb2e"
             }
           ],
           "format": "state-schema/postgresql",
-          "head": "v1_0010",
+          "head": "v1_0001",
           "id": "riverhog-catalog"
         },
         {
-          "classification": "compatibility-preserved",
           "distribution": "riverhog-client",
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog-local.sqlite.sql",
-              "sha256": "33a84f57e46c3d4ab8f7b3d853554ac6c750840bae68b47a2e5d85697dab0689"
+              "sha256": "96a41ca966133b85a3b6cdd862f2651f3b1b71bbf46f4f7b4ae26dd1a27ec5b7"
             }
           ],
           "format": "state-schema/sqlite",
@@ -4176,12 +4165,11 @@
           "id": "riverhog-local"
         },
         {
-          "classification": "compatibility-preserved",
           "distribution": "mango-fish",
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/mango-fish.sqlite.sql",
-              "sha256": "ecbacc7e325a51bec6d51f7d434e500aaff3cbf0ccd18226f471f035e67e9679"
+              "sha256": "6e0e53bdb860793cba6eb97e6c0c083f6791ba3df08fea749521d6e8f69c4567"
             }
           ],
           "format": "state-schema/sqlite",
@@ -4189,25 +4177,23 @@
           "id": "mango-fish-cursor"
         },
         {
-          "classification": "compatibility-preserved",
           "distribution": "stove0-server",
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/stove0.postgresql.sql",
-              "sha256": "302720e97853af6a3c1181949ca13fd2f869d58219afdf03b88b2026ed9e4ebd"
+              "sha256": "badf22973128b4e1cece7bbe1e88fdab4790e6b627b1b4d8814a3114cfc2561f"
             }
           ],
           "format": "state-schema/postgresql",
-          "head": "v1_0003",
+          "head": "v1_0001",
           "id": "stove0-control"
         },
         {
-          "classification": "compatibility-preserved",
           "distribution": "gogurt-listener-runtime",
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/gogurt-listener.sqlite.sql",
-              "sha256": "89a6f0ae0fdb6c49ed3dca9dc547710c2828ce2d4eb261df4207d563bf72114b"
+              "sha256": "c54534f113b1d4eb344ac9d23a5ca4cb756ad15f14e295a77a3efa0eb525aadc"
             }
           ],
           "format": "gogurt-listener-state/v1",
@@ -4215,7 +4201,6 @@
           "id": "gogurt-listener"
         },
         {
-          "classification": "compatibility-preserved",
           "distribution": "stove0-target-support",
           "fixtures": [
             {
@@ -4240,7 +4225,6 @@
           "id": "stove0-target-jobs"
         },
         {
-          "classification": "compatibility-preserved",
           "distribution": "riverhog-ftp-adapter",
           "fixtures": [
             {
@@ -4257,7 +4241,6 @@
           "id": "riverhog-ftp-custody"
         },
         {
-          "classification": "compatibility-preserved",
           "distribution": "riverhog-provenance",
           "fixtures": [
             {
@@ -63522,7 +63505,6 @@
         "components": "A supported deployment runs components from one coordinated product version.",
         "configuration": "Accepted v1 configuration remains valid throughout v1 unless an unsafe value must be rejected.",
         "http_api": "Published v1 HTTP and CloudEvents contracts remain backward compatible throughout v1.",
-        "persistent_state": "State upgrades are forward-only; every later v1 schema restores and upgrades every earlier v1 state fixture.",
         "python_api": "Reusable-library top-level exports and public signatures remain backward compatible throughout v1; implementation submodules and other component roles are not Python API promises.",
         "recovery": "Every later v1 recovery release reads every valid earlier v1 archive and provenance set."
       },

@@ -97,7 +97,7 @@ def stores() -> Iterator[tuple[SqlAlchemyStateStore, SqlAlchemyStateStore]]:
         .render_as_string(hide_password=False)
     )
     assert stove0_state_schema(scoped_url).upgrade().condition == "current"
-    assert stove0_state_schema(scoped_url).validate().current_revision == "v1_0003"
+    assert stove0_state_schema(scoped_url).validate().current_revision == "v1_0001"
     first_engine = create_engine(
         scoped_url,
         pool_pre_ping=True,
@@ -143,7 +143,7 @@ def v1_fixture_database_url() -> Iterator[str]:
         cleanup.dispose()
 
 
-def test_stove0_postgres_v1_fixture_reaches_head_with_work_and_cursor(
+def test_stove0_postgres_current_v1_fixture_validates_and_restarts(
     v1_fixture_database_url: str,
 ) -> None:
     engine = create_engine(v1_fixture_database_url)
@@ -152,18 +152,27 @@ def test_stove0_postgres_v1_fixture_reaches_head_with_work_and_cursor(
             if statement.strip():
                 connection.exec_driver_sql(statement)
 
-    status = stove0_state_schema(v1_fixture_database_url).upgrade()
+    status = stove0_state_schema(v1_fixture_database_url).validate()
     store = SqlAlchemyStateStore(v1_fixture_database_url, engine=engine, initialize=False)
-    record = store.load("5eadff5ce59d17eb1975ab49c17ba9f8ef2746c0a304f917c8ad779ef9c065c2")
+    assert store.compare_and_swap_cursor(
+        "riverhog-catalog",
+        expected_revision=None,
+        cursor="41",
+    ) == ("41", 1)
+    engine.dispose()
+
+    restarted_engine = create_engine(v1_fixture_database_url)
+    restarted = SqlAlchemyStateStore(
+        v1_fixture_database_url,
+        engine=restarted_engine,
+        initialize=False,
+    )
 
     assert status.condition == "current"
-    assert status.current_revision == "v1_0003"
-    assert record is not None
-    assert record.phase == "eligible"
-    assert record.work.recipe.id == "fixture.recipe/v1"
-    assert store.load_cursor("riverhog-catalog") == ("41", 1)
-    assert store.list_events().events == []
-    engine.dispose()
+    assert status.current_revision == "v1_0001"
+    assert restarted.load_cursor("riverhog-catalog") == ("41", 1)
+    assert stove0_state_schema(v1_fixture_database_url).validate().condition == "current"
+    restarted_engine.dispose()
 
 
 def _work() -> WorkIdentity:

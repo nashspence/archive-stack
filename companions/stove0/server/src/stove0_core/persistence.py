@@ -18,7 +18,6 @@ from sqlalchemy import (
     delete,
     desc,
     func,
-    inspect,
     select,
     update,
 )
@@ -29,7 +28,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.sql import Select
-from state_schema import StateSchema
+from state_schema import StateSchema, assert_schema_matches_metadata
 from stove0_operator_contracts import (
     BRANCH_SET_ADMITTED,
     EVALUATION_CREATED,
@@ -118,75 +117,12 @@ def create_state_engine(database_url: str) -> Engine:
     return create_engine(database_url, pool_pre_ping=True)
 
 
-def _type_name(value: object, bind: Connection) -> str:
-    return " ".join(str(value.compile(dialect=bind.dialect)).upper().split())  # type: ignore[attr-defined]
-
-
 def _assert_schema_matches_models(bind: Connection) -> None:
-    inspector = inspect(bind)
-    expected = {table.name: table for table in _Base.metadata.sorted_tables}
-    actual_tables = set(inspector.get_table_names()) - {STATE_VERSION_TABLE}
-    differences = [f"unexpected table {name}" for name in sorted(actual_tables - set(expected))]
-    differences.extend(f"missing table {name}" for name in sorted(set(expected) - actual_tables))
-    for table_name in sorted(actual_tables & set(expected)):
-        table = expected[table_name]
-        expected_columns = {column.name: column for column in table.columns}
-        actual_columns = {
-            str(column["name"]): column for column in inspector.get_columns(table_name)
-        }
-        differences.extend(
-            f"unexpected column {table_name}.{name}"
-            for name in sorted(set(actual_columns) - set(expected_columns))
-        )
-        differences.extend(
-            f"missing column {table_name}.{name}"
-            for name in sorted(set(expected_columns) - set(actual_columns))
-        )
-        for column_name in sorted(set(expected_columns) & set(actual_columns)):
-            expected_column = expected_columns[column_name]
-            actual_column = actual_columns[column_name]
-            actual_type = _type_name(actual_column["type"], bind)
-            expected_type = _type_name(expected_column.type, bind)
-            if actual_type != expected_type:
-                differences.append(
-                    f"column {table_name}.{column_name} has type {actual_type}, "
-                    f"expected {expected_type}"
-                )
-            if bool(actual_column["nullable"]) != bool(expected_column.nullable):
-                differences.append(
-                    f"column {table_name}.{column_name} has nullable="
-                    f"{bool(actual_column['nullable'])}, expected {bool(expected_column.nullable)}"
-                )
-        expected_pk = tuple(str(column.name) for column in table.primary_key.columns)
-        actual_pk = tuple(
-            str(name)
-            for name in (inspector.get_pk_constraint(table_name)["constrained_columns"] or ())
-        )
-        if actual_pk != expected_pk:
-            differences.append(
-                f"table {table_name} has primary key {actual_pk}, expected {expected_pk}"
-            )
-        expected_indexes = {
-            str(index.name): (
-                tuple(str(column.name) for column in index.columns),
-                bool(index.unique),
-            )
-            for index in table.indexes
-        }
-        actual_indexes = {
-            str(index["name"]): (
-                tuple(str(name) for name in index["column_names"]),
-                bool(index["unique"]),
-            )
-            for index in inspector.get_indexes(table_name)
-            if not index.get("duplicates_constraint")
-        }
-        if actual_indexes != expected_indexes:
-            differences.append(
-                f"table {table_name} indexes are {actual_indexes}, expected {expected_indexes}"
-            )
-    if differences:
-        raise RuntimeError("stove0 schema does not match current models: " + "; ".join(differences))
+    assert_schema_matches_metadata(
+        bind,
+        _Base.metadata,
+        version_table=STATE_VERSION_TABLE,
+    )
 
 
 def stove0_state_schema(database_url: str) -> StateSchema:
@@ -194,7 +130,6 @@ def stove0_state_schema(database_url: str) -> StateSchema:
         name="stove0 control",
         engine_factory=lambda: create_state_engine(database_url),
         script_location=STATE_MIGRATIONS,
-        bootstrap=lambda connection: _Base.metadata.create_all(connection),
         verify=_assert_schema_matches_models,
         version_table=STATE_VERSION_TABLE,
     )

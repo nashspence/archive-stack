@@ -13,6 +13,12 @@ from typing import Literal, cast
 DEFAULT_OPERATIONAL_STATE_RETENTION_SECONDS = 30 * 24 * 60 * 60
 
 
+def _postgresql_database_url(value: str) -> str:
+    if value.strip().split(":", 1)[0].split("+", 1)[0] != "postgresql":
+        raise ValueError("STOVE0_DATABASE_URL must use postgresql")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class EndpointRegistration:
     base_url: str
@@ -45,7 +51,9 @@ class Stove0RuntimeConfig:
         require_api_token: bool = True,
     ) -> Stove0RuntimeConfig:
         values = dict(os.environ if environ is None else environ)
-        database_url = cast(str, _secret(values, "STOVE0_DATABASE_URL", required=True))
+        database_url = _postgresql_database_url(
+            cast(str, _secret(values, "STOVE0_DATABASE_URL", required=True))
+        )
         api_token = (
             _secret(values, "STOVE0_API_TOKEN", required=True)
             if require_api_token
@@ -109,7 +117,9 @@ class Stove0RuntimeConfig:
 
 def database_url_from_environment(environ: Mapping[str, str] | None = None) -> str:
     values = dict(os.environ if environ is None else environ)
-    return cast(str, _secret(values, "STOVE0_DATABASE_URL", required=True))
+    return _postgresql_database_url(
+        cast(str, _secret(values, "STOVE0_DATABASE_URL", required=True))
+    )
 
 
 def _required(values: Mapping[str, str], name: str) -> str:

@@ -60,8 +60,9 @@ release reference or duplicate executable contracts to `main`.
 - Treat application databases as durable operational state, projections and
   format-versioned caches as rebuildable, and archive stores as the separate durable
   archive authority.
-- Keep released state fixtures immutable and public; later schema heads must restore and
-  verify every earlier fixture.
+- Keep each release's current state baseline and verification evidence exact. State
+  compatibility is not implied by a revision name or fixture; any transition is an
+  explicitly scoped release operation.
 
 ## Validation
 

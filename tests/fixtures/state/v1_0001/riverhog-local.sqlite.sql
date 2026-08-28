@@ -1,4 +1,4 @@
--- Immutable Riverhog local v1.0 database fixture. Add later baselines; do not edit.
+-- Exact current Riverhog local v1 baseline conformance fixture.
 BEGIN TRANSACTION;
 CREATE TABLE settings (
     key TEXT PRIMARY KEY,
