@@ -38,10 +38,11 @@ NOTICE_POLICY = {
     "basis": "exact-artifact-contents",
     "required_for": ["wheel", "image"],
 }
+IMAGE_DISTRIBUTION_ROOTS_LABEL = "io.github.nashspence.riverhog.distribution-roots"
 REFERENCE_POLICY = (
-    "First-party reference components are optional, nonnormative, maintainer-selected "
-    "conformance examples. Their inventory is neither complete nor recommended and is not a "
-    "support matrix; new mechanisms are independently owned and published."
+    "New mechanisms are independently owned and published. First-party reference components "
+    "are a finite, maintainer-selected, optional, nonnormative conformance set; their inventory "
+    "is neither complete nor recommended and is not an expansion target or support matrix."
 )
 GOGURT_REFERENCE_QUALIFICATION = {
     "purpose": (
@@ -1639,6 +1640,14 @@ def _remove_release_image_tags(tags: list[str], *, cwd: Path) -> None:
         raise ReleaseError("could not remove temporary release image tags: " + ", ".join(remaining))
 
 
+def _image_distribution_roots_label(distributions: list[str]) -> str:
+    """Return the canonical OCI value for exact release-image distribution roots."""
+
+    if not distributions or len(distributions) != len(set(distributions)):
+        raise ReleaseError("release image distribution roots must be nonempty and unique")
+    return json.dumps(distributions, separators=(",", ":"))
+
+
 def _build_release_images(
     root: Path,
     projects: list[Project],
@@ -1660,6 +1669,7 @@ def _build_release_images(
         distributions = [
             _normalize_name(str(distribution)) for distribution in image["distributions"]
         ]
+        distribution_roots_label = _image_distribution_roots_label(distributions)
         local_repository = f"riverhog-release-dry-run-{source_sha[:12]}/{target}"
         local_version_tag = f"{local_repository}:{version}"
         local_sha_tag = f"{local_repository}:sha-{source_sha}"
@@ -1685,6 +1695,8 @@ def _build_release_images(
             f"{target}.args.SOURCE_DATE_EPOCH={source_epoch}",
             "--set",
             f"{target}.args.RELEASE_VERSION={version}",
+            "--set",
+            f"{target}.labels.{IMAGE_DISTRIBUTION_ROOTS_LABEL}={distribution_roots_label}",
         ]
         if github_cache:
             build_command.extend(
@@ -1732,6 +1744,7 @@ def _build_release_images(
             "org.opencontainers.image.created": created,
             "org.opencontainers.image.documentation": ("https://nashspence.github.io/riverhog/v1/"),
             "io.github.nashspence.riverhog.release-role": str(image["role"]),
+            IMAGE_DISTRIBUTION_ROOTS_LABEL: distribution_roots_label,
         }
         if any(labels.get(key) != value for key, value in expected_labels.items()):
             raise ReleaseError(f"release image labels differ from the release plan: {target}")

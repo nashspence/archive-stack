@@ -171,6 +171,11 @@ def test_non_reference_distributions_do_not_depend_on_reference_components() -> 
             "internal_build_unit",
         }
     )
+    architecture = " ".join(
+        (REPO_ROOT / "docs/architecture.md").read_text(encoding="utf-8").split()
+    )
+    assert "Non-reference release units do not depend on references" in architecture
+    assert "reference images, qualification, and tests compose them explicitly" in architecture
 
 
 def test_release_contract_rejects_optional_reference_dependency_from_product(
@@ -391,6 +396,10 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
         "stove0-opus-target",
         "stove0-opus-review-sampler",
     ]
+    assert (
+        module._image_distribution_roots_label(["stove0-opus-target", "stove0-opus-review-sampler"])
+        == '["stove0-opus-target","stove0-opus-review-sampler"]'
+    )
     assert all(image["platforms"] == ["linux/amd64"] for image in plan["images"])
     assert all(
         image["tags"]

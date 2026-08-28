@@ -42,7 +42,7 @@ COPY packages/state-schema packages/state-schema
 COPY packages/time-formats packages/time-formats
 RUN uv sync --frozen --package stove0-server --no-dev --no-editable
 
-FROM build AS reference-qualification-build
+FROM build AS reference-composition-build
 
 COPY reference/stove0/observers/contracts/media-metadata reference/stove0/observers/contracts/media-metadata
 COPY reference/stove0/observers/contracts/media-sampling reference/stove0/observers/contracts/media-sampling
@@ -85,10 +85,10 @@ EXPOSE 8080
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["stove0-server", "serve", "--host", "0.0.0.0", "--port", "8080"]
 
-FROM runtime-base AS reference-qualification
+FROM runtime-base AS reference-composition
 
-LABEL io.github.nashspence.riverhog.composition="reference-qualification"
-COPY --from=reference-qualification-build /opt/venv /opt/venv
+LABEL io.github.nashspence.riverhog.composition="reference-composition"
+COPY --from=reference-composition-build /opt/venv /opt/venv
 
 FROM runtime-base AS runtime
 
