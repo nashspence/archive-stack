@@ -16,10 +16,10 @@ CanonicalVisibleText = Annotated[
     StringConstraints(min_length=1, pattern=CANONICAL_VISIBLE_TEXT_PATTERN),
 ]
 
-FRAMED_REQUEST_FORMAT = "riverhog-json-opaque-framing/v1"
-FRAMED_REQUEST_MEDIA_TYPE = "application/vnd.riverhog.json-opaque-framing"
-FRAMED_REQUEST_DECLARATION_LENGTH_BYTES = 4
-FRAMED_REQUEST_MAXIMUM_DECLARATION_BYTES = 32 * 1024
+FRAMED_BODY_FORMAT = "riverhog-json-opaque-framing/v1"
+FRAMED_BODY_MEDIA_TYPE = "application/vnd.riverhog.json-opaque-framing"
+FRAMED_BODY_DECLARATION_LENGTH_BYTES = 4
+FRAMED_BODY_MAXIMUM_DECLARATION_BYTES = 32 * 1024
 
 
 class HttpApiModel(BaseModel):
@@ -72,6 +72,20 @@ class HttpErrorContract:
 
 
 @dataclass(frozen=True, slots=True)
+class HttpResponseHeaderContract:
+    """One response header described by an executable HTTP operation."""
+
+    name: str
+    value_type: object = str
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", self.name) is None:
+            raise ValueError("HTTP response header name is invalid")
+        TypeAdapter(self.value_type)
+
+
+@dataclass(frozen=True, slots=True)
 class HttpOperationContract:
     """One exact method/path binding projected into a running OpenAPI document."""
 
@@ -84,14 +98,15 @@ class HttpOperationContract:
     success_statuses: tuple[int, ...] = (200,)
     errors: tuple[HttpErrorContract, ...] = ()
     path_parameters: tuple[HttpPathParameterContract, ...] = ()
+    response_headers: tuple[HttpResponseHeaderContract, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.path.startswith("/v1/"):
             raise ValueError("HTTP operation path must be an absolute v1 path")
         if self.request_kind in {"json", "framed"} and self.request_type is None:
             raise ValueError("typed HTTP request body has no declaration model")
-        if self.response_kind == "json" and self.response_type is None:
-            raise ValueError("JSON HTTP response has no response model")
+        if self.response_kind in {"json", "framed"} and self.response_type is None:
+            raise ValueError("typed HTTP response body has no declaration model")
         if self.response_kind == "none" and self.response_type is not None:
             raise ValueError("empty HTTP response cannot have a response model")
         placeholders = tuple(re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", self.path))
@@ -101,6 +116,9 @@ class HttpOperationContract:
         codes = tuple(error.code for error in self.errors)
         if len(codes) != len(set(codes)):
             raise ValueError("HTTP operation error codes must be unique")
+        header_names = tuple(header.name.casefold() for header in self.response_headers)
+        if len(header_names) != len(set(header_names)):
+            raise ValueError("HTTP response header names must be unique")
 
     @property
     def error_statuses(self) -> tuple[int, ...]:
@@ -185,10 +203,24 @@ def operation_openapi(
     responses: dict[int, dict[str, Any]] = {}
     for status in contract.success_statuses:
         response: dict[str, Any] = {"description": HTTPStatus(status).phrase}
+        if contract.response_headers:
+            response["headers"] = {
+                header.name: {
+                    "schema": inline_type_schema(header.value_type),
+                    **(
+                        {"description": header.description}
+                        if header.description is not None
+                        else {}
+                    ),
+                }
+                for header in contract.response_headers
+            }
         if contract.response_kind == "json":
             response["content"] = {
                 "application/json": {"schema": inline_type_schema(contract.response_type)}
             }
+        elif contract.response_kind == "framed":
+            response["content"] = _framed_body_openapi_content(contract.response_type)
         elif contract.response_kind == "binary":
             response["content"] = {
                 "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
@@ -211,19 +243,7 @@ def operation_openapi(
     elif contract.request_kind == "framed":
         extra["requestBody"] = {
             "required": True,
-            "content": {
-                FRAMED_REQUEST_MEDIA_TYPE: {
-                    "schema": {"type": "string", "format": "binary"},
-                    "x-riverhog-framing-declaration": inline_type_schema(contract.request_type),
-                    "x-riverhog-framing": {
-                        "format": FRAMED_REQUEST_FORMAT,
-                        "declaration_length_bytes": (FRAMED_REQUEST_DECLARATION_LENGTH_BYTES),
-                        "declaration_length_byte_order": "big-endian",
-                        "maximum_declaration_bytes": (FRAMED_REQUEST_MAXIMUM_DECLARATION_BYTES),
-                        "body": "length || UTF-8 JSON declaration || opaque payload",
-                    },
-                }
-            },
+            "content": _framed_body_openapi_content(contract.request_type),
         }
     if contract.path_parameters:
         extra["parameters"] = [
@@ -240,6 +260,22 @@ def operation_openapi(
         "response_model": None,
         "responses": responses,
         "openapi_extra": extra or None,
+    }
+
+
+def _framed_body_openapi_content(declaration_type: object) -> dict[str, Any]:
+    return {
+        FRAMED_BODY_MEDIA_TYPE: {
+            "schema": {"type": "string", "format": "binary"},
+            "x-riverhog-framing-declaration": inline_type_schema(declaration_type),
+            "x-riverhog-framing": {
+                "format": FRAMED_BODY_FORMAT,
+                "declaration_length_bytes": FRAMED_BODY_DECLARATION_LENGTH_BYTES,
+                "declaration_length_byte_order": "big-endian",
+                "maximum_declaration_bytes": FRAMED_BODY_MAXIMUM_DECLARATION_BYTES,
+                "body": "length || UTF-8 JSON declaration || opaque payload",
+            },
+        }
     }
 
 
@@ -467,10 +503,10 @@ def parse_error_payload(
 __all__ = [
     "CANONICAL_VISIBLE_TEXT_PATTERN",
     "ERROR_STATUS_BY_CODE",
-    "FRAMED_REQUEST_DECLARATION_LENGTH_BYTES",
-    "FRAMED_REQUEST_FORMAT",
-    "FRAMED_REQUEST_MAXIMUM_DECLARATION_BYTES",
-    "FRAMED_REQUEST_MEDIA_TYPE",
+    "FRAMED_BODY_DECLARATION_LENGTH_BYTES",
+    "FRAMED_BODY_FORMAT",
+    "FRAMED_BODY_MAXIMUM_DECLARATION_BYTES",
+    "FRAMED_BODY_MEDIA_TYPE",
     "PUBLIC_ERROR_CODES",
     "CanonicalVisibleText",
     "ErrorBody",
@@ -480,6 +516,7 @@ __all__ = [
     "HttpBodyKind",
     "HttpOperationContract",
     "HttpPathParameterContract",
+    "HttpResponseHeaderContract",
     "OperationInterface",
     "apply_openapi_error_contract",
     "error_code_for_status",

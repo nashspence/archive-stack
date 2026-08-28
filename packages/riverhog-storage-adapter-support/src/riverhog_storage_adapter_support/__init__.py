@@ -11,13 +11,13 @@ from riverhog_storage_adapter_support.conformance import (
 )
 from riverhog_storage_adapter_support.framing import (
     DEFAULT_MAXIMUM_HEADER_BYTES,
-    FRAMED_REQUEST_FORMAT,
-    FRAMED_REQUEST_MEDIA_TYPE,
+    FRAMED_BODY_FORMAT,
+    FRAMED_BODY_MEDIA_TYPE,
+    FramedBodyError,
     FramedContent,
-    FramedRequestError,
+    framed_body,
+    framed_body_length,
     framed_declaration_bytes,
-    framed_request,
-    framed_request_length,
     parse_framed_stream,
 )
 from riverhog_storage_adapter_support.http_binding import (
@@ -34,11 +34,11 @@ from riverhog_storage_adapter_support.schemas import (
 
 __all__ = [
     "DEFAULT_MAXIMUM_HEADER_BYTES",
-    "FRAMED_REQUEST_FORMAT",
-    "FRAMED_REQUEST_MEDIA_TYPE",
+    "FRAMED_BODY_FORMAT",
+    "FRAMED_BODY_MEDIA_TYPE",
     "FRAMED_STORAGE_ADAPTER_HTTP_PATHS",
     "FramedContent",
-    "FramedRequestError",
+    "FramedBodyError",
     "STORAGE_ADAPTER_CONFORMANCE_RESULT",
     "STORAGE_ADAPTER_SCHEMA_BUNDLE_FORMAT",
     "STORAGE_ADAPTER_HTTP_OPERATIONS",
@@ -49,8 +49,8 @@ __all__ = [
     "StorageAdapterProtocolError",
     "StorageAdapterServiceError",
     "framed_declaration_bytes",
-    "framed_request",
-    "framed_request_length",
+    "framed_body",
+    "framed_body_length",
     "parse_framed_stream",
     "run_storage_adapter_conformance",
     "storage_adapter_schema_bundle",

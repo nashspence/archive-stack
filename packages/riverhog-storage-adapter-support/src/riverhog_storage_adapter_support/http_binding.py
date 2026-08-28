@@ -7,7 +7,12 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TypeVar
 
-from http_api_contracts import HttpErrorContract, HttpOperationContract, http_operation_for_request
+from http_api_contracts import (
+    HttpErrorContract,
+    HttpOperationContract,
+    HttpResponseHeaderContract,
+    http_operation_for_request,
+)
 from pydantic import BaseModel, ValidationError
 from riverhog_storage_adapter_protocol import (
     AbortIncompleteWritesRequest,
@@ -20,6 +25,7 @@ from riverhog_storage_adapter_protocol import (
     MaintenanceResult,
     ObjectHeadRequest,
     ObjectMetadataReceipt,
+    ObjectReadReceipt,
     ObjectReadRequest,
     ObjectReadStream,
     ReadPreparationRequest,
@@ -50,11 +56,11 @@ from riverhog_storage_adapter_protocol import (
 )
 
 from riverhog_storage_adapter_support.framing import (
-    FRAMED_REQUEST_MEDIA_TYPE,
+    FRAMED_BODY_MEDIA_TYPE,
+    FramedBodyError,
     FramedContent,
-    FramedRequestError,
-    framed_request,
-    framed_request_length,
+    framed_body,
+    framed_body_length,
     parse_framed_stream,
 )
 
@@ -181,8 +187,8 @@ class StorageAdapterHttpBinding:
                 validate_object_read_response(read_request, read_stream.receipt)
                 receipt = read_stream.receipt
                 headers: list[tuple[str, str]] = [
-                    ("Content-Type", FRAMED_REQUEST_MEDIA_TYPE),
-                    ("Content-Length", str(framed_request_length(receipt))),
+                    ("Content-Type", FRAMED_BODY_MEDIA_TYPE),
+                    ("Content-Length", str(framed_body_length(receipt))),
                     ("X-Riverhog-Object-Bytes", str(receipt.total_bytes)),
                 ]
                 if receipt.object.revision is not None:
@@ -314,7 +320,7 @@ class StorageAdapterHttpBinding:
             ):
                 return _error(500, "internal_failure", "storage adapter operation failed")
             return _error(exc.status, exc.code, exc.message)
-        except FramedRequestError:
+        except FramedBodyError:
             if operation is None or not operation.accepts_error(
                 status=400,
                 code="invalid_request",
@@ -513,9 +519,9 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         "POST",
         "/v1/objects/read",
         ObjectReadRequest,
-        None,
+        ObjectReadReceipt,
         "json",
-        "binary",
+        "framed",
         (200, 206),
         _adapter_errors(
             "request_too_large",
@@ -525,6 +531,24 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             "read_not_ready",
             "read_expired",
             "integrity_failure",
+        ),
+        response_headers=(
+            HttpResponseHeaderContract(
+                "Content-Length",
+                description="Exact framed response-body length in bytes.",
+            ),
+            HttpResponseHeaderContract(
+                "X-Riverhog-Object-Bytes",
+                description="Adapter-observed complete object length in bytes.",
+            ),
+            HttpResponseHeaderContract(
+                "X-Riverhog-Object-Revision",
+                description="Opaque provider revision when one exists.",
+            ),
+            HttpResponseHeaderContract(
+                "Content-Range",
+                description="Exact returned range for a nonempty ranged read.",
+            ),
         ),
     ),
     HttpOperationContract(
@@ -639,7 +663,7 @@ def _framed_read_stream(read_stream: ObjectReadStream) -> Iterator[bytes]:
     """Frame one read while closing provider custody on every exit path."""
 
     try:
-        yield from framed_request(read_stream.receipt, read_stream.content)
+        yield from framed_body(read_stream.receipt, read_stream.content)
     finally:
         read_stream.close()
 

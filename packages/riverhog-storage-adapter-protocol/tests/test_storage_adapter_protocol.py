@@ -102,6 +102,30 @@ def test_validated_port_rejects_direct_response_and_stream_drift() -> None:
     with pytest.raises(ValueError, match="metadata differs"):
         ValidatedStorageAdapterPort(head_adapter).head_object(head_request)
 
+    closed: list[bool] = []
+    mismatched_stream = ObjectReadStream(
+        receipt=ObjectReadReceipt(
+            object=ObjectLocator(object_path="objects/other"),
+            total_bytes=6,
+            offset=0,
+            read_bytes=6,
+        ),
+        content=iter((b"unused",)),
+        close=lambda: closed.append(True),
+    )
+    mismatched_adapter = cast(
+        StorageAdapterPort,
+        SimpleNamespace(read_object=lambda _request: mismatched_stream),
+    )
+    with pytest.raises(ValueError, match="object read path differs"):
+        ValidatedStorageAdapterPort(mismatched_adapter).read_object(
+            ObjectReadRequest(
+                object=ObjectLocator(object_path="objects/item"),
+                expected_bytes=6,
+            )
+        )
+    assert closed == [True]
+
     read_adapter = cast(
         StorageAdapterPort,
         SimpleNamespace(

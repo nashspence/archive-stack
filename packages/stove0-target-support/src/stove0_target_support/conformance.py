@@ -54,11 +54,11 @@ class TargetClient(Protocol):
 def _single_operation_report(
     client: TargetClient,
     *,
+    contract: TargetContract,
     operation: OperationContract | None = None,
     job_request: TargetJobRequest | None = None,
     semantic_vectors: SemanticIntentConformanceVectors | None = None,
 ) -> dict[str, Any]:
-    contract = client.contract()
     operation_reports: list[dict[str, Any]] = []
     for item in contract.operations:
         entry: dict[str, Any] = {
@@ -238,13 +238,14 @@ def conformance_report(
     if set(case_by_operation) - advertised_ids:
         raise ValueError("target conformance case names an unadvertised operation")
 
-    report = _single_operation_report(client)
+    report = _single_operation_report(client, contract=contract)
     evidence: list[dict[str, Any]] = []
     operation_reports = {str(item["operation_id"]): item for item in report["operations"]}
     for operation_id in sorted(case_by_operation):
         case = case_by_operation[operation_id]
         exercised = _single_operation_report(
             client,
+            contract=contract,
             operation=case.operation,
             job_request=case.job_request,
             semantic_vectors=case.semantic_vectors,

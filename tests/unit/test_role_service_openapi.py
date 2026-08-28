@@ -7,8 +7,8 @@ from typing import Any, cast
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from http_api_contracts import (
-    FRAMED_REQUEST_FORMAT,
-    FRAMED_REQUEST_MEDIA_TYPE,
+    FRAMED_BODY_FORMAT,
+    FRAMED_BODY_MEDIA_TYPE,
     HttpOperationContract,
 )
 from riverhog_storage_adapter_asgi_support import create_storage_adapter_app
@@ -118,20 +118,26 @@ def test_maintained_role_openapi_is_derived_from_each_executable_binding() -> No
                 assert request_body["required"] is True
                 assert "#/$defs/" not in str(request_body)
                 if contract.request_kind == "framed":
-                    assert set(request_body["content"]) == {FRAMED_REQUEST_MEDIA_TYPE}
-                    framing = request_body["content"][FRAMED_REQUEST_MEDIA_TYPE][
-                        "x-riverhog-framing"
-                    ]
-                    assert framing["format"] == FRAMED_REQUEST_FORMAT
+                    assert set(request_body["content"]) == {FRAMED_BODY_MEDIA_TYPE}
+                    framing = request_body["content"][FRAMED_BODY_MEDIA_TYPE]["x-riverhog-framing"]
+                    assert framing["format"] == FRAMED_BODY_FORMAT
                     assert framing["declaration_length_bytes"] == 4
                     assert framing["maximum_declaration_bytes"] == 32 * 1024
             success = operation["responses"][str(contract.success_statuses[0])]
             if contract.response_kind == "json":
                 assert "application/json" in success["content"]
+            elif contract.response_kind == "framed":
+                assert set(success["content"]) == {FRAMED_BODY_MEDIA_TYPE}
+                framed_response = success["content"][FRAMED_BODY_MEDIA_TYPE]
+                assert framed_response["x-riverhog-framing"]["format"] == FRAMED_BODY_FORMAT
+                assert framed_response["x-riverhog-framing-declaration"]["type"] == "object"
             elif contract.response_kind == "binary":
                 assert "application/octet-stream" in success["content"]
             else:
                 assert "content" not in success
+            assert set(success.get("headers", {})) == {
+                header.name for header in contract.response_headers
+            }
             for status in contract.error_statuses:
                 expected_codes = {error.code for error in contract.errors if error.status == status}
                 assert (

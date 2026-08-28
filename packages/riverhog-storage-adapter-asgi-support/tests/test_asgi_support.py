@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import AsyncIterator, Iterable
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
-from http_api_contracts import FRAMED_REQUEST_MEDIA_TYPE
+from http_api_contracts import FRAMED_BODY_MEDIA_TYPE
 from riverhog_storage_adapter_asgi_support import create_storage_adapter_app
 from riverhog_storage_adapter_protocol import (
     AdapterDescriptor,
@@ -20,8 +21,8 @@ from riverhog_storage_adapter_protocol import (
     StorageAdapterPort,
 )
 from riverhog_storage_adapter_support import (
-    framed_request,
-    framed_request_length,
+    framed_body,
+    framed_body_length,
     parse_framed_stream,
 )
 
@@ -151,6 +152,23 @@ def test_asgi_health_is_public_but_readiness_fails_closed() -> None:
     assert "provider detail" not in response.text
 
 
+def test_asgi_readiness_uses_the_validated_adapter_descriptor() -> None:
+    adapter = cast(
+        StorageAdapterPort,
+        SimpleNamespace(descriptor=lambda: {"implementation_id": "unvalidated"}),
+    )
+    app = create_storage_adapter_app(
+        service="fixture-storage-adapter",
+        token="secret-token",
+        adapter=adapter,
+    )
+
+    response = TestClient(app).get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "provider_unavailable"
+
+
 def test_asgi_shell_rejects_malformed_maintenance_cutoff_before_dispatch() -> None:
     adapter = _Adapter()
     app = create_storage_adapter_app(
@@ -198,10 +216,10 @@ def test_asgi_shell_streams_framed_uploads_without_materializing_request_body(
         "/v1/objects/put",
         headers={
             "Authorization": "Bearer secret-token",
-            "Content-Type": FRAMED_REQUEST_MEDIA_TYPE,
-            "Content-Length": str(framed_request_length(declaration)),
+            "Content-Type": FRAMED_BODY_MEDIA_TYPE,
+            "Content-Length": str(framed_body_length(declaration)),
         },
-        content=framed_request(declaration, payload),
+        content=framed_body(declaration, payload),
     )
 
     assert response.status_code == 200
@@ -225,7 +243,7 @@ def test_asgi_shell_rejects_unnamed_framing_before_adapter_consumption() -> None
         stored_bytes=1,
         stored_sha256=hashlib.sha256(b"x").hexdigest(),
     )
-    wire = b"".join(framed_request(declaration, b"x"))
+    wire = b"".join(framed_body(declaration, b"x"))
 
     response = TestClient(app).post(
         "/v1/objects/put",
@@ -255,7 +273,7 @@ def test_asgi_shell_authenticates_before_reading_framed_content(
     response = TestClient(app).post(
         "/v1/objects/put",
         headers={
-            "Content-Type": FRAMED_REQUEST_MEDIA_TYPE,
+            "Content-Type": FRAMED_BODY_MEDIA_TYPE,
             "Content-Length": "1",
         },
         content=b"x",

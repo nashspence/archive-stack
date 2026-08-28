@@ -6,18 +6,18 @@ import struct
 from collections.abc import Iterable, Iterator
 
 from http_api_contracts import (
-    FRAMED_REQUEST_DECLARATION_LENGTH_BYTES,
-    FRAMED_REQUEST_FORMAT,
-    FRAMED_REQUEST_MAXIMUM_DECLARATION_BYTES,
-    FRAMED_REQUEST_MEDIA_TYPE,
+    FRAMED_BODY_DECLARATION_LENGTH_BYTES,
+    FRAMED_BODY_FORMAT,
+    FRAMED_BODY_MAXIMUM_DECLARATION_BYTES,
+    FRAMED_BODY_MEDIA_TYPE,
 )
 from pydantic import BaseModel
 from riverhog_storage_adapter_protocol import BinaryContent
 
-DEFAULT_MAXIMUM_HEADER_BYTES = FRAMED_REQUEST_MAXIMUM_DECLARATION_BYTES
+DEFAULT_MAXIMUM_HEADER_BYTES = FRAMED_BODY_MAXIMUM_DECLARATION_BYTES
 
 
-class FramedRequestError(ValueError):
+class FramedBodyError(ValueError):
     """The peer's named declaration/payload framing is malformed."""
 
 
@@ -26,11 +26,11 @@ def framed_declaration_bytes(model: BaseModel) -> bytes:
 
     header = model.model_dump_json(exclude_none=True).encode("utf-8")
     if len(header) < 2 or len(header) > DEFAULT_MAXIMUM_HEADER_BYTES:
-        raise FramedRequestError("framed request declaration exceeds its size bound")
+        raise FramedBodyError("framed body declaration exceeds its size bound")
     return header
 
 
-def framed_request(model: BaseModel, content: BinaryContent) -> Iterator[bytes]:
+def framed_body(model: BaseModel, content: BinaryContent) -> Iterator[bytes]:
     """Yield one declaration and its exact opaque payload without joining them."""
 
     expected = _declared_content_bytes(model)
@@ -41,17 +41,17 @@ def framed_request(model: BaseModel, content: BinaryContent) -> Iterator[bytes]:
     for chunk in _content_chunks(content):
         emitted += len(chunk)
         if emitted > expected:
-            raise FramedRequestError("framed content exceeds its declared length")
+            raise FramedBodyError("framed content exceeds its declared length")
         yield chunk
     if emitted != expected:
-        raise FramedRequestError("framed content ended before its declared length")
+        raise FramedBodyError("framed content ended before its declared length")
 
 
-def framed_request_length(model: BaseModel) -> int:
+def framed_body_length(model: BaseModel) -> int:
     """Return the exact framed HTTP body length from its sealed declaration."""
 
     return (
-        FRAMED_REQUEST_DECLARATION_LENGTH_BYTES
+        FRAMED_BODY_DECLARATION_LENGTH_BYTES
         + len(framed_declaration_bytes(model))
         + _declared_content_bytes(model)
     )
@@ -74,17 +74,17 @@ class FramedContent(Iterator[bytes]):
                 chunk = next(self._chunks)
             except StopIteration:
                 if self.emitted_bytes != self.expected_bytes:
-                    raise FramedRequestError(
+                    raise FramedBodyError(
                         "framed content ended before its declared length"
                     ) from None
                 raise
             if not chunk:
                 continue
             if not isinstance(chunk, bytes):
-                raise TypeError("framed request chunks must be bytes")
+                raise TypeError("framed body chunks must be bytes")
             self.emitted_bytes += len(chunk)
             if self.emitted_bytes > self.expected_bytes:
-                raise FramedRequestError("framed content exceeds its declared length")
+                raise FramedBodyError("framed content exceeds its declared length")
             return chunk
 
     def require_consumed(self) -> None:
@@ -96,7 +96,7 @@ class FramedContent(Iterator[bytes]):
             next(self)
         except StopIteration:
             return
-        raise FramedRequestError("framed content contains trailing bytes")
+        raise FramedBodyError("framed content contains trailing bytes")
 
 
 def parse_framed_stream[ModelT: BaseModel](
@@ -109,19 +109,19 @@ def parse_framed_stream[ModelT: BaseModel](
     """Parse the bounded declaration while leaving opaque bytes single-pass."""
 
     if maximum_header_bytes < 1:
-        raise FramedRequestError("framed request header limit must be positive")
-    if content_length < FRAMED_REQUEST_DECLARATION_LENGTH_BYTES:
-        raise FramedRequestError("framed request is missing its declaration length")
+        raise FramedBodyError("framed body header limit must be positive")
+    if content_length < FRAMED_BODY_DECLARATION_LENGTH_BYTES:
+        raise FramedBodyError("framed body is missing its declaration length")
     cursor = _ChunkCursor(chunks)
-    raw_length = cursor.read_exact(FRAMED_REQUEST_DECLARATION_LENGTH_BYTES)
+    raw_length = cursor.read_exact(FRAMED_BODY_DECLARATION_LENGTH_BYTES)
     header_bytes = struct.unpack(">I", raw_length)[0]
     if header_bytes < 2 or header_bytes > maximum_header_bytes:
-        raise FramedRequestError("framed request declaration length is invalid")
+        raise FramedBodyError("framed body declaration length is invalid")
     declaration = model.model_validate_json(cursor.read_exact(header_bytes))
     expected_content = _declared_content_bytes(declaration)
-    expected_total = FRAMED_REQUEST_DECLARATION_LENGTH_BYTES + header_bytes + expected_content
+    expected_total = FRAMED_BODY_DECLARATION_LENGTH_BYTES + header_bytes + expected_content
     if content_length != expected_total:
-        raise FramedRequestError("framed HTTP content length differs from its declaration")
+        raise FramedBodyError("framed HTTP content length differs from its declaration")
     return declaration, FramedContent(cursor.remaining(), expected_content)
 
 
@@ -146,7 +146,7 @@ class _ChunkCursor:
             self._pending = memoryview(b"")
         for chunk in self._chunks:
             if not isinstance(chunk, bytes):
-                raise TypeError("framed request chunks must be bytes")
+                raise TypeError("framed body chunks must be bytes")
             if chunk:
                 yield chunk
 
@@ -155,9 +155,9 @@ class _ChunkCursor:
             try:
                 chunk = next(self._chunks)
             except StopIteration:
-                raise FramedRequestError("framed request declaration is truncated") from None
+                raise FramedBodyError("framed body declaration is truncated") from None
             if not isinstance(chunk, bytes):
-                raise TypeError("framed request chunks must be bytes")
+                raise TypeError("framed body chunks must be bytes")
             if chunk:
                 return chunk
 
@@ -167,9 +167,9 @@ def _declared_content_bytes(model: BaseModel) -> int:
     if declared_bytes is None:
         declared_bytes = getattr(model, "read_bytes", None)
     if isinstance(declared_bytes, bool) or not isinstance(declared_bytes, int):
-        raise FramedRequestError("framed request declaration has no byte count")
+        raise FramedBodyError("framed body declaration has no byte count")
     if declared_bytes < 0:
-        raise FramedRequestError("framed request declaration has a negative byte count")
+        raise FramedBodyError("framed body declaration has a negative byte count")
     return declared_bytes
 
 
@@ -184,12 +184,12 @@ def _content_chunks(content: BinaryContent) -> Iterator[bytes]:
 
 __all__ = [
     "DEFAULT_MAXIMUM_HEADER_BYTES",
-    "FRAMED_REQUEST_FORMAT",
-    "FRAMED_REQUEST_MEDIA_TYPE",
+    "FRAMED_BODY_FORMAT",
+    "FRAMED_BODY_MEDIA_TYPE",
     "FramedContent",
-    "FramedRequestError",
+    "FramedBodyError",
     "framed_declaration_bytes",
-    "framed_request",
-    "framed_request_length",
+    "framed_body",
+    "framed_body_length",
     "parse_framed_stream",
 ]

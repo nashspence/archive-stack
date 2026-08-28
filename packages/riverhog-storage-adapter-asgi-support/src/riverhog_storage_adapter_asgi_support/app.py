@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer
-from http_api_contracts import FRAMED_REQUEST_MEDIA_TYPE, HealthResponse, operation_openapi
+from http_api_contracts import FRAMED_BODY_MEDIA_TYPE, HealthResponse, operation_openapi
 from riverhog_storage_adapter_protocol import (
     StorageAdapterError,
     StorageAdapterErrorBody,
@@ -122,7 +122,7 @@ def create_storage_adapter_app(
         try:
             if readiness is not None:
                 readiness()
-            adapter.descriptor()
+            binding.adapter.descriptor()
         except Exception:
             return _error(503, "provider_unavailable", "storage adapter is not ready")
         return JSONResponse({"service": service, "status": "ok"})
@@ -135,7 +135,7 @@ def create_storage_adapter_app(
             FRAMED_STORAGE_ADAPTER_HTTP_PATHS
         ):
             media_type = request.headers.get("content-type", "").partition(";")[0].strip()
-            if media_type.casefold() != FRAMED_REQUEST_MEDIA_TYPE.casefold():
+            if media_type.casefold() != FRAMED_BODY_MEDIA_TYPE.casefold():
                 return _error(400, "invalid_request", "framed request media type is invalid")
             raw_length = request.headers.get("content-length")
             if raw_length is None:
@@ -189,6 +189,7 @@ def create_storage_adapter_app(
             dispatch,
             methods=[operation.method],
             dependencies=[Depends(_bearer)],
+            response_class=Response,
             tags=["storage-adapter"],
             **operation_openapi(operation, error_type=StorageAdapterError),
         )
