@@ -17,6 +17,7 @@ QUALIFICATION_INPUTS = {
     REPO_ROOT / "qualification/fixtures/gogurt/scripts/fake_archive_device.py",
     REPO_ROOT / "qualification/fixtures/riverhog-ftp-adapter/config.json",
     REPO_ROOT / "qualification/fixtures/stove0/recipes.yaml",
+    REPO_ROOT / "qualification/contracts/riverhog-v1.json",
     REPO_ROOT / "qualification/provider/config.toml",
 }
 
@@ -83,3 +84,17 @@ def test_every_checked_qualification_input_runs_through_its_real_consumer(
         *(bucket.logical_name for bucket in qualification.buckets),
         "aws-cloudfront-egress",
     }
+
+    contract_script = REPO_ROOT / "scripts/contract_freeze.py"
+    if str(contract_script.parent) not in sys.path:
+        sys.path.insert(0, str(contract_script.parent))
+    contract_spec = importlib.util.spec_from_file_location(
+        "qualification_contract_freeze", contract_script
+    )
+    assert contract_spec is not None and contract_spec.loader is not None
+    contract_module = importlib.util.module_from_spec(contract_spec)
+    sys.modules[contract_spec.name] = contract_module
+    contract_spec.loader.exec_module(contract_module)
+    assert (REPO_ROOT / "qualification/contracts/riverhog-v1.json").read_text(
+        encoding="utf-8"
+    ) == contract_module._render()

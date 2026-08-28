@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from application_access import ApplicationKeyId, ApplicationName
 from fastapi import APIRouter, Query
+from riverhog_application_access import ApplicationKeyId, ApplicationName
 from riverhog_protocol import DownloadQuotaSort, SortOrder
 from riverhog_protocol.errors import Forbidden
 

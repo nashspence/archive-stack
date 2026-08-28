@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Self
 
-from application_access import ApplicationKeyId, ApplicationName
 from pydantic import ConfigDict, Field, RootModel, model_validator
+from riverhog_application_access import ApplicationKeyId, ApplicationName
 from riverhog_protocol import (
     ArchiveCopySort,
     ArchiveCopyState,

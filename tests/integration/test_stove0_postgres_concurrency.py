@@ -4,6 +4,7 @@ import os
 import threading
 import uuid
 from collections.abc import Iterator
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -77,6 +78,7 @@ from stove0_target_support import (
 )
 
 pytestmark = pytest.mark.integration
+V1_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures/state/v1_0001/stove0.postgresql.sql"
 
 
 @pytest.fixture
@@ -115,6 +117,53 @@ def stores() -> Iterator[tuple[SqlAlchemyStateStore, SqlAlchemyStateStore]]:
         with cleanup.begin() as connection:
             connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         cleanup.dispose()
+
+
+@pytest.fixture
+def v1_fixture_database_url() -> Iterator[str]:
+    database_url = os.environ.get("RIVERHOG_TEST_POSTGRES_URL", "").strip()
+    if not database_url:
+        pytest.skip("RIVERHOG_TEST_POSTGRES_URL is required")
+    schema = "stove0_fixture_" + uuid.uuid4().hex
+    bootstrap = create_engine(database_url)
+    with bootstrap.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    bootstrap.dispose()
+    scoped_url = str(
+        make_url(database_url)
+        .update_query_dict({"options": f"-csearch_path={schema}"})
+        .render_as_string(hide_password=False)
+    )
+    try:
+        yield scoped_url
+    finally:
+        cleanup = create_engine(database_url)
+        with cleanup.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        cleanup.dispose()
+
+
+def test_stove0_postgres_v1_fixture_reaches_head_with_work_and_cursor(
+    v1_fixture_database_url: str,
+) -> None:
+    engine = create_engine(v1_fixture_database_url)
+    with engine.begin() as connection:
+        for statement in V1_FIXTURE.read_text(encoding="utf-8").split(";\n"):
+            if statement.strip():
+                connection.exec_driver_sql(statement)
+
+    status = stove0_state_schema(v1_fixture_database_url).upgrade()
+    store = SqlAlchemyStateStore(v1_fixture_database_url, engine=engine, initialize=False)
+    record = store.load("5eadff5ce59d17eb1975ab49c17ba9f8ef2746c0a304f917c8ad779ef9c065c2")
+
+    assert status.condition == "current"
+    assert status.current_revision == "v1_0003"
+    assert record is not None
+    assert record.phase == "eligible"
+    assert record.work.recipe.id == "fixture.recipe/v1"
+    assert store.load_cursor("riverhog-catalog") == ("41", 1)
+    assert store.list_events().events == []
+    engine.dispose()
 
 
 def _work() -> WorkIdentity:

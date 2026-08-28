@@ -36,7 +36,7 @@ MYPY_SOURCES = \
 	reference/stove0/targets/review/rclone-effect-target/src \
 	reference/stove0/targets/review/support/src \
 	companions/stove0/server/src \
-	packages/application-access/src \
+	packages/riverhog-application-access/src \
 	packages/config-validation/src \
 	packages/file-download/src \
 	packages/http-api-contracts/src \
@@ -88,6 +88,7 @@ MYPY_SOURCES = \
 	reference/riverhog/storage/aws/src \
 	reference/riverhog/storage/backblaze/src \
 	scripts/operation_qualification.py \
+	scripts/contract_freeze.py \
 	scripts/pre_v1_encryption_cutover.py \
 	scripts/provider_qualification.py \
 	scripts/release.py \
@@ -98,7 +99,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke stove0-scale-qualification mango-fish-smoke transfer-profile stop-spec dist dist-smoke build build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-exiftool-observer build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-materialize-target build-stove0-review-rclone-effect-target build-mango-fish build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification contract-freeze contract-freeze-update provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke stove0-scale-qualification mango-fish-smoke transfer-profile stop-spec dist dist-smoke build build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-exiftool-observer build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-materialize-target build-stove0-review-rclone-effect-target build-mango-fish build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -136,6 +137,8 @@ help:
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make dependency-readiness Verify the live uv graph and Dependabot release gate.' \
 		'  make operation-qualification Verify or emit the generated operation matrix.' \
+		'  make contract-freeze   Verify the checked-in v1 boundary and external contract.' \
+		'  make contract-freeze-update Regenerate that contract for semantic review.' \
 		'  make provider-qualification Run the operator/provider qualification command.' \
 		'  make installation-qualification Stage and qualify independent uv-tool installs.' \
 		'  make release-check     Validate the coordinated release-unit contract.' \
@@ -225,6 +228,12 @@ dependency-readiness:
 
 operation-qualification:
 	$(call UV_CMD,python scripts/operation_qualification.py $(args))
+
+contract-freeze:
+	$(call UV_CMD,python scripts/contract_freeze.py check)
+
+contract-freeze-update:
+	$(call UV_CMD,python scripts/contract_freeze.py update)
 
 provider-qualification:
 	$(call UV_CMD,python scripts/provider_qualification.py $(args))

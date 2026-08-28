@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from application_access import (
+from pydantic import ConfigDict, Field, model_validator
+from riverhog_application_access import (
     ApplicationAccessGrant,
     ApplicationAccessGrantSet,
     ApplicationKeyId,
@@ -11,7 +12,6 @@ from application_access import (
     ApplicationResource,
     MonthlyDownloadQuotaBytes,
 )
-from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import (
     ApplicationAccessSort,
     ApplicationKeySort,

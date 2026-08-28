@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from application_access import (
+from jsonschema import Draft202012Validator
+from pydantic import TypeAdapter, ValidationError
+from riverhog_application_access import (
     CATALOG_READ,
     EVENTS_READ,
     EVENTS_READ_ALL,
@@ -18,8 +20,6 @@ from application_access import (
     permission_resources,
     tag_resource,
 )
-from jsonschema import Draft202012Validator
-from pydantic import TypeAdapter, ValidationError
 
 
 def test_public_access_contract_normalizes_and_covers_grants() -> None:

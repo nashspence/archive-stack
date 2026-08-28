@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Annotated
 
-from application_access import (
+from fastapi import APIRouter, Query
+from riverhog_application_access import (
     ApplicationKeyId,
     ApplicationName,
     ApplicationPermission,
     ApplicationResource,
 )
-from fastapi import APIRouter, Query
 from riverhog_protocol import (
     ApplicationAccessSort,
     ApplicationKeySort,

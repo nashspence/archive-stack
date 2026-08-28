@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import threading
 import time
@@ -15,6 +16,8 @@ from riverhog_ftp_adapter.config import FtpAdapterConfig, SourceConfig
 from riverhog_ftp_adapter.landing import FtpAdapter
 
 from tests.provenance_observer import native_provenance_observer
+
+REPO_ROOT = Path(__file__).resolve().parents[5]
 
 
 def _config(tmp_path: Path) -> FtpAdapterConfig:
@@ -66,6 +69,19 @@ class _Producer:
             content_identity="b" * 64,
             receipt={"state": "finalized"},
         )
+
+
+def test_v1_claim_fixture_retains_payload_and_portable_provenance_identity() -> None:
+    fixture_root = REPO_ROOT / "tests/fixtures/state/v1_0001/riverhog-ftp-adapter"
+    manifest = json.loads((fixture_root / "claim.json").read_text(encoding="utf-8"))
+    payload = (fixture_root / "payload.bin").read_bytes()
+
+    assert landing._read_manifest(fixture_root) == manifest
+    assert hashlib.sha256(payload).hexdigest() == manifest["files"][0]["sha256"]
+    assert landing._producer_provenance(manifest["files"][0]) == {
+        "status": "omitted",
+        "omission_reason": "Fixture intentionally has no host provenance.",
+    }
 
 
 def test_landing_adapter_reconciles_lost_response_without_releasing_custody(

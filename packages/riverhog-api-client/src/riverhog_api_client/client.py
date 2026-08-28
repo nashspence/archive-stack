@@ -11,22 +11,22 @@ from urllib.parse import quote
 from xml.etree import ElementTree
 
 import httpx
-from application_access import (
+from file_download import verified_download
+from http_api_contracts import CanonicalVisibleText, parse_error_payload, safe_http_base_url
+from pydantic import Field, TypeAdapter, ValidationError
+from riverhog_application_access import (
     ApplicationAccessGrant,
     ApplicationAccessGrantSet,
     ApplicationKeyId,
     ApplicationName,
     MonthlyDownloadQuotaBytes,
 )
-from application_access import (
+from riverhog_application_access import (
     ApplicationPermission as ApplicationPermission,
 )
-from application_access import (
+from riverhog_application_access import (
     ApplicationResource as ApplicationResource,
 )
-from file_download import verified_download
-from http_api_contracts import CanonicalVisibleText, parse_error_payload, safe_http_base_url
-from pydantic import Field, TypeAdapter, ValidationError
 from riverhog_protocol import (
     ApplicationAccessSort,
     ApplicationKeySort,
@@ -245,7 +245,7 @@ def _provenance_choice(
     raise BadRequest("provenance_mode must be captured, or omitted with provenance_omission_reason")
 
 
-def _application_access_payload(
+def _riverhog_application_access_payload(
     access: Sequence[Mapping[str, str]],
 ) -> list[dict[str, Any]]:
     try:
@@ -255,7 +255,7 @@ def _application_access_payload(
     return cast(list[dict[str, Any]], grants.model_dump(mode="json"))
 
 
-def _application_access_grant_payload(
+def _riverhog_application_access_grant_payload(
     permission: ApplicationPermission,
     resource: ApplicationResource,
 ) -> dict[str, Any]:
@@ -1472,7 +1472,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         access: Sequence[Mapping[str, str]],
         expires_in_seconds: int | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"access": _application_access_payload(access)}
+        payload: dict[str, Any] = {"access": _riverhog_application_access_payload(access)}
         if expires_in_seconds is not None:
             payload["expires_in_seconds"] = expires_in_seconds
         return self._json(
@@ -1581,7 +1581,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "PUT",
             f"/v1/apps/{quote(_application_name(app), safe='')}/keys/"
             f"{quote(_application_key_id(key_id), safe='')}/access",
-            json={"access": _application_access_payload(access)},
+            json={"access": _riverhog_application_access_payload(access)},
         )
 
     def add_app_key_access(
@@ -1596,7 +1596,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "POST",
             f"/v1/apps/{quote(_application_name(app), safe='')}/keys/"
             f"{quote(_application_key_id(key_id), safe='')}/access",
-            json=_application_access_grant_payload(permission, resource),
+            json=_riverhog_application_access_grant_payload(permission, resource),
         )
 
     def remove_app_key_access(
@@ -1611,7 +1611,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "DELETE",
             f"/v1/apps/{quote(_application_name(app), safe='')}/keys/"
             f"{quote(_application_key_id(key_id), safe='')}/access",
-            json=_application_access_grant_payload(permission, resource),
+            json=_riverhog_application_access_grant_payload(permission, resource),
         )
 
     def create_tag(self, tag: str) -> dict[str, Any]:

@@ -46,12 +46,26 @@ def _copy_release_contract(module: ModuleType, destination: Path) -> None:
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    release = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))
+    for relative in release["python"]["reusable_library"]:
+        pyproject = REPO_ROOT / relative / "pyproject.toml"
+        package = module._public_python_package(pyproject)
+        source = pyproject.parent / "src" / package / "__init__.py"
+        target = destination / source.relative_to(REPO_ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
     for image in module.RUNTIME_IMAGE_TARGETS:
         source = module._bake_dockerfile(REPO_ROOT, image)
         relative = source.relative_to(REPO_ROOT)
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    for owner in release["state"]["owners"]:
+        for relative in owner["fixtures"]:
+            source = REPO_ROOT / relative
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
 
 
 def test_release_contract_classifies_every_coordinated_distribution() -> None:
@@ -65,11 +79,12 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "end_user_artifact": 4,
         "deployed_implementation": 3,
         "reference_component": 36,
-        "reusable_library": 26,
-        "internal_build_unit": 4,
+        "reusable_library": 25,
+        "internal_build_unit": 5,
     }
     assert {project.name for project in projects} >= {
         "riverhog-client",
+        "riverhog-application-access",
         "riverhog-ftp-adapter",
         "riverhog-ftp-adapter-api-client",
         "riverhog-recover",
@@ -113,6 +128,18 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "stove0-target-client",
         "stove0-target-support",
     }
+    release = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))
+    assert release["compatibility"]["python_api"].startswith("Reusable-library top-level exports")
+    assert {owner["id"] for owner in release["state"]["owners"]} == {
+        "gogurt-listener",
+        "mango-fish-cursor",
+        "riverhog-catalog",
+        "riverhog-ftp-custody",
+        "riverhog-local",
+        "riverhog-provenance-installation",
+        "stove0-control",
+        "stove0-target-jobs",
+    }
     signing = tomllib.loads((REPO_ROOT / "release.toml").read_text(encoding="utf-8"))["signing"]
     assert signing["checksums"] == "SHA-256"
     assert signing["signature"] == "minisign"
@@ -147,6 +174,16 @@ def test_release_contract_classifies_every_coordinated_distribution() -> None:
         "qualification"
     ]
     assert qualification["storage_reference"] == module.STORAGE_REFERENCE_QUALIFICATION
+
+
+def test_reusable_library_requires_an_explicit_top_level_api(tmp_path: Path) -> None:
+    module = load_script()
+    _copy_release_contract(module, tmp_path)
+    public_root = tmp_path / "packages/gogurt-core/src/gogurt_core/__init__.py"
+    public_root.write_text('"""No declared public surface."""\n', encoding="utf-8")
+
+    with pytest.raises(module.ReleaseError, match="explicit top-level __all__"):
+        module.validate_release_contract(tmp_path)
 
 
 def test_release_role_dependency_direction_is_exact() -> None:
@@ -442,6 +479,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
     assert plan["supporting_artifacts"] == {
         "documentation": "riverhog-docs-v1.0.0.tar.gz",
         "source": "riverhog-source-v1.0.0.tar.gz",
+        "contract": "riverhog-v1-contract.json",
         "installation": {
             "manifest": "install-manifest.json",
             "locks": [
@@ -461,6 +499,7 @@ def test_release_plan_is_exact_sha_bound_and_excludes_the_test_image() -> None:
             "required_for": ["wheel", "image"],
         },
         "evidence": [
+            "riverhog-v1-contract.json",
             "install-manifest.json",
             "release-manifest.json",
             "SHA256SUMS",
@@ -756,3 +795,7 @@ def test_release_evidence_is_complete_and_minisign_verified(
     manifest = module.json.loads((output / "release-manifest.json").read_text(encoding="utf-8"))
     assert manifest["published"] is False
     assert manifest["subjects"] == records
+    assert manifest["contract"] == {
+        "file": "riverhog-v1-contract.json",
+        "sha256": module._sha256_file(output / "riverhog-v1-contract.json"),
+    }

@@ -6,7 +6,7 @@ import secrets
 from collections.abc import Sequence
 from datetime import timedelta
 
-from application_access import (
+from riverhog_application_access import (
     validate_application_key_id,
     validate_application_name,
 )

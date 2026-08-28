@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import gzip
 import hashlib
@@ -85,6 +86,7 @@ RELEASE_ROLES = (
     "internal_build_unit",
     "test_only_artifact",
 )
+STATE_INVENTORY_SCHEMA = "riverhog-durable-state-inventory/v1"
 PROJECT_README = {
     "text": "Riverhog v1 component. See the project URL for documentation and releases.",
     "content-type": "text/markdown",
@@ -325,6 +327,44 @@ def _project_metadata(path: Path) -> dict[str, Any]:
     )
 
 
+def _public_python_package(pyproject: Path) -> str:
+    config = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    packages = (
+        config.get("tool", {})
+        .get("hatch", {})
+        .get("build", {})
+        .get("targets", {})
+        .get("wheel", {})
+        .get("packages")
+    )
+    if (
+        not isinstance(packages, list)
+        or len(packages) != 1
+        or not isinstance(packages[0], str)
+        or not packages[0].startswith("src/")
+    ):
+        raise ReleaseError(f"reusable library must expose one Python package: {pyproject}")
+    return packages[0].removeprefix("src/")
+
+
+def _validate_public_python_package(pyproject: Path) -> None:
+    package = _public_python_package(pyproject)
+    root = pyproject.parent / "src" / package / "__init__.py"
+    if not root.is_file():
+        raise ReleaseError(f"reusable library lacks a top-level import surface: {package}")
+    tree = ast.parse(root.read_text(encoding="utf-8"), filename=str(root))
+    if not any(
+        isinstance(node, (ast.Assign, ast.AnnAssign))
+        and (
+            any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
+            if isinstance(node, ast.Assign)
+            else isinstance(node.target, ast.Name) and node.target.id == "__all__"
+        )
+        for node in tree.body
+    ):
+        raise ReleaseError(f"reusable library lacks an explicit top-level __all__: {package}")
+
+
 def _bake_targets(root: Path) -> set[str]:
     text = (root / "docker-bake.hcl").read_text(encoding="utf-8")
     group = re.search(r'group "default" \{(?P<body>.*?)\n\}', text, re.DOTALL)
@@ -498,12 +538,17 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         "python_formats",
         "documentation",
         "source",
+        "contract",
         "evidence",
         "notices",
     }:
         raise ReleaseError("release.toml lacks the complete artifact contract")
     if artifacts["python_formats"] != ["wheel", "sdist"]:
         raise ReleaseError("release.toml requires wheel and sdist Python artifacts")
+    if artifacts["contract"] != "riverhog-v1-contract.json":
+        raise ReleaseError("release.toml requires the canonical v1 contract projection")
+    if artifacts["contract"] not in artifacts["evidence"]:
+        raise ReleaseError("release evidence omits the canonical v1 contract projection")
     if artifacts["notices"] != NOTICE_POLICY:
         raise ReleaseError("release.toml differs from the artifact notice policy")
     _buildkit_sbom_attestation(root)
@@ -557,6 +602,8 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
             raise ReleaseError(f"{name} does not carry canonical classifiers")
         if metadata.get("urls") != PROJECT_URLS:
             raise ReleaseError(f"{name} does not carry canonical project URLs")
+        if classified[relative] == "reusable_library":
+            _validate_public_python_package(pyproject)
         projects.append(
             Project(
                 name=name,
@@ -719,6 +766,7 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         "components",
         "http_api",
         "cli",
+        "python_api",
         "archive",
         "recovery",
         "configuration",
@@ -727,6 +775,47 @@ def validate_release_contract(root: Path, *, expected_version: str | None = None
         raise ReleaseError("release.toml lacks the complete v1 compatibility policy")
     if any(not str(value).strip() for value in compatibility.values()):
         raise ReleaseError("v1 compatibility promises must be visible")
+    state = config.get("state")
+    if not isinstance(state, dict) or set(state) != {"schema", "owners"}:
+        raise ReleaseError("release.toml lacks the complete durable-state inventory")
+    owners = state.get("owners")
+    if state.get("schema") != STATE_INVENTORY_SCHEMA or not isinstance(owners, list):
+        raise ReleaseError("release.toml durable-state inventory is invalid")
+    state_ids: set[str] = set()
+    for owner in owners:
+        if not isinstance(owner, dict) or set(owner) != {
+            "id",
+            "distribution",
+            "classification",
+            "format",
+            "head",
+            "fixtures",
+        }:
+            raise ReleaseError("release.toml durable-state owner is incomplete")
+        state_id = str(owner["id"])
+        distribution = _normalize_name(str(owner["distribution"]))
+        fixtures = owner["fixtures"]
+        if (
+            not state_id
+            or state_id in state_ids
+            or distribution not in seen_names
+            or owner["classification"] not in {"compatibility-preserved", "rebuildable-operational"}
+            or not str(owner["format"]).strip()
+            or not str(owner["head"]).strip()
+            or not isinstance(fixtures, list)
+            or (owner["classification"] == "compatibility-preserved" and not fixtures)
+        ):
+            raise ReleaseError("release.toml durable-state owner is invalid")
+        state_ids.add(state_id)
+        for fixture in fixtures:
+            fixture_path = root / str(fixture)
+            if (
+                not str(fixture).startswith("tests/fixtures/state/v1_0001/")
+                or not fixture_path.is_file()
+            ):
+                raise ReleaseError(
+                    f"durable-state fixture is absent or outside the v1 baseline: {fixture}"
+                )
     signing = config.get("signing")
     if not isinstance(signing, dict) or set(signing) != SIGNING_POLICY_KEYS:
         raise ReleaseError("release.toml lacks the complete release-signing policy")
@@ -912,6 +1001,7 @@ def build_release_plan(root: Path, version: str, *, allow_dirty: bool = False) -
     supporting = {
         "documentation": config["artifacts"]["documentation"].format(version=version),
         "source": config["artifacts"]["source"].format(version=version),
+        "contract": config["artifacts"]["contract"],
         "installation": {
             "manifest": "install-manifest.json",
             "locks": [f"pylock.{name}.toml" for name in installation.END_USER_ROOTS],
@@ -2239,6 +2329,12 @@ def verify_release_evidence(
         "sha256": _sha256_file(output / "install-manifest.json"),
     }:
         raise ReleaseError("release manifest installation identity differs from its evidence")
+    contract_name = str(config["artifacts"]["contract"])
+    if manifest.get("contract") != {
+        "file": contract_name,
+        "sha256": _sha256_file(output / contract_name),
+    }:
+        raise ReleaseError("release manifest contract identity differs from its evidence")
     subjects = cast(list[dict[str, Any]], manifest.get("subjects"))
     if not subjects:
         raise ReleaseError("release manifest contains no subjects")
@@ -2410,6 +2506,11 @@ def _generate_release_evidence(
     public_key: Path,
 ) -> dict[str, Any]:
     shutil.copy2(root / "THIRD_PARTY_NOTICES.md", output / "THIRD_PARTY_NOTICES.md")
+    contract_name = str(_load_config(root)["artifacts"]["contract"])
+    shutil.copy2(
+        root / "qualification/contracts/riverhog-v1.json",
+        output / contract_name,
+    )
     written_install_manifest = cast(
         dict[str, Any],
         json.loads((output / "install-manifest.json").read_text(encoding="utf-8")),
@@ -2439,6 +2540,10 @@ def _generate_release_evidence(
         "installation": {
             "manifest": "install-manifest.json",
             "sha256": _sha256_file(output / "install-manifest.json"),
+        },
+        "contract": {
+            "file": contract_name,
+            "sha256": _sha256_file(output / contract_name),
         },
         "evidence": config["artifacts"]["evidence"],
         "signing": config["signing"],

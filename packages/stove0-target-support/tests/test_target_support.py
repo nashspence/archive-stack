@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import threading
 import time
 from collections.abc import Mapping
@@ -67,6 +68,7 @@ from stove0_target_support import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
     TARGET_HTTP_OPERATIONS,
     TARGET_TERMINAL_STATE_RETENTION_ENV,
+    AcceptedTargetJob,
     EffectPlan,
     EffectPlanPayload,
     InputArtifact,
@@ -108,6 +110,8 @@ from stove0_target_support import (
     validate_preflight_response_against_request,
     validate_status_against_request,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _sha(character: str) -> str:
@@ -1381,6 +1385,58 @@ def _write_model(path: Path, value: Any) -> None:
     path.write_bytes(
         canonical_json_bytes(value.model_dump(mode="json", by_alias=True, exclude_none=True))
     )
+
+
+@pytest.mark.parametrize(
+    ("kind", "request_factory"),
+    [("transform", _request), ("effect", _effect_request)],
+)
+def test_v1_persisted_target_fixture_recovers_active_custody_without_repeating_effect(
+    kind: str,
+    request_factory: Any,
+    tmp_path: Path,
+) -> None:
+    operation, target, request = request_factory()
+    fixture_root = REPO_ROOT / "tests/fixtures/state/v1_0001/stove0-target"
+    accepted_fixture = fixture_root / f"{kind}.accepted.json"
+    status_fixture = fixture_root / f"{kind}.status.json"
+    assert AcceptedTargetJob.model_validate_json(accepted_fixture.read_text()) == request.accepted()
+    persisted_status = TargetJobStatus.model_validate_json(status_fixture.read_text())
+    assert persisted_status.state == "running"
+    assert persisted_status.job_id == request.declaration.job_id
+
+    state_root = tmp_path / kind
+    state_root.mkdir(mode=0o700)
+    shutil.copyfile(
+        accepted_fixture,
+        state_root / f"{request.declaration.job_id}.accepted.json",
+    )
+    shutil.copyfile(
+        status_fixture,
+        state_root / f"{request.declaration.job_id}.status.json",
+    )
+    executions = 0
+
+    def execute(*_args: object) -> TargetJobStatus:
+        nonlocal executions
+        executions += 1
+        raise AssertionError("fixture recovery must not execute during restart")
+
+    service = PersistentTargetService(
+        contract=target,
+        operations={operation.id: operation},
+        state_root=state_root,
+        execute=execute,  # type: ignore[arg-type]
+    )
+    try:
+        recovered = service.get_job(request.declaration.job_id)
+        assert recovered.state == "interrupted"
+        assert recovered.request_sha256 == request.request_sha256
+        if kind == "effect":
+            assert service.put_job(request) == recovered
+    finally:
+        service.close()
+    assert executions == 0
 
 
 def test_terminal_state_retention_configuration_is_connected_and_fail_closed() -> None:

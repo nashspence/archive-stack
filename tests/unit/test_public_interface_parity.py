@@ -5,12 +5,6 @@ from typing import Any
 
 import pytest
 import riverhog_api_client
-from application_access import (
-    ApplicationPermission as CanonicalApplicationPermission,
-)
-from application_access import (
-    ApplicationResource as CanonicalApplicationResource,
-)
 from fastapi import FastAPI
 from http_api_contracts import (
     ERROR_STATUS_BY_CODE,
@@ -33,6 +27,12 @@ from riverhog_api_client import (
 )
 from riverhog_api_client import producer as riverhog_producer
 from riverhog_api_client.client import ApiClient
+from riverhog_application_access import (
+    ApplicationPermission as CanonicalApplicationPermission,
+)
+from riverhog_application_access import (
+    ApplicationResource as CanonicalApplicationResource,
+)
 from riverhog_cli import main as riverhog_cli
 from riverhog_cli import upload_progress as riverhog_upload_progress
 from riverhog_core.services.archive_copy_states import ARCHIVE_COPY_STATES
