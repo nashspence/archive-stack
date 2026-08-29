@@ -49,7 +49,7 @@ def harness(tmp_path: Path) -> Harness:
                 change="created",
                 collection_id=COLLECTION_ID,
                 occurred_at="2026-07-18T00:00:00.000000Z",
-                record_etag=collection.record_etag,
+                inventory_identity=collection.inventory_identity,
             )
         )
     memory_store = MemoryArchiveStore(archive)
@@ -83,6 +83,11 @@ def _request() -> Request:
 
 def test_catalog_search_and_archive_store_share_current_identity(harness: Harness) -> None:
     collection = harness.collections.get(COLLECTION_ID)
+    copies = harness.collections.list_archive_copies(
+        COLLECTION_ID,
+        page=1,
+        per_page=25,
+    )
     search = harness.search.search(
         q="readme",
         page=1,
@@ -102,17 +107,23 @@ def test_catalog_search_and_archive_store_share_current_identity(harness: Harnes
     )
 
     assert collection.id == COLLECTION_ID
-    assert [(copy.store, copy.state.value) for copy in collection.archive_copies] == [
-        ("deep", "uploaded")
-    ]
+    assert collection.archive_copy_count == 1
+    copy_rows = copies["copies"]
+    assert isinstance(copy_rows, list)
+    assert [(copy["store"], copy["state"]) for copy in copy_rows] == [("deep", "uploaded")]
     assert search["files"][0]["file_ref"] == f"{COLLECTION_ID}/readme.txt"
     assert archive.collections == 1
     assert str(COLLECTION_ID).encode() in resources.body
 
 
 def test_application_retrieves_one_manifest_selected_file(harness: Harness) -> None:
-    manifest, etag = harness.retrieval.collection_manifest(COLLECTION_ID)
-    assert [(item.path, item.bytes, item.sha256) for item in manifest.files] == [
+    header, files, etag, file_count, file_bytes = harness.retrieval.collection_inventory(
+        COLLECTION_ID
+    )
+    assert header.collection == COLLECTION_ID
+    assert file_count == 1
+    assert file_bytes == len(b"current archive contract\n")
+    assert [(item.path, item.bytes, item.sha256) for item in files] == [
         (
             "readme.txt",
             len(b"current archive contract\n"),

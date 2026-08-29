@@ -21,12 +21,9 @@ def test_portable_collection_model_owns_canonical_document_and_identity() -> Non
         passphrase_id="collection-test-key-v1",
         provenance_mode="omitted",
         provenance_identity=None,
-        metadata_revision=2,
-        tags=("video", "archive"),
         files=(("z.txt", 2, "b" * 64), ("a.txt", 1, "c" * 64)),
     )
 
-    assert record.tags == ("archive", "video")
     assert [item.path for item in record.files] == ["a.txt", "z.txt"]
     assert PortableCollectionRecord.from_json_bytes(record.to_json_bytes()) == record
     assert len(record.identity) == 64
@@ -51,8 +48,6 @@ def test_portable_collection_factory_cannot_emit_a_parser_invalid_file() -> None
             passphrase_id="collection-test-key-v1",
             provenance_mode="omitted",
             provenance_identity=None,
-            metadata_revision=2,
-            tags=("archive",),
             files=(("./not-canonical", 1, "b" * 64),),
         )
     with pytest.raises(PortableCollectionError, match="file bytes"):
@@ -69,8 +64,6 @@ def test_portable_collection_schema_projects_expressible_semantic_constraints() 
         passphrase_id="collection-test-key-v1",
         provenance_mode="omitted",
         provenance_identity=None,
-        metadata_revision=2,
-        tags=("archive",),
         files=(("valid.txt", 1, "b" * 64),),
     ).to_mapping()
 

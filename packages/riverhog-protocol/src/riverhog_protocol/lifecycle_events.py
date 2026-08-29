@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal, Self
 from lifecycle_events.models import CloudEvent, normalize_event_context
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from riverhog_protocol.paths import CollectionId, normalize_collection_id, normalize_tag
+from riverhog_protocol.paths import CollectionId, normalize_collection_id
 from riverhog_protocol.storage_names import ArchiveStoreName
 
 RIVERHOG_EVENT_TYPE_PREFIX = "io.riverhog.riverhog."
@@ -86,14 +86,11 @@ class RiverhogEventData(RiverhogEventModel):
 class CollectionEventData(RiverhogEventData):
     collection_id: CollectionId
     collection_created_at: str = Field(min_length=1, max_length=64)
-    collection_tags: list[str]
+    collection_tag_count: int = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_collection(self) -> Self:
         normalize_collection_id(self.collection_id)
-        tags = tuple(normalize_tag(item) for item in self.collection_tags)
-        if tags != tuple(sorted(set(tags))) or tags != tuple(self.collection_tags):
-            raise ValueError("event collection tags must be unique and canonically ordered")
         return self
 
 
@@ -155,7 +152,7 @@ class RetrievalEventData(RiverhogEventData):
     state: RetrievalState
     collection_id: CollectionId | None = None
     collection_created_at: str | None = Field(default=None, min_length=1, max_length=64)
-    collection_tags: list[str] | None = None
+    collection_tag_count: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def validate_collections(self) -> Self:
@@ -166,13 +163,9 @@ class RetrievalEventData(RiverhogEventData):
             raise ValueError("single-collection retrieval event requires its collection identity")
         if len(ids) != 1 and self.collection_id is not None:
             raise ValueError("multi-collection retrieval event cannot have a singular identity")
-        if self.collection_created_at is not None or self.collection_tags is not None:
+        if self.collection_created_at is not None or self.collection_tag_count is not None:
             if self.collection_id is None:
                 raise ValueError("retrieval collection projection has no singular collection")
-        if self.collection_tags is not None:
-            tags = tuple(normalize_tag(item) for item in self.collection_tags)
-            if tags != tuple(sorted(set(tags))) or tags != tuple(self.collection_tags):
-                raise ValueError("retrieval collection tags must be canonical")
         return self
 
 

@@ -71,6 +71,10 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_workflows = SimpleNamespace(
         reap_expired_claims=Mock(return_value=0),
     )
+    provenance = SimpleNamespace(
+        requeue_interrupted_verifications_for_startup=Mock(return_value=0),
+        process_due_verifications=Mock(return_value=0),
+    )
     container = cast(
         ServiceContainer,
         SimpleNamespace(
@@ -78,6 +82,7 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
             collection_workflows=collection_workflows,
             archive_copies=archive_copies,
             archive_maintenance=archive_maintenance,
+            provenance=provenance,
         ),
     )
 
@@ -92,6 +97,8 @@ def test_archive_maintenance_sweep_recovers_and_processes_collection_finalizatio
     collection_uploads.process_due_finalizations.assert_called_once_with(limit=1)
     collection_uploads.reap_expired_custody_transfers.assert_called_once_with(limit=100)
     collection_workflows.reap_expired_claims.assert_called_once_with(limit=100)
+    provenance.requeue_interrupted_verifications_for_startup.assert_called_once_with()
+    provenance.process_due_verifications.assert_called_once_with(limit=1)
 
 
 def test_archive_write_sweep_uses_the_configured_max_age(monkeypatch) -> None:

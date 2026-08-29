@@ -33,7 +33,7 @@ CREATE TABLE dispatches (
     exit_code INTEGER,
     error TEXT
 );
-CREATE INDEX dispatches_state_idx ON dispatches(state, next_retry_at, observed_at);
+CREATE INDEX dispatches_state_idx ON dispatches(state, next_retry_at, observed_at, dispatch_id);
 INSERT INTO dispatches (
     dispatch_id, mount_point, generation, marker_identity, route, plan_json,
     state, attempts, observed_at, started_at

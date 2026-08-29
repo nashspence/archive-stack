@@ -19,6 +19,7 @@ from riverhog_protocol.errors import (
     ServiceUnavailable,
     Unauthorized,
 )
+from riverhog_protocol.paths import tag_set_identity
 
 UPLOAD_REGISTRATION_CONSTRAINTS = {
     "pack_member_bytes": 1024,
@@ -34,6 +35,8 @@ class RecordingClient(ApiClient):
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         self.calls.append((method, path, kwargs))
         payload: dict[str, Any] = {"ok": True}
+        if method == "POST" and path == "/v1/collection-upload-sessions":
+            payload = {"collection_id": 1, "state": "finalized"}
         if method == "PUT" and "/volumes/" in path and "/units/" in path:
             content = bytes(kwargs["content"])
             payload = {
@@ -199,7 +202,8 @@ def test_collection_upload_custody_transfer_and_operator_controls_use_exact_rout
             {
                 "json": {
                     "idempotency_key": "execution-1",
-                    "tags": ["derived"],
+                    "tag_set_identity": tag_set_identity(("derived",)),
+                    "initial_tag": "derived",
                     "provenance_mode": "omitted",
                     "custody_mode": "custody-transfer",
                     "provenance_omission_reason": "fixture",
@@ -253,7 +257,7 @@ def test_collection_upload_selects_archive_store_without_materialization_policy(
 
     assert client.calls[0][2]["json"] == {
         "idempotency_key": "upload-one",
-        "tags": [],
+        "tag_set_identity": tag_set_identity(()),
         "archive_store": "b2",
         "provenance_mode": "omitted",
         "provenance_omission_reason": "fixture source has no provenance",
@@ -478,7 +482,8 @@ def test_client_rejects_noncanonical_upload_and_retrieval_http_identities() -> N
         client.put_collection_upload_session_provenance_journal(
             42,
             "urn:uuid:12345678-1234-5678-9234-567812345678",
-            content=b"journal",
+            content=(b"journal",),
+            byte_count=7,
             sha256="A" * 64,
         )
 
@@ -805,7 +810,9 @@ def test_provenance_client_methods_use_the_collection_scoped_contract() -> None:
     )
     client.get_collection_file_provenance(42, "media/movie.mov")
     client.trace_collection_file_provenance(42, "media/movie.mov")
-    client.verify_collection_provenance(42)
+    client.request_collection_provenance_verification(42)
+    client.get_collection_provenance_verification(42)
+    client.cancel_collection_provenance_verification(42)
 
     assert client.calls == [
         (
@@ -828,7 +835,9 @@ def test_provenance_client_methods_use_the_collection_scoped_contract() -> None:
             "/v1/collections/42/provenance/trace/media/movie.mov",
             {"params": {"page": 1, "per_page": 25}},
         ),
-        ("POST", "/v1/collections/42/provenance/verify", {}),
+        ("POST", "/v1/collections/42/provenance/verification", {}),
+        ("GET", "/v1/collections/42/provenance/verification", {}),
+        ("DELETE", "/v1/collections/42/provenance/verification", {}),
     ]
 
 
@@ -847,7 +856,8 @@ def test_provenance_client_rejects_noncanonical_read_identities() -> None:
     with pytest.raises(BadRequest):
         client.get_collection_file_provenance(42, "media/../movie.mov")
     with pytest.raises(BadRequest):
-        client.export_collection_provenance_journal(42, "journal-1")
+        with client.stream_collection_provenance_journal(42, "journal-1"):
+            pass
     assert client.calls == []
 
 

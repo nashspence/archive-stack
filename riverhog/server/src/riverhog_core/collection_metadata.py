@@ -16,8 +16,6 @@ def collection_record_manifest(
     passphrase_id: str,
     provenance_mode: str,
     provenance_identity: str | None,
-    metadata_revision: int,
-    tags: Sequence[str],
     files: Iterable[tuple[str, int, str]],
 ) -> tuple[PortableCollectionRecord, str]:
     if provenance_mode not in {"captured", "mixed", "omitted"}:
@@ -29,8 +27,6 @@ def collection_record_manifest(
         passphrase_id=passphrase_id,
         provenance_mode=cast(Literal["captured", "mixed", "omitted"], provenance_mode),
         provenance_identity=provenance_identity,
-        metadata_revision=metadata_revision,
-        tags=tags,
         files=files,
     )
     # passphrase_id is an opaque public identifier, not passphrase material.
@@ -43,7 +39,7 @@ def collection_metadata_manifest(
     content_identity: str,
     encryption_format: str,
     passphrase_id: str,
-    record_etag: str,
+    inventory_identity: str,
     metadata_revision: int,
     tags: Sequence[str],
     updated_at: str,
@@ -55,7 +51,7 @@ def collection_metadata_manifest(
             "content_identity": content_identity,
             "encryption_format": encryption_format,
             "passphrase_id": passphrase_id,
-            "record_etag": record_etag,
+            "inventory_identity": inventory_identity,
             "metadata_revision": metadata_revision,
             "tags": sorted(tags),
             "updated_at": updated_at,

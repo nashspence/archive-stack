@@ -37,7 +37,7 @@ from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
-from riverhog_protocol import CollectionUploadUnitWorkDocument
+from riverhog_protocol import CollectionUploadUnitWorkDocument, PortableCollectionInventoryReader
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     ArtifactDisposition,
@@ -240,7 +240,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     archive_copy_errors = application.openapi()["paths"]["/v1/archive/copies"]["post"]["responses"]
     assert "not_found" in archive_copy_errors["404"]["x-riverhog-error-codes"]
     provenance_verify_errors = application.openapi()["paths"][
-        "/v1/collections/{collection_id}/provenance/verify"
+        "/v1/collections/{collection_id}/provenance/verification"
     ]["post"]["responses"]
     assert "conflict" not in {
         code
@@ -342,21 +342,23 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     )
     assert opened["resumed"] is False
     collection_id = int(opened["collection_id"])
+    operator.create_tag("staged")
+    operator.add_collection_upload_session_tag(collection_id, "staged")
+    operator.remove_collection_upload_session_tag(collection_id, "staged")
     with operator.stream_collection_upload_sessions() as items:
         assert len(list(items)) == 1
     operator.put_collection_upload_session_provenance_journal(
         collection_id,
         journal_summary.journal_id,
-        content=journal,
+        content=(journal,),
+        byte_count=len(journal),
         sha256=journal_summary.journal_sha256,
     )
-    assert (
-        operator.export_collection_upload_session_provenance_journal(
-            collection_id,
-            journal_summary.journal_id,
-        )
-        == journal
-    )
+    with operator.stream_collection_upload_session_provenance_journal(
+        collection_id,
+        journal_summary.journal_id,
+    ) as chunks:
+        assert b"".join(chunks) == journal
     operator.register_collection_upload_session_files(
         collection_id,
         [
@@ -407,13 +409,20 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert container.collection_uploads.process_due_finalizations() == 1
     assert operator.get_collection_upload_session(collection_id)["state"] == "finalized"
     assert operator.get_collection(collection_id)["id"] == collection_id
+    assert operator.get_collection_tags(collection_id, page=1, per_page=100)["tag_count"] == 1
+    assert (
+        operator.list_collection_archive_copies(collection_id, page=1, per_page=100)["total"] == 1
+    )
+    with operator.stream_collection_archive_copies(collection_id) as copies:
+        assert len(list(copies)) == 1
     assert operator.list_collections(tag="docs", page=1, per_page=100)["total"] == 1
     with operator.stream_collections(tag="docs") as items:
         assert len(list(items)) == 1
     assert operator.search("document", collection=collection_id, page=1, per_page=100)["total"] == 1
     with operator.stream_search("document", collection=collection_id) as items:
         assert len(list(items)) == 1
-    assert operator.get_collection_tags(collection_id)["tags"] == ["docs"]
+    with operator.stream_collection_tags(collection_id) as tags:
+        assert list(tags) == [{"tag": "docs"}]
     operator.create_tag("reviewed")
     operator.add_collection_tag(collection_id, "reviewed")
     operator.remove_collection_tag(collection_id, "docs")
@@ -435,10 +444,30 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     ) as items:
         assert len(list(items)) == 1
     assert (
-        operator.export_collection_provenance_journal(collection_id, journal_summary.journal_id)
-        == journal
+        operator.list_collection_provenance_journal_agents(
+            collection_id,
+            journal_summary.journal_id,
+            page=1,
+            per_page=100,
+        )["total"]
+        >= 1
     )
-    assert operator.verify_collection_provenance(collection_id)["valid"] is True
+    with operator.stream_collection_provenance_journal_agents(
+        collection_id,
+        journal_summary.journal_id,
+    ) as agents:
+        assert len(list(agents)) >= 1
+    with operator.stream_collection_provenance_journal(
+        collection_id,
+        journal_summary.journal_id,
+    ) as chunks:
+        assert b"".join(chunks) == journal
+    assert operator.request_collection_provenance_verification(collection_id)["state"] == "queued"
+    assert container.provenance.process_due_verifications() == 1
+    verification = operator.get_collection_provenance_verification(collection_id)
+    assert verification["state"] == "succeeded"
+    assert verification["result"]["valid"] is True
+    assert operator.cancel_collection_provenance_verification(collection_id)["state"] == "succeeded"
 
     resourcesync_documents = [
         transport.get(path, headers=operator_headers)
@@ -463,15 +492,18 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         str(node.text) for node in roots[3].iter() if node.tag.rsplit("}", 1)[-1] == "loc"
     ]
     assert referenced_locations == [
-        f"http://testserver/v1/catalog/collections/{collection_id}/manifest"
+        f"http://testserver/v1/catalog/collections/{collection_id}/inventory"
     ]
     assert int(roots[4].attrib["data-cursor"]) > 0
     manifest = transport.get(
-        f"/v1/catalog/collections/{collection_id}/manifest",
+        f"/v1/catalog/collections/{collection_id}/inventory",
         headers=operator_headers,
     )
     assert manifest.status_code == 200
-    assert manifest.json()["collection"] == collection_id
+    inventory = PortableCollectionInventoryReader((manifest.content,))
+    assert inventory.begin.header.collection == collection_id
+    assert len(list(inventory)) == 1
+    inventory.require_complete()
 
     assert {
         item["store"] for item in operator.list_archive_stores(page=1, per_page=100)["stores"]
@@ -798,13 +830,11 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     target = _api(transport, str(output_capability["token"]), observer=observer)
     with target.stream_collection_provenance(collection_id) as items:
         assert len(list(items)) == 1
-    assert (
-        target.export_collection_provenance_journal(
-            collection_id,
-            journal_summary.journal_id,
-        )
-        == journal
-    )
+    with target.stream_collection_provenance_journal(
+        collection_id,
+        journal_summary.journal_id,
+    ) as chunks:
+        assert b"".join(chunks) == journal
     target_retrieval_plan = target.plan_retrieval(
         [(collection_id, "document.txt")],
         restore_policy="never",
@@ -860,7 +890,8 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         target.put_collection_upload_session_provenance_journal(
             output_collection_id,
             journal_id,
-            content=content,
+            content=(content,),
+            byte_count=len(content),
             sha256=hashlib.sha256(content).hexdigest(),
         )
     target.register_collection_upload_session_files(
@@ -941,14 +972,19 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         journal_summary.journal_id,
         output_journal_summary.journal_id,
     }
+    with operator.stream_collection_provenance_journal(
+        output_collection_id,
+        output_journal_summary.journal_id,
+    ) as chunks:
+        assert b"".join(chunks) == output_journal
     assert (
-        operator.export_collection_provenance_journal(
-            output_collection_id,
-            output_journal_summary.journal_id,
-        )
-        == output_journal
+        operator.request_collection_provenance_verification(output_collection_id)["state"]
+        == "queued"
     )
-    assert operator.verify_collection_provenance(output_collection_id)["valid"] is True
+    assert container.provenance.process_due_verifications() == 1
+    output_verification = operator.get_collection_provenance_verification(output_collection_id)
+    assert output_verification["state"] == "succeeded"
+    assert output_verification["result"]["valid"] is True
 
     settled = operator.settle_processing_claim(
         claim_id,

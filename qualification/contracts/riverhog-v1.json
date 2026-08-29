@@ -4146,7 +4146,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-              "sha256": "d828217590c4d65c6ac81234c3f2ed26a53a2582ee5d0d36ef2b6763b3253da2"
+              "sha256": "f725786792f27fa24269971154764dd43c671027b5f171cab63e1432e7f35c96"
             }
           ],
           "format": "state-schema/postgresql",
@@ -4158,7 +4158,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog-local.sqlite.sql",
-              "sha256": "dfdb08c71aff085aaf6916fac224148645887ce723080e83c1ee5f593170f45a"
+              "sha256": "e249d8b8e80f4d3408b4fb7080467aa42ce9c1c72139fce5247b6e16e5660dbe"
             }
           ],
           "format": "state-schema/sqlite",
@@ -4182,7 +4182,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/stove0.postgresql.sql",
-              "sha256": "e4e44e44d5f99606d39158912865cd18c38fe69ce50f4e51a49a9aa2b28d091a"
+              "sha256": "2c14ef4e42e9d4c589a44606e4a263ceb7bc9ccd0c5e82f7ed30a9a58c7cf152"
             }
           ],
           "format": "state-schema/postgresql",
@@ -4194,7 +4194,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/gogurt-listener.sqlite.sql",
-              "sha256": "49d89dd4bf56a45ca18604a98355df23bd32796646904cc64049439449781f7e"
+              "sha256": "278ff26b6357b89c6af934f31b31917557cd3c377ecdddf8308eb3d9962cd15a"
             }
           ],
           "format": "gogurt-listener-state/v1",
@@ -5169,12 +5169,10 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "collection_tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Collection Tags",
-                  "type": "array"
+                "collection_tag_count": {
+                  "minimum": 0.0,
+                  "title": "Collection Tag Count",
+                  "type": "integer"
                 },
                 "context": {
                   "anyOf": [
@@ -5208,7 +5206,7 @@
                 "initiator",
                 "collection_id",
                 "collection_created_at",
-                "collection_tags",
+                "collection_tag_count",
                 "source_store",
                 "destination_store",
                 "state"
@@ -5301,12 +5299,10 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "collection_tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Collection Tags",
-                  "type": "array"
+                "collection_tag_count": {
+                  "minimum": 0.0,
+                  "title": "Collection Tag Count",
+                  "type": "integer"
                 },
                 "context": {
                   "anyOf": [
@@ -5340,7 +5336,7 @@
                 "initiator",
                 "collection_id",
                 "collection_created_at",
-                "collection_tags",
+                "collection_tag_count",
                 "source_store",
                 "destination_store",
                 "state"
@@ -5433,12 +5429,10 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "collection_tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Collection Tags",
-                  "type": "array"
+                "collection_tag_count": {
+                  "minimum": 0.0,
+                  "title": "Collection Tag Count",
+                  "type": "integer"
                 },
                 "context": {
                   "anyOf": [
@@ -5478,7 +5472,7 @@
                 "initiator",
                 "collection_id",
                 "collection_created_at",
-                "collection_tags",
+                "collection_tag_count",
                 "source_store",
                 "destination_store",
                 "state",
@@ -5841,12 +5835,10 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "collection_tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Collection Tags",
-                  "type": "array"
+                "collection_tag_count": {
+                  "minimum": 0.0,
+                  "title": "Collection Tag Count",
+                  "type": "integer"
                 },
                 "context": {
                   "anyOf": [
@@ -5880,7 +5872,7 @@
                 "initiator",
                 "collection_id",
                 "collection_created_at",
-                "collection_tags",
+                "collection_tag_count",
                 "source_store",
                 "destination_store",
                 "state"
@@ -6543,7 +6535,8 @@
               "maxLength": 4096,
               "minLength": 1,
               "pattern": "^[^/\\\\]+(?:/[^/\\\\]+)*$",
-              "type": "string"
+              "type": "string",
+              "x-unicode-normalization": "NFC"
             },
             "CanonicalTag": {
               "maxLength": 80,
@@ -6873,6 +6866,52 @@
               "title": "ClaimFenceDocument",
               "type": "object"
             },
+            "CollectionArchiveCopyListOut": {
+              "additionalProperties": false,
+              "properties": {
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "copies": {
+                  "items": {
+                    "$ref": "#/components/schemas/ArchiveCopyOut"
+                  },
+                  "title": "Copies",
+                  "type": "array"
+                },
+                "page": {
+                  "minimum": 1.0,
+                  "title": "Page",
+                  "type": "integer"
+                },
+                "pages": {
+                  "minimum": 0.0,
+                  "title": "Pages",
+                  "type": "integer"
+                },
+                "per_page": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Per Page",
+                  "type": "integer"
+                },
+                "total": {
+                  "minimum": 0.0,
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "collection_id",
+                "page",
+                "per_page",
+                "total",
+                "pages",
+                "copies"
+              ],
+              "title": "CollectionArchiveCopyListOut",
+              "type": "object"
+            },
             "CollectionArtifactIdentityDocument": {
               "additionalProperties": false,
               "properties": {
@@ -6932,12 +6971,10 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "collection_tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Collection Tags",
-                  "type": "array"
+                "collection_tag_count": {
+                  "minimum": 0.0,
+                  "title": "Collection Tag Count",
+                  "type": "integer"
                 },
                 "context": {
                   "anyOf": [
@@ -6970,7 +7007,7 @@
                 "initiator",
                 "collection_id",
                 "collection_created_at",
-                "collection_tags",
+                "collection_tag_count",
                 "files",
                 "bytes",
                 "remote_storage_bytes"
@@ -7144,16 +7181,16 @@
                   "title": "File Count",
                   "type": "integer"
                 },
+                "inventory_identity": {
+                  "title": "Inventory Identity",
+                  "type": "string"
+                },
                 "metadata_rows": {
                   "additionalProperties": {
                     "type": "integer"
                   },
                   "title": "Metadata Rows",
                   "type": "object"
-                },
-                "record_etag": {
-                  "title": "Record Etag",
-                  "type": "string"
                 },
                 "remote_storage_bytes": {
                   "title": "Remote Storage Bytes",
@@ -7199,7 +7236,7 @@
                 "archive_object_count",
                 "remote_storage_bytes",
                 "upload_file_count",
-                "record_etag",
+                "inventory_identity",
                 "metadata_rows",
                 "blockers",
                 "billing_note"
@@ -7379,12 +7416,10 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "collection_tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Collection Tags",
-                  "type": "array"
+                "collection_tag_count": {
+                  "minimum": 0.0,
+                  "title": "Collection Tag Count",
+                  "type": "integer"
                 },
                 "context": {
                   "anyOf": [
@@ -7407,7 +7442,7 @@
                 "initiator",
                 "collection_id",
                 "collection_created_at",
-                "collection_tags"
+                "collection_tag_count"
               ],
               "title": "CollectionEventData",
               "type": "object"
@@ -7478,12 +7513,10 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "collection_tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Collection Tags",
-                  "type": "array"
+                "collection_tag_count": {
+                  "minimum": 0.0,
+                  "title": "Collection Tag Count",
+                  "type": "integer"
                 },
                 "context": {
                   "anyOf": [
@@ -7511,7 +7544,7 @@
                 "initiator",
                 "collection_id",
                 "collection_created_at",
-                "collection_tags",
+                "collection_tag_count",
                 "files_total",
                 "bytes_total",
                 "archive_store",
@@ -7589,6 +7622,90 @@
               "minimum": 1.0,
               "type": "integer"
             },
+            "CollectionProvenanceVerificationJobOut": {
+              "additionalProperties": false,
+              "properties": {
+                "attempts": {
+                  "minimum": 0.0,
+                  "title": "Attempts",
+                  "type": "integer"
+                },
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "failure": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Failure"
+                },
+                "finished_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Finished At"
+                },
+                "requested_at": {
+                  "title": "Requested At",
+                  "type": "string"
+                },
+                "result": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/CollectionProvenanceVerificationOut"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "started_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Started At"
+                },
+                "state": {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "canceling",
+                    "succeeded",
+                    "failed",
+                    "canceled"
+                  ],
+                  "title": "State",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "collection_id",
+                "state",
+                "requested_at",
+                "started_at",
+                "finished_at",
+                "attempts",
+                "result",
+                "failure"
+              ],
+              "title": "CollectionProvenanceVerificationJobOut",
+              "type": "object"
+            },
             "CollectionProvenanceVerificationOut": {
               "discriminator": {
                 "mapping": {
@@ -7645,12 +7762,10 @@
             "CollectionSummaryOut": {
               "additionalProperties": false,
               "properties": {
-                "archive_copies": {
-                  "items": {
-                    "$ref": "#/components/schemas/ArchiveCopyOut"
-                  },
-                  "title": "Archive Copies",
-                  "type": "array"
+                "archive_copy_count": {
+                  "minimum": 0.0,
+                  "title": "Archive Copy Count",
+                  "type": "integer"
                 },
                 "archive_root_sha256": {
                   "pattern": "^[0-9a-f]{64}$",
@@ -7690,18 +7805,16 @@
                   "title": "Remote Storage Bytes",
                   "type": "integer"
                 },
-                "tags": {
-                  "items": {
-                    "$ref": "#/components/schemas/CanonicalTag"
-                  },
-                  "title": "Tags",
-                  "type": "array"
+                "tag_count": {
+                  "minimum": 0.0,
+                  "title": "Tag Count",
+                  "type": "integer"
                 }
               },
               "required": [
                 "id",
                 "created_at",
-                "tags",
+                "tag_count",
                 "content_identity",
                 "archive_root_sha256",
                 "encryption_format",
@@ -7709,9 +7822,40 @@
                 "files",
                 "bytes",
                 "remote_storage_bytes",
-                "archive_copies"
+                "archive_copy_count"
               ],
               "title": "CollectionSummaryOut",
+              "type": "object"
+            },
+            "CollectionTagSetOut": {
+              "additionalProperties": false,
+              "properties": {
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "inventory_identity": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Inventory Identity",
+                  "type": "string"
+                },
+                "metadata_revision": {
+                  "minimum": 1.0,
+                  "title": "Metadata Revision",
+                  "type": "integer"
+                },
+                "tag_count": {
+                  "minimum": 0.0,
+                  "title": "Tag Count",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "collection_id",
+                "metadata_revision",
+                "inventory_identity",
+                "tag_count"
+              ],
+              "title": "CollectionTagSetOut",
               "type": "object"
             },
             "CollectionTagsChangedEvent": {
@@ -7780,13 +7924,36 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
+                "inventory_identity": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Inventory Identity",
+                  "type": "string"
+                },
                 "metadata_revision": {
+                  "minimum": 1.0,
                   "title": "Metadata Revision",
                   "type": "integer"
                 },
-                "record_etag": {
-                  "title": "Record Etag",
-                  "type": "string"
+                "page": {
+                  "minimum": 1.0,
+                  "title": "Page",
+                  "type": "integer"
+                },
+                "pages": {
+                  "minimum": 0.0,
+                  "title": "Pages",
+                  "type": "integer"
+                },
+                "per_page": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Per Page",
+                  "type": "integer"
+                },
+                "tag_count": {
+                  "minimum": 0.0,
+                  "title": "Tag Count",
+                  "type": "integer"
                 },
                 "tags": {
                   "items": {
@@ -7799,7 +7966,11 @@
               "required": [
                 "collection_id",
                 "metadata_revision",
-                "record_etag",
+                "inventory_identity",
+                "tag_count",
+                "page",
+                "per_page",
+                "pages",
                 "tags"
               ],
               "title": "CollectionTagsOut",
@@ -8483,12 +8654,10 @@
                   "title": "State",
                   "type": "string"
                 },
-                "tags": {
-                  "items": {
-                    "$ref": "#/components/schemas/CanonicalTag"
-                  },
-                  "title": "Tags",
-                  "type": "array"
+                "tag_count": {
+                  "minimum": 0.0,
+                  "title": "Tag Count",
+                  "type": "integer"
                 },
                 "upload_state_expires_at": {
                   "anyOf": [
@@ -8505,7 +8674,7 @@
               "required": [
                 "collection_id",
                 "created_at",
-                "tags",
+                "tag_count",
                 "ingest_source",
                 "archive_store",
                 "encryption_format",
@@ -9479,12 +9648,10 @@
                   "title": "State",
                   "type": "string"
                 },
-                "tags": {
-                  "items": {
-                    "$ref": "#/components/schemas/CanonicalTag"
-                  },
-                  "title": "Tags",
-                  "type": "array"
+                "tag_count": {
+                  "minimum": 0.0,
+                  "title": "Tag Count",
+                  "type": "integer"
                 },
                 "upload_state_expires_at": {
                   "anyOf": [
@@ -9501,7 +9668,7 @@
               "required": [
                 "collection_id",
                 "created_at",
-                "tags",
+                "tag_count",
                 "ingest_source",
                 "provenance_mode",
                 "archive_store",
@@ -9544,6 +9711,38 @@
                 "discarding"
               ],
               "type": "string"
+            },
+            "CollectionUploadTagMutationOut": {
+              "additionalProperties": false,
+              "properties": {
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "tag_count": {
+                  "minimum": 0.0,
+                  "title": "Tag Count",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "collection_id",
+                "tag_count"
+              ],
+              "title": "CollectionUploadTagMutationOut",
+              "type": "object"
+            },
+            "CollectionUploadTagOut": {
+              "additionalProperties": false,
+              "properties": {
+                "tag": {
+                  "$ref": "#/components/schemas/CanonicalTag"
+                }
+              },
+              "required": [
+                "tag"
+              ],
+              "title": "CollectionUploadTagOut",
+              "type": "object"
             },
             "CollectionUploadUnitSourceDocument": {
               "additionalProperties": false,
@@ -10667,12 +10866,10 @@
                   "title": "State",
                   "type": "string"
                 },
-                "tags": {
-                  "items": {
-                    "$ref": "#/components/schemas/CanonicalTag"
-                  },
-                  "title": "Tags",
-                  "type": "array"
+                "tag_count": {
+                  "minimum": 0.0,
+                  "title": "Tag Count",
+                  "type": "integer"
                 },
                 "upload_state_expires_at": {
                   "anyOf": [
@@ -10689,7 +10886,7 @@
               "required": [
                 "collection_id",
                 "created_at",
-                "tags",
+                "tag_count",
                 "ingest_source",
                 "provenance_mode",
                 "archive_store",
@@ -10791,6 +10988,16 @@
                   ],
                   "title": "Ingest Source"
                 },
+                "initial_tag": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/CanonicalTag"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "provenance_mode": {
                   "default": "captured",
                   "enum": [
@@ -10813,17 +11020,15 @@
                   ],
                   "title": "Provenance Omission Reason"
                 },
-                "tags": {
-                  "items": {
-                    "$ref": "#/components/schemas/CanonicalTag"
-                  },
-                  "title": "Tags",
-                  "type": "array"
+                "tag_set_identity": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Tag Set Identity",
+                  "type": "string"
                 }
               },
               "required": [
                 "idempotency_key",
-                "tags"
+                "tag_set_identity"
               ],
               "title": "CreateOrResumeCollectionUploadSessionRequest",
               "type": "object"
@@ -11504,6 +11709,52 @@
               "title": "ListCollectionUploadSessionFilesResponse",
               "type": "object"
             },
+            "ListCollectionUploadSessionTagsResponse": {
+              "additionalProperties": false,
+              "properties": {
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "page": {
+                  "minimum": 1.0,
+                  "title": "Page",
+                  "type": "integer"
+                },
+                "pages": {
+                  "minimum": 0.0,
+                  "title": "Pages",
+                  "type": "integer"
+                },
+                "per_page": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Per Page",
+                  "type": "integer"
+                },
+                "tags": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionUploadTagOut"
+                  },
+                  "title": "Tags",
+                  "type": "array"
+                },
+                "total": {
+                  "minimum": 0.0,
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "collection_id",
+                "page",
+                "per_page",
+                "total",
+                "pages",
+                "tags"
+              ],
+              "title": "ListCollectionUploadSessionTagsResponse",
+              "type": "object"
+            },
             "ListCollectionUploadSessionsResponse": {
               "additionalProperties": false,
               "properties": {
@@ -11655,6 +11906,55 @@
                 "collections"
               ],
               "title": "ListCollectionsResponse",
+              "type": "object"
+            },
+            "ListProvenanceJournalAgentsResponse": {
+              "additionalProperties": false,
+              "properties": {
+                "agents": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProvenanceJournalAgentOut"
+                  },
+                  "title": "Agents",
+                  "type": "array"
+                },
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
+                },
+                "journal_id": {
+                  "$ref": "#/components/schemas/ProvenanceJournalId"
+                },
+                "page": {
+                  "minimum": 1.0,
+                  "title": "Page",
+                  "type": "integer"
+                },
+                "pages": {
+                  "minimum": 0.0,
+                  "title": "Pages",
+                  "type": "integer"
+                },
+                "per_page": {
+                  "minimum": 1.0,
+                  "title": "Per Page",
+                  "type": "integer"
+                },
+                "total": {
+                  "minimum": 0.0,
+                  "title": "Total",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "collection_id",
+                "journal_id",
+                "page",
+                "per_page",
+                "total",
+                "pages",
+                "agents"
+              ],
+              "title": "ListProvenanceJournalAgentsResponse",
               "type": "object"
             },
             "MixedCollectionFileProvenancePage": {
@@ -13224,6 +13524,20 @@
               "title": "ProvenanceExternalStateReferenceOut",
               "type": "object"
             },
+            "ProvenanceJournalAgentOut": {
+              "additionalProperties": false,
+              "properties": {
+                "agent_id": {
+                  "title": "Agent Id",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "agent_id"
+              ],
+              "title": "ProvenanceJournalAgentOut",
+              "type": "object"
+            },
             "ProvenanceJournalId": {
               "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
               "type": "string"
@@ -13231,12 +13545,10 @@
             "ProvenanceJournalOut": {
               "additionalProperties": false,
               "properties": {
-                "agent_ids": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Agent Ids",
-                  "type": "array"
+                "agent_count": {
+                  "minimum": 0.0,
+                  "title": "Agent Count",
+                  "type": "integer"
                 },
                 "bytes": {
                   "minimum": 0.0,
@@ -13289,7 +13601,7 @@
                 "current_path",
                 "current_bytes",
                 "current_sha256",
-                "agent_ids",
+                "agent_count",
                 "entity_counts"
               ],
               "title": "ProvenanceJournalOut",
@@ -13441,35 +13753,6 @@
                 "access"
               ],
               "title": "ReplaceAppAccessRequest",
-              "type": "object"
-            },
-            "ReplaceCollectionTagsRequest": {
-              "additionalProperties": false,
-              "properties": {
-                "event_context": {
-                  "anyOf": [
-                    {
-                      "additionalProperties": true,
-                      "type": "object"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Event Context"
-                },
-                "tags": {
-                  "items": {
-                    "$ref": "#/components/schemas/CanonicalTag"
-                  },
-                  "title": "Tags",
-                  "type": "array"
-                }
-              },
-              "required": [
-                "tags"
-              ],
-              "title": "ReplaceCollectionTagsRequest",
               "type": "object"
             },
             "RetireArchiveCopyRequest": {
@@ -13806,12 +14089,10 @@
                   "title": "Stored Sha256",
                   "type": "string"
                 },
-                "tags": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Tags",
-                  "type": "array"
+                "tag_count": {
+                  "minimum": 0.0,
+                  "title": "Tag Count",
+                  "type": "integer"
                 },
                 "verified_at": {
                   "title": "Verified At",
@@ -13831,7 +14112,7 @@
                 "new_archive_expires_at",
                 "lease_categories",
                 "retrieval_job_leases",
-                "tags"
+                "tag_count"
               ],
               "title": "RetrievalCacheObjectOut",
               "type": "object"
@@ -13992,19 +14273,17 @@
                   "title": "Collection Ids",
                   "type": "array"
                 },
-                "collection_tags": {
+                "collection_tag_count": {
                   "anyOf": [
                     {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
+                      "minimum": 0.0,
+                      "type": "integer"
                     },
                     {
                       "type": "null"
                     }
                   ],
-                  "title": "Collection Tags"
+                  "title": "Collection Tag Count"
                 },
                 "context": {
                   "anyOf": [
@@ -14163,19 +14442,17 @@
                   "title": "Collection Ids",
                   "type": "array"
                 },
-                "collection_tags": {
+                "collection_tag_count": {
                   "anyOf": [
                     {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
+                      "minimum": 0.0,
+                      "type": "integer"
                     },
                     {
                       "type": "null"
                     }
                   ],
-                  "title": "Collection Tags"
+                  "title": "Collection Tag Count"
                 },
                 "context": {
                   "anyOf": [
@@ -14321,19 +14598,17 @@
                   "title": "Collection Ids",
                   "type": "array"
                 },
-                "collection_tags": {
+                "collection_tag_count": {
                   "anyOf": [
                     {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
+                      "minimum": 0.0,
+                      "type": "integer"
                     },
                     {
                       "type": "null"
                     }
                   ],
-                  "title": "Collection Tags"
+                  "title": "Collection Tag Count"
                 },
                 "context": {
                   "anyOf": [
@@ -14479,19 +14754,17 @@
                   "title": "Collection Ids",
                   "type": "array"
                 },
-                "collection_tags": {
+                "collection_tag_count": {
                   "anyOf": [
                     {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
+                      "minimum": 0.0,
+                      "type": "integer"
                     },
                     {
                       "type": "null"
                     }
                   ],
-                  "title": "Collection Tags"
+                  "title": "Collection Tag Count"
                 },
                 "context": {
                   "anyOf": [
@@ -14661,19 +14934,17 @@
                   "title": "Collection Ids",
                   "type": "array"
                 },
-                "collection_tags": {
+                "collection_tag_count": {
                   "anyOf": [
                     {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
+                      "minimum": 0.0,
+                      "type": "integer"
                     },
                     {
                       "type": "null"
                     }
                   ],
-                  "title": "Collection Tags"
+                  "title": "Collection Tag Count"
                 },
                 "context": {
                   "anyOf": [
@@ -15315,19 +15586,17 @@
                   "title": "Collection Ids",
                   "type": "array"
                 },
-                "collection_tags": {
+                "collection_tag_count": {
                   "anyOf": [
                     {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
+                      "minimum": 0.0,
+                      "type": "integer"
                     },
                     {
                       "type": "null"
                     }
                   ],
-                  "title": "Collection Tags"
+                  "title": "Collection Tag Count"
                 },
                 "context": {
                   "anyOf": [
@@ -15480,19 +15749,17 @@
                   "title": "Collection Ids",
                   "type": "array"
                 },
-                "collection_tags": {
+                "collection_tag_count": {
                   "anyOf": [
                     {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
+                      "minimum": 0.0,
+                      "type": "integer"
                     },
                     {
                       "type": "null"
                     }
                   ],
-                  "title": "Collection Tags"
+                  "title": "Collection Tag Count"
                 },
                 "context": {
                   "anyOf": [
@@ -15645,19 +15912,17 @@
                   "title": "Collection Ids",
                   "type": "array"
                 },
-                "collection_tags": {
+                "collection_tag_count": {
                   "anyOf": [
                     {
-                      "items": {
-                        "type": "string"
-                      },
-                      "type": "array"
+                      "minimum": 0.0,
+                      "type": "integer"
                     },
                     {
                       "type": "null"
                     }
                   ],
-                  "title": "Collection Tags"
+                  "title": "Collection Tag Count"
                 },
                 "context": {
                   "anyOf": [
@@ -20449,9 +20714,9 @@
               ]
             }
           },
-          "/v1/catalog/collections/{collection_id}/manifest": {
+          "/v1/catalog/collections/{collection_id}/inventory": {
             "get": {
-              "operationId": "get_portable_collection_manifest",
+              "operationId": "stream_portable_collection_inventory",
               "parameters": [
                 {
                   "in": "path",
@@ -20467,139 +20732,195 @@
               "responses": {
                 "200": {
                   "content": {
-                    "application/json": {
+                    "application/json-seq": {
                       "schema": {
-                        "$comment": "This schema is the structural projection. riverhog_protocol.PortableCollectionRecord is the canonical semantic and canonical-JSON authority.",
-                        "$id": "https://nashspence.github.io/riverhog/v1/schemas/riverhog-collection-v1.schema.json",
-                        "$schema": "https://json-schema.org/draft/2020-12/schema",
-                        "additionalProperties": false,
-                        "allOf": [
-                          {
-                            "else": {
-                              "properties": {
-                                "provenance_identity": {
-                                  "pattern": "^[0-9a-f]{64}$",
-                                  "type": "string"
-                                }
-                              }
-                            },
-                            "if": {
-                              "properties": {
-                                "provenance_mode": {
-                                  "const": "omitted"
-                                }
-                              }
-                            },
-                            "then": {
-                              "properties": {
-                                "provenance_identity": {
-                                  "type": "null"
-                                }
-                              }
-                            }
-                          }
-                        ],
-                        "properties": {
-                          "collection": {
+                        "$defs": {
+                          "CollectionId": {
                             "minimum": 1,
                             "type": "integer"
                           },
-                          "content_identity": {
-                            "pattern": "^[0-9a-f]{64}$",
-                            "type": "string"
-                          },
-                          "encryption_format": {
-                            "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
-                            "type": "string"
-                          },
-                          "files": {
-                            "items": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "bytes": {
-                                  "minimum": 0,
-                                  "type": "integer"
-                                },
-                                "path": {
-                                  "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.\\.?(?:/|$))[^/]+(?:/[^/]+)*$",
-                                  "type": "string"
-                                },
-                                "sha256": {
-                                  "pattern": "^[0-9a-f]{64}$",
-                                  "type": "string"
-                                }
+                          "PortableCollectionHeader": {
+                            "additionalProperties": false,
+                            "description": "Bounded immutable metadata that owns one portable file inventory.",
+                            "properties": {
+                              "collection": {
+                                "$ref": "#/$defs/CollectionId"
                               },
-                              "required": [
-                                "path",
-                                "bytes",
-                                "sha256"
-                              ],
-                              "type": "object"
-                            },
-                            "minItems": 1,
-                            "type": "array",
-                            "uniqueItems": true
-                          },
-                          "format": {
-                            "const": "riverhog-collection/v1"
-                          },
-                          "metadata_revision": {
-                            "minimum": 0,
-                            "type": "integer"
-                          },
-                          "passphrase_id": {
-                            "pattern": "^[A-Za-z0-9_-]{16,128}$",
-                            "type": "string"
-                          },
-                          "provenance_identity": {
-                            "oneOf": [
-                              {
+                              "content_identity": {
                                 "pattern": "^[0-9a-f]{64}$",
+                                "title": "Content Identity",
                                 "type": "string"
                               },
-                              {
-                                "type": "null"
+                              "encryption_format": {
+                                "minLength": 1,
+                                "title": "Encryption Format",
+                                "type": "string"
+                              },
+                              "format": {
+                                "const": "riverhog-collection/v1",
+                                "default": "riverhog-collection/v1",
+                                "title": "Format",
+                                "type": "string"
+                              },
+                              "passphrase_id": {
+                                "pattern": "^[A-Za-z0-9_-]{16,128}$",
+                                "title": "Passphrase Id",
+                                "type": "string"
+                              },
+                              "provenance_identity": {
+                                "anyOf": [
+                                  {
+                                    "pattern": "^[0-9a-f]{64}$",
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ],
+                                "title": "Provenance Identity"
+                              },
+                              "provenance_mode": {
+                                "enum": [
+                                  "captured",
+                                  "mixed",
+                                  "omitted"
+                                ],
+                                "title": "Provenance Mode",
+                                "type": "string"
                               }
-                            ]
-                          },
-                          "provenance_mode": {
-                            "enum": [
-                              "captured",
-                              "mixed",
-                              "omitted"
-                            ]
-                          },
-                          "tags": {
-                            "items": {
-                              "maxLength": 80,
-                              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-                              "type": "string"
                             },
-                            "type": "array",
-                            "uniqueItems": true
+                            "required": [
+                              "collection",
+                              "content_identity",
+                              "encryption_format",
+                              "passphrase_id",
+                              "provenance_mode"
+                            ],
+                            "title": "PortableCollectionHeader",
+                            "type": "object"
+                          },
+                          "PortableCollectionInventoryBegin": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bytes": {
+                                "minimum": 0,
+                                "title": "Bytes",
+                                "type": "integer"
+                              },
+                              "files": {
+                                "minimum": 1,
+                                "title": "Files",
+                                "type": "integer"
+                              },
+                              "format": {
+                                "const": "riverhog-collection-inventory-stream/v1",
+                                "default": "riverhog-collection-inventory-stream/v1",
+                                "title": "Format",
+                                "type": "string"
+                              },
+                              "header": {
+                                "$ref": "#/$defs/PortableCollectionHeader"
+                              },
+                              "inventory_identity": {
+                                "pattern": "^[0-9a-f]{64}$",
+                                "title": "Inventory Identity",
+                                "type": "string"
+                              },
+                              "type": {
+                                "const": "begin",
+                                "default": "begin",
+                                "title": "Type",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "header",
+                              "inventory_identity",
+                              "files",
+                              "bytes"
+                            ],
+                            "title": "PortableCollectionInventoryBegin",
+                            "type": "object"
+                          },
+                          "PortableCollectionInventoryEnd": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bytes": {
+                                "minimum": 0,
+                                "title": "Bytes",
+                                "type": "integer"
+                              },
+                              "files": {
+                                "minimum": 1,
+                                "title": "Files",
+                                "type": "integer"
+                              },
+                              "inventory_identity": {
+                                "pattern": "^[0-9a-f]{64}$",
+                                "title": "Inventory Identity",
+                                "type": "string"
+                              },
+                              "type": {
+                                "const": "end",
+                                "default": "end",
+                                "title": "Type",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "files",
+                              "bytes",
+                              "inventory_identity"
+                            ],
+                            "title": "PortableCollectionInventoryEnd",
+                            "type": "object"
+                          },
+                          "PortableCollectionInventoryFile": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "file": {
+                                "additionalProperties": true,
+                                "title": "File",
+                                "type": "object"
+                              },
+                              "ordinal": {
+                                "minimum": 0,
+                                "title": "Ordinal",
+                                "type": "integer"
+                              },
+                              "type": {
+                                "const": "file",
+                                "default": "file",
+                                "title": "Type",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "ordinal",
+                              "file"
+                            ],
+                            "title": "PortableCollectionInventoryFile",
+                            "type": "object"
                           }
                         },
-                        "required": [
-                          "format",
-                          "collection",
-                          "content_identity",
-                          "encryption_format",
-                          "passphrase_id",
-                          "provenance_mode",
-                          "provenance_identity",
-                          "metadata_revision",
-                          "tags",
-                          "files"
-                        ],
-                        "title": "Riverhog v1 portable collection record",
-                        "type": "object"
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/PortableCollectionInventoryBegin"
+                          },
+                          {
+                            "$ref": "#/$defs/PortableCollectionInventoryFile"
+                          },
+                          {
+                            "$ref": "#/$defs/PortableCollectionInventoryEnd"
+                          }
+                        ]
                       }
                     }
                   },
                   "description": "OK",
                   "headers": {
                     "ETag": {
-                      "description": "Quoted SHA-256 identity of the canonical manifest bytes.",
+                      "description": "Quoted SHA-256 identity of the immutable file inventory.",
                       "schema": {
                         "pattern": "^\"[0-9a-f]{64}\"$",
                         "type": "string"
@@ -20691,7 +21012,7 @@
                   "HTTPBearer": []
                 }
               ],
-              "summary": "Get Portable Collection Manifest",
+              "summary": "Stream Portable Collection Inventory",
               "tags": [
                 "catalog"
               ],
@@ -21154,7 +21475,7 @@
                 "format": "riverhog-complete-enumeration/v1",
                 "item_schema": {
                   "id": "riverhog.collection-processing-claim/v1",
-                  "sha256": "f48a24af35bddcbeeda930b4744ebfd08dbfa4f50fc8b433d43d4cfa95f903d8"
+                  "sha256": "0dd09d350673bb395571ddb1df392ac5bc407b2b8cc930a5b309c4175cdc954d"
                 },
                 "kind": "complete-enumeration",
                 "media_type": "application/json-seq",
@@ -22946,7 +23267,7 @@
                 "format": "riverhog-complete-enumeration/v1",
                 "item_schema": {
                   "id": "riverhog.collection-upload-session-summary/v1",
-                  "sha256": "ef2cda8f966706686359707a590e18cba25b91ad2ed952e8e40595e19a694449"
+                  "sha256": "9654c7d08ac7e4636cf5d63b1f633ecf088287d82e298bbf1a716ac16c20e2d7"
                 },
                 "kind": "complete-enumeration",
                 "media_type": "application/json-seq",
@@ -23896,7 +24217,7 @@
                 "format": "riverhog-complete-enumeration/v1",
                 "item_schema": {
                   "id": "riverhog.collection-upload-file/v1",
-                  "sha256": "f5f4cff92c6e543770d4c4be2da80c5907b7bf2b5aefb9dca13bbe4b321f6ec5"
+                  "sha256": "4e394f7089be2e584d69c1631d6c1dfe8ac5fcccb5305a551479d9f5ff2fe860"
                 },
                 "kind": "complete-enumeration",
                 "media_type": "application/json-seq",
@@ -24004,7 +24325,7 @@
           },
           "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}": {
             "get": {
-              "operationId": "export_collection_upload_session_provenance_journal",
+              "operationId": "stream_collection_upload_session_provenance_journal",
               "parameters": [
                 {
                   "in": "path",
@@ -24128,7 +24449,7 @@
                   "HTTPBearer": []
                 }
               ],
-              "summary": "Export Collection Upload Session Provenance Journal",
+              "summary": "Stream Collection Upload Session Provenance Journal",
               "tags": [
                 "collections"
               ],
@@ -24189,9 +24510,7 @@
                 "content": {
                   "application/json-seq": {
                     "schema": {
-                      "contentMediaType": "application/octet-stream",
                       "format": "binary",
-                      "title": "Content",
                       "type": "string"
                     }
                   }
@@ -24307,6 +24626,455 @@
                 }
               ],
               "summary": "Put Collection Upload Session Provenance Journal",
+              "tags": [
+                "collections"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "collections:create"
+                  ]
+                }
+              ]
+            }
+          },
+          "/v1/collection-upload-sessions/{collection_id}/tags": {
+            "get": {
+              "operationId": "list_collection_upload_session_tags",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page",
+                  "required": false,
+                  "schema": {
+                    "default": 1,
+                    "minimum": 1,
+                    "title": "Page",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "per_page",
+                  "required": false,
+                  "schema": {
+                    "default": 25,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Per Page",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ListCollectionUploadSessionTagsResponse"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "List Collection Upload Session Tags",
+              "tags": [
+                "collections"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "collections:create"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collection_upload_session_tags"
+              }
+            }
+          },
+          "/v1/collection-upload-sessions/{collection_id}/tags/stream": {
+            "get": {
+              "operationId": "stream_collection_upload_session_tags",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collection Upload Session Tags",
+              "tags": [
+                "collections"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "collections:create"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.collection-upload-tag-membership/v1",
+                  "sha256": "75c5ce96825c9cce4917f4bf65fe9a93594ba125de6f1af4af8dc3444a51cf69"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_collection_upload_session_tags"
+              }
+            }
+          },
+          "/v1/collection-upload-sessions/{collection_id}/tags/{tag}": {
+            "delete": {
+              "operationId": "remove_collection_upload_session_tag",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "path",
+                  "name": "tag",
+                  "required": true,
+                  "schema": {
+                    "maxLength": 80,
+                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                    "title": "Tag",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/CollectionUploadTagMutationOut"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Remove Collection Upload Session Tag",
+              "tags": [
+                "collections"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "collections:create"
+                  ]
+                }
+              ]
+            },
+            "put": {
+              "operationId": "add_collection_upload_session_tag",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "path",
+                  "name": "tag",
+                  "required": true,
+                  "schema": {
+                    "maxLength": 80,
+                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+                    "title": "Tag",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/CollectionUploadTagMutationOut"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Add Collection Upload Session Tag",
               "tags": [
                 "collections"
               ],
@@ -25238,7 +26006,7 @@
                 "format": "riverhog-complete-enumeration/v1",
                 "item_schema": {
                   "id": "riverhog.collection-summary/v1",
-                  "sha256": "00970fab0f6d1db917c86d998ae82ae06fafdb72031288aaeba076ca6f1154fe"
+                  "sha256": "50e41305400ca0e8938758fd4ab4a65d6fe93e7e4f8358a5fe1edda4f4b7e3ca"
                 },
                 "kind": "complete-enumeration",
                 "media_type": "application/json-seq",
@@ -25354,6 +26122,237 @@
                   ]
                 }
               ]
+            }
+          },
+          "/v1/collections/{collection_id}/archive-copies": {
+            "get": {
+              "operationId": "list_collection_archive_copies",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page",
+                  "required": false,
+                  "schema": {
+                    "default": 1,
+                    "minimum": 1,
+                    "title": "Page",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "per_page",
+                  "required": false,
+                  "schema": {
+                    "default": 25,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Per Page",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/CollectionArchiveCopyListOut"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "List Collection Archive Copies",
+              "tags": [
+                "collections"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "catalog:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collection_archive_copies"
+              }
+            }
+          },
+          "/v1/collections/{collection_id}/archive-copies/stream": {
+            "get": {
+              "operationId": "stream_collection_archive_copies",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collection Archive Copies",
+              "tags": [
+                "collections"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "catalog:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.collection-archive-copy/v1",
+                  "sha256": "7167b4ceb6b4ad0a125d25984d21fdaa6d5ef31b4c290a1a94e1f3ab7232c5d8"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_collection_archive_copies"
+              }
             }
           },
           "/v1/collections/{collection_id}/delete": {
@@ -26113,7 +27112,7 @@
                 "format": "riverhog-complete-enumeration/v1",
                 "item_schema": {
                   "id": "riverhog.collection-file-provenance/v1",
-                  "sha256": "796dce760f006e232cd5bbe3963139c6b2ecbf795fcacfc1fff83e4449b5970f"
+                  "sha256": "19376f883793003b3c13eb7d307edfd2c46abd6f622b5b5753e3652b1e8548c5"
                 },
                 "kind": "complete-enumeration",
                 "media_type": "application/json-seq",
@@ -26157,7 +27156,8 @@
                     "minLength": 1,
                     "pattern": "^[^/\\\\]+(?:/[^/\\\\]+)*$",
                     "title": "Path",
-                    "type": "string"
+                    "type": "string",
+                    "x-unicode-normalization": "NFC"
                   }
                 }
               ],
@@ -26271,7 +27271,7 @@
           },
           "/v1/collections/{collection_id}/provenance/journals/{journal_id}": {
             "get": {
-              "operationId": "export_collection_provenance_journal",
+              "operationId": "stream_collection_provenance_journal",
               "parameters": [
                 {
                   "in": "path",
@@ -26297,8 +27297,173 @@
               "responses": {
                 "200": {
                   "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "format": "binary",
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Exact immutable provenance journal.",
+                  "headers": {
+                    "Content-Length": {
+                      "description": "Exact response-body length in bytes.",
+                      "required": true,
+                      "schema": {
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "ETag": {
+                      "description": "Quoted SHA-256 identity of the journal bytes.",
+                      "required": true,
+                      "schema": {
+                        "pattern": "^\"[0-9a-f]{64}\"$",
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "400": {
+                  "content": {
                     "application/json": {
-                      "schema": {}
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "404": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Not Found",
+                  "x-riverhog-error-codes": [
+                    "not_found"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collection Provenance Journal",
+              "tags": [
+                "provenance"
+              ],
+              "x-riverhog-interface": "client-only-primitive",
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "provenance:export"
+                  ]
+                }
+              ]
+            }
+          },
+          "/v1/collections/{collection_id}/provenance/journals/{journal_id}/agents": {
+            "get": {
+              "operationId": "list_collection_provenance_journal_agents",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "path",
+                  "name": "journal_id",
+                  "required": true,
+                  "schema": {
+                    "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "title": "Journal Id",
+                    "type": "string"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page",
+                  "required": false,
+                  "schema": {
+                    "default": 1,
+                    "minimum": 1,
+                    "title": "Page",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "per_page",
+                  "required": false,
+                  "schema": {
+                    "default": 25,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Per Page",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ListProvenanceJournalAgentsResponse"
+                      }
                     }
                   },
                   "description": "Successful Response"
@@ -26374,17 +27539,151 @@
                   "HTTPBearer": []
                 }
               ],
-              "summary": "Export Collection Provenance Journal",
+              "summary": "List Collection Provenance Journal Agents",
               "tags": [
                 "provenance"
               ],
               "x-riverhog-permission-requirements": [
                 {
                   "any_of": [
-                    "provenance:export"
+                    "provenance:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collection_provenance_journal_agents"
+              }
+            }
+          },
+          "/v1/collections/{collection_id}/provenance/journals/{journal_id}/agents/stream": {
+            "get": {
+              "operationId": "stream_collection_provenance_journal_agents",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "path",
+                  "name": "journal_id",
+                  "required": true,
+                  "schema": {
+                    "pattern": "^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "title": "Journal Id",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "404": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Not Found",
+                  "x-riverhog-error-codes": [
+                    "not_found"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collection Provenance Journal Agents",
+              "tags": [
+                "provenance"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "provenance:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.provenance-journal-agent/v1",
+                  "sha256": "f583f1b6cd0a63844e10b628bea016e3aa237fb18e598f3e20a7dd739a3d0151"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "list_collection_provenance_journal_agents"
+              }
             }
           },
           "/v1/collections/{collection_id}/provenance/trace/{path}": {
@@ -26423,7 +27722,8 @@
                     "minLength": 1,
                     "pattern": "^[^/\\\\]+(?:/[^/\\\\]+)*$",
                     "title": "Path",
-                    "type": "string"
+                    "type": "string",
+                    "x-unicode-normalization": "NFC"
                   }
                 },
                 {
@@ -26598,7 +27898,8 @@
                     "minLength": 1,
                     "pattern": "^[^/\\\\]+(?:/[^/\\\\]+)*$",
                     "title": "Path",
-                    "type": "string"
+                    "type": "string",
+                    "x-unicode-normalization": "NFC"
                   }
                 }
               ],
@@ -26686,7 +27987,7 @@
                 "format": "riverhog-complete-enumeration/v1",
                 "item_schema": {
                   "id": "riverhog.provenance-trace-item/v1",
-                  "sha256": "f4239b405a7d1ccbd9b779ca7812783786b6cccf6c2a261c4a73e88d12bd4df3"
+                  "sha256": "7bc0616005ff50717e4c451eed2b8e3d65afed23c87e742164dd0a5e08f367a7"
                 },
                 "kind": "complete-enumeration",
                 "media_type": "application/json-seq",
@@ -26694,9 +27995,9 @@
               }
             }
           },
-          "/v1/collections/{collection_id}/provenance/verify": {
-            "post": {
-              "operationId": "verify_collection_provenance",
+          "/v1/collections/{collection_id}/provenance/verification": {
+            "delete": {
+              "operationId": "cancel_collection_provenance_verification",
               "parameters": [
                 {
                   "in": "path",
@@ -26714,7 +28015,7 @@
                   "content": {
                     "application/json": {
                       "schema": {
-                        "$ref": "#/components/schemas/CollectionProvenanceVerificationOut"
+                        "$ref": "#/components/schemas/CollectionProvenanceVerificationJobOut"
                       }
                     }
                   },
@@ -26772,7 +28073,7 @@
                     "not_found"
                   ]
                 },
-                "409": {
+                "500": {
                   "content": {
                     "application/json": {
                       "schema": {
@@ -26780,9 +28081,104 @@
                       }
                     }
                   },
-                  "description": "Conflict",
+                  "description": "Internal Server Error",
                   "x-riverhog-error-codes": [
-                    "invalid_state"
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Cancel Collection Provenance Verification",
+              "tags": [
+                "provenance"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "provenance:read"
+                  ]
+                }
+              ]
+            },
+            "get": {
+              "operationId": "get_collection_provenance_verification",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/CollectionProvenanceVerificationJobOut"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "404": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Not Found",
+                  "x-riverhog-error-codes": [
+                    "not_found"
                   ]
                 },
                 "500": {
@@ -26804,7 +28200,115 @@
                   "HTTPBearer": []
                 }
               ],
-              "summary": "Verify Collection Provenance",
+              "summary": "Get Collection Provenance Verification",
+              "tags": [
+                "provenance"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "provenance:read"
+                  ]
+                }
+              ]
+            },
+            "post": {
+              "operationId": "request_collection_provenance_verification",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/CollectionProvenanceVerificationJobOut"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "404": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Not Found",
+                  "x-riverhog-error-codes": [
+                    "not_found"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Request Collection Provenance Verification",
               "tags": [
                 "provenance"
               ],
@@ -26828,6 +28332,29 @@
                   "schema": {
                     "minimum": 1,
                     "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page",
+                  "required": false,
+                  "schema": {
+                    "default": 1,
+                    "minimum": 1,
+                    "title": "Page",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "per_page",
+                  "required": false,
+                  "schema": {
+                    "default": 25,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Per Page",
                     "type": "integer"
                   }
                 }
@@ -26924,10 +28451,16 @@
                     "catalog:read"
                   ]
                 }
-              ]
-            },
-            "put": {
-              "operationId": "replace_collection_tags",
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collection_tags"
+              }
+            }
+          },
+          "/v1/collections/{collection_id}/tags/stream": {
+            "get": {
+              "operationId": "stream_collection_tags",
               "parameters": [
                 {
                   "in": "path",
@@ -26940,22 +28473,12 @@
                   }
                 }
               ],
-              "requestBody": {
-                "content": {
-                  "application/json": {
-                    "schema": {
-                      "$ref": "#/components/schemas/ReplaceCollectionTagsRequest"
-                    }
-                  }
-                },
-                "required": true
-              },
               "responses": {
                 "200": {
                   "content": {
-                    "application/json": {
+                    "application/json-seq": {
                       "schema": {
-                        "$ref": "#/components/schemas/CollectionTagsOut"
+                        "type": "string"
                       }
                     }
                   },
@@ -27000,32 +28523,6 @@
                     "forbidden"
                   ]
                 },
-                "404": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Not Found",
-                  "x-riverhog-error-codes": [
-                    "not_found"
-                  ]
-                },
-                "409": {
-                  "content": {
-                    "application/json": {
-                      "schema": {
-                        "$ref": "#/components/schemas/ErrorResponse"
-                      }
-                    }
-                  },
-                  "description": "Conflict",
-                  "x-riverhog-error-codes": [
-                    "conflict"
-                  ]
-                },
                 "500": {
                   "content": {
                     "application/json": {
@@ -27045,17 +28542,27 @@
                   "HTTPBearer": []
                 }
               ],
-              "summary": "Replace Collection Tags",
+              "summary": "Stream Collection Tags",
               "tags": [
                 "tags"
               ],
               "x-riverhog-permission-requirements": [
                 {
                   "any_of": [
-                    "collection-tags:manage"
+                    "catalog:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.collection-tag-membership/v1",
+                  "sha256": "08a8ba62f19b020dfd9ca39d2c0c49829a8e41d585d02903d9dcbc0156a94487"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "get_collection_tags"
+              }
             }
           },
           "/v1/collections/{collection_id}/tags/{tag}": {
@@ -27099,7 +28606,7 @@
                   "content": {
                     "application/json": {
                       "schema": {
-                        "$ref": "#/components/schemas/CollectionTagsOut"
+                        "$ref": "#/components/schemas/CollectionTagSetOut"
                       }
                     }
                   },
@@ -27241,7 +28748,7 @@
                   "content": {
                     "application/json": {
                       "schema": {
-                        "$ref": "#/components/schemas/CollectionTagsOut"
+                        "$ref": "#/components/schemas/CollectionTagSetOut"
                       }
                     }
                   },
@@ -28498,7 +30005,7 @@
                 "format": "riverhog-complete-enumeration/v1",
                 "item_schema": {
                   "id": "riverhog.retrieval-cache-object/v1",
-                  "sha256": "943345fd5d47c91314d843ca5bdbbc8d34542bb0c528b1a8c5bb6182fcc8ec85"
+                  "sha256": "5250545676155873cc00629fc399fc922eddf7cfc5251fa5fd0d41587f34e501"
                 },
                 "kind": "complete-enumeration",
                 "media_type": "application/json-seq",
@@ -29875,7 +31382,7 @@
                 "format": "riverhog-complete-enumeration/v1",
                 "item_schema": {
                   "id": "riverhog.search-file/v1",
-                  "sha256": "a6511a5dbf39316830647871f9ebca0b896cc93d42636ddb0c776faf67153a76"
+                  "sha256": "9f70abaf8699e875793ea6c90ed928b5a5187bdba2a1f0f057e647e1e4e54c2e"
                 },
                 "kind": "complete-enumeration",
                 "media_type": "application/json-seq",
@@ -39943,8 +41450,8 @@
         ],
         "client": "ApiClient",
         "method": "GET",
-        "operation_id": "get_portable_collection_manifest",
-        "path": "/v1/catalog/collections/{collection_id}/manifest",
+        "operation_id": "stream_portable_collection_inventory",
+        "path": "/v1/catalog/collections/{collection_id}/inventory",
         "provider_evidence": null,
         "read_collection": null,
         "response_authority": "stream-or-empty"
@@ -39989,7 +41496,7 @@
           "format": "riverhog-complete-enumeration/v1",
           "item_schema": {
             "id": "riverhog.collection-processing-claim/v1",
-            "sha256": "f48a24af35bddcbeeda930b4744ebfd08dbfa4f50fc8b433d43d4cfa95f903d8"
+            "sha256": "0dd09d350673bb395571ddb1df392ac5bc407b2b8cc930a5b309c4175cdc954d"
           },
           "kind": "complete-enumeration",
           "media_type": "application/json-seq",
@@ -40163,7 +41670,7 @@
           "format": "riverhog-complete-enumeration/v1",
           "item_schema": {
             "id": "riverhog.collection-upload-session-summary/v1",
-            "sha256": "ef2cda8f966706686359707a590e18cba25b91ad2ed952e8e40595e19a694449"
+            "sha256": "9654c7d08ac7e4636cf5d63b1f633ecf088287d82e298bbf1a716ac16c20e2d7"
           },
           "kind": "complete-enumeration",
           "media_type": "application/json-seq",
@@ -40290,7 +41797,7 @@
           "format": "riverhog-complete-enumeration/v1",
           "item_schema": {
             "id": "riverhog.collection-upload-file/v1",
-            "sha256": "f5f4cff92c6e543770d4c4be2da80c5907b7bf2b5aefb9dca13bbe4b321f6ec5"
+            "sha256": "4e394f7089be2e584d69c1631d6c1dfe8ac5fcccb5305a551479d9f5ff2fe860"
           },
           "kind": "complete-enumeration",
           "media_type": "application/json-seq",
@@ -40316,7 +41823,7 @@
         "cli_commands": [],
         "client": "ApiClient",
         "method": "GET",
-        "operation_id": "export_collection_upload_session_provenance_journal",
+        "operation_id": "stream_collection_upload_session_provenance_journal",
         "path": "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
         "provider_evidence": null,
         "read_collection": null,
@@ -40333,6 +41840,72 @@
         "operation_id": "put_collection_upload_session_provenance_journal",
         "path": "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
         "provider_evidence": "provider-qualification:#442",
+        "read_collection": null,
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "client-only-primitive",
+        "cli_commands": [],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "list_collection_upload_session_tags",
+        "path": "/v1/collection-upload-sessions/{collection_id}/tags",
+        "provider_evidence": "provider-qualification:#442",
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collection_upload_session_tags"
+        },
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "client-only-primitive",
+        "cli_commands": [
+          "collection upload start"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collection_upload_session_tags",
+        "path": "/v1/collection-upload-sessions/{collection_id}/tags/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.collection-upload-tag-membership/v1",
+            "sha256": "75c5ce96825c9cce4917f4bf65fe9a93594ba125de6f1af4af8dc3444a51cf69"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_collection_upload_session_tags"
+        },
+        "response_authority": "stream-or-empty"
+      },
+      {
+        "application": "riverhog",
+        "classification": "client-only-primitive",
+        "cli_commands": [
+          "collection upload start"
+        ],
+        "client": "ApiClient",
+        "method": "DELETE",
+        "operation_id": "remove_collection_upload_session_tag",
+        "path": "/v1/collection-upload-sessions/{collection_id}/tags/{tag}",
+        "provider_evidence": null,
+        "read_collection": null,
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "client-only-primitive",
+        "cli_commands": [
+          "collection upload start"
+        ],
+        "client": "ApiClient",
+        "method": "PUT",
+        "operation_id": "add_collection_upload_session_tag",
+        "path": "/v1/collection-upload-sessions/{collection_id}/tags/{tag}",
+        "provider_evidence": null,
         "read_collection": null,
         "response_authority": "http-json"
       },
@@ -40422,7 +41995,7 @@
           "format": "riverhog-complete-enumeration/v1",
           "item_schema": {
             "id": "riverhog.collection-summary/v1",
-            "sha256": "00970fab0f6d1db917c86d998ae82ae06fafdb72031288aaeba076ca6f1154fe"
+            "sha256": "50e41305400ca0e8938758fd4ab4a65d6fe93e7e4f8358a5fe1edda4f4b7e3ca"
           },
           "kind": "complete-enumeration",
           "media_type": "application/json-seq",
@@ -40446,6 +42019,46 @@
         "provider_evidence": null,
         "read_collection": null,
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection archive-copies"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "list_collection_archive_copies",
+        "path": "/v1/collections/{collection_id}/archive-copies",
+        "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collection_archive_copies"
+        },
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection archive-copies"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collection_archive_copies",
+        "path": "/v1/collections/{collection_id}/archive-copies/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.collection-archive-copy/v1",
+            "sha256": "7167b4ceb6b4ad0a125d25984d21fdaa6d5ef31b4c290a1a94e1f3ab7232c5d8"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_collection_archive_copies"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -40519,7 +42132,7 @@
           "format": "riverhog-complete-enumeration/v1",
           "item_schema": {
             "id": "riverhog.collection-file-provenance/v1",
-            "sha256": "796dce760f006e232cd5bbe3963139c6b2ecbf795fcacfc1fff83e4449b5970f"
+            "sha256": "19376f883793003b3c13eb7d307edfd2c46abd6f622b5b5753e3652b1e8548c5"
           },
           "kind": "complete-enumeration",
           "media_type": "application/json-seq",
@@ -40543,16 +42156,56 @@
       },
       {
         "application": "riverhog",
-        "classification": "human-cli+json",
+        "classification": "client-only-primitive",
         "cli_commands": [
           "collection provenance export"
         ],
         "client": "ApiClient",
         "method": "GET",
-        "operation_id": "export_collection_provenance_journal",
+        "operation_id": "stream_collection_provenance_journal",
         "path": "/v1/collections/{collection_id}/provenance/journals/{journal_id}",
         "provider_evidence": null,
         "read_collection": null,
+        "response_authority": "stream-or-empty"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection provenance agents"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "list_collection_provenance_journal_agents",
+        "path": "/v1/collections/{collection_id}/provenance/journals/{journal_id}/agents",
+        "provider_evidence": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collection_provenance_journal_agents"
+        },
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection provenance agents"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collection_provenance_journal_agents",
+        "path": "/v1/collections/{collection_id}/provenance/journals/{journal_id}/agents/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.provenance-journal-agent/v1",
+            "sha256": "f583f1b6cd0a63844e10b628bea016e3aa237fb18e598f3e20a7dd739a3d0151"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "list_collection_provenance_journal_agents"
+        },
         "response_authority": "stream-or-empty"
       },
       {
@@ -40587,7 +42240,7 @@
           "format": "riverhog-complete-enumeration/v1",
           "item_schema": {
             "id": "riverhog.provenance-trace-item/v1",
-            "sha256": "f4239b405a7d1ccbd9b779ca7812783786b6cccf6c2a261c4a73e88d12bd4df3"
+            "sha256": "7bc0616005ff50717e4c451eed2b8e3d65afed23c87e742164dd0a5e08f367a7"
           },
           "kind": "complete-enumeration",
           "media_type": "application/json-seq",
@@ -40599,12 +42252,12 @@
         "application": "riverhog",
         "classification": "human-cli+json",
         "cli_commands": [
-          "collection provenance verify"
+          "collection provenance verification-cancel"
         ],
         "client": "ApiClient",
-        "method": "POST",
-        "operation_id": "verify_collection_provenance",
-        "path": "/v1/collections/{collection_id}/provenance/verify",
+        "method": "DELETE",
+        "operation_id": "cancel_collection_provenance_verification",
+        "path": "/v1/collections/{collection_id}/provenance/verification",
         "provider_evidence": null,
         "read_collection": null,
         "response_authority": "http-json"
@@ -40613,12 +42266,27 @@
         "application": "riverhog",
         "classification": "human-cli+json",
         "cli_commands": [
-          "collection tag list"
+          "collection provenance verification-show",
+          "collection provenance verify"
         ],
         "client": "ApiClient",
         "method": "GET",
-        "operation_id": "get_collection_tags",
-        "path": "/v1/collections/{collection_id}/tags",
+        "operation_id": "get_collection_provenance_verification",
+        "path": "/v1/collections/{collection_id}/provenance/verification",
+        "provider_evidence": null,
+        "read_collection": null,
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection provenance verify"
+        ],
+        "client": "ApiClient",
+        "method": "POST",
+        "operation_id": "request_collection_provenance_verification",
+        "path": "/v1/collections/{collection_id}/provenance/verification",
         "provider_evidence": null,
         "read_collection": null,
         "response_authority": "http-json"
@@ -40630,18 +42298,49 @@
           "collection tag replace"
         ],
         "client": "ApiClient",
-        "method": "PUT",
-        "operation_id": "replace_collection_tags",
+        "method": "GET",
+        "operation_id": "get_collection_tags",
         "path": "/v1/collections/{collection_id}/tags",
         "provider_evidence": null,
-        "read_collection": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collection_tags"
+        },
         "response_authority": "http-json"
       },
       {
         "application": "riverhog",
         "classification": "human-cli+json",
         "cli_commands": [
-          "collection tag remove"
+          "collection tag list",
+          "collection tag replace",
+          "local add",
+          "local repair",
+          "local sync"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collection_tags",
+        "path": "/v1/collections/{collection_id}/tags/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.collection-tag-membership/v1",
+            "sha256": "08a8ba62f19b020dfd9ca39d2c0c49829a8e41d585d02903d9dcbc0156a94487"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "get_collection_tags"
+        },
+        "response_authority": "stream-or-empty"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection tag remove",
+          "collection tag replace"
         ],
         "client": "ApiClient",
         "method": "DELETE",
@@ -40655,7 +42354,8 @@
         "application": "riverhog",
         "classification": "human-cli+json",
         "cli_commands": [
-          "collection tag add"
+          "collection tag add",
+          "collection tag replace"
         ],
         "client": "ApiClient",
         "method": "POST",
@@ -40783,7 +42483,7 @@
           "format": "riverhog-complete-enumeration/v1",
           "item_schema": {
             "id": "riverhog.retrieval-cache-object/v1",
-            "sha256": "943345fd5d47c91314d843ca5bdbbc8d34542bb0c528b1a8c5bb6182fcc8ec85"
+            "sha256": "5250545676155873cc00629fc399fc922eddf7cfc5251fa5fd0d41587f34e501"
           },
           "kind": "complete-enumeration",
           "media_type": "application/json-seq",
@@ -40956,7 +42656,7 @@
           "format": "riverhog-complete-enumeration/v1",
           "item_schema": {
             "id": "riverhog.search-file/v1",
-            "sha256": "a6511a5dbf39316830647871f9ebca0b896cc93d42636ddb0c776faf67153a76"
+            "sha256": "9f70abaf8699e875793ea6c90ed928b5a5187bdba2a1f0f057e647e1e4e54c2e"
           },
           "kind": "complete-enumeration",
           "media_type": "application/json-seq",
@@ -42071,10 +43771,6 @@
             "format": {
               "const": "riverhog-collection/v1"
             },
-            "metadata_revision": {
-              "minimum": 0,
-              "type": "integer"
-            },
             "passphrase_id": {
               "pattern": "^[A-Za-z0-9_-]{16,128}$",
               "type": "string"
@@ -42096,15 +43792,6 @@
                 "mixed",
                 "omitted"
               ]
-            },
-            "tags": {
-              "items": {
-                "maxLength": 80,
-                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-                "type": "string"
-              },
-              "type": "array",
-              "uniqueItems": true
             }
           },
           "required": [
@@ -42115,8 +43802,6 @@
             "passphrase_id",
             "provenance_mode",
             "provenance_identity",
-            "metadata_revision",
-            "tags",
             "files"
           ],
           "title": "Riverhog v1 portable collection record",
@@ -60077,7 +61762,7 @@
               },
               "runnable": {
                 "kind": "method",
-                "signature": "(self, *, now: 'float') -> 'list[str]'"
+                "signature": "(self, *, now: 'float', limit: 'int') -> 'list[str]'"
               },
               "start_dispatch": {
                 "kind": "method",
@@ -60506,6 +62191,10 @@
             "kind": "function",
             "signature": "(items: 'Iterable[object]', *, query: 'Mapping[str, object]', item_schema: 'CompleteEnumerationItemSchema') -> 'Iterator[bytes]'"
           },
+          "iter_json_sequence_records": {
+            "kind": "function",
+            "signature": "(chunks: 'Iterable[bytes]') -> 'Iterator[dict[str, Any]]'"
+          },
           "operation_interface": {
             "kind": "function",
             "signature": "(value: 'OperationInterface') -> 'dict[str, str]'"
@@ -60889,9 +62578,17 @@
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', tag: 'str', *, event_context: 'Mapping[str, Any] | None' = None) -> 'dict[str, Any]'"
               },
+              "add_collection_upload_session_tag": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', tag: 'str') -> 'dict[str, Any]'"
+              },
               "cancel_archive_copy_job": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', *, destination_store: 'ArchiveStoreName') -> 'dict[str, Any]'"
+              },
+              "cancel_collection_provenance_verification": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId') -> 'dict[str, Any]'"
               },
               "cancel_collection_upload_session": {
                 "kind": "method",
@@ -60945,14 +62642,6 @@
                 "kind": "method",
                 "signature": "(self, job_id: 'str', *, collection_id: 'CollectionId', path: 'str', output: 'Path', expected_bytes: 'int', expected_sha256: 'str', progress: 'DownloadProgress | None' = None) -> 'int'"
               },
-              "export_collection_provenance_journal": {
-                "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId') -> 'bytes'"
-              },
-              "export_collection_upload_session_provenance_journal": {
-                "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId') -> 'bytes'"
-              },
               "get_archive_copy_job": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', *, destination_store: 'ArchiveStoreName') -> 'dict[str, Any]'"
@@ -60969,9 +62658,13 @@
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', path: 'str') -> 'dict[str, Any]'"
               },
-              "get_collection_tags": {
+              "get_collection_provenance_verification": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId') -> 'dict[str, Any]'"
+              },
+              "get_collection_tags": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
               },
               "get_collection_upload_session": {
                 "kind": "method",
@@ -60988,10 +62681,6 @@
               "get_download_quota": {
                 "kind": "method",
                 "signature": "(self) -> 'dict[str, Any]'"
-              },
-              "get_portable_collection_manifest": {
-                "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId') -> 'PortableCollectionRecord'"
               },
               "get_retrieval_cache_object": {
                 "kind": "method",
@@ -61029,11 +62718,23 @@
                 "kind": "method",
                 "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
+              "list_collection_archive_copies": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
+              },
               "list_collection_provenance": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, status: 'ProvenanceStatus | None' = None, sort: 'ProvenanceSort' = 'path', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
+              "list_collection_provenance_journal_agents": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
+              },
               "list_collection_upload_session_files": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
+              },
+              "list_collection_upload_session_tags": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
               },
@@ -61087,7 +62788,7 @@
               },
               "put_collection_upload_session_provenance_journal": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId', *, content: 'bytes', sha256: 'str') -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId', *, content: 'Iterable[bytes]', byte_count: 'int', sha256: 'str') -> 'dict[str, Any]'"
               },
               "put_collection_upload_session_unit": {
                 "kind": "method",
@@ -61105,6 +62806,10 @@
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', tag: 'str', *, event_context: 'Mapping[str, Any] | None' = None) -> 'dict[str, Any]'"
               },
+              "remove_collection_upload_session_tag": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', tag: 'str') -> 'dict[str, Any]'"
+              },
               "renew_retrieval_job": {
                 "kind": "method",
                 "signature": "(self, job_id: 'str', *, lease_seconds: 'int') -> 'dict[str, Any]'"
@@ -61116,6 +62821,10 @@
               "replace_collection_tags": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', tags: 'Sequence[str]', *, event_context: 'Mapping[str, Any] | None' = None) -> 'dict[str, Any]'"
+              },
+              "request_collection_provenance_verification": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId') -> 'dict[str, Any]'"
               },
               "resourcesync_capabilities": {
                 "kind": "method",
@@ -61181,6 +62890,10 @@
                 "kind": "method",
                 "signature": "(self, *, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc') -> 'Iterator[Iterator[dict[str, Any]]]'"
               },
+              "stream_collection_archive_copies": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
               "stream_collection_file_provenance_trace": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', path: 'str') -> 'Iterator[Iterator[dict[str, Any]]]'"
@@ -61189,7 +62902,27 @@
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', *, q: 'str | None' = None, status: 'ProvenanceStatus | None' = None, sort: 'ProvenanceSort' = 'path', order: 'SortOrder' = 'asc') -> 'Iterator[Iterator[dict[str, Any]]]'"
               },
+              "stream_collection_provenance_journal": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId') -> 'Iterator[Iterator[bytes]]'"
+              },
+              "stream_collection_provenance_journal_agents": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_collection_tags": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
               "stream_collection_upload_session_files": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_collection_upload_session_provenance_journal": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId') -> 'Iterator[Iterator[bytes]]'"
+              },
+              "stream_collection_upload_session_tags": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId') -> 'Iterator[Iterator[dict[str, Any]]]'"
               },
@@ -61204,6 +62937,10 @@
               "stream_download_quotas": {
                 "kind": "method",
                 "signature": "(self, *, q: 'str | None' = None, sort: 'DownloadQuotaSort' = 'app', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, active: 'bool | None' = None) -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_portable_collection_inventory": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId') -> 'Iterator[PortableCollectionInventoryReader]'"
               },
               "stream_retrieval_cache_objects": {
                 "kind": "method",
@@ -61224,10 +62961,6 @@
               "trace_collection_file_provenance": {
                 "kind": "method",
                 "signature": "(self, collection_id: 'CollectionId', path: 'str', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
-              },
-              "verify_collection_provenance": {
-                "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId') -> 'dict[str, Any]'"
               }
             },
             "signature": "(base_url: 'str | None' = None, token: 'str | None' = None, *, allow_insecure_http: 'bool | None' = None) -> 'None'"
@@ -62527,7 +64260,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "367d08be3b1e27d71da3e542d112a0a6b171f507e132c900a84a6e7cee96e322",
+            "schema_sha256": "149456f1731c2018b68844dd93513f835937fda10ac2bd2fab237237d6f09147",
             "signature": "(*, collection: riverhog_protocol.collection_workflow_transport.CollectionRootIdentityDocument, path: CanonicalRelPath, bytes: Annotated[int, Ge(ge=0)], sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')]) -> None"
           },
           "CollectionDerivation": {
@@ -62622,7 +64355,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "c1cab35e6bbffa06b1c7aaf531fc36dcc7175092c4370b79455a71e226d0a6ed",
+            "schema_sha256": "1e731d196eb36aa1a1d8dc75e404a9bfe1625dac00e1978796d64cb4e4cf0032",
             "signature": "(*, format: Literal['riverhog-collection-derivation/v1'], execution_id: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], claim: riverhog_protocol.collection_workflow_transport.ClaimFenceDocument, recipe: riverhog_protocol.collection_workflow_transport.RecipeIdentityDocument, operation: riverhog_protocol.collection_workflow_transport.OperationIdentityDocument, inputs: Annotated[list[riverhog_protocol.collection_workflow_transport.CollectionRootIdentityDocument], MinLen(min_length=1)], output_tags: Annotated[list[CanonicalTag], MinLen(min_length=1)], execution_envelope_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], execution_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], controller_evidence: dict[str, typing.Any], controller_evidence_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], dispositions: Annotated[list[riverhog_protocol.collection_workflow_transport.ArtifactDispositionDocument], MinLen(min_length=1)]) -> None"
           },
           "CollectionDerivationResponseDocument": {
@@ -62633,7 +64366,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "f6d2ae65382416b2bee74295c3a42a80d224a1b7f80aa37f8488deff73c9a1a1",
+            "schema_sha256": "ca58b699a2ab20ce52292cbaab02aea91fa9803b19037be796d51a5be79caa24",
             "signature": "(*, collection_id: CollectionId, document_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], derivation: riverhog_protocol.collection_workflow_transport.CollectionDerivationDocument) -> None"
           },
           "CollectionId": {
@@ -62766,12 +64499,12 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "1f395077b430e7adace21492d3aa96c263cb6d00513eaa73e42a4c9e8bf58c33",
+            "schema_sha256": "3d7fbac72d546a99cdf54d62a777ee7bf09291107b0b6194d91f4d050b3221f2",
             "signature": "(*, files: Annotated[list[riverhog_protocol.collection_upload_transport.CollectionUploadFileIn], MinLen(min_length=1), MaxLen(max_length=100)]) -> None"
           },
           "CollectionUploadFileIn": {
             "kind": "class",
-            "schema_sha256": "6d63fac2ca0526cde895302123b00a25155b2b7334a1744043021536c0902b31",
+            "schema_sha256": "9deb502281e0e93300309a113f0ceb00a5fbf097db10efbd79bffb82c7ac2aef",
             "signature": "(*, path: CanonicalRelPath, bytes: Annotated[int, Ge(ge=0)], sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], raw_parts: riverhog_protocol.collection_upload_transport.CollectionUploadRawPartsIn | None = None, provenance: riverhog_protocol.collection_upload_transport.CapturedFileProvenanceBinding | riverhog_protocol.collection_upload_transport.OmittedFileProvenanceBinding) -> None"
           },
           "CollectionUploadRawPartsIn": {
@@ -62917,7 +64650,7 @@
           },
           "ImmutableFileIdentityDocument": {
             "kind": "class",
-            "schema_sha256": "6ec68321cce47ff03a1e19b6c3c7e2b96e6d748cd579b837710c6b50c83651b2",
+            "schema_sha256": "b70f55d90a8f7b3a8506e96e423fbbf6705b9d55d919d9918254e4a3da6188b1",
             "signature": "(*, path: CanonicalRelPath, bytes: Annotated[int, Ge(ge=0)], sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')]) -> None"
           },
           "InvalidPath": {
@@ -62978,6 +64711,10 @@
             "kind": "constant",
             "value": "riverhog-collection/v1"
           },
+          "PORTABLE_COLLECTION_STREAM_FORMAT": {
+            "kind": "constant",
+            "value": "riverhog-collection-inventory-stream/v1"
+          },
           "PRODUCER_EVIDENCE_PATH": {
             "kind": "constant",
             "value": "riverhog/producer-evidence.json"
@@ -63017,6 +64754,56 @@
             },
             "signature": "(path: 'str', bytes: 'int', sha256: 'str') -> None"
           },
+          "PortableCollectionHeader": {
+            "kind": "class",
+            "members": {
+              "validate_provenance_binding": {
+                "kind": "method",
+                "signature": "(self) -> 'PortableCollectionHeader'"
+              }
+            },
+            "schema_sha256": "f3306150c0b20a86e2053a1c71f6653c3327b4e6009f6e31027b42ae26ad46cf",
+            "signature": "(*, format: Literal['riverhog-collection/v1'] = 'riverhog-collection/v1', collection: CollectionId, content_identity: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], encryption_format: Annotated[str, MinLen(min_length=1)], passphrase_id: Annotated[str, _PydanticGeneralMetadata(pattern='^[A-Za-z0-9_-]{16,128}$')], provenance_mode: Literal['captured', 'mixed', 'omitted'], provenance_identity: Annotated[str | None, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')] = None) -> None"
+          },
+          "PortableCollectionIdentityBuilder": {
+            "kind": "class",
+            "members": {
+              "add": {
+                "kind": "method",
+                "signature": "(self, file: 'PortableCollectionFile') -> 'None'"
+              },
+              "identity": {
+                "kind": "property",
+                "signature": "(self) -> 'str'"
+              }
+            },
+            "signature": "(header: 'PortableCollectionHeader') -> 'None'"
+          },
+          "PortableCollectionInventoryBegin": {
+            "kind": "class",
+            "schema_sha256": "34abd6799d5427d4bfd8d69a203bbb1f65ef607d735220b482e9547b04dd8510",
+            "signature": "(*, type: Literal['begin'] = 'begin', format: Literal['riverhog-collection-inventory-stream/v1'] = 'riverhog-collection-inventory-stream/v1', header: riverhog_protocol.portable_collection.PortableCollectionHeader, inventory_identity: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], files: Annotated[int, Ge(ge=1)], bytes: Annotated[int, Ge(ge=0)]) -> None"
+          },
+          "PortableCollectionInventoryEnd": {
+            "kind": "class",
+            "schema_sha256": "fa670fce5fca6aad2b01fe7229267bfa5d216c5c1ffadf3bc4aae7a5995f4af8",
+            "signature": "(*, type: Literal['end'] = 'end', files: Annotated[int, Ge(ge=1)], bytes: Annotated[int, Ge(ge=0)], inventory_identity: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')]) -> None"
+          },
+          "PortableCollectionInventoryFile": {
+            "kind": "class",
+            "schema_sha256": "f2f35447c19fd2e7b7fa9cde6f39df3e4b5cd83bf1cbf91d397e685e111b3449",
+            "signature": "(*, type: Literal['file'] = 'file', ordinal: Annotated[int, Ge(ge=0)], file: dict[str, object]) -> None"
+          },
+          "PortableCollectionInventoryReader": {
+            "kind": "class",
+            "members": {
+              "require_complete": {
+                "kind": "method",
+                "signature": "(self) -> 'None'"
+              }
+            },
+            "signature": "(chunks: 'Iterable[bytes]') -> 'None'"
+          },
           "PortableCollectionRecord": {
             "fields": [
               {
@@ -63051,16 +64838,6 @@
               },
               {
                 "default": "required",
-                "name": "metadata_revision",
-                "type": "'int'"
-              },
-              {
-                "default": "required",
-                "name": "tags",
-                "type": "'tuple[str, ...]'"
-              },
-              {
-                "default": "required",
                 "name": "files",
                 "type": "'tuple[PortableCollectionFile, ...]'"
               },
@@ -63074,7 +64851,7 @@
             "members": {
               "create": {
                 "kind": "classmethod",
-                "signature": "(cls, *, collection: 'CollectionId', content_identity: 'str', encryption_format: 'str', passphrase_id: 'str', provenance_mode: \"Literal['captured', 'mixed', 'omitted']\", provenance_identity: 'str | None', metadata_revision: 'int', tags: 'Sequence[str]', files: 'Iterable[tuple[str, int, str]]') -> 'PortableCollectionRecord'"
+                "signature": "(cls, *, collection: 'CollectionId', content_identity: 'str', encryption_format: 'str', passphrase_id: 'str', provenance_mode: \"Literal['captured', 'mixed', 'omitted']\", provenance_identity: 'str | None', files: 'Iterable[tuple[str, int, str]]') -> 'PortableCollectionRecord'"
               },
               "from_json_bytes": {
                 "kind": "classmethod",
@@ -63083,6 +64860,10 @@
               "from_mapping": {
                 "kind": "classmethod",
                 "signature": "(cls, value: 'object') -> 'PortableCollectionRecord'"
+              },
+              "header": {
+                "kind": "property",
+                "signature": "(self) -> 'PortableCollectionHeader'"
               },
               "identity": {
                 "kind": "property",
@@ -63097,7 +64878,7 @@
                 "signature": "(self) -> 'dict[str, object]'"
               }
             },
-            "signature": "(collection: 'CollectionId', content_identity: 'str', encryption_format: 'str', passphrase_id: 'str', provenance_mode: \"Literal['captured', 'mixed', 'omitted']\", provenance_identity: 'str | None', metadata_revision: 'int', tags: 'tuple[str, ...]', files: 'tuple[PortableCollectionFile, ...]', format: 'str' = 'riverhog-collection/v1') -> None"
+            "signature": "(collection: 'CollectionId', content_identity: 'str', encryption_format: 'str', passphrase_id: 'str', provenance_mode: \"Literal['captured', 'mixed', 'omitted']\", provenance_identity: 'str | None', files: 'tuple[PortableCollectionFile, ...]', format: 'str' = 'riverhog-collection/v1') -> None"
           },
           "ProcessingClaimAbandonDocument": {
             "kind": "class",
@@ -63123,7 +64904,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "f48a24af35bddcbeeda930b4744ebfd08dbfa4f50fc8b433d43d4cfa95f903d8",
+            "schema_sha256": "0dd09d350673bb395571ddb1df392ac5bc407b2b8cc930a5b309c4175cdc954d",
             "signature": "(*, format: Literal['riverhog-processing-claim/v1'], id: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], work_id: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], consumer: riverhog_protocol.collection_workflow_transport.ProcessingClaimConsumerDocument, purpose: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], state: Literal['active', 'settled', 'retiring', 'abandoned', 'released'], fence: Annotated[int, Ge(ge=1)], expires_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=64)], created_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=64)], updated_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=64)], settled_at: Optional[Annotated[str, FieldInfo(annotation=NoneType, required=True, metadata=[MinLen(min_length=1), MaxLen(max_length=64)])]] = None, abandoned_at: Optional[Annotated[str, FieldInfo(annotation=NoneType, required=True, metadata=[MinLen(min_length=1), MaxLen(max_length=64)])]] = None, abandonment_reason: Annotated[str | None, MinLen(min_length=1), MaxLen(max_length=1000)] = None, released_at: Optional[Annotated[str, FieldInfo(annotation=NoneType, required=True, metadata=[MinLen(min_length=1), MaxLen(max_length=64)])]] = None, output_collection_id: CollectionId | None = None, work_document: dict[str, typing.Any], work_document_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], inputs: Annotated[list[riverhog_protocol.collection_workflow_transport.CollectionRootIdentityDocument], MinLen(min_length=1)], plan: riverhog_protocol.collection_workflow_transport.ProcessingClaimPlanDocument | None = None, outcomes: list[riverhog_protocol.collection_workflow_transport.ProcessingOutcomeIdentityDocument] = <factory>, outcome_settlement: riverhog_protocol.collection_workflow_transport.ProcessingClaimOutcomeSettlementDocument | None = None) -> None"
           },
           "ProcessingClaimFenceDocument": {
@@ -63148,7 +64929,7 @@
           },
           "ProcessingClaimPageDocument": {
             "kind": "class",
-            "schema_sha256": "2d047227ba8732cc153201edcd8eee1e41b45b2e51e260fc22fdb818f253f723",
+            "schema_sha256": "a80acd01c7b0a68fba0a0b12409228d06a5709af2d5e5f145791e970c984e5be",
             "signature": "(*, page: Annotated[int, Ge(ge=1)], per_page: Annotated[int, Ge(ge=0)], total: Annotated[int, Ge(ge=0)], pages: Annotated[int, Ge(ge=0)], sort: ProcessingClaimSort, order: SortOrder, filters: riverhog_protocol.collection_workflow_transport.ProcessingClaimFiltersDocument, claims: list[riverhog_protocol.collection_workflow_transport.ProcessingClaimDocument]) -> None"
           },
           "ProcessingClaimPlanSealDocument": {
@@ -63159,7 +64940,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "3e765c2e04fdab098915f3231ca7afd15c1304c84d74c44a801b565f4800a527",
+            "schema_sha256": "0a285ac7db405406e7460e0f0846a399f9e4cfa11ddf90ed68470f23a2bd177e",
             "signature": "(*, fence: Annotated[int, Ge(ge=1)], execution_id: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], controller_evidence: dict[str, typing.Any], controller_evidence_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], operation: riverhog_protocol.collection_workflow_transport.OperationIdentityDocument, input_artifacts: Annotated[list[riverhog_protocol.collection_workflow_transport.CollectionArtifactIdentityDocument], MinLen(min_length=1)], output_tags: Annotated[list[CanonicalTag], MinLen(min_length=1)], retirement_policy: Literal['retain', 'retire-after-verified-output'] = 'retain', retirement_grace_seconds: Annotated[int, Ge(ge=0)] = 0) -> None"
           },
           "ProcessingClaimRenewDocument": {
@@ -63174,7 +64955,7 @@
           },
           "ProcessingClaimSettleDocument": {
             "kind": "class",
-            "schema_sha256": "00a00f61c2d5cfa28ee90aeb66571ff46e55647cd5d498818d9f659a94bbc23c",
+            "schema_sha256": "2aa49eb3ae92a5157c4fcab2adb8e455ccbb56f96c4b52ff857b05cb6810ac28",
             "signature": "(*, fence: Annotated[int, Ge(ge=1)], output_collection_id: CollectionId, derivation: riverhog_protocol.collection_workflow_transport.CollectionDerivationDocument, outcome: riverhog_protocol.collection_workflow_transport.ProcessingOutcomeBindingDocument | None = None) -> None"
           },
           "ProcessingClaimSort": {
@@ -63354,7 +65135,7 @@
           },
           "RetrievalFileReferenceDocument": {
             "kind": "class",
-            "schema_sha256": "652aac00ebffcacb30753eaeef3d9ce29022019d7ee892cc8a7c5c045f82e3f6",
+            "schema_sha256": "46c0a44ede7dac165b09955455c01f3facbf8b911f1ebc4472f6653e8348ea57",
             "signature": "(*, collection_id: CollectionId, path: CanonicalRelPath) -> None"
           },
           "RetrievalFileReferenceSetDocument": {
@@ -63365,7 +65146,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "fad3f9b2dd5a44a9a074a225bf49c9589721803ae3c771ab57cc3c3bb6534531",
+            "schema_sha256": "ba0ca0fceb204c0069ca65c769c0523fed4af538de5cf4a923f7ae720a99fb08",
             "signature": "(*, files: Annotated[list[riverhog_protocol.retrieval_transport.RetrievalFileReferenceDocument], MinLen(min_length=1), MaxLen(max_length=10000)]) -> None"
           },
           "RiverhogError": {
@@ -63380,7 +65161,7 @@
                 "signature": "(self, cursor: 'str') -> 'None'"
               }
             },
-            "schema_sha256": "4dd46a9b8ab13e1ed8fc0e0a70fbb8b4dc93bde6a49afd85058abe3569d7b43e",
+            "schema_sha256": "85f314f6806b0bb3b1f6df0a2cf6a5aafc662cdf028c8acc3c13cde2533e5886",
             "signature": "(*, events: list[RiverhogLifecycleEvent], next_cursor: str, has_more: bool) -> None"
           },
           "RiverhogLifecycleEvent": {
@@ -63411,7 +65192,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "2aac1538532ee34f71241f966bd1daed16d15a1d5a453c0b65ef248d79226139",
+            "schema_sha256": "2fc5449f67db65ecde398fadeb94c0be18af1d79b96c6b3685459c51b9d2e9fc",
             "signature": "(*, fence: Annotated[int, Ge(ge=1)], audience: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-z0-9][a-z0-9._:/-]{0,299}$')], actions: Annotated[list[Literal['read-inputs', 'write-output']], MinLen(min_length=1)] = <factory>, artifacts: Annotated[list[riverhog_protocol.collection_workflow_transport.CollectionArtifactIdentityDocument], MinLen(min_length=1)], ttl_seconds: Annotated[int, Ge(ge=30), Le(le=86400)] = 900) -> None"
           },
           "TransformCapabilityDocument": {
@@ -63422,7 +65203,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "c275c3e56fab999c0880ed200d3a903fd2331e11f8a83344a1c7b3b11a379470",
+            "schema_sha256": "04842d7f60c13f3428162d7a8090d71c54c4cbd6148af6379df2f18c3336b6f2",
             "signature": "(*, format: Literal['riverhog-transform-capability/v1'], id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], claim_id: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], fence: Annotated[int, Ge(ge=1)], audience: Annotated[str, _PydanticGeneralMetadata(pattern='^[a-z0-9][a-z0-9._:/-]{0,299}$')], actions: Annotated[list[Literal['read-inputs', 'write-output']], MinLen(min_length=1)], principal_app: Annotated[str, MinLen(min_length=1), MaxLen(max_length=300)], expires_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=64)], artifacts: Annotated[list[riverhog_protocol.collection_workflow_transport.CollectionArtifactIdentityDocument], MinLen(min_length=1)], token: Annotated[str, _PydanticGeneralMetadata(pattern='^rhc_[A-Za-z0-9_-]+$')]) -> None"
           },
           "TransformIntent": {
@@ -63524,6 +65305,14 @@
           "error_type_for_code": {
             "kind": "function",
             "signature": "(code: 'str') -> 'type[RiverhogError] | None'"
+          },
+          "iter_portable_collection_inventory": {
+            "kind": "function",
+            "signature": "(header: 'PortableCollectionHeader', files: 'Iterable[PortableCollectionFile]', *, inventory_identity: 'str', file_count: 'int', file_bytes: 'int') -> 'Iterator[bytes]'"
+          },
+          "portable_collection_inventory_identity": {
+            "kind": "function",
+            "signature": "(header: 'PortableCollectionHeader', files: 'Iterable[PortableCollectionFile]') -> 'str'"
           },
           "portable_collection_json_schema": {
             "kind": "function",
@@ -63689,6 +65478,16 @@
               },
               {
                 "default": "required",
+                "name": "entries",
+                "type": "'int'"
+              },
+              {
+                "default": "required",
+                "name": "tail_frame",
+                "type": "'JournalFrame'"
+              },
+              {
+                "default": "required",
                 "name": "journal_sha256",
                 "type": "'str'"
               },
@@ -63735,7 +65534,7 @@
                 "signature": "(self) -> 'JournalFrame'"
               }
             },
-            "signature": "(journal_id: 'str', primary_lineage_id: 'str', frames: 'tuple[JournalFrame, ...]', journal_sha256: 'str', current_binding_id: 'str', current_state_id: 'str', current_path: 'str', current_bytes: 'int', current_sha256: 'str', agent_ids: 'frozenset[str]', external_states: 'tuple[ExternalStateReference, ...]') -> None"
+            "signature": "(journal_id: 'str', primary_lineage_id: 'str', frames: 'tuple[JournalFrame, ...]', entries: 'int', tail_frame: 'JournalFrame', journal_sha256: 'str', current_binding_id: 'str', current_state_id: 'str', current_path: 'str', current_bytes: 'int', current_sha256: 'str', agent_ids: 'frozenset[str]', external_states: 'tuple[ExternalStateReference, ...]') -> None"
           },
           "LargeValueDisposition": {
             "kind": "class",
@@ -64412,6 +66211,10 @@
           "validate_journal": {
             "kind": "function",
             "signature": "(content: 'bytes') -> 'JournalSummary'"
+          },
+          "validate_journal_chunks": {
+            "kind": "function",
+            "signature": "(chunks: 'Iterable[bytes]', *, retain_frames: 'bool' = True) -> 'JournalSummary'"
           },
           "validate_journal_set": {
             "kind": "function",

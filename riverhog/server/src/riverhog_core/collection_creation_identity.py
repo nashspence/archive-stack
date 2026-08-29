@@ -5,10 +5,9 @@ from __future__ import annotations
 from typing import Annotated, Literal, Self
 
 from http_api_contracts import CanonicalVisibleText
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from riverhog_protocol import CollectionUploadCustodyMode
 from riverhog_protocol.collection_workflows import canonical_json_sha256
-from riverhog_protocol.paths import CanonicalTag
 from riverhog_protocol.storage_names import ArchiveStoreName
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -20,20 +19,13 @@ class CollectionUploadCreationIdentityPayload(BaseModel):
     format: Literal["riverhog-collection-upload-creation/v1"] = (
         "riverhog-collection-upload-creation/v1"
     )
-    tags: tuple[CanonicalTag, ...]
+    tag_set_identity: Sha256
     ingest_source: str | None = None
     archive_store: ArchiveStoreName
     event_context: dict[str, JsonValue] | None = None
     provenance_mode: Literal["captured", "omitted"]
     provenance_omission_reason: CanonicalVisibleText | None = None
     custody_mode: CollectionUploadCustodyMode
-
-    @field_validator("tags")
-    @classmethod
-    def canonical_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if value != tuple(sorted(value)) or len(value) != len(set(value)):
-            raise ValueError("collection upload creation tags must be unique and ordered")
-        return value
 
     @model_validator(mode="after")
     def validate_provenance_choice(self) -> Self:

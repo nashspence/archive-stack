@@ -12,6 +12,7 @@ from riverhog_provenance import (
     create_derivative_journal_from_identity,
     create_observation_journal,
     validate_journal,
+    validate_journal_chunks,
     validate_journal_set,
     verify_payload_binding,
 )
@@ -61,6 +62,15 @@ def test_observation_journal_binds_payload_and_continues_exact_prefix(
     assert current.primary_lineage_id == initial.primary_lineage_id
     assert current.current_path == "staged/source.bin"
     assert len(current.frames) == 3
+
+    transport_summary = validate_journal_chunks(
+        (continued[index : index + 97] for index in range(0, len(continued), 97)),
+        retain_frames=False,
+    )
+    assert transport_summary.frames == ()
+    assert transport_summary.entries == current.entries
+    assert transport_summary.tail.sha256 == current.tail.sha256
+    assert transport_summary.current_state_id == current.current_state_id
 
 
 def test_replacement_transformation_stays_in_the_same_lineage(tmp_path: Path, urn_factory) -> None:

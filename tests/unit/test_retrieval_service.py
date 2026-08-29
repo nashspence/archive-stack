@@ -26,6 +26,7 @@ from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUpload
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol.errors import Conflict, NotFound
 from riverhog_protocol.manifest import collection_content_identity
+from riverhog_protocol.paths import tag_set_identity
 from riverhog_protocol.raw_ingress import hash_raw_source
 
 from tests.fixtures.crypto import FixtureProofStamper
@@ -244,7 +245,8 @@ def _seed_collection(
     )
     opened = uploads.create_or_resume(
         idempotency_key="upload-1",
-        tags=("docs",),
+        initial_tag="docs",
+        tag_set_identity_sha256=tag_set_identity(("docs",)),
         ingest_source="fixture",
         archive_store=None,
         initiator=_creator(),

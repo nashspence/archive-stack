@@ -22,8 +22,8 @@ from .schema import validate_provenance_index_document, validate_provenance_set_
 PROVENANCE_INDEX_SCHEMA = "riverhog-provenance-index/v1"
 PROVENANCE_SET_SCHEMA = "riverhog-provenance-set/v1"
 PROVENANCE_BUNDLE_FORMAT = "riverhog-provenance-bundle/v1"
-MAX_BUNDLE_JOURNALS = 256
-MAX_BUNDLE_PLAINTEXT_BYTES = 64 * 1024 * 1024
+TARGET_BUNDLE_JOURNALS = 256
+TARGET_BUNDLE_PLAINTEXT_BYTES = 64 * 1024 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _JOURNAL_ID_RE = re.compile(
     r"urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
@@ -408,13 +408,9 @@ def _journal_groups(
         if previous_journal_id is not None and journal_id <= previous_journal_id:
             raise ProvenanceValidationError("provenance journals are not in canonical order")
         contribution = len(content) + 1024
-        if contribution > MAX_BUNDLE_PLAINTEXT_BYTES:
-            raise ProvenanceValidationError(
-                f"provenance journal exceeds the bundle limit: {journal_id}"
-            )
         if current and (
-            len(current) >= MAX_BUNDLE_JOURNALS
-            or current_bytes + contribution > MAX_BUNDLE_PLAINTEXT_BYTES
+            len(current) >= TARGET_BUNDLE_JOURNALS
+            or current_bytes + contribution > TARGET_BUNDLE_PLAINTEXT_BYTES
         ):
             yield tuple(current)
             current = []
@@ -429,10 +425,6 @@ def _journal_groups(
 def _build_bundle(sequence: int, group: Sequence[tuple[str, bytes]]) -> ProvenanceBundle:
     bundle_id = _bundle_id(sequence)
     content = _tar_bytes(group)
-    if len(content) > MAX_BUNDLE_PLAINTEXT_BYTES:
-        raise ProvenanceValidationError(
-            f"provenance bundle exceeds its canonical limit: {bundle_id}"
-        )
     return ProvenanceBundle(
         bundle_id=bundle_id,
         relative_path=f"provenance/{bundle_id}.tar.age",

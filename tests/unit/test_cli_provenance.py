@@ -72,22 +72,32 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
             calls.append(("trace-stream", (collection_id, path)))
             yield iter(({"kind": "journal", "journal": shown["journal"]},))
 
-        def export_collection_provenance_journal(
+        @contextmanager
+        def stream_collection_provenance_journal(
             self, collection_id: int, journal_id: str
-        ) -> bytes:
+        ) -> Iterator[Iterator[bytes]]:
             calls.append(("export", (collection_id, journal_id)))
-            return JOURNAL
+            yield iter((JOURNAL,))
 
-        def verify_collection_provenance(self, collection_id: int) -> dict[str, Any]:
+        def request_collection_provenance_verification(self, collection_id: int) -> dict[str, Any]:
             calls.append(("verify", collection_id))
             return {
                 "collection_id": collection_id,
-                "valid": True,
-                "provenance_mode": "captured",
-                "provenance_identity": "b" * 64,
-                "files": 1,
-                "journals": 1,
-                "entities": 4,
+                "state": "succeeded",
+                "requested_at": "2026-08-29T00:00:00.000000Z",
+                "started_at": "2026-08-29T00:00:00.000000Z",
+                "finished_at": "2026-08-29T00:00:01.000000Z",
+                "attempts": 1,
+                "failure": None,
+                "result": {
+                    "collection_id": collection_id,
+                    "valid": True,
+                    "provenance_mode": "captured",
+                    "provenance_identity": "b" * 64,
+                    "files": 1,
+                    "journals": 1,
+                    "entities": 4,
+                },
             }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
@@ -181,7 +191,7 @@ def test_provenance_list_show_trace_export_and_verify_share_one_cli_surface(
         "sha256": hashlib.sha256(JOURNAL).hexdigest(),
     }
     assert verified.exit_code == 0
-    assert json.loads(verified.stdout)["valid"] is True
+    assert json.loads(verified.stdout)["result"]["valid"] is True
     assert calls == [
         (
             "stream",

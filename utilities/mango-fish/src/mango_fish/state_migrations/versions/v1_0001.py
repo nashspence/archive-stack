@@ -9,9 +9,10 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
-    from mango_fish.schema import MANGO_FISH_STATE_METADATA  # noqa: PLC0415
+    from mango_fish.state_migrations.v1_ddl import SQLITE_DDL  # noqa: PLC0415
 
-    MANGO_FISH_STATE_METADATA.create_all(op.get_bind())
+    for statement in SQLITE_DDL:
+        op.execute(statement)
 
 
 def downgrade() -> None:

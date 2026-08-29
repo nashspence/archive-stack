@@ -42,6 +42,7 @@ from .journal import (
     parse_journal,
     software_agent_id,
     validate_journal,
+    validate_journal_chunks,
     validate_journal_set,
     verify_payload_binding,
 )
@@ -134,6 +135,7 @@ __all__ = [
     "validate_entry_document",
     "validate_graph_fragment",
     "validate_journal",
+    "validate_journal_chunks",
     "validate_journal_set",
     "validate_portable_provenance_set",
     "validate_provenance_archive",

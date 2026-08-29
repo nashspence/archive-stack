@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from typing import Any
 
 import riverhog_cli.main
@@ -72,8 +73,8 @@ def test_collection_tag_add_and_remove_match_json_data_model(monkeypatch) -> Non
             return {
                 "collection_id": collection_id,
                 "metadata_revision": 2,
-                "record_etag": "etag-2",
-                "tags": ["photos", tag],
+                "inventory_identity": "etag-2",
+                "tag_count": 2,
             }
 
         def remove_collection_tag(self, collection_id: int, tag: str) -> dict[str, Any]:
@@ -81,8 +82,8 @@ def test_collection_tag_add_and_remove_match_json_data_model(monkeypatch) -> Non
             return {
                 "collection_id": collection_id,
                 "metadata_revision": 3,
-                "record_etag": "etag-3",
-                "tags": ["reviewed"],
+                "inventory_identity": "etag-3",
+                "tag_count": 1,
             }
 
     monkeypatch.setattr(riverhog_cli.main, "client", FakeClient)
@@ -91,9 +92,9 @@ def test_collection_tag_add_and_remove_match_json_data_model(monkeypatch) -> Non
     removed = runner.invoke(app, ["collection", "tag", "remove", "41", "photos", "--json"])
 
     assert added.exit_code == 0
-    assert json.loads(added.stdout)["tags"] == ["photos", "reviewed"]
+    assert json.loads(added.stdout)["tag_count"] == 2
     assert removed.exit_code == 0
-    assert json.loads(removed.stdout)["tags"] == ["reviewed"]
+    assert json.loads(removed.stdout)["tag_count"] == 1
     assert calls == [("add", 41, "reviewed"), ("remove", 41, "photos")]
     added_human = runner.invoke(app, ["collection", "tag", "add", "41", "reviewed"])
     removed_human = runner.invoke(app, ["collection", "tag", "remove", "41", "photos"])
@@ -113,8 +114,8 @@ def test_tag_and_collection_tag_reads_have_human_json_parity(monkeypatch) -> Non
     collection_tags = {
         "collection_id": 41,
         "metadata_revision": 2,
-        "record_etag": "etag-2",
-        "tags": ["photos"],
+        "inventory_identity": "etag-2",
+        "tag_count": 1,
     }
 
     class FakeClient:
@@ -135,9 +136,10 @@ def test_tag_and_collection_tag_reads_have_human_json_parity(monkeypatch) -> Non
                 "tags": [tag],
             }
 
-        def get_collection_tags(self, collection_id: int) -> dict[str, object]:
+        @contextmanager
+        def stream_collection_tags(self, collection_id: int):  # type: ignore[no-untyped-def]
             assert collection_id == 41
-            return collection_tags
+            yield iter(({"tag": "photos"},))
 
         def replace_collection_tags(self, collection_id: int, tags: list[str]) -> dict[str, object]:
             assert collection_id == 41
@@ -151,7 +153,7 @@ def test_tag_and_collection_tag_reads_have_human_json_parity(monkeypatch) -> Non
         (["tag", "show", "photos"], "photos"),
         (["tag", "list"], "photos"),
         (["collection", "tag", "list", "41"], "photos"),
-        (["collection", "tag", "replace", "41", "--tag", "photos"], "photos"),
+        (["collection", "tag", "replace", "41", "--tag", "photos"], "collection 41"),
     )
     for arguments, identity in cases:
         human = runner.invoke(app, arguments)
@@ -159,4 +161,6 @@ def test_tag_and_collection_tag_reads_have_human_json_parity(monkeypatch) -> Non
         assert human.exit_code == 0, human.output
         assert structured.exit_code == 0, structured.output
         assert identity in human.stdout
-        assert identity in json.dumps(json.loads(structured.stdout), sort_keys=True)
+        assert str(identity).split()[-1] in json.dumps(
+            json.loads(structured.stdout), sort_keys=True
+        )

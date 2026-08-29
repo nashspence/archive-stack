@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
     error TEXT
 );
 CREATE INDEX IF NOT EXISTS dispatches_state_idx
-    ON dispatches(state, next_retry_at, observed_at);
+    ON dispatches(state, next_retry_at, observed_at, dispatch_id);
 """
 
 
@@ -405,19 +405,37 @@ class ListenerStore:
         *,
         now: float,
     ) -> list[str]:
-        current = {str(path.resolve()) for path in mount_points}
+        current = tuple(sorted({str(path.resolve()) for path in mount_points}, key=str.casefold))
         queued: list[str] = []
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            known_rows = connection.execute("SELECT * FROM observed_mounts").fetchall()
+            connection.execute(
+                "CREATE TEMP TABLE current_mounts (mount_point TEXT PRIMARY KEY) WITHOUT ROWID"
+            )
+            connection.executemany(
+                "INSERT INTO current_mounts(mount_point) VALUES (?)",
+                ((path_value,) for path_value in current),
+            )
+            connection.execute(
+                """
+                UPDATE observed_mounts
+                SET present = 0
+                WHERE present = 1
+                  AND NOT EXISTS (
+                    SELECT 1 FROM current_mounts
+                    WHERE current_mounts.mount_point = observed_mounts.mount_point
+                  )
+                """
+            )
+            known_rows = connection.execute(
+                """
+                SELECT observed_mounts.*
+                FROM current_mounts
+                CROSS JOIN observed_mounts USING (mount_point)
+                """
+            ).fetchall()
             known = {str(row["mount_point"]): row for row in known_rows}
-            for path_value, row in known.items():
-                if path_value not in current and int(row["present"]) == 1:
-                    connection.execute(
-                        "UPDATE observed_mounts SET present = 0 WHERE mount_point = ?",
-                        (path_value,),
-                    )
-            for path_value in sorted(current, key=str.casefold):
+            for path_value in current:
                 row = known.get(path_value)
                 if row is None:
                     generation = 1
@@ -488,7 +506,9 @@ class ListenerStore:
             connection.commit()
         return queued
 
-    def runnable(self, *, now: float) -> list[str]:
+    def runnable(self, *, now: float, limit: int) -> list[str]:
+        if limit < 1:
+            return []
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 """
@@ -496,8 +516,9 @@ class ListenerStore:
                 WHERE state = 'queued'
                    OR (state = 'retry' AND next_retry_at <= ?)
                 ORDER BY observed_at, dispatch_id
+                LIMIT ?
                 """,
-                (now,),
+                (now, limit),
             ).fetchall()
         return [str(row["dispatch_id"]) for row in rows]
 
@@ -824,6 +845,14 @@ class ListenerRuntime:
                 self._queued.add(dispatch_id)
                 self.dispatch_queue.put(dispatch_id)
 
+    def _enqueue_runnable(self, *, now: float) -> None:
+        with self._active_lock:
+            active = self._active_dispatch is not None
+        with self._queue_lock:
+            available = 1 - len(self._queued) - int(active)
+        if available > 0:
+            self._enqueue(self.store.runnable(now=now, limit=available))
+
     def _heartbeat(self) -> None:
         summary = self.store.summary()
         with self._active_lock:
@@ -887,8 +916,6 @@ class ListenerRuntime:
                 dispatch_id = self.dispatch_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
-            with self._queue_lock:
-                self._queued.discard(dispatch_id)
             while not self.stop_event.is_set():
                 with self._health_lock:
                     configuration_valid = self._configuration_diagnostic is None
@@ -899,6 +926,8 @@ class ListenerRuntime:
                 self.dispatch_queue.task_done()
                 continue
             plan = self.store.start_dispatch(dispatch_id, now=self.clock())
+            with self._queue_lock:
+                self._queued.discard(dispatch_id)
             if plan is None:
                 self.dispatch_queue.task_done()
                 continue
@@ -997,12 +1026,11 @@ class ListenerRuntime:
             with self._health_lock:
                 self._mount_attention.append({"mount_point": "", "diagnostic": diagnostic})
             self.logger.warning("mount discovery attention=%s", diagnostic)
-            self._enqueue(self.store.runnable(now=now))
+            self._enqueue_runnable(now=now)
             self._heartbeat()
             return
-        queued = self.store.observe(mount_points, self._planner, now=now)
-        self._enqueue(queued)
-        self._enqueue(self.store.runnable(now=now))
+        self.store.observe(mount_points, self._planner, now=now)
+        self._enqueue_runnable(now=now)
         self._heartbeat()
 
     def run(self) -> None:

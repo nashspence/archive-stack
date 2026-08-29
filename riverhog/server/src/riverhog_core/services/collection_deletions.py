@@ -309,7 +309,7 @@ class SqlAlchemyCollectionDeletionService:
                     change="deleted",
                     collection_id=collection_id,
                     occurred_at=format_utc_timestamp(utc_now()),
-                    record_etag=str(plan["record_etag"]),
+                    inventory_identity=str(plan["inventory_identity"]),
                     before_tags=before_tags,
                     after_tags=(),
                 )
@@ -391,7 +391,7 @@ def _build_plan(
         "archive_object_count": archive_object_count,
         "remote_storage_bytes": remote_storage_bytes,
         "upload_file_count": upload_file_count,
-        "record_etag": collection.record_etag,
+        "inventory_identity": collection.inventory_identity,
         "metadata_rows": {
             "collections": 1,
             "collection_files": int(file_count),

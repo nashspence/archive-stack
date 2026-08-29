@@ -6,11 +6,12 @@ import os
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from http_api_contracts import closed_literal_values
 from riverhog_protocol import (
-    PortableCollectionRecord,
+    PortableCollectionFile,
+    PortableCollectionHeader,
     RetrievalCacheProtection,
     RetrievalCacheSort,
     RetrievalCacheState,
@@ -46,7 +47,6 @@ from riverhog_core.catalog_models import (
     RetrievalJobRecord,
 )
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
-from riverhog_core.collection_metadata import collection_record_manifest
 from riverhog_core.domain.archive import StoredArchivePart
 from riverhog_core.pack_retrieval import (
     PackMemberRangeReader,
@@ -127,12 +127,18 @@ class SqlAlchemyRetrievalService:
             return 0
         return self._cache.abort_incomplete_writes(initiated_before=initiated_before)
 
-    def collection_manifest(
+    def collection_inventory(
         self,
         collection_id: int,
         *,
         principal: ApplicationPrincipal | None = None,
-    ) -> tuple[PortableCollectionRecord, str]:
+    ) -> tuple[
+        PortableCollectionHeader,
+        Iterator[PortableCollectionFile],
+        str,
+        int,
+        int,
+    ]:
         normalized_id = _normalize_collection_id_or_raise(collection_id)
         if principal is not None and principal.has_artifact_scope:
             raise NotFound(f"collection manifest not found: {normalized_id}")
@@ -141,34 +147,41 @@ class SqlAlchemyRetrievalService:
             if collection is None:
                 raise NotFound(f"collection not found: {normalized_id}")
             require_collection_access(session, principal, CATALOG_READ, normalized_id)
-            files = list(
-                session.scalars(
-                    select(CollectionFileRecord)
-                    .where(CollectionFileRecord.collection_id == normalized_id)
-                    .order_by(CollectionFileRecord.path)
-                )
-            )
-            tags = tuple(
-                session.scalars(
-                    select(CollectionTagRecord.tag_id)
-                    .where(CollectionTagRecord.collection_id == normalized_id)
-                    .order_by(CollectionTagRecord.tag_id)
-                ).all()
-            )
-            payload, etag = collection_record_manifest(
-                collection_id=normalized_id,
+            header = PortableCollectionHeader(
+                collection=normalized_id,
                 content_identity=collection.content_identity,
                 encryption_format=collection.encryption_format,
                 passphrase_id=collection.passphrase_id,
-                provenance_mode=collection.provenance_mode,
+                provenance_mode=cast(
+                    Literal["captured", "mixed", "omitted"],
+                    collection.provenance_mode,
+                ),
                 provenance_identity=collection.provenance_identity,
-                metadata_revision=collection.metadata_revision,
-                tags=tags,
-                files=((row.path, row.bytes, row.sha256) for row in files),
             )
-            if etag != collection.record_etag:
-                raise InvalidState("collection record does not match its catalog ETag")
-            return payload, etag
+            inventory_identity = collection.inventory_identity
+            file_count = int(collection.file_count)
+            file_bytes = int(collection.file_bytes)
+
+        def files() -> Iterator[PortableCollectionFile]:
+            statement = (
+                select(
+                    CollectionFileRecord.path,
+                    CollectionFileRecord.bytes,
+                    CollectionFileRecord.sha256,
+                )
+                .where(CollectionFileRecord.collection_id == normalized_id)
+                .order_by(CollectionFileRecord.path_sort_key)
+                .execution_options(yield_per=100)
+            )
+            with read_snapshot(self._session_factory) as session:
+                for path, byte_count, sha256 in session.execute(statement).tuples():
+                    yield PortableCollectionFile(
+                        path=str(path),
+                        bytes=int(byte_count),
+                        sha256=str(sha256),
+                    )
+
+        return header, files(), inventory_identity, file_count, file_bytes
 
     def resource_list_page(
         self,
@@ -188,7 +201,7 @@ class SqlAlchemyRetrievalService:
                 or 0
             )
             rows = session.execute(
-                select(CollectionRecord.id, CollectionRecord.record_etag)
+                select(CollectionRecord.id, CollectionRecord.inventory_identity)
                 .where(visible)
                 .order_by(CollectionRecord.id)
                 .offset((page - 1) * per_page)
@@ -200,7 +213,7 @@ class SqlAlchemyRetrievalService:
                 "total": total,
                 "pages": (total + per_page - 1) // per_page if total else 0,
                 "resources": [
-                    {"collection_id": row.id, "etag": str(row.record_etag)} for row in rows
+                    {"collection_id": row.id, "etag": str(row.inventory_identity)} for row in rows
                 ],
             }
 
@@ -260,7 +273,7 @@ class SqlAlchemyRetrievalService:
                         "change": projected,
                         "collection_id": event.collection_id,
                         "occurred_at": event.occurred_at,
-                        "etag": event.record_etag,
+                        "etag": event.inventory_identity,
                     }
                     for event, projected in rows
                 ],
@@ -362,10 +375,6 @@ class SqlAlchemyRetrievalService:
             total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
             statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = list(session.execute(statement))
-            tags = _collection_tags(
-                session,
-                {current.collection_id for current, *_ in rows},
-            )
         return {
             "page": page,
             "per_page": per_page,
@@ -381,9 +390,15 @@ class SqlAlchemyRetrievalService:
                     protected_until=protected_until,
                     new_archive_expires_at=new_archive_expires_at,
                     retrieval_job_leases=int(retrieval_job_leases or 0),
-                    tags=tags.get(current.collection_id, ()),
+                    tag_count=int(tag_count),
                 )
-                for current, protected_until, new_archive_expires_at, retrieval_job_leases in rows
+                for (
+                    current,
+                    protected_until,
+                    new_archive_expires_at,
+                    retrieval_job_leases,
+                    tag_count,
+                ) in rows
             ],
         }
 
@@ -420,17 +435,19 @@ class SqlAlchemyRetrievalService:
         with read_snapshot(self._session_factory) as session:
             rows = session.execute(statement.execution_options(yield_per=100))
             for partition in rows.partitions():
-                tags = _collection_tags(
-                    session,
-                    {current.collection_id for current, *_ in partition},
-                )
-                for current, protected_until, new_archive_expires_at, job_leases in partition:
+                for (
+                    current,
+                    protected_until,
+                    new_archive_expires_at,
+                    job_leases,
+                    tag_count,
+                ) in partition:
                     yield _cache_object_payload(
                         current,
                         protected_until=protected_until,
                         new_archive_expires_at=new_archive_expires_at,
                         retrieval_job_leases=int(job_leases or 0),
-                        tags=tags.get(current.collection_id, ()),
+                        tag_count=int(tag_count),
                     )
 
     def get_cache_object(
@@ -472,13 +489,19 @@ class SqlAlchemyRetrievalService:
             if row is None:
                 raise NotFound("retrieval cache object not found")
             current, protected_until, new_archive_expires_at, retrieval_job_leases = row
-            tags = _collection_tags(session, {normalized_id}).get(normalized_id, ())
             return _cache_object_payload(
                 current,
                 protected_until=protected_until,
                 new_archive_expires_at=new_archive_expires_at,
                 retrieval_job_leases=int(retrieval_job_leases or 0),
-                tags=tags,
+                tag_count=int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(CollectionTagRecord)
+                        .where(CollectionTagRecord.collection_id == normalized_id)
+                    )
+                    or 0
+                ),
             )
 
     def plan(
@@ -1812,11 +1835,19 @@ def _cache_list_statement(
     normalized_tag = tag.strip().casefold() if tag and tag.strip() else None
     needle = q.strip().casefold() if q and q.strip() else None
     protected_until, new_archive_expires_at, retrieval_job_leases = _cache_lease_projections(now)
+    tag_count = (
+        select(func.count())
+        .select_from(CollectionTagRecord)
+        .where(CollectionTagRecord.collection_id == RetrievalCacheObjectRecord.collection_id)
+        .correlate(RetrievalCacheObjectRecord)
+        .scalar_subquery()
+    )
     statement = select(
         RetrievalCacheObjectRecord,
         protected_until.label("protected_until"),
         new_archive_expires_at.label("new_archive_expires_at"),
         retrieval_job_leases.label("retrieval_job_leases"),
+        tag_count.label("tag_count"),
     ).where(
         collection_access_filter(RetrievalCacheObjectRecord.collection_id, principal, CATALOG_READ)
     )
@@ -1943,27 +1974,13 @@ def _active_cache_lease_summary(now: str) -> Any:
     )
 
 
-def _collection_tags(session: Session, collection_ids: set[int]) -> dict[int, tuple[str, ...]]:
-    if not collection_ids:
-        return {}
-    rows = session.execute(
-        select(CollectionTagRecord.collection_id, CollectionTagRecord.tag_id)
-        .where(CollectionTagRecord.collection_id.in_(collection_ids))
-        .order_by(CollectionTagRecord.collection_id, CollectionTagRecord.tag_id)
-    )
-    result: dict[int, list[str]] = {}
-    for collection_id, tag in rows:
-        result.setdefault(int(collection_id), []).append(str(tag))
-    return {collection_id: tuple(tags) for collection_id, tags in result.items()}
-
-
 def _cache_object_payload(
     current: RetrievalCacheObjectRecord,
     *,
     protected_until: str | None,
     new_archive_expires_at: str | None,
     retrieval_job_leases: int,
-    tags: Sequence[str],
+    tag_count: int,
 ) -> dict[str, object]:
     categories: list[str] = []
     if new_archive_expires_at is not None:
@@ -1983,7 +2000,7 @@ def _cache_object_payload(
         "new_archive_expires_at": new_archive_expires_at,
         "lease_categories": categories,
         "retrieval_job_leases": retrieval_job_leases,
-        "tags": list(tags),
+        "tag_count": tag_count,
     }
 
 

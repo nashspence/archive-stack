@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 
 from riverhog_core.app_permissions import (
@@ -16,11 +15,15 @@ from riverhog_core.catalog_db import initialize_db, make_session_factory, sessio
 from riverhog_core.catalog_models import (
     CollectionFileProvenanceRecord,
     CollectionFileRecord,
+    CollectionProvenanceJournalAgentRecord,
+    CollectionProvenanceJournalChunkRecord,
     CollectionProvenanceJournalRecord,
+    CollectionProvenanceVerificationRecord,
     CollectionRecord,
 )
 from riverhog_core.provenance_projection import provenance_journal_projection
 from riverhog_core.runtime_config import RuntimeConfig
+from riverhog_core.services import provenance as provenance_module
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_provenance import (
     create_derivative_journal,
@@ -48,6 +51,33 @@ READER = ApplicationPrincipal(
 def _payload(path: Path, content: bytes) -> Path:
     path.write_bytes(content)
     return path
+
+
+def _omitted_provenance_service(tmp_path: Path) -> SqlAlchemyProvenanceService:
+    database_url = sqlite_url(tmp_path / "verification.sqlite3")
+    initialize_db(database_url)
+    with session_scope(make_session_factory(database_url)) as session:
+        session.add(
+            CollectionRecord(
+                id=1,
+                creation_idempotency_key="verification-fixture",
+                creation_identity_sha256="e" * 64,
+                creation_custody_mode="producer-retained",
+                content_identity="a" * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="fixture-archive-key-v1",
+                provenance_mode="omitted",
+                provenance_identity=None,
+                inventory_identity="c" * 64,
+                metadata_revision=1,
+                metadata_updated_at=NOW,
+                created_by_app="fixture",
+                created_at=NOW,
+                file_count=0,
+                file_bytes=0,
+            )
+        )
+    return SqlAlchemyProvenanceService(RuntimeConfig(database_url=database_url))
 
 
 def test_trace_reads_only_reachable_validated_lineage_projection(
@@ -111,7 +141,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
                 passphrase_id="fixture-archive-key-v1",
                 provenance_mode="captured",
                 provenance_identity="b" * 64,
-                record_etag="c" * 64,
+                inventory_identity="c" * 64,
                 metadata_revision=1,
                 metadata_updated_at=NOW,
                 created_by_app="fixture",
@@ -130,16 +160,32 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
                 CollectionProvenanceJournalRecord(
                     collection_id=1,
                     journal_id=journal_id,
-                    journal_bytes=contents[journal_id],
                     bytes=len(contents[journal_id]),
                     sha256=summary.journal_sha256,
                     entries=len(summary.frames),
-                    agent_ids_json=json.dumps(sorted(summary.agent_ids), separators=(",", ":")),
+                    agent_count=len(summary.agent_ids),
                     entity_counts_json=projection.entity_counts_json,
                     current_state_id=summary.current_state_id,
                     current_path=summary.current_path,
                     current_bytes=summary.current_bytes,
                     current_sha256=summary.current_sha256,
+                )
+            )
+            session.flush()
+            session.add_all(
+                CollectionProvenanceJournalAgentRecord(
+                    collection_id=1,
+                    journal_id=journal_id,
+                    agent_id=agent_id,
+                )
+                for agent_id in summary.agent_ids
+            )
+            session.add(
+                CollectionProvenanceJournalChunkRecord(
+                    collection_id=1,
+                    journal_id=journal_id,
+                    ordinal=0,
+                    content=contents[journal_id],
                 )
             )
         session.flush()
@@ -247,9 +293,72 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
         derivative_summary.journal_id,
         *source_ids,
     }
-    exported, _sha256 = service.export_journal(
-        1,
-        validate_journal(first).journal_id,
-        principal=scoped,
+    exported = b"".join(
+        service.iter_journal(
+            1,
+            validate_journal(first).journal_id,
+            principal=scoped,
+        )
     )
     assert exported == first
+
+
+def test_provenance_verification_job_is_restartable_and_cancellable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    service = _omitted_provenance_service(tmp_path)
+
+    queued = service.request_verification(1, principal=READER)
+    assert queued["state"] == "queued"
+    canceled = service.cancel_verification(1, principal=READER)
+    assert canceled["state"] == "canceled"
+
+    retried = service.request_verification(1, principal=READER)
+    assert retried["state"] == "queued"
+
+    def interrupt(
+        collection_id: int,
+        *,
+        principal: ApplicationPrincipal,
+        cancel_requested,
+    ) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        assert collection_id == 1
+        service.cancel_verification(1, principal=READER)
+        assert cancel_requested()
+        raise provenance_module._VerificationCanceled
+
+    monkeypatch.setattr(service, "verify", interrupt)
+    assert service.process_due_verifications() == 1
+    assert service.get_verification(1, principal=READER)["state"] == "canceled"
+
+    service.request_verification(1, principal=READER)
+    with session_scope(service._session_factory) as session:
+        record = session.get(CollectionProvenanceVerificationRecord, 1)
+        assert record is not None
+        record.state = "running"
+        record.started_at = NOW
+    assert service.requeue_interrupted_verifications_for_startup() == 1
+    restarted = service.get_verification(1, principal=READER)
+    assert restarted["state"] == "queued"
+    assert restarted["started_at"] is None
+
+
+def test_provenance_verification_job_persists_terminal_result(tmp_path: Path) -> None:
+    service = _omitted_provenance_service(tmp_path)
+
+    service.request_verification(1, principal=READER)
+    assert service.process_due_verifications() == 1
+
+    completed = service.get_verification(1, principal=READER)
+    assert completed["state"] == "succeeded"
+    assert completed["attempts"] == 1
+    assert completed["result"] == {
+        "collection_id": 1,
+        "valid": True,
+        "provenance_mode": "omitted",
+        "provenance_identity": None,
+        "files": 0,
+        "journals": 0,
+        "entities": 0,
+    }

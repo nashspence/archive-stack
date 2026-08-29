@@ -9,13 +9,21 @@ from typing import Any
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.orm import Session, sessionmaker
-from state_schema import StateSchema, StateStatus, assert_schema_matches_metadata
+from state_schema import (
+    StateSchema,
+    StateStatus,
+    assert_schema_matches_metadata,
+    attach_sha256_string_constraints,
+    require_postgresql_extension,
+)
 
 # The catalog database composition boundary owns registration of every current
 # v1 table with the shared declarative metadata. Model modules remain acyclic.
 from riverhog_core import catalog_models as _catalog_models  # noqa: E402,F401
 from riverhog_core import catalog_workflow_models as _catalog_workflow_models  # noqa: E402,F401
 from riverhog_core.catalog_base import Base
+
+attach_sha256_string_constraints(Base.metadata)
 
 SessionFactory = sessionmaker[Session]
 
@@ -58,6 +66,15 @@ def _assert_schema_matches_models(bind: Any) -> None:
         bind,
         Base.metadata,
         version_table=STATE_VERSION_TABLE,
+    )
+
+
+def _require_catalog_database_capabilities(bind: Any) -> None:
+    require_postgresql_extension(
+        bind,
+        name="pg_trgm",
+        schema="public",
+        operator_classes=("gin_trgm_ops",),
     )
 
 
@@ -149,6 +166,7 @@ def catalog_state_schema(database_url: str) -> StateSchema:
         name="riverhog catalog",
         engine_factory=lambda: create_catalog_engine(database_url),
         script_location=STATE_MIGRATIONS,
+        prerequisite=_require_catalog_database_capabilities,
         verify=_assert_schema_matches_models,
         version_table=STATE_VERSION_TABLE,
     )

@@ -95,6 +95,8 @@ compose up --detach --wait app
 compose exec -T app sh -c \
   'test "$(id -u)" = 65532 && test "$(id -g)" = 65532 && test -w /tmp && test ! -w /usr/share/doc/riverhog'
 compose exec -T postgres createdb --username riverhog --owner riverhog stove0
+compose exec -T postgres psql --username riverhog --dbname stove0 \
+  --command 'CREATE EXTENSION pg_trgm WITH SCHEMA public;'
 
 bootstrap_token="$(compose_env_value RIVERHOG_BOOTSTRAP_TOKEN riverhog-development-bootstrap-token)"
 create_code="import json, os, urllib.request

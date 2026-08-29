@@ -12,7 +12,7 @@ from riverhog_protocol.lifecycle_events import (
     normalize_riverhog_event_type,
     validate_riverhog_event,
 )
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
 
@@ -22,6 +22,7 @@ from riverhog_core.catalog_models import (
     CollectionRecord,
     CollectionTagRecord,
     CollectionUploadRecord,
+    CollectionUploadTagRecord,
     LifecycleEventRecord,
     RetrievalJobRecord,
 )
@@ -197,16 +198,24 @@ class SqlAlchemyLifecycleEventService:
         }
         if collection is not None:
             data["collection_created_at"] = collection.created_at
-            data["collection_tags"] = list(
-                session.scalars(
-                    select(CollectionTagRecord.tag_id)
+            data["collection_tag_count"] = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionTagRecord)
                     .where(CollectionTagRecord.collection_id == collection_id)
-                    .order_by(CollectionTagRecord.tag_id)
                 )
+                or 0
             )
         elif upload is not None:
             data["collection_created_at"] = upload.opened_at
-            data["collection_tags"] = sorted(current.tag_id for current in upload.tags)
+            data["collection_tag_count"] = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionUploadTagRecord)
+                    .where(CollectionUploadTagRecord.collection_id == collection_id)
+                )
+                or 0
+            )
         data.update(details or {})
         return self.emit(
             owner_app=owner_app,
@@ -249,12 +258,13 @@ class SqlAlchemyLifecycleEventService:
             data["collection_id"] = collection_id
             if collection is not None:
                 data["collection_created_at"] = collection.created_at
-                data["collection_tags"] = list(
-                    session.scalars(
-                        select(CollectionTagRecord.tag_id)
+                data["collection_tag_count"] = int(
+                    session.scalar(
+                        select(func.count())
+                        .select_from(CollectionTagRecord)
                         .where(CollectionTagRecord.collection_id == collection_id)
-                        .order_by(CollectionTagRecord.tag_id)
                     )
+                    or 0
                 )
         data.update(details or {})
         return self.emit(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import uuid4
 
 import pytest
@@ -137,6 +137,10 @@ _NON_PLAN_QUERY_OPERATIONS = {
     ("riverhog", "list_archive_stores"): {"order", "page", "per_page", "q", "sort"},
     ("riverhog", "stream_archive_stores"): {"order", "q", "sort"},
     ("riverhog", "list_collection_upload_session_files"): {"page", "per_page"},
+    ("riverhog", "list_collection_upload_session_tags"): {"page", "per_page"},
+    ("riverhog", "list_collection_archive_copies"): {"page", "per_page"},
+    ("riverhog", "list_collection_provenance_journal_agents"): {"page", "per_page"},
+    ("riverhog", "get_collection_tags"): {"page", "per_page"},
     ("riverhog", "list_lifecycle_events"): {"after", "limit"},
     ("riverhog", "plan_collection_deletion"): {"retirement_claim_id"},
     ("riverhog", "resourcesync_change_list"): {"after"},
@@ -154,6 +158,8 @@ class _PlanCase:
     expected_indexes: frozenset[str] = frozenset()
     expected_nodes: frozenset[str] = frozenset()
     database: str = "riverhog"
+    allow_low_cardinality_seq_scan: bool = False
+    allow_explicit_sort: bool = False
 
 
 @dataclass(frozen=True)
@@ -215,13 +221,13 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             INSERT INTO collections (
                 id, creation_idempotency_key, creation_identity_sha256,
                 creation_custody_mode, content_identity, encryption_format,
-                passphrase_id, provenance_mode, provenance_identity, record_etag,
+                passphrase_id, provenance_mode, provenance_identity, inventory_identity,
                 metadata_revision, metadata_updated_at, ingest_source,
                 created_by_app, created_at, file_count, file_bytes
             )
             SELECT g, 'collection-' || g, {sha}, 'producer-retained', {sha},
-                   CASE WHEN g = 4096 THEN 'age-v1-scrypt' ELSE 'age-v1-other' END,
-                   CASE WHEN g = 4096 THEN 'qualification-key-v1'
+                   CASE WHEN g = {rows} THEN 'age-v1-scrypt' ELSE 'age-v1-other' END,
+                   CASE WHEN g = {rows} THEN 'qualification-key-v1'
                         ELSE 'qualification-key-v2' END,
                    'omitted', NULL, {sha}, 1, {timestamp},
                    'fixture-' || lpad(g::text, 6, '0'), 'qualification', {timestamp},
@@ -230,18 +236,26 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             """,
             f"""
             INSERT INTO collection_files (
-                collection_id, path, bytes, sha256, provenance_status
+                collection_id, path, bytes, sha256, provenance_status,
+                path_sort_key, search_text, path_search_text
             )
             SELECT g, 'camera/file-' || lpad(g::text, 6, '0') || '.bin', g,
-                   {sha}, 'omitted'
+                   {sha}, 'omitted',
+                   convert_to('camera/file-' || lpad(g::text, 6, '0') || '.bin', 'UTF8'),
+                   g || '/camera/file-' || lpad(g::text, 6, '0') || '.bin',
+                   'camera/file-' || lpad(g::text, 6, '0') || '.bin'
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
             INSERT INTO collection_files (
-                collection_id, path, bytes, sha256, provenance_status
+                collection_id, path, bytes, sha256, provenance_status,
+                path_sort_key, search_text, path_search_text
             )
             SELECT 1, 'archive/member-' || md5(g::text) || '.bin', g,
-                   {sha}, CASE WHEN g % 2 = 0 THEN 'captured' ELSE 'omitted' END
+                   {sha}, CASE WHEN g % 2 = 0 THEN 'captured' ELSE 'omitted' END,
+                   convert_to('archive/member-' || md5(g::text) || '.bin', 'UTF8'),
+                   '1/archive/member-' || md5(g::text) || '.bin',
+                   'archive/member-' || md5(g::text) || '.bin'
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
@@ -268,6 +282,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             f"""
             INSERT INTO collection_uploads (
                 collection_id, idempotency_key, creation_identity_sha256,
+                tag_set_identity,
                 ingest_source, provenance_mode, provenance_omission_reason,
                 provenance_identity, encryption_format, passphrase_id,
                 initiated_by_app, initiated_by_key_id, event_context_json,
@@ -277,19 +292,21 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                 archive_next_attempt_at, archive_last_attempt_at, archive_failure,
                 archive_storage_prefix, collection_manifest_bytes_b64,
                 collection_manifest_proof_bytes_b64, planner_checkpoint_json,
-                file_count, file_bytes, custodied_file_count, custodied_file_bytes
+                file_count, file_bytes, custodied_file_count, custodied_file_bytes,
+                search_text
             )
-            SELECT {rows} + g, 'upload-' || g, {sha},
+            SELECT {rows} + g, 'upload-' || g, {sha}, {sha},
                    'source-' || lpad(g::text, 6, '0'), 'omitted',
                    'qualification fixture', NULL, 'age-v1-scrypt',
                    'qualification-key-v1', 'qualification', NULL, NULL,
-                   CASE WHEN g = 4096 THEN 'open' ELSE 'orphaned' END,
+                   CASE WHEN g = {rows} THEN 'open' ELSE 'orphaned' END,
                    'producer-retained', NULL,
-                   CASE WHEN g = 4096 THEN NULL ELSE {timestamp} END,
+                   CASE WHEN g = {rows} THEN NULL ELSE {timestamp} END,
                    'archive', {timestamp}, {timestamp}, NULL,
-                   CASE WHEN g = 4096 THEN 'planning' ELSE 'orphaned' END,
+                   CASE WHEN g = {rows} THEN 'planning' ELSE 'orphaned' END,
                    {timestamp}, 0, NULL, NULL, NULL, 'qualification/' || g,
-                   NULL, NULL, '{{}}', g % 32, g * 1024, 0, 0
+                   NULL, NULL, '{{}}', g % 32, g * 1024, 0, 0,
+                   'source-' || lpad(g::text, 6, '0')
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
@@ -307,7 +324,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                         ELSE 'app-' || lpad(g::text, 6, '0') END, {sha},
                    1000000000 + g, {timestamp},
                    CASE WHEN g % 3 = 0 THEN '2027-08-28T00:00:00.000000Z' ELSE NULL END,
-                   CASE WHEN g = 4096 THEN NULL ELSE {timestamp} END,
+                   CASE WHEN g = {rows} THEN NULL ELSE {timestamp} END,
                    CASE WHEN g % 5 = 0 THEN {timestamp} ELSE NULL END
             FROM generate_series(1, {rows}) AS g
             """,
@@ -316,8 +333,8 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                 key_id, permission, resource, created_at
             )
             SELECT substring(md5(g::text), 1, 16),
-                   CASE WHEN g = 4096 THEN 'provenance:read' ELSE 'catalog:read' END,
-                   CASE WHEN g = 4096 THEN 'tag:tag-000001' ELSE '*' END,
+                   CASE WHEN g = {rows} THEN 'provenance:read' ELSE 'catalog:read' END,
+                   CASE WHEN g = {rows} THEN 'tag:tag-000001' ELSE '*' END,
                    {timestamp}
             FROM generate_series(1, {rows}) AS g
             """,
@@ -372,7 +389,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
                    'object-' || lpad(g::text, 6, '0'),
                    'collections/' || g || '/object', 'revision-' || g,
                    g + 64, {sha}, {timestamp}, {timestamp},
-                   CASE WHEN g = 4096 THEN 'delete_pending' ELSE 'ready' END
+                   CASE WHEN g = {rows} THEN 'delete_pending' ELSE 'ready' END
             FROM generate_series(1, {rows}) AS g
             """,
             f"""
@@ -394,7 +411,7 @@ def _seed_selector_relations(engine: Engine, *, rows: int) -> None:
             SELECT g, 'copy-' || lpad((g % 16)::text, 2, '0'),
                    'copies/' || g, 'archive-' || lpad((g % 16)::text, 2, '0'),
                    'qualification',
-                   CASE WHEN g = 4096 THEN 'requested' ELSE 'waiting' END,
+                   CASE WHEN g = {rows} THEN 'requested' ELSE 'waiting' END,
                    {timestamp}
             FROM generate_series(1, {rows}) AS g
             """,
@@ -477,7 +494,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 )
             )
     for name, kwargs, index in (
-        ("q", {"q": "004096"}, "ix_collections_search_trgm"),
+        ("q", {"q": "065536"}, "ix_collections_search_trgm"),
         ("tag", {"tag": "tag-004096"}, "ix_collection_tags_tag"),
         (
             "encryption_format",
@@ -504,8 +521,8 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         cases.append(_PlanCase(f"collections.filter.{name}", statement, frozenset({index})))
 
     search_indexes = {
-        "file_ref": "collection_files_pkey",
-        "collection_id": "collection_files_pkey",
+        "file_ref": "ix_collection_files_collection_path",
+        "collection_id": "ix_collection_files_collection_path",
         "path": "ix_collection_files_path",
         "bytes": "ix_collection_files_bytes",
     }
@@ -530,7 +547,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             _PlanCase(
                 "search.filter.q",
                 _search_statement(
-                    q="file-004096",
+                    q="file-065536",
                     collection=None,
                     sort="file_ref",
                     order="asc",
@@ -547,7 +564,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                     order="asc",
                     principal=None,
                 )[3],
-                frozenset({"collection_files_pkey"}),
+                frozenset({"ix_collection_files_collection_path"}),
             ),
         )
     )
@@ -575,7 +592,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     cases.append(
         _PlanCase(
             "tags.filter.q",
-            _tag_list_statements(q="004096", sort="id", order="asc", principal=_READER)[2],
+            _tag_list_statements(q="065536", sort="id", order="asc", principal=_READER)[2],
             frozenset({"ix_tags_id_trgm"}),
         )
     )
@@ -605,7 +622,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 )
             )
     for name, kwargs, index in (
-        ("q", {"q": "source-004096"}, "ix_collection_uploads_search_trgm"),
+        ("q", {"q": "source-065536"}, "ix_collection_uploads_search_trgm"),
         ("tag", {"tag": "tag-004096"}, "ix_collection_upload_tags_tag"),
         ("state", {"state": "open"}, "ix_collection_uploads_state"),
     ):
@@ -620,7 +637,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         cases.append(_PlanCase(f"uploads.filter.{name}", statement, frozenset({index})))
 
     provenance_indexes = {
-        "path": "collection_files_pkey",
+        "path": "ix_collection_files_collection_path",
         "bytes": "ix_collection_files_collection_bytes",
         "status": "ix_collection_files_collection_provenance",
     }
@@ -648,7 +665,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 _provenance_file_statement(
                     collection_id=1,
                     principal=_READER,
-                    q="member-f7efa4f864ae9b88d43527f4b14f750f",
+                    q="member-297ce0b3c836ae307023d7c2c3a7b1ec",
                     status=None,
                     sort="path",
                     order="asc",
@@ -698,7 +715,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             _PlanCase(
                 "archive-copies.filter.q",
                 _archive_copy_list_statement(
-                    q="0000000000001000",
+                    q="65536",
                     state=None,
                     sort="collection_id",
                     order="asc",
@@ -750,6 +767,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                         f"retrieval-cache.sort.{sort}.{order}",
                         statement,
                         expected_nodes=frozenset({"Aggregate"}),
+                        allow_explicit_sort=True,
                     )
                 )
             else:
@@ -763,7 +781,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     cache_filters = (
         (
             "q",
-            {"q": "object-004096"},
+            {"q": "object-065536"},
             "ix_retrieval_cache_objects_search_trgm",
             None,
         ),
@@ -776,7 +794,10 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             "source_store",
             {"source_store": "archive-00"},
-            "retrieval_cache_objects_pkey",
+            (
+                "retrieval_cache_objects_pkey",
+                "ix_retrieval_cache_objects_collection",
+            ),
             None,
         ),
         ("state", {"state": "delete_pending"}, "ix_retrieval_cache_objects_cleanup", None),
@@ -814,7 +835,13 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             _PlanCase(
                 f"retrieval-cache.filter.{name}",
                 statement,
-                frozenset({index}) if index is not None else frozenset(),
+                (
+                    frozenset(index)
+                    if isinstance(index, tuple)
+                    else frozenset({index})
+                    if index is not None
+                    else frozenset()
+                ),
                 frozenset({node}) if node is not None else frozenset(),
             )
         )
@@ -893,7 +920,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 "application-keys.filter.q",
                 _key_list_statement(
                     app="app-000",
-                    q="f7efa4f864ae9b88",
+                    q="297ce0b3c836ae30",
                     sort="id",
                     order="asc",
                     active=None,
@@ -1001,7 +1028,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             _PlanCase(
                 "applications.filter.q",
                 _app_list_statement(
-                    q="app-016384",
+                    q="app-065536",
                     sort="name",
                     order="asc",
                     active=None,
@@ -1047,7 +1074,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 "download-quotas.filter.q",
                 _key_quota_statements(
                     now=qualification_now,
-                    q="f7efa4f864ae9b88",
+                    q="297ce0b3c836ae30",
                     sort="key_id",
                     order="asc",
                     app=None,
@@ -1109,11 +1136,16 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 "stove0-work.filter.q",
                 _work_list_statement(
                     phase=None,
-                    query="abc",
+                    query="19c611b455303958a1ca8f4c6c382fd4",
                     sort="work_id",
                     order="asc",
                 )[1],
-                frozenset({"ix_stove0_work_records_id_trgm"}),
+                frozenset(
+                    {
+                        "ix_stove0_work_records_id_trgm",
+                        "stove0_work_records_pkey",
+                    }
+                ),
                 database="stove0",
             ),
             _PlanCase(
@@ -1157,11 +1189,16 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 "stove0-evaluations.filter.q",
                 _evaluation_list_statement(
                     phase=None,
-                    query="abc",
+                    query="bccb92b0182c48d41e4dbf870ccd6009",
                     sort="evaluation_id",
                     order="asc",
                 )[1],
-                frozenset({"ix_stove0_evaluation_records_id_trgm"}),
+                frozenset(
+                    {
+                        "ix_stove0_evaluation_records_id_trgm",
+                        "stove0_evaluation_records_pkey",
+                    }
+                ),
                 database="stove0",
             ),
             _PlanCase(
@@ -1177,7 +1214,26 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             ),
         )
     )
-    return tuple(cases)
+    # On the smaller qualified relation PostgreSQL may correctly prefer a
+    # sequential scan to a trigram index. Record that reviewed natural-plan
+    # alternative explicitly. Database qualification still requires the
+    # declared trigram operator or this alternative and rejects linear work
+    # growth at the larger cardinality. Aggregate-derived orderings explicitly
+    # permit a database sort; stored-key ordering must remain index-backed.
+    return tuple(
+        replace(
+            case,
+            allow_low_cardinality_seq_scan=(
+                case.allow_low_cardinality_seq_scan
+                or any("trgm" in index for index in case.expected_indexes)
+            ),
+            allow_explicit_sort=(
+                case.allow_explicit_sort
+                or (".sort." in case.id and "Aggregate" in case.expected_nodes)
+            ),
+        )
+        for case in cases
+    )
 
 
 def _index_names(plan: object) -> set[str]:

@@ -122,6 +122,7 @@ SUPPORTED_CLIENT_HELPERS = {
         "resourcesync_discovery",
         "resourcesync_resource_pages",
         "resourcesync_resources",
+        "replace_collection_tags",
         "spawn",
         "stream_retrieval_file",
     },
@@ -382,6 +383,10 @@ READ_COLLECTION_OPERATIONS = {
             "list_archive_copy_jobs",
             "list_archive_stores",
             "list_collection_provenance",
+            "list_collection_provenance_journal_agents",
+            "list_collection_archive_copies",
+            "get_collection_tags",
+            "list_collection_upload_session_tags",
             "list_collection_upload_session_files",
             "list_collection_upload_sessions",
             "list_collections",
@@ -399,6 +404,10 @@ READ_COLLECTION_OPERATIONS = {
             "stream_archive_copy_jobs",
             "stream_archive_stores",
             "stream_collection_provenance",
+            "stream_collection_provenance_journal_agents",
+            "stream_collection_archive_copies",
+            "stream_collection_tags",
+            "stream_collection_upload_session_tags",
             "stream_collection_upload_session_files",
             "stream_collection_upload_sessions",
             "stream_collections",
@@ -424,6 +433,15 @@ READ_COLLECTION_OPERATIONS = {
         },
         "cursor-feed": {"list_events"},
     },
+}
+
+EXACT_RESOURCE_STREAM_OPERATIONS = {
+    "riverhog": {
+        "stream_collection_provenance_journal",
+        "stream_collection_upload_session_provenance_journal",
+        "stream_portable_collection_inventory",
+    },
+    "stove0": set(),
 }
 
 # Every public query selector is intentional and frozen here.  This is broader
@@ -457,6 +475,10 @@ PUBLIC_QUERY_SELECTORS = {
             "sort",
             "status",
         },
+        "list_collection_provenance_journal_agents": {"page", "per_page"},
+        "list_collection_archive_copies": {"page", "per_page"},
+        "get_collection_tags": {"page", "per_page"},
+        "list_collection_upload_session_tags": {"page", "per_page"},
         "list_collection_upload_session_files": {"page", "per_page"},
         "list_collection_upload_sessions": {
             "order",
@@ -670,6 +692,7 @@ def test_public_read_collection_selectors_are_complete_paired_and_frozen(
         "complete-enumeration": set(),
         "cursor-feed": set(),
     }
+    exact_resource_streams: set[str] = set()
 
     for operation_id, operation in operations.items():
         parameter_names = {item["name"] for item in operation.get("parameters", [])}
@@ -679,9 +702,8 @@ def test_public_read_collection_selectors_are_complete_paired_and_frozen(
             assert not {"page", "per_page"} <= parameter_names, operation_id
             assert "after" not in parameter_names, operation_id
             success_media = set(operation.get("responses", {}).get("200", {}).get("content", {}))
-            assert not (
-                operation_id.startswith("stream_") and JSON_SEQUENCE_MEDIA_TYPE in success_media
-            ), operation_id
+            if operation_id.startswith("stream_") and JSON_SEQUENCE_MEDIA_TYPE in success_media:
+                exact_resource_streams.add(operation_id)
             continue
         kind = classification["kind"]
         classified[kind].add(operation_id)
@@ -712,6 +734,7 @@ def test_public_read_collection_selectors_are_complete_paired_and_frozen(
         assert client_schemas[advertised["id"]].model_dump(mode="json") == advertised
 
     assert classified == READ_COLLECTION_OPERATIONS[application]
+    assert exact_resource_streams == EXACT_RESOURCE_STREAM_OPERATIONS[application]
 
 
 def test_no_public_http_operation_exposes_an_all_selector() -> None:
@@ -1217,8 +1240,6 @@ def test_staged_provenance_openapi_describes_exact_binary_transfer() -> None:
     assert upload["requestBody"]["content"]["application/json-seq"]["schema"] == {
         "type": "string",
         "format": "binary",
-        "title": "Content",
-        "contentMediaType": "application/octet-stream",
     }
     content_length = next(
         parameter for parameter in upload["parameters"] if parameter["name"] == "Content-Length"

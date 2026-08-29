@@ -70,7 +70,7 @@ class ArchiveStoreListPage:
 class CollectionSummary:
     id: CollectionId
     created_at: str
-    tags: tuple[str, ...]
+    tag_count: int
     content_identity: str
     archive_root_sha256: str
     encryption_format: str
@@ -78,7 +78,7 @@ class CollectionSummary:
     files: int
     bytes: int
     remote_storage_bytes: int = 0
-    archive_copies: tuple[ArchiveCopyStatus, ...] = ()
+    archive_copy_count: int = 0
 
 
 @dataclass(frozen=True)

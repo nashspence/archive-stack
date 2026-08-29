@@ -1545,7 +1545,7 @@ def _collection_payload_paths(session: Session, collection_id: int) -> tuple[str
         for path in session.scalars(
             select(CollectionFileRecord.path)
             .where(CollectionFileRecord.collection_id == collection_id)
-            .order_by(CollectionFileRecord.path)
+            .order_by(CollectionFileRecord.path_sort_key)
         )
         if not path.startswith("riverhog/")
     )

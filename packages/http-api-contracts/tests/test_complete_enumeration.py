@@ -108,7 +108,7 @@ def test_complete_enumeration_requires_terminal_consumption() -> None:
         reader.require_complete()
 
 
-def test_complete_enumeration_produces_with_backpressure_without_precounting() -> None:
+def test_complete_enumeration_drains_source_before_consumer_controls_delivery() -> None:
     produced: list[int] = []
     schema = complete_enumeration_schema_identity(_Item, schema_id="fixture-item/v1")
 
@@ -120,9 +120,7 @@ def test_complete_enumeration_produces_with_backpressure_without_precounting() -
     stream = iter_complete_enumeration(items(), query={}, item_schema=schema)
 
     assert json.loads(next(stream)[1:])["type"] == "begin"
-    assert produced == []
-    assert json.loads(next(stream)[1:])["item"] == {"id": 0}
-    assert produced == [0]
+    assert produced == list(range(250))
     stream.close()
 
 

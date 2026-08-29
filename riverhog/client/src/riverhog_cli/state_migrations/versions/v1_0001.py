@@ -9,9 +9,10 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
-    from riverhog_cli.local_state import LOCAL_STATE_METADATA  # noqa: PLC0415
+    from riverhog_cli.state_migrations.v1_ddl import SQLITE_DDL  # noqa: PLC0415
 
-    LOCAL_STATE_METADATA.create_all(op.get_bind())
+    for statement in SQLITE_DDL:
+        op.execute(statement)
 
 
 def downgrade() -> None:

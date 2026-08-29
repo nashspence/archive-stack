@@ -88,7 +88,7 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
     return {
         "id": summary.id,
         "created_at": summary.created_at,
-        "tags": list(summary.tags),
+        "tag_count": summary.tag_count,
         "content_identity": summary.content_identity,
         "archive_root_sha256": summary.archive_root_sha256,
         "encryption_format": summary.encryption_format,
@@ -96,7 +96,7 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
         "files": summary.files,
         "bytes": summary.bytes,
         "remote_storage_bytes": summary.remote_storage_bytes,
-        "archive_copies": [map_archive(copy) for copy in summary.archive_copies],
+        "archive_copy_count": summary.archive_copy_count,
     }
 
 

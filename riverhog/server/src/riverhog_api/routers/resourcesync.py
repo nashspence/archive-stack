@@ -4,11 +4,15 @@ from typing import Annotated, Any, cast
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from fastapi import APIRouter, Path, Query, Request, Response
-from http_api_contracts import cursor_feed_operation, operation_interface
+from fastapi.responses import StreamingResponse
+from http_api_contracts import JSON_SEQUENCE_MEDIA_TYPE, cursor_feed_operation, operation_interface
+from pydantic import TypeAdapter
 from riverhog_protocol import (
     CollectionIdParameter,
-    PortableCollectionRecord,
-    portable_collection_json_schema,
+    PortableCollectionInventoryBegin,
+    PortableCollectionInventoryEnd,
+    PortableCollectionInventoryFile,
+    iter_portable_collection_inventory,
 )
 
 from riverhog_api.auth import CatalogReader
@@ -141,7 +145,7 @@ def resourcesync_resource_list_page(
         collection_id = resource["collection_id"]
         SubElement(url, "loc").text = _url(
             request,
-            f"/v1/catalog/collections/{collection_id}/manifest",
+            f"/v1/catalog/collections/{collection_id}/inventory",
         )
         SubElement(url, "rs:md", {"hash": f"sha-256:{resource['etag']}"})
     return _xml(root)
@@ -174,7 +178,7 @@ def resourcesync_change_list(
         url = SubElement(root, "url")
         SubElement(url, "loc").text = _url(
             request,
-            f"/v1/catalog/collections/{change['collection_id']}/manifest",
+            f"/v1/catalog/collections/{change['collection_id']}/inventory",
         )
         SubElement(
             url,
@@ -189,15 +193,24 @@ def resourcesync_change_list(
 
 
 @router.get(
-    "/v1/catalog/collections/{collection_id}/manifest",
+    "/v1/catalog/collections/{collection_id}/inventory",
     response_model=None,
+    response_class=StreamingResponse,
     responses={
         200: {
             "description": "OK",
-            "content": {"application/json": {"schema": portable_collection_json_schema()}},
+            "content": {
+                JSON_SEQUENCE_MEDIA_TYPE: {
+                    "schema": TypeAdapter(
+                        PortableCollectionInventoryBegin
+                        | PortableCollectionInventoryFile
+                        | PortableCollectionInventoryEnd
+                    ).json_schema()
+                }
+            },
             "headers": {
                 "ETag": {
-                    "description": "Quoted SHA-256 identity of the canonical manifest bytes.",
+                    "description": "Quoted SHA-256 identity of the immutable file inventory.",
                     "schema": {"type": "string", "pattern": '^"[0-9a-f]{64}"$'},
                 }
             },
@@ -205,15 +218,23 @@ def resourcesync_change_list(
     },
     openapi_extra=operation_interface("standard-tool/protocol"),
 )
-def get_portable_collection_manifest(
+def stream_portable_collection_inventory(
     collection_id: CollectionIdParameter,
     principal: CatalogReader,
     container: ContainerDep,
-    response: Response,
-) -> PortableCollectionRecord:
-    record, etag = container.retrieval.collection_manifest(
+) -> StreamingResponse:
+    header, files, identity, file_count, file_bytes = container.retrieval.collection_inventory(
         collection_id,
         principal=principal,
     )
-    response.headers["ETag"] = f'"{etag}"'
-    return record
+    return StreamingResponse(
+        iter_portable_collection_inventory(
+            header,
+            files,
+            inventory_identity=identity,
+            file_count=file_count,
+            file_bytes=file_bytes,
+        ),
+        media_type=JSON_SEQUENCE_MEDIA_TYPE,
+        headers={"ETag": f'"{identity}"'},
+    )

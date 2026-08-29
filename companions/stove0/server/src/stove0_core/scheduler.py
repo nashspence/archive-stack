@@ -119,7 +119,8 @@ class Stove0Scheduler:
             archive_root_sha256=str(current.get("archive_root_sha256") or ""),
             content_identity=str(current.get("content_identity") or ""),
         )
-        tags = tuple(str(item) for item in current.get("tags", []))
+        with self.riverhog.stream_collection_tags(collection_id) as memberships:
+            tags = tuple(str(item["tag"]) for item in memberships)
         derivation = self._derivation(collection_id)
         created: list[str] = []
         for recipe in self.catalog.matching(tags):

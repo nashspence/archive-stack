@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,6 +55,8 @@ class JournalSummary:
     journal_id: str
     primary_lineage_id: str
     frames: tuple[JournalFrame, ...]
+    entries: int
+    tail_frame: JournalFrame
     journal_sha256: str
     current_binding_id: str
     current_state_id: str
@@ -66,7 +68,7 @@ class JournalSummary:
 
     @property
     def tail(self) -> JournalFrame:
-        return self.frames[-1]
+        return self.tail_frame
 
 
 def software_agent_id(name: str) -> str:
@@ -96,69 +98,108 @@ def journal_sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
-def parse_journal(content: bytes) -> tuple[JournalFrame, ...]:
-    if not content or content[:1] != RS:
-        raise ProvenanceValidationError("journal must begin with an RFC 7464 record separator")
-    chunks = content.split(RS)
-    if chunks[0] != b"":
-        raise ProvenanceValidationError("journal has bytes before its first record separator")
-    frames: list[JournalFrame] = []
-    for physical_sequence, chunk in enumerate(chunks[1:]):
-        if not chunk.endswith(LF):
-            raise ProvenanceValidationError(
-                f"journal entry {physical_sequence} has no terminating LF"
-            )
-        json_bytes = chunk[:-1]
-        if not json_bytes or json_bytes != json_bytes.strip():
-            raise ProvenanceValidationError(
-                f"journal entry {physical_sequence} has non-canonical outer whitespace"
-            )
-        try:
-            document = json.loads(
-                json_bytes,
-                object_pairs_hook=_unique_object,
-                parse_constant=_reject_json_constant,
-            )
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            raise ProvenanceValidationError(
-                f"journal entry {physical_sequence} is not strict JSON: {exc}"
-            ) from exc
-        if not isinstance(document, dict):
-            raise ProvenanceValidationError(
-                f"journal entry {physical_sequence} must be a JSON object"
-            )
-        if canonical_json(document) != json_bytes:
-            raise ProvenanceValidationError(
-                f"journal entry {physical_sequence} is not canonical JSON"
-            )
-        frames.append(
-            JournalFrame(
-                sequence=physical_sequence,
-                json_bytes=json_bytes,
-                document=document,
-                sha256=hashlib.sha256(json_bytes).hexdigest(),
-            )
+def _journal_frame(physical_sequence: int, chunk: bytes) -> JournalFrame:
+    if not chunk.endswith(LF):
+        raise ProvenanceValidationError(f"journal entry {physical_sequence} has no terminating LF")
+    json_bytes = chunk[:-1]
+    if not json_bytes or json_bytes != json_bytes.strip():
+        raise ProvenanceValidationError(
+            f"journal entry {physical_sequence} has non-canonical outer whitespace"
         )
-    if not frames:
+    try:
+        document = json.loads(
+            json_bytes,
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ProvenanceValidationError(
+            f"journal entry {physical_sequence} is not strict JSON: {exc}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise ProvenanceValidationError(f"journal entry {physical_sequence} must be a JSON object")
+    if canonical_json(document) != json_bytes:
+        raise ProvenanceValidationError(f"journal entry {physical_sequence} is not canonical JSON")
+    return JournalFrame(
+        sequence=physical_sequence,
+        json_bytes=json_bytes,
+        document=document,
+        sha256=hashlib.sha256(json_bytes).hexdigest(),
+    )
+
+
+def iter_journal_frames(chunks: Iterable[bytes]) -> Iterator[JournalFrame]:
+    """Parse an RFC 7464 journal incrementally without retaining its complete body."""
+
+    buffer = bytearray()
+    started = False
+    sequence = 0
+    for source in chunks:
+        chunk = bytes(source)
+        if not chunk:
+            continue
+        buffer.extend(chunk)
+        if not started:
+            if buffer[0] != RS[0]:
+                raise ProvenanceValidationError(
+                    "journal must begin with an RFC 7464 record separator"
+                )
+            del buffer[:1]
+            started = True
+        while (separator := buffer.find(RS)) >= 0:
+            yield _journal_frame(sequence, bytes(buffer[:separator]))
+            sequence += 1
+            del buffer[: separator + 1]
+    if not started:
+        raise ProvenanceValidationError("journal must begin with an RFC 7464 record separator")
+    if buffer:
+        yield _journal_frame(sequence, bytes(buffer))
+        sequence += 1
+    if sequence == 0:
         raise ProvenanceValidationError("journal must contain at least one entry")
+
+
+def parse_journal(content: bytes) -> tuple[JournalFrame, ...]:
+    frames: list[JournalFrame] = []
+    frames.extend(iter_journal_frames((content,)))
     return tuple(frames)
 
 
 def validate_journal(content: bytes) -> JournalSummary:
-    frames = parse_journal(content)
-    journal_id = _required_string(frames[0].document, "journal_id")
-    if frames[0].document.get("entry_kind") != "journal_init":
-        raise ProvenanceValidationError("journal sequence zero must initialize the journal")
+    return validate_journal_chunks((content,))
 
+
+def validate_journal_chunks(
+    chunks: Iterable[bytes],
+    *,
+    retain_frames: bool = True,
+) -> JournalSummary:
+    """Validate one journal from bounded transport/storage chunks."""
+
+    digest = hashlib.sha256()
+
+    def measured() -> Iterator[bytes]:
+        for source in chunks:
+            chunk = bytes(source)
+            digest.update(chunk)
+            yield chunk
+
+    retained_frames: list[JournalFrame] = []
     states: dict[str, JsonObject] = {}
     agents: set[str] = set()
     establishing_events: set[str] = set()
     active_bindings: dict[str, JsonObject] = {}
     external_states: dict[tuple[str, str, str, str], ExternalStateReference] = {}
-    entry_by_id: dict[str, JournalFrame] = {}
+    entry_ids: set[str] = set()
+    journal_id: str | None = None
     primary_lineage_id = ""
+    previous_frame: JournalFrame | None = None
+    tail_frame: JournalFrame | None = None
+    entries = 0
 
-    for index, frame in enumerate(frames):
+    for index, frame in enumerate(iter_journal_frames(measured())):
+        if retain_frames:
+            retained_frames.append(frame)
         document = frame.document
         try:
             validate_entry_document(document)
@@ -176,16 +217,21 @@ def validate_journal(content: bytes) -> JournalSummary:
             raise ProvenanceValidationError(
                 f"journal entry {index} sequence does not match physical order"
             )
+        if index == 0:
+            journal_id = _required_string(document, "journal_id")
+            if document.get("entry_kind") != "journal_init":
+                raise ProvenanceValidationError("journal sequence zero must initialize the journal")
         if document.get("journal_id") != journal_id:
             raise ProvenanceValidationError(f"journal entry {index} changes journal identity")
 
         entry_id = _required_string(document, "id")
-        if entry_id in entry_by_id:
+        if entry_id in entry_ids:
             raise ProvenanceValidationError(f"journal repeats entry identity {entry_id}")
-        entry_by_id[entry_id] = frame
+        entry_ids.add(entry_id)
         if index:
             previous = document.get("previous_entry")
-            prior = frames[index - 1]
+            prior = previous_frame
+            assert prior is not None
             if previous != {
                 "entry_id": _required_string(prior.document, "id"),
                 "sequence": index - 1,
@@ -249,6 +295,12 @@ def validate_journal(content: bytes) -> JournalSummary:
                 reference.state_id,
             )
             external_states[key] = reference
+        previous_frame = frame
+        tail_frame = frame
+        entries = index + 1
+
+    if journal_id is None or tail_frame is None:
+        raise ProvenanceValidationError("journal must contain at least one entry")
 
     primary = active_bindings.get(PRIMARY_PAYLOAD_ROLE)
     if primary is None:
@@ -270,8 +322,10 @@ def validate_journal(content: bytes) -> JournalSummary:
     return JournalSummary(
         journal_id=journal_id,
         primary_lineage_id=primary_lineage_id,
-        frames=frames,
-        journal_sha256=journal_sha256(content),
+        frames=tuple(retained_frames),
+        entries=entries,
+        tail_frame=tail_frame,
+        journal_sha256=digest.hexdigest(),
         current_binding_id=_required_string(primary, "id"),
         current_state_id=current_state_id,
         current_path=current_path,
@@ -953,7 +1007,7 @@ def _assertion_entry(
         "id": new_urn_uuid(),
         "type": JOURNAL_TYPE,
         "journal_id": summary.journal_id,
-        "sequence": len(summary.frames),
+        "sequence": summary.entries,
         "recorded_at": utc_now(),
         "recorded_by_agent_id": recorded_by_agent_id,
         "recording_environment_id": recording_environment_id,

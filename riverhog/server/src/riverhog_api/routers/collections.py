@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import tempfile
+from collections.abc import Iterator
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Response
@@ -23,6 +26,7 @@ from riverhog_protocol import (
 from riverhog_protocol.paths import CanonicalTag
 from riverhog_provenance_contracts import ProvenanceJournalId
 from starlette.concurrency import run_in_threadpool
+from starlette.responses import StreamingResponse
 
 from riverhog_api.auth import (
     CatalogReader,
@@ -38,7 +42,9 @@ from riverhog_api.complete_enumeration import (
 )
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_collection, map_collection_list_page
+from riverhog_api.schemas.archive import ArchiveCopyOut
 from riverhog_api.schemas.collections import (
+    CollectionArchiveCopyListOut,
     CollectionDeletionPlanOut,
     CollectionDeletionResultOut,
     CollectionSummaryOut,
@@ -49,6 +55,8 @@ from riverhog_api.schemas.collections import (
     CollectionUploadProvenanceJournalOut,
     CollectionUploadSessionFilesRegistrationOut,
     CollectionUploadSessionOut,
+    CollectionUploadTagMutationOut,
+    CollectionUploadTagOut,
     CollectionUploadUnitOut,
     CollectionUploadVolumeOut,
     CompleteCollectionUploadSessionRequest,
@@ -59,6 +67,7 @@ from riverhog_api.schemas.collections import (
     ListCollectionsResponse,
     ListCollectionUploadSessionFilesResponse,
     ListCollectionUploadSessionsResponse,
+    ListCollectionUploadSessionTagsResponse,
     ListCollectionUploadVolumesResponse,
     RegisterCollectionUploadSessionFilesRequest,
 )
@@ -76,6 +85,17 @@ _CLIENT_BINARY_OPERATION = {
             "schema": {"type": "integer", "minimum": 0},
         }
     ],
+}
+_CLIENT_PROVENANCE_BINARY_OPERATION = {
+    **_CLIENT_BINARY_OPERATION,
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json-seq": {
+                "schema": {"type": "string", "format": "binary"},
+            }
+        },
+    },
 }
 _PROVENANCE_JOURNAL_RESPONSE: dict[int | str, dict[str, Any]] = {
     200: {
@@ -168,12 +188,55 @@ def stream_collections(
         order=order,
         principal=principal,
     )
-    items = (CollectionSummaryOut.model_validate(map_collection(item)) for item in summaries)
     return complete_enumeration_response(
-        items,
+        (map_collection(summary) for summary in summaries),
         query=query,
         item_type=CollectionSummaryOut,
         schema_id="riverhog.collection-summary/v1",
+    )
+
+
+@router.get(
+    "/collections/{collection_id}/archive-copies",
+    response_model=CollectionArchiveCopyListOut,
+    openapi_extra=bounded_list_operation(paired_operation_id="stream_collection_archive_copies"),
+)
+def list_collection_archive_copies(
+    collection_id: CollectionIdParameter,
+    container: ContainerDep,
+    principal: CatalogReader,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+) -> CollectionArchiveCopyListOut:
+    return CollectionArchiveCopyListOut.model_validate(
+        container.collections.list_archive_copies(
+            collection_id,
+            page=page,
+            per_page=per_page,
+            principal=principal,
+        )
+    )
+
+
+@router.get(
+    "/collections/{collection_id}/archive-copies/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_collection_archive_copies",
+        item_type=ArchiveCopyOut,
+        schema_id="riverhog.collection-archive-copy/v1",
+    ),
+)
+def stream_collection_archive_copies(
+    collection_id: CollectionIdParameter,
+    container: ContainerDep,
+    principal: CatalogReader,
+) -> Response:
+    return complete_enumeration_response(
+        container.collections.iter_archive_copies(collection_id, principal=principal),
+        query={"collection_id": collection_id},
+        item_type=ArchiveCopyOut,
+        schema_id="riverhog.collection-archive-copy/v1",
     )
 
 
@@ -254,7 +317,8 @@ def create_or_resume_collection_upload_session(
 ) -> CreateOrResumeCollectionUploadSessionOut:
     payload = container.collection_uploads.create_or_resume(
         idempotency_key=request.idempotency_key,
-        tags=request.tags,
+        initial_tag=request.initial_tag,
+        tag_set_identity_sha256=request.tag_set_identity,
         ingest_source=request.ingest_source,
         archive_store=request.archive_store,
         initiator=principal,
@@ -264,6 +328,95 @@ def create_or_resume_collection_upload_session(
         custody_mode=request.custody_mode,
     )
     return CreateOrResumeCollectionUploadSessionOut.model_validate(payload)
+
+
+@router.get(
+    "/collection-upload-sessions/{collection_id}/tags",
+    response_model=ListCollectionUploadSessionTagsResponse,
+    openapi_extra={
+        **bounded_list_operation(paired_operation_id="stream_collection_upload_session_tags"),
+        **operation_interface("client-only-primitive"),
+    },
+)
+def list_collection_upload_session_tags(
+    collection_id: CollectionIdParameter,
+    container: ContainerDep,
+    principal: CollectionCreator,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
+) -> ListCollectionUploadSessionTagsResponse:
+    container.collection_uploads.require_access(collection_id, principal)
+    return ListCollectionUploadSessionTagsResponse.model_validate(
+        container.collection_uploads.list_tags(
+            collection_id,
+            page=page,
+            per_page=per_page,
+        )
+    )
+
+
+@router.get(
+    "/collection-upload-sessions/{collection_id}/tags/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra={
+        **complete_enumeration_operation(
+            paired_operation_id="list_collection_upload_session_tags",
+            item_type=CollectionUploadTagOut,
+            schema_id="riverhog.collection-upload-tag-membership/v1",
+        ),
+        **operation_interface("client-only-primitive"),
+    },
+)
+def stream_collection_upload_session_tags(
+    collection_id: CollectionIdParameter,
+    container: ContainerDep,
+    principal: CollectionCreator,
+) -> Response:
+    container.collection_uploads.require_access(collection_id, principal)
+    return complete_enumeration_response(
+        container.collection_uploads.iter_tags(collection_id),
+        query={"collection_id": collection_id},
+        item_type=CollectionUploadTagOut,
+        schema_id="riverhog.collection-upload-tag-membership/v1",
+    )
+
+
+@router.put(
+    "/collection-upload-sessions/{collection_id}/tags/{tag}",
+    response_model=CollectionUploadTagMutationOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def add_collection_upload_session_tag(
+    collection_id: CollectionIdParameter,
+    tag: CanonicalTag,
+    container: ContainerDep,
+    principal: CollectionCreator,
+) -> CollectionUploadTagMutationOut:
+    container.collection_uploads.require_access(collection_id, principal)
+    return CollectionUploadTagMutationOut.model_validate(
+        container.collection_uploads.add_tag(
+            collection_id,
+            tag,
+            principal=principal,
+        )
+    )
+
+
+@router.delete(
+    "/collection-upload-sessions/{collection_id}/tags/{tag}",
+    response_model=CollectionUploadTagMutationOut,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def remove_collection_upload_session_tag(
+    collection_id: CollectionIdParameter,
+    tag: CanonicalTag,
+    container: ContainerDep,
+    principal: CollectionCreator,
+) -> CollectionUploadTagMutationOut:
+    container.collection_uploads.require_access(collection_id, principal)
+    return CollectionUploadTagMutationOut.model_validate(
+        container.collection_uploads.remove_tag(collection_id, tag)
+    )
 
 
 @router.post(
@@ -288,19 +441,12 @@ def register_collection_upload_session_files(
 @router.put(
     "/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}",
     response_model=CollectionUploadProvenanceJournalOut,
-    openapi_extra=_CLIENT_BINARY_OPERATION,
+    openapi_extra=_CLIENT_PROVENANCE_BINARY_OPERATION,
 )
 async def put_collection_upload_session_provenance_journal(
     collection_id: CollectionIdParameter,
     journal_id: ProvenanceJournalId,
     request: Request,
-    content: Annotated[
-        bytes,
-        Body(
-            media_type="application/json-seq",
-            json_schema_extra={"format": "binary"},
-        ),
-    ],
     container: ContainerDep,
     principal: CollectionCreator,
     provenance_sha256: Annotated[
@@ -312,15 +458,33 @@ async def put_collection_upload_session_provenance_journal(
     declared = request.headers.get("content-length")
     if declared is None or not declared.isdecimal():
         raise HTTPException(status_code=411, detail="Content-Length is required")
-    if int(declared) != len(content):
-        raise HTTPException(status_code=400, detail="Content-Length does not match the journal")
-    payload = await run_in_threadpool(
-        container.collection_uploads.put_provenance_journal,
-        collection_id,
-        journal_id,
-        content=content,
-        sha256=provenance_sha256,
-    )
+    byte_count = 0
+    digest = hashlib.sha256()
+    with tempfile.TemporaryFile(mode="w+b") as journal:
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            journal.write(chunk)
+            digest.update(chunk)
+            byte_count += len(chunk)
+        if int(declared) != byte_count:
+            raise HTTPException(status_code=400, detail="Content-Length does not match the journal")
+        if digest.hexdigest() != provenance_sha256:
+            raise HTTPException(status_code=400, detail="provenance SHA-256 does not match")
+
+        def chunks() -> Iterator[bytes]:
+            journal.seek(0)
+            while chunk := journal.read(1024 * 1024):
+                yield chunk
+
+        payload = await run_in_threadpool(
+            container.collection_uploads.put_provenance_journal_chunks,
+            collection_id,
+            journal_id,
+            chunks=chunks,
+            byte_count=byte_count,
+            sha256=provenance_sha256,
+        )
     return CollectionUploadProvenanceJournalOut.model_validate(payload)
 
 
@@ -330,22 +494,34 @@ async def put_collection_upload_session_provenance_journal(
     responses=_PROVENANCE_JOURNAL_RESPONSE,
     openapi_extra=operation_interface("client-only-primitive"),
 )
-def export_collection_upload_session_provenance_journal(
+def stream_collection_upload_session_provenance_journal(
     collection_id: CollectionIdParameter,
     journal_id: ProvenanceJournalId,
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> Response:
     container.collection_uploads.require_access(collection_id, principal)
-    content, sha256 = container.collection_uploads.export_provenance_journal(
+    byte_count, sha256 = container.collection_uploads.provenance_journal_metadata(
         collection_id,
         journal_id,
     )
-    return Response(
-        content=content,
+
+    def content() -> Iterator[bytes]:
+        with tempfile.TemporaryFile(mode="w+b") as snapshot:
+            for chunk in container.collection_uploads.iter_provenance_journal(
+                collection_id,
+                journal_id,
+            ):
+                snapshot.write(chunk)
+            snapshot.seek(0)
+            while chunk := snapshot.read(1024 * 1024):
+                yield chunk
+
+    return StreamingResponse(
+        content(),
         media_type="application/json-seq",
         headers={
-            "Content-Length": str(len(content)),
+            "Content-Length": str(byte_count),
             "ETag": f'"{sha256}"',
         },
     )

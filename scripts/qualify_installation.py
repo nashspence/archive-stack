@@ -54,7 +54,7 @@ RIVERHOG_EVENT_PAGE = {
                 "initiator": {"app": "riverhog-installation-qualification"},
                 "collection_id": 1,
                 "collection_created_at": "2026-08-14T00:00:00.000000Z",
-                "collection_tags": ["qualification"],
+                "collection_tag_count": 1,
             },
         }
     ],

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import tempfile
+from collections.abc import Iterator
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Response
+from http_api_contracts import operation_interface
 from riverhog_protocol import CollectionIdParameter, ProvenanceSort, ProvenanceStatus, SortOrder
 from riverhog_protocol.paths import CanonicalRelPath
 from riverhog_provenance_contracts import ProvenanceJournalId
+from starlette.responses import StreamingResponse
 
 from riverhog_api.auth import ProvenanceExporter, ProvenanceReader
 from riverhog_api.complete_enumeration import (
@@ -19,12 +23,37 @@ from riverhog_api.schemas.provenance import (
     CollectionFileProvenanceDetailOut,
     CollectionFileProvenanceOut,
     CollectionFileProvenanceTraceOut,
-    CollectionProvenanceVerificationOut,
+    CollectionProvenanceVerificationJobOut,
     ListCollectionFileProvenanceResponse,
+    ListProvenanceJournalAgentsResponse,
+    ProvenanceJournalAgentOut,
     ProvenanceTraceItemOut,
 )
 
 router = APIRouter(tags=["provenance"])
+
+_PROVENANCE_JOURNAL_RESPONSE: dict[int | str, dict[str, Any]] = {
+    200: {
+        "description": "Exact immutable provenance journal.",
+        "headers": {
+            "Content-Length": {
+                "required": True,
+                "description": "Exact response-body length in bytes.",
+                "schema": {"type": "integer", "minimum": 0},
+            },
+            "ETag": {
+                "required": True,
+                "description": "Quoted SHA-256 identity of the journal bytes.",
+                "schema": {"type": "string", "pattern": '^"[0-9a-f]{64}"$'},
+            },
+        },
+        "content": {
+            "application/json-seq": {
+                "schema": {"type": "string", "format": "binary"},
+            }
+        },
+    }
+}
 
 
 @router.get(
@@ -158,36 +187,130 @@ def trace_collection_file_provenance(
     )
 
 
-@router.get("/collections/{collection_id}/provenance/journals/{journal_id}")
-def export_collection_provenance_journal(
+@router.get(
+    "/collections/{collection_id}/provenance/journals/{journal_id}",
+    response_class=Response,
+    responses=_PROVENANCE_JOURNAL_RESPONSE,
+    openapi_extra=operation_interface("client-only-primitive"),
+)
+def stream_collection_provenance_journal(
     collection_id: CollectionIdParameter,
     journal_id: ProvenanceJournalId,
     principal: ProvenanceExporter,
     container: ContainerDep,
 ) -> Response:
-    content, sha256 = container.provenance.export_journal(
+    byte_count, sha256 = container.provenance.journal_metadata(
         collection_id,
         journal_id,
         principal=principal,
     )
-    return Response(
-        content=content,
+
+    def content() -> Iterator[bytes]:
+        with tempfile.TemporaryFile(mode="w+b") as snapshot:
+            for chunk in container.provenance.iter_journal(
+                collection_id,
+                journal_id,
+                principal=principal,
+            ):
+                snapshot.write(chunk)
+            snapshot.seek(0)
+            while chunk := snapshot.read(1024 * 1024):
+                yield chunk
+
+    return StreamingResponse(
+        content(),
         media_type="application/json-seq",
         headers={
-            "Content-Length": str(len(content)),
+            "Content-Length": str(byte_count),
             "ETag": f'"{sha256}"',
             "Content-Disposition": f'attachment; filename="{journal_id}.json-seq"',
         },
     )
 
 
-@router.post(
-    "/collections/{collection_id}/provenance/verify",
-    response_model=CollectionProvenanceVerificationOut,
+@router.get(
+    "/collections/{collection_id}/provenance/journals/{journal_id}/agents/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="list_collection_provenance_journal_agents",
+        item_type=ProvenanceJournalAgentOut,
+        schema_id="riverhog.provenance-journal-agent/v1",
+    ),
 )
-def verify_collection_provenance(
+def stream_collection_provenance_journal_agents(
+    collection_id: CollectionIdParameter,
+    journal_id: ProvenanceJournalId,
+    principal: ProvenanceReader,
+    container: ContainerDep,
+) -> Response:
+    query = {"collection_id": collection_id, "journal_id": journal_id}
+    return complete_enumeration_response(
+        container.provenance.iter_journal_agents(
+            collection_id,
+            journal_id,
+            principal=principal,
+        ),
+        query=query,
+        item_type=ProvenanceJournalAgentOut,
+        schema_id="riverhog.provenance-journal-agent/v1",
+    )
+
+
+@router.get(
+    "/collections/{collection_id}/provenance/journals/{journal_id}/agents",
+    response_model=ListProvenanceJournalAgentsResponse,
+    openapi_extra=bounded_list_operation(
+        paired_operation_id="stream_collection_provenance_journal_agents"
+    ),
+)
+def list_collection_provenance_journal_agents(
+    collection_id: CollectionIdParameter,
+    journal_id: ProvenanceJournalId,
+    principal: ProvenanceReader,
+    container: ContainerDep,
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> dict[str, Any]:
+    return container.provenance.list_journal_agents(
+        collection_id,
+        journal_id,
+        page=page,
+        per_page=per_page,
+        principal=principal,
+    )
+
+
+@router.post(
+    "/collections/{collection_id}/provenance/verification",
+    response_model=CollectionProvenanceVerificationJobOut,
+)
+def request_collection_provenance_verification(
     collection_id: CollectionIdParameter,
     principal: ProvenanceReader,
     container: ContainerDep,
 ) -> dict[str, Any]:
-    return container.provenance.verify(collection_id, principal=principal)
+    return container.provenance.request_verification(collection_id, principal=principal)
+
+
+@router.get(
+    "/collections/{collection_id}/provenance/verification",
+    response_model=CollectionProvenanceVerificationJobOut,
+)
+def get_collection_provenance_verification(
+    collection_id: CollectionIdParameter,
+    principal: ProvenanceReader,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    return container.provenance.get_verification(collection_id, principal=principal)
+
+
+@router.delete(
+    "/collections/{collection_id}/provenance/verification",
+    response_model=CollectionProvenanceVerificationJobOut,
+)
+def cancel_collection_provenance_verification(
+    collection_id: CollectionIdParameter,
+    principal: ProvenanceReader,
+    container: ContainerDep,
+) -> dict[str, Any]:
+    return container.provenance.cancel_verification(collection_id, principal=principal)

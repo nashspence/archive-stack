@@ -37,7 +37,7 @@ def _seed(path: Path) -> None:
                 content_identity="0" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
-                record_etag="1" * 64,
+                inventory_identity="1" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 created_by_app="fixture",
@@ -176,3 +176,49 @@ def test_search_returns_only_the_exact_artifact_capability_scope(tmp_path: Path)
 
     assert payload["total"] == 1
     assert [item["file_ref"] for item in payload["files"]] == ["1/tax/receipt.pdf"]
+
+
+def test_search_uses_canonical_utf8_order_and_stable_ascii_case_projection(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "catalog.sqlite3"
+    initialize_db(sqlite_url(path))
+    _seed(path)
+    factory = make_session_factory(sqlite_url(path))
+    with session_scope(factory) as session:
+        session.add_all(
+            [
+                CollectionFileRecord(
+                    collection_id=1,
+                    path="unicode/Éclair.txt",
+                    bytes=1,
+                    sha256="d" * 64,
+                ),
+                CollectionFileRecord(
+                    collection_id=1,
+                    path="unicode/éclair.txt",
+                    bytes=1,
+                    sha256="e" * 64,
+                ),
+                CollectionFileRecord(
+                    collection_id=1,
+                    path="unicode/ΩMEGA.txt",
+                    bytes=1,
+                    sha256="f" * 64,
+                ),
+            ]
+        )
+
+    service = SqlAlchemySearchService(RuntimeConfig(database_url=sqlite_url(path)))
+    assert [
+        item["path"] for item in service.iter_files(q="unicode", sort="path", order="asc")
+    ] == sorted(
+        ["unicode/Éclair.txt", "unicode/éclair.txt", "unicode/ΩMEGA.txt"],
+        key=lambda value: value.encode("utf-8"),
+    )
+    assert [item["path"] for item in service.iter_files(q="Ωmega", sort="path", order="asc")] == [
+        "unicode/ΩMEGA.txt"
+    ]
+    assert [item["path"] for item in service.iter_files(q="éclair", sort="path", order="asc")] == [
+        "unicode/éclair.txt"
+    ]

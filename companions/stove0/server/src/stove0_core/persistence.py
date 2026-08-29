@@ -35,7 +35,14 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.sql import Select
-from state_schema import StateSchema, assert_schema_matches_metadata, read_snapshot, sqlite_engine
+from state_schema import (
+    StateSchema,
+    assert_schema_matches_metadata,
+    attach_sha256_string_constraints,
+    read_snapshot,
+    require_postgresql_extension,
+    sqlite_engine,
+)
 from stove0_operator_contracts import (
     BRANCH_SET_ADMITTED,
     EVALUATION_CREATED,
@@ -284,6 +291,9 @@ class _EventRow(_Base):
     event_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+attach_sha256_string_constraints(_Base.metadata)
+
+
 def create_state_engine(database_url: str) -> Engine:
     _prepare_sqlite_parent(database_url)
     url = make_url(database_url)
@@ -300,11 +310,21 @@ def _assert_schema_matches_models(bind: Connection) -> None:
     )
 
 
+def _require_state_database_capabilities(bind: Connection) -> None:
+    require_postgresql_extension(
+        bind,
+        name="pg_trgm",
+        schema="public",
+        operator_classes=("gin_trgm_ops",),
+    )
+
+
 def stove0_state_schema(database_url: str) -> StateSchema:
     return StateSchema(
         name="stove0 control",
         engine_factory=lambda: create_state_engine(database_url),
         script_location=STATE_MIGRATIONS,
+        prerequisite=_require_state_database_capabilities,
         verify=_assert_schema_matches_models,
         version_table=STATE_VERSION_TABLE,
     )
@@ -329,7 +349,8 @@ class SqlAlchemyStateStore:
         self.engine = engine or create_state_engine(database_url)
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
         if initialize:
-            _Base.metadata.create_all(self.engine)
+            with self.engine.begin() as connection:
+                stove0_state_schema(database_url).upgrade_connection(connection)
 
     def load(self, work_id: str) -> WorkRecord | None:
         with self.sessions() as session:

@@ -134,7 +134,7 @@ def test_concurrent_collection_mutations_keep_tag_count_projection_exact(
                 passphrase_id="fixture-archive-key-v1",
                 provenance_mode="omitted",
                 provenance_identity=None,
-                record_etag=f"{collection_id}" * 64,
+                inventory_identity=f"{collection_id}" * 64,
                 metadata_revision=1,
                 metadata_updated_at=now,
                 created_by_app="fixture",
@@ -166,10 +166,7 @@ def test_concurrent_collection_mutations_keep_tag_count_projection_exact(
             executor.submit(first.add_collection_tag, 1, "shared", principal=TAG_MANAGER),
             executor.submit(second.add_collection_tag, 2, "shared", principal=TAG_MANAGER),
         )
-        assert [future.result(timeout=10)["tags"] for future in results] == [
-            ["shared"],
-            ["shared"],
-        ]
+        assert [future.result(timeout=10)["tag_count"] for future in results] == [1, 1]
 
     with session_scope(sessions) as session:
         shared = session.get(TagRecord, "shared")

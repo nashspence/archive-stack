@@ -7,25 +7,30 @@ CREATE TABLE settings (
 INSERT INTO settings VALUES('catalog_cursor', '19');
 CREATE TABLE desired_collections (
     collection_id INTEGER NOT NULL PRIMARY KEY,
-    record_etag TEXT NOT NULL,
+    inventory_identity TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    tags_json TEXT NOT NULL,
     remote_deleted INTEGER NOT NULL DEFAULT 0,
     CONSTRAINT ck_desired_collections_id CHECK (collection_id > 0),
     CONSTRAINT ck_desired_collections_etag CHECK (
-        length(record_etag) = 64 AND record_etag = lower(record_etag)
-        AND record_etag NOT GLOB '*[^0-9a-f]*'
+        length(inventory_identity) = 64 AND inventory_identity = lower(inventory_identity)
+        AND inventory_identity NOT GLOB '*[^0-9a-f]*'
     ),
-    CONSTRAINT ck_desired_collections_tags_json CHECK (json_valid(tags_json)),
     CONSTRAINT ck_desired_collections_remote_deleted CHECK (remote_deleted IN (0, 1))
 );
 INSERT INTO desired_collections VALUES(
     1,
     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     '2026-01-01T00:00:00.000000Z',
-    '["fixture"]',
     0
 );
+CREATE TABLE desired_collection_tags (
+    collection_id INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    PRIMARY KEY (collection_id, tag),
+    FOREIGN KEY (collection_id) REFERENCES desired_collections(collection_id)
+        ON DELETE CASCADE
+);
+INSERT INTO desired_collection_tags VALUES(1, 'fixture');
 CREATE TABLE desired_files (
     collection_id INTEGER NOT NULL,
     path TEXT NOT NULL,

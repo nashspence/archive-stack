@@ -32,6 +32,7 @@ from riverhog_protocol import (
     CollectionUploadVolumeSetDocument,
 )
 from riverhog_protocol.collection_workflows import DERIVATION_EVIDENCE_PATH
+from riverhog_protocol.paths import tag_set_identity
 
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store_binding
@@ -302,7 +303,8 @@ class _ServiceApi:
     ) -> dict[str, object]:
         return self.service.create_or_resume(
             idempotency_key=idempotency_key,
-            tags=tags,
+            initial_tag=(tags[0] if tags else None),
+            tag_set_identity_sha256=tag_set_identity(sorted(tags)),
             ingest_source=str(kwargs["ingest_source"]),
             archive_store=None,
             initiator=self.principal,

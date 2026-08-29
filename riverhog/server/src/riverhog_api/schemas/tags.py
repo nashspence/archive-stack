@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import ConfigDict, field_validator, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import CollectionId, SortOrder, TagSort
 from riverhog_protocol.paths import CanonicalTag
 
@@ -32,22 +32,21 @@ class TagListOut(RiverhogModel):
     tags: list[TagOut]
 
 
-class ReplaceCollectionTagsRequest(RiverhogModel):
-    tags: list[CanonicalTag]
-    event_context: dict[str, Any] | None = None
-
-    @field_validator("tags")
-    @classmethod
-    def validate_unique_tags(cls, value: list[str]) -> list[str]:
-        if len(value) != len(set(value)):
-            raise ValueError("collection tags must not contain duplicates")
-        return value
-
-
-class CollectionTagsOut(RiverhogModel):
+class CollectionTagSetOut(RiverhogModel):
     collection_id: CollectionId
-    metadata_revision: int
-    record_etag: str
+    metadata_revision: int = Field(ge=1, strict=True)
+    inventory_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    tag_count: int = Field(ge=0, strict=True)
+
+
+class CollectionTagMembershipOut(RiverhogModel):
+    tag: CanonicalTag
+
+
+class CollectionTagsOut(CollectionTagSetOut):
+    page: int = Field(ge=1, strict=True)
+    per_page: int = Field(ge=1, le=100, strict=True)
+    pages: int = Field(ge=0, strict=True)
     tags: list[CanonicalTag]
 
 

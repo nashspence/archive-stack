@@ -6,6 +6,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import riverhog_provenance.archive as provenance_archive
 import riverhog_provenance.schema as provenance_schema
 import riverhog_provenance_linux_contracts as linux_contracts
 import riverhog_provenance_macos_contracts as macos_contracts
@@ -96,6 +97,33 @@ def test_archive_index_and_bundle_round_trip_deterministically(tmp_path: Path, u
     assert validated.identity == first.identity
     assert validated.journal_bytes == journals
     assert validated.bindings == bindings
+
+
+def test_bundle_target_never_rejects_one_legitimate_large_journal(
+    tmp_path: Path,
+    urn_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload, journal = _journal(tmp_path, urn_factory)
+    summary = validate_journal(journal)
+    monkeypatch.setattr(provenance_archive, "TARGET_BUNDLE_PLAINTEXT_BYTES", 1)
+
+    archive = build_provenance_archive(
+        bindings=(
+            FileProvenanceBinding(
+                path="movie.bin",
+                bytes=payload.stat().st_size,
+                sha256=summary.current_sha256,
+                status="captured",
+                journal_id=summary.journal_id,
+                current_state_id=summary.current_state_id,
+            ),
+        ),
+        journals={summary.journal_id: journal},
+    )
+
+    assert len(archive.bundles) == 1
+    assert archive.bundles[0].journal_ids == (summary.journal_id,)
 
 
 def test_portable_recovery_set_round_trip(tmp_path: Path, urn_factory) -> None:

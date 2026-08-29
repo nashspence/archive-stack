@@ -160,7 +160,7 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         "new_archive_expires_at": "2026-08-14T00:00:00.000000Z",
         "lease_categories": ["new_archive"],
         "retrieval_job_leases": 0,
-        "tags": ["photos"],
+        "tag_count": 1,
     }
     page = {
         "page": 1,
@@ -253,7 +253,7 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
     assert json.loads(json_list.stdout) == page
     assert human_show.exit_code == 0
     assert "state: ready" in human_show.stdout
-    assert "tags: photos" in human_show.stdout
+    assert "tags: 1" in human_show.stdout
     assert json.loads(json_show.stdout) == cached
     assert human_status.exit_code == json_status.exit_code == 0
     assert "retrieval cache" in human_status.stdout

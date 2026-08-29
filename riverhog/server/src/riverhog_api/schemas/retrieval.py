@@ -160,7 +160,7 @@ class RetrievalCacheObjectOut(RiverhogModel):
     new_archive_expires_at: str | None
     lease_categories: list[Literal["new_archive", "retrieval_job"]]
     retrieval_job_leases: int
-    tags: list[str]
+    tag_count: int = Field(ge=0, strict=True)
 
 
 class RetrievalCacheObjectListFiltersOut(RiverhogModel):

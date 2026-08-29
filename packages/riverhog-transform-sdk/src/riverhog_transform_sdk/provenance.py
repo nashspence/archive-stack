@@ -41,17 +41,17 @@ class _TransformProvenanceApi(Protocol):
         order: str = "asc",
     ) -> AbstractContextManager[Iterator[dict[str, Any]]]: ...
 
-    def export_collection_provenance_journal(
+    def stream_collection_provenance_journal(
         self,
         collection_id: CollectionId,
         journal_id: ProvenanceJournalId,
-    ) -> bytes: ...
+    ) -> AbstractContextManager[Iterator[bytes]]: ...
 
-    def export_collection_upload_session_provenance_journal(
+    def stream_collection_upload_session_provenance_journal(
         self,
         collection_id: CollectionId,
         journal_id: ProvenanceJournalId,
-    ) -> bytes: ...
+    ) -> AbstractContextManager[Iterator[bytes]]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,10 +99,11 @@ class IncrementalTransformProvenance:
         journal: bytes | None = None
         if resumed:
             try:
-                journal = self.api.export_collection_upload_session_provenance_journal(
+                with self.api.stream_collection_upload_session_provenance_journal(
                     collection_id,
                     journal_id,
-                )
+                ) as chunks:
+                    journal = b"".join(chunks)
             except NotFound:
                 pass
         if journal is None:
@@ -376,10 +377,11 @@ class _TransformProvenanceBuilder:
             journal: bytes | None = None
             if resumed:
                 try:
-                    journal = self.api.export_collection_upload_session_provenance_journal(
+                    with self.api.stream_collection_upload_session_provenance_journal(
                         collection_id,
                         journal_id,
-                    )
+                    ) as chunks:
+                        journal = b"".join(chunks)
                 except NotFound:
                     pass
             if journal is None:
@@ -453,7 +455,7 @@ def _load_journal_closure(
         content = (
             existing
             if collection_key in loaded_journals and existing is not None
-            else api.export_collection_provenance_journal(collection_id, current_id)
+            else _read_collection_journal(api, collection_id, current_id)
         )
         summary = validate_journal(content)
         if summary.journal_id != current_id:
@@ -467,6 +469,15 @@ def _load_journal_closure(
             if (collection_id, reference.journal_id) not in loaded_journals:
                 pending.append(reference.journal_id)
     return journals[journal_id]
+
+
+def _read_collection_journal(
+    api: _TransformProvenanceApi,
+    collection_id: CollectionId,
+    journal_id: ProvenanceJournalId,
+) -> bytes:
+    with api.stream_collection_provenance_journal(collection_id, journal_id) as chunks:
+        return b"".join(chunks)
 
 
 def _output_journal_id(execution_id: str, path: str) -> str:

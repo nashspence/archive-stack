@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from pathlib import Path
 
 import httpx
@@ -307,11 +308,14 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             collection_id: int,
             journal_id: str,
             *,
-            content: bytes,
+            content: Iterable[bytes],
+            byte_count: int,
             sha256: str,
         ) -> dict[str, object]:
+            body = b"".join(content)
             assert collection_id == COLLECTION_ID
-            assert hashlib.sha256(content).hexdigest() == sha256
+            assert len(body) == byte_count
+            assert hashlib.sha256(body).hexdigest() == sha256
             assert journal_id.startswith("urn:uuid:")
             return {"journal_id": journal_id, "sha256": sha256}
 
