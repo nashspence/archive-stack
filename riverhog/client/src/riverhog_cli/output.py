@@ -17,15 +17,6 @@ FIELD_STYLE = "dim"
 ATTENTION_STYLE = "bold yellow"
 
 
-def _archive_copy_states(payload: Mapping[str, object]) -> str:
-    copies = _items(payload, "archive_copies")
-    if not copies:
-        return "none"
-    return ", ".join(
-        f"{copy.get('store', 'unknown')}={copy.get('state', 'pending')}" for copy in copies
-    )
-
-
 def format_find(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "files")]
     for file in _items(payload, "files"):
@@ -36,17 +27,15 @@ def format_find(payload: Mapping[str, object]) -> str:
 def format_collections(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "collections")]
     for collection in _items(payload, "collections"):
-        tags = collection.get("tags")
-        tag_text = ",".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
         lines.append(
             f"- {collection.get('id', 'unknown')}  "
             f"created={collection.get('created_at', 'unknown')}  "
             f"files={collection.get('files', 0)}  "
             f"bytes={_bytes(collection.get('bytes'))}  "
-            f"tags={tag_text or 'none'}  "
+            f"tags={collection.get('tag_count', 0)}  "
             f"encryption={collection.get('encryption_format', 'unknown')}:"
             f"{collection.get('passphrase_id', 'unknown')}  "
-            f"archive={_archive_copy_states(collection)}"
+            f"archive-copies={collection.get('archive_copy_count', 0)}"
         )
     return "\n".join(lines)
 
@@ -54,32 +43,24 @@ def format_collections(payload: Mapping[str, object]) -> str:
 def format_local_collections(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "local collections")]
     for collection in _items(payload, "collections"):
-        tags = collection.get("tags")
-        tag_text = ",".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
         lines.append(
             f"- {collection.get('collection_id', 'unknown')}  "
             f"status={collection.get('status', 'unknown')}  "
             f"created={collection.get('created_at', 'unknown')}  "
             f"files={collection.get('files', 0)}  "
             f"bytes={_bytes(collection.get('bytes'))}  "
-            f"tags={tag_text or 'none'}"
+            f"tags={collection.get('tag_count', 0)}"
         )
     return "\n".join(lines)
 
 
 def format_local_collection(payload: Mapping[str, object]) -> str:
-    tags = payload.get("tags")
-    tag_text = (
-        ",".join(str(tag) for tag in tags)
-        if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes))
-        else ""
-    )
     return "\n".join(
         [
             f"local collection {payload.get('collection_id', 'unknown')}",
             f"status: {payload.get('status', 'unknown')}",
             f"created: {payload.get('created_at', 'unknown')}",
-            f"tags: {tag_text or 'none'}",
+            f"tags: {payload.get('tag_count', 0)}",
             f"files: {payload.get('files', 0)}",
             f"bytes: {_bytes(payload.get('bytes'))}",
         ]
@@ -89,23 +70,29 @@ def format_local_collection(payload: Mapping[str, object]) -> str:
 def format_collection_summary(
     payload: Mapping[str, object],
 ) -> str:
-    tags = payload.get("tags")
-    tag_text = ", ".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
     lines = [
         f"collection {payload.get('id', 'unknown')}",
         f"created: {payload.get('created_at', 'unknown')}",
-        f"tags: {tag_text or 'none'}",
+        f"tags: {payload.get('tag_count', 0)}",
         f"files: {payload.get('files', 0)}",
         f"bytes: {_bytes(payload.get('bytes'))}",
         f"encryption: {payload.get('encryption_format', 'unknown')}:"
         f"{payload.get('passphrase_id', 'unknown')}",
         f"remote storage: {_bytes(payload.get('remote_storage_bytes'))}",
-        f"archive copies: {_archive_copy_states(payload)}",
+        f"archive copies: {payload.get('archive_copy_count', 0)}",
     ]
-    for archive in _items(payload, "archive_copies"):
-        store = archive.get("store", "unknown")
-        if archive.get("last_verified_at"):
-            lines.append(f"{store} verified: {archive['last_verified_at']}")
+    return "\n".join(lines)
+
+
+def format_collection_archive_copies(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "archive copies")]
+    for copy in _items(payload, "copies"):
+        lines.append(
+            f"- {copy.get('store', 'unknown')}  "
+            f"state={copy.get('state', 'unknown')}  "
+            f"objects={copy.get('object_count', 0)}  "
+            f"stored={_bytes(copy.get('stored_bytes'))}"
+        )
     return "\n".join(lines)
 
 
@@ -282,8 +269,6 @@ def format_collection_upload_discard_result(payload: Mapping[str, object]) -> st
 def format_collection_uploads(payload: Mapping[str, object]) -> str:
     lines = [_page_line(payload, "uploads")]
     for upload in _items(payload, "uploads"):
-        tags = upload.get("tags")
-        tag_text = ",".join(str(tag) for tag in tags) if isinstance(tags, Sequence) else ""
         custody_state, custody_files, custody_bytes = _upload_custody(
             upload,
             files_key="files",
@@ -300,7 +285,7 @@ def format_collection_uploads(payload: Mapping[str, object]) -> str:
             f"mode={upload.get('custody_mode', 'unknown')}  "
             f"encryption={upload.get('encryption_format', 'unknown')}:"
             f"{upload.get('passphrase_id', 'unknown')}  "
-            f"tags={tag_text or 'none'}"
+            f"tags={upload.get('tag_count', 0)}"
         )
     return "\n".join(lines)
 
@@ -442,11 +427,21 @@ def format_tag_deletion_result(payload: Mapping[str, object]) -> str:
 
 def format_collection_tags(payload: Mapping[str, object]) -> str:
     tags = payload.get("tags")
-    values = [str(tag) for tag in tags] if isinstance(tags, list) else []
+    values = (
+        [str(tag.get("tag", "unknown")) if isinstance(tag, Mapping) else str(tag) for tag in tags]
+        if isinstance(tags, list)
+        else []
+    )
+    if not values:
+        return "\n".join(
+            [
+                f"collection {payload.get('collection_id', 'unknown')}",
+                f"metadata revision: {payload.get('metadata_revision', 'unknown')}",
+                f"inventory identity: {payload.get('inventory_identity', 'unknown')}",
+                f"tag count: {payload.get('tag_count', 0)}",
+            ]
+        )
     lines = [
-        f"collection {payload.get('collection_id', 'unknown')}",
-        f"metadata revision: {payload.get('metadata_revision', 'unknown')}",
-        f"record etag: {payload.get('record_etag', 'unknown')}",
         "tags:",
     ]
     lines.extend(f"- {tag}" for tag in values)
@@ -602,12 +597,6 @@ def format_retrieval_cache_object(payload: Mapping[str, object]) -> str:
         if isinstance(categories, Sequence) and not isinstance(categories, (str, bytes))
         else "none"
     )
-    tags = payload.get("tags")
-    tag_text = (
-        ", ".join(str(value) for value in tags)
-        if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes))
-        else "none"
-    )
     return "\n".join(
         [
             f"retrieval cache object {payload.get('collection_id', 'unknown')}::"
@@ -622,7 +611,7 @@ def format_retrieval_cache_object(payload: Mapping[str, object]) -> str:
             f"new archive lease expires: {payload.get('new_archive_expires_at') or 'none'}",
             f"lease categories: {leases}",
             f"retrieval job leases: {payload.get('retrieval_job_leases', 0)}",
-            f"tags: {tag_text}",
+            f"tags: {payload.get('tag_count', 0)}",
         ]
     )
 
@@ -742,6 +731,12 @@ def format_provenance_trace(payload: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def format_provenance_journal_agents(payload: Mapping[str, object]) -> str:
+    lines = [_page_line(payload, "agents")]
+    lines.extend(f"- {item.get('agent_id', 'unknown')}" for item in _items(payload, "agents"))
+    return "\n".join(lines)
+
+
 def format_provenance_verification(payload: Mapping[str, object]) -> str:
     return "\n".join(
         [
@@ -754,3 +749,17 @@ def format_provenance_verification(payload: Mapping[str, object]) -> str:
             f"projected entities: {payload.get('entities', 0)}",
         ]
     )
+
+
+def format_provenance_verification_job(payload: Mapping[str, object]) -> str:
+    result = payload.get("result")
+    if payload.get("state") == "succeeded" and isinstance(result, Mapping):
+        return format_provenance_verification(result)
+    lines = [
+        f"collection provenance verification {payload.get('collection_id', 'unknown')}",
+        f"state: {payload.get('state', 'unknown')}",
+        f"attempts: {payload.get('attempts', 0)}",
+    ]
+    if payload.get("failure"):
+        lines.append(f"failure: {payload['failure']}")
+    return "\n".join(lines)

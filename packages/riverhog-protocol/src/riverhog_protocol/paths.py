@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
+from collections.abc import Iterable
 from pathlib import PurePosixPath
 from typing import Annotated
 
@@ -17,6 +19,11 @@ __all__ = [
     "PathNormalizationError",
     "normalize_collection_id",
     "normalize_relpath",
+    "relpath_search_key",
+    "relpath_sort_key",
+    "text_search_key",
+    "TagSetIdentityBuilder",
+    "tag_set_identity",
     "normalize_tag",
     "validate_canonical_relpath",
     "validate_canonical_tag",
@@ -30,6 +37,7 @@ class PathNormalizationError(ValueError):
 
 _TAG_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 MAX_TAG_LENGTH = 80
+TAG_SET_IDENTITY_FORMAT = "riverhog-tag-set/v1"
 CANONICAL_RELPATH_PATTERN = r"^[^/\\]+(?:/[^/\\]+)*$"
 
 
@@ -48,6 +56,7 @@ type CanonicalRelPath = Annotated[
         pattern=CANONICAL_RELPATH_PATTERN,
         json_schema_extra={
             "format": "riverhog-canonical-relpath-v1",
+            "x-unicode-normalization": "NFC",
             "allOf": [
                 {"not": {"pattern": r"(?:^|/)\.{1,2}(?:/|$)"}},
                 {"not": {"pattern": r"^\s|\s$"}},
@@ -73,7 +82,7 @@ type CanonicalTag = Annotated[
 
 
 def normalize_relpath(raw: str) -> str:
-    candidate = raw.strip().replace("\\", "/")
+    candidate = unicodedata.normalize("NFC", raw.strip()).replace("\\", "/")
     if not candidate or candidate in {".", "/"}:
         raise PathNormalizationError("path must not be empty")
     path = PurePosixPath(candidate)
@@ -91,6 +100,31 @@ def normalize_relpath(raw: str) -> str:
     return "/".join(parts)
 
 
+def relpath_sort_key(value: str) -> bytes:
+    """Return the database-independent canonical ordering key for one path."""
+
+    return validate_canonical_relpath(value).encode("utf-8")
+
+
+def relpath_search_key(value: str) -> str:
+    """Return Riverhog's stable ASCII-insensitive search projection for one path.
+
+    Non-ASCII path text remains exact. This deliberately avoids delegating
+    semantic normalization to database or operating-system collation tables.
+    """
+
+    return text_search_key(validate_canonical_relpath(value))
+
+
+def text_search_key(value: str) -> str:
+    """Normalize free text with the same stable projection used for paths."""
+
+    normalized = unicodedata.normalize("NFC", value)
+    return normalized.translate(
+        str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+    )
+
+
 def normalize_tag(raw: str) -> str:
     ascii_text = (
         unicodedata.normalize("NFKD", raw.strip().casefold())
@@ -103,6 +137,41 @@ def normalize_tag(raw: str) -> str:
     if not normalized:
         raise PathNormalizationError("tag must include at least one letter or digit")
     return normalized
+
+
+class TagSetIdentityBuilder:
+    """Hash one canonically ordered tag membership without retaining it."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256()
+        self._digest.update(b'{"format":"riverhog-tag-set/v1","tags":[')
+        self._previous: str | None = None
+        self._count = 0
+
+    def add(self, value: str) -> None:
+        tag = validate_canonical_tag(value)
+        if self._previous is not None and tag <= self._previous:
+            raise PathNormalizationError("tag set must be unique and canonically ordered")
+        if self._count:
+            self._digest.update(b",")
+        self._digest.update(b'"')
+        self._digest.update(tag.encode("ascii"))
+        self._digest.update(b'"')
+        self._previous = tag
+        self._count += 1
+
+    def finish(self) -> str:
+        self._digest.update(b"]}")
+        return self._digest.hexdigest()
+
+
+def tag_set_identity(values: Iterable[str]) -> str:
+    """Return the bounded-memory identity of one ordered tag iterable."""
+
+    builder = TagSetIdentityBuilder()
+    for value in values:
+        builder.add(value)
+    return builder.finish()
 
 
 def normalize_collection_id(raw: str | int) -> int:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -284,8 +285,15 @@ class FixtureApi:
             "id": collection_id,
             "archive_root_sha256": _sha("7"),
             "content_identity": _sha("8"),
-            "tags": list(self.derivation.output_tags),
         }
+
+    @contextmanager
+    def stream_collection_tags(self, collection_id: int):  # type: ignore[no-untyped-def]
+        assert self.derivation is not None
+        self.calls.append(("stream-tags", {"collection_id": collection_id}))
+        yield iter(
+            {"collection_id": collection_id, "tag": tag} for tag in self.derivation.output_tags
+        )
 
     def get_collection_derivation(self, collection_id: int) -> dict[str, Any]:
         assert self.derivation is not None
@@ -407,6 +415,7 @@ def test_riverhog_adapter_uses_scoped_capabilities_and_verifies_settlement() -> 
     output = client.verify_and_settle(record)
     assert output == record.output
     assert any(name == "settle" for name, _payload in api.calls)
+    assert ("stream-tags", {"collection_id": output.collection_id}) in api.calls
 
 
 def test_effect_target_uses_only_generic_read_custody_and_releases_without_settlement() -> None:

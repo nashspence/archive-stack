@@ -146,7 +146,7 @@ class SqlAlchemyArchiveMaintenanceService:
                     content_identity=collection.content_identity,
                     encryption_format=collection.encryption_format,
                     passphrase_id=collection.passphrase_id,
-                    record_etag=collection.record_etag,
+                    inventory_identity=collection.inventory_identity,
                     metadata_revision=collection.metadata_revision,
                     tags=tags,
                     updated_at=collection.metadata_updated_at,

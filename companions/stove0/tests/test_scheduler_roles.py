@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import cast
 
 from lifecycle_events import EventPage, cloud_event
@@ -262,7 +263,7 @@ def test_lifecycle_cursor_advances_past_deleted_and_unrelated_events() -> None:
                 data={
                     "collection_id": collection_id,
                     "collection_created_at": "2026-08-01T00:00:00.000000Z",
-                    "collection_tags": [],
+                    "collection_tag_count": 0,
                     "actor": {"app": "riverhog"},
                     "initiator": {"app": "fixture"},
                     **(
@@ -377,6 +378,7 @@ class _LineageCoordinator:
 class _LineageRiverhog:
     def __init__(self, derivations: dict[int, dict[str, object]]) -> None:
         self.derivations = derivations
+        self.tag_stream_reads: list[int] = []
 
     def get_collection(self, collection_id: int) -> dict[str, object]:
         character = f"{collection_id % 16:x}"
@@ -384,8 +386,12 @@ class _LineageRiverhog:
             "id": collection_id,
             "archive_root_sha256": character * 64,
             "content_identity": f"{(collection_id + 1) % 16:x}" * 64,
-            "tags": ["fixture"],
         }
+
+    @contextmanager
+    def stream_collection_tags(self, collection_id: int):  # type: ignore[no-untyped-def]
+        self.tag_stream_reads.append(collection_id)
+        yield iter(({"collection_id": collection_id, "tag": "fixture"},))
 
     def get_collection_derivation(self, collection_id: int) -> dict[str, object]:
         try:
@@ -432,17 +438,19 @@ def _lineage(
 def _lineage_scheduler(
     recipe: RecipeDefinition,
     derivations: dict[int, dict[str, object]],
-) -> tuple[Stove0Scheduler, _LineageCoordinator]:
+) -> tuple[Stove0Scheduler, _LineageCoordinator, _LineageRiverhog]:
     coordinator = _LineageCoordinator()
+    riverhog = _LineageRiverhog(derivations)
     return (
         Stove0Scheduler(
-            riverhog=_LineageRiverhog(derivations),  # type: ignore[arg-type]
+            riverhog=riverhog,  # type: ignore[arg-type]
             catalog=_LineageCatalog(recipe),  # type: ignore[arg-type]
             planner=_LineagePlanner(recipe),  # type: ignore[arg-type]
             coordinator=coordinator,  # type: ignore[arg-type]
             state=cast(object, None),  # type: ignore[arg-type]
         ),
         coordinator,
+        riverhog,
     )
 
 
@@ -454,8 +462,8 @@ def test_derived_recipe_rejects_self_and_a_to_b_to_a_ancestry_cycles() -> None:
         3: _lineage(recipe_b.ref, 2),
     }
 
-    immediate, immediate_coordinator = _lineage_scheduler(recipe_a, derivations)
-    ancestry, ancestry_coordinator = _lineage_scheduler(recipe_a, derivations)
+    immediate, immediate_coordinator, _ = _lineage_scheduler(recipe_a, derivations)
+    ancestry, ancestry_coordinator, _ = _lineage_scheduler(recipe_a, derivations)
 
     assert immediate.reconcile_collection(2) == []
     assert immediate_coordinator.records == {}
@@ -470,7 +478,7 @@ def test_derived_recipe_allows_deep_acyclic_lineage_and_repeated_events_converge
         for collection_id in range(2, 98)
     }
     candidate = _recipe("final")
-    scheduler, coordinator = _lineage_scheduler(candidate, derivations)
+    scheduler, coordinator, riverhog = _lineage_scheduler(candidate, derivations)
 
     first = scheduler.reconcile_collection(97)
     repeated = scheduler.reconcile_collection(97)
@@ -478,3 +486,4 @@ def test_derived_recipe_allows_deep_acyclic_lineage_and_repeated_events_converge
     assert first == repeated
     assert len(first) == 1
     assert set(coordinator.records) == set(first)
+    assert riverhog.tag_stream_reads == [97, 97]

@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import sys
 import time
+from collections.abc import Iterator, Sequence
 from contextlib import closing
 from pathlib import Path
 from typing import Annotated, Any, cast
@@ -22,7 +23,10 @@ from riverhog_api_client.downloads import (
 from riverhog_cli_support.output import emit, format_list_ids
 from riverhog_protocol.errors import InvalidState, NotFound
 from riverhog_protocol.paths import normalize_collection_id, normalize_relpath, normalize_tag
-from riverhog_protocol.portable_collection import PortableCollectionRecord
+from riverhog_protocol.portable_collection import (
+    PortableCollectionFile,
+    PortableCollectionHeader,
+)
 from riverhog_protocol.transport import RETRIEVAL_FILE_BATCH_MAX
 from riverhog_provenance import list_provenance_observers, resolve_provenance_observer
 from state_schema import StateSchemaError
@@ -189,7 +193,7 @@ def state_verify(
 def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, object]:
     row = db.execute(
         """
-        SELECT c.collection_id, c.created_at, c.tags_json,
+        SELECT c.collection_id, c.created_at,
                CASE c.remote_deleted
                    WHEN 1 THEN 'remote-deleted'
                    ELSE 'desired'
@@ -199,7 +203,7 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
         FROM desired_collections AS c
         LEFT JOIN desired_files AS f USING (collection_id)
         WHERE c.collection_id = ?
-        GROUP BY c.collection_id, c.created_at, c.tags_json, c.remote_deleted
+        GROUP BY c.collection_id, c.created_at, c.remote_deleted
         """,
         (collection_id,),
     ).fetchone()
@@ -208,43 +212,50 @@ def _local_collection(db: sqlite3.Connection, collection_id: int) -> dict[str, o
     return {
         "collection_id": int(row["collection_id"]),
         "created_at": str(row["created_at"]),
-        "tags": json.loads(str(row["tags_json"])),
+        "tag_count": int(
+            db.execute(
+                "SELECT COUNT(*) FROM desired_collection_tags WHERE collection_id = ?",
+                (collection_id,),
+            ).fetchone()[0]
+        ),
         "status": str(row["status"]),
         "files": int(row["files"]),
         "bytes": int(row["bytes"]),
     }
 
 
-def _store_manifest(
+def _store_inventory(
     db: sqlite3.Connection,
-    record: PortableCollectionRecord,
+    header: PortableCollectionHeader,
+    files: Sequence[PortableCollectionFile] | Iterator[PortableCollectionFile],
     *,
+    inventory_identity: str,
     created_at: str,
 ) -> None:
-    collection_id = normalize_collection_id(record.collection)
+    collection_id = normalize_collection_id(header.collection)
     parse_utc_timestamp(created_at)
-    tags = list(record.tags)
-    etag = record.identity
     db.execute(
         """
         INSERT INTO desired_collections (
             collection_id,
-            record_etag,
+            inventory_identity,
             created_at,
-            tags_json,
             remote_deleted
         )
-        VALUES (?, ?, ?, ?, 0)
+        VALUES (?, ?, ?, 0)
         ON CONFLICT (collection_id) DO UPDATE SET
-            record_etag = excluded.record_etag,
+            inventory_identity = excluded.inventory_identity,
             created_at = excluded.created_at,
-            tags_json = excluded.tags_json,
             remote_deleted = 0
         """,
-        (collection_id, etag, created_at, json.dumps(tags, separators=(",", ":"))),
+        (
+            collection_id,
+            inventory_identity,
+            created_at,
+        ),
     )
     db.execute("DELETE FROM desired_files WHERE collection_id = ?", (collection_id,))
-    for current in record.files:
+    for current in files:
         db.execute(
             """
             INSERT INTO desired_files (collection_id, path, bytes, sha256)
@@ -254,15 +265,36 @@ def _store_manifest(
         )
 
 
+def _replace_local_tags(
+    db: sqlite3.Connection,
+    collection_id: int,
+    tags: Iterator[dict[str, Any]],
+) -> None:
+    db.execute("DELETE FROM desired_collection_tags WHERE collection_id = ?", (collection_id,))
+    for item in tags:
+        tag = item.get("tag")
+        if not isinstance(tag, str) or normalize_tag(tag) != tag:
+            raise InvalidState("Riverhog returned an invalid collection tag")
+        db.execute(
+            "INSERT INTO desired_collection_tags (collection_id, tag) VALUES (?, ?)",
+            (collection_id, tag),
+        )
+
+
 def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: int) -> None:
     summary = api.get_collection(collection_id)
     if normalize_collection_id(summary["id"]) != collection_id:
         raise InvalidState("Riverhog returned the wrong collection summary")
-    _store_manifest(
-        db,
-        api.get_portable_collection_manifest(collection_id),
-        created_at=str(summary["created_at"]),
-    )
+    with api.stream_portable_collection_inventory(collection_id) as inventory:
+        _store_inventory(
+            db,
+            inventory.begin.header,
+            iter(inventory),
+            inventory_identity=inventory.begin.inventory_identity,
+            created_at=str(summary["created_at"]),
+        )
+    with api.stream_collection_tags(collection_id) as tags:
+        _replace_local_tags(db, collection_id, tags)
 
 
 def _output_path(target: Path, collection_id: int, path: str) -> Path:
@@ -275,22 +307,9 @@ def _output_path(target: Path, collection_id: int, path: str) -> Path:
 def _projection_name(
     collection_id: int,
     created_at: str,
-    *,
-    tags: list[str] | None = None,
-    parent_tag: str | None = None,
 ) -> str:
     timestamp = parse_utc_timestamp(created_at).strftime("%Y%m%dT%H%M%SZ")
-    base = f"{timestamp}--{collection_id}"
-    other_tags = sorted(tag for tag in tags or [] if tag != parent_tag)
-    if not other_tags:
-        return base
-    full_name = "--".join((base, *other_tags))
-    if len(full_name.encode("utf-8")) <= PROJECTION_NAME_BYTES_MAX:
-        return full_name
-    digest = hashlib.sha256(full_name.encode("utf-8")).hexdigest()[:12]
-    suffix = f"--{digest}"
-    budget = PROJECTION_NAME_BYTES_MAX - len(suffix)
-    return f"{full_name[:budget].rstrip('-')}{suffix}"
+    return f"{timestamp}--{collection_id}"
 
 
 def _collection_is_materialized(
@@ -318,7 +337,7 @@ def _expected_projection_links(
     expected: dict[Path, str] = {}
     for row in db.execute(
         """
-        SELECT collection_id, created_at, tags_json
+        SELECT collection_id, created_at
         FROM desired_collections
         ORDER BY collection_id
         """
@@ -326,10 +345,13 @@ def _expected_projection_links(
         collection_id = normalize_collection_id(row["collection_id"])
         if not _collection_is_materialized(db, target, collection_id):
             continue
-        tags = json.loads(str(row["tags_json"]))
-        if not isinstance(tags, list):
-            raise InvalidState(f"invalid local tag state for collection {collection_id}")
-        normalized_tags = [normalize_tag(str(tag)) for tag in tags]
+        normalized_tags = [
+            str(tag["tag"])
+            for tag in db.execute(
+                "SELECT tag FROM desired_collection_tags WHERE collection_id = ? ORDER BY tag",
+                (collection_id,),
+            )
+        ]
         collection_dir = target / str(collection_id)
         if not normalized_tags:
             directory = target / "untagged"
@@ -341,8 +363,6 @@ def _expected_projection_links(
             link = directory / _projection_name(
                 collection_id,
                 str(row["created_at"]),
-                tags=normalized_tags,
-                parent_tag=parent_tag,
             )
             expected[link] = os.path.relpath(collection_dir, start=directory)
     return expected
@@ -831,14 +851,18 @@ def list_collections(
         if normalized_query:
             filters = (
                 "WHERE CAST(collection_id AS TEXT) LIKE ? "
-                "OR lower(tags_json) LIKE lower(?) "
+                "OR EXISTS (SELECT 1 FROM desired_collection_tags AS t "
+                "           WHERE t.collection_id = local_collections.collection_id "
+                "             AND t.tag LIKE lower(?)) "
                 "OR status LIKE lower(?)"
             )
             pattern = f"%{normalized_query}%"
             params.extend((pattern, pattern, pattern))
         base_query = f"""
                 WITH local_collections AS (
-                SELECT c.collection_id, c.created_at, c.tags_json, c.remote_deleted,
+                SELECT c.collection_id, c.created_at, c.remote_deleted,
+                       (SELECT COUNT(*) FROM desired_collection_tags AS t
+                        WHERE t.collection_id = c.collection_id) AS tag_count,
                        CASE c.remote_deleted
                            WHEN 1 THEN 'remote-deleted'
                            ELSE 'desired'
@@ -847,7 +871,7 @@ def list_collections(
                        COALESCE(SUM(f.bytes), 0) AS bytes
                 FROM desired_collections AS c
                 LEFT JOIN desired_files AS f USING (collection_id)
-                GROUP BY c.collection_id, c.created_at, c.tags_json, c.remote_deleted
+                GROUP BY c.collection_id, c.created_at, c.remote_deleted
                 )
                 SELECT * FROM local_collections
                 {filters}
@@ -907,7 +931,7 @@ def _local_collection_list_item(row: sqlite3.Row) -> dict[str, object]:
     return {
         "collection_id": int(row["collection_id"]),
         "created_at": str(row["created_at"]),
-        "tags": json.loads(str(row["tags_json"])),
+        "tag_count": int(row["tag_count"]),
         "status": str(row["status"]),
         "files": int(row["files"]),
         "bytes": int(row["bytes"]),

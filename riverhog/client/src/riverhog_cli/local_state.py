@@ -36,18 +36,27 @@ Table(
     "desired_collections",
     LOCAL_STATE_METADATA,
     Column("collection_id", Integer, primary_key=True),
-    Column("record_etag", Text, nullable=False),
+    Column("inventory_identity", Text, nullable=False),
     Column("created_at", Text, nullable=False),
-    Column("tags_json", Text, nullable=False),
     Column("remote_deleted", Integer, nullable=False, server_default=text("0")),
     CheckConstraint("collection_id > 0", name="ck_desired_collections_id"),
     CheckConstraint(
-        "length(record_etag) = 64 AND record_etag = lower(record_etag) "
-        "AND record_etag NOT GLOB '*[^0-9a-f]*'",
+        "length(inventory_identity) = 64 AND inventory_identity = lower(inventory_identity) "
+        "AND inventory_identity NOT GLOB '*[^0-9a-f]*'",
         name="ck_desired_collections_etag",
     ),
-    CheckConstraint("json_valid(tags_json)", name="ck_desired_collections_tags_json"),
     CheckConstraint("remote_deleted IN (0, 1)", name="ck_desired_collections_remote_deleted"),
+)
+Table(
+    "desired_collection_tags",
+    LOCAL_STATE_METADATA,
+    Column(
+        "collection_id",
+        Integer,
+        ForeignKey("desired_collections.collection_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("tag", Text, primary_key=True),
 )
 Table(
     "desired_files",

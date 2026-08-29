@@ -129,11 +129,20 @@ def _process_archive_maintenance(
                 "startup requeued interrupted metadata-manifest publications: count=%s",
                 requeued_metadata,
             )
+        requeued_verifications = (
+            container.provenance.requeue_interrupted_verifications_for_startup()
+        )
+        if requeued_verifications:
+            _LOG.info(
+                "startup reconciled interrupted provenance verifications: count=%s",
+                requeued_verifications,
+            )
     container.collection_uploads.process_due_finalizations(limit=1)
     container.collection_uploads.reap_expired_custody_transfers(limit=100)
     container.collection_workflows.reap_expired_claims(limit=100)
     container.archive_copies.process_due(limit=1)
     container.archive_maintenance.process_due_metadata_publications(limit=10)
+    container.provenance.process_due_verifications(limit=1)
 
 
 def _process_proof_maturations(

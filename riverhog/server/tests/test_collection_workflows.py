@@ -35,6 +35,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_bytes,
 )
 from riverhog_protocol.errors import Conflict
+from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -74,7 +75,7 @@ def _collection(
         passphrase_id="fixture-archive-key-v1",
         provenance_mode="omitted",
         provenance_identity=None,
-        record_etag="f" * 64,
+        inventory_identity="f" * 64,
         metadata_revision=1,
         metadata_updated_at=NOW,
         ingest_source="fixture",
@@ -591,6 +592,7 @@ def test_expired_execution_upload_remains_a_deletion_blocker(
                 collection_id=3,
                 idempotency_key=EXECUTION_ID,
                 creation_identity_sha256="a" * 64,
+                tag_set_identity=tag_set_identity(("archive-camera",)),
                 ingest_source=f"transform:{EXECUTION_ID}",
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",

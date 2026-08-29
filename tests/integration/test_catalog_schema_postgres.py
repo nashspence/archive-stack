@@ -24,6 +24,7 @@ from riverhog_core.catalog_db import (
 from riverhog_core.catalog_models import TagRecord
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
+from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import make_url
 
@@ -122,7 +123,8 @@ def test_postgres_upload_idempotency_is_independent_per_application(
         )
         return service.create_or_resume(
             idempotency_key="shared-retry-key",
-            tags=("photos",),
+            initial_tag="photos",
+            tag_set_identity_sha256=tag_set_identity(("photos",)),
             ingest_source="postgres-fixture",
             archive_store=None,
             initiator=ApplicationPrincipal(app=app, key_id=key_id, access=access),

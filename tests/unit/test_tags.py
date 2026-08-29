@@ -30,6 +30,7 @@ from riverhog_core.services.archive_maintenance import SqlAlchemyArchiveMaintena
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.tags import SqlAlchemyTagService
 from riverhog_protocol.errors import Conflict
+from riverhog_protocol.paths import tag_set_identity
 
 from tests.unit.archive_object_fixtures import (
     COLLECTION_ID,
@@ -127,8 +128,10 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
         access=frozenset({ApplicationAccess(COLLECTION_TAGS_MANAGE)}),
     )
 
-    assert tags.replace_collection(1, ("camera",), principal=manager)["metadata_revision"] == 2
-    assert tags.replace_collection(1, ("reviewed",), principal=manager)["metadata_revision"] == 3
+    assert tags.add_collection_tag(1, "camera", principal=manager)["metadata_revision"] == 2
+    assert tags.remove_collection_tag(1, "docs", principal=manager)["metadata_revision"] == 3
+    assert tags.add_collection_tag(1, "reviewed", principal=manager)["metadata_revision"] == 4
+    assert tags.remove_collection_tag(1, "camera", principal=manager)["metadata_revision"] == 5
 
     events = (
         SqlAlchemyLifecycleEventService(config)
@@ -139,10 +142,7 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
         )
         .events
     )
-    assert [event.data["collection_tags"] for event in events] == [
-        ["camera"],
-        ["reviewed"],
-    ]
+    assert [event.data["collection_tag_count"] for event in events] == [2, 1, 2, 1]
     assert all(
         event.data["collection_created_at"] == "2026-07-15T00:00:00.000000Z" for event in events
     )
@@ -157,9 +157,17 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
             )
         ] == [
             (1, "after", "camera"),
+            (1, "after", "docs"),
             (1, "before", "docs"),
-            (2, "after", "reviewed"),
+            (2, "after", "camera"),
             (2, "before", "camera"),
+            (2, "before", "docs"),
+            (3, "after", "camera"),
+            (3, "after", "reviewed"),
+            (3, "before", "camera"),
+            (4, "after", "reviewed"),
+            (4, "before", "camera"),
+            (4, "before", "reviewed"),
         ]
 
     archive_store = MemoryArchiveStore()
@@ -176,13 +184,13 @@ def test_collection_metadata_publication_coalesces_to_latest_revision(tmp_path: 
     assert prefix.endswith("opaque-docs")
     assert manifest["format"] == "riverhog-collection-metadata/v1"
     assert manifest["collection"] == 1
-    assert manifest["metadata_revision"] == 3
+    assert manifest["metadata_revision"] == 5
     assert manifest["tags"] == ["reviewed"]
     with session_scope(make_session_factory(config.database_url)) as session:
         publication = session.get(CollectionMetadataPublicationRecord, (1, "deep"))
         assert publication is not None
         assert publication.state == "published"
-        assert publication.desired_revision == publication.published_revision == 3
+        assert publication.desired_revision == publication.published_revision == 5
 
 
 def test_collection_tag_add_and_remove_are_atomic_single_assignment_operations(
@@ -197,13 +205,25 @@ def test_collection_tag_add_and_remove_are_atomic_single_assignment_operations(
     manager = ApplicationPrincipal(
         app="operator",
         key_id=None,
-        access=frozenset({ApplicationAccess(COLLECTION_TAGS_MANAGE)}),
+        access=frozenset(
+            {
+                ApplicationAccess(CATALOG_READ),
+                ApplicationAccess(COLLECTION_TAGS_MANAGE),
+            }
+        ),
     )
 
     added = tags.add_collection_tag(COLLECTION_ID, "reviewed", principal=manager)
-    assert added["tags"] == ["docs", "reviewed"]
+    assert added["tag_count"] == 2
+    assert list(tags.iter_collection_tags(COLLECTION_ID, principal=manager)) == [
+        {"tag": "docs"},
+        {"tag": "reviewed"},
+    ]
     removed = tags.remove_collection_tag(COLLECTION_ID, "docs", principal=manager)
-    assert removed["tags"] == ["reviewed"]
+    assert removed["tag_count"] == 1
+    assert list(tags.iter_collection_tags(COLLECTION_ID, principal=manager)) == [
+        {"tag": "reviewed"}
+    ]
     with session_scope(make_session_factory(config.database_url)) as session:
         docs = session.get(TagRecord, "docs")
         reviewed = session.get(TagRecord, "reviewed")
@@ -230,6 +250,7 @@ def test_tag_deletion_plan_reports_only_bounded_catalog_dependencies(tmp_path: P
         upload = CollectionUploadRecord(
             idempotency_key="photos-upload",
             creation_identity_sha256="e" * 64,
+            tag_set_identity=tag_set_identity(("photos",)),
             provenance_mode="omitted",
             provenance_omission_reason="fixture does not exercise source observation",
             encryption_format="age-v1-scrypt",
@@ -315,7 +336,8 @@ def test_startup_resumes_a_claimed_metadata_publication(tmp_path: Path) -> None:
         key_id=None,
         access=frozenset({ApplicationAccess(COLLECTION_TAGS_MANAGE)}),
     )
-    tags.replace_collection(COLLECTION_ID, ("camera",), principal=manager)
+    tags.add_collection_tag(COLLECTION_ID, "camera", principal=manager)
+    tags.remove_collection_tag(COLLECTION_ID, "docs", principal=manager)
     factory = make_session_factory(config.database_url)
     with session_scope(factory) as session:
         publication = session.get(CollectionMetadataPublicationRecord, (COLLECTION_ID, "deep"))
@@ -360,7 +382,7 @@ def test_collection_tag_mutation_waits_for_destructive_archive_operations(
             )
         )
     with pytest.raises(Conflict, match="collection deletion is in progress"):
-        tags.replace_collection(COLLECTION_ID, ("camera",), principal=manager)
+        tags.add_collection_tag(COLLECTION_ID, "camera", principal=manager)
 
     with session_scope(factory) as session:
         session.delete(session.get(CollectionDeletionRecord, COLLECTION_ID))
@@ -374,4 +396,4 @@ def test_collection_tag_mutation_waits_for_destructive_archive_operations(
             )
         )
     with pytest.raises(Conflict, match="archive copy retirement is in progress"):
-        tags.replace_collection(COLLECTION_ID, ("camera",), principal=manager)
+        tags.add_collection_tag(COLLECTION_ID, "camera", principal=manager)

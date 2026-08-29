@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tempfile
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -197,22 +198,31 @@ def iter_complete_enumeration(
     query: Mapping[str, object],
     item_schema: CompleteEnumerationItemSchema,
 ) -> Iterator[bytes]:
-    """Emit one RFC 7464 complete-enumeration stream without materializing its items."""
+    """Drain one snapshot to transient storage, then emit its exact RFC 7464 stream.
+
+    Draining before the first response byte keeps database cursor and transaction
+    lifetime under server control rather than consumer backpressure. The transient
+    file is operational state only and is removed when iteration ends.
+    """
 
     begin = CompleteEnumerationBegin(
         query=dict(query),
         item_schema=item_schema,
     )
-    yield _json_sequence_record(begin.model_dump(mode="json"))
     digest = hashlib.sha256()
     count = 0
-    for count, value in enumerate(items, start=1):
-        item = CompleteEnumerationItem(ordinal=count - 1, item=value)
-        encoded = canonical_json_bytes(item.model_dump(mode="json"))
-        digest.update(encoded)
-        yield _JSON_SEQUENCE_RECORD_SEPARATOR + encoded + b"\n"
-    end = CompleteEnumerationEnd(count=count, items_sha256=digest.hexdigest())
-    yield _json_sequence_record(end.model_dump(mode="json"))
+    with tempfile.TemporaryFile(mode="w+b") as snapshot:
+        for count, value in enumerate(items, start=1):
+            item = CompleteEnumerationItem(ordinal=count - 1, item=value)
+            encoded = canonical_json_bytes(item.model_dump(mode="json"))
+            digest.update(encoded)
+            snapshot.write(_JSON_SEQUENCE_RECORD_SEPARATOR + encoded + b"\n")
+        snapshot.seek(0)
+        yield _json_sequence_record(begin.model_dump(mode="json"))
+        while chunk := snapshot.read(64 * 1024):
+            yield chunk
+        end = CompleteEnumerationEnd(count=count, items_sha256=digest.hexdigest())
+        yield _json_sequence_record(end.model_dump(mode="json"))
 
 
 class CompleteEnumerationReader:
@@ -239,7 +249,7 @@ class CompleteEnumerationReader:
         if self._started:
             raise RuntimeError("complete-enumeration reader is single-use")
         self._started = True
-        records = _iter_json_sequence_records(self._chunks)
+        records = iter_json_sequence_records(self._chunks)
         try:
             first = next(records)
         except StopIteration as exc:
@@ -279,7 +289,7 @@ class CompleteEnumerationReader:
             raise ValueError("complete-enumeration terminal proof was not consumed")
 
 
-def _iter_json_sequence_records(chunks: Iterable[bytes]) -> Iterator[dict[str, Any]]:
+def iter_json_sequence_records(chunks: Iterable[bytes]) -> Iterator[dict[str, Any]]:
     buffer = bytearray()
     for chunk in chunks:
         buffer.extend(chunk)
@@ -894,6 +904,7 @@ __all__ = [
     "http_operation_for_request",
     "http_operation_inventory",
     "iter_complete_enumeration",
+    "iter_json_sequence_records",
     "parse_error_payload",
     "parse_declared_error_payload",
     "parse_quoted_sha256_identity",

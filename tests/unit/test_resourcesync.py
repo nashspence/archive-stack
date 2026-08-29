@@ -3,20 +3,28 @@ from __future__ import annotations
 from types import SimpleNamespace
 from xml.etree import ElementTree
 
+import anyio
 import httpx
+from http_api_contracts import JSON_SEQUENCE_MEDIA_TYPE
+from pydantic import TypeAdapter
 from riverhog_api.app import create_app
 from riverhog_api.routers.resourcesync import (
-    get_portable_collection_manifest,
     resourcesync_capability_list,
     resourcesync_change_list,
     resourcesync_resource_list,
     resourcesync_resource_list_page,
+    stream_portable_collection_inventory,
     well_known_resourcesync,
 )
 from riverhog_api_client.client import ApiClient
-from riverhog_protocol import PortableCollectionRecord, portable_collection_json_schema
+from riverhog_protocol import (
+    PortableCollectionInventoryBegin,
+    PortableCollectionInventoryEnd,
+    PortableCollectionInventoryFile,
+    PortableCollectionInventoryReader,
+    PortableCollectionRecord,
+)
 from starlette.requests import Request
-from starlette.responses import Response
 
 COLLECTION_ID = 42
 ETAG = "a" * 64
@@ -55,22 +63,24 @@ class RetrievalStub:
             ],
         }
 
-    def collection_manifest(self, collection_id: int, *, principal: object):
+    def collection_inventory(self, collection_id: int, *, principal: object):
         assert collection_id == COLLECTION_ID
         assert principal == "app"
+        record = PortableCollectionRecord.create(
+            collection=collection_id,
+            content_identity="b" * 64,
+            encryption_format="age-v1-scrypt",
+            passphrase_id="collection-test-key-v1",
+            provenance_mode="omitted",
+            provenance_identity=None,
+            files=(("empty.txt", 0, "c" * 64),),
+        )
         return (
-            PortableCollectionRecord.create(
-                collection=collection_id,
-                content_identity="b" * 64,
-                encryption_format="age-v1-scrypt",
-                passphrase_id="collection-test-key-v1",
-                provenance_mode="omitted",
-                provenance_identity=None,
-                metadata_revision=0,
-                tags=(),
-                files=(("empty.txt", 0, "c" * 64),),
-            ),
-            ETAG,
+            record.header,
+            iter(record.files),
+            record.identity,
+            len(record.files),
+            sum(file.bytes for file in record.files),
         )
 
 
@@ -104,12 +114,22 @@ def test_resourcesync_uses_the_configured_public_url_authority() -> None:
     assert b"https://public.example.test/riverhog/resourcesync/capabilitylist.xml" in response.body
 
 
-def test_portable_manifest_openapi_uses_the_shipped_structural_projection() -> None:
-    response = create_app().openapi()["paths"]["/v1/catalog/collections/{collection_id}/manifest"][
+def test_portable_inventory_openapi_uses_the_exact_stream_projection() -> None:
+    response = create_app().openapi()["paths"]["/v1/catalog/collections/{collection_id}/inventory"][
         "get"
     ]["responses"]["200"]
 
-    assert response["content"]["application/json"]["schema"] == portable_collection_json_schema()
+    expected = TypeAdapter(
+        PortableCollectionInventoryBegin
+        | PortableCollectionInventoryFile
+        | PortableCollectionInventoryEnd
+    ).json_schema()
+    # FastAPI omits defaults from referenced response schemas. The field remains
+    # optional and its nullability is unchanged.
+    expected["$defs"]["PortableCollectionHeader"]["properties"]["provenance_identity"].pop(
+        "default"
+    )
+    assert response["content"][JSON_SEQUENCE_MEDIA_TYPE]["schema"] == expected
     assert response["headers"]["ETag"]["schema"] == {
         "type": "string",
         "pattern": '^"[0-9a-f]{64}"$',
@@ -259,19 +279,24 @@ def test_api_client_parses_resourcesync_discovery_capabilities_and_resources() -
         {
             "collection_id": COLLECTION_ID,
             "etag": ETAG,
-            "location": ("https://riverhog.example.test/v1/catalog/collections/42/manifest"),
+            "location": ("https://riverhog.example.test/v1/catalog/collections/42/inventory"),
         }
     ]
 
 
-def test_portable_manifest_response_has_a_content_identity() -> None:
-    response = Response()
-    record = get_portable_collection_manifest(
+def test_portable_inventory_response_has_an_exact_content_identity() -> None:
+    response = stream_portable_collection_inventory(
         COLLECTION_ID,
         "app",
         SimpleNamespace(retrieval=RetrievalStub()),
-        response,
     )
 
-    assert response.headers["etag"] == f'"{ETAG}"'
-    assert record.format == "riverhog-collection/v1"
+    async def content() -> bytes:
+        return b"".join([chunk async for chunk in response.body_iterator])
+
+    body = anyio.run(content)
+    reader = PortableCollectionInventoryReader([body])
+    assert [file.path for file in reader] == ["empty.txt"]
+    reader.require_complete()
+    assert response.headers["etag"] == f'"{reader.begin.inventory_identity}"'
+    assert reader.begin.header.format == "riverhog-collection/v1"

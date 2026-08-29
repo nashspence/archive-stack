@@ -341,20 +341,14 @@ class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
     )
 
     idempotency_key: CanonicalVisibleText = Field(max_length=200)
-    tags: list[CanonicalTag]
+    initial_tag: CanonicalTag | None = None
+    tag_set_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     ingest_source: str | None = None
     archive_store: ArchiveStoreName | None = None
     event_context: dict[str, Any] | None = None
     provenance_mode: Literal["captured", "omitted"] = "captured"
     provenance_omission_reason: CanonicalVisibleText | None = None
     custody_mode: CollectionUploadCustodyMode = "producer-retained"
-
-    @field_validator("tags")
-    @classmethod
-    def validate_unique_tags(cls, value: list[str]) -> list[str]:
-        if len(value) != len(set(value)):
-            raise ValueError("collection tags must not contain duplicates")
-        return value
 
     @model_validator(mode="after")
     def validate_provenance_choice(self) -> CreateOrResumeCollectionUploadSessionRequest:
@@ -381,7 +375,7 @@ class CompleteCollectionUploadSessionRequest(RiverhogModel):
 class CollectionSummaryOut(RiverhogModel):
     id: CollectionId
     created_at: str
-    tags: list[CanonicalTag]
+    tag_count: int = Field(ge=0, strict=True)
     content_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     archive_root_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     encryption_format: str
@@ -389,7 +383,7 @@ class CollectionSummaryOut(RiverhogModel):
     files: int
     bytes: int
     remote_storage_bytes: int
-    archive_copies: list[ArchiveCopyOut]
+    archive_copy_count: int = Field(ge=0, strict=True)
 
 
 class ListCollectionsResponse(RiverhogModel):
@@ -404,6 +398,15 @@ class ListCollectionsResponse(RiverhogModel):
     encryption_format: str | None
     passphrase_id: str | None
     collections: list[CollectionSummaryOut]
+
+
+class CollectionArchiveCopyListOut(RiverhogModel):
+    collection_id: CollectionId
+    page: int = Field(ge=1, strict=True)
+    per_page: int = Field(ge=1, le=100, strict=True)
+    total: int = Field(ge=0, strict=True)
+    pages: int = Field(ge=0, strict=True)
+    copies: list[ArchiveCopyOut]
 
 
 class CollectionDeletionArchiveCopyOut(RiverhogModel):
@@ -445,7 +448,7 @@ class CollectionDeletionPlanOut(RiverhogModel):
     archive_object_count: int
     remote_storage_bytes: int
     upload_file_count: int
-    record_etag: str
+    inventory_identity: str
     metadata_rows: dict[str, int]
     retirement_claim: RetirementClaimReferenceDocument | None = None
     blockers: list[str]
@@ -539,12 +542,30 @@ class ListCollectionUploadSessionFilesResponse(RiverhogModel):
         return self
 
 
+class CollectionUploadTagOut(RiverhogModel):
+    tag: CanonicalTag
+
+
+class ListCollectionUploadSessionTagsResponse(RiverhogModel):
+    collection_id: CollectionId
+    page: int = Field(ge=1, strict=True)
+    per_page: int = Field(ge=1, le=100, strict=True)
+    total: int = Field(ge=0, strict=True)
+    pages: int = Field(ge=0, strict=True)
+    tags: list[CollectionUploadTagOut]
+
+
+class CollectionUploadTagMutationOut(RiverhogModel):
+    collection_id: CollectionId
+    tag_count: int = Field(ge=0, strict=True)
+
+
 class CollectionUploadListItemOut(RiverhogModel):
     model_config = ConfigDict(json_schema_extra={"allOf": cast(Any, _UPLOAD_CUSTODY_STATE_SCHEMA)})
 
     collection_id: CollectionId
     created_at: str | None
-    tags: list[CanonicalTag]
+    tag_count: int = Field(ge=0, strict=True)
     ingest_source: str | None
     archive_store: ArchiveStoreName
     encryption_format: str
@@ -631,7 +652,7 @@ class CollectionUploadSessionOut(RiverhogModel):
 
     collection_id: CollectionId
     created_at: str
-    tags: list[CanonicalTag]
+    tag_count: int = Field(ge=0, strict=True)
     ingest_source: str | None
     provenance_mode: Literal["captured", "mixed", "omitted"]
     provenance_identity: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")

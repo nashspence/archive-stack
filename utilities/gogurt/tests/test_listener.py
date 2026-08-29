@@ -9,6 +9,7 @@ import stat
 import sys
 import threading
 import time
+import tracemalloc
 from collections.abc import Callable, Sequence
 from contextlib import closing
 from functools import partial
@@ -890,6 +891,68 @@ def test_listener_store_rejects_current_revision_schema_drift(tmp_path: Path) ->
 
     with pytest.raises(ListenerError, match="exact current schema"):
         store.create()
+
+
+def test_listener_observation_memory_depends_on_current_mounts_not_history(
+    tmp_path: Path,
+) -> None:
+    store = ListenerStore(tmp_path / "listener.sqlite3")
+    store.create()
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.executemany(
+            "INSERT INTO observed_mounts(mount_point, present, generation, marker_identity) "
+            "VALUES (?, 0, 1, NULL)",
+            ((f"/historical/mount-{index:06d}",) for index in range(50_000)),
+        )
+        connection.commit()
+
+    current = tmp_path / "current-mount"
+    current.mkdir()
+    tracemalloc.start()
+    try:
+        assert (
+            store.observe(
+                [current],
+                lambda _mount: {"status": "unmarked"},
+                now=1,
+            )
+            == []
+        )
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 4 * 1024 * 1024
+    with closing(sqlite3.connect(store.path)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM observed_mounts").fetchone() == (50_001,)
+
+
+def test_listener_runnable_selection_is_bounded_by_available_custody(
+    tmp_path: Path,
+) -> None:
+    store = ListenerStore(tmp_path / "listener.sqlite3")
+    store.create()
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.executemany(
+            "INSERT INTO dispatches(dispatch_id, mount_point, generation, marker_identity, "
+            "route, plan_json, state, observed_at) VALUES (?, ?, 1, ?, 'fixture', '{}', "
+            "'queued', ?)",
+            (
+                (f"{index:064x}", f"/mount/{index}", f"marker-{index}", float(index))
+                for index in range(10_000)
+            ),
+        )
+        connection.commit()
+
+    tracemalloc.start()
+    try:
+        runnable = store.runnable(now=10_001, limit=3)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert runnable == [f"{index:064x}" for index in range(3)]
+    assert peak < 1024 * 1024
 
 
 def test_listener_store_does_not_normalize_sqlite_owned_sidecars(

@@ -8,8 +8,9 @@ import os
 import re
 import secrets
 import tempfile
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import timedelta
+from itertools import zip_longest
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
@@ -27,6 +28,9 @@ from riverhog_protocol import (
     CollectionUploadSort,
     CollectionUploadState,
     OmittedFileProvenanceBinding,
+    PortableCollectionFile,
+    PortableCollectionHeader,
+    PortableCollectionIdentityBuilder,
     SortOrder,
     collection_upload_path_order_key,
     collection_upload_raw_digest_manifest,
@@ -36,6 +40,11 @@ from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
 from riverhog_protocol.manifest import collection_content_identity_ordered
 from riverhog_protocol.paths import (
     normalize_collection_id,
+    normalize_tag,
+    relpath_search_key,
+    relpath_sort_key,
+    tag_set_identity,
+    text_search_key,
 )
 from riverhog_protocol.raw_ingress import RawSourceDigestManifest, raw_volume_part_sha256s
 from riverhog_protocol.transport import COLLECTION_UPLOAD_FILE_BATCH_MAX
@@ -44,9 +53,10 @@ from riverhog_provenance import (
     ProvenanceArchive,
     ProvenanceValidationError,
     build_provenance_archive,
-    validate_journal,
+    reconstruct_provenance_archive_identity,
+    validate_journal_chunks,
 )
-from sqlalchemy import asc, desc, exists, func, or_, select, true
+from sqlalchemy import asc, case, desc, exists, func, insert, literal, or_, select, true, update
 from sqlalchemy.orm import Session, selectinload
 from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now, utc_timestamp_now
@@ -59,7 +69,6 @@ from riverhog_core.app_permissions import (
 )
 from riverhog_core.archive_catalog import ArchiveVolumeProjection, build_archive_catalog_projection
 from riverhog_core.archive_formats import ROOT_PROOF_STORAGE_FORMAT
-from riverhog_core.archive_manifest import validate_collection_archive_plan
 from riverhog_core.archive_provenance import (
     ArchiveProvenancePublisher,
     SealedArchiveProvenance,
@@ -71,7 +80,10 @@ from riverhog_core.archive_recovery_descriptor import (
 from riverhog_core.archive_root import ArchiveRootPublisher, SealedArchiveRoot
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
-from riverhog_core.catalog_events import record_catalog_event
+from riverhog_core.catalog_events import (
+    begin_catalog_event,
+    snapshot_catalog_event_collection_tags,
+)
 from riverhog_core.catalog_models import (
     CollectionArchiveAttestationRecord,
     CollectionArchiveCopyRecord,
@@ -82,10 +94,13 @@ from riverhog_core.catalog_models import (
     CollectionFileRecord,
     CollectionMetadataPublicationRecord,
     CollectionProofMaturationRecord,
+    CollectionProvenanceJournalAgentRecord,
+    CollectionProvenanceJournalChunkRecord,
     CollectionProvenanceJournalRecord,
     CollectionRecord,
     CollectionTagRecord,
     CollectionUploadFileRecord,
+    CollectionUploadProvenanceJournalChunkRecord,
     CollectionUploadProvenanceJournalRecord,
     CollectionUploadRecord,
     CollectionUploadTagRecord,
@@ -104,7 +119,6 @@ from riverhog_core.collection_creation_identity import (
     CollectionUploadCreationIdentityDocument,
     CollectionUploadCreationIdentityPayload,
 )
-from riverhog_core.collection_metadata import collection_record_manifest
 from riverhog_core.collection_plan import CollectionVolumePolicy
 from riverhog_core.domain.archive import (
     ArchiveFile,
@@ -131,7 +145,6 @@ from riverhog_core.ports.archive_objects import ArchiveResumableObjectStore
 from riverhog_core.ports.retrieval_cache import RetrievalCache, RetrievalCacheReceipt
 from riverhog_core.proofs import ProofStamper
 from riverhog_core.provenance_projection import (
-    ProvenanceJournalProjection,
     provenance_journal_projection,
 )
 from riverhog_core.raw_upload import RawUploadCheckpoint, RawVolumeUploader
@@ -152,7 +165,6 @@ from riverhog_core.services.operation_plans import (
     challenge_has_shape,
     plan_challenge,
 )
-from riverhog_core.services.tag_projections import adjust_tag_collection_counts
 from riverhog_core.stores.mirrored_archive_resumable_object_store import (
     MirroredArchiveResumableObjectStore,
 )
@@ -169,6 +181,7 @@ from riverhog_core.throughput import (
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _PROOF_RELATIVE_PATH = "manifest.json.ots.age"
 _PROOF_CONTENT_TYPE = "application/vnd.riverhog.collection-manifest-proof+age"
+_PROVENANCE_JOURNAL_CHUNK_BYTES = 1024 * 1024
 _LOG = logging.getLogger("riverhog_core.collection_uploads")
 _DISCARD_CHALLENGE_PREFIX = "discard-upload"
 _UPLOAD_SORT_FIELDS = closed_literal_values(CollectionUploadSort)
@@ -235,7 +248,8 @@ class SqlAlchemyCollectionUploadService:
         self,
         *,
         idempotency_key: str,
-        tags: Sequence[str],
+        initial_tag: str | None,
+        tag_set_identity_sha256: str,
         ingest_source: str | None,
         archive_store: str | None,
         initiator: ApplicationPrincipal,
@@ -245,13 +259,21 @@ class SqlAlchemyCollectionUploadService:
         custody_mode: str = "producer-retained",
     ) -> dict[str, object]:
         key = _normalize_idempotency_key(idempotency_key)
-        normalized_tags = _normalize_tags(tags)
+        normalized_initial_tag = normalize_tag(initial_tag) if initial_tag is not None else None
+        if normalized_initial_tag != initial_tag:
+            raise BadRequest("initial collection tag must be canonical")
+        if _SHA256_RE.fullmatch(tag_set_identity_sha256) is None:
+            raise BadRequest("collection tag-set identity is invalid")
         store_name = archive_store or self._config.archive_write_store
         try:
             archive_binding = self._archive_stores.require(store_name)
         except ValueError as exc:
             raise BadRequest(str(exc)) from exc
-        require_collection_create_access(initiator, COLLECTIONS_CREATE, normalized_tags)
+        require_collection_create_access(
+            initiator,
+            COLLECTIONS_CREATE,
+            (() if normalized_initial_tag is None else (normalized_initial_tag,)),
+        )
         context_json = event_context_json(event_context)
         normalized_provenance_mode, normalized_omission_reason = _normalize_provenance_mode(
             provenance_mode,
@@ -259,7 +281,7 @@ class SqlAlchemyCollectionUploadService:
         )
         normalized_custody_mode = _normalize_custody_mode(custody_mode)
         creation_identity = _collection_upload_creation_identity(
-            tags=normalized_tags,
+            tag_set_identity_sha256=tag_set_identity_sha256,
             ingest_source=ingest_source,
             archive_store=store_name,
             event_context_json=context_json,
@@ -273,7 +295,7 @@ class SqlAlchemyCollectionUploadService:
                 session,
                 initiator=initiator,
                 idempotency_key=key,
-                tags=normalized_tags,
+                tag_set_identity_sha256=tag_set_identity_sha256,
                 ingest_source=ingest_source,
                 archive_store=archive_store,
             )
@@ -323,13 +345,16 @@ class SqlAlchemyCollectionUploadService:
                     raise Conflict("collection upload discard is in progress")
                 return _upload_payload(session, upload, resumed=True)
 
-            _require_tags(session, normalized_tags)
+            if normalized_initial_tag is not None:
+                _require_tags(session, (normalized_initial_tag,))
             now = utc_timestamp_now()
             checkpoint = new_incremental_volume_planner(policy=self._policy)
             upload = CollectionUploadRecord(
                 idempotency_key=key,
                 creation_identity_sha256=creation_identity.creation_identity_sha256,
+                tag_set_identity=tag_set_identity_sha256,
                 ingest_source=ingest_source,
+                search_text=text_search_key(ingest_source or ""),
                 provenance_mode=normalized_provenance_mode,
                 provenance_omission_reason=normalized_omission_reason,
                 encryption_format=self._config.archive_active_encryption.format,
@@ -358,10 +383,13 @@ class SqlAlchemyCollectionUploadService:
             )
             session.add(upload)
             session.flush()
-            session.add_all(
-                CollectionUploadTagRecord(collection_id=upload.collection_id, tag_id=tag)
-                for tag in normalized_tags
-            )
+            if normalized_initial_tag is not None:
+                session.add(
+                    CollectionUploadTagRecord(
+                        collection_id=upload.collection_id,
+                        tag_id=normalized_initial_tag,
+                    )
+                )
             session.flush()
             return _upload_payload(session, upload, resumed=False)
 
@@ -372,23 +400,16 @@ class SqlAlchemyCollectionUploadService:
             if upload is not None:
                 if upload.initiated_by_app != principal.app:
                     raise NotFound(f"collection upload not found: {normalized}")
-                require_collection_create_access(
+                _require_upload_tag_access(
+                    session,
                     principal,
-                    COLLECTIONS_CREATE,
-                    _upload_tags(upload),
+                    normalized,
                 )
                 return
             collection = session.get(CollectionRecord, normalized)
             if collection is None or collection.created_by_app != principal.app:
                 raise NotFound(f"collection upload not found: {normalized}")
-            tags = tuple(
-                session.scalars(
-                    select(CollectionTagRecord.tag_id)
-                    .where(CollectionTagRecord.collection_id == normalized)
-                    .order_by(CollectionTagRecord.tag_id)
-                )
-            )
-            require_collection_create_access(principal, COLLECTIONS_CREATE, tags)
+            _require_collection_tag_create_access(session, principal, normalized)
 
     def require_read_access(self, collection_id: int, principal: ApplicationPrincipal) -> None:
         """Allow the owning producer or a collection-scoped deletion operator to inspect."""
@@ -398,27 +419,151 @@ class SqlAlchemyCollectionUploadService:
             upload = session.get(CollectionUploadRecord, normalized)
             if upload is not None:
                 if upload.initiated_by_app == principal.app:
-                    require_collection_create_access(
+                    _require_upload_tag_access(
+                        session,
                         principal,
-                        COLLECTIONS_CREATE,
-                        _upload_tags(upload),
+                        normalized,
                     )
                     return
-                if _upload_visible_to_deleter(upload, principal):
+                if _upload_visible_to_deleter(session, upload, principal):
                     return
                 raise NotFound(f"collection upload not found: {normalized}")
             collection = session.get(CollectionRecord, normalized)
             if collection is None:
                 raise NotFound(f"collection upload not found: {normalized}")
-            tags = tuple(current.tag_id for current in collection.tags)
             if collection.created_by_app == principal.app:
-                require_collection_create_access(principal, COLLECTIONS_CREATE, tags)
+                _require_collection_tag_create_access(session, principal, normalized)
                 return
-            if principal.allows_collection(COLLECTIONS_DELETE, normalized) or any(
-                principal.allows_tag(COLLECTIONS_DELETE, tag) for tag in tags
+            resources = permission_resources(principal, COLLECTIONS_DELETE)
+            allowed_tags = tag_ids(resources)
+            if (
+                ALL_RESOURCES in resources
+                or normalized in collection_ids(resources)
+                or (
+                    allowed_tags
+                    and session.scalar(
+                        select(CollectionTagRecord.collection_id)
+                        .where(CollectionTagRecord.collection_id == normalized)
+                        .where(CollectionTagRecord.tag_id.in_(allowed_tags))
+                        .limit(1)
+                    )
+                    is not None
+                )
             ):
                 return
             raise NotFound(f"collection upload not found: {normalized}")
+
+    def list_tags(
+        self,
+        collection_id: int,
+        *,
+        page: int,
+        per_page: int,
+    ) -> dict[str, object]:
+        normalized_id = _collection_id(collection_id)
+        if page < 1 or per_page < 1 or per_page > 100:
+            raise BadRequest("invalid collection upload tag pagination")
+        with read_snapshot(self._session_factory) as session:
+            if session.get(CollectionUploadRecord, normalized_id) is None:
+                raise NotFound(f"collection upload session not found: {normalized_id}")
+            total = _upload_tag_count(session, normalized_id)
+            rows = list(
+                session.scalars(
+                    select(CollectionUploadTagRecord.tag_id)
+                    .where(CollectionUploadTagRecord.collection_id == normalized_id)
+                    .order_by(CollectionUploadTagRecord.tag_id)
+                    .offset((page - 1) * per_page)
+                    .limit(per_page)
+                )
+            )
+            return {
+                "collection_id": normalized_id,
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "pages": (total + per_page - 1) // per_page,
+                "tags": [{"tag": value} for value in rows],
+            }
+
+    def iter_tags(self, collection_id: int) -> Iterator[dict[str, object]]:
+        normalized_id = _collection_id(collection_id)
+
+        def generate() -> Iterator[dict[str, object]]:
+            with read_snapshot(self._session_factory) as session:
+                if session.get(CollectionUploadRecord, normalized_id) is None:
+                    raise NotFound(f"collection upload session not found: {normalized_id}")
+                result = session.scalars(
+                    select(CollectionUploadTagRecord.tag_id)
+                    .where(CollectionUploadTagRecord.collection_id == normalized_id)
+                    .order_by(CollectionUploadTagRecord.tag_id)
+                ).yield_per(100)
+                for value in result:
+                    yield {"tag": value}
+
+        return generate()
+
+    def add_tag(
+        self,
+        collection_id: int,
+        tag: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> dict[str, object]:
+        normalized_id = _collection_id(collection_id)
+        normalized_tag = normalize_tag(tag)
+        if normalized_tag != tag:
+            raise BadRequest("collection upload tag must be canonical")
+        require_collection_create_access(principal, COLLECTIONS_CREATE, (normalized_tag,))
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == normalized_id)
+                .with_for_update()
+            )
+            if upload is None:
+                raise NotFound(f"collection upload session not found: {normalized_id}")
+            if upload.state != "open":
+                raise Conflict("collection upload tags are sealed")
+            _require_tags(session, (normalized_tag,))
+            existing = session.get(CollectionUploadTagRecord, (normalized_id, normalized_tag))
+            if existing is None:
+                session.add(
+                    CollectionUploadTagRecord(
+                        collection_id=normalized_id,
+                        tag_id=normalized_tag,
+                    )
+                )
+                _touch_upload(upload, config=self._config)
+                session.flush()
+            return {
+                "collection_id": normalized_id,
+                "tag_count": _upload_tag_count(session, normalized_id),
+            }
+
+    def remove_tag(self, collection_id: int, tag: str) -> dict[str, object]:
+        normalized_id = _collection_id(collection_id)
+        normalized_tag = normalize_tag(tag)
+        if normalized_tag != tag:
+            raise BadRequest("collection upload tag must be canonical")
+        with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == normalized_id)
+                .with_for_update()
+            )
+            if upload is None:
+                raise NotFound(f"collection upload session not found: {normalized_id}")
+            if upload.state != "open":
+                raise Conflict("collection upload tags are sealed")
+            record = session.get(CollectionUploadTagRecord, (normalized_id, normalized_tag))
+            if record is not None:
+                session.delete(record)
+                _touch_upload(upload, config=self._config)
+                session.flush()
+            return {
+                "collection_id": normalized_id,
+                "tag_count": _upload_tag_count(session, normalized_id),
+            }
 
     def require_discard_access(
         self,
@@ -430,7 +575,7 @@ class SqlAlchemyCollectionUploadService:
         normalized = _collection_id(collection_id)
         with session_scope(self._session_factory) as session:
             upload = session.get(CollectionUploadRecord, normalized)
-            if upload is None or not _upload_visible_to_deleter(upload, principal):
+            if upload is None or not _upload_visible_to_deleter(session, upload, principal):
                 raise NotFound(f"collection upload not found: {normalized}")
 
     def register_files(
@@ -528,6 +673,7 @@ class SqlAlchemyCollectionUploadService:
                     CollectionUploadFileRecord(
                         collection_id=normalized_id,
                         path=current["path"],
+                        path_sort_key=relpath_sort_key(current["path"]),
                         file_order=next_order,
                         bytes=current["bytes"],
                         sha256=current["sha256"],
@@ -588,15 +734,45 @@ class SqlAlchemyCollectionUploadService:
         content: bytes,
         sha256: str,
     ) -> dict[str, object]:
+        return self.put_provenance_journal_chunks(
+            collection_id,
+            journal_id,
+            chunks=lambda: iter((content,)),
+            byte_count=len(content),
+            sha256=sha256,
+        )
+
+    def put_provenance_journal_chunks(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        chunks: Callable[[], Iterable[bytes]],
+        byte_count: int,
+        sha256: str,
+    ) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
-        if len(content) > 64 * 1024 * 1024:
-            raise BadRequest("provenance journal exceeds the 64 MiB per-journal limit")
-        if hashlib.sha256(content).hexdigest() != sha256:
-            raise BadRequest("provenance journal SHA-256 does not match its content")
+        if byte_count < 1:
+            raise BadRequest("provenance journal must not be empty")
+        measured = hashlib.sha256()
+        measured_bytes = 0
+
+        def validated_chunks() -> Iterator[bytes]:
+            nonlocal measured_bytes
+            for source in chunks():
+                chunk = bytes(source)
+                if not chunk:
+                    continue
+                measured.update(chunk)
+                measured_bytes += len(chunk)
+                yield chunk
+
         try:
-            summary = validate_journal(content)
+            summary = validate_journal_chunks(validated_chunks(), retain_frames=False)
         except ProvenanceValidationError as exc:
             raise BadRequest(str(exc)) from exc
+        if measured_bytes != byte_count or measured.hexdigest() != sha256:
+            raise BadRequest("provenance journal SHA-256 does not match its content")
         if summary.journal_id != journal_id:
             raise BadRequest("provenance journal path identity does not match its content")
         with session_scope(self._session_factory) as session:
@@ -614,14 +790,13 @@ class SqlAlchemyCollectionUploadService:
                 (normalized_id, journal_id),
             )
             if existing is not None:
-                if existing.sha256 != sha256 or existing.journal_bytes != content:
+                if existing.sha256 != sha256 or existing.bytes != byte_count:
                     raise Conflict("provenance journal already has different exact bytes")
                 return _journal_payload(existing)
             record = CollectionUploadProvenanceJournalRecord(
                 collection_id=normalized_id,
                 journal_id=journal_id,
-                journal_bytes=content,
-                bytes=len(content),
+                bytes=byte_count,
                 sha256=sha256,
                 current_state_id=summary.current_state_id,
                 current_path=summary.current_path,
@@ -629,29 +804,70 @@ class SqlAlchemyCollectionUploadService:
                 current_sha256=summary.current_sha256,
             )
             session.add(record)
+            session.flush()
+            ordinal = 0
+            for source in chunks():
+                for offset in range(0, len(source), _PROVENANCE_JOURNAL_CHUNK_BYTES):
+                    content = bytes(source[offset : offset + _PROVENANCE_JOURNAL_CHUNK_BYTES])
+                    if not content:
+                        continue
+                    session.add(
+                        CollectionUploadProvenanceJournalChunkRecord(
+                            collection_id=normalized_id,
+                            journal_id=journal_id,
+                            ordinal=ordinal,
+                            content=content,
+                        )
+                    )
+                    ordinal += 1
+            if ordinal == 0:
+                raise BadRequest("provenance journal must not be empty")
             _touch_upload(upload, config=self._config)
             session.flush()
             return _journal_payload(record)
 
-    def export_provenance_journal(
+    def provenance_journal_metadata(
         self,
         collection_id: int,
         journal_id: str,
-    ) -> tuple[bytes, str]:
-        """Return exact staged journal bytes for idempotent producer recovery."""
-
+    ) -> tuple[int, str]:
         normalized_id = _collection_id(collection_id)
-        with session_scope(self._session_factory) as session:
-            upload = session.get(CollectionUploadRecord, normalized_id)
-            if upload is None:
-                raise NotFound(f"collection upload session not found: {normalized_id}")
+        with read_snapshot(self._session_factory) as session:
             record = session.get(
                 CollectionUploadProvenanceJournalRecord,
                 (normalized_id, journal_id),
             )
             if record is None:
                 raise NotFound(f"collection upload provenance journal not found: {journal_id}")
-            return record.journal_bytes, record.sha256
+            return record.bytes, record.sha256
+
+    def iter_provenance_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+    ) -> Iterator[bytes]:
+        """Yield exact staged journal chunks without materializing the value."""
+
+        normalized_id = _collection_id(collection_id)
+        with read_snapshot(self._session_factory) as session:
+            if (
+                session.get(
+                    CollectionUploadProvenanceJournalRecord,
+                    (normalized_id, journal_id),
+                )
+                is None
+            ):
+                raise NotFound(f"collection upload provenance journal not found: {journal_id}")
+            statement = (
+                select(CollectionUploadProvenanceJournalChunkRecord.content)
+                .where(
+                    CollectionUploadProvenanceJournalChunkRecord.collection_id == normalized_id,
+                    CollectionUploadProvenanceJournalChunkRecord.journal_id == journal_id,
+                )
+                .order_by(CollectionUploadProvenanceJournalChunkRecord.ordinal)
+                .execution_options(yield_per=16)
+            )
+            yield from session.scalars(statement)
 
     def complete(
         self,
@@ -688,20 +904,19 @@ class SqlAlchemyCollectionUploadService:
                 raise Conflict(f"collection upload session is {upload.state}: {normalized_id}")
             if upload.state == "finalizing":
                 return _upload_payload(session, upload)
-            rows = list(
-                session.scalars(
-                    select(CollectionUploadFileRecord)
-                    .where(CollectionUploadFileRecord.collection_id == normalized_id)
-                    .order_by(CollectionUploadFileRecord.file_order)
-                )
-            )
+            if _upload_tag_set_identity(session, normalized_id) != upload.tag_set_identity:
+                raise Conflict("collection upload tag set differs from creation identity")
             actual_etag = collection_content_identity_ordered(
-                (row.path, row.bytes, row.sha256) for row in rows
+                (row.path, row.bytes, row.sha256)
+                for batch in _upload_file_batches(session, normalized_id)
+                for row in batch
             )
-            if len(rows) != files_total or actual_etag != content_identity:
+            if upload.file_count != files_total or actual_etag != content_identity:
                 raise Conflict("collection upload registered manifest differs from completion")
-            provenance = _upload_provenance_archive(upload)
-            actual_provenance_identity = provenance.identity if provenance is not None else None
+            actual_provenance_identity = _upload_provenance_identity(
+                session,
+                upload,
+            )
             if provenance_identity != actual_provenance_identity:
                 raise Conflict("collection upload provenance identity differs from completion")
             checkpoint = _planner_checkpoint(upload)
@@ -711,26 +926,35 @@ class SqlAlchemyCollectionUploadService:
                 upload.planner_checkpoint_json = incremental_volume_planner_checkpoint_bytes(
                     batch.checkpoint
                 ).decode("utf-8")
+                session.flush()
+            checkpoint = _planner_checkpoint(upload)
+            if (
+                not checkpoint.closed
+                or checkpoint.files_seen != upload.file_count
+                or checkpoint.bytes_seen != upload.file_bytes
+            ):
+                raise Conflict("collection upload planner differs from registered files")
+            registered = (
+                (row.path, row.bytes, row.sha256)
+                for batch in _upload_file_batches(session, normalized_id)
+                for row in batch
+            )
+            sentinel = object()
             try:
-                pack_plans: list[PackVolumePlan] = []
-                raw_plans: list[RawVolumePlan] = []
-                for record in sorted(upload.archive_objects, key=lambda item: item.sequence):
-                    if record.kind == "pack":
-                        pack_plans.append(parse_pack_volume_plan(record.plan_json))
-                    else:
-                        raw_plans.append(parse_raw_volume_plan(record.plan_json))
-                validate_collection_archive_plan(
-                    files=tuple(
-                        ArchiveFile(path=row.path, bytes=row.bytes, sha256=row.sha256)
-                        for row in rows
-                    ),
-                    packs=pack_plans,
-                    raw_volumes=raw_plans,
+                plans_differ = any(
+                    expected is sentinel or planned is sentinel or expected != planned
+                    for expected, planned in zip_longest(
+                        registered,
+                        _iter_planned_file_identities(session, normalized_id),
+                        fillvalue=sentinel,
+                    )
                 )
             except ValueError as exc:
                 raise Conflict(
                     "collection upload volume plans differ from registered files"
                 ) from exc
+            if plans_differ:
+                raise Conflict("collection upload volume plans differ from registered files")
             custody_pending = (
                 upload.custody_mode == "custody-transfer"
                 and not _has_complete_artifact_custody(upload)
@@ -1651,7 +1875,7 @@ class SqlAlchemyCollectionUploadService:
             prefix = upload.archive_storage_prefix
             if not prefix:
                 raise RuntimeError("collection archive storage prefix is missing")
-            provenance = _upload_provenance_archive(upload)
+            provenance = _upload_provenance_archive(session, upload)
             encryption = CollectionEncryptionBinding(
                 format=upload.encryption_format,
                 passphrase_id=upload.passphrase_id,
@@ -1795,22 +2019,42 @@ class SqlAlchemyCollectionUploadService:
             if session.get(CollectionRecord, collection_id) is not None:
                 session.delete(upload)
                 return
-            rows = sorted(upload.files, key=lambda item: item.file_order)
-            file_entries = [(row.path, row.bytes, row.sha256) for row in rows]
-            content_identity = collection_content_identity_ordered(file_entries)
-            tags = _upload_tags(upload)
-            now = utc_timestamp_now()
-            _, record_etag = collection_record_manifest(
-                collection_id=collection_id,
-                content_identity=content_identity,
-                encryption_format=upload.encryption_format,
-                passphrase_id=upload.passphrase_id,
-                provenance_mode=_final_provenance_mode(upload),
-                provenance_identity=upload.provenance_identity,
-                metadata_revision=1,
-                tags=tags,
-                files=file_entries,
+            content_identity = collection_content_identity_ordered(
+                (row.path, row.bytes, row.sha256)
+                for batch in _upload_file_batches(session, collection_id)
+                for row in batch
             )
+            provenance_mode = _final_provenance_mode(
+                session,
+                collection_id,
+                upload.provenance_mode,
+            )
+            now = utc_timestamp_now()
+            inventory_builder = PortableCollectionIdentityBuilder(
+                PortableCollectionHeader(
+                    collection=collection_id,
+                    content_identity=content_identity,
+                    encryption_format=upload.encryption_format,
+                    passphrase_id=upload.passphrase_id,
+                    provenance_mode=provenance_mode,  # type: ignore[arg-type]
+                    provenance_identity=upload.provenance_identity,
+                )
+            )
+            for batch in _upload_file_path_batches(session, collection_id):
+                for row in batch:
+                    inventory_builder.add(
+                        PortableCollectionFile(
+                            path=row.path,
+                            bytes=row.bytes,
+                            sha256=row.sha256,
+                        )
+                    )
+            inventory_identity = inventory_builder.identity
+            if (
+                inventory_builder.files != upload.file_count
+                or inventory_builder.bytes != upload.file_bytes
+            ):
+                raise RuntimeError("collection upload file projections are inconsistent")
             collection = CollectionRecord(
                 id=collection_id,
                 creation_idempotency_key=upload.idempotency_key,
@@ -1819,9 +2063,9 @@ class SqlAlchemyCollectionUploadService:
                 content_identity=content_identity,
                 encryption_format=upload.encryption_format,
                 passphrase_id=upload.passphrase_id,
-                provenance_mode=_final_provenance_mode(upload),
+                provenance_mode=provenance_mode,
                 provenance_identity=upload.provenance_identity,
-                record_etag=record_etag,
+                inventory_identity=inventory_identity,
                 metadata_revision=1,
                 metadata_updated_at=now,
                 ingest_source=upload.ingest_source,
@@ -1833,35 +2077,43 @@ class SqlAlchemyCollectionUploadService:
             )
             session.add(collection)
             session.flush()
-            collection.files.extend(
-                CollectionFileRecord(
-                    collection_id=collection_id,
-                    path=row.path,
-                    bytes=row.bytes,
-                    sha256=row.sha256,
-                    provenance_status=row.provenance_status,
+            for batch in _upload_file_batches(session, collection_id):
+                session.execute(
+                    insert(CollectionFileRecord),
+                    [
+                        {
+                            "collection_id": collection_id,
+                            "path": row.path,
+                            "bytes": row.bytes,
+                            "sha256": row.sha256,
+                            "provenance_status": row.provenance_status,
+                            "path_sort_key": relpath_sort_key(row.path),
+                            "search_text": f"{collection_id}/{relpath_search_key(row.path)}",
+                            "path_search_text": relpath_search_key(row.path),
+                        }
+                        for row in batch
+                    ],
                 )
-                for row in rows
-            )
-            journal_projections: dict[str, ProvenanceJournalProjection] = {}
             for journal in upload.provenance_journals:
                 journal_projection = provenance_journal_projection(
                     collection_id=collection_id,
                     journal_id=journal.journal_id,
-                    summary=validate_journal(journal.journal_bytes),
+                    summary=validate_journal_chunks(
+                        _iter_upload_journal_chunks(
+                            session,
+                            collection_id,
+                            journal.journal_id,
+                        )
+                    ),
                 )
-                journal_projections[journal.journal_id] = journal_projection
                 session.add(
                     CollectionProvenanceJournalRecord(
                         collection_id=collection_id,
                         journal_id=journal.journal_id,
-                        journal_bytes=journal.journal_bytes,
                         bytes=journal.bytes,
                         sha256=journal.sha256,
-                        entries=len(journal_projection.summary.frames),
-                        agent_ids_json=json.dumps(
-                            sorted(journal_projection.summary.agent_ids), separators=(",", ":")
-                        ),
+                        entries=journal_projection.summary.entries,
+                        agent_count=len(journal_projection.summary.agent_ids),
                         entity_counts_json=journal_projection.entity_counts_json,
                         current_state_id=journal.current_state_id,
                         current_path=journal.current_path,
@@ -1869,33 +2121,85 @@ class SqlAlchemyCollectionUploadService:
                         current_sha256=journal.current_sha256,
                     )
                 )
-            session.flush()
-            session.add_all(
-                CollectionFileProvenanceRecord(
-                    collection_id=collection_id,
-                    path=row.path,
-                    status=row.provenance_status,
-                    journal_id=row.provenance_journal_id,
-                    current_state_id=row.provenance_current_state_id,
-                    omission_reason=row.provenance_omission_reason,
+                session.flush()
+                session.execute(
+                    insert(CollectionProvenanceJournalChunkRecord).from_select(
+                        ["collection_id", "journal_id", "ordinal", "content"],
+                        select(
+                            CollectionUploadProvenanceJournalChunkRecord.collection_id,
+                            CollectionUploadProvenanceJournalChunkRecord.journal_id,
+                            CollectionUploadProvenanceJournalChunkRecord.ordinal,
+                            CollectionUploadProvenanceJournalChunkRecord.content,
+                        ).where(
+                            CollectionUploadProvenanceJournalChunkRecord.collection_id
+                            == collection_id,
+                            CollectionUploadProvenanceJournalChunkRecord.journal_id
+                            == journal.journal_id,
+                        ),
+                    )
                 )
-                for row in rows
-            )
-            for journal in upload.provenance_journals:
-                journal_projection = journal_projections[journal.journal_id]
+                session.execute(
+                    insert(CollectionProvenanceJournalAgentRecord),
+                    [
+                        {
+                            "collection_id": collection_id,
+                            "journal_id": journal.journal_id,
+                            "agent_id": agent_id,
+                        }
+                        for agent_id in sorted(journal_projection.summary.agent_ids)
+                    ],
+                )
                 session.add_all(journal_projection.entities)
                 session.add_all(journal_projection.external_state_references)
-            collection.tags.extend(
-                CollectionTagRecord(
-                    collection_id=collection_id,
-                    tag_id=tag,
-                    assigned_by_app=upload.initiated_by_app,
-                    assigned_by_key_id=upload.initiated_by_key_id,
-                    assigned_at=now,
+                session.flush()
+            for batch in _upload_file_batches(session, collection_id):
+                session.execute(
+                    insert(CollectionFileProvenanceRecord),
+                    [
+                        {
+                            "collection_id": collection_id,
+                            "path": row.path,
+                            "status": row.provenance_status,
+                            "journal_id": row.provenance_journal_id,
+                            "current_state_id": row.provenance_current_state_id,
+                            "omission_reason": row.provenance_omission_reason,
+                        }
+                        for row in batch
+                    ],
                 )
-                for tag in tags
+            session.execute(
+                insert(CollectionTagRecord).from_select(
+                    (
+                        "collection_id",
+                        "tag_id",
+                        "assigned_by_app",
+                        "assigned_by_key_id",
+                        "assigned_at",
+                    ),
+                    select(
+                        CollectionUploadTagRecord.collection_id,
+                        CollectionUploadTagRecord.tag_id,
+                        literal(upload.initiated_by_app),
+                        literal(upload.initiated_by_key_id),
+                        literal(now),
+                    ).where(CollectionUploadTagRecord.collection_id == collection_id),
+                )
             )
-            adjust_tag_collection_counts(session, added=tags)
+            tag_count = _upload_tag_count(session, collection_id)
+            adjusted = session.execute(
+                update(TagRecord)
+                .where(
+                    exists(
+                        select(1).where(
+                            CollectionUploadTagRecord.collection_id == collection_id,
+                            CollectionUploadTagRecord.tag_id == TagRecord.id,
+                        )
+                    )
+                )
+                .values(collection_count=TagRecord.collection_count + 1)
+            )
+            if int(getattr(adjusted, "rowcount", 0) or 0) != tag_count:
+                raise RuntimeError("collection upload tag projection is inconsistent")
             store_binding = self._archive_stores.require(upload.archive_store)
             copy = CollectionArchiveCopyRecord(
                 collection_id=collection_id,
@@ -2106,21 +2410,25 @@ class SqlAlchemyCollectionUploadService:
                     ),
                 )
             )
-            record_catalog_event(
+            catalog_event = begin_catalog_event(
                 session,
                 change="created",
                 collection_id=collection_id,
                 occurred_at=now,
-                record_etag=record_etag,
-                before_tags=(),
-                after_tags=tags,
+                inventory_identity=inventory_identity,
+            )
+            snapshot_catalog_event_collection_tags(
+                session,
+                event=catalog_event,
+                phase="after",
+                collection_id=collection_id,
             )
             self._events.emit_collection(
                 type="collection.finalized",
                 collection_id=collection_id,
                 details={
-                    "files_total": len(rows),
-                    "bytes_total": sum(row.bytes for row in rows),
+                    "files_total": int(upload.file_count),
+                    "bytes_total": int(upload.file_bytes),
                     "archive_store": upload.archive_store,
                     "archive_storage_prefix": projection.root.archive_storage_prefix,
                     "archive_objects": (
@@ -2151,7 +2459,7 @@ def _normalize_idempotency_key(value: str) -> str:
 
 def _collection_upload_creation_identity(
     *,
-    tags: tuple[str, ...],
+    tag_set_identity_sha256: str,
     ingest_source: str | None,
     archive_store: str,
     event_context_json: str | None,
@@ -2164,7 +2472,7 @@ def _collection_upload_creation_identity(
         raise RuntimeError("normalized upload event context is not an object")
     return CollectionUploadCreationIdentityDocument.seal(
         CollectionUploadCreationIdentityPayload(
-            tags=tags,
+            tag_set_identity=tag_set_identity_sha256,
             ingest_source=ingest_source,
             archive_store=archive_store,
             event_context=event_context,
@@ -2175,21 +2483,12 @@ def _collection_upload_creation_identity(
     )
 
 
-def _normalize_tags(values: Sequence[str]) -> tuple[str, ...]:
-    normalized = tuple(sorted(value.strip().casefold() for value in values))
-    if any(not value for value in normalized):
-        raise BadRequest("collection tags must not be empty")
-    if len(set(normalized)) != len(normalized):
-        raise BadRequest("collection tags must not contain duplicates")
-    return normalized
-
-
 def _require_transform_output_intent(
     session: Session,
     *,
     initiator: ApplicationPrincipal,
     idempotency_key: str,
-    tags: Sequence[str],
+    tag_set_identity_sha256: str,
     ingest_source: str | None,
     archive_store: str | None,
 ) -> None:
@@ -2217,7 +2516,7 @@ def _require_transform_output_intent(
     expected_tags = tuple(str(value) for value in json.loads(claim.output_tags_json))
     if (
         idempotency_key != execution_id
-        or tuple(tags) != expected_tags
+        or tag_set_identity(expected_tags) != tag_set_identity_sha256
         or ingest_source != f"transform:{execution_id}"
         or archive_store is not None
     ):
@@ -2296,6 +2595,7 @@ def _normalize_provenance_mode(
 
 
 def _upload_provenance_archive(
+    session: Session,
     upload: CollectionUploadRecord,
 ) -> ProvenanceArchive | None:
     bindings = tuple(
@@ -2310,7 +2610,10 @@ def _upload_provenance_archive(
         )
         for row in sorted(upload.files, key=lambda item: item.file_order)
     )
-    journals = {row.journal_id: row.journal_bytes for row in upload.provenance_journals}
+    journals = {
+        row.journal_id: _upload_journal_bytes(session, upload.collection_id, row.journal_id)
+        for row in upload.provenance_journals
+    }
     if upload.provenance_mode == "omitted":
         if journals or any(item.status != "omitted" for item in bindings):
             raise Conflict("collection-wide provenance omission is not internally consistent")
@@ -2321,12 +2624,120 @@ def _upload_provenance_archive(
         raise Conflict(str(exc)) from exc
 
 
-def _final_provenance_mode(upload: CollectionUploadRecord) -> str:
-    if upload.provenance_mode == "omitted":
-        return "omitted"
-    return (
-        "mixed" if any(item.provenance_status == "omitted" for item in upload.files) else "captured"
+def _iter_upload_journal_chunks(
+    session: Session,
+    collection_id: int,
+    journal_id: str,
+) -> Iterator[bytes]:
+    statement = (
+        select(CollectionUploadProvenanceJournalChunkRecord.content)
+        .where(
+            CollectionUploadProvenanceJournalChunkRecord.collection_id == collection_id,
+            CollectionUploadProvenanceJournalChunkRecord.journal_id == journal_id,
+        )
+        .order_by(CollectionUploadProvenanceJournalChunkRecord.ordinal)
+        .execution_options(yield_per=16)
     )
+    yield from session.scalars(statement)
+
+
+def _iter_upload_journal_ids(session: Session, collection_id: int) -> Iterator[str]:
+    after: str | None = None
+    while True:
+        statement = select(CollectionUploadProvenanceJournalRecord.journal_id).where(
+            CollectionUploadProvenanceJournalRecord.collection_id == collection_id
+        )
+        if after is not None:
+            statement = statement.where(CollectionUploadProvenanceJournalRecord.journal_id > after)
+        batch = list(
+            session.scalars(
+                statement.order_by(CollectionUploadProvenanceJournalRecord.journal_id).limit(100)
+            )
+        )
+        if not batch:
+            return
+        yield from batch
+        after = batch[-1]
+
+
+def _upload_journal_bytes(
+    session: Session,
+    collection_id: int,
+    journal_id: str,
+) -> bytes:
+    return b"".join(_iter_upload_journal_chunks(session, collection_id, journal_id))
+
+
+def _upload_provenance_identity(
+    session: Session,
+    upload: CollectionUploadRecord,
+) -> str | None:
+    collection_id = upload.collection_id
+    if upload.provenance_mode == "omitted":
+        inconsistent = session.scalar(
+            select(
+                exists().where(
+                    CollectionUploadFileRecord.collection_id == collection_id,
+                    CollectionUploadFileRecord.provenance_status != "omitted",
+                )
+                | exists().where(
+                    CollectionUploadProvenanceJournalRecord.collection_id == collection_id
+                )
+            )
+        )
+        if inconsistent:
+            raise Conflict("collection-wide provenance omission is not internally consistent")
+        return None
+
+    def bindings() -> Iterator[FileProvenanceBinding]:
+        for batch in _upload_file_batches(session, collection_id):
+            for row in batch:
+                yield FileProvenanceBinding(
+                    path=row.path,
+                    bytes=row.bytes,
+                    sha256=row.sha256,
+                    status=row.provenance_status,
+                    journal_id=row.provenance_journal_id,
+                    current_state_id=row.provenance_current_state_id,
+                    omission_reason=row.provenance_omission_reason,
+                )
+
+    def journals() -> Iterator[tuple[str, bytes]]:
+        for journal_id in _iter_upload_journal_ids(session, collection_id):
+            yield (
+                journal_id,
+                _upload_journal_bytes(
+                    session,
+                    collection_id,
+                    journal_id,
+                ),
+            )
+
+    try:
+        return reconstruct_provenance_archive_identity(
+            bindings=bindings,
+            journals=journals,
+        )
+    except ProvenanceValidationError as exc:
+        raise Conflict(str(exc)) from exc
+
+
+def _final_provenance_mode(
+    session: Session,
+    collection_id: int,
+    upload_provenance_mode: str,
+) -> str:
+    if upload_provenance_mode == "omitted":
+        return "omitted"
+    has_omission = session.scalar(
+        select(
+            exists().where(
+                CollectionUploadFileRecord.collection_id == collection_id,
+                CollectionUploadFileRecord.provenance_status == "omitted",
+            )
+        )
+    )
+    return "mixed" if has_omission else "captured"
 
 
 def _planner_checkpoint(upload: CollectionUploadRecord) -> Any:
@@ -2392,8 +2803,202 @@ def _persist_plan_batch(session: Session, *, upload: CollectionUploadRecord, bat
     session.flush()
 
 
-def _upload_tags(upload: CollectionUploadRecord) -> tuple[str, ...]:
-    return tuple(sorted(current.tag_id for current in upload.tags))
+def _upload_file_batches(
+    session: Session,
+    collection_id: int,
+) -> Iterator[list[Any]]:
+    """Read a finalized upload inventory with bounded keyset batches."""
+
+    after = -1
+    while True:
+        rows = list(
+            session.execute(
+                select(
+                    CollectionUploadFileRecord.file_order,
+                    CollectionUploadFileRecord.path,
+                    CollectionUploadFileRecord.bytes,
+                    CollectionUploadFileRecord.sha256,
+                    CollectionUploadFileRecord.provenance_status,
+                    CollectionUploadFileRecord.provenance_journal_id,
+                    CollectionUploadFileRecord.provenance_current_state_id,
+                    CollectionUploadFileRecord.provenance_omission_reason,
+                )
+                .where(
+                    CollectionUploadFileRecord.collection_id == collection_id,
+                    CollectionUploadFileRecord.file_order > after,
+                )
+                .order_by(CollectionUploadFileRecord.file_order)
+                .limit(COLLECTION_UPLOAD_FILE_BATCH_MAX)
+            )
+        )
+        if not rows:
+            return
+        yield rows
+        after = int(rows[-1].file_order)
+
+
+def _upload_file_path_batches(
+    session: Session,
+    collection_id: int,
+) -> Iterator[list[Any]]:
+    """Read an upload inventory in portable UTF-8 path order with bounded keysets."""
+
+    after = b""
+    while True:
+        rows = list(
+            session.execute(
+                select(
+                    CollectionUploadFileRecord.file_order,
+                    CollectionUploadFileRecord.path,
+                    CollectionUploadFileRecord.bytes,
+                    CollectionUploadFileRecord.sha256,
+                    CollectionUploadFileRecord.provenance_status,
+                    CollectionUploadFileRecord.provenance_journal_id,
+                    CollectionUploadFileRecord.provenance_current_state_id,
+                    CollectionUploadFileRecord.provenance_omission_reason,
+                    CollectionUploadFileRecord.path_sort_key,
+                )
+                .where(
+                    CollectionUploadFileRecord.collection_id == collection_id,
+                    CollectionUploadFileRecord.path_sort_key > after,
+                )
+                .order_by(CollectionUploadFileRecord.path_sort_key)
+                .limit(COLLECTION_UPLOAD_FILE_BATCH_MAX)
+            )
+        )
+        if not rows:
+            return
+        yield rows
+        after = bytes(rows[-1].path_sort_key)
+
+
+def _iter_planned_file_identities(
+    session: Session,
+    collection_id: int,
+) -> Iterator[tuple[str, int, str]]:
+    """Project the persisted volume plan back to its ordered file identities."""
+
+    rows = session.scalars(
+        select(CollectionArchiveObjectUploadRecord)
+        .where(CollectionArchiveObjectUploadRecord.collection_id == collection_id)
+        .order_by(CollectionArchiveObjectUploadRecord.sequence)
+    ).yield_per(1)
+    raw_path: str | None = None
+    raw_bytes = 0
+    raw_file_bytes = 0
+    raw_sha256 = ""
+
+    def finish_raw() -> tuple[str, int, str] | None:
+        nonlocal raw_path, raw_bytes, raw_file_bytes, raw_sha256
+        if raw_path is None:
+            return None
+        if raw_bytes != raw_file_bytes:
+            raise ValueError(f"raw volume plan does not cover its file: {raw_path}")
+        result = (raw_path, raw_file_bytes, raw_sha256)
+        raw_path = None
+        raw_bytes = 0
+        raw_file_bytes = 0
+        raw_sha256 = ""
+        return result
+
+    for record in rows:
+        if record.kind == "pack":
+            completed_raw = finish_raw()
+            if completed_raw is not None:
+                yield completed_raw
+            # Pack layout owns bytewise tar-member ordering.  Upload registration
+            # additionally keeps terminal derivation evidence last, so reconstruct
+            # that collection-level order within each bounded pack before comparing
+            # it with the append-only inventory.
+            members = sorted(
+                parse_pack_volume_plan(record.plan_json).members,
+                key=lambda member: collection_upload_path_order_key(member.path),
+            )
+            for member in members:
+                yield member.path, member.bytes, member.sha256
+            continue
+        plan = parse_raw_volume_plan(record.plan_json)
+        if raw_path != plan.source_path:
+            completed_raw = finish_raw()
+            if completed_raw is not None:
+                yield completed_raw
+            if plan.file_offset != 0:
+                raise ValueError("raw volume plan does not begin at file offset zero")
+            raw_path = plan.source_path
+            raw_file_bytes = plan.file_bytes
+            raw_sha256 = plan.file_sha256
+        elif (
+            plan.file_offset != raw_bytes
+            or plan.file_bytes != raw_file_bytes
+            or plan.file_sha256 != raw_sha256
+        ):
+            raise ValueError(f"raw volume plan is not contiguous: {plan.source_path}")
+        raw_bytes += plan.plaintext_bytes
+    completed_raw = finish_raw()
+    if completed_raw is not None:
+        yield completed_raw
+
+
+def _upload_tag_count(session: Session, collection_id: int) -> int:
+    return int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionUploadTagRecord)
+            .where(CollectionUploadTagRecord.collection_id == collection_id)
+        )
+        or 0
+    )
+
+
+def _upload_tag_set_identity(session: Session, collection_id: int) -> str:
+    tags = session.scalars(
+        select(CollectionUploadTagRecord.tag_id)
+        .where(CollectionUploadTagRecord.collection_id == collection_id)
+        .order_by(CollectionUploadTagRecord.tag_id)
+    ).yield_per(100)
+    return tag_set_identity(tags)
+
+
+def _require_upload_tag_access(
+    session: Session,
+    principal: ApplicationPrincipal,
+    collection_id: int,
+) -> None:
+    resources = permission_resources(principal, COLLECTIONS_CREATE)
+    if ALL_RESOURCES in resources:
+        return
+    allowed_tags = tag_ids(resources)
+    if not allowed_tags:
+        raise NotFound("collection tags are not available")
+    unauthorized = session.scalar(
+        select(CollectionUploadTagRecord.tag_id)
+        .where(CollectionUploadTagRecord.collection_id == collection_id)
+        .where(CollectionUploadTagRecord.tag_id.not_in(allowed_tags))
+        .limit(1)
+    )
+    if unauthorized is not None:
+        raise NotFound("collection tags are not available")
+
+
+def _require_collection_tag_create_access(
+    session: Session,
+    principal: ApplicationPrincipal,
+    collection_id: int,
+) -> None:
+    resources = permission_resources(principal, COLLECTIONS_CREATE)
+    if ALL_RESOURCES in resources:
+        return
+    allowed_tags = tag_ids(resources)
+    if not allowed_tags:
+        raise NotFound("collection tags are not available")
+    unauthorized = session.scalar(
+        select(CollectionTagRecord.tag_id)
+        .where(CollectionTagRecord.collection_id == collection_id)
+        .where(CollectionTagRecord.tag_id.not_in(allowed_tags))
+        .limit(1)
+    )
+    if unauthorized is not None:
+        raise NotFound("collection tags are not available")
 
 
 def _ready_for_finalization(upload: CollectionUploadRecord) -> bool:
@@ -2706,7 +3311,7 @@ def _upload_list_statement(
         raise BadRequest("invalid collection upload state")
     filters: list[Any] = [_upload_read_filter(principal)]
     if q:
-        pattern = f"%{q.casefold()}%"
+        pattern = f"%{text_search_key(q)}%"
         matching_ids = (
             select(CollectionUploadRecord.collection_id)
             .where(CollectionUploadRecord.search_text.like(pattern))
@@ -2758,7 +3363,7 @@ def _upload_list_payload(
     return {
         "collection_id": upload.collection_id,
         "created_at": upload.opened_at,
-        "tags": list(_upload_tags(upload)),
+        "tag_count": _upload_tag_count(session, upload.collection_id),
         "ingest_source": upload.ingest_source,
         "archive_store": upload.archive_store,
         "encryption_format": upload.encryption_format,
@@ -2786,11 +3391,25 @@ def _normalize_custody_mode(value: str) -> CollectionUploadCustodyMode:
 
 
 def _upload_visible_to_deleter(
+    session: Session,
     upload: CollectionUploadRecord,
     principal: ApplicationPrincipal,
 ) -> bool:
-    return principal.allows_collection(COLLECTIONS_DELETE, upload.collection_id) or any(
-        principal.allows_tag(COLLECTIONS_DELETE, tag) for tag in _upload_tags(upload)
+    if principal.allows_collection(COLLECTIONS_DELETE, upload.collection_id):
+        return True
+    allowed_tags = tag_ids(permission_resources(principal, COLLECTIONS_DELETE))
+    if not allowed_tags:
+        return False
+    return (
+        session.scalar(
+            select(CollectionUploadTagRecord.tag_id)
+            .where(
+                CollectionUploadTagRecord.collection_id == upload.collection_id,
+                CollectionUploadTagRecord.tag_id.in_(allowed_tags),
+            )
+            .limit(1)
+        )
+        is not None
     )
 
 
@@ -2964,7 +3583,7 @@ def _upload_payload(
     payload: dict[str, object] = {
         "collection_id": upload.collection_id,
         "created_at": upload.opened_at,
-        "tags": list(_upload_tags(upload)),
+        "tag_count": _upload_tag_count(session, upload.collection_id),
         "ingest_source": upload.ingest_source,
         "provenance_mode": upload.provenance_mode,
         "provenance_identity": None,
@@ -3009,41 +3628,71 @@ def _finalized_payload(
     store_name: str,
     resumed: bool | None = None,
 ) -> dict[str, object]:
-    copy = next(
-        (current for current in collection.archive_copies if current.store == store_name),
-        collection.archive_copies[0] if collection.archive_copies else None,
+    copy = session.scalar(
+        select(CollectionArchiveCopyRecord)
+        .where(CollectionArchiveCopyRecord.collection_id == collection.id)
+        .order_by(
+            case((CollectionArchiveCopyRecord.store == store_name, 0), else_=1),
+            CollectionArchiveCopyRecord.store,
+        )
+        .limit(1)
     )
-    tags = sorted(current.tag_id for current in collection.tags)
-    stored_bytes = sum(current.stored_bytes for current in copy.objects) if copy else 0
-    manifest = (
-        next((current for current in copy.objects if current.object_id == "manifest"), None)
-        if copy
-        else None
+    tag_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionTagRecord)
+            .where(CollectionTagRecord.collection_id == collection.id)
+        )
+        or 0
     )
-    if manifest is None or not manifest.sha256:
+    archive_copy_count = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionArchiveCopyRecord)
+            .where(CollectionArchiveCopyRecord.collection_id == collection.id)
+        )
+        or 0
+    )
+    stored_bytes = int(
+        session.scalar(
+            select(func.coalesce(func.sum(CollectionArchiveObjectRecord.stored_bytes), 0)).where(
+                CollectionArchiveObjectRecord.collection_id == collection.id,
+                CollectionArchiveObjectRecord.store == (copy.store if copy else store_name),
+            )
+        )
+        or 0
+    )
+    manifest_sha256 = session.scalar(
+        select(CollectionArchiveObjectRecord.sha256).where(
+            CollectionArchiveObjectRecord.collection_id == collection.id,
+            CollectionArchiveObjectRecord.store == (copy.store if copy else store_name),
+            CollectionArchiveObjectRecord.object_id == "manifest",
+        )
+    )
+    if manifest_sha256 is None:
         raise RuntimeError("finalized collection has no immutable archive-root identity")
     summary = {
         "id": collection.id,
         "created_at": collection.created_at,
-        "tags": tags,
+        "tag_count": tag_count,
         "content_identity": collection.content_identity,
-        "archive_root_sha256": manifest.sha256,
+        "archive_root_sha256": manifest_sha256,
         "encryption_format": collection.encryption_format,
         "passphrase_id": collection.passphrase_id,
-        "files": len(collection.files),
-        "bytes": sum(current.bytes for current in collection.files),
+        "files": int(collection.file_count),
+        "bytes": int(collection.file_bytes),
         "remote_storage_bytes": stored_bytes,
-        "archive_copies": [],
+        "archive_copy_count": archive_copy_count,
     }
     payload: dict[str, object] = {
         "collection_id": collection.id,
         "created_at": collection.created_at,
-        "tags": tags,
+        "tag_count": tag_count,
         "ingest_source": collection.ingest_source,
         "provenance_mode": collection.provenance_mode,
         "provenance_identity": collection.provenance_identity,
         "content_identity": collection.content_identity,
-        "archive_root_sha256": manifest.sha256,
+        "archive_root_sha256": manifest_sha256,
         "archive_store": copy.store if copy else store_name,
         "encryption_format": collection.encryption_format,
         "passphrase_id": collection.passphrase_id,

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import builtins
+
+from riverhog_protocol.paths import relpath_search_key, relpath_sort_key, text_search_key
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Computed,
     ForeignKeyConstraint,
@@ -69,7 +73,7 @@ class CollectionRecord(Base):
     passphrase_id: Mapped[str] = mapped_column(String, nullable=False)
     provenance_mode: Mapped[str] = mapped_column(String, default="omitted")
     provenance_identity: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    record_etag: Mapped[str] = mapped_column(String(64))
+    inventory_identity: Mapped[str] = mapped_column(String(64))
     metadata_revision: Mapped[int] = mapped_column(BigInteger, default=1)
     metadata_updated_at: Mapped[str] = mapped_column(String)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -129,7 +133,9 @@ class CollectionRecord(Base):
             name="ck_collections_provenance_identity",
         ),
         CheckConstraint("length(content_identity) = 64", name="ck_collections_content_identity"),
-        CheckConstraint("length(record_etag) = 64", name="ck_collections_record_etag"),
+        CheckConstraint(
+            "length(inventory_identity) = 64", name="ck_collections_inventory_identity"
+        ),
     )
 
 
@@ -197,13 +203,20 @@ class CollectionFileRecord(Base):
         default="missing",
         server_default=text("'missing'"),
     )
+    path_sort_key: Mapped[builtins.bytes] = mapped_column(
+        LargeBinary,
+        default=lambda context: relpath_sort_key(str(context.get_current_parameters()["path"])),
+    )
     search_text: Mapped[str] = mapped_column(
         String,
-        Computed("CAST(collection_id AS TEXT) || '/' || lower(path)"),
+        default=lambda context: (
+            f"{context.get_current_parameters()['collection_id']}/"
+            f"{relpath_search_key(str(context.get_current_parameters()['path']))}"
+        ),
     )
     path_search_text: Mapped[str] = mapped_column(
         String,
-        Computed("lower(path)"),
+        default=lambda context: relpath_search_key(str(context.get_current_parameters()["path"])),
     )
 
     __table_args__ = (
@@ -218,19 +231,24 @@ class CollectionFileRecord(Base):
             "provenance_status IN ('captured','omitted','missing')",
             name="ck_collection_files_provenance_status",
         ),
-        Index("ix_collection_files_path", "path", "collection_id"),
-        Index("ix_collection_files_bytes", "bytes", "collection_id", "path"),
+        Index("ix_collection_files_path", "path_sort_key", "collection_id"),
+        Index(
+            "ix_collection_files_collection_path",
+            "collection_id",
+            "path_sort_key",
+        ),
+        Index("ix_collection_files_bytes", "bytes", "collection_id", "path_sort_key"),
         Index(
             "ix_collection_files_collection_bytes",
             "collection_id",
             "bytes",
-            "path",
+            "path_sort_key",
         ),
         Index(
             "ix_collection_files_collection_provenance",
             "collection_id",
             "provenance_status",
-            "path",
+            "path_sort_key",
         ),
         Index(
             "ix_collection_files_search_trgm",
@@ -254,11 +272,10 @@ class CollectionProvenanceJournalRecord(Base):
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     journal_id: Mapped[str] = mapped_column(String, primary_key=True)
-    journal_bytes: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
     entries: Mapped[int] = mapped_column(BigInteger)
-    agent_ids_json: Mapped[str] = mapped_column(Text)
+    agent_count: Mapped[int] = mapped_column(BigInteger)
     entity_counts_json: Mapped[str] = mapped_column(Text)
     current_state_id: Mapped[str] = mapped_column(String)
     current_path: Mapped[str] = mapped_column(String)
@@ -270,11 +287,95 @@ class CollectionProvenanceJournalRecord(Base):
         Index("ix_collection_provenance_journals_sha256", "sha256", "collection_id"),
         CheckConstraint("bytes >= 0", name="ck_provenance_journals_bytes"),
         CheckConstraint("entries >= 0", name="ck_provenance_journals_entries"),
+        CheckConstraint("agent_count >= 0", name="ck_provenance_journals_agent_count"),
         CheckConstraint("current_bytes >= 0", name="ck_provenance_journals_current_bytes"),
         CheckConstraint("length(sha256) = 64", name="ck_provenance_journals_sha256"),
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="provenance_journals")
+    chunks: Mapped[list[CollectionProvenanceJournalChunkRecord]] = relationship(
+        back_populates="journal",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    agents: Mapped[list[CollectionProvenanceJournalAgentRecord]] = relationship(
+        back_populates="journal",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class CollectionProvenanceJournalChunkRecord(Base):
+    __tablename__ = "collection_provenance_journal_chunks"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "journal_id"],
+            [
+                "collection_provenance_journals.collection_id",
+                "collection_provenance_journals.journal_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("ordinal >= 0", name="ck_provenance_journal_chunks_ordinal"),
+        CheckConstraint("length(content) > 0", name="ck_provenance_journal_chunks_content"),
+    )
+
+    journal: Mapped[CollectionProvenanceJournalRecord] = relationship(back_populates="chunks")
+
+
+class CollectionProvenanceJournalAgentRecord(Base):
+    __tablename__ = "collection_provenance_journal_agents"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String, primary_key=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "journal_id"],
+            [
+                "collection_provenance_journals.collection_id",
+                "collection_provenance_journals.journal_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        Index("ix_collection_provenance_journal_agents_agent", "agent_id", "collection_id"),
+    )
+
+    journal: Mapped[CollectionProvenanceJournalRecord] = relationship(back_populates="agents")
+
+
+class CollectionProvenanceVerificationRecord(Base):
+    __tablename__ = "collection_provenance_verifications"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    state: Mapped[str] = mapped_column(String)
+    requested_by_app: Mapped[str] = mapped_column(String)
+    requested_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    requested_at: Mapped[str] = mapped_column(String)
+    started_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    next_attempt_at: Mapped[str] = mapped_column(String)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
+        CheckConstraint(
+            "state IN ('queued','running','canceling','succeeded','failed','canceled')",
+            name="ck_collection_provenance_verifications_state",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_collection_provenance_verifications_attempts"),
+        Index("ix_collection_provenance_verifications_due", "state", "next_attempt_at"),
+    )
 
 
 class CollectionProvenanceExternalStateReferenceRecord(Base):
@@ -757,7 +858,7 @@ class CatalogEventRecord(Base):
     change: Mapped[str] = mapped_column(String)
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE)
     occurred_at: Mapped[str] = mapped_column(String)
-    record_etag: Mapped[str] = mapped_column(String(64))
+    inventory_identity: Mapped[str] = mapped_column(String(64))
 
     __table_args__ = (Index("ix_catalog_events_collection", "collection_id", "sequence"),)
 
@@ -1142,6 +1243,7 @@ class CollectionUploadRecord(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String)
     creation_identity_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    tag_set_identity: Mapped[str] = mapped_column(String(64), nullable=False)
     ingest_source: Mapped[str | None] = mapped_column(String, nullable=True)
     provenance_mode: Mapped[str] = mapped_column(String)
     provenance_omission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1191,7 +1293,9 @@ class CollectionUploadRecord(Base):
     )
     search_text: Mapped[str] = mapped_column(
         String,
-        Computed("lower(coalesce(ingest_source, ''))"),
+        default=lambda context: text_search_key(
+            str(context.get_current_parameters().get("ingest_source") or "")
+        ),
     )
 
     files: Mapped[list[CollectionUploadFileRecord]] = relationship(
@@ -1294,6 +1398,10 @@ class CollectionUploadFileRecord(Base):
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     path: Mapped[str] = mapped_column(String, primary_key=True)
+    path_sort_key: Mapped[bytes] = mapped_column(
+        LargeBinary,
+        default=lambda context: relpath_sort_key(str(context.get_current_parameters()["path"])),
+    )
     file_order: Mapped[int] = mapped_column(Integer)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
@@ -1314,6 +1422,11 @@ class CollectionUploadFileRecord(Base):
         ),
         Index("idx_collection_upload_files_collection_order", "collection_id", "file_order"),
         Index(
+            "idx_collection_upload_files_collection_path",
+            "collection_id",
+            "path_sort_key",
+        ),
+        Index(
             "ux_collection_upload_files_order",
             "collection_id",
             "file_order",
@@ -1332,7 +1445,6 @@ class CollectionUploadProvenanceJournalRecord(Base):
 
     collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
     journal_id: Mapped[str] = mapped_column(String, primary_key=True)
-    journal_bytes: Mapped[bytes] = mapped_column(LargeBinary)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
     current_state_id: Mapped[str] = mapped_column(String)
@@ -1352,6 +1464,38 @@ class CollectionUploadProvenanceJournalRecord(Base):
     )
 
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="provenance_journals")
+    chunks: Mapped[list[CollectionUploadProvenanceJournalChunkRecord]] = relationship(
+        back_populates="journal",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class CollectionUploadProvenanceJournalChunkRecord(Base):
+    __tablename__ = "collection_upload_provenance_journal_chunks"
+
+    collection_id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    journal_id: Mapped[str] = mapped_column(String, primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_id", "journal_id"],
+            [
+                "collection_upload_provenance_journals.collection_id",
+                "collection_upload_provenance_journals.journal_id",
+            ],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("ordinal >= 0", name="ck_upload_provenance_journal_chunks_ordinal"),
+        CheckConstraint(
+            "length(content) > 0",
+            name="ck_upload_provenance_journal_chunks_content",
+        ),
+    )
+
+    journal: Mapped[CollectionUploadProvenanceJournalRecord] = relationship(back_populates="chunks")
 
 
 class CollectionArchiveObjectUploadRecord(Base):

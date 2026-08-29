@@ -4,11 +4,16 @@ import ast
 import hashlib
 import inspect
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from riverhog_cli import local as local_materialization
-from riverhog_protocol import PortableCollectionRecord
+from riverhog_protocol import (
+    PortableCollectionInventoryReader,
+    PortableCollectionRecord,
+    iter_portable_collection_inventory,
+)
 from riverhog_protocol.errors import InvalidState
 from typer.testing import CliRunner
 
@@ -25,8 +30,6 @@ MANIFEST = {
     "passphrase_id": "collection-test-key-v1",
     "provenance_mode": "omitted",
     "provenance_identity": None,
-    "metadata_revision": 1,
-    "tags": ["docs"],
     "files": [
         {
             "path": "notes/one.txt",
@@ -65,7 +68,8 @@ def test_local_materializer_depends_only_on_client_safe_riverhog_modules() -> No
         ("riverhog_api_client.downloads", "download_retrieval_files"),
         ("riverhog_protocol.errors", "InvalidState"),
         ("riverhog_protocol.errors", "NotFound"),
-        ("riverhog_protocol.portable_collection", "PortableCollectionRecord"),
+        ("riverhog_protocol.portable_collection", "PortableCollectionFile"),
+        ("riverhog_protocol.portable_collection", "PortableCollectionHeader"),
         ("riverhog_protocol.paths", "normalize_collection_id"),
         ("riverhog_protocol.paths", "normalize_relpath"),
         ("riverhog_protocol.paths", "normalize_tag"),
@@ -134,16 +138,39 @@ class FakeApi:
     def spawn(self) -> FakeApi:
         return self
 
-    def get_portable_collection_manifest(self, collection_id: int) -> PortableCollectionRecord:
+    def stream_portable_collection_inventory(self, collection_id: int):  # type: ignore[no-untyped-def]
         assert collection_id == COLLECTION_ID
-        return PortableCollectionRecord.from_mapping({**MANIFEST, "tags": list(self.tags)})
+        record = PortableCollectionRecord.from_mapping(MANIFEST)
+        reader = PortableCollectionInventoryReader(
+            iter_portable_collection_inventory(
+                record.header,
+                record.files,
+                inventory_identity=record.identity,
+                file_count=len(record.files),
+                file_bytes=sum(file.bytes for file in record.files),
+            )
+        )
+
+        class _Stream:
+            def __enter__(self):  # type: ignore[no-untyped-def]
+                return reader
+
+            def __exit__(self, *_args: object) -> None:
+                reader.require_complete()
+
+        return _Stream()
+
+    @contextmanager
+    def stream_collection_tags(self, collection_id: int):  # type: ignore[no-untyped-def]
+        assert collection_id == COLLECTION_ID
+        yield iter({"tag": tag} for tag in self.tags)
 
     def get_collection(self, collection_id: int) -> dict[str, Any]:
         assert collection_id == COLLECTION_ID
         return {
             "id": collection_id,
             "created_at": CREATED_AT,
-            "tags": list(self.tags),
+            "tag_count": len(self.tags),
         }
 
     def catalog_changes(self, *, after: int = 0) -> dict[str, Any]:
@@ -552,8 +579,8 @@ def test_local_projection_tracks_current_tags_without_moving_collection_bytes(
 
     assert collection_dir.joinpath("notes/one.txt").read_bytes() == CONTENT
     assert not (target / "by-tag" / "docs" / PROJECTION_NAME).exists()
-    for tag, other_tag in (("photos", "reviewed"), ("reviewed", "photos")):
-        link = target / "by-tag" / tag / f"{PROJECTION_NAME}--{other_tag}"
+    for tag in ("photos", "reviewed"):
+        link = target / "by-tag" / tag / PROJECTION_NAME
         assert link.is_symlink()
         assert link.resolve() == collection_dir
 
@@ -567,31 +594,8 @@ def test_local_projection_tracks_current_tags_without_moving_collection_bytes(
     assert untagged.resolve() == collection_dir
 
 
-def test_local_projection_names_append_other_tags_in_canonical_order() -> None:
-    assert (
-        local_materialization._projection_name(
-            COLLECTION_ID,
-            CREATED_AT,
-            tags=["zebra", "alpha", "middle"],
-            parent_tag="middle",
-        )
-        == f"{PROJECTION_NAME}--alpha--zebra"
-    )
-
-    bounded = local_materialization._projection_name(
-        COLLECTION_ID,
-        CREATED_AT,
-        tags=[f"tag-{index}-{'x' * 70}" for index in range(8)],
-        parent_tag="tag-0-" + "x" * 70,
-    )
-
-    assert len(bounded.encode("utf-8")) <= local_materialization.PROJECTION_NAME_BYTES_MAX
-    assert bounded == local_materialization._projection_name(
-        COLLECTION_ID,
-        CREATED_AT,
-        tags=[f"tag-{index}-{'x' * 70}" for index in reversed(range(8))],
-        parent_tag="tag-0-" + "x" * 70,
-    )
+def test_local_projection_name_depends_only_on_immutable_collection_identity() -> None:
+    assert local_materialization._projection_name(COLLECTION_ID, CREATED_AT) == PROJECTION_NAME
 
 
 def test_local_list_uses_standard_human_json_and_id_views(
@@ -619,7 +623,7 @@ def test_local_list_uses_standard_human_json_and_id_views(
     assert human.exit_code == 0
     assert "local collections: 1 (page 1/1)" in human.stdout
     assert "status=desired" in human.stdout
-    assert "tags=docs" in human.stdout
+    assert "tags=1" in human.stdout
     assert machine.exit_code == 0
     assert json.loads(machine.stdout) == {
         "collections": [
@@ -629,7 +633,7 @@ def test_local_list_uses_standard_human_json_and_id_views(
                 "created_at": CREATED_AT,
                 "files": 2,
                 "status": "desired",
-                "tags": ["docs"],
+                "tag_count": 1,
             }
         ],
         "order": "asc",
@@ -655,20 +659,26 @@ def test_local_list_pages_and_sorts_database_aggregates(
     db = local_materialization._connect(target)
     try:
         for collection_id, byte_count in ((1, 100), (2, 300), (3, 200)):
-            local_materialization._store_manifest(
+            record = PortableCollectionRecord.create(
+                collection=collection_id,
+                content_identity="b" * 64,
+                encryption_format="age-v1-scrypt",
+                passphrase_id="collection-test-key-v1",
+                provenance_mode="omitted",
+                provenance_identity=None,
+                files=(("file.bin", byte_count, "a" * 64),),
+            )
+            local_materialization._store_inventory(
                 db,
-                PortableCollectionRecord.create(
-                    collection=collection_id,
-                    content_identity="b" * 64,
-                    encryption_format="age-v1-scrypt",
-                    passphrase_id="collection-test-key-v1",
-                    provenance_mode="omitted",
-                    provenance_identity=None,
-                    metadata_revision=0,
-                    tags=("docs",),
-                    files=(("file.bin", byte_count, "a" * 64),),
-                ),
+                record.header,
+                record.files,
+                inventory_identity=record.identity,
                 created_at=f"2026-07-19T20:55:0{collection_id}.000000Z",
+            )
+            local_materialization._replace_local_tags(
+                db,
+                collection_id,
+                iter(({"tag": "docs"},)),
             )
         db.commit()
     finally:

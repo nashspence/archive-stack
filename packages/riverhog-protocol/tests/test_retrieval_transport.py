@@ -52,10 +52,20 @@ def test_canonical_path_schema_advertises_semantic_exclusions() -> None:
     schema = TypeAdapter(CanonicalRelPath).json_schema()
 
     assert schema["format"] == "riverhog-canonical-relpath-v1"
+    assert schema["x-unicode-normalization"] == "NFC"
     assert {entry["not"]["pattern"] for entry in schema["allOf"]} == {
         r"(?:^|/)\.{1,2}(?:/|$)",
         r"^\s|\s$",
     }
+
+
+def test_canonical_path_uses_one_unicode_representation() -> None:
+    composed = "caf\N{LATIN SMALL LETTER E WITH ACUTE}.txt"
+    decomposed = "cafe\N{COMBINING ACUTE ACCENT}.txt"
+
+    assert TypeAdapter(CanonicalRelPath).validate_python(composed, strict=True) == composed
+    with pytest.raises(ValidationError):
+        TypeAdapter(CanonicalRelPath).validate_python(decomposed, strict=True)
 
 
 @pytest.mark.parametrize("value", ("archive", "aws-deep-archive", "b2"))

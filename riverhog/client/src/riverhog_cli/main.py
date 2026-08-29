@@ -77,6 +77,7 @@ from riverhog_cli.output import (
     format_archive_copy_selectors,
     format_archive_store,
     format_archive_stores,
+    format_collection_archive_copies,
     format_collection_deletion_plan,
     format_collection_deletion_result,
     format_collection_summary,
@@ -94,8 +95,9 @@ from riverhog_cli.output import (
     format_file_selectors,
     format_find,
     format_provenance_files,
+    format_provenance_journal_agents,
     format_provenance_trace,
-    format_provenance_verification,
+    format_provenance_verification_job,
     format_retrieval_cache_object,
     format_retrieval_cache_objects,
     format_retrieval_cache_selectors,
@@ -324,6 +326,11 @@ def _emit_human_enumeration_chunk(
     if lines:
         typer.echo("\n".join(lines))
     return False
+
+
+def _format_collection_tag_ids(payload: Mapping[str, object]) -> str:
+    items = cast(list[dict[str, object]], payload["tags"])
+    return "\n".join(str(item["tag"]) for item in items)
 
 
 def _monthly_quota_bytes(value: str) -> int | None:
@@ -581,11 +588,14 @@ def collection_tag_list_cmd(
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
-    payload = client().get_collection_tags(collection_id)
-    if ids:
-        emit("\n".join(str(tag) for tag in payload.get("tags", [])), json_mode=False)
-        return
-    emit(payload if json_mode else format_collection_tags(payload), json_mode=json_mode)
+    with client().stream_collection_tags(collection_id) as items:
+        _emit_complete_enumeration(
+            items,
+            key="tags",
+            formatter=format_collection_tags,
+            json_mode=json_mode,
+            selector_formatter=_format_collection_tag_ids if ids else None,
+        )
 
 
 @collection_tag_app.command("replace")
@@ -1398,7 +1408,8 @@ def _put_provenance_journals(
                 api.put_collection_upload_session_provenance_journal,
                 collection_id,
                 journal_id,
-                content=content,
+                content=(content,),
+                byte_count=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
             ),
         )
@@ -1751,6 +1762,40 @@ def collection_list_cmd(
         emit(format_list_ids(payload, "collections"), json_mode=False)
         return
     emit(payload if json_mode else format_collections(payload), json_mode=json_mode)
+
+
+@collection_app.command("archive-copies")
+def collection_archive_copies_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every archive copy"),
+    ] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List the durable archive copies of one collection."""
+
+    api = client()
+    if all_items:
+        with api.stream_collection_archive_copies(collection_id) as items:
+            _emit_complete_enumeration(
+                items,
+                key="copies",
+                formatter=format_collection_archive_copies,
+                json_mode=json_mode,
+            )
+        return
+    payload = api.list_collection_archive_copies(
+        collection_id,
+        page=page,
+        per_page=per_page,
+    )
+    emit(
+        payload if json_mode else format_collection_archive_copies(payload),
+        json_mode=json_mode,
+    )
 
 
 @collection_upload_app.command("start")
@@ -2275,6 +2320,39 @@ def provenance_trace_cmd(
     emit(payload if json_mode else format_provenance_trace(payload), json_mode=json_mode)
 
 
+@collection_provenance_app.command("agents")
+def provenance_agents_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    journal_id: Annotated[str, typer.Argument(help="Exact provenance journal id")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    all_items: Annotated[bool, typer.Option("--all", help="Return every agent")] = False,
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """List agents asserted by one exact provenance journal."""
+
+    api = client()
+    if all_items:
+        with api.stream_collection_provenance_journal_agents(
+            collection_id,
+            journal_id,
+        ) as items:
+            _emit_complete_enumeration(
+                items,
+                key="agents",
+                formatter=format_provenance_journal_agents,
+                json_mode=json_mode,
+            )
+        return
+    payload = api.list_collection_provenance_journal_agents(
+        collection_id,
+        journal_id,
+        page=page,
+        per_page=per_page,
+    )
+    emit(payload if json_mode else format_provenance_journal_agents(payload), json_mode=json_mode)
+
+
 @collection_provenance_app.command("export")
 def provenance_export_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
@@ -2284,12 +2362,18 @@ def provenance_export_cmd(
 ) -> None:
     """Export one exact canonical RFC 7464 journal."""
 
-    content = client().export_collection_provenance_journal(collection_id, journal_id)
     destination = output.expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.part")
+    byte_count = 0
+    digest = hashlib.sha256()
     try:
-        temporary.write_bytes(content)
+        with client().stream_collection_provenance_journal(collection_id, journal_id) as chunks:
+            with temporary.open("wb") as stream:
+                for chunk in chunks:
+                    stream.write(chunk)
+                    byte_count += len(chunk)
+                    digest.update(chunk)
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)
@@ -2299,8 +2383,8 @@ def provenance_export_cmd(
                 "collection_id": collection_id,
                 "journal_id": journal_id,
                 "output": str(destination),
-                "bytes": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
+                "bytes": byte_count,
+                "sha256": digest.hexdigest(),
             },
             json_mode=True,
         )
@@ -2311,12 +2395,42 @@ def provenance_export_cmd(
 @collection_provenance_app.command("verify")
 def provenance_verify_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    wait: Annotated[
+        bool,
+        typer.Option("--wait/--no-wait", help="Wait for the server-owned verification job"),
+    ] = True,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Verify exact journals, bindings, identity, and database projection."""
+    """Start verification of exact journals, bindings, identity, and projection."""
 
-    payload = client().verify_collection_provenance(collection_id)
-    emit(payload if json_mode else format_provenance_verification(payload), json_mode=json_mode)
+    api = client()
+    payload = api.request_collection_provenance_verification(collection_id)
+    while wait and payload["state"] in {"queued", "running", "canceling"}:
+        time.sleep(0.25)
+        payload = api.get_collection_provenance_verification(collection_id)
+    emit(payload if json_mode else format_provenance_verification_job(payload), json_mode=json_mode)
+
+
+@collection_provenance_app.command("verification-show")
+def provenance_verification_show_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Show the current server-owned provenance verification job."""
+
+    payload = client().get_collection_provenance_verification(collection_id)
+    emit(payload if json_mode else format_provenance_verification_job(payload), json_mode=json_mode)
+
+
+@collection_provenance_app.command("verification-cancel")
+def provenance_verification_cancel_cmd(
+    collection_id: Annotated[int, typer.Argument(help="Collection id")],
+    json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
+) -> None:
+    """Cancel the current server-owned provenance verification job."""
+
+    payload = client().cancel_collection_provenance_verification(collection_id)
+    emit(payload if json_mode else format_provenance_verification_job(payload), json_mode=json_mode)
 
 
 _ARCHIVE_STORE_SORT_FIELDS = {

@@ -4,7 +4,7 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from riverhog_protocol import PortableCollectionRecord
+from riverhog_protocol import PortableCollectionFile, PortableCollectionHeader
 from riverhog_protocol.lifecycle_events import RiverhogEventPage
 
 from riverhog_core.app_permissions import ApplicationAccess, ApplicationPrincipal
@@ -49,6 +49,20 @@ class CollectionService(Protocol):
         order: str = "asc",
         principal: ApplicationPrincipal | None = None,
     ) -> Iterator[CollectionSummary]: ...
+    def list_archive_copies(
+        self,
+        collection_id: int,
+        *,
+        page: int,
+        per_page: int,
+        principal: ApplicationPrincipal | None = None,
+    ) -> JsonObject: ...
+    def iter_archive_copies(
+        self,
+        collection_id: int,
+        *,
+        principal: ApplicationPrincipal | None = None,
+    ) -> Iterator[JsonObject]: ...
 
 
 class ProvenanceService(Protocol):
@@ -97,19 +111,56 @@ class ProvenanceService(Protocol):
         *,
         principal: ApplicationPrincipal,
     ) -> Iterator[JsonObject]: ...
-    def export_journal(
+    def journal_metadata(
         self,
         collection_id: int,
         journal_id: str,
         *,
         principal: ApplicationPrincipal,
-    ) -> tuple[bytes, str]: ...
-    def verify(
+    ) -> tuple[int, str]: ...
+    def iter_journal(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[bytes]: ...
+    def list_journal_agents(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        page: int,
+        per_page: int,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def iter_journal_agents(
+        self,
+        collection_id: int,
+        journal_id: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[JsonObject]: ...
+    def request_verification(
         self,
         collection_id: int,
         *,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
+    def get_verification(
+        self,
+        collection_id: int,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def cancel_verification(
+        self,
+        collection_id: int,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def requeue_interrupted_verifications_for_startup(self) -> int: ...
+    def process_due_verifications(self, *, limit: int = 1) -> int: ...
 
 
 class TagService(Protocol):
@@ -145,20 +196,20 @@ class TagService(Protocol):
         order: str,
         principal: ApplicationPrincipal,
     ) -> Iterator[JsonObject]: ...
-    def get_collection(
+    def list_collection_tags(
+        self,
+        collection_id: int,
+        *,
+        page: int,
+        per_page: int,
+        principal: ApplicationPrincipal,
+    ) -> JsonObject: ...
+    def iter_collection_tags(
         self,
         collection_id: int,
         *,
         principal: ApplicationPrincipal,
-    ) -> JsonObject: ...
-    def replace_collection(
-        self,
-        collection_id: int,
-        tags: Sequence[str],
-        *,
-        principal: ApplicationPrincipal,
-        event_context: dict[str, object] | None = None,
-    ) -> JsonObject: ...
+    ) -> Iterator[JsonObject]: ...
     def add_collection_tag(
         self,
         collection_id: int,
@@ -203,12 +254,18 @@ class RetrievalService(Protocol):
         initiated_before: datetime,
     ) -> int: ...
 
-    def collection_manifest(
+    def collection_inventory(
         self,
         collection_id: int,
         *,
         principal: ApplicationPrincipal | None = None,
-    ) -> tuple[PortableCollectionRecord, str]: ...
+    ) -> tuple[
+        PortableCollectionHeader,
+        Iterator[PortableCollectionFile],
+        str,
+        int,
+        int,
+    ]: ...
     def resource_list_page(
         self,
         *,

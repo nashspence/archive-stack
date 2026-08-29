@@ -103,8 +103,24 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
             "/v1/collections/{collection_id}/provenance/journals/{journal_id}",
         ): PROVENANCE_EXPORT,
         (
+            "GET",
+            "/v1/collections/{collection_id}/provenance/journals/{journal_id}/agents",
+        ): PROVENANCE_READ,
+        (
+            "GET",
+            "/v1/collections/{collection_id}/provenance/journals/{journal_id}/agents/stream",
+        ): PROVENANCE_READ,
+        (
             "POST",
-            "/v1/collections/{collection_id}/provenance/verify",
+            "/v1/collections/{collection_id}/provenance/verification",
+        ): PROVENANCE_READ,
+        (
+            "GET",
+            "/v1/collections/{collection_id}/provenance/verification",
+        ): PROVENANCE_READ,
+        (
+            "DELETE",
+            "/v1/collections/{collection_id}/provenance/verification",
         ): PROVENANCE_READ,
     }
 

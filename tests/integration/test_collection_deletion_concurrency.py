@@ -60,6 +60,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_sha256,
 )
 from riverhog_protocol.errors import Conflict
+from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import select, text
 
 from tests.fixtures.crypto import FixtureProofStamper
@@ -236,7 +237,7 @@ def _seed(database_url: str) -> None:
                 content_identity="0" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
-                record_etag="0" * 64,
+                inventory_identity="0" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 created_at="2026-01-01T00:00:00.000000Z",
@@ -286,7 +287,7 @@ def _seed(database_url: str) -> None:
                     plaintext_bytes=stored_bytes - 1,
                     stored_bytes=stored_bytes,
                     sha256=chr(ord("a") + order) * 64,
-                    stored_sha256=chr(ord("d") + order) * 64,
+                    stored_sha256="def0"[order] * 64,
                     uploaded_at="2026-07-18T00:00:00.000000Z",
                     verified_at="2026-07-18T00:00:00.000000Z",
                 )
@@ -317,7 +318,7 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
                 content_identity="1" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
-                record_etag="1" * 64,
+                inventory_identity="1" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 created_at="2026-01-01T00:00:00.000000Z",
@@ -526,7 +527,7 @@ def _seed_derived_output(
                 content_identity=("4" if output_collection_id == 2 else "5") * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
-                record_etag=("3" if output_collection_id == 2 else "4") * 64,
+                inventory_identity=("3" if output_collection_id == 2 else "4") * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 ingest_source=f"transform:{execution_id}",
@@ -639,7 +640,7 @@ def _seed_multi_input_derived_output(
                 content_identity="4" * 64,
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
-                record_etag="3" * 64,
+                inventory_identity="3" * 64,
                 metadata_revision=1,
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 ingest_source=f"transform:{EXECUTION_ID}",
@@ -969,7 +970,8 @@ def test_postgres_exact_output_intent_creation_resumes_one_upload(
             uploads.append(
                 service.create_or_resume(
                     idempotency_key=EXECUTION_ID,
-                    tags=("docs",),
+                    initial_tag="docs",
+                    tag_set_identity_sha256=tag_set_identity(("docs",)),
                     ingest_source=f"transform:{EXECUTION_ID}",
                     archive_store=None,
                     initiator=transform,

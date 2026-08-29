@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -489,39 +489,45 @@ class ProvenanceTransformApi(UploadApi):
     def stream_collection_provenance(self, collection_id: int, **kwargs: Any) -> Iterator[Any]:
         yield iter(self.list_collection_provenance(collection_id, **kwargs)["files"])
 
-    def export_collection_provenance_journal(
+    @contextmanager
+    def stream_collection_provenance_journal(
         self,
         collection_id: int,
         journal_id: str,
-    ) -> bytes:
+    ) -> Iterator[Iterator[bytes]]:
         assert collection_id == 1
-        return self.source_journals[journal_id]
+        yield iter((self.source_journals[journal_id],))
 
-    def export_collection_upload_session_provenance_journal(
+    @contextmanager
+    def stream_collection_upload_session_provenance_journal(
         self,
         collection_id: int,
         journal_id: str,
-    ) -> bytes:
+    ) -> Iterator[Iterator[bytes]]:
         assert collection_id == 7
         self.staged_export_calls += 1
         try:
-            return self.staged_journals[journal_id]
+            content = self.staged_journals[journal_id]
         except KeyError as exc:
             raise NotFound("staged provenance journal not found") from exc
+        yield iter((content,))
 
     def put_collection_upload_session_provenance_journal(
         self,
         collection_id: int,
         journal_id: str,
         *,
-        content: bytes,
+        content: Iterable[bytes],
+        byte_count: int,
         **_kwargs: Any,
     ) -> dict[str, Any]:
         assert collection_id == 7
+        body = b"".join(content)
+        assert len(body) == byte_count
         existing = self.staged_journals.get(journal_id)
-        if existing is not None and existing != content:
+        if existing is not None and existing != body:
             raise AssertionError("retry changed staged provenance bytes")
-        self.staged_journals[journal_id] = content
+        self.staged_journals[journal_id] = body
         return {"journal_id": journal_id}
 
     def register_collection_upload_session_files(
@@ -636,10 +642,13 @@ def test_producer_builds_provenance_after_exact_stream_verification(
             _collection_id: int,
             journal_id: str,
             *,
-            content: bytes,
+            content: Iterable[bytes],
+            byte_count: int,
             **_kwargs: Any,
         ) -> dict[str, Any]:
-            self.journals[journal_id] = content
+            body = b"".join(content)
+            assert len(body) == byte_count
+            self.journals[journal_id] = body
             return {"journal_id": journal_id}
 
     api = ProvenanceUploadApi()

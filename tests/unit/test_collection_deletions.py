@@ -166,6 +166,6 @@ def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(
         "key_id": "client-key",
     }
     assert event.data["collection_created_at"] == UPLOADED_AT
-    assert event.data["collection_tags"] == ["docs"]
+    assert event.data["collection_tag_count"] == 1
     assert event.data["context"] == {"workflow": "direct-delete"}
     assert events.page(owner_app="stove0", after=None, limit=100).events == []

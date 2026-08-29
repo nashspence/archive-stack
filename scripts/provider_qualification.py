@@ -2999,9 +2999,12 @@ def _assert_resourcesync(api: Any, collection_id: int, *, base_url: str) -> None
         raise QualificationError("ResourceSync omitted the qualification collection")
     if not str(resource.get("location", "")).startswith(public_prefix):
         raise QualificationError("ResourceSync resource published an unusable URL authority")
-    portable = api.get_portable_collection_manifest(collection_id)
-    if portable.format != "riverhog-collection/v1":
-        raise QualificationError("portable collection manifest format is invalid")
+    with api.stream_portable_collection_inventory(collection_id) as portable:
+        if portable.begin.header.format != "riverhog-collection/v1":
+            raise QualificationError("portable collection inventory format is invalid")
+        observed_files = sum(1 for _file in portable)
+        if observed_files != portable.begin.files:
+            raise QualificationError("portable collection inventory count differs")
     changes = api.catalog_changes(after=0)
     if not any(
         int(item.get("collection_id", 0)) == collection_id

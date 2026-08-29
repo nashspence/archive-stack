@@ -790,39 +790,36 @@ def _key_quota_statements(
         raise BadRequest("order must be asc or desc")
     now_text = format_utc_timestamp(now)
     current_month = format_utc_timestamp(_month_start(now))
-    usage = (
-        select(
-            KeyDownloadUsageRecord.key_id.label("key_id"),
-            KeyDownloadUsageRecord.accounted_bytes.label("accounted_bytes"),
-        )
-        .where(KeyDownloadUsageRecord.month_started_at == current_month)
-        .subquery()
-    )
-    expired_streams = (
-        select(
-            KeyDownloadReservationRecord.key_id.label("key_id"),
-            func.sum(KeyDownloadReservationRecord.reserved_bytes).label("accounted_bytes"),
-        )
+    usage_accounted = (
+        select(KeyDownloadUsageRecord.accounted_bytes)
         .where(
+            KeyDownloadUsageRecord.key_id == AppKeyRecord.id,
+            KeyDownloadUsageRecord.month_started_at == current_month,
+        )
+        .correlate(AppKeyRecord)
+        .scalar_subquery()
+    )
+    expired_stream_accounted = (
+        select(func.sum(KeyDownloadReservationRecord.reserved_bytes))
+        .where(
+            KeyDownloadReservationRecord.key_id == AppKeyRecord.id,
             KeyDownloadReservationRecord.kind == "stream",
             KeyDownloadReservationRecord.expires_at <= now_text,
         )
-        .group_by(KeyDownloadReservationRecord.key_id)
-        .subquery()
+        .correlate(AppKeyRecord)
+        .scalar_subquery()
     )
-    reservations = (
-        select(
-            KeyDownloadReservationRecord.key_id.label("key_id"),
-            func.sum(KeyDownloadReservationRecord.reserved_bytes).label("reserved_bytes"),
+    active_reserved = (
+        select(func.sum(KeyDownloadReservationRecord.reserved_bytes))
+        .where(
+            KeyDownloadReservationRecord.key_id == AppKeyRecord.id,
+            KeyDownloadReservationRecord.expires_at > now_text,
         )
-        .where(KeyDownloadReservationRecord.expires_at > now_text)
-        .group_by(KeyDownloadReservationRecord.key_id)
-        .subquery()
+        .correlate(AppKeyRecord)
+        .scalar_subquery()
     )
-    accounted = func.coalesce(usage.c.accounted_bytes, 0) + func.coalesce(
-        expired_streams.c.accounted_bytes, 0
-    )
-    reserved = func.coalesce(reservations.c.reserved_bytes, 0)
+    accounted = func.coalesce(usage_accounted, 0) + func.coalesce(expired_stream_accounted, 0)
+    reserved = func.coalesce(active_reserved, 0)
     remainder = AppKeyRecord.monthly_download_quota_bytes - accounted - reserved
     remaining = case(
         (AppKeyRecord.monthly_download_quota_bytes.is_(None), None),
@@ -851,23 +848,17 @@ def _key_quota_statements(
     )
     if active is not None:
         filters.append(active_expression if active else ~active_expression)
-    base = (
-        select(
-            AppKeyRecord.id.label("id"),
-            AppKeyRecord.app.label("app"),
-            AppKeyRecord.id.label("key_id"),
-            AppKeyRecord.monthly_download_quota_bytes.label("monthly_bytes"),
-            accounted.label("accounted_bytes"),
-            reserved.label("reserved_bytes"),
-            remaining.label("remaining_bytes"),
-            AppKeyRecord.expires_at.label("expires_at"),
-            AppKeyRecord.revoked_at.label("revoked_at"),
-        )
-        .outerjoin(usage, usage.c.key_id == AppKeyRecord.id)
-        .outerjoin(expired_streams, expired_streams.c.key_id == AppKeyRecord.id)
-        .outerjoin(reservations, reservations.c.key_id == AppKeyRecord.id)
-        .where(*filters)
-    )
+    base = select(
+        AppKeyRecord.id.label("id"),
+        AppKeyRecord.app.label("app"),
+        AppKeyRecord.id.label("key_id"),
+        AppKeyRecord.monthly_download_quota_bytes.label("monthly_bytes"),
+        accounted.label("accounted_bytes"),
+        reserved.label("reserved_bytes"),
+        remaining.label("remaining_bytes"),
+        AppKeyRecord.expires_at.label("expires_at"),
+        AppKeyRecord.revoked_at.label("revoked_at"),
+    ).where(*filters)
     direction = desc if order == "desc" else asc
     statement = base.order_by(direction(columns[sort]), direction(AppKeyRecord.id))
     return now_text, current_month, query, normalized_app, base, statement

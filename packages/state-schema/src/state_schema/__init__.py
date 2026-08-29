@@ -12,7 +12,7 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from alembic.script.revision import ResolutionError
-from sqlalchemy import create_engine, event, inspect
+from sqlalchemy import CheckConstraint, MetaData, String, create_engine, event, inspect, text
 from sqlalchemy.engine import URL, Connection, Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -63,6 +63,7 @@ class StateSchema:
         engine_factory: EngineFactory,
         script_location: Path,
         verify: SchemaVerify,
+        prerequisite: SchemaVerify | None = None,
         is_empty: EmptyStateCheck | None = None,
         version_table: str = "state_schema_revision",
     ) -> None:
@@ -70,6 +71,7 @@ class StateSchema:
         self._engine_factory = engine_factory
         self.script_location = Path(script_location)
         self._verify = verify
+        self._prerequisite = prerequisite
         self._is_empty = is_empty
         self.version_table = version_table
 
@@ -148,24 +150,69 @@ class StateSchema:
         return status
 
     def upgrade(self) -> StateStatus:
-        before = self.status()
-        if before.condition in {"unversioned", "incompatible"}:
-            raise StateSchemaError(self._actionable_message(before))
-
-        config = self._config()
         engine = self._engine_factory()
         try:
             with engine.begin() as connection:
-                config.attributes["connection"] = connection
-                if before.condition in {"empty", "upgrade_required"}:
-                    command.upgrade(config, "head")
-                self._verify_database(connection)
+                status = self.upgrade_connection(connection)
         finally:
             engine.dispose()
-        return self.validate()
+        return status
+
+    def upgrade_connection(self, connection: Connection) -> StateStatus:
+        """Upgrade and verify state through one caller-owned connection."""
+
+        config = self._config()
+        script = ScriptDirectory.from_config(config)
+        head = self._head(script)
+        before = self._status_connection(connection, script=script, head=head)
+        if before.condition in {"unversioned", "incompatible"}:
+            raise StateSchemaError(self._actionable_message(before))
+        if self._prerequisite is not None:
+            self._prerequisite(connection)
+        config.attributes["connection"] = connection
+        if before.condition in {"empty", "upgrade_required"}:
+            command.upgrade(config, "head")
+        self._verify_database(connection)
+        after = self._status_connection(connection, script=script, head=head)
+        if after.condition != "current":
+            raise StateSchemaError(self._actionable_message(after))
+        return after
+
+    def _status_connection(
+        self,
+        connection: Connection,
+        *,
+        script: ScriptDirectory,
+        head: str,
+    ) -> StateStatus:
+        tables = set(inspect(connection).get_table_names())
+        current_heads = tuple(
+            MigrationContext.configure(
+                connection,
+                opts={"version_table": self.version_table},
+            ).get_current_heads()
+        )
+        if not tables:
+            return StateStatus(self.name, "empty", None, head)
+        if not current_heads:
+            return StateStatus(self.name, "unversioned", None, head)
+        if len(current_heads) != 1:
+            return StateStatus(self.name, "incompatible", ",".join(current_heads), head)
+        current = current_heads[0]
+        if current == head:
+            return StateStatus(self.name, "current", current, head)
+        try:
+            revision = script.get_revision(current)
+        except ResolutionError:
+            return StateStatus(self.name, "incompatible", current, head)
+        if revision is None:
+            return StateStatus(self.name, "incompatible", current, head)
+        return StateStatus(self.name, "upgrade_required", current, head)
 
     def _verify_database(self, connection: Connection) -> None:
         try:
+            if self._prerequisite is not None:
+                self._prerequisite(connection)
             inspector = inspect(connection)
             version_columns = tuple(
                 str(column["name"]) for column in inspector.get_columns(self.version_table)
@@ -232,6 +279,84 @@ def run_migration_environment() -> None:
         context.run_migrations()
 
 
+def require_postgresql_extension(
+    connection: Connection,
+    *,
+    name: str,
+    schema: str,
+    accepted_versions: tuple[str, ...] = (),
+    operator_classes: tuple[str, ...] = (),
+) -> None:
+    """Require a deployment-installed PostgreSQL extension capability."""
+
+    if connection.dialect.name != "postgresql":
+        return
+    installed = connection.execute(
+        text(
+            "SELECT n.nspname, e.extversion FROM pg_extension e "
+            "JOIN pg_namespace n ON n.oid = e.extnamespace "
+            "WHERE e.extname = :name"
+        ),
+        {"name": name},
+    ).one_or_none()
+    if installed is None or installed[0] != schema:
+        actual = "absent" if installed is None else f"schema {installed[0]}"
+        raise StateSchemaError(
+            f"PostgreSQL extension {name} must be installed in schema {schema}; found {actual}"
+        )
+    version = str(installed[1])
+    if accepted_versions and version not in accepted_versions:
+        raise StateSchemaError(
+            f"PostgreSQL extension {name} version must be one of "
+            f"{', '.join(accepted_versions)}; found {version}"
+        )
+    for operator_class in operator_classes:
+        present = connection.execute(
+            text(
+                "SELECT 1 FROM pg_opclass o "
+                "JOIN pg_namespace n ON n.oid = o.opcnamespace "
+                "WHERE o.opcname = :operator_class AND n.nspname = :schema"
+            ),
+            {"operator_class": operator_class, "schema": schema},
+        ).scalar_one_or_none()
+        if present != 1:
+            raise StateSchemaError(
+                f"PostgreSQL extension {name} is missing operator class {schema}.{operator_class}"
+            )
+
+
+def attach_sha256_string_constraints(metadata: MetaData) -> None:
+    """Reserve ``String(64)`` columns for exact lowercase SHA-256 identities."""
+
+    for table in metadata.tables.values():
+        existing = {constraint.name for constraint in table.constraints}
+        for column in table.columns:
+            if not isinstance(column.type, String) or column.type.length != 64:
+                continue
+            name = f"ck_{table.name}_{column.name}_hex"
+            if len(name) > 60:
+                import hashlib  # noqa: PLC0415
+
+                name = f"ck_sha256_{hashlib.sha256(name.encode()).hexdigest()[:16]}"
+            if name in existing:
+                continue
+            identifier = column.name
+            remainder = identifier
+            for character in "0123456789abcdef":
+                remainder = f"replace({remainder}, '{character}', '')"
+            exact = (
+                f"length({identifier}) = 64 AND lower({identifier}) = {identifier} "
+                f"AND {remainder} = ''"
+            )
+            # ``AND`` binds more tightly than ``OR`` in every supported SQL
+            # dialect. Avoid a redundant grouping pair that PostgreSQL removes
+            # while deparsing, so migration DDL and runtime metadata have one
+            # exact semantic fingerprint.
+            expression = exact if not column.nullable else f"{identifier} IS NULL OR {exact}"
+            table.append_constraint(CheckConstraint(expression, name=name))
+            existing.add(name)
+
+
 def sqlite_engine(path: Path) -> Engine:
     """Create the repository-standard engine for one application-owned SQLite file."""
 
@@ -286,8 +411,10 @@ __all__ = [
     "StateSchema",
     "StateSchemaError",
     "StateStatus",
+    "attach_sha256_string_constraints",
     "assert_schema_matches_metadata",
     "read_snapshot",
+    "require_postgresql_extension",
     "run_migration_environment",
     "sqlite_engine",
 ]

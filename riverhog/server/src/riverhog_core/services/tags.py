@@ -4,13 +4,13 @@ import math
 import secrets
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from http_api_contracts import closed_literal_values
 from riverhog_protocol import SortOrder, TagSort
 from riverhog_protocol.errors import BadRequest, Conflict, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_tag
-from sqlalchemy import asc, desc, exists, func, or_, select
+from sqlalchemy import asc, desc, exists, func, insert, literal, or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
@@ -26,14 +26,16 @@ from riverhog_core.app_permissions import (
     tag_resource,
 )
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
-from riverhog_core.catalog_events import record_catalog_event
+from riverhog_core.catalog_events import (
+    begin_catalog_event,
+    snapshot_catalog_event_collection_tags,
+)
 from riverhog_core.catalog_models import (
     AppKeyAccessGrantRecord,
     AppKeyRecord,
     CatalogEventRecord,
     CatalogEventTagRecord,
     CollectionArchiveCopyRecord,
-    CollectionFileRecord,
     CollectionMetadataPublicationRecord,
     CollectionRecord,
     CollectionTagRecord,
@@ -42,7 +44,6 @@ from riverhog_core.catalog_models import (
     TagRecord,
 )
 from riverhog_core.collection_access import require_collection_access, tag_access_filter
-from riverhog_core.collection_metadata import collection_record_manifest
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import active_key_filter
 from riverhog_core.services.collection_mutations import require_collection_mutation_allowed
@@ -243,38 +244,58 @@ class SqlAlchemyTagService:
             for row in rows:
                 yield dict(row)
 
-    def get_collection(
+    def list_collection_tags(
         self,
         collection_id: int,
         *,
+        page: int,
+        per_page: int,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
-        with session_scope(self._session_factory) as session:
+        if page < 1 or per_page < 1 or per_page > 100:
+            raise BadRequest("invalid collection-tag pagination")
+        with read_snapshot(self._session_factory) as session:
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
                 raise NotFound(f"collection not found: {collection_id}")
             require_collection_access(session, principal, CATALOG_READ, collection_id)
-            return _collection_tags_payload(session, collection)
+            total = _collection_tag_count(session, collection_id)
+            tags = list(
+                session.scalars(
+                    select(CollectionTagRecord.tag_id)
+                    .where(CollectionTagRecord.collection_id == collection_id)
+                    .order_by(CollectionTagRecord.tag_id)
+                    .offset((page - 1) * per_page)
+                    .limit(per_page)
+                )
+            )
+            return {
+                **_collection_tag_set_payload(collection, tag_count=total),
+                "page": page,
+                "per_page": per_page,
+                "pages": math.ceil(total / per_page) if total else 0,
+                "tags": tags,
+            }
 
-    def replace_collection(
+    def iter_collection_tags(
         self,
         collection_id: int,
-        tags: Sequence[str],
         *,
         principal: ApplicationPrincipal,
-        event_context: Mapping[str, object] | None = None,
-    ) -> dict[str, object]:
-        normalized_tags = tuple(sorted({canonical_tag(tag) for tag in tags}))
-        if len(normalized_tags) != len(tags):
-            raise BadRequest("collection tags must not contain duplicates")
-        return self._mutate_collection_tags(
-            collection_id,
-            principal=principal,
-            event_context=event_context,
-            mutation="replace",
-            tag=None,
-            replacement=normalized_tags,
-        )
+    ) -> Iterator[dict[str, object]]:
+        with read_snapshot(self._session_factory) as session:
+            collection = session.get(CollectionRecord, collection_id)
+            if collection is None:
+                raise NotFound(f"collection not found: {collection_id}")
+            require_collection_access(session, principal, CATALOG_READ, collection_id)
+            statement = (
+                select(CollectionTagRecord.tag_id)
+                .where(CollectionTagRecord.collection_id == collection_id)
+                .order_by(CollectionTagRecord.tag_id)
+                .execution_options(yield_per=100)
+            )
+            for tag in session.scalars(statement):
+                yield {"tag": tag}
 
     def add_collection_tag(
         self,
@@ -288,9 +309,8 @@ class SqlAlchemyTagService:
             collection_id,
             principal=principal,
             event_context=event_context,
-            mutation="add",
+            add=True,
             tag=canonical_tag(tag),
-            replacement=None,
         )
 
     def remove_collection_tag(
@@ -305,9 +325,8 @@ class SqlAlchemyTagService:
             collection_id,
             principal=principal,
             event_context=event_context,
-            mutation="remove",
+            add=False,
             tag=canonical_tag(tag),
-            replacement=None,
         )
 
     def _mutate_collection_tags(
@@ -316,9 +335,8 @@ class SqlAlchemyTagService:
         *,
         principal: ApplicationPrincipal,
         event_context: Mapping[str, object] | None,
-        mutation: Literal["replace", "add", "remove"],
-        tag: str | None,
-        replacement: tuple[str, ...] | None,
+        add: bool,
+        tag: str,
     ) -> dict[str, object]:
         normalized_context_json = event_context_json(event_context)
         with session_scope(self._session_factory) as session:
@@ -336,40 +354,28 @@ class SqlAlchemyTagService:
                 collection_id,
             )
             require_collection_mutation_allowed(session, collection_id)
-            current_tags = tuple(
-                session.scalars(
-                    select(CollectionTagRecord.tag_id)
-                    .where(CollectionTagRecord.collection_id == collection_id)
-                    .order_by(CollectionTagRecord.tag_id)
-                ).all()
-            )
-            if mutation == "replace":
-                assert replacement is not None
-                normalized_tags = replacement
-            elif mutation == "add":
-                assert tag is not None
-                if tag in current_tags:
+            membership = session.get(CollectionTagRecord, (collection_id, tag))
+            if add:
+                if membership is not None:
                     raise Conflict(f"collection already has tag: {tag}")
-                normalized_tags = tuple(sorted((*current_tags, tag)))
-            else:
-                assert tag is not None
-                if tag not in current_tags:
-                    raise NotFound(f"collection tag not found: {tag}")
-                normalized_tags = tuple(current for current in current_tags if current != tag)
-            _require_tags(session, normalized_tags)
-            if current_tags == normalized_tags:
-                return _collection_tags_payload(session, collection)
-
-            adjust_tag_collection_counts(
-                session,
-                added=set(normalized_tags) - set(current_tags),
-                removed=set(current_tags) - set(normalized_tags),
-            )
-            session.query(CollectionTagRecord).filter(
-                CollectionTagRecord.collection_id == collection_id
-            ).delete(synchronize_session=False)
+                _require_tags(session, (tag,))
+            elif membership is None:
+                raise NotFound(f"collection tag not found: {tag}")
             now = format_utc_timestamp(utc_now())
-            for tag in normalized_tags:
+            event = begin_catalog_event(
+                session,
+                change="updated",
+                collection_id=collection_id,
+                occurred_at=now,
+                inventory_identity=collection.inventory_identity,
+            )
+            snapshot_catalog_event_collection_tags(
+                session,
+                event=event,
+                phase="before",
+                collection_id=collection_id,
+            )
+            if add:
                 session.add(
                     CollectionTagRecord(
                         collection_id=collection_id,
@@ -379,39 +385,20 @@ class SqlAlchemyTagService:
                         assigned_at=now,
                     )
                 )
+                adjust_tag_collection_counts(session, added=(tag,))
+            else:
+                assert membership is not None
+                session.delete(membership)
+                adjust_tag_collection_counts(session, removed=(tag,))
+            session.flush()
             collection.metadata_revision += 1
             collection.metadata_updated_at = now
-            files = list(
-                session.execute(
-                    select(
-                        CollectionFileRecord.path,
-                        CollectionFileRecord.bytes,
-                        CollectionFileRecord.sha256,
-                    )
-                    .where(CollectionFileRecord.collection_id == collection_id)
-                    .order_by(CollectionFileRecord.path)
-                ).tuples()
-            )
-            _, collection.record_etag = collection_record_manifest(
-                collection_id=collection_id,
-                content_identity=collection.content_identity,
-                encryption_format=collection.encryption_format,
-                passphrase_id=collection.passphrase_id,
-                provenance_mode=collection.provenance_mode,
-                provenance_identity=collection.provenance_identity,
-                metadata_revision=collection.metadata_revision,
-                tags=normalized_tags,
-                files=files,
-            )
             _schedule_metadata_publications(session, collection)
-            record_catalog_event(
+            snapshot_catalog_event_collection_tags(
                 session,
-                change="updated",
+                event=event,
+                phase="after",
                 collection_id=collection_id,
-                occurred_at=now,
-                record_etag=collection.record_etag,
-                before_tags=current_tags,
-                after_tags=normalized_tags,
             )
             session.flush()
             self._lifecycle_events.emit_collection(
@@ -422,7 +409,10 @@ class SqlAlchemyTagService:
                 event_context_json=normalized_context_json,
                 session=session,
             )
-            return _collection_tags_payload(session, collection)
+            return _collection_tag_set_payload(
+                collection,
+                tag_count=_collection_tag_count(session, collection_id),
+            )
 
 
 def _tag_list_statements(
@@ -637,21 +627,28 @@ def _tag_payload(record: TagRecord, *, collections: int) -> dict[str, object]:
     }
 
 
-def _collection_tags_payload(
-    session: Session,
+def _collection_tag_set_payload(
     collection: CollectionRecord,
+    *,
+    tag_count: int,
 ) -> dict[str, object]:
-    tags = session.scalars(
-        select(CollectionTagRecord.tag_id)
-        .where(CollectionTagRecord.collection_id == collection.id)
-        .order_by(CollectionTagRecord.tag_id)
-    ).all()
     return {
         "collection_id": collection.id,
         "metadata_revision": collection.metadata_revision,
-        "record_etag": collection.record_etag,
-        "tags": list(tags),
+        "inventory_identity": collection.inventory_identity,
+        "tag_count": tag_count,
     }
+
+
+def _collection_tag_count(session: Session, collection_id: int) -> int:
+    return int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionTagRecord)
+            .where(CollectionTagRecord.collection_id == collection_id)
+        )
+        or 0
+    )
 
 
 def _require_tags(session: Session, tags: Sequence[str]) -> None:
@@ -666,34 +663,69 @@ def _require_tags(session: Session, tags: Sequence[str]) -> None:
 
 
 def _schedule_metadata_publications(session: Session, collection: CollectionRecord) -> None:
-    copies = session.scalars(
-        select(CollectionArchiveCopyRecord).where(
-            CollectionArchiveCopyRecord.collection_id == collection.id,
-            CollectionArchiveCopyRecord.archive_storage_prefix.is_not(None),
-        )
-    ).all()
-    for copy in copies:
-        publication = session.get(
-            CollectionMetadataPublicationRecord,
-            (collection.id, copy.store),
-        )
-        if publication is None:
-            session.add(
-                CollectionMetadataPublicationRecord(
-                    collection_id=collection.id,
-                    store=copy.store,
-                    desired_revision=collection.metadata_revision,
-                    state="pending",
-                    attempt_count=0,
-                    next_attempt_at=collection.metadata_updated_at,
-                )
+    expected = int(
+        session.scalar(
+            select(func.count())
+            .select_from(CollectionArchiveCopyRecord)
+            .where(
+                CollectionArchiveCopyRecord.collection_id == collection.id,
+                CollectionArchiveCopyRecord.archive_storage_prefix.is_not(None),
             )
-        else:
-            publication.desired_revision = collection.metadata_revision
-            publication.state = "pending"
-            publication.attempt_count = 0
-            publication.next_attempt_at = collection.metadata_updated_at
-            publication.failure = None
+        )
+        or 0
+    )
+    session.execute(
+        insert(CollectionMetadataPublicationRecord).from_select(
+            (
+                "collection_id",
+                "store",
+                "desired_revision",
+                "state",
+                "attempt_count",
+                "next_attempt_at",
+            ),
+            select(
+                CollectionArchiveCopyRecord.collection_id,
+                CollectionArchiveCopyRecord.store,
+                literal(collection.metadata_revision),
+                literal("pending"),
+                literal(0),
+                literal(collection.metadata_updated_at),
+            ).where(
+                CollectionArchiveCopyRecord.collection_id == collection.id,
+                CollectionArchiveCopyRecord.archive_storage_prefix.is_not(None),
+                ~exists(
+                    select(1).where(
+                        CollectionMetadataPublicationRecord.collection_id == collection.id,
+                        CollectionMetadataPublicationRecord.store
+                        == CollectionArchiveCopyRecord.store,
+                    )
+                ),
+            ),
+        )
+    )
+    result = session.execute(
+        update(CollectionMetadataPublicationRecord)
+        .where(
+            CollectionMetadataPublicationRecord.collection_id == collection.id,
+            exists(
+                select(1).where(
+                    CollectionArchiveCopyRecord.collection_id == collection.id,
+                    CollectionArchiveCopyRecord.store == CollectionMetadataPublicationRecord.store,
+                    CollectionArchiveCopyRecord.archive_storage_prefix.is_not(None),
+                )
+            ),
+        )
+        .values(
+            desired_revision=collection.metadata_revision,
+            state="pending",
+            attempt_count=0,
+            next_attempt_at=collection.metadata_updated_at,
+            failure=None,
+        )
+    )
+    if int(getattr(result, "rowcount", 0) or 0) != expected:
+        raise RuntimeError("archive metadata publication relation is incomplete for collection")
 
 
 def _like_pattern(value: str) -> str:

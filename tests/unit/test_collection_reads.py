@@ -47,7 +47,7 @@ def _seed_collections(database: Path, *, count: int) -> tuple[RuntimeConfig, Eng
                     passphrase_id=f"fixture-archive-key-v{1 if collection_id % 2 else 2}",
                     provenance_mode="omitted",
                     provenance_identity=None,
-                    record_etag=f"{collection_id:064x}",
+                    inventory_identity=f"{collection_id:064x}",
                     metadata_revision=1,
                     metadata_updated_at=NOW,
                     created_by_app="fixture",
@@ -123,13 +123,8 @@ def test_collection_list_query_count_is_independent_of_page_rows(tmp_path: Path)
     twelve_row_selects = select_count
 
     assert len(page.collections) == 12
-    assert len(loaded_object_ids) == 24
-    assert set(loaded_object_ids) == {"manifest", "proof"}
-    assert all(
-        current.archive_copies[0].archive_root.proof_state == "uploaded"
-        for current in page.collections
-    )
-    assert all(current.archive_copies[0].object_count == 10 for current in page.collections)
+    assert loaded_object_ids == []
+    assert all(current.archive_copy_count == 1 for current in page.collections)
     assert twelve_row_selects == one_row_selects
     engine.dispose()
 

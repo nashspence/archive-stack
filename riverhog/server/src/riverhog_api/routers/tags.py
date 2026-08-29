@@ -15,11 +15,12 @@ from riverhog_api.complete_enumeration import (
 )
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.tags import (
+    CollectionTagMembershipOut,
+    CollectionTagSetOut,
     CollectionTagsOut,
     CreateTagRequest,
     DeleteTagRequest,
     MutateCollectionTagRequest,
-    ReplaceCollectionTagsRequest,
     TagDeletionPlanOut,
     TagDeletionResultOut,
     TagListOut,
@@ -119,43 +120,59 @@ def delete_tag(
     )
 
 
-@router.get("/collections/{collection_id}/tags", response_model=CollectionTagsOut)
+@router.get(
+    "/collections/{collection_id}/tags",
+    response_model=CollectionTagsOut,
+    openapi_extra=bounded_list_operation(paired_operation_id="stream_collection_tags"),
+)
 def get_collection_tags(
     collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CatalogReader,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(25, ge=1, le=100),
 ) -> CollectionTagsOut:
     return CollectionTagsOut.model_validate(
-        container.tags.get_collection(collection_id, principal=principal)
-    )
-
-
-@router.put("/collections/{collection_id}/tags", response_model=CollectionTagsOut)
-def replace_collection_tags(
-    collection_id: CollectionIdParameter,
-    request: ReplaceCollectionTagsRequest,
-    container: ContainerDep,
-    principal: CollectionTagManager,
-) -> CollectionTagsOut:
-    return CollectionTagsOut.model_validate(
-        container.tags.replace_collection(
+        container.tags.list_collection_tags(
             collection_id,
-            request.tags,
+            page=page,
+            per_page=per_page,
             principal=principal,
-            event_context=request.event_context,
         )
     )
 
 
-@router.post("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagsOut)
+@router.get(
+    "/collections/{collection_id}/tags/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="get_collection_tags",
+        item_type=CollectionTagMembershipOut,
+        schema_id="riverhog.collection-tag-membership/v1",
+    ),
+)
+def stream_collection_tags(
+    collection_id: CollectionIdParameter,
+    container: ContainerDep,
+    principal: CatalogReader,
+) -> Response:
+    return complete_enumeration_response(
+        container.tags.iter_collection_tags(collection_id, principal=principal),
+        query={"collection_id": collection_id},
+        item_type=CollectionTagMembershipOut,
+        schema_id="riverhog.collection-tag-membership/v1",
+    )
+
+
+@router.post("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagSetOut)
 def add_collection_tag(
     collection_id: CollectionIdParameter,
     tag: CanonicalTag,
     request: MutateCollectionTagRequest,
     container: ContainerDep,
     principal: CollectionTagManager,
-) -> CollectionTagsOut:
-    return CollectionTagsOut.model_validate(
+) -> CollectionTagSetOut:
+    return CollectionTagSetOut.model_validate(
         container.tags.add_collection_tag(
             collection_id,
             tag,
@@ -165,15 +182,15 @@ def add_collection_tag(
     )
 
 
-@router.delete("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagsOut)
+@router.delete("/collections/{collection_id}/tags/{tag}", response_model=CollectionTagSetOut)
 def remove_collection_tag(
     collection_id: CollectionIdParameter,
     tag: CanonicalTag,
     request: MutateCollectionTagRequest,
     container: ContainerDep,
     principal: CollectionTagManager,
-) -> CollectionTagsOut:
-    return CollectionTagsOut.model_validate(
+) -> CollectionTagSetOut:
+    return CollectionTagSetOut.model_validate(
         container.tags.remove_collection_tag(
             collection_id,
             tag,

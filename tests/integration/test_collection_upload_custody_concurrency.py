@@ -33,6 +33,7 @@ from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUploadService
 from riverhog_protocol.errors import Conflict
 from riverhog_protocol.manifest import collection_content_identity_ordered
+from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import func, select, text
 from sqlalchemy.engine import make_url
 
@@ -118,7 +119,8 @@ def _services(
 def _create(service: SqlAlchemyCollectionUploadService) -> int:
     payload = service.create_or_resume(
         idempotency_key="fixture-execution",
-        tags=("derived",),
+        initial_tag="derived",
+        tag_set_identity_sha256=tag_set_identity(("derived",)),
         ingest_source="transform:fixture",
         archive_store=None,
         initiator=_CREATOR,
@@ -206,7 +208,8 @@ def test_heartbeat_and_expiry_serialize_without_losing_resumable_custody(
         assert reaped == 1
         resumed = first.create_or_resume(
             idempotency_key="fixture-execution",
-            tags=("derived",),
+            initial_tag="derived",
+            tag_set_identity_sha256=tag_set_identity(("derived",)),
             ingest_source="transform:fixture",
             archive_store=None,
             initiator=_CREATOR,

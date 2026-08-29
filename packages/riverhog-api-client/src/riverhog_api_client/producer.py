@@ -389,7 +389,8 @@ class CollectionProducer:
             self.api.put_collection_upload_session_provenance_journal(
                 collection_id,
                 journal_id,
-                content=content,
+                content=(content,),
+                byte_count=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
             )
         for start in range(0, len(registration), COLLECTION_UPLOAD_REGISTRATION_BATCH_FILES):
@@ -882,7 +883,8 @@ class IncrementalCollectionProducer:
             self.api.put_collection_upload_session_provenance_journal(
                 self.collection_id,
                 journal_id,
-                content=content,
+                content=(content,),
+                byte_count=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
             )
             self._journals[journal_id] = content
@@ -893,12 +895,11 @@ class IncrementalCollectionProducer:
                 continue
             journal_id = str(source.provenance.get("journal_id") or "")
             if journal_id and journal_id not in self._journals:
-                self._journals[journal_id] = (
-                    self.api.export_collection_upload_session_provenance_journal(
-                        self.collection_id,
-                        journal_id,
-                    )
-                )
+                with self.api.stream_collection_upload_session_provenance_journal(
+                    self.collection_id,
+                    journal_id,
+                ) as chunks:
+                    self._journals[journal_id] = b"".join(chunks)
 
 
 def _hash_local_source(

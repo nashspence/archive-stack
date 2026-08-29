@@ -63,7 +63,7 @@ def test_operation_audiences_distinguish_commands_wires_and_protocols() -> None:
         == "client-only-primitive"
     )
     assert (
-        by_identity[("riverhog", "get_portable_collection_manifest")].classification
+        by_identity[("riverhog", "stream_portable_collection_inventory")].classification
         == "standard-tool/protocol"
     )
     assert (

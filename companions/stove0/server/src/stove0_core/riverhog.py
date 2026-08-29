@@ -8,7 +8,8 @@ settlement verification. It never receives or exposes archive credentials.
 from __future__ import annotations
 
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from typing import Any, Literal, Protocol
 
 from riverhog_protocol import Conflict, NotFound
@@ -133,6 +134,11 @@ class RiverhogApi(Protocol):
     ) -> ProcessingClaimDocument: ...
 
     def get_collection(self, collection_id: int) -> dict[str, Any]: ...
+
+    def stream_collection_tags(
+        self,
+        collection_id: int,
+    ) -> AbstractContextManager[Iterator[dict[str, Any]]]: ...
 
     def get_collection_derivation(
         self, collection_id: int
@@ -395,7 +401,8 @@ class Stove0RiverhogClient:
         verified = CollectionDerivation.from_mapping(stored_document)
         if verified != derivation or stored.get("document_sha256") != derivation.sha256:
             raise RuntimeError("Riverhog derivation differs from the target publication evidence")
-        tags = tuple(sorted(str(item) for item in collection.get("tags", ())))
+        with self.api.stream_collection_tags(target_output.collection_id) as memberships:
+            tags = tuple(sorted(str(item["tag"]) for item in memberships))
         if tags != record.workflow_plan.output_tags:
             raise RuntimeError("Riverhog output tags differ from the sealed stove0 plan")
         output = OutputCollectionRef(

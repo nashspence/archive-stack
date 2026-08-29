@@ -9,15 +9,15 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
-    # The unreleased baseline deliberately follows the current model authority.
-    # There is no pre-v1 schema compatibility contract.
-    from riverhog_core import catalog_models, catalog_workflow_models  # noqa: PLC0415
-    from riverhog_core.catalog_base import Base  # noqa: PLC0415
+    from riverhog_core.state_migrations.v1_ddl import (  # noqa: PLC0415
+        POSTGRESQL_DDL,
+        SQLITE_DDL,
+    )
 
-    _ = (catalog_models, catalog_workflow_models)
-    if op.get_bind().dialect.name == "postgresql":
-        op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
-    Base.metadata.create_all(op.get_bind())
+    dialect = op.get_bind().dialect.name
+    statements = POSTGRESQL_DDL if dialect == "postgresql" else SQLITE_DDL
+    for statement in statements:
+        op.execute(statement)
 
 
 def downgrade() -> None:

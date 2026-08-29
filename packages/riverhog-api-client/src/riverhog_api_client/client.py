@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self, cast
@@ -63,7 +63,7 @@ from riverhog_protocol import (
     CollectionUploadVolumeWorkDocument,
     DownloadQuotaSort,
     ImmutableFileIdentityDocument,
-    PortableCollectionRecord,
+    PortableCollectionInventoryReader,
     ProcessingClaimId,
     ProvenanceSort,
     ProvenanceStatus,
@@ -89,6 +89,7 @@ from riverhog_protocol.lifecycle_events import RiverhogEventPage
 from riverhog_protocol.paths import (
     CanonicalRelPath,
     normalize_collection_id,
+    tag_set_identity,
     validate_canonical_tag,
 )
 from riverhog_provenance_contracts import ProvenanceJournalId
@@ -128,19 +129,31 @@ _JSON_OBJECT_TYPE = dict[str, Any]
 _STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
     "riverhog.collection-summary/v1": CompleteEnumerationItemSchema(
         id="riverhog.collection-summary/v1",
-        sha256="00970fab0f6d1db917c86d998ae82ae06fafdb72031288aaeba076ca6f1154fe",
+        sha256="50e41305400ca0e8938758fd4ab4a65d6fe93e7e4f8358a5fe1edda4f4b7e3ca",
     ),
     "riverhog.collection-upload-session-summary/v1": CompleteEnumerationItemSchema(
         id="riverhog.collection-upload-session-summary/v1",
-        sha256="ef2cda8f966706686359707a590e18cba25b91ad2ed952e8e40595e19a694449",
+        sha256="9654c7d08ac7e4636cf5d63b1f633ecf088287d82e298bbf1a716ac16c20e2d7",
     ),
     "riverhog.collection-upload-file/v1": CompleteEnumerationItemSchema(
         id="riverhog.collection-upload-file/v1",
-        sha256="f5f4cff92c6e543770d4c4be2da80c5907b7bf2b5aefb9dca13bbe4b321f6ec5",
+        sha256="4e394f7089be2e584d69c1631d6c1dfe8ac5fcccb5305a551479d9f5ff2fe860",
+    ),
+    "riverhog.collection-archive-copy/v1": CompleteEnumerationItemSchema(
+        id="riverhog.collection-archive-copy/v1",
+        sha256="7167b4ceb6b4ad0a125d25984d21fdaa6d5ef31b4c290a1a94e1f3ab7232c5d8",
+    ),
+    "riverhog.collection-tag-membership/v1": CompleteEnumerationItemSchema(
+        id="riverhog.collection-tag-membership/v1",
+        sha256="08a8ba62f19b020dfd9ca39d2c0c49829a8e41d585d02903d9dcbc0156a94487",
+    ),
+    "riverhog.collection-upload-tag-membership/v1": CompleteEnumerationItemSchema(
+        id="riverhog.collection-upload-tag-membership/v1",
+        sha256="75c5ce96825c9cce4917f4bf65fe9a93594ba125de6f1af4af8dc3444a51cf69",
     ),
     "riverhog.search-file/v1": CompleteEnumerationItemSchema(
         id="riverhog.search-file/v1",
-        sha256="a6511a5dbf39316830647871f9ebca0b896cc93d42636ddb0c776faf67153a76",
+        sha256="9f70abaf8699e875793ea6c90ed928b5a5187bdba2a1f0f057e647e1e4e54c2e",
     ),
     "riverhog.tag/v1": CompleteEnumerationItemSchema(
         id="riverhog.tag/v1",
@@ -148,11 +161,15 @@ _STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
     ),
     "riverhog.collection-file-provenance/v1": CompleteEnumerationItemSchema(
         id="riverhog.collection-file-provenance/v1",
-        sha256="796dce760f006e232cd5bbe3963139c6b2ecbf795fcacfc1fff83e4449b5970f",
+        sha256="19376f883793003b3c13eb7d307edfd2c46abd6f622b5b5753e3652b1e8548c5",
     ),
     "riverhog.provenance-trace-item/v1": CompleteEnumerationItemSchema(
         id="riverhog.provenance-trace-item/v1",
-        sha256="f4239b405a7d1ccbd9b779ca7812783786b6cccf6c2a261c4a73e88d12bd4df3",
+        sha256="7bc0616005ff50717e4c451eed2b8e3d65afed23c87e742164dd0a5e08f367a7",
+    ),
+    "riverhog.provenance-journal-agent/v1": CompleteEnumerationItemSchema(
+        id="riverhog.provenance-journal-agent/v1",
+        sha256="f583f1b6cd0a63844e10b628bea016e3aa237fb18e598f3e20a7dd739a3d0151",
     ),
     "riverhog.archive-copy-job/v1": CompleteEnumerationItemSchema(
         id="riverhog.archive-copy-job/v1",
@@ -180,11 +197,11 @@ _STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
     ),
     "riverhog.retrieval-cache-object/v1": CompleteEnumerationItemSchema(
         id="riverhog.retrieval-cache-object/v1",
-        sha256="943345fd5d47c91314d843ca5bdbbc8d34542bb0c528b1a8c5bb6182fcc8ec85",
+        sha256="5250545676155873cc00629fc399fc922eddf7cfc5251fa5fd0d41587f34e501",
     ),
     "riverhog.collection-processing-claim/v1": CompleteEnumerationItemSchema(
         id="riverhog.collection-processing-claim/v1",
-        sha256="f48a24af35bddcbeeda930b4744ebfd08dbfa4f50fc8b433d43d4cfa95f903d8",
+        sha256="0dd09d350673bb395571ddb1df392ac5bc407b2b8cc930a5b309c4175cdc954d",
     ),
 }
 _SORT_ORDERS = closed_literal_values(SortOrder)
@@ -627,6 +644,53 @@ class _HttpApiClient:
             self.close()
             raise
 
+    @contextmanager
+    def _stream_verified_body(
+        self,
+        path: str,
+        *,
+        media_type: str,
+    ) -> Iterator[Iterator[bytes]]:
+        client = self._persistent_download_client()
+        try:
+            with client.stream("GET", path, headers={"Accept": media_type}) as response:
+                if not response.is_success:
+                    response.read()
+                    self._raise_for_error(response)
+                returned_media_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+                if returned_media_type != media_type:
+                    raise InvalidState("API returned an invalid binary response media type")
+                raw_length = response.headers.get("Content-Length")
+                try:
+                    expected_bytes = int(raw_length) if raw_length is not None else -1
+                except ValueError as exc:
+                    raise InvalidState("API returned an invalid Content-Length") from exc
+                if expected_bytes < 0:
+                    raise InvalidState("API returned no exact Content-Length")
+                expected_sha256 = _response_sha256_etag(response.headers.get("ETag", ""))
+                observed_bytes = 0
+                digest = hashlib.sha256()
+                complete = False
+
+                def content() -> Iterator[bytes]:
+                    nonlocal observed_bytes, complete
+                    for chunk in response.iter_bytes(chunk_size=_DOWNLOAD_CHUNK_BYTES):
+                        observed_bytes += len(chunk)
+                        digest.update(chunk)
+                        yield chunk
+                    if observed_bytes != expected_bytes:
+                        raise InvalidState("binary response differs from its Content-Length")
+                    if digest.hexdigest() != expected_sha256:
+                        raise InvalidState("binary response differs from its ETag")
+                    complete = True
+
+                yield content()
+                if not complete:
+                    raise InvalidState("binary response was not consumed completely")
+        except httpx.TransportError:
+            self.close()
+            raise
+
     def _download(
         self,
         path: str,
@@ -783,7 +847,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             if location is None or metadata is None:
                 continue
             collection_id = normalize_collection_id(
-                location.split("/v1/catalog/collections/", 1)[-1].rsplit("/manifest", 1)[0]
+                location.split("/v1/catalog/collections/", 1)[-1].rsplit("/inventory", 1)[0]
             )
             resources.append(
                 {
@@ -808,7 +872,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             if loc is None or metadata is None:
                 continue
             collection_id = normalize_collection_id(
-                loc.split("/v1/catalog/collections/", 1)[-1].rsplit("/manifest", 1)[0]
+                loc.split("/v1/catalog/collections/", 1)[-1].rsplit("/inventory", 1)[0]
             )
             changes.append(
                 {
@@ -824,15 +888,35 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "changes": changes,
         }
 
-    def get_portable_collection_manifest(
+    @contextmanager
+    def stream_portable_collection_inventory(
         self, collection_id: CollectionId
-    ) -> PortableCollectionRecord:
-        return PortableCollectionRecord.from_mapping(
-            self._json(
+    ) -> Iterator[PortableCollectionInventoryReader]:
+        client = self._persistent_client()
+        try:
+            with client.stream(
                 "GET",
-                f"/v1/catalog/collections/{str(_collection_id(collection_id))}/manifest",
-            )
-        )
+                f"/v1/catalog/collections/{str(_collection_id(collection_id))}/inventory",
+                headers={"Accept": JSON_SEQUENCE_MEDIA_TYPE},
+            ) as response:
+                if not response.is_success:
+                    response.read()
+                    self._raise_for_error(response)
+                media_type = response.headers.get("Content-Type", "").split(";", 1)[0]
+                if media_type != JSON_SEQUENCE_MEDIA_TYPE:
+                    raise InvalidState("API returned an invalid collection inventory media type")
+                try:
+                    identity = parse_quoted_sha256_identity(response.headers.get("ETag", ""))
+                    reader = PortableCollectionInventoryReader(response.iter_bytes())
+                    if reader.begin.inventory_identity != identity:
+                        raise ValueError("collection inventory HTTP identity differs")
+                    yield reader
+                    reader.require_complete()
+                except ValueError as exc:
+                    raise InvalidState("API returned an invalid collection inventory") from exc
+        except httpx.TransportError:
+            self.close()
+            raise
 
     def plan_retrieval(
         self,
@@ -1158,11 +1242,14 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             provenance_mode,
             provenance_omission_reason,
         )
+        normalized_tags = sorted(_canonical_tags(tags))
         payload: dict[str, Any] = {
             "idempotency_key": _validated_collection_upload_idempotency_key(idempotency_key),
-            "tags": _canonical_tags(tags),
+            "tag_set_identity": tag_set_identity(normalized_tags),
             "provenance_mode": provenance_mode,
         }
+        if normalized_tags:
+            payload["initial_tag"] = normalized_tags[0]
         normalized_custody_mode = _one_of(
             custody_mode,
             frozenset({"producer-retained", "custody-transfer"}),
@@ -1178,7 +1265,67 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             payload["event_context"] = dict(event_context)
         if provenance_omission_reason is not None:
             payload["provenance_omission_reason"] = provenance_omission_reason
-        return self._json("POST", "/v1/collection-upload-sessions", json=payload)
+        opened = self._json("POST", "/v1/collection-upload-sessions", json=payload)
+        if opened.get("state") == "finalized":
+            return opened
+        collection_id = _collection_id(int(opened["collection_id"]))
+        with self.stream_collection_upload_session_tags(collection_id) as items:
+            current = {str(item["tag"]) for item in items}
+        for tag in sorted(set(normalized_tags) - current):
+            self.add_collection_upload_session_tag(collection_id, tag)
+        for tag in sorted(current - set(normalized_tags)):
+            self.remove_collection_upload_session_tag(collection_id, tag)
+        opened["tag_count"] = len(normalized_tags)
+        return opened
+
+    def list_collection_upload_session_tags(
+        self,
+        collection_id: CollectionId,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collection-upload-sessions/{_collection_id(collection_id)}/tags",
+            params={"page": page, "per_page": per_page},
+        )
+
+    @contextmanager
+    def stream_collection_upload_session_tags(
+        self,
+        collection_id: CollectionId,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_id = _collection_id(collection_id)
+        with self._stream_json_objects(
+            f"/v1/collection-upload-sessions/{normalized_id}/tags/stream",
+            query={"collection_id": normalized_id},
+            params={},
+            schema_id="riverhog.collection-upload-tag-membership/v1",
+        ) as items:
+            yield items
+
+    def add_collection_upload_session_tag(
+        self,
+        collection_id: CollectionId,
+        tag: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "PUT",
+            f"/v1/collection-upload-sessions/{_collection_id(collection_id)}/tags/"
+            f"{quote(_canonical_tag(tag), safe='')}",
+        )
+
+    def remove_collection_upload_session_tag(
+        self,
+        collection_id: CollectionId,
+        tag: str,
+    ) -> dict[str, Any]:
+        return self._json(
+            "DELETE",
+            f"/v1/collection-upload-sessions/{_collection_id(collection_id)}/tags/"
+            f"{quote(_canonical_tag(tag), safe='')}",
+        )
 
     def register_collection_upload_session_files(
         self,
@@ -1267,7 +1414,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         collection_id: CollectionId,
         journal_id: ProvenanceJournalId,
         *,
-        content: bytes,
+        content: Iterable[bytes],
+        byte_count: int,
         sha256: str,
     ) -> dict[str, Any]:
         try:
@@ -1277,12 +1425,15 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             )
         except ValidationError as exc:
             raise BadRequest(str(exc)) from exc
+        if isinstance(byte_count, bool) or byte_count < 1:
+            raise BadRequest("provenance byte count must be positive")
         return self._json(
             "PUT",
             f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/provenance/journals/"
             f"{quote(canonical_journal_id, safe='')}",
             headers={
                 "Content-Type": "application/json-seq",
+                "Content-Length": str(byte_count),
                 "X-Riverhog-Provenance-SHA256": _sha256_identity(
                     sha256,
                     "provenance SHA-256",
@@ -1292,11 +1443,12 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             timeout=self.upload_timeout_seconds,
         )
 
-    def export_collection_upload_session_provenance_journal(
+    @contextmanager
+    def stream_collection_upload_session_provenance_journal(
         self,
         collection_id: CollectionId,
         journal_id: ProvenanceJournalId,
-    ) -> bytes:
+    ) -> Iterator[Iterator[bytes]]:
         try:
             canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
                 journal_id,
@@ -1304,16 +1456,12 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             )
         except ValidationError as exc:
             raise BadRequest(str(exc)) from exc
-        response = self._request(
-            "GET",
+        with self._stream_verified_body(
             f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/provenance/journals/"
             f"{quote(canonical_journal_id, safe='')}",
-        )
-        content = response.content
-        expected = _response_sha256_etag(response.headers.get("ETag", ""))
-        if hashlib.sha256(content).hexdigest() != expected:
-            raise InvalidState("staged provenance journal does not match its ETag")
-        return content
+            media_type="application/json-seq",
+        ) as chunks:
+            yield chunks
 
     def list_collection_upload_sessions(
         self,
@@ -1578,6 +1726,33 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             f"/v1/collections/{str(_collection_id(collection_id))}",
         )
 
+    def list_collection_archive_copies(
+        self,
+        collection_id: CollectionId,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collections/{_collection_id(collection_id)}/archive-copies",
+            params={"page": page, "per_page": per_page},
+        )
+
+    @contextmanager
+    def stream_collection_archive_copies(
+        self,
+        collection_id: CollectionId,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_id = _collection_id(collection_id)
+        with self._stream_json_objects(
+            f"/v1/collections/{normalized_id}/archive-copies/stream",
+            query={"collection_id": normalized_id},
+            params={},
+            schema_id="riverhog.collection-archive-copy/v1",
+        ) as items:
+            yield items
+
     def list_collection_provenance(
         self,
         collection_id: CollectionId,
@@ -1691,11 +1866,12 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         ) as items:
             yield items
 
-    def export_collection_provenance_journal(
+    @contextmanager
+    def stream_collection_provenance_journal(
         self,
         collection_id: CollectionId,
         journal_id: ProvenanceJournalId,
-    ) -> bytes:
+    ) -> Iterator[Iterator[bytes]]:
         try:
             canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
                 journal_id,
@@ -1703,21 +1879,78 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             )
         except ValidationError as exc:
             raise BadRequest(str(exc)) from exc
-        response = self._request(
-            "GET",
+        with self._stream_verified_body(
             f"/v1/collections/{_collection_id(collection_id)}/provenance/journals/"
             f"{quote(canonical_journal_id, safe='')}",
-        )
-        content = response.content
-        expected = _response_sha256_etag(response.headers.get("ETag", ""))
-        if hashlib.sha256(content).hexdigest() != expected:
-            raise InvalidState("provenance export does not match its ETag")
-        return content
+            media_type="application/json-seq",
+        ) as chunks:
+            yield chunks
 
-    def verify_collection_provenance(self, collection_id: CollectionId) -> dict[str, Any]:
+    def list_collection_provenance_journal_agents(
+        self,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+    ) -> dict[str, Any]:
+        try:
+            canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
+                journal_id,
+                strict=True,
+            )
+        except ValidationError as exc:
+            raise BadRequest(str(exc)) from exc
+        return self._json(
+            "GET",
+            f"/v1/collections/{_collection_id(collection_id)}/provenance/journals/"
+            f"{quote(canonical_journal_id, safe='')}/agents",
+            params={"page": page, "per_page": per_page},
+        )
+
+    @contextmanager
+    def stream_collection_provenance_journal_agents(
+        self,
+        collection_id: CollectionId,
+        journal_id: ProvenanceJournalId,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        try:
+            canonical_journal_id = _PROVENANCE_JOURNAL_ID.validate_python(
+                journal_id,
+                strict=True,
+            )
+        except ValidationError as exc:
+            raise BadRequest(str(exc)) from exc
+        normalized_id = _collection_id(collection_id)
+        with self._stream_json_objects(
+            f"/v1/collections/{normalized_id}/provenance/journals/"
+            f"{quote(canonical_journal_id, safe='')}/agents/stream",
+            query={"collection_id": normalized_id, "journal_id": canonical_journal_id},
+            params={},
+            schema_id="riverhog.provenance-journal-agent/v1",
+        ) as items:
+            yield items
+
+    def request_collection_provenance_verification(
+        self, collection_id: CollectionId
+    ) -> dict[str, Any]:
         return self._json(
             "POST",
-            f"/v1/collections/{_collection_id(collection_id)}/provenance/verify",
+            f"/v1/collections/{_collection_id(collection_id)}/provenance/verification",
+        )
+
+    def get_collection_provenance_verification(self, collection_id: CollectionId) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collections/{_collection_id(collection_id)}/provenance/verification",
+        )
+
+    def cancel_collection_provenance_verification(
+        self, collection_id: CollectionId
+    ) -> dict[str, Any]:
+        return self._json(
+            "DELETE",
+            f"/v1/collections/{_collection_id(collection_id)}/provenance/verification",
         )
 
     def plan_collection_deletion(
@@ -2230,8 +2463,32 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             json={"challenge": challenge},
         )
 
-    def get_collection_tags(self, collection_id: CollectionId) -> dict[str, Any]:
-        return self._json("GET", f"/v1/collections/{_collection_id(collection_id)}/tags")
+    def get_collection_tags(
+        self,
+        collection_id: CollectionId,
+        *,
+        page: int = 1,
+        per_page: int = 25,
+    ) -> dict[str, Any]:
+        return self._json(
+            "GET",
+            f"/v1/collections/{_collection_id(collection_id)}/tags",
+            params={"page": page, "per_page": per_page},
+        )
+
+    @contextmanager
+    def stream_collection_tags(
+        self,
+        collection_id: CollectionId,
+    ) -> Iterator[Iterator[dict[str, Any]]]:
+        normalized_id = _collection_id(collection_id)
+        with self._stream_json_objects(
+            f"/v1/collections/{normalized_id}/tags/stream",
+            query={"collection_id": normalized_id},
+            params={},
+            schema_id="riverhog.collection-tag-membership/v1",
+        ) as items:
+            yield items
 
     def replace_collection_tags(
         self,
@@ -2240,12 +2497,35 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         *,
         event_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"tags": _canonical_tags(tags)}
-        if event_context is not None:
-            payload["event_context"] = dict(event_context)
-        return self._json(
-            "PUT", f"/v1/collections/{_collection_id(collection_id)}/tags", json=payload
-        )
+        normalized_id = _collection_id(collection_id)
+        desired = set(_canonical_tags(tags))
+        with self.stream_collection_tags(normalized_id) as items:
+            current = {str(item["tag"]) for item in items}
+        result: dict[str, Any] | None = None
+        for tag in sorted(current - desired):
+            result = self.remove_collection_tag(
+                normalized_id,
+                tag,
+                event_context=event_context,
+            )
+        for tag in sorted(desired - current):
+            result = self.add_collection_tag(
+                normalized_id,
+                tag,
+                event_context=event_context,
+            )
+        if result is not None:
+            return result
+        current_page = self.get_collection_tags(normalized_id, page=1, per_page=1)
+        return {
+            key: current_page[key]
+            for key in (
+                "collection_id",
+                "metadata_revision",
+                "inventory_identity",
+                "tag_count",
+            )
+        }
 
     def add_collection_tag(
         self,

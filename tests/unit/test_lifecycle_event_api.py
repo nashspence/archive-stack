@@ -40,7 +40,7 @@ def _tag_event_data(collection_id: int, owner: str) -> dict[str, object]:
     return {
         "collection_id": collection_id,
         "collection_created_at": utc_timestamp_now(),
-        "collection_tags": [],
+        "collection_tag_count": 0,
         "actor": {"app": "riverhog"},
         "initiator": {"app": owner},
     }

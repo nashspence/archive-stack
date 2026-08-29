@@ -7,7 +7,11 @@ from typing import Any
 from http_api_contracts import closed_literal_values
 from riverhog_protocol import SearchSort, SortOrder
 from riverhog_protocol.errors import BadRequest
-from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
+from riverhog_protocol.paths import (
+    PathNormalizationError,
+    normalize_collection_id,
+    text_search_key,
+)
 from sqlalchemy import asc, desc, func, select
 from sqlalchemy.sql.elements import ColumnElement
 from state_schema import read_snapshot
@@ -36,23 +40,23 @@ def _order_expressions(
     if sort == "file_ref":
         return (
             direction(CollectionFileRecord.collection_id),
-            direction(CollectionFileRecord.path),
+            direction(CollectionFileRecord.path_sort_key),
         )
     if sort == "collection_id":
         return (
             direction(CollectionFileRecord.collection_id),
-            direction(CollectionFileRecord.path),
+            direction(CollectionFileRecord.path_sort_key),
         )
     if sort == "path":
         return (
-            direction(CollectionFileRecord.path),
+            direction(CollectionFileRecord.path_sort_key),
             direction(CollectionFileRecord.collection_id),
         )
     if sort == "bytes":
         return (
             direction(CollectionFileRecord.bytes),
             direction(CollectionFileRecord.collection_id),
-            direction(CollectionFileRecord.path),
+            direction(CollectionFileRecord.path_sort_key),
         )
     raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
 
@@ -215,7 +219,7 @@ def _search_filters(
     if query:
         filters.append(
             CollectionFileRecord.search_text.like(
-                _like_pattern(query.casefold()),
+                _like_pattern(text_search_key(query)),
                 escape="\\",
             )
         )

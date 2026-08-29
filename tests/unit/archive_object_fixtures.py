@@ -480,15 +480,13 @@ def seed_archive_copy(
         provenance_identity = (
             current.provenance.identity if current.provenance is not None else None
         )
-        _manifest, record_etag = collection_record_manifest(
+        _manifest, inventory_identity = collection_record_manifest(
             collection_id=current.collection_id,
             content_identity=content_identity,
             encryption_format=ARCHIVE_ENCRYPTION_FORMAT,
             passphrase_id=DEV_ARCHIVE_PASSPHRASE_ID,
             provenance_mode=provenance_mode,
             provenance_identity=provenance_identity,
-            metadata_revision=1,
-            tags=("docs",),
             files=file_rows,
         )
         session.add(
@@ -509,7 +507,7 @@ def seed_archive_copy(
             passphrase_id=DEV_ARCHIVE_PASSPHRASE_ID,
             provenance_mode=provenance_mode,
             provenance_identity=provenance_identity,
-            record_etag=record_etag,
+            inventory_identity=inventory_identity,
             metadata_revision=1,
             metadata_updated_at=UPLOADED_AT,
             created_by_app="fixture",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import sqlite3
 import tomllib
@@ -14,6 +15,25 @@ from riverhog_provenance import load_or_create_installation_id
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = REPO_ROOT / "tests/fixtures/state/v1_0001"
+
+MIGRATION_BASELINES = {
+    "riverhog/server/src/riverhog_core/state_migrations/versions/v1_0001.py": (
+        "alembic",
+        "riverhog_core.state_migrations.v1_ddl",
+    ),
+    "companions/stove0/server/src/stove0_core/state_migrations/versions/v1_0001.py": (
+        "alembic",
+        "stove0_core.state_migrations.v1_ddl",
+    ),
+    "riverhog/client/src/riverhog_cli/state_migrations/versions/v1_0001.py": (
+        "alembic",
+        "riverhog_cli.state_migrations.v1_ddl",
+    ),
+    "utilities/mango-fish/src/mango_fish/state_migrations/versions/v1_0001.py": (
+        "alembic",
+        "mango_fish.state_migrations.v1_ddl",
+    ),
+}
 
 
 def _restore_sqlite(fixture: Path, database: Path) -> None:
@@ -37,9 +57,12 @@ def test_riverhog_local_current_v1_fixture_restarts_with_selection_and_retrieval
     status = local_state_schema(database).upgrade()
     with closing(_connect(database)) as connection:
         collection = connection.execute(
-            "SELECT record_etag, tags_json, remote_deleted "
+            "SELECT inventory_identity, remote_deleted "
             "FROM desired_collections WHERE collection_id = 1"
         ).fetchone()
+        tags = connection.execute(
+            "SELECT tag FROM desired_collection_tags WHERE collection_id = 1 ORDER BY tag"
+        ).fetchall()
         file = connection.execute(
             "SELECT path, bytes, sha256 FROM desired_files WHERE collection_id = 1"
         ).fetchone()
@@ -53,7 +76,8 @@ def test_riverhog_local_current_v1_fixture_restarts_with_selection_and_retrieval
 
     assert status.condition == "current"
     assert collection is not None
-    assert tuple(collection) == ("b" * 64, '["fixture"]', 0)
+    assert tuple(collection) == ("b" * 64, 0)
+    assert [str(row[0]) for row in tags] == ["fixture"]
     assert file is not None
     assert tuple(file) == ("notes/fixture.txt", 12, "a" * 64)
     assert retrieval is not None
@@ -122,3 +146,20 @@ def test_release_inventory_accounts_for_every_v1_state_fixture() -> None:
         len(hashlib.sha256((REPO_ROOT / path).read_bytes()).hexdigest()) == 64
         for path in fixture_paths
     )
+
+
+def test_v1_baseline_revisions_depend_only_on_migration_owned_ddl() -> None:
+    observed: dict[str, tuple[str, ...]] = {}
+    for relative_path in MIGRATION_BASELINES:
+        tree = ast.parse((REPO_ROOT / relative_path).read_text(encoding="utf-8"))
+        observed[relative_path] = tuple(
+            sorted(
+                node.module
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom) and node.module is not None
+            )
+        )
+
+    assert observed == {
+        path: tuple(sorted(modules)) for path, modules in MIGRATION_BASELINES.items()
+    }

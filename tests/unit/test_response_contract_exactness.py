@@ -46,7 +46,7 @@ def _collection_deletion(status: str, challenge: str | None, blockers: list[str]
         "archive_object_count": 0,
         "remote_storage_bytes": 0,
         "upload_file_count": 0,
-        "record_etag": "etag",
+        "inventory_identity": "etag",
         "metadata_rows": {},
         "blockers": blockers,
         "billing_note": "billing",
@@ -253,7 +253,7 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
     payload = {
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
-        "tags": [],
+        "tag_count": 0,
         "ingest_source": None,
         "provenance_mode": "omitted",
         "provenance_identity": None,
@@ -400,7 +400,7 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
             "collection": {
                 "id": 1,
                 "created_at": "2026-08-25T00:00:00.000000Z",
-                "tags": [],
+                "tag_count": 0,
                 "content_identity": "a" * 64,
                 "archive_root_sha256": "b" * 64,
                 "encryption_format": "age-x25519/v1",
@@ -408,7 +408,7 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
                 "files": 0,
                 "bytes": 0,
                 "remote_storage_bytes": 0,
-                "archive_copies": [],
+                "archive_copy_count": 0,
             },
         }
     )
@@ -549,7 +549,7 @@ def test_upload_session_list_states_reject_impossible_custody_lifecycles(
     payload: dict[str, object] = {
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
-        "tags": [],
+        "tag_count": 0,
         "ingest_source": None,
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
@@ -615,7 +615,7 @@ def test_upload_session_list_states_accept_reachable_custody_lifecycles(
     payload: dict[str, object] = {
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
-        "tags": [],
+        "tag_count": 0,
         "ingest_source": None,
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
@@ -647,7 +647,7 @@ def test_upload_session_list_complete_states_require_complete_custody(
     payload: dict[str, object] = {
         "collection_id": 1,
         "created_at": "2026-08-25T00:00:00.000000Z",
-        "tags": [],
+        "tag_count": 0,
         "ingest_source": None,
         "archive_store": "archive",
         "encryption_format": "age-x25519/v1",
@@ -817,7 +817,7 @@ def test_provenance_read_projections_preserve_captured_mixed_and_omitted_truth()
         "current_path": "camera/clip.mp4",
         "current_bytes": 42,
         "current_sha256": "a" * 64,
-        "agent_ids": ["fixture"],
+        "agent_count": 1,
         "entity_counts": {"file": 1},
     }
     assert (
