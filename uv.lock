@@ -1069,6 +1069,7 @@ dependencies = [
     { name = "lifecycle-events" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "sqlalchemy" },
     { name = "state-schema" },
 ]
 
@@ -1079,6 +1080,7 @@ requires-dist = [
     { name = "lifecycle-events", editable = "packages/lifecycle-events" },
     { name = "pydantic", specifier = ">=2.7,<3.0" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
+    { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
     { name = "state-schema", editable = "packages/state-schema" },
 ]
 
@@ -1742,9 +1744,11 @@ dependencies = [
     { name = "httpx" },
     { name = "rich" },
     { name = "riverhog-api-client" },
+    { name = "riverhog-application-access" },
     { name = "riverhog-cli-support" },
     { name = "riverhog-protocol" },
     { name = "riverhog-provenance" },
+    { name = "sqlalchemy" },
     { name = "state-schema" },
     { name = "time-formats" },
     { name = "typer" },
@@ -1756,9 +1760,11 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27,<1.0" },
     { name = "rich", specifier = ">=15.0,<16.0" },
     { name = "riverhog-api-client", editable = "packages/riverhog-api-client" },
+    { name = "riverhog-application-access", editable = "packages/riverhog-application-access" },
     { name = "riverhog-cli-support", editable = "packages/riverhog-cli-support" },
     { name = "riverhog-protocol", editable = "packages/riverhog-protocol" },
     { name = "riverhog-provenance", editable = "packages/riverhog-provenance" },
+    { name = "sqlalchemy", specifier = ">=2.0,<3.0" },
     { name = "state-schema", editable = "packages/state-schema" },
     { name = "time-formats", editable = "packages/time-formats" },
     { name = "typer", specifier = ">=0.12,<1.0" },

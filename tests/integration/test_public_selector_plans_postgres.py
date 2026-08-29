@@ -944,7 +944,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                 )
             )
     for name, kwargs, index in (
-        ("q", {"q": "f7efa4f864ae9b88"}, "ix_app_key_access_grants_search_trgm"),
+        ("q", {"q": "provenance"}, "ix_app_key_access_grants_search_trgm"),
         ("app", {"app": "app-000"}, "ix_app_keys_app"),
         ("key_id", {"key_id": "f7efa4f864ae9b88"}, "app_key_access_grants_pkey"),
         (

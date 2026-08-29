@@ -832,6 +832,7 @@
         },
         "dependencies": [
           "riverhog-api-client",
+          "riverhog-application-access",
           "riverhog-cli-support",
           "riverhog-protocol",
           "riverhog-provenance",

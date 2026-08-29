@@ -14,7 +14,7 @@ from riverhog_application_access import (
 )
 from riverhog_protocol import ApplicationAccessSort, ApplicationKeySort, ApplicationSort, SortOrder
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
-from sqlalchemy import and_, asc, case, delete, desc, func, or_, select
+from sqlalchemy import and_, asc, case, delete, desc, func, or_, select, tuple_
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 from state_schema import read_snapshot
@@ -691,16 +691,36 @@ def _access_list_statement(
         filters.append(active_key_filter(now) if active else ~active_key_filter(now))
     if query:
         pattern = _like_pattern(query.casefold())
-        matching_key_ids = (
-            select(AppKeyRecord.id)
+        matching_access = (
+            select(
+                AppKeyAccessGrantRecord.key_id.label("key_id"),
+                AppKeyAccessGrantRecord.permission.label("permission"),
+                AppKeyAccessGrantRecord.resource.label("resource"),
+            )
+            .join(AppKeyRecord, AppKeyRecord.id == AppKeyAccessGrantRecord.key_id)
             .where(AppKeyRecord.search_text.like(pattern, escape="\\"))
             .union(
-                select(AppKeyAccessGrantRecord.key_id).where(
-                    AppKeyAccessGrantRecord.search_text.like(pattern, escape="\\")
+                select(
+                    AppKeyAccessGrantRecord.key_id,
+                    AppKeyAccessGrantRecord.permission,
+                    AppKeyAccessGrantRecord.resource,
+                ).where(AppKeyAccessGrantRecord.search_text.like(pattern, escape="\\"))
+            )
+            .subquery()
+        )
+        filters.append(
+            tuple_(
+                AppKeyAccessGrantRecord.key_id,
+                AppKeyAccessGrantRecord.permission,
+                AppKeyAccessGrantRecord.resource,
+            ).in_(
+                select(
+                    matching_access.c.key_id,
+                    matching_access.c.permission,
+                    matching_access.c.resource,
                 )
             )
         )
-        filters.append(AppKeyRecord.id.in_(matching_key_ids))
     direction = desc if order == "desc" else asc
     sort_columns = {
         "app": (

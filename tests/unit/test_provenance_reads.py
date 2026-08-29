@@ -157,6 +157,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
                     path=path,
                     bytes=len(content),
                     sha256=sha256,
+                    provenance_status="captured",
                 )
             )
         session.flush()

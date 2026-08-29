@@ -23,10 +23,12 @@ dependencies = [
   "httpx>=0.27,<1.0",
   "rich>=15.0,<16.0",
   "riverhog-api-client>=0.1,<0.2",
+  "riverhog-application-access>=0.1,<0.2",
   "riverhog-cli-support>=0.1,<0.2",
   "riverhog-protocol>=0.1,<0.2",
   "riverhog-provenance>=0.1,<0.2",
   "state-schema>=0.1,<0.2",
+  "SQLAlchemy>=2.0,<3.0",
   "time-formats>=0.1,<0.2",
   "typer>=0.12,<1.0",
 ]
@@ -36,6 +38,7 @@ riverhog = "riverhog_cli.main:main"
 
 [tool.uv.sources]
 riverhog-api-client = { workspace = true }
+riverhog-application-access = { workspace = true }
 riverhog-cli-support = { workspace = true }
 riverhog-protocol = { workspace = true }
 riverhog-provenance = { workspace = true }
