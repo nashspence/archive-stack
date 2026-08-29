@@ -7,7 +7,6 @@ import argparse
 import gc
 import hashlib
 import json
-import subprocess
 import time
 import tracemalloc
 from collections.abc import Iterable, Sequence
@@ -49,25 +48,6 @@ def _source_sha(value: str) -> str:
     ):
         raise QualificationError("source SHA must be one exact 40-character Git commit")
     return normalized
-
-
-def _verify_checkout(source_sha: str) -> None:
-    current = subprocess.run(
-        ["git", "rev-parse", "--verify", "HEAD"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout.strip()
-    if current != source_sha:
-        raise QualificationError(f"qualification source mismatch: {current} != {source_sha}")
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        check=True,
-        stdout=subprocess.PIPE,
-        text=True,
-    ).stdout
-    if status:
-        raise QualificationError("database qualification requires a clean exact-source checkout")
 
 
 def _json_plan(value: object) -> list[dict[str, Any]]:
@@ -376,7 +356,6 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     source_sha = _source_sha(args.source_sha)
-    _verify_checkout(source_sha)
     evidence = build_evidence(args.database_url, source_sha=source_sha)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -17,9 +17,30 @@ output_dir="$(dirname "${output}")"
 output_name="$(basename "${output}")"
 mkdir -p "${output_dir}"
 
+source_sha="$(git -C "${ROOT_DIR}" rev-parse --verify HEAD)"
+if [[ "${source_sha}" != "${DATABASE_QUALIFICATION_SOURCE_SHA}" ]]; then
+  printf 'Qualification source mismatch: %s != %s\n' \
+    "${source_sha}" "${DATABASE_QUALIFICATION_SOURCE_SHA}" >&2
+  exit 2
+fi
+if [[ -n "$(git -C "${ROOT_DIR}" status --porcelain)" ]]; then
+  printf '%s\n' 'Database qualification requires a clean exact-source checkout.' >&2
+  exit 2
+fi
+export SOURCE_REVISION="${source_sha}"
+
 setup_test_compose_project
 configure_compose_tty
 ensure_compose_image test
+image_revision="$(
+  docker image inspect "${TEST_IMAGE_NAME}" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+)"
+if [[ "${image_revision}" != "${source_sha}" ]]; then
+  printf 'Qualification image source mismatch: %s != %s\n' \
+    "${image_revision}" "${source_sha}" >&2
+  exit 2
+fi
 
 cleanup() {
   compose down --volumes --remove-orphans
