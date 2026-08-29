@@ -445,6 +445,15 @@ def test_restore_required_job_caches_ciphertext_then_serves_logical_range(
     assert ready["state"] == "ready"
     assert store.prepared == [("pack-000000000000",)]
 
+    cached_plan = service.plan(((collection_id, "target.bin"),))
+    assert [current["read_mode"] for current in cached_plan["objects"]] == ["cache"]
+    cached_job = service.create(
+        app="reader",
+        files=((collection_id, "target.bin"),),
+        plan_etag=str(cached_plan["etag"]),
+    )
+    assert cached_job["state"] == "ready"
+
     chunks, _bytes, _sha256 = service.content(
         app="reader",
         job_id=str(job["id"]),

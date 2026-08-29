@@ -4146,7 +4146,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-              "sha256": "0f3a02643a11dcc0b1733d6a0685e43004afe3fb5351e1f5ed0e7950e86f0316"
+              "sha256": "d828217590c4d65c6ac81234c3f2ed26a53a2582ee5d0d36ef2b6763b3253da2"
             }
           ],
           "format": "state-schema/postgresql",

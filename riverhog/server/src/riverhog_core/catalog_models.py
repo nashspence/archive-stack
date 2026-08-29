@@ -1019,7 +1019,7 @@ class RetrievalJobObjectRecord(Base):
         Index("ix_retrieval_job_objects_order", "job_id", "object_order"),
         CheckConstraint("object_order >= 0", name="ck_retrieval_job_objects_order"),
         CheckConstraint(
-            "read_mode IN ('immediate','restore_required')",
+            "read_mode IN ('immediate','restore_required','cache')",
             name="ck_retrieval_job_objects_read_mode",
         ),
     )

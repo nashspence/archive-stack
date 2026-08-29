@@ -664,7 +664,7 @@ CREATE TABLE retrieval_job_objects (
     object_order integer NOT NULL,
     read_mode character varying NOT NULL,
     CONSTRAINT ck_retrieval_job_objects_order CHECK ((object_order >= 0)),
-    CONSTRAINT ck_retrieval_job_objects_read_mode CHECK (((read_mode)::text = ANY ((ARRAY['immediate'::character varying, 'restore_required'::character varying])::text[])))
+    CONSTRAINT ck_retrieval_job_objects_read_mode CHECK (((read_mode)::text = ANY ((ARRAY['immediate'::character varying, 'restore_required'::character varying, 'cache'::character varying])::text[])))
 );
 
 CREATE TABLE retrieval_jobs (
