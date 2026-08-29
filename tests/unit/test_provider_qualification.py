@@ -14,6 +14,11 @@ from botocore.session import get_session
 from botocore.validate import validate_parameters
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from riverhog_protocol import (
+    CollectionUploadUnitWorkDocument,
+    CollectionUploadVolumeSetDocument,
+    CollectionUploadVolumeWorkDocument,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts/provider_qualification.py"
@@ -1118,18 +1123,55 @@ def test_official_upload_client_writes_directly_and_resumes_after_interruption(
         def stream_collection_upload_session_files(self, _collection_id: int):  # type: ignore[no-untyped-def]
             yield iter(({"path": "file.txt"},))
 
-        def list_collection_upload_session_volumes(self, _collection_id: int) -> dict[str, object]:
-            return {"volumes": [{"volume_id": "volume-1"}]}
+        def list_collection_upload_session_volumes(
+            self,
+            collection_id: int,
+        ) -> CollectionUploadVolumeSetDocument:
+            return CollectionUploadVolumeSetDocument.model_validate(
+                {
+                    "collection_id": collection_id,
+                    "volumes": [
+                        {
+                            "volume_id": "pack-000000000000",
+                            "sequence": 0,
+                            "kind": "pack",
+                            "state": "sealed",
+                            "plan_sha256": "a" * 64,
+                            "plaintext_bytes": 1,
+                            "source_bytes": 1,
+                            "units": [
+                                {
+                                    "unit": 0,
+                                    "payload_bytes": 1,
+                                    "plaintext_bytes": 1,
+                                    "sources": [
+                                        {
+                                            "path": "file.txt",
+                                            "offset": 0,
+                                            "bytes": 1,
+                                            "artifact_sha256": "b" * 64,
+                                        }
+                                    ],
+                                    "state": "committed",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
 
         def get_collection_upload_session_volume(
             self, _collection_id: int, _volume_id: str
-        ) -> dict[str, object]:
-            return {"units": [{"unit": 0}]}
+        ) -> CollectionUploadVolumeWorkDocument:
+            return self.list_collection_upload_session_volumes(_collection_id).volumes[0]
 
         def get_collection_upload_session_unit(
             self, _collection_id: int, _volume_id: str, unit: int
-        ) -> dict[str, object]:
-            return {"unit": unit, "state": "committed"}
+        ) -> CollectionUploadUnitWorkDocument:
+            return self.get_collection_upload_session_volume(
+                _collection_id,
+                _volume_id,
+            ).units[unit]
 
     monkeypatch.setattr(module.shutil, "which", lambda _name: "/usr/bin/riverhog")
     monkeypatch.setattr(module.subprocess, "Popen", popen)

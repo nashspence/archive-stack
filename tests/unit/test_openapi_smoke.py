@@ -301,8 +301,8 @@ def test_retrieval_cache_contract_exposes_indexer_state_and_filters() -> None:
 
 def test_collection_upload_contract_exposes_server_planned_plaintext_units() -> None:
     schemas = create_app().openapi()["components"]["schemas"]
-    unit = schemas["CollectionUploadUnitOut"]
-    source = schemas["CollectionUploadUnitSourceOut"]
+    unit = schemas["CollectionUploadUnitWorkDocument"]
+    source = schemas["CollectionUploadUnitSourceDocument"]
 
     assert set(unit["required"]) == {
         "unit",
@@ -311,8 +311,8 @@ def test_collection_upload_contract_exposes_server_planned_plaintext_units() -> 
         "sources",
         "state",
     }
-    assert set(source["required"]) == {"path", "offset", "bytes", "sha256"}
-    assert source["properties"]["sha256"]
+    assert set(source["required"]) == {"path", "offset", "bytes", "artifact_sha256"}
+    assert source["properties"]["artifact_sha256"]
 
 
 def test_collection_contracts_expose_creation_and_encryption_identities() -> None:

@@ -16,6 +16,7 @@ from typing import Any, Literal, cast
 from riverhog_protocol.collection_upload_transport import (
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadRegistrationConstraintsDocument,
+    CollectionUploadUnitWorkDocument,
     collection_upload_path_order_key,
     validate_collection_upload_artifact_custody_receipt,
 )
@@ -398,23 +399,17 @@ class CollectionProducer:
                 registration_constraints=constraints_document,
             )
 
-        def content_for_unit(unit: Mapping[str, object]) -> bytes:
-            rows = unit.get("sources")
-            if not isinstance(rows, list):
-                raise RuntimeError("Riverhog upload unit has no source rows")
+        def content_for_unit(unit: CollectionUploadUnitWorkDocument) -> bytes:
             chunks: list[bytes] = []
-            for row in rows:
-                if not isinstance(row, Mapping):
-                    raise RuntimeError("Riverhog upload unit source is invalid")
-                source_path = str(row.get("path") or "")
-                source = sources.get(source_path)
+            for row in unit.sources:
+                source = sources.get(row.path)
                 if source is None:
+                    raise RuntimeError(f"Riverhog requested an unknown producer path: {row.path}")
+                if row.artifact_sha256 != source.sha256:
                     raise RuntimeError(
-                        f"Riverhog requested an unknown producer path: {source_path}"
+                        f"Riverhog requested a changed producer artifact: {row.path}"
                     )
-                chunks.append(
-                    source.read_range(int(row.get("offset") or 0), int(row.get("bytes") or 0))
-                )
+                chunks.append(source.read_range(row.offset, row.bytes))
             return b"".join(chunks)
 
         concurrency = configured_upload_concurrency()
@@ -812,21 +807,17 @@ class IncrementalCollectionProducer:
     def _upload_available(self) -> None:
         concurrency = configured_upload_concurrency()
 
-        def content_for_unit(unit: Mapping[str, object]) -> bytes:
-            rows = unit.get("sources")
-            if not isinstance(rows, list):
-                raise RuntimeError("Riverhog upload unit has no source rows")
+        def content_for_unit(unit: CollectionUploadUnitWorkDocument) -> bytes:
             chunks: list[bytes] = []
-            for row in rows:
-                if not isinstance(row, Mapping):
-                    raise RuntimeError("Riverhog upload unit source is invalid")
-                path = str(row.get("path") or "")
-                source = self._sources.get(path)
+            for row in unit.sources:
+                source = self._sources.get(row.path)
                 if source is None:
-                    raise RuntimeError(f"uncustodied producer source is unavailable: {path}")
-                chunks.append(
-                    source.read_range(int(row.get("offset") or 0), int(row.get("bytes") or 0))
-                )
+                    raise RuntimeError(f"uncustodied producer source is unavailable: {row.path}")
+                if row.artifact_sha256 != source.sha256:
+                    raise RuntimeError(
+                        f"Riverhog requested a changed producer artifact: {row.path}"
+                    )
+                chunks.append(source.read_range(row.offset, row.bytes))
             return b"".join(chunks)
 
         upload_collection_units(

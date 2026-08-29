@@ -2513,7 +2513,7 @@ def _volume_work_payload(record: CollectionArchiveObjectUploadRecord) -> dict[st
                         "path": source.path,
                         "offset": 0,
                         "bytes": source.bytes,
-                        "sha256": source.sha256,
+                        "artifact_sha256": source.sha256,
                     }
                     for source in current.sources
                 ],
@@ -2540,7 +2540,7 @@ def _volume_work_payload(record: CollectionArchiveObjectUploadRecord) -> dict[st
                             "path": raw_plan.source_path,
                             "offset": raw_plan.file_offset + unit * raw_part_bytes,
                             "bytes": byte_count,
-                            "sha256": raw_plan.file_sha256,
+                            "artifact_sha256": raw_plan.file_sha256,
                         }
                     ],
                     "state": "committed" if unit in committed else "pending",

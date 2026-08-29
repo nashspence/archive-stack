@@ -7866,8 +7866,7 @@
                   "type": "string"
                 },
                 "volume_id": {
-                  "minLength": 1,
-                  "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+                  "pattern": "^(?:pack|segment)-[0-9]{12}$",
                   "title": "Volume Id",
                   "type": "string"
                 }
@@ -8654,7 +8653,7 @@
                 },
                 "volumes": {
                   "items": {
-                    "$ref": "#/components/schemas/CollectionUploadVolumeSummaryOut"
+                    "$ref": "#/components/schemas/CollectionUploadVolumeSummaryDocument"
                   },
                   "title": "Volumes",
                   "type": "array"
@@ -9546,8 +9545,42 @@
               ],
               "type": "string"
             },
-            "CollectionUploadUnitOut": {
+            "CollectionUploadUnitSourceDocument": {
               "additionalProperties": false,
+              "description": "One exact source range supplied in a server-planned upload unit.",
+              "properties": {
+                "artifact_sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "title": "Artifact Sha256",
+                  "type": "string"
+                },
+                "bytes": {
+                  "minimum": 0.0,
+                  "title": "Bytes",
+                  "type": "integer"
+                },
+                "offset": {
+                  "minimum": 0.0,
+                  "title": "Offset",
+                  "type": "integer"
+                },
+                "path": {
+                  "title": "Path",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "offset",
+                "bytes",
+                "artifact_sha256"
+              ],
+              "title": "CollectionUploadUnitSourceDocument",
+              "type": "object"
+            },
+            "CollectionUploadUnitWorkDocument": {
+              "additionalProperties": false,
+              "description": "One exact unit and its durable upload checkpoint state.",
               "properties": {
                 "payload_bytes": {
                   "minimum": 0.0,
@@ -9561,7 +9594,7 @@
                 },
                 "sources": {
                   "items": {
-                    "$ref": "#/components/schemas/CollectionUploadUnitSourceOut"
+                    "$ref": "#/components/schemas/CollectionUploadUnitSourceDocument"
                   },
                   "title": "Sources",
                   "type": "array"
@@ -9587,43 +9620,65 @@
                 "sources",
                 "state"
               ],
-              "title": "CollectionUploadUnitOut",
+              "title": "CollectionUploadUnitWorkDocument",
               "type": "object"
             },
-            "CollectionUploadUnitSourceOut": {
+            "CollectionUploadVolumeSetDocument": {
               "additionalProperties": false,
+              "description": "Complete canonically ordered upload work for one collection session.",
               "properties": {
-                "bytes": {
-                  "minimum": 0.0,
-                  "title": "Bytes",
-                  "type": "integer"
+                "collection_id": {
+                  "$ref": "#/components/schemas/CollectionId"
                 },
-                "offset": {
-                  "minimum": 0.0,
-                  "title": "Offset",
-                  "type": "integer"
-                },
-                "path": {
-                  "title": "Path",
+                "volumes": {
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionUploadVolumeWorkDocument"
+                  },
+                  "title": "Volumes",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "collection_id",
+                "volumes"
+              ],
+              "title": "CollectionUploadVolumeSetDocument",
+              "type": "object"
+            },
+            "CollectionUploadVolumeSummaryDocument": {
+              "additionalProperties": false,
+              "description": "Protocol-owned identity of one immutable collection archive volume.",
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "pack",
+                    "segment"
+                  ],
+                  "title": "Kind",
                   "type": "string"
                 },
-                "sha256": {
-                  "pattern": "^[0-9a-f]{64}$",
-                  "title": "Sha256",
+                "sequence": {
+                  "minimum": 0.0,
+                  "title": "Sequence",
+                  "type": "integer"
+                },
+                "volume_id": {
+                  "pattern": "^(?:pack|segment)-[0-9]{12}$",
+                  "title": "Volume Id",
                   "type": "string"
                 }
               },
               "required": [
-                "path",
-                "offset",
-                "bytes",
-                "sha256"
+                "volume_id",
+                "sequence",
+                "kind"
               ],
-              "title": "CollectionUploadUnitSourceOut",
+              "title": "CollectionUploadVolumeSummaryDocument",
               "type": "object"
             },
-            "CollectionUploadVolumeOut": {
+            "CollectionUploadVolumeWorkDocument": {
               "additionalProperties": false,
+              "description": "One exact volume plan and its durable construction state.",
               "properties": {
                 "kind": {
                   "enum": [
@@ -9657,20 +9712,21 @@
                   "enum": [
                     "planned",
                     "uploading",
-                    "sealed",
-                    "failed"
+                    "sealed"
                   ],
                   "title": "State",
                   "type": "string"
                 },
                 "units": {
                   "items": {
-                    "$ref": "#/components/schemas/CollectionUploadUnitOut"
+                    "$ref": "#/components/schemas/CollectionUploadUnitWorkDocument"
                   },
+                  "minItems": 1,
                   "title": "Units",
                   "type": "array"
                 },
                 "volume_id": {
+                  "pattern": "^(?:pack|segment)-[0-9]{12}$",
                   "title": "Volume Id",
                   "type": "string"
                 }
@@ -9685,35 +9741,7 @@
                 "units",
                 "state"
               ],
-              "title": "CollectionUploadVolumeOut",
-              "type": "object"
-            },
-            "CollectionUploadVolumeSummaryOut": {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "enum": [
-                    "pack",
-                    "segment"
-                  ],
-                  "title": "Kind",
-                  "type": "string"
-                },
-                "sequence": {
-                  "title": "Sequence",
-                  "type": "integer"
-                },
-                "volume_id": {
-                  "title": "Volume Id",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "volume_id",
-                "sequence",
-                "kind"
-              ],
-              "title": "CollectionUploadVolumeSummaryOut",
+              "title": "CollectionUploadVolumeWorkDocument",
               "type": "object"
             },
             "CompleteCollectionUploadCustodyOut": {
@@ -11535,27 +11563,6 @@
                 "uploads"
               ],
               "title": "ListCollectionUploadSessionsResponse",
-              "type": "object"
-            },
-            "ListCollectionUploadVolumesResponse": {
-              "additionalProperties": false,
-              "properties": {
-                "collection_id": {
-                  "$ref": "#/components/schemas/CollectionId"
-                },
-                "volumes": {
-                  "items": {
-                    "$ref": "#/components/schemas/CollectionUploadVolumeOut"
-                  },
-                  "title": "Volumes",
-                  "type": "array"
-                }
-              },
-              "required": [
-                "collection_id",
-                "volumes"
-              ],
-              "title": "ListCollectionUploadVolumesResponse",
               "type": "object"
             },
             "ListCollectionsResponse": {
@@ -14931,6 +14938,7 @@
                   "type": "array"
                 },
                 "plan_etag": {
+                  "pattern": "^[0-9a-f]{64}$",
                   "title": "Plan Etag",
                   "type": "string"
                 },
@@ -15168,6 +15176,7 @@
               "additionalProperties": false,
               "properties": {
                 "etag": {
+                  "pattern": "^[0-9a-f]{64}$",
                   "title": "Etag",
                   "type": "string"
                 },
@@ -23887,7 +23896,7 @@
                 "format": "riverhog-complete-enumeration/v1",
                 "item_schema": {
                   "id": "riverhog.collection-upload-file/v1",
-                  "sha256": "2fe28658c73b3747b895eb065466aca5e77aa00d374040b820d9965e258c46b1"
+                  "sha256": "f5f4cff92c6e543770d4c4be2da80c5907b7bf2b5aefb9dca13bbe4b321f6ec5"
                 },
                 "kind": "complete-enumeration",
                 "media_type": "application/json-seq",
@@ -24160,6 +24169,7 @@
                   "name": "X-Riverhog-Provenance-SHA256",
                   "required": true,
                   "schema": {
+                    "pattern": "^[0-9a-f]{64}$",
                     "title": "X-Riverhog-Provenance-Sha256",
                     "type": "string"
                   }
@@ -24330,7 +24340,7 @@
                   "content": {
                     "application/json": {
                       "schema": {
-                        "$ref": "#/components/schemas/ListCollectionUploadVolumesResponse"
+                        "$ref": "#/components/schemas/CollectionUploadVolumeSetDocument"
                       }
                     }
                   },
@@ -24440,6 +24450,7 @@
                   "name": "volume_id",
                   "required": true,
                   "schema": {
+                    "pattern": "^(?:pack|segment)-[0-9]{12}$",
                     "title": "Volume Id",
                     "type": "string"
                   }
@@ -24450,7 +24461,7 @@
                   "content": {
                     "application/json": {
                       "schema": {
-                        "$ref": "#/components/schemas/CollectionUploadVolumeOut"
+                        "$ref": "#/components/schemas/CollectionUploadVolumeWorkDocument"
                       }
                     }
                   },
@@ -24560,6 +24571,7 @@
                   "name": "volume_id",
                   "required": true,
                   "schema": {
+                    "pattern": "^(?:pack|segment)-[0-9]{12}$",
                     "title": "Volume Id",
                     "type": "string"
                   }
@@ -24569,6 +24581,7 @@
                   "name": "unit",
                   "required": true,
                   "schema": {
+                    "minimum": 0,
                     "title": "Unit",
                     "type": "integer"
                   }
@@ -24579,7 +24592,7 @@
                   "content": {
                     "application/json": {
                       "schema": {
-                        "$ref": "#/components/schemas/CollectionUploadUnitOut"
+                        "$ref": "#/components/schemas/CollectionUploadUnitWorkDocument"
                       }
                     }
                   },
@@ -24687,6 +24700,7 @@
                   "name": "volume_id",
                   "required": true,
                   "schema": {
+                    "pattern": "^(?:pack|segment)-[0-9]{12}$",
                     "title": "Volume Id",
                     "type": "string"
                   }
@@ -24696,6 +24710,7 @@
                   "name": "unit",
                   "required": true,
                   "schema": {
+                    "minimum": 0,
                     "title": "Unit",
                     "type": "integer"
                   }
@@ -24705,6 +24720,7 @@
                   "name": "If-Match",
                   "required": true,
                   "schema": {
+                    "pattern": "^\"[0-9a-f]{64}\"$",
                     "title": "If-Match",
                     "type": "string"
                   }
@@ -24738,7 +24754,7 @@
                   "content": {
                     "application/json": {
                       "schema": {
-                        "$ref": "#/components/schemas/CollectionUploadUnitOut"
+                        "$ref": "#/components/schemas/CollectionUploadUnitWorkDocument"
                       }
                     }
                   },
@@ -28628,6 +28644,7 @@
                   "name": "If-Match",
                   "required": true,
                   "schema": {
+                    "pattern": "^\"[0-9a-f]{64}\"$",
                     "title": "If-Match",
                     "type": "string"
                   }
@@ -40273,7 +40290,7 @@
           "format": "riverhog-complete-enumeration/v1",
           "item_schema": {
             "id": "riverhog.collection-upload-file/v1",
-            "sha256": "2fe28658c73b3747b895eb065466aca5e77aa00d374040b820d9965e258c46b1"
+            "sha256": "f5f4cff92c6e543770d4c4be2da80c5907b7bf2b5aefb9dca13bbe4b321f6ec5"
           },
           "kind": "complete-enumeration",
           "media_type": "application/json-seq",
@@ -40331,7 +40348,7 @@
         "path": "/v1/collection-upload-sessions/{collection_id}/volumes",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": null,
-        "response_authority": "http-json"
+        "response_authority": "canonical-document"
       },
       {
         "application": "riverhog",
@@ -40343,7 +40360,7 @@
         "path": "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": null,
-        "response_authority": "http-json"
+        "response_authority": "canonical-document"
       },
       {
         "application": "riverhog",
@@ -40357,7 +40374,7 @@
         "path": "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": null,
-        "response_authority": "http-json"
+        "response_authority": "canonical-document"
       },
       {
         "application": "riverhog",
@@ -40371,7 +40388,7 @@
         "path": "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": null,
-        "response_authority": "http-json"
+        "response_authority": "canonical-document"
       },
       {
         "application": "riverhog",
@@ -47933,6 +47950,7 @@
             "semantic_acceptance": "semantic_acceptance",
             "structural_models": "schemas"
           },
+          "bundle_sha256": "1639d6dd9f996f437ba9d16d50b4c21f3fa0a16945b2a7f3a48bca87f86f5b9f",
           "compatibility": {
             "provider_ontology": "private",
             "unknown_fields": "reject"
@@ -47941,6 +47959,7 @@
           "http_binding": {
             "operations": [
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -47976,6 +47995,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48019,6 +48039,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48070,6 +48091,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48117,6 +48139,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48172,6 +48195,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48227,6 +48251,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48274,6 +48299,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48329,6 +48355,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48384,6 +48411,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48477,6 +48505,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48524,6 +48553,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48567,6 +48597,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48622,6 +48653,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48677,6 +48709,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -48732,6 +48765,7 @@
                 }
               },
               {
+                "error_schema": "StorageAdapterError",
                 "errors": [
                   {
                     "code": "unauthorized",
@@ -49723,6 +49757,123 @@
               "title": "SmallObjectWriteRequest",
               "type": "object"
             },
+            "StorageAdapterConformanceResult": {
+              "$defs": {
+                "AdapterDescriptor": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "implementation_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Implementation Id",
+                      "type": "string"
+                    },
+                    "implementation_version": {
+                      "maxLength": 120,
+                      "minLength": 1,
+                      "title": "Implementation Version",
+                      "type": "string"
+                    },
+                    "maximum_segment_bytes": {
+                      "anyOf": [
+                        {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Maximum Segment Bytes"
+                    },
+                    "maximum_segment_count": {
+                      "anyOf": [
+                        {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Maximum Segment Count"
+                    },
+                    "minimum_nonfinal_segment_bytes": {
+                      "minimum": 1,
+                      "title": "Minimum Nonfinal Segment Bytes",
+                      "type": "integer"
+                    },
+                    "protocol": {
+                      "const": "riverhog-storage-adapter/v1",
+                      "default": "riverhog-storage-adapter/v1",
+                      "title": "Protocol",
+                      "type": "string"
+                    },
+                    "read_mode": {
+                      "enum": [
+                        "immediate",
+                        "restore_required"
+                      ],
+                      "title": "Read Mode",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "implementation_id",
+                    "implementation_version",
+                    "read_mode",
+                    "minimum_nonfinal_segment_bytes"
+                  ],
+                  "title": "AdapterDescriptor",
+                  "type": "object"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Stable positive evidence returned after the complete check set passes.",
+              "properties": {
+                "checks": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Checks",
+                  "type": "array"
+                },
+                "coverage": {
+                  "const": "complete",
+                  "default": "complete",
+                  "title": "Coverage",
+                  "type": "string"
+                },
+                "descriptor": {
+                  "$ref": "#/$defs/AdapterDescriptor"
+                },
+                "format": {
+                  "const": "riverhog-storage-adapter-conformance-result/v1",
+                  "default": "riverhog-storage-adapter-conformance-result/v1",
+                  "title": "Format",
+                  "type": "string"
+                },
+                "protocol": {
+                  "const": "riverhog-storage-adapter/v1",
+                  "default": "riverhog-storage-adapter/v1",
+                  "title": "Protocol",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "conformant",
+                  "default": "conformant",
+                  "title": "Status",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "descriptor",
+                "checks"
+              ],
+              "title": "StorageAdapterConformanceResult",
+              "type": "object"
+            },
             "StorageAdapterError": {
               "$defs": {
                 "StorageAdapterErrorBody": {
@@ -50155,7 +50306,7 @@
             "semantic_acceptance": "semantic_acceptance",
             "structural_models": "schemas"
           },
-          "bundle_sha256": "c4748932868399fef49b7a065a0f115d75bdc037e42d7947ecb878b4cf2bec31",
+          "bundle_sha256": "c44684f32c55e3ef7327dcb341bc14409a18e511c2b65cffc88e4855f5af5cf6",
           "compatibility": {
             "contract_identity": "canonical-json-sha256",
             "unknown_fields": "reject",
@@ -50165,6 +50316,7 @@
           "http_binding": {
             "operations": [
               {
+                "error_schema": "ErrorResponse",
                 "errors": [
                   {
                     "code": "bad_request",
@@ -50196,6 +50348,7 @@
                 }
               },
               {
+                "error_schema": "ErrorResponse",
                 "errors": [
                   {
                     "code": "invalid_observation_request",
@@ -50234,6 +50387,55 @@
           },
           "protocol": "stove0-content-observer/v1",
           "schemas": {
+            "ErrorResponse": {
+              "$defs": {
+                "ErrorBody": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "minLength": 1,
+                      "title": "Code",
+                      "type": "string"
+                    },
+                    "details": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Details"
+                    },
+                    "message": {
+                      "minLength": 1,
+                      "title": "Message",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "title": "ErrorBody",
+                  "type": "object"
+                }
+              },
+              "additionalProperties": false,
+              "properties": {
+                "error": {
+                  "$ref": "#/$defs/ErrorBody"
+                }
+              },
+              "required": [
+                "error"
+              ],
+              "title": "ErrorResponse",
+              "type": "object"
+            },
             "ObservationInvocation": {
               "$defs": {
                 "ArtifactSubject": {
@@ -51201,6 +51403,96 @@
                   "title": "ObservationInapplicable",
                   "type": "object"
                 },
+                "ObservationRequest": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "format": {
+                      "const": "stove0-observation-request/v1",
+                      "default": "stove0-observation-request/v1",
+                      "title": "Format",
+                      "type": "string"
+                    },
+                    "maximum_result_bytes": {
+                      "default": 1048576,
+                      "maximum": 67108864,
+                      "minimum": 1,
+                      "title": "Maximum Result Bytes",
+                      "type": "integer"
+                    },
+                    "observer_contract_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Observer Contract Id",
+                      "type": "string"
+                    },
+                    "observer_contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Observer Contract Sha256",
+                      "type": "string"
+                    },
+                    "observer_descriptor_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Observer Descriptor Sha256",
+                      "type": "string"
+                    },
+                    "observer_registration_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$",
+                      "title": "Observer Registration Id",
+                      "type": "string"
+                    },
+                    "options": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Options",
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Request Id",
+                      "type": "string"
+                    },
+                    "retrieval_policy": {
+                      "default": "available-only",
+                      "enum": [
+                        "available-only",
+                        "allow"
+                      ],
+                      "title": "Retrieval Policy",
+                      "type": "string"
+                    },
+                    "subjects": {
+                      "items": {
+                        "$ref": "#/$defs/ArtifactSubject"
+                      },
+                      "minItems": 1,
+                      "title": "Subjects",
+                      "type": "array"
+                    },
+                    "timeout_seconds": {
+                      "default": 300,
+                      "maximum": 86400,
+                      "minimum": 1,
+                      "title": "Timeout Seconds",
+                      "type": "integer"
+                    },
+                    "work_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Work Id",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "work_id",
+                    "observer_registration_id",
+                    "observer_descriptor_sha256",
+                    "observer_contract_id",
+                    "observer_contract_sha256",
+                    "subjects",
+                    "request_id"
+                  ],
+                  "title": "ObservationRequest",
+                  "type": "object"
+                },
                 "ObservationResult": {
                   "additionalProperties": false,
                   "properties": {
@@ -51370,6 +51662,17 @@
                       "title": "Contract Sha256",
                       "type": "string"
                     },
+                    "evidence": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/ObserverContractConformanceEvidence"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
                     "execution": {
                       "enum": [
                         "not-exercised",
@@ -51454,6 +51757,23 @@
                     "semantic_conformance"
                   ],
                   "title": "ObserverContractConformance",
+                  "type": "object"
+                },
+                "ObserverContractConformanceEvidence": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "observation": {
+                      "$ref": "#/$defs/ObservationResult"
+                    },
+                    "request": {
+                      "$ref": "#/$defs/ObservationRequest"
+                    }
+                  },
+                  "required": [
+                    "request",
+                    "observation"
+                  ],
+                  "title": "ObserverContractConformanceEvidence",
                   "type": "object"
                 },
                 "ObserverContractSupport": {
@@ -51616,18 +51936,90 @@
                       "title": "Rejected Vector Ids",
                       "type": "array"
                     },
-                    "sha256": {
-                      "pattern": "^[0-9a-f]{64}$",
-                      "title": "Sha256",
-                      "type": "string"
+                    "vectors": {
+                      "$ref": "#/$defs/SemanticFactsConformanceVectors"
                     }
                   },
                   "required": [
-                    "sha256",
+                    "vectors",
                     "accepted_vector_ids",
                     "rejected_vector_ids"
                   ],
                   "title": "ObserverSemanticVectorEvidence",
+                  "type": "object"
+                },
+                "SemanticFactsConformanceVector": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "accepted": {
+                      "title": "Accepted",
+                      "type": "boolean"
+                    },
+                    "facts": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Facts",
+                      "type": "object"
+                    },
+                    "id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "options": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Options",
+                      "type": "object"
+                    },
+                    "subjects": {
+                      "items": {
+                        "$ref": "#/$defs/ArtifactSubject"
+                      },
+                      "minItems": 1,
+                      "title": "Subjects",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "accepted",
+                    "subjects",
+                    "facts"
+                  ],
+                  "title": "SemanticFactsConformanceVector",
+                  "type": "object"
+                },
+                "SemanticFactsConformanceVectors": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "format": {
+                      "const": "stove0-semantic-facts-conformance/v1",
+                      "default": "stove0-semantic-facts-conformance/v1",
+                      "title": "Format",
+                      "type": "string"
+                    },
+                    "profile_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Profile Id",
+                      "type": "string"
+                    },
+                    "vectors": {
+                      "items": {
+                        "$ref": "#/$defs/SemanticFactsConformanceVector"
+                      },
+                      "minItems": 2,
+                      "title": "Vectors",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "profile_id",
+                    "vectors"
+                  ],
+                  "title": "SemanticFactsConformanceVectors",
                   "type": "object"
                 },
                 "SemanticValidationProfile": {
@@ -51695,14 +52087,6 @@
                   "default": "stove0-observer-conformance-result/v1",
                   "title": "Format",
                   "type": "string"
-                },
-                "observations": {
-                  "default": [],
-                  "items": {
-                    "$ref": "#/$defs/ObservationResult"
-                  },
-                  "title": "Observations",
-                  "type": "array"
                 },
                 "status": {
                   "enum": [
@@ -52045,7 +52429,7 @@
           "semantic_acceptance": {
             "binding": "ObserverContract.facts_semantics",
             "identity": [
-              "profile_id",
+              "id",
               "profile_sha256"
             ],
             "kind": "profile-registry",
@@ -52061,10 +52445,12 @@
             "semantic_acceptance": "semantic_acceptance",
             "structural_models": "schemas"
           },
+          "bundle_sha256": "dbbc9320e223fb591a30981339ba8c7a7f8b7de2358ce3a3cc38c2c7fbf78119",
           "format": "stove0-review-sampler-schema-bundle/v1",
           "http_binding": {
             "operations": [
               {
+                "error_schema": "ErrorResponse",
                 "errors": [
                   {
                     "code": "bad_request",
@@ -52096,6 +52482,7 @@
                 }
               },
               {
+                "error_schema": "ErrorResponse",
                 "errors": [
                   {
                     "code": "invalid_sampler_request",
@@ -52138,6 +52525,55 @@
           },
           "protocol": "stove0-review-sampler/v1",
           "schemas": {
+            "ErrorResponse": {
+              "$defs": {
+                "ErrorBody": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "minLength": 1,
+                      "title": "Code",
+                      "type": "string"
+                    },
+                    "details": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Details"
+                    },
+                    "message": {
+                      "minLength": 1,
+                      "title": "Message",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "title": "ErrorBody",
+                  "type": "object"
+                }
+              },
+              "additionalProperties": false,
+              "properties": {
+                "error": {
+                  "$ref": "#/$defs/ErrorBody"
+                }
+              },
+              "required": [
+                "error"
+              ],
+              "title": "ErrorResponse",
+              "type": "object"
+            },
             "SamplerConformanceResult": {
               "$defs": {
                 "JsonSchemaDocument": {
@@ -52327,6 +52763,54 @@
                   "title": "SamplerInapplicable",
                   "type": "object"
                 },
+                "SamplerInput": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "minimum": 0,
+                      "title": "Bytes",
+                      "type": "integer"
+                    },
+                    "id": {
+                      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,158}[A-Za-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "media_type": {
+                      "anyOf": [
+                        {
+                          "maxLength": 255,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Media Type"
+                    },
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "title": "Path",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Sha256",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "path",
+                    "bytes",
+                    "sha256"
+                  ],
+                  "title": "SamplerInput",
+                  "type": "object"
+                },
                 "SamplerOutput": {
                   "additionalProperties": false,
                   "properties": {
@@ -52375,6 +52859,86 @@
                     "derived_from"
                   ],
                   "title": "SamplerOutput",
+                  "type": "object"
+                },
+                "SamplerRequest": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cancellation_path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "title": "Cancellation Path",
+                      "type": "string"
+                    },
+                    "format": {
+                      "const": "stove0-review-sampler-request/v1",
+                      "default": "stove0-review-sampler-request/v1",
+                      "title": "Format",
+                      "type": "string"
+                    },
+                    "inputs": {
+                      "items": {
+                        "$ref": "#/$defs/SamplerInput"
+                      },
+                      "minItems": 1,
+                      "title": "Inputs",
+                      "type": "array"
+                    },
+                    "maximum_output_bytes": {
+                      "maximum": 1099511627776,
+                      "minimum": 1,
+                      "title": "Maximum Output Bytes",
+                      "type": "integer"
+                    },
+                    "portable_intent": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Portable Intent",
+                      "type": "object"
+                    },
+                    "request_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Request Sha256",
+                      "type": "string"
+                    },
+                    "sampler_descriptor_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Sampler Descriptor Sha256",
+                      "type": "string"
+                    },
+                    "timeout_seconds": {
+                      "maximum": 86400,
+                      "minimum": 1,
+                      "title": "Timeout Seconds",
+                      "type": "integer"
+                    },
+                    "windows": {
+                      "items": {
+                        "$ref": "#/$defs/SamplerWindow"
+                      },
+                      "minItems": 1,
+                      "title": "Windows",
+                      "type": "array"
+                    },
+                    "workspace_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Workspace Id",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "sampler_descriptor_sha256",
+                    "workspace_id",
+                    "inputs",
+                    "windows",
+                    "portable_intent",
+                    "maximum_output_bytes",
+                    "timeout_seconds",
+                    "cancellation_path",
+                    "request_sha256"
+                  ],
+                  "title": "SamplerRequest",
                   "type": "object"
                 },
                 "SamplerResult": {
@@ -52457,6 +53021,46 @@
                   ],
                   "title": "SamplerResult",
                   "type": "object"
+                },
+                "SamplerWindow": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "duration_ms": {
+                      "minimum": 1,
+                      "title": "Duration Ms",
+                      "type": "integer"
+                    },
+                    "id": {
+                      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,158}[A-Za-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "input_id": {
+                      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,158}[A-Za-z0-9])?$",
+                      "title": "Input Id",
+                      "type": "string"
+                    },
+                    "output_path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "title": "Output Path",
+                      "type": "string"
+                    },
+                    "start_ms": {
+                      "minimum": 0,
+                      "title": "Start Ms",
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "input_id",
+                    "start_ms",
+                    "duration_ms",
+                    "output_path"
+                  ],
+                  "title": "SamplerWindow",
+                  "type": "object"
                 }
               },
               "additionalProperties": false,
@@ -52469,6 +53073,17 @@
                   "default": "stove0-review-sampler-conformance-result/v1",
                   "title": "Format",
                   "type": "string"
+                },
+                "request": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/SamplerRequest"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
                 },
                 "sample": {
                   "anyOf": [
@@ -52992,7 +53607,7 @@
             "semantic_acceptance": "semantic_acceptance",
             "structural_models": "schemas"
           },
-          "bundle_sha256": "f70359234f593f3fb5915b00f841f1964eabcddb49ffa2ae8001e597b3b951f0",
+          "bundle_sha256": "5f198293d941ae7391c5f263c98bc14db4c72f21deb1903679b25b20825ef490",
           "compatibility": {
             "contract_identity": "rfc8785-sha256",
             "unknown_fields": "reject",
@@ -53002,6 +53617,7 @@
           "http_binding": {
             "operations": [
               {
+                "error_schema": "ErrorResponse",
                 "errors": [
                   {
                     "code": "bad_request",
@@ -53033,6 +53649,7 @@
                 }
               },
               {
+                "error_schema": "ErrorResponse",
                 "errors": [
                   {
                     "code": "invalid_target_request",
@@ -53080,6 +53697,7 @@
                 }
               },
               {
+                "error_schema": "ErrorResponse",
                 "errors": [
                   {
                     "code": "invalid_target_request",
@@ -53147,6 +53765,7 @@
                 }
               },
               {
+                "error_schema": "ErrorResponse",
                 "errors": [
                   {
                     "code": "bad_request",
@@ -53190,6 +53809,7 @@
                 }
               },
               {
+                "error_schema": "ErrorResponse",
                 "errors": [
                   {
                     "code": "bad_request",
@@ -53239,6 +53859,55 @@
             "stove0-effect-target/v1"
           ],
           "schemas": {
+            "ErrorResponse": {
+              "$defs": {
+                "ErrorBody": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "minLength": 1,
+                      "title": "Code",
+                      "type": "string"
+                    },
+                    "details": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": true,
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Details"
+                    },
+                    "message": {
+                      "minLength": 1,
+                      "title": "Message",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "title": "ErrorBody",
+                  "type": "object"
+                }
+              },
+              "additionalProperties": false,
+              "properties": {
+                "error": {
+                  "$ref": "#/$defs/ErrorBody"
+                }
+              },
+              "required": [
+                "error"
+              ],
+              "title": "ErrorResponse",
+              "type": "object"
+            },
             "OperationContract": {
               "$defs": {
                 "InputArtifactContract": {
@@ -53499,6 +54168,124 @@
             },
             "TargetConformanceResult": {
               "$defs": {
+                "AcceptedTargetJob": {
+                  "additionalProperties": false,
+                  "description": "Durable, non-secret identity of one accepted target job request.",
+                  "properties": {
+                    "declaration": {
+                      "$ref": "#/$defs/TargetJobDeclaration"
+                    },
+                    "request_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Request Sha256",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "declaration",
+                    "request_sha256"
+                  ],
+                  "title": "AcceptedTargetJob",
+                  "type": "object"
+                },
+                "ArtifactSubject": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "bytes": {
+                      "minimum": 0,
+                      "title": "Bytes",
+                      "type": "integer"
+                    },
+                    "collection": {
+                      "$ref": "#/$defs/CollectionRootRef"
+                    },
+                    "id": {
+                      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,158}[A-Za-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "media_type": {
+                      "anyOf": [
+                        {
+                          "maxLength": 255,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Media Type"
+                    },
+                    "path": {
+                      "maxLength": 4096,
+                      "minLength": 1,
+                      "title": "Path",
+                      "type": "string"
+                    },
+                    "role": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Role",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Sha256",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "role",
+                    "collection",
+                    "path",
+                    "bytes",
+                    "sha256"
+                  ],
+                  "title": "ArtifactSubject",
+                  "type": "object"
+                },
+                "BranchWorkBinding": {
+                  "additionalProperties": false,
+                  "description": "Stable parent/branch lineage for one ordinary child work identity.",
+                  "properties": {
+                    "artifact_selection_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Artifact Selection Sha256",
+                      "type": "string"
+                    },
+                    "branch_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Branch Id",
+                      "type": "string"
+                    },
+                    "decision_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Decision Sha256",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "branch",
+                      "default": "branch",
+                      "title": "Kind",
+                      "type": "string"
+                    },
+                    "parent_work_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Parent Work Id",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "parent_work_id",
+                    "branch_id",
+                    "decision_sha256",
+                    "artifact_selection_sha256"
+                  ],
+                  "title": "BranchWorkBinding",
+                  "type": "object"
+                },
                 "CollectionId": {
                   "minimum": 1,
                   "type": "integer"
@@ -53526,6 +54313,31 @@
                     "content_identity"
                   ],
                   "title": "CollectionRootRef",
+                  "type": "object"
+                },
+                "ControllerEvidence": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "controller_evidence_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Controller Evidence Sha256",
+                      "type": "string"
+                    },
+                    "execution_envelope": {
+                      "$ref": "#/$defs/ExecutionEnvelope"
+                    },
+                    "format": {
+                      "const": "stove0-controller-evidence/v1",
+                      "default": "stove0-controller-evidence/v1",
+                      "title": "Format",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "execution_envelope",
+                    "controller_evidence_sha256"
+                  ],
+                  "title": "ControllerEvidence",
                   "type": "object"
                 },
                 "EffectPlan": {
@@ -53604,6 +54416,83 @@
                     "plan_sha256"
                   ],
                   "title": "EffectPlan",
+                  "type": "object"
+                },
+                "EvaluationBinding": {
+                  "additionalProperties": false,
+                  "description": "Immutable membership of one work item in a trial/evaluation matrix.",
+                  "properties": {
+                    "evaluation_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Evaluation Id",
+                      "type": "string"
+                    },
+                    "matrix_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Matrix Sha256",
+                      "type": "string"
+                    },
+                    "parameters": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Parameters",
+                      "type": "object"
+                    },
+                    "variant_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Variant Id",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "evaluation_id",
+                    "matrix_sha256",
+                    "variant_id"
+                  ],
+                  "title": "EvaluationBinding",
+                  "type": "object"
+                },
+                "ExecutionEnvelope": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "claim_id": {
+                      "maxLength": 160,
+                      "minLength": 1,
+                      "title": "Claim Id",
+                      "type": "string"
+                    },
+                    "execution_envelope_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Execution Envelope Sha256",
+                      "type": "string"
+                    },
+                    "fence": {
+                      "minimum": 1,
+                      "title": "Fence",
+                      "type": "integer"
+                    },
+                    "format": {
+                      "const": "stove0-execution-envelope/v1",
+                      "default": "stove0-execution-envelope/v1",
+                      "title": "Format",
+                      "type": "string"
+                    },
+                    "target_plan": {
+                      "$ref": "#/$defs/TargetPlanBinding"
+                    },
+                    "workflow_plan": {
+                      "$ref": "#/$defs/WorkflowPlan"
+                    }
+                  },
+                  "required": [
+                    "claim_id",
+                    "fence",
+                    "workflow_plan",
+                    "target_plan",
+                    "execution_envelope_sha256"
+                  ],
+                  "title": "ExecutionEnvelope",
                   "type": "object"
                 },
                 "ExternalEffectReceipt": {
@@ -53729,6 +54618,139 @@
                   "title": "InputArtifact",
                   "type": "object"
                 },
+                "InputArtifactContract": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "allowed_dispositions": {
+                      "anyOf": [
+                        {
+                          "items": {
+                            "enum": [
+                              "transformed",
+                              "preserved",
+                              "omitted",
+                              "rejected"
+                            ],
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Allowed Dispositions"
+                    },
+                    "maximum": {
+                      "anyOf": [
+                        {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Maximum"
+                    },
+                    "minimum": {
+                      "default": 1,
+                      "minimum": 0,
+                      "title": "Minimum",
+                      "type": "integer"
+                    },
+                    "role": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Role",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "role"
+                  ],
+                  "title": "InputArtifactContract",
+                  "type": "object"
+                },
+                "JoinWorkBinding": {
+                  "additionalProperties": false,
+                  "description": "Stable branch-set lineage for one ordinary join work identity.",
+                  "properties": {
+                    "branch_set_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Branch Set Sha256",
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "join",
+                      "default": "join",
+                      "title": "Kind",
+                      "type": "string"
+                    },
+                    "members": {
+                      "items": {
+                        "$ref": "#/$defs/JoinWorkMemberBinding"
+                      },
+                      "minItems": 2,
+                      "title": "Members",
+                      "type": "array"
+                    },
+                    "parent_work_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Parent Work Id",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "parent_work_id",
+                    "branch_set_sha256",
+                    "members"
+                  ],
+                  "title": "JoinWorkBinding",
+                  "type": "object"
+                },
+                "JoinWorkMemberBinding": {
+                  "additionalProperties": false,
+                  "description": "Exact successful branch result used to derive one join work identity.",
+                  "properties": {
+                    "artifact_selection_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Artifact Selection Sha256",
+                      "type": "string"
+                    },
+                    "branch_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Branch Id",
+                      "type": "string"
+                    },
+                    "producer_settlement_sha256": {
+                      "anyOf": [
+                        {
+                          "pattern": "^[0-9a-f]{64}$",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Producer Settlement Sha256"
+                    },
+                    "settlement_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Settlement Sha256",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "branch_id",
+                    "settlement_sha256",
+                    "artifact_selection_sha256"
+                  ],
+                  "title": "JoinWorkMemberBinding",
+                  "type": "object"
+                },
                 "JsonSchemaDocument": {
                   "additionalProperties": false,
                   "properties": {
@@ -53771,6 +54793,427 @@
                   "type": "object"
                 },
                 "JsonValue": {},
+                "ObservationEvidence": {
+                  "additionalProperties": false,
+                  "description": "Complete routing evidence: immutable request plus accepted result.",
+                  "properties": {
+                    "request": {
+                      "$ref": "#/$defs/ObservationRequest"
+                    },
+                    "result": {
+                      "$ref": "#/$defs/ObservationResult"
+                    }
+                  },
+                  "required": [
+                    "request",
+                    "result"
+                  ],
+                  "title": "ObservationEvidence",
+                  "type": "object"
+                },
+                "ObservationFailure": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Code",
+                      "type": "string"
+                    },
+                    "message": {
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "title": "Message",
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "title": "Retryable",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message",
+                    "retryable"
+                  ],
+                  "title": "ObservationFailure",
+                  "type": "object"
+                },
+                "ObservationInapplicable": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "code": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Code",
+                      "type": "string"
+                    },
+                    "message": {
+                      "maxLength": 1000,
+                      "minLength": 1,
+                      "title": "Message",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "title": "ObservationInapplicable",
+                  "type": "object"
+                },
+                "ObservationRequest": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "format": {
+                      "const": "stove0-observation-request/v1",
+                      "default": "stove0-observation-request/v1",
+                      "title": "Format",
+                      "type": "string"
+                    },
+                    "maximum_result_bytes": {
+                      "default": 1048576,
+                      "maximum": 67108864,
+                      "minimum": 1,
+                      "title": "Maximum Result Bytes",
+                      "type": "integer"
+                    },
+                    "observer_contract_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Observer Contract Id",
+                      "type": "string"
+                    },
+                    "observer_contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Observer Contract Sha256",
+                      "type": "string"
+                    },
+                    "observer_descriptor_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Observer Descriptor Sha256",
+                      "type": "string"
+                    },
+                    "observer_registration_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$",
+                      "title": "Observer Registration Id",
+                      "type": "string"
+                    },
+                    "options": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Options",
+                      "type": "object"
+                    },
+                    "request_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Request Id",
+                      "type": "string"
+                    },
+                    "retrieval_policy": {
+                      "default": "available-only",
+                      "enum": [
+                        "available-only",
+                        "allow"
+                      ],
+                      "title": "Retrieval Policy",
+                      "type": "string"
+                    },
+                    "subjects": {
+                      "items": {
+                        "$ref": "#/$defs/ArtifactSubject"
+                      },
+                      "minItems": 1,
+                      "title": "Subjects",
+                      "type": "array"
+                    },
+                    "timeout_seconds": {
+                      "default": 300,
+                      "maximum": 86400,
+                      "minimum": 1,
+                      "title": "Timeout Seconds",
+                      "type": "integer"
+                    },
+                    "work_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Work Id",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "work_id",
+                    "observer_registration_id",
+                    "observer_descriptor_sha256",
+                    "observer_contract_id",
+                    "observer_contract_sha256",
+                    "subjects",
+                    "request_id"
+                  ],
+                  "title": "ObservationRequest",
+                  "type": "object"
+                },
+                "ObservationResult": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "execution_evidence": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Execution Evidence",
+                      "type": "object"
+                    },
+                    "facts": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": {
+                            "$ref": "#/$defs/JsonValue"
+                          },
+                          "type": "object"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Facts"
+                    },
+                    "facts_schema": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/JsonSchemaDocument"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "facts_sha256": {
+                      "anyOf": [
+                        {
+                          "pattern": "^[0-9a-f]{64}$",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Facts Sha256"
+                    },
+                    "failure": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/ObservationFailure"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "format": {
+                      "const": "stove0-observation-result/v1",
+                      "default": "stove0-observation-result/v1",
+                      "title": "Format",
+                      "type": "string"
+                    },
+                    "inapplicable": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/ObservationInapplicable"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "observer": {
+                      "$ref": "#/$defs/ObserverImplementation"
+                    },
+                    "observer_contract_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Observer Contract Id",
+                      "type": "string"
+                    },
+                    "observer_contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Observer Contract Sha256",
+                      "type": "string"
+                    },
+                    "request_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Request Id",
+                      "type": "string"
+                    },
+                    "result_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Result Sha256",
+                      "type": "string"
+                    },
+                    "state": {
+                      "enum": [
+                        "observed",
+                        "inapplicable",
+                        "failed",
+                        "canceled"
+                      ],
+                      "title": "State",
+                      "type": "string"
+                    },
+                    "subjects": {
+                      "items": {
+                        "$ref": "#/$defs/ArtifactSubject"
+                      },
+                      "minItems": 1,
+                      "title": "Subjects",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "request_id",
+                    "state",
+                    "observer",
+                    "observer_contract_id",
+                    "observer_contract_sha256",
+                    "subjects",
+                    "result_sha256"
+                  ],
+                  "title": "ObservationResult",
+                  "type": "object"
+                },
+                "ObserverImplementation": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "descriptor_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Descriptor Sha256",
+                      "type": "string"
+                    },
+                    "id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "protocol": {
+                      "const": "stove0-content-observer/v1",
+                      "default": "stove0-content-observer/v1",
+                      "title": "Protocol",
+                      "type": "string"
+                    },
+                    "source_revision": {
+                      "maxLength": 200,
+                      "minLength": 1,
+                      "title": "Source Revision",
+                      "type": "string"
+                    },
+                    "version": {
+                      "maxLength": 120,
+                      "minLength": 1,
+                      "title": "Version",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "version",
+                    "source_revision",
+                    "descriptor_sha256"
+                  ],
+                  "title": "ObserverImplementation",
+                  "type": "object"
+                },
+                "OperationContract": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Contract Sha256",
+                      "type": "string"
+                    },
+                    "effect_receipt_schema": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/JsonSchemaDocument"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "inputs": {
+                      "items": {
+                        "$ref": "#/$defs/InputArtifactContract"
+                      },
+                      "minItems": 1,
+                      "title": "Inputs",
+                      "type": "array"
+                    },
+                    "intent_schema": {
+                      "$ref": "#/$defs/JsonSchemaDocument"
+                    },
+                    "intent_semantics": {
+                      "$ref": "#/$defs/SemanticValidationProfile"
+                    },
+                    "outputs": {
+                      "default": [],
+                      "items": {
+                        "$ref": "#/$defs/OutputArtifactContract"
+                      },
+                      "title": "Outputs",
+                      "type": "array"
+                    },
+                    "result_kind": {
+                      "default": "collection",
+                      "enum": [
+                        "collection",
+                        "external-effect"
+                      ],
+                      "title": "Result Kind",
+                      "type": "string"
+                    },
+                    "source_retirement_permitted": {
+                      "default": false,
+                      "title": "Source Retirement Permitted",
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "intent_schema",
+                    "intent_semantics",
+                    "inputs",
+                    "contract_sha256"
+                  ],
+                  "title": "OperationContract",
+                  "type": "object"
+                },
+                "OperationRef": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Sha256",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "sha256"
+                  ],
+                  "title": "OperationRef",
+                  "type": "object"
+                },
                 "OutputArtifact": {
                   "additionalProperties": false,
                   "properties": {
@@ -53834,6 +55277,50 @@
                   "title": "OutputArtifact",
                   "type": "object"
                 },
+                "OutputArtifactContract": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "derived_from_roles": {
+                      "items": {
+                        "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                        "type": "string"
+                      },
+                      "minItems": 1,
+                      "title": "Derived From Roles",
+                      "type": "array"
+                    },
+                    "maximum": {
+                      "anyOf": [
+                        {
+                          "minimum": 1,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Maximum"
+                    },
+                    "minimum": {
+                      "default": 1,
+                      "minimum": 0,
+                      "title": "Minimum",
+                      "type": "integer"
+                    },
+                    "role": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Role",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "role",
+                    "derived_from_roles"
+                  ],
+                  "title": "OutputArtifactContract",
+                  "type": "object"
+                },
                 "OutputCollectionRef": {
                   "additionalProperties": false,
                   "properties": {
@@ -53863,6 +55350,135 @@
                     "derivation_sha256"
                   ],
                   "title": "OutputCollectionRef",
+                  "type": "object"
+                },
+                "RecipeRef": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "revision": {
+                      "minimum": 1,
+                      "title": "Revision",
+                      "type": "integer"
+                    },
+                    "sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Sha256",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "revision",
+                    "sha256"
+                  ],
+                  "title": "RecipeRef",
+                  "type": "object"
+                },
+                "SemanticIntentConformanceVector": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "accepted": {
+                      "title": "Accepted",
+                      "type": "boolean"
+                    },
+                    "id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "intent": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Intent",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "accepted",
+                    "intent"
+                  ],
+                  "title": "SemanticIntentConformanceVector",
+                  "type": "object"
+                },
+                "SemanticIntentConformanceVectors": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "format": {
+                      "const": "stove0-semantic-intent-conformance/v1",
+                      "default": "stove0-semantic-intent-conformance/v1",
+                      "title": "Format",
+                      "type": "string"
+                    },
+                    "profile_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Profile Id",
+                      "type": "string"
+                    },
+                    "vectors": {
+                      "items": {
+                        "$ref": "#/$defs/SemanticIntentConformanceVector"
+                      },
+                      "minItems": 2,
+                      "title": "Vectors",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "profile_id",
+                    "vectors"
+                  ],
+                  "title": "SemanticIntentConformanceVectors",
+                  "type": "object"
+                },
+                "SemanticValidationProfile": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "conformance_vectors_sha256": {
+                      "anyOf": [
+                        {
+                          "pattern": "^[0-9a-f]{64}$",
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Conformance Vectors Sha256"
+                    },
+                    "id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Id",
+                      "type": "string"
+                    },
+                    "profile_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Profile Sha256",
+                      "type": "string"
+                    },
+                    "rules": {
+                      "items": {
+                        "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                        "type": "string"
+                      },
+                      "minItems": 1,
+                      "title": "Rules",
+                      "type": "array"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "rules",
+                    "profile_sha256"
+                  ],
+                  "title": "SemanticValidationProfile",
                   "type": "object"
                 },
                 "TargetConformanceCoverage": {
@@ -54043,6 +55659,66 @@
                     "message"
                   ],
                   "title": "TargetInapplicable",
+                  "type": "object"
+                },
+                "TargetJobDeclaration": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "claim_id": {
+                      "maxLength": 160,
+                      "minLength": 1,
+                      "title": "Claim Id",
+                      "type": "string"
+                    },
+                    "controller_evidence": {
+                      "$ref": "#/$defs/ControllerEvidence"
+                    },
+                    "fence": {
+                      "minimum": 1,
+                      "title": "Fence",
+                      "type": "integer"
+                    },
+                    "job_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Job Id",
+                      "type": "string"
+                    },
+                    "plan": {
+                      "discriminator": {
+                        "mapping": {
+                          "stove0-effect-target/v1": "#/$defs/EffectPlan",
+                          "stove0-transform-target/v1": "#/$defs/TransformPlan"
+                        },
+                        "propertyName": "protocol"
+                      },
+                      "oneOf": [
+                        {
+                          "$ref": "#/$defs/TransformPlan"
+                        },
+                        {
+                          "$ref": "#/$defs/EffectPlan"
+                        }
+                      ],
+                      "title": "Plan"
+                    },
+                    "workspace_assurance": {
+                      "enum": [
+                        "encrypted",
+                        "ephemeral"
+                      ],
+                      "title": "Workspace Assurance",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "job_id",
+                    "claim_id",
+                    "fence",
+                    "controller_evidence",
+                    "plan",
+                    "workspace_assurance"
+                  ],
+                  "title": "TargetJobDeclaration",
                   "type": "object"
                 },
                 "TargetJobStatus": {
@@ -54268,7 +55944,7 @@
                     "result_kind": {
                       "enum": [
                         "collection",
-                        "effect"
+                        "external-effect"
                       ],
                       "title": "Result Kind",
                       "type": "string"
@@ -54296,8 +55972,14 @@
                 "TargetOperationConformanceEvidence": {
                   "additionalProperties": false,
                   "properties": {
+                    "accepted_job": {
+                      "$ref": "#/$defs/AcceptedTargetJob"
+                    },
                     "job_status": {
                       "$ref": "#/$defs/TargetJobStatus"
+                    },
+                    "operation": {
+                      "$ref": "#/$defs/OperationContract"
                     },
                     "operation_id": {
                       "title": "Operation Id",
@@ -54305,6 +55987,9 @@
                     },
                     "preflight": {
                       "$ref": "#/$defs/TargetPreflightResponse"
+                    },
+                    "preflight_request": {
+                      "$ref": "#/$defs/TargetPreflightRequest"
                     },
                     "semantic_conformance": {
                       "$ref": "#/$defs/TargetSemanticConformance"
@@ -54315,8 +56000,11 @@
                   },
                   "required": [
                     "operation_id",
+                    "operation",
                     "semantic_conformance",
+                    "preflight_request",
                     "preflight",
+                    "accepted_job",
                     "submission",
                     "job_status"
                   ],
@@ -54355,6 +56043,116 @@
                     "options_schema"
                   ],
                   "title": "TargetOperationSupport",
+                  "type": "object"
+                },
+                "TargetPlanBinding": {
+                  "additionalProperties": false,
+                  "description": "Opaque binding to a target-owned preflight plan.\n\nThe target protocol owns the plan schema and canonicalization algorithm. stove0\nretains the complete validated plan document and its target-issued digest, but\ndeliberately does not reinterpret or re-hash the plan with stove0's canonical\nJSON rules. This prevents two authorities from disagreeing about target plan\nidentity while preserving the full document in the execution envelope.",
+                  "properties": {
+                    "operation_contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Operation Contract Sha256",
+                      "type": "string"
+                    },
+                    "plan": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Plan",
+                      "type": "object"
+                    },
+                    "plan_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Plan Sha256",
+                      "type": "string"
+                    },
+                    "protocol": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Protocol",
+                      "type": "string"
+                    },
+                    "target_contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Target Contract Sha256",
+                      "type": "string"
+                    },
+                    "target_implementation_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Target Implementation Id",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "target_implementation_id",
+                    "target_contract_sha256",
+                    "operation_contract_sha256",
+                    "plan",
+                    "plan_sha256"
+                  ],
+                  "title": "TargetPlanBinding",
+                  "type": "object"
+                },
+                "TargetPreflightRequest": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "inputs": {
+                      "items": {
+                        "$ref": "#/$defs/InputArtifact"
+                      },
+                      "minItems": 1,
+                      "title": "Inputs",
+                      "type": "array"
+                    },
+                    "intent": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Intent",
+                      "type": "object"
+                    },
+                    "observations": {
+                      "default": [],
+                      "items": {
+                        "$ref": "#/$defs/ObservationEvidence"
+                      },
+                      "title": "Observations",
+                      "type": "array"
+                    },
+                    "operation_contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Operation Contract Sha256",
+                      "type": "string"
+                    },
+                    "operation_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$",
+                      "title": "Operation Id",
+                      "type": "string"
+                    },
+                    "protocol": {
+                      "default": "stove0-transform-target/v1",
+                      "enum": [
+                        "stove0-transform-target/v1",
+                        "stove0-effect-target/v1"
+                      ],
+                      "title": "Protocol",
+                      "type": "string"
+                    },
+                    "target_options": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Target Options",
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "operation_id",
+                    "operation_contract_sha256",
+                    "inputs",
+                    "intent"
+                  ],
+                  "title": "TargetPreflightRequest",
                   "type": "object"
                 },
                 "TargetPreflightResponse": {
@@ -54486,6 +56284,17 @@
                       ],
                       "title": "Status",
                       "type": "string"
+                    },
+                    "vectors": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/SemanticIntentConformanceVectors"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
                     }
                   },
                   "required": [
@@ -54572,6 +56381,188 @@
                     "plan_sha256"
                   ],
                   "title": "TransformPlan",
+                  "type": "object"
+                },
+                "WorkIdentity": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "effective_intent": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Effective Intent",
+                      "type": "object"
+                    },
+                    "evaluation": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/EvaluationBinding"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "fork_join": {
+                      "anyOf": [
+                        {
+                          "discriminator": {
+                            "mapping": {
+                              "branch": "#/$defs/BranchWorkBinding",
+                              "join": "#/$defs/JoinWorkBinding"
+                            },
+                            "propertyName": "kind"
+                          },
+                          "oneOf": [
+                            {
+                              "$ref": "#/$defs/BranchWorkBinding"
+                            },
+                            {
+                              "$ref": "#/$defs/JoinWorkBinding"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "title": "Fork Join"
+                    },
+                    "format": {
+                      "const": "stove0-work/v1",
+                      "default": "stove0-work/v1",
+                      "title": "Format",
+                      "type": "string"
+                    },
+                    "inputs": {
+                      "items": {
+                        "$ref": "#/$defs/CollectionRootRef"
+                      },
+                      "minItems": 1,
+                      "title": "Inputs",
+                      "type": "array"
+                    },
+                    "recipe": {
+                      "$ref": "#/$defs/RecipeRef"
+                    },
+                    "work_id": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Work Id",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "recipe",
+                    "inputs",
+                    "work_id"
+                  ],
+                  "title": "WorkIdentity",
+                  "type": "object"
+                },
+                "WorkflowPlan": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "format": {
+                      "const": "stove0-workflow-plan/v1",
+                      "default": "stove0-workflow-plan/v1",
+                      "title": "Format",
+                      "type": "string"
+                    },
+                    "input_retrieval_policy": {
+                      "default": "available-only",
+                      "enum": [
+                        "available-only",
+                        "allow"
+                      ],
+                      "title": "Input Retrieval Policy",
+                      "type": "string"
+                    },
+                    "observations": {
+                      "default": [],
+                      "items": {
+                        "$ref": "#/$defs/ObservationEvidence"
+                      },
+                      "title": "Observations",
+                      "type": "array"
+                    },
+                    "operation": {
+                      "$ref": "#/$defs/OperationRef"
+                    },
+                    "output_policy": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Output Policy",
+                      "type": "object"
+                    },
+                    "output_tags": {
+                      "default": [],
+                      "items": {
+                        "type": "string"
+                      },
+                      "title": "Output Tags",
+                      "type": "array"
+                    },
+                    "requested_target_options": {
+                      "additionalProperties": {
+                        "$ref": "#/$defs/JsonValue"
+                      },
+                      "title": "Requested Target Options",
+                      "type": "object"
+                    },
+                    "result_kind": {
+                      "default": "collection",
+                      "enum": [
+                        "collection",
+                        "external-effect"
+                      ],
+                      "title": "Result Kind",
+                      "type": "string"
+                    },
+                    "retirement_grace_seconds": {
+                      "default": 0,
+                      "minimum": 0,
+                      "title": "Retirement Grace Seconds",
+                      "type": "integer"
+                    },
+                    "retirement_policy": {
+                      "default": "retain",
+                      "enum": [
+                        "retain",
+                        "retire-after-verified-output"
+                      ],
+                      "title": "Retirement Policy",
+                      "type": "string"
+                    },
+                    "target_contract_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Target Contract Sha256",
+                      "type": "string"
+                    },
+                    "target_registration_id": {
+                      "pattern": "^[a-z0-9](?:[a-z0-9.-]{0,118}[a-z0-9])?$",
+                      "title": "Target Registration Id",
+                      "type": "string"
+                    },
+                    "work": {
+                      "$ref": "#/$defs/WorkIdentity"
+                    },
+                    "workflow_plan_sha256": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "title": "Workflow Plan Sha256",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "work",
+                    "operation",
+                    "target_registration_id",
+                    "target_contract_sha256",
+                    "workflow_plan_sha256"
+                  ],
+                  "title": "WorkflowPlan",
                   "type": "object"
                 }
               },
@@ -57527,7 +59518,7 @@
           "semantic_acceptance": {
             "binding": "OperationContract.intent_semantics",
             "identity": [
-              "profile_id",
+              "id",
               "profile_sha256"
             ],
             "kind": "operation-contract",
@@ -58360,6 +60351,11 @@
                 "default": "()",
                 "name": "response_headers",
                 "type": "'tuple[HttpResponseHeaderContract, ...]'"
+              },
+              {
+                "default": "<class 'http_api_contracts.ErrorResponse'>",
+                "name": "error_type",
+                "type": "'type[BaseModel]'"
               }
             ],
             "kind": "class",
@@ -58377,7 +60373,7 @@
                 "signature": "(self, method: 'str', path: 'str') -> 'bool'"
               }
             },
-            "signature": "(method: \"Literal['GET', 'POST', 'PUT', 'DELETE', 'PATCH']\", path: 'str', request_type: 'object | None' = None, response_type: 'object | None' = None, request_kind: 'HttpBodyKind' = 'none', response_kind: 'HttpBodyKind' = 'json', success_statuses: 'tuple[int, ...]' = (200,), errors: 'tuple[HttpErrorContract, ...]' = (), path_parameters: 'tuple[HttpPathParameterContract, ...]' = (), response_headers: 'tuple[HttpResponseHeaderContract, ...]' = ()) -> None"
+            "signature": "(method: \"Literal['GET', 'POST', 'PUT', 'DELETE', 'PATCH']\", path: 'str', request_type: 'object | None' = None, response_type: 'object | None' = None, request_kind: 'HttpBodyKind' = 'none', response_kind: 'HttpBodyKind' = 'json', success_statuses: 'tuple[int, ...]' = (200,), errors: 'tuple[HttpErrorContract, ...]' = (), path_parameters: 'tuple[HttpPathParameterContract, ...]' = (), response_headers: 'tuple[HttpResponseHeaderContract, ...]' = (), error_type: 'type[BaseModel]' = <class 'http_api_contracts.ErrorResponse'>) -> None"
           },
           "HttpPathParameterContract": {
             "fields": [
@@ -58450,6 +60446,14 @@
               "unauthorized"
             ]
           },
+          "QuotedSha256Identity": {
+            "kind": "object",
+            "type": "typing._AnnotatedAlias"
+          },
+          "Sha256Identity": {
+            "kind": "object",
+            "type": "typing._AnnotatedAlias"
+          },
           "apply_openapi_error_contract": {
             "kind": "function",
             "signature": "(schema: 'dict[str, Any]', *, operation_error_codes: 'Mapping[str, Collection[str]] | None' = None) -> 'dict[str, Any]'"
@@ -58508,7 +60512,7 @@
           },
           "operation_openapi": {
             "kind": "function",
-            "signature": "(contract: 'HttpOperationContract', *, error_type: 'object' = <class 'http_api_contracts.ErrorResponse'>) -> 'dict[str, Any]'"
+            "signature": "(contract: 'HttpOperationContract', *, error_type: 'object | None' = None) -> 'dict[str, Any]'"
           },
           "parse_declared_error_payload": {
             "kind": "function",
@@ -58517,6 +60521,14 @@
           "parse_error_payload": {
             "kind": "function",
             "signature": "(payload: 'object', *, fallback_message: 'str') -> 'tuple[str, str, dict[str, Any]]'"
+          },
+          "parse_quoted_sha256_identity": {
+            "kind": "function",
+            "signature": "(value: 'str') -> 'str'"
+          },
+          "quote_sha256_identity": {
+            "kind": "function",
+            "signature": "(value: 'str') -> 'str'"
           },
           "safe_http_base_url": {
             "kind": "function",
@@ -58529,6 +60541,10 @@
           "structural_model_catalog": {
             "kind": "function",
             "signature": "(contracts: 'Sequence[HttpOperationContract]', *, additional_models: 'Sequence[type[BaseModel]]' = ()) -> 'dict[str, dict[str, Any]]'"
+          },
+          "validate_sha256_identity": {
+            "kind": "function",
+            "signature": "(value: 'str') -> 'str'"
           }
         },
         "module": "http_api_contracts"
@@ -58963,11 +60979,11 @@
               },
               "get_collection_upload_session_unit": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', volume_id: 'str', unit: 'int') -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', volume_id: 'CollectionUploadVolumeId', unit: 'CollectionUploadUnitNumber') -> 'CollectionUploadUnitWorkDocument'"
               },
               "get_collection_upload_session_volume": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', volume_id: 'str') -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', volume_id: 'CollectionUploadVolumeId') -> 'CollectionUploadVolumeWorkDocument'"
               },
               "get_download_quota": {
                 "kind": "method",
@@ -59023,7 +61039,7 @@
               },
               "list_collection_upload_session_volumes": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId') -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId') -> 'CollectionUploadVolumeSetDocument'"
               },
               "list_collection_upload_sessions": {
                 "kind": "method",
@@ -59075,7 +61091,7 @@
               },
               "put_collection_upload_session_unit": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', volume_id: 'str', unit: 'int', *, plan_sha256: 'str', content: 'bytes') -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', volume_id: 'CollectionUploadVolumeId', unit: 'CollectionUploadUnitNumber', *, plan_sha256: 'str', content: 'bytes') -> 'CollectionUploadUnitWorkDocument'"
               },
               "register_collection_upload_session_files": {
                 "kind": "method",
@@ -59528,7 +61544,7 @@
           },
           "put_collection_upload_unit": {
             "kind": "function",
-            "signature": "(api: 'CollectionUnitApi', collection_id: 'CollectionId', volume: 'Mapping[str, object]', unit: 'Mapping[str, object]', *, content_for_unit: 'UnitContent', retry_notice: 'RetryNotice | None' = None, retry_initial_delay_seconds: 'float' = 1.0, retry_max_delay_seconds: 'float' = 10.0) -> 'int'"
+            "signature": "(api: 'CollectionUnitApi', collection_id: 'CollectionId', volume: 'CollectionUploadVolumeWorkDocument', unit: 'CollectionUploadUnitWorkDocument', *, content_for_unit: 'UnitContent', retry_notice: 'RetryNotice | None' = None, retry_initial_delay_seconds: 'float' = 1.0, retry_max_delay_seconds: 'float' = 10.0) -> 'int'"
           },
           "upload_collection_units": {
             "kind": "function",
@@ -60730,7 +62746,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "8eee1223fc83d98e13d1fe2888cebedacb3643bc4c498eef76e2156817c3132b",
+            "schema_sha256": "208d3860e766580abfac8c2420f8c6a05612684724429ebd4c32fccd5d6549f7",
             "signature": "(*, format: Literal['riverhog-artifact-custody-receipt/v1'] = 'riverhog-artifact-custody-receipt/v1', collection_id: CollectionId, path: str, bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], archive_objects: Annotated[tuple[riverhog_protocol.collection_upload_transport.CollectionUploadCustodyObjectDocument, ...], MinLen(min_length=1)], receipt_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')]) -> None"
           },
           "CollectionUploadCustodyMode": {
@@ -60739,8 +62755,8 @@
           },
           "CollectionUploadCustodyObjectDocument": {
             "kind": "class",
-            "schema_sha256": "67b3dc951f3ecebe3995901adf6474c0b03386e06d425c0033fa6b94b5790434",
-            "signature": "(*, volume_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=None, pattern='^\\\\S(?:[\\\\s\\\\S]*\\\\S)?$', ascii_only=None)], sealed_receipt_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')]) -> None"
+            "schema_sha256": "af3e336b9199b8ef10b5711fc58cac2a983509037b9e7f3f843a1cbda0d1afad",
+            "signature": "(*, volume_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^(?:pack|segment)-[0-9]{12}$', ascii_only=None)], sealed_receipt_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')]) -> None"
           },
           "CollectionUploadFileBatchDocument": {
             "kind": "class",
@@ -60784,8 +62800,12 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "626b088e6dec0d127ec33617cddabb482f0f4ed3382ed9cc63d3cda80852b5d8",
-            "signature": "(*, unit: Annotated[int, Strict(strict=True), Ge(ge=0)], payload_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], plaintext_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], sources: collections.abc.Sequence[riverhog_protocol.collection_upload_transport.CollectionUploadUnitSourceDocument]) -> None"
+            "schema_sha256": "8443ecb29ca2ac5ea316579ad0745591cc0f05015ed5d91ab6ad8da50ee5d43b",
+            "signature": "(*, unit: Annotated[int, Ge(ge=0)], payload_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], plaintext_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], sources: collections.abc.Sequence[riverhog_protocol.collection_upload_transport.CollectionUploadUnitSourceDocument]) -> None"
+          },
+          "CollectionUploadUnitNumber": {
+            "kind": "object",
+            "type": "typing._AnnotatedAlias"
           },
           "CollectionUploadUnitSourceDocument": {
             "kind": "class",
@@ -60795,8 +62815,17 @@
                 "signature": "(cls, value: 'str') -> 'str'"
               }
             },
-            "schema_sha256": "019ec35adf74789273eff401105bb65e7e9c5de94a8dbc9b22a202842e5d0930",
-            "signature": "(*, path: str, offset: Annotated[int, Strict(strict=True), Ge(ge=0)], bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')]) -> None"
+            "schema_sha256": "3870870a9e0b96323d9a6bb59e3124806d4f2cbfd6db047e34765004a7c96160",
+            "signature": "(*, path: str, offset: Annotated[int, Strict(strict=True), Ge(ge=0)], bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], artifact_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')]) -> None"
+          },
+          "CollectionUploadUnitState": {
+            "kind": "object",
+            "type": "typing._LiteralGenericAlias"
+          },
+          "CollectionUploadUnitWorkDocument": {
+            "kind": "class",
+            "schema_sha256": "b9004246612baeb93788dca654092d496459c9533f39fa7d6f3643cb050fdc43",
+            "signature": "(*, unit: Annotated[int, Ge(ge=0)], payload_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], plaintext_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], sources: collections.abc.Sequence[riverhog_protocol.collection_upload_transport.CollectionUploadUnitSourceDocument], state: Literal['pending', 'committed']) -> None"
           },
           "CollectionUploadVolumeDocument": {
             "kind": "class",
@@ -60806,12 +62835,57 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "a3d73f1358c8b0865f59d42e1b52536ecf6a5939fba7840d986fcdcf91b993b8",
-            "signature": "(*, volume_id: str, sequence: Annotated[int, Strict(strict=True), Ge(ge=0)], kind: Literal['pack', 'segment'], plan_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], plaintext_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], source_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], units: Annotated[collections.abc.Sequence[riverhog_protocol.collection_upload_transport.CollectionUploadUnitDocument], MinLen(min_length=1)]) -> None"
+            "schema_sha256": "8d4aa1a1197025e72388b23422113a859da51c2d520a0bb2d9d935fb165e3929",
+            "signature": "(*, volume_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^(?:pack|segment)-[0-9]{12}$', ascii_only=None)], sequence: Annotated[int, Strict(strict=True), Ge(ge=0)], kind: Literal['pack', 'segment'], plan_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], plaintext_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], source_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], units: Annotated[collections.abc.Sequence[riverhog_protocol.collection_upload_transport.CollectionUploadUnitDocument], MinLen(min_length=1)]) -> None"
+          },
+          "CollectionUploadVolumeId": {
+            "kind": "object",
+            "type": "typing._AnnotatedAlias"
           },
           "CollectionUploadVolumeKind": {
             "kind": "object",
             "type": "typing._LiteralGenericAlias"
+          },
+          "CollectionUploadVolumeSetDocument": {
+            "kind": "class",
+            "members": {
+              "canonical_collection_id": {
+                "kind": "classmethod",
+                "signature": "(cls, value: 'int') -> 'int'"
+              },
+              "validate_complete_volume_set": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
+              }
+            },
+            "schema_sha256": "d85e623932e255ee244ab0a8a9aa3eccbb1a1d48eb157d267f7cc799a890fcb1",
+            "signature": "(*, collection_id: CollectionId, volumes: collections.abc.Sequence[riverhog_protocol.collection_upload_transport.CollectionUploadVolumeWorkDocument]) -> None"
+          },
+          "CollectionUploadVolumeState": {
+            "kind": "object",
+            "type": "typing._LiteralGenericAlias"
+          },
+          "CollectionUploadVolumeSummaryDocument": {
+            "kind": "class",
+            "members": {
+              "validate_volume_identity": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
+              }
+            },
+            "schema_sha256": "517cf09ed2715ad08093baa24b0dc1a1107e379aa532ebf1abe8c97b4eca8fb7",
+            "signature": "(*, volume_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^(?:pack|segment)-[0-9]{12}$', ascii_only=None)], sequence: Annotated[int, Strict(strict=True), Ge(ge=0)], kind: Literal['pack', 'segment']) -> None"
+          },
+          "CollectionUploadVolumeWorkDocument": {
+            "kind": "class",
+            "members": {
+              "validate_work_state": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
+              }
+            },
+            "schema_sha256": "54454e636517cd6011c03af69b6cd8d19632787883521025d58dbc03a37b730b",
+            "signature": "(*, volume_id: Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^(?:pack|segment)-[0-9]{12}$', ascii_only=None)], sequence: Annotated[int, Strict(strict=True), Ge(ge=0)], kind: Literal['pack', 'segment'], plan_sha256: Annotated[str, _PydanticGeneralMetadata(pattern='^[0-9a-f]{64}$')], plaintext_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], source_bytes: Annotated[int, Strict(strict=True), Ge(ge=0)], units: Annotated[collections.abc.Sequence[riverhog_protocol.collection_upload_transport.CollectionUploadUnitWorkDocument], MinLen(min_length=1)], state: Literal['planned', 'uploading', 'sealed']) -> None"
           },
           "Conflict": {
             "kind": "class",
@@ -63161,8 +65235,14 @@
           },
           "StorageAdapterConformanceResult": {
             "kind": "class",
-            "schema_sha256": "6dcac8d7d777a4b01a730619ccae210eef9825c1346b598859676a030054f530",
-            "signature": "(*, format: Literal['riverhog-storage-adapter-conformance-result/v1'] = 'riverhog-storage-adapter-conformance-result/v1', protocol: Literal['riverhog-storage-adapter/v1'] = 'riverhog-storage-adapter/v1', status: Literal['conformant'] = 'conformant', coverage: Literal['complete'] = 'complete', implementation_id: str, implementation_version: str, checks: tuple[str, ...]) -> None"
+            "members": {
+              "validate_exact_coverage": {
+                "kind": "method",
+                "signature": "(self) -> 'Self'"
+              }
+            },
+            "schema_sha256": "af805afd4d0dffb329ba08dde971222ad008eab2aec7afc4abc0303dd1956caf",
+            "signature": "(*, format: Literal['riverhog-storage-adapter-conformance-result/v1'] = 'riverhog-storage-adapter-conformance-result/v1', protocol: Literal['riverhog-storage-adapter/v1'] = 'riverhog-storage-adapter/v1', status: Literal['conformant'] = 'conformant', coverage: Literal['complete'] = 'complete', descriptor: riverhog_storage_adapter_protocol.protocol.AdapterDescriptor, checks: tuple[str, ...]) -> None"
           },
           "StorageAdapterHttpBinding": {
             "kind": "class",
@@ -64327,8 +66407,8 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "d5cfbac08b6506b0d963fd8a6c699b0047372bb13fadbdc5a5fd5d49f6d8d060",
-            "signature": "(*, format: Literal['stove0-observer-conformance-result/v1'] = 'stove0-observer-conformance-result/v1', status: Literal['conformant', 'partially-exercised', 'inspected'], descriptor: stove0_protocol.models.ObserverDescriptor, coverage: stove0_observer_support.conformance.ObserverConformanceCoverage, contracts: tuple[stove0_observer_support.conformance.ObserverContractConformance, ...], observations: tuple[stove0_protocol.models.ObservationResult, ...] = ()) -> None"
+            "schema_sha256": "5dd808370ec4b53fabf2190ef04767372551c29cdf5e68d88005883ce181c4ef",
+            "signature": "(*, format: Literal['stove0-observer-conformance-result/v1'] = 'stove0-observer-conformance-result/v1', status: Literal['conformant', 'partially-exercised', 'inspected'], descriptor: stove0_protocol.models.ObserverDescriptor, coverage: stove0_observer_support.conformance.ObserverConformanceCoverage, contracts: tuple[stove0_observer_support.conformance.ObserverContractConformance, ...]) -> None"
           },
           "ObserverHttpBinding": {
             "kind": "class",
@@ -66637,7 +68717,7 @@
                 "signature": "(self) -> 'Self'"
               }
             },
-            "schema_sha256": "bc8aa921a6c40706b57f2aa1b084ff6782c3733a78b3a95be9ee2b2adfd9579e",
+            "schema_sha256": "9f240be02331d5cce68d4f0f282879639ab5e0f262c2c7178c629eb7b65c446e",
             "signature": "(*, format: Literal['stove0-target-conformance-result/v1'] = 'stove0-target-conformance-result/v1', status: Literal['conformant', 'partially-exercised', 'inspected'], target: stove0_target_protocol.protocol.TargetContract, coverage: stove0_target_support.conformance.TargetConformanceCoverage, operations: tuple[stove0_target_support.conformance.TargetOperationConformance, ...], operation_evidence: tuple[stove0_target_support.conformance.TargetOperationConformanceEvidence, ...] = ()) -> None"
           },
           "TargetContract": {

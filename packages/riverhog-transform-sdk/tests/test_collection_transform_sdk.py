@@ -18,6 +18,10 @@ from riverhog_api_client.producer import (
     ProducerProvenance,
     ProducerStream,
 )
+from riverhog_protocol import (
+    CollectionUploadUnitWorkDocument,
+    CollectionUploadVolumeSetDocument,
+)
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     PRODUCER_EVIDENCE_PATH,
@@ -310,35 +314,51 @@ class UploadApi:
     def heartbeat_collection_upload_session(self, _collection_id: int) -> dict[str, Any]:
         return {"state": "open"}
 
-    def list_collection_upload_session_volumes(self, _collection_id: int) -> dict[str, Any]:
+    def list_collection_upload_session_volumes(
+        self,
+        collection_id: int,
+    ) -> CollectionUploadVolumeSetDocument:
         self.volume_list_calls += 1
+        return self._volume_set(collection_id)
+
+    def _volume_set(self, collection_id: int) -> CollectionUploadVolumeSetDocument:
         if not self.discovery_closed:
-            return {"volumes": []}
+            return CollectionUploadVolumeSetDocument(collection_id=collection_id, volumes=())
         sources = [
             {
                 "path": item["path"],
                 "offset": 0,
                 "bytes": item["bytes"],
-                "sha256": item["sha256"],
+                "artifact_sha256": item["sha256"],
             }
             for item in self.registered
         ]
-        return {
-            "volumes": [
-                {
-                    "volume_id": "pack-000000000000",
-                    "plan_sha256": "8" * 64,
-                    "units": [
-                        {
-                            "unit": 0,
-                            "payload_bytes": sum(int(item["bytes"]) for item in sources),
-                            "sources": sources,
-                            "state": "committed" if self.committed else "pending",
-                        }
-                    ],
-                }
-            ]
-        }
+        total_bytes = sum(int(item["bytes"]) for item in sources)
+        return CollectionUploadVolumeSetDocument.model_validate(
+            {
+                "collection_id": collection_id,
+                "volumes": [
+                    {
+                        "volume_id": "pack-000000000000",
+                        "sequence": 0,
+                        "kind": "pack",
+                        "state": "sealed" if self.committed else "planned",
+                        "plan_sha256": "8" * 64,
+                        "plaintext_bytes": total_bytes,
+                        "source_bytes": total_bytes,
+                        "units": [
+                            {
+                                "unit": 0,
+                                "payload_bytes": total_bytes,
+                                "plaintext_bytes": total_bytes,
+                                "sources": sources,
+                                "state": "committed" if self.committed else "pending",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
 
     def put_collection_upload_session_unit(
         self,
@@ -348,13 +368,18 @@ class UploadApi:
         *,
         content: bytes,
         **_kwargs: Any,
-    ) -> dict[str, Any]:
+    ) -> CollectionUploadUnitWorkDocument:
         self.uploaded = content
         self.committed = True
-        return {"state": "committed"}
+        return self._volume_set(7).volumes[0].units[0]
 
-    def get_collection_upload_session_unit(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"state": "committed" if self.committed else "pending"}
+    def get_collection_upload_session_unit(
+        self,
+        collection_id: int,
+        _volume_id: str,
+        _unit: int,
+    ) -> CollectionUploadUnitWorkDocument:
+        return self._volume_set(collection_id).volumes[0].units[0]
 
     def complete_collection_upload_session(
         self,
@@ -931,7 +956,7 @@ def test_producer_file_rejects_mutation_between_hash_and_upload(
         def list_collection_upload_session_volumes(
             self,
             collection_id: int,
-        ) -> dict[str, Any]:
+        ) -> CollectionUploadVolumeSetDocument:
             source.write_bytes(b"X" * len(b"generated output"))
             return super().list_collection_upload_session_volumes(collection_id)
 

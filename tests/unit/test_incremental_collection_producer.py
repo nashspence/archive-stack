@@ -28,6 +28,8 @@ from riverhog_core.services.collection_uploads import SqlAlchemyCollectionUpload
 from riverhog_protocol import (
     CollectionUploadArtifactCustodyReceiptDocument,
     CollectionUploadCustodyObjectDocument,
+    CollectionUploadUnitWorkDocument,
+    CollectionUploadVolumeSetDocument,
 )
 from riverhog_protocol.collection_workflows import DERIVATION_EVIDENCE_PATH
 
@@ -99,7 +101,7 @@ class _CustodyApi:
                 sha256=str(row["sha256"]),
                 archive_objects=(
                     CollectionUploadCustodyObjectDocument(
-                        volume_id=f"sealed-{len(self.rows):012d}",
+                        volume_id=f"pack-{len(self.rows):012d}",
                         sealed_receipt_sha256="f" * 64,
                     ),
                 ),
@@ -108,8 +110,11 @@ class _CustodyApi:
             self.rows[path] = row
         return {"files": list(self.rows.values()), "volumes": []}
 
-    def list_collection_upload_session_volumes(self, _collection_id: int) -> dict[str, object]:
-        return {"volumes": []}
+    def list_collection_upload_session_volumes(
+        self,
+        collection_id: int,
+    ) -> CollectionUploadVolumeSetDocument:
+        return CollectionUploadVolumeSetDocument(collection_id=collection_id, volumes=())
 
     def put_collection_upload_session_provenance_journal(
         self, *_args: object, **_kwargs: object
@@ -223,7 +228,7 @@ def test_incremental_producer_keeps_local_custody_when_receipt_identity_is_wrong
                     sha256=str(row["sha256"]),
                     archive_objects=(
                         CollectionUploadCustodyObjectDocument(
-                            volume_id="sealed-000000000000",
+                            volume_id="pack-000000000000",
                             sealed_receipt_sha256="f" * 64,
                         ),
                     ),
@@ -347,17 +352,21 @@ class _ServiceApi:
     def list_collection_upload_session_volumes(
         self,
         collection_id: int,
-    ) -> dict[str, object]:
+    ) -> CollectionUploadVolumeSetDocument:
         self.volume_list_calls += 1
-        return self.service.list_volumes(collection_id)
+        return CollectionUploadVolumeSetDocument.model_validate(
+            self.service.list_volumes(collection_id)
+        )
 
     def get_collection_upload_session_unit(
         self,
         collection_id: int,
         volume_id: str,
         unit: int,
-    ) -> dict[str, object]:
-        return self.service.get_unit(collection_id, volume_id, unit)
+    ) -> CollectionUploadUnitWorkDocument:
+        return CollectionUploadUnitWorkDocument.model_validate(
+            self.service.get_unit(collection_id, volume_id, unit)
+        )
 
     def put_collection_upload_session_unit(
         self,
@@ -367,13 +376,15 @@ class _ServiceApi:
         *,
         plan_sha256: str,
         content: bytes,
-    ) -> dict[str, object]:
-        return self.service.upload_unit(
-            collection_id,
-            volume_id,
-            unit,
-            plan_sha256=plan_sha256,
-            content=content,
+    ) -> CollectionUploadUnitWorkDocument:
+        return CollectionUploadUnitWorkDocument.model_validate(
+            self.service.upload_unit(
+                collection_id,
+                volume_id,
+                unit,
+                plan_sha256=plan_sha256,
+                content=content,
+            )
         )
 
     def complete_collection_upload_session(

@@ -6,7 +6,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from http_api_contracts import operation_interface
+from http_api_contracts import (
+    QuotedSha256Identity,
+    operation_interface,
+    parse_quoted_sha256_identity,
+)
 from riverhog_protocol import (
     ArchiveStoreName,
     CollectionIdParameter,
@@ -200,9 +204,9 @@ def create_retrieval_job(
     request: CreateRetrievalJobRequest,
     principal: RetrievalManager,
     container: ContainerDep,
-    if_match: Annotated[str, Header(alias="If-Match")],
+    if_match: Annotated[QuotedSha256Identity, Header(alias="If-Match")],
 ) -> RetrievalJobOut:
-    plan_etag = if_match.strip().strip('"')
+    plan_etag = parse_quoted_sha256_identity(if_match)
     payload = container.retrieval.create(
         app=principal.app,
         key_id=principal.key_id,

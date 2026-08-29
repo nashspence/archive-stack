@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from http_api_contracts import http_operation_inventory, structural_model_catalog
+from http_api_contracts import (
+    canonical_json_bytes,
+    http_operation_inventory,
+    structural_model_catalog,
+)
 from riverhog_storage_adapter_protocol import STORAGE_ADAPTER_PROTOCOL, StorageAdapterError
 
+from riverhog_storage_adapter_support.conformance import StorageAdapterConformanceResult
 from riverhog_storage_adapter_support.http_binding import STORAGE_ADAPTER_HTTP_OPERATIONS
 
 STORAGE_ADAPTER_SCHEMA_BUNDLE_FORMAT = "riverhog-storage-adapter-schema-bundle/v1"
 
 
 def storage_adapter_schema_bundle() -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "format": STORAGE_ADAPTER_SCHEMA_BUNDLE_FORMAT,
         "protocol": STORAGE_ADAPTER_PROTOCOL,
         "compatibility": {
@@ -38,8 +44,12 @@ def storage_adapter_schema_bundle() -> dict[str, Any]:
         },
         "schemas": structural_model_catalog(
             STORAGE_ADAPTER_HTTP_OPERATIONS,
-            additional_models=(StorageAdapterError,),
+            additional_models=(StorageAdapterConformanceResult, StorageAdapterError),
         ),
+    }
+    return {
+        **payload,
+        "bundle_sha256": hashlib.sha256(canonical_json_bytes(payload)).hexdigest(),
     }
 
 

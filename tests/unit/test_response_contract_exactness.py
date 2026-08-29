@@ -16,6 +16,7 @@ from riverhog_api.schemas.archive import (
 )
 from riverhog_api.schemas.collections import (
     CollectionDeletionPlanOut,
+    CollectionUploadDiscardPlanOut,
     CollectionUploadFileOut,
     CollectionUploadListItemOut,
     CollectionUploadSessionFilesRegistrationOut,
@@ -92,6 +93,38 @@ def _retirement(status: str, challenge: str | None, blockers: list[str]) -> dict
     }
 
 
+def test_upload_discard_readiness_requires_orphaned_custody_but_orphans_may_be_blocked() -> None:
+    payload = {
+        "status": "ready",
+        "collection_id": 1,
+        "warning": "warning",
+        "expires_at": "2026-08-25T00:00:00.000000Z",
+        "challenge": "challenge",
+        "state": "orphaned",
+        "files": 1,
+        "bytes": 0,
+        "custody": {"state": "complete"},
+        "archive_objects": 1,
+        "blockers": [],
+    }
+    CollectionUploadDiscardPlanOut.model_validate(payload)
+
+    blocked_orphan = deepcopy(payload)
+    blocked_orphan.update(
+        {
+            "status": "blocked",
+            "challenge": None,
+            "blockers": ["owning processing claim remains active"],
+        }
+    )
+    CollectionUploadDiscardPlanOut.model_validate(blocked_orphan)
+
+    ready_open = deepcopy(payload)
+    ready_open["state"] = "open"
+    with pytest.raises(ValidationError, match="orphaned custody"):
+        CollectionUploadDiscardPlanOut.model_validate(ready_open)
+
+
 @pytest.mark.parametrize(
     ("model", "payload"),
     (
@@ -128,7 +161,7 @@ def test_terminal_job_responses_require_their_evidence() -> None:
     retrieval_job = {
         "id": "job",
         "state": "failed",
-        "plan_etag": "etag",
+        "plan_etag": "a" * 64,
         "created_at": "2026-08-25T00:00:00.000000Z",
         "requested_at": None,
         "restore_requested_at": None,
@@ -170,7 +203,7 @@ def test_operational_responses_reject_contradictory_state_evidence() -> None:
     retrieval_job = {
         "id": "job",
         "state": "ready",
-        "plan_etag": "etag",
+        "plan_etag": "a" * 64,
         "created_at": "2026-08-25T00:00:00.000000Z",
         "requested_at": "2026-08-25T00:00:00.000000Z",
         "restore_requested_at": None,
@@ -442,11 +475,27 @@ def test_finalized_upload_sessions_require_immutable_evidence() -> None:
         {"state": "pending", "files": 2, "bytes": 0},
         {"state": "pending", "files": 1, "bytes": 3},
         {"state": "pending", "files": 0, "bytes": 1},
+        {"state": "pending", "files": 1, "bytes": 2},
     ):
         impossible_progress = deepcopy(open_payload)
         impossible_progress.update({"files_total": 1, "bytes_total": 2, "custody": progress})
         with pytest.raises(ValidationError, match="custody"):
             CollectionUploadSessionOut.model_validate(impossible_progress)
+
+    for totals, progress in (
+        ((2, 0), {"state": "pending", "files": 1, "bytes": 0}),
+        ((2, 10), {"state": "pending", "files": 2, "bytes": 5}),
+        ((2, 10), {"state": "pending", "files": 1, "bytes": 10}),
+    ):
+        partial_progress = deepcopy(open_payload)
+        partial_progress.update(
+            {
+                "files_total": totals[0],
+                "bytes_total": totals[1],
+                "custody": progress,
+            }
+        )
+        CollectionUploadSessionOut.model_validate(partial_progress)
 
     invalid_phase = deepcopy(open_payload)
     invalid_phase["archive_phase"] = "completed"

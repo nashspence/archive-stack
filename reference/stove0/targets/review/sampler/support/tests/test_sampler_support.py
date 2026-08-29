@@ -8,7 +8,8 @@ from pathlib import Path
 
 import httpx
 import pytest
-from http_api_contracts import http_operation_inventory
+from http_api_contracts import canonical_json_bytes, http_operation_inventory
+from pydantic import ValidationError
 from stove0_protocol import JsonSchemaDocument
 from stove0_review_sampler_client import ReviewSamplerClient
 from stove0_review_sampler_protocol import (
@@ -200,8 +201,17 @@ def test_binding_client_and_conformance_share_the_exact_two_endpoint_contract() 
     assert report.status == "conformant"
     assert report.coverage.model_dump() == {"advertised": 1, "exercised": 1, "complete": True}
     assert report.sampler.image_digest == _sha("9")
+    assert report.request == request
     assert report.sample is not None and report.sample.state == "succeeded"
+    changed = report.model_dump(mode="json")
+    changed.pop("request")
+    with pytest.raises(ValidationError, match="inconsistent"):
+        type(report).model_validate(changed)
     bundle = sampler_schema_bundle()
+    second = sampler_schema_bundle()
+    assert bundle == second
+    digest = bundle.pop("bundle_sha256")
+    assert hashlib.sha256(canonical_json_bytes(bundle)).hexdigest() == digest
     assert bundle["http_binding"]["operations"] == http_operation_inventory(SAMPLER_HTTP_OPERATIONS)
     assert bundle["semantic_acceptance"] == {
         "kind": "request-bound-result",
@@ -210,6 +220,18 @@ def test_binding_client_and_conformance_share_the_exact_two_endpoint_contract() 
     assert bundle["schemas"]["SamplerConformanceResult"]["properties"]["format"]["const"] == (
         "stove0-review-sampler-conformance-result/v1"
     )
+    referenced = {
+        value
+        for operation in bundle["http_binding"]["operations"]
+        for value in (
+            operation["request"]["schema"],
+            operation["response"]["schema"],
+            operation["error_schema"],
+        )
+        if value is not None
+    }
+    assert referenced <= set(bundle["schemas"])
+    assert "ErrorResponse" in referenced
 
 
 def test_sampler_binding_serializes_workspace_execution_by_default() -> None:

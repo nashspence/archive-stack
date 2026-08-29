@@ -14,6 +14,7 @@ import pytest
 import stove0_observer_client.providers as observer_provider_module
 from http_api_contracts import http_operation_inventory
 from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 from riverhog_protocol.collection_workflows import PRODUCER_EVIDENCE_PATH
 from stove0_observer_client import (
     ContentObserverClient,
@@ -344,12 +345,18 @@ def test_conformance_report_checks_contract_schemas_and_result_binding() -> None
     assert report.status == "conformant"
     assert report.coverage.complete is True
     assert report.descriptor == descriptor
-    assert report.observations[0].facts == {"bytes": len(api.data)}
+    assert report.contracts[0].evidence is not None
+    assert report.contracts[0].evidence.observation.facts == {"bytes": len(api.data)}
     contract_result = report.contracts[0]
     assert contract_result.contract_id == contract.id
     assert contract_result.contract_sha256 == contract.contract_sha256
     assert contract_result.execution == "exercised"
     assert contract_result.semantic_conformance == "schema-only"
+
+    changed = report.model_dump(mode="json")
+    changed["contracts"][0]["contract_id"] = "fixture.changed/v1"
+    with pytest.raises(ValidationError, match="differs from the descriptor"):
+        type(report).model_validate(changed)
 
 
 def test_conformance_report_exercises_semantics_locally_not_as_observer_calls() -> None:
@@ -926,6 +933,19 @@ def test_observer_schema_bundle_is_deterministic_and_self_validating() -> None:
         "http_operations": "http_binding.operations",
         "semantic_acceptance": "semantic_acceptance",
     }
+    assert first["semantic_acceptance"]["identity"] == ["id", "profile_sha256"]
+    referenced = {
+        value
+        for operation in first["http_binding"]["operations"]
+        for value in (
+            operation["request"]["schema"],
+            operation["response"]["schema"],
+            operation["error_schema"],
+        )
+        if value is not None
+    }
+    assert referenced <= set(first["schemas"])
+    assert "ErrorResponse" in referenced
     assert first["schemas"]["ObserverConformanceResult"]["properties"]["format"]["const"] == (
         "stove0-observer-conformance-result/v1"
     )

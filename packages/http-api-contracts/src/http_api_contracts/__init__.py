@@ -17,6 +17,16 @@ CanonicalVisibleText = Annotated[
     str,
     StringConstraints(min_length=1, pattern=CANONICAL_VISIBLE_TEXT_PATTERN),
 ]
+Sha256Identity = Annotated[
+    str,
+    StringConstraints(pattern=r"^[0-9a-f]{64}$"),
+]
+QuotedSha256Identity = Annotated[
+    str,
+    StringConstraints(pattern=r'^"[0-9a-f]{64}"$'),
+]
+_SHA256_IDENTITY = TypeAdapter(Sha256Identity)
+_QUOTED_SHA256_IDENTITY = TypeAdapter(QuotedSha256Identity)
 
 FRAMED_BODY_FORMAT = "riverhog-json-opaque-framing/v1"
 FRAMED_BODY_MEDIA_TYPE = "application/vnd.riverhog.json-opaque-framing"
@@ -82,6 +92,24 @@ def canonical_json_bytes(value: object) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def validate_sha256_identity(value: str) -> str:
+    """Validate one exact lowercase SHA-256 HTTP identity."""
+
+    return _SHA256_IDENTITY.validate_python(value, strict=True)
+
+
+def quote_sha256_identity(value: str) -> str:
+    """Return one exact strong quoted SHA-256 HTTP identity."""
+
+    return f'"{validate_sha256_identity(value)}"'
+
+
+def parse_quoted_sha256_identity(value: str) -> str:
+    """Parse one exact strong quoted SHA-256 HTTP identity."""
+
+    return _QUOTED_SHA256_IDENTITY.validate_python(value, strict=True)[1:-1]
 
 
 def closed_literal_values(literal_type: object) -> frozenset[str]:
@@ -329,6 +357,7 @@ class HttpOperationContract:
     errors: tuple[HttpErrorContract, ...] = ()
     path_parameters: tuple[HttpPathParameterContract, ...] = ()
     response_headers: tuple[HttpResponseHeaderContract, ...] = ()
+    error_type: type[BaseModel] = ErrorResponse
 
     def __post_init__(self) -> None:
         if not self.path.startswith("/v1/"):
@@ -349,6 +378,8 @@ class HttpOperationContract:
         header_names = tuple(header.name.casefold() for header in self.response_headers)
         if len(header_names) != len(set(header_names)):
             raise ValueError("HTTP response header names must be unique")
+        if not isinstance(self.error_type, type) or not issubclass(self.error_type, BaseModel):
+            raise TypeError("HTTP error declaration is not a Pydantic model")
 
     @property
     def error_statuses(self) -> tuple[int, ...]:
@@ -430,6 +461,7 @@ def http_operation_inventory(
                 ],
             },
             "errors": [{"code": error.code, "status": error.status} for error in operation.errors],
+            "error_schema": _type_name(operation.error_type) if operation.errors else None,
         }
         for operation in contracts
     ]
@@ -450,6 +482,8 @@ def structural_model_catalog(
             if not isinstance(value, type) or not issubclass(value, BaseModel):
                 raise TypeError("HTTP declaration is not a Pydantic model")
             models.add(value)
+        if operation.errors:
+            models.add(operation.error_type)
     return {
         model.__name__: model.model_json_schema(mode="validation")
         for model in sorted(models, key=lambda item: item.__name__)
@@ -499,11 +533,12 @@ def inline_type_schema(value: object) -> dict[str, Any]:
 def operation_openapi(
     contract: HttpOperationContract,
     *,
-    error_type: object = ErrorResponse,
+    error_type: object | None = None,
 ) -> dict[str, Any]:
     """Build FastAPI route metadata without changing framework-neutral dispatch."""
 
     responses: dict[int, dict[str, Any]] = {}
+    effective_error_type = contract.error_type if error_type is None else error_type
     for status in contract.success_statuses:
         response: dict[str, Any] = {"description": HTTPStatus(status).phrase}
         if contract.response_headers:
@@ -535,7 +570,7 @@ def operation_openapi(
             "x-riverhog-error-codes": sorted(
                 error.code for error in contract.errors if error.status == status
             ),
-            "content": {"application/json": {"schema": inline_type_schema(error_type)}},
+            "content": {"application/json": {"schema": inline_type_schema(effective_error_type)}},
         }
     extra: dict[str, Any] = {}
     if contract.request_kind == "json":
@@ -827,6 +862,8 @@ __all__ = [
     "FRAMED_BODY_MEDIA_TYPE",
     "JSON_SEQUENCE_MEDIA_TYPE",
     "PUBLIC_ERROR_CODES",
+    "QuotedSha256Identity",
+    "Sha256Identity",
     "CanonicalVisibleText",
     "CompleteEnumerationBegin",
     "CompleteEnumerationEnd",
@@ -859,7 +896,10 @@ __all__ = [
     "iter_complete_enumeration",
     "parse_error_payload",
     "parse_declared_error_payload",
+    "parse_quoted_sha256_identity",
+    "quote_sha256_identity",
     "safe_http_base_url",
     "status_for_error_code",
     "structural_model_catalog",
+    "validate_sha256_identity",
 ]

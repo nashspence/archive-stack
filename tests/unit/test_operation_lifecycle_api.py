@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
 from xml.etree import ElementTree
 
 import pytest
@@ -38,6 +37,7 @@ from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
+from riverhog_protocol import CollectionUploadUnitWorkDocument
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     ArtifactDisposition,
@@ -197,13 +197,12 @@ def _api(
     return api
 
 
-def _unit_content(root: Path, unit: dict[str, Any]) -> bytes:
+def _unit_content(root: Path, unit: CollectionUploadUnitWorkDocument) -> bytes:
     content = bytearray()
-    for source in unit["sources"]:
-        payload = (root / source["path"]).read_bytes()
-        start = int(source["offset"])
-        content.extend(payload[start : start + int(source["bytes"])])
-    assert len(content) == unit["payload_bytes"]
+    for source in unit.sources:
+        payload = (root / source.path).read_bytes()
+        content.extend(payload[source.offset : source.offset + source.bytes])
+    assert len(content) == unit.payload_bytes
     return bytes(content)
 
 
@@ -385,21 +384,22 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         provenance_identity=provenance.identity,
     )
     volume_page = operator.list_collection_upload_session_volumes(collection_id)
-    for volume in volume_page["volumes"]:
+    for volume in volume_page.volumes:
         shown = operator.get_collection_upload_session_volume(
-            collection_id, str(volume["volume_id"])
+            collection_id,
+            volume.volume_id,
         )
-        for unit in shown["units"]:
+        for unit in shown.units:
             current = operator.get_collection_upload_session_unit(
                 collection_id,
-                str(volume["volume_id"]),
-                int(unit["unit"]),
+                volume.volume_id,
+                unit.unit,
             )
             operator.put_collection_upload_session_unit(
                 collection_id,
-                str(volume["volume_id"]),
-                int(unit["unit"]),
-                plan_sha256=str(volume["plan_sha256"]),
+                volume.volume_id,
+                unit.unit,
+                plan_sha256=volume.plan_sha256,
                 content=_unit_content(source_root, current),
             )
     with operator.stream_collection_upload_session_files(collection_id) as items:
@@ -893,22 +893,22 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         content_identity=collection_content_identity(output_entries),
         provenance_identity=output_provenance.identity,
     )
-    for volume in target.list_collection_upload_session_volumes(output_collection_id)["volumes"]:
+    for volume in target.list_collection_upload_session_volumes(output_collection_id).volumes:
         shown = target.get_collection_upload_session_volume(
             output_collection_id,
-            str(volume["volume_id"]),
+            volume.volume_id,
         )
-        for unit in shown["units"]:
+        for unit in shown.units:
             current = target.get_collection_upload_session_unit(
                 output_collection_id,
-                str(volume["volume_id"]),
-                int(unit["unit"]),
+                volume.volume_id,
+                unit.unit,
             )
             target.put_collection_upload_session_unit(
                 output_collection_id,
-                str(volume["volume_id"]),
-                int(unit["unit"]),
-                plan_sha256=str(volume["plan_sha256"]),
+                volume.volume_id,
+                unit.unit,
+                plan_sha256=volume.plan_sha256,
                 content=_unit_content(output_root, current),
             )
     assert container.collection_uploads.process_due_finalizations() == 1

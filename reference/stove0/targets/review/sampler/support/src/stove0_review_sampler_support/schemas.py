@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata
 import json
 from collections.abc import Sequence
 from typing import Any, Final
 
-from http_api_contracts import http_operation_inventory, structural_model_catalog
+from http_api_contracts import (
+    canonical_json_bytes,
+    http_operation_inventory,
+    structural_model_catalog,
+)
 from stove0_review_sampler_protocol import (
     SAMPLER_HTTP_OPERATIONS,
     SamplerDescriptor,
@@ -22,7 +27,7 @@ SAMPLER_SCHEMA_BUNDLE_FORMAT: Final = "stove0-review-sampler-schema-bundle/v1"
 
 
 def sampler_schema_bundle() -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "format": SAMPLER_SCHEMA_BUNDLE_FORMAT,
         "protocol": "stove0-review-sampler/v1",
         "authorities": {
@@ -46,6 +51,10 @@ def sampler_schema_bundle() -> dict[str, Any]:
                 SamplerConformanceResult,
             ),
         ),
+    }
+    return {
+        **payload,
+        "bundle_sha256": hashlib.sha256(canonical_json_bytes(payload)).hexdigest(),
     }
 
 

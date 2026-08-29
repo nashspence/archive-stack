@@ -3,13 +3,20 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Response
-from http_api_contracts import operation_interface
+from http_api_contracts import (
+    QuotedSha256Identity,
+    Sha256Identity,
+    operation_interface,
+    parse_quoted_sha256_identity,
+)
 from riverhog_core.app_permissions import COLLECTIONS_DELETE
 from riverhog_protocol import (
     CollectionIdParameter,
     CollectionSort,
     CollectionUploadSort,
     CollectionUploadState,
+    CollectionUploadUnitNumber,
+    CollectionUploadVolumeId,
     ProcessingClaimId,
     SortOrder,
 )
@@ -296,7 +303,10 @@ async def put_collection_upload_session_provenance_journal(
     ],
     container: ContainerDep,
     principal: CollectionCreator,
-    provenance_sha256: str = Header(alias="X-Riverhog-Provenance-SHA256"),
+    provenance_sha256: Annotated[
+        Sha256Identity,
+        Header(alias="X-Riverhog-Provenance-SHA256"),
+    ],
 ) -> CollectionUploadProvenanceJournalOut:
     container.collection_uploads.require_access(collection_id, principal)
     declared = request.headers.get("content-length")
@@ -508,7 +518,7 @@ def list_collection_upload_session_volumes(
 )
 def get_collection_upload_session_volume(
     collection_id: CollectionIdParameter,
-    volume_id: str,
+    volume_id: CollectionUploadVolumeId,
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadVolumeOut:
@@ -525,8 +535,8 @@ def get_collection_upload_session_volume(
 )
 def get_collection_upload_session_unit(
     collection_id: CollectionIdParameter,
-    volume_id: str,
-    unit: int,
+    volume_id: CollectionUploadVolumeId,
+    unit: CollectionUploadUnitNumber,
     container: ContainerDep,
     principal: CollectionCreator,
 ) -> CollectionUploadUnitOut:
@@ -543,8 +553,8 @@ def get_collection_upload_session_unit(
 )
 async def put_collection_upload_session_unit(
     collection_id: CollectionIdParameter,
-    volume_id: str,
-    unit: int,
+    volume_id: CollectionUploadVolumeId,
+    unit: CollectionUploadUnitNumber,
     request: Request,
     content: Annotated[
         bytes,
@@ -555,7 +565,7 @@ async def put_collection_upload_session_unit(
     ],
     container: ContainerDep,
     principal: CollectionCreator,
-    if_match: str = Header(alias="If-Match"),
+    if_match: Annotated[QuotedSha256Identity, Header(alias="If-Match")],
 ) -> CollectionUploadUnitOut:
     container.collection_uploads.require_access(collection_id, principal)
     work = container.collection_uploads.get_unit(collection_id, volume_id, unit)
@@ -572,7 +582,7 @@ async def put_collection_upload_session_unit(
         collection_id,
         volume_id,
         unit,
-        plan_sha256=if_match.strip('"'),
+        plan_sha256=parse_quoted_sha256_identity(if_match),
         content=content,
     )
     return CollectionUploadUnitOut.model_validate(payload)

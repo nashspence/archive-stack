@@ -19,9 +19,12 @@ from http_api_contracts import (
     CompleteEnumerationReader,
     closed_literal_values,
     parse_error_payload,
+    parse_quoted_sha256_identity,
+    quote_sha256_identity,
     safe_http_base_url,
+    validate_sha256_identity,
 )
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from riverhog_application_access import (
     ApplicationAccessGrant,
     ApplicationAccessGrantSet,
@@ -53,6 +56,11 @@ from riverhog_protocol import (
     CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadSort,
     CollectionUploadState,
+    CollectionUploadUnitNumber,
+    CollectionUploadUnitWorkDocument,
+    CollectionUploadVolumeId,
+    CollectionUploadVolumeSetDocument,
+    CollectionUploadVolumeWorkDocument,
     DownloadQuotaSort,
     ImmutableFileIdentityDocument,
     PortableCollectionRecord,
@@ -111,6 +119,8 @@ _COLLECTION_ID: TypeAdapter[int] = TypeAdapter(CollectionId)
 _CANONICAL_RELPATH: TypeAdapter[str] = TypeAdapter(CanonicalRelPath)
 _MONTHLY_DOWNLOAD_QUOTA_BYTES: TypeAdapter[int] = TypeAdapter(MonthlyDownloadQuotaBytes)
 _PROCESSING_CLAIM_ID: TypeAdapter[str] = TypeAdapter(ProcessingClaimId)
+_COLLECTION_UPLOAD_VOLUME_ID: TypeAdapter[str] = TypeAdapter(CollectionUploadVolumeId)
+_COLLECTION_UPLOAD_UNIT_NUMBER: TypeAdapter[int] = TypeAdapter(CollectionUploadUnitNumber)
 _JSON_OBJECT_TYPE = dict[str, Any]
 
 # These identities are checked against the server-owned response models in the
@@ -126,7 +136,7 @@ _STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
     ),
     "riverhog.collection-upload-file/v1": CompleteEnumerationItemSchema(
         id="riverhog.collection-upload-file/v1",
-        sha256="2fe28658c73b3747b895eb065466aca5e77aa00d374040b820d9965e258c46b1",
+        sha256="f5f4cff92c6e543770d4c4be2da80c5907b7bf2b5aefb9dca13bbe4b321f6ec5",
     ),
     "riverhog.search-file/v1": CompleteEnumerationItemSchema(
         id="riverhog.search-file/v1",
@@ -212,6 +222,44 @@ def _canonical_tag(value: str) -> str:
     try:
         return validate_canonical_tag(value)
     except ValueError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def _sha256_identity(value: str, label: str) -> str:
+    try:
+        return validate_sha256_identity(value)
+    except ValueError as exc:
+        raise BadRequest(f"{label} must be an exact lowercase SHA-256 identity") from exc
+
+
+def _response_sha256_etag(value: str) -> str:
+    try:
+        return parse_quoted_sha256_identity(value)
+    except ValueError as exc:
+        raise InvalidState("API returned an invalid SHA-256 ETag identity") from exc
+
+
+def _response_model[ResponseModelT: BaseModel](
+    model: type[ResponseModelT],
+    payload: object,
+) -> ResponseModelT:
+    try:
+        return model.model_validate(payload)
+    except ValidationError as exc:
+        raise InvalidState("API returned an invalid typed response document") from exc
+
+
+def _collection_upload_volume_id(value: str) -> str:
+    try:
+        return _COLLECTION_UPLOAD_VOLUME_ID.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def _collection_upload_unit_number(value: int) -> int:
+    try:
+        return _COLLECTION_UPLOAD_UNIT_NUMBER.validate_python(value, strict=True)
+    except ValidationError as exc:
         raise BadRequest(str(exc)) from exc
 
 
@@ -604,8 +652,9 @@ class _HttpApiClient:
                     "download Content-Length does not match planned metadata: "
                     f"{returned_bytes} != {expected_bytes}"
                 )
-            returned_etag = response.headers.get("ETag", "").strip().strip('"').casefold()
-            if returned_etag != expected_sha256.casefold():
+            expected_identity = _sha256_identity(expected_sha256, "expected download SHA-256")
+            returned_etag = _response_sha256_etag(response.headers.get("ETag", ""))
+            if returned_etag != expected_identity:
                 raise InvalidState("download ETag does not match planned SHA-256")
             try:
                 receipt = verified_download(
@@ -823,7 +872,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "POST",
             "/v1/retrieval-jobs",
             json=payload,
-            headers={"If-Match": f'"{plan_etag}"'},
+            headers={"If-Match": quote_sha256_identity(_sha256_identity(plan_etag, "plan ETag"))},
         )
 
     def get_retrieval_job(self, job_id: str) -> dict[str, Any]:
@@ -1014,9 +1063,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
 
         if isinstance(expected_bytes, bool) or expected_bytes < 0:
             raise ValueError("expected retrieval bytes must be non-negative")
-        digest = expected_sha256.casefold()
-        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
-            raise ValueError("expected retrieval SHA-256 is invalid")
+        digest = _sha256_identity(expected_sha256, "expected retrieval SHA-256")
         resolved_end = expected_bytes if end is None else end
         if (
             isinstance(start, bool)
@@ -1051,7 +1098,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                         "retrieval stream returned an unexpected HTTP status: "
                         f"{response.status_code}"
                     )
-                returned_etag = response.headers.get("ETag", "").strip().strip('"').casefold()
+                returned_etag = _response_sha256_etag(response.headers.get("ETag", ""))
                 if returned_etag != digest:
                     raise InvalidState("retrieval stream ETag does not match the planned SHA-256")
                 expected_length = resolved_end - start
@@ -1236,7 +1283,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             f"{quote(canonical_journal_id, safe='')}",
             headers={
                 "Content-Type": "application/json-seq",
-                "X-Riverhog-Provenance-SHA256": sha256,
+                "X-Riverhog-Provenance-SHA256": _sha256_identity(
+                    sha256,
+                    "provenance SHA-256",
+                ),
             },
             content=content,
             timeout=self.upload_timeout_seconds,
@@ -1260,8 +1310,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             f"{quote(canonical_journal_id, safe='')}",
         )
         content = response.content
-        expected = response.headers.get("ETag", "").strip().strip('"')
-        if not expected or hashlib.sha256(content).hexdigest() != expected:
+        expected = _response_sha256_etag(response.headers.get("ETag", ""))
+        if hashlib.sha256(content).hexdigest() != expected:
             raise InvalidState("staged provenance journal does not match its ETag")
         return content
 
@@ -1395,54 +1445,75 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             timeout=_CANCEL_TIMEOUT_SECONDS,
         )
 
-    def list_collection_upload_session_volumes(self, collection_id: CollectionId) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/volumes",
+    def list_collection_upload_session_volumes(
+        self,
+        collection_id: CollectionId,
+    ) -> CollectionUploadVolumeSetDocument:
+        normalized_collection_id = _collection_id(collection_id)
+        return _response_model(
+            CollectionUploadVolumeSetDocument,
+            self._json(
+                "GET",
+                f"/v1/collection-upload-sessions/{str(normalized_collection_id)}/volumes",
+            ),
         )
 
     def get_collection_upload_session_volume(
         self,
         collection_id: CollectionId,
-        volume_id: str,
-    ) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/volumes/"
-            f"{quote(volume_id, safe='')}",
+        volume_id: CollectionUploadVolumeId,
+    ) -> CollectionUploadVolumeWorkDocument:
+        return _response_model(
+            CollectionUploadVolumeWorkDocument,
+            self._json(
+                "GET",
+                f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/volumes/"
+                f"{quote(_collection_upload_volume_id(volume_id), safe='')}",
+            ),
         )
 
     def get_collection_upload_session_unit(
         self,
         collection_id: CollectionId,
-        volume_id: str,
-        unit: int,
-    ) -> dict[str, Any]:
-        return self._json(
-            "GET",
-            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/volumes/"
-            f"{quote(volume_id, safe='')}/units/{str(unit)}",
+        volume_id: CollectionUploadVolumeId,
+        unit: CollectionUploadUnitNumber,
+    ) -> CollectionUploadUnitWorkDocument:
+        return _response_model(
+            CollectionUploadUnitWorkDocument,
+            self._json(
+                "GET",
+                f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/volumes/"
+                f"{quote(_collection_upload_volume_id(volume_id), safe='')}/units/"
+                f"{str(_collection_upload_unit_number(unit))}",
+            ),
         )
 
     def put_collection_upload_session_unit(
         self,
         collection_id: CollectionId,
-        volume_id: str,
-        unit: int,
+        volume_id: CollectionUploadVolumeId,
+        unit: CollectionUploadUnitNumber,
         *,
         plan_sha256: str,
         content: bytes,
-    ) -> dict[str, Any]:
-        return self._json(
-            "PUT",
-            f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/volumes/"
-            f"{quote(volume_id, safe='')}/units/{str(unit)}",
-            headers={
-                "Content-Type": "application/octet-stream",
-                "If-Match": f'"{plan_sha256}"',
-            },
-            content=content,
-            timeout=self.upload_timeout_seconds,
+    ) -> CollectionUploadUnitWorkDocument:
+        normalized_volume_id = _collection_upload_volume_id(volume_id)
+        normalized_unit = _collection_upload_unit_number(unit)
+        return _response_model(
+            CollectionUploadUnitWorkDocument,
+            self._json(
+                "PUT",
+                f"/v1/collection-upload-sessions/{str(_collection_id(collection_id))}/volumes/"
+                f"{quote(normalized_volume_id, safe='')}/units/{str(normalized_unit)}",
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "If-Match": quote_sha256_identity(
+                        _sha256_identity(plan_sha256, "upload plan SHA-256")
+                    ),
+                },
+                content=content,
+                timeout=self.upload_timeout_seconds,
+            ),
         )
 
     def search(
@@ -1638,8 +1709,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             f"{quote(canonical_journal_id, safe='')}",
         )
         content = response.content
-        expected = response.headers.get("ETag", "").strip().strip('"')
-        if not expected or hashlib.sha256(content).hexdigest() != expected:
+        expected = _response_sha256_etag(response.headers.get("ETag", ""))
+        if hashlib.sha256(content).hexdigest() != expected:
             raise InvalidState("provenance export does not match its ETag")
         return content
 

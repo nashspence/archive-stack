@@ -41,6 +41,8 @@ from riverhog_cli_support.output import (
 )
 from riverhog_protocol.collection_upload_transport import (
     CollectionUploadRegistrationConstraintsDocument,
+    CollectionUploadUnitWorkDocument,
+    CollectionUploadVolumeWorkDocument,
 )
 from riverhog_protocol.errors import Conflict, RiverhogError, ServiceUnavailable
 from riverhog_protocol.manifest import collection_content_identity
@@ -1412,37 +1414,21 @@ def _is_provenance_control_path(root: Path, path: Path) -> bool:
 
 def _upload_unit_content(
     root: Path,
-    unit: Mapping[str, object],
+    unit: CollectionUploadUnitWorkDocument,
 ) -> bytes:
-    expected = unit.get("payload_bytes")
-    sources = unit.get("sources")
-    if not isinstance(expected, int) or expected < 0 or not isinstance(sources, list):
-        raise RuntimeError("server returned an invalid upload unit")
     content = bytearray()
-    for source in sources:
-        if not isinstance(source, Mapping):
-            raise RuntimeError("server returned an invalid upload unit source")
-        path = source.get("path")
-        offset = source.get("offset")
-        byte_count = source.get("bytes")
-        if (
-            not isinstance(path, str)
-            or not isinstance(offset, int)
-            or offset < 0
-            or not isinstance(byte_count, int)
-            or byte_count < 0
-        ):
-            raise RuntimeError("server returned an invalid upload unit source")
-        source_path = root / path
+    for source in unit.sources:
+        source_path = root / source.path
         for chunk in _iter_file_chunks(
             source_path,
-            offset=offset,
-            limit=byte_count,
+            offset=source.offset,
+            limit=source.bytes,
         ):
             content.extend(chunk)
-    if len(content) != expected:
+    if len(content) != unit.payload_bytes:
         raise RuntimeError(
-            f"local sources produced {len(content)} bytes for a {expected}-byte upload unit"
+            f"local sources produced {len(content)} bytes for a "
+            f"{unit.payload_bytes}-byte upload unit"
         )
     return bytes(content)
 
@@ -1450,8 +1436,8 @@ def _upload_unit_content(
 def _put_collection_upload_session_unit(
     api: ApiClient,
     collection_id: int,
-    volume: Mapping[str, object],
-    unit: Mapping[str, object],
+    volume: CollectionUploadVolumeWorkDocument,
+    unit: CollectionUploadUnitWorkDocument,
     *,
     root: Path,
 ) -> int:

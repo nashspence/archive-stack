@@ -6,7 +6,14 @@ from collections.abc import Sequence
 from typing import Annotated, Literal, Self
 
 from http_api_contracts import CanonicalVisibleText
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 from riverhog_provenance_contracts import (
     ProvenanceJournalId,
     ProvenanceJournalStateReference,
@@ -27,8 +34,15 @@ from riverhog_protocol.raw_ingress import RawSourceDigestManifest
 from riverhog_protocol.transport import COLLECTION_UPLOAD_FILE_BATCH_MAX
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+CollectionUploadVolumeId = Annotated[
+    str,
+    StringConstraints(pattern=r"^(?:pack|segment)-[0-9]{12}$"),
+]
+CollectionUploadUnitNumber = Annotated[int, Field(ge=0)]
 CollectionUploadCustodyMode = Literal["producer-retained", "custody-transfer"]
 CollectionUploadVolumeKind = Literal["pack", "segment"]
+CollectionUploadVolumeState = Literal["planned", "uploading", "sealed"]
+CollectionUploadUnitState = Literal["pending", "committed"]
 
 
 def collection_upload_path_order_key(path: str) -> tuple[int, bytes]:
@@ -82,7 +96,7 @@ class CollectionUploadUnitSourceDocument(CollectionUploadDocument):
     path: str
     offset: int = Field(ge=0, strict=True)
     bytes: int = Field(ge=0, strict=True)
-    sha256: Sha256
+    artifact_sha256: Sha256
 
     @field_validator("path")
     @classmethod
@@ -93,7 +107,7 @@ class CollectionUploadUnitSourceDocument(CollectionUploadDocument):
 class CollectionUploadUnitDocument(CollectionUploadDocument):
     """Protocol-owned identity of one server-planned plaintext upload unit."""
 
-    unit: int = Field(ge=0, strict=True)
+    unit: CollectionUploadUnitNumber
     payload_bytes: int = Field(ge=0, strict=True)
     plaintext_bytes: int = Field(ge=0, strict=True)
     sources: Sequence[CollectionUploadUnitSourceDocument]
@@ -108,12 +122,24 @@ class CollectionUploadUnitDocument(CollectionUploadDocument):
         return self
 
 
-class CollectionUploadVolumeDocument(CollectionUploadDocument):
-    """Protocol-owned identity and complete unit plan for one archive volume."""
+class CollectionUploadVolumeSummaryDocument(CollectionUploadDocument):
+    """Protocol-owned identity of one immutable collection archive volume."""
 
-    volume_id: str
+    volume_id: CollectionUploadVolumeId
     sequence: int = Field(ge=0, strict=True)
     kind: CollectionUploadVolumeKind
+
+    @model_validator(mode="after")
+    def validate_volume_identity(self) -> Self:
+        expected_prefix = "pack" if self.kind == "pack" else "segment"
+        if self.volume_id != f"{expected_prefix}-{self.sequence:012d}":
+            raise ValueError("upload volume ID differs from its kind and sequence")
+        return self
+
+
+class CollectionUploadVolumeDocument(CollectionUploadVolumeSummaryDocument):
+    """Protocol-owned identity and complete unit plan for one archive volume."""
+
     plan_sha256: Sha256
     plaintext_bytes: int = Field(ge=0, strict=True)
     source_bytes: int = Field(ge=0, strict=True)
@@ -121,15 +147,58 @@ class CollectionUploadVolumeDocument(CollectionUploadDocument):
 
     @model_validator(mode="after")
     def validate_volume_plan(self) -> Self:
-        expected_prefix = "pack" if self.kind == "pack" else "segment"
-        if self.volume_id != f"{expected_prefix}-{self.sequence:012d}":
-            raise ValueError("upload volume ID differs from its kind and sequence")
         if [unit.unit for unit in self.units] != list(range(len(self.units))):
             raise ValueError("upload volume units must be consecutive from zero")
         if sum(unit.plaintext_bytes for unit in self.units) != self.plaintext_bytes:
             raise ValueError("upload volume unit plaintext bytes differ from its total")
         if sum(unit.payload_bytes for unit in self.units) != self.source_bytes:
             raise ValueError("upload volume unit payload bytes differ from its source total")
+        return self
+
+
+class CollectionUploadUnitWorkDocument(CollectionUploadUnitDocument):
+    """One exact unit and its durable upload checkpoint state."""
+
+    state: CollectionUploadUnitState
+
+
+class CollectionUploadVolumeWorkDocument(CollectionUploadVolumeDocument):
+    """One exact volume plan and its durable construction state."""
+
+    state: CollectionUploadVolumeState
+    units: Sequence[CollectionUploadUnitWorkDocument] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_work_state(self) -> Self:
+        committed = sum(unit.state == "committed" for unit in self.units)
+        if self.state == "planned" and committed != 0:
+            raise ValueError("planned upload volumes cannot contain committed units")
+        if self.state == "uploading" and committed == len(self.units):
+            raise ValueError("uploading volumes must contain a pending unit")
+        if self.state == "sealed" and committed != len(self.units):
+            raise ValueError("upload volume state differs from its unit checkpoints")
+        return self
+
+
+class CollectionUploadVolumeSetDocument(CollectionUploadDocument):
+    """Complete canonically ordered upload work for one collection session."""
+
+    collection_id: CollectionId
+    volumes: Sequence[CollectionUploadVolumeWorkDocument]
+
+    @field_validator("collection_id")
+    @classmethod
+    def canonical_collection_id(cls, value: int) -> int:
+        return validate_collection_id(value)
+
+    @model_validator(mode="after")
+    def validate_complete_volume_set(self) -> Self:
+        sequences = [item.sequence for item in self.volumes]
+        identities = [item.volume_id for item in self.volumes]
+        if sequences != list(range(len(self.volumes))):
+            raise ValueError("upload volumes must be consecutive from sequence zero")
+        if len(identities) != len(set(identities)):
+            raise ValueError("upload volume IDs must be unique")
         return self
 
 
@@ -158,7 +227,7 @@ class CollectionUploadFileBatchDocument(CollectionUploadDocument):
 
 
 class CollectionUploadCustodyObjectDocument(CollectionUploadDocument):
-    volume_id: CanonicalVisibleText
+    volume_id: CollectionUploadVolumeId
     sealed_receipt_sha256: Sha256
 
 
@@ -285,9 +354,17 @@ __all__ = [
     "CollectionUploadRegistrationConstraintsDocument",
     "CollectionUploadRawPartsIn",
     "CollectionUploadUnitDocument",
+    "CollectionUploadUnitNumber",
     "CollectionUploadUnitSourceDocument",
+    "CollectionUploadUnitState",
+    "CollectionUploadUnitWorkDocument",
     "CollectionUploadVolumeDocument",
+    "CollectionUploadVolumeId",
     "CollectionUploadVolumeKind",
+    "CollectionUploadVolumeSetDocument",
+    "CollectionUploadVolumeState",
+    "CollectionUploadVolumeSummaryDocument",
+    "CollectionUploadVolumeWorkDocument",
     "FileProvenanceBinding",
     "OmittedFileProvenanceBinding",
     "collection_upload_raw_digest_manifest",

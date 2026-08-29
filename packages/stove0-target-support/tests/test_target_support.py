@@ -765,6 +765,24 @@ def test_conformance_report_proves_preflight_and_idempotent_submission() -> None
     assert report.coverage.model_dump() == {"advertised": 1, "exercised": 1, "complete": True}
     assert report.operation_evidence[0].semantic_conformance.status == "schema-only"
     assert report.operations[0].semantic_conformance == "schema-only"
+    assert report.operation_evidence[0].accepted_job == request.accepted()
+
+    changed = report.model_dump(mode="json")
+    changed["operations"][0]["result_kind"] = "external-effect"
+    with pytest.raises(ValidationError, match="differs from its contract"):
+        type(report).model_validate(changed)
+
+
+def test_conformance_report_uses_protocol_owned_external_effect_result_kind() -> None:
+    operation, target, request = _effect_request()
+    report = conformance_report(
+        FixtureTargetClient(target, request, _effect_success_status(operation, request)),
+        cases=(TargetConformanceCase(operation=operation, job_request=request),),
+    )
+
+    assert report.status == "conformant"
+    assert report.operations[0].result_kind == "external-effect"
+    assert report.operation_evidence[0].operation.result_kind == "external-effect"
 
 
 def test_conformance_report_uses_one_exact_target_contract_snapshot() -> None:
@@ -972,6 +990,7 @@ def test_target_conformance_executes_the_exact_advertised_semantic_vectors() -> 
         "profile_id": semantics.id,
         "profile_sha256": semantics.profile_sha256,
         "conformance_vectors_sha256": vectors.sha256,
+        "vectors": vectors.model_dump(mode="json"),
         "accepted_vector_ids": ["accepted"],
         "rejected_vector_ids": ["rejected"],
         "status": "exercised",
@@ -1374,6 +1393,19 @@ def test_target_schema_bundle_is_deterministic_and_self_validating() -> None:
         "http_operations": "http_binding.operations",
         "semantic_acceptance": "semantic_acceptance",
     }
+    assert first["semantic_acceptance"]["identity"] == ["id", "profile_sha256"]
+    referenced = {
+        value
+        for operation in first["http_binding"]["operations"]
+        for value in (
+            operation["request"]["schema"],
+            operation["response"]["schema"],
+            operation["error_schema"],
+        )
+        if value is not None
+    }
+    assert referenced <= set(first["schemas"])
+    assert "ErrorResponse" in referenced
     assert first["schemas"]["TargetConformanceResult"]["properties"]["format"]["const"] == (
         "stove0-target-conformance-result/v1"
     )

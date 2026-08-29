@@ -2679,25 +2679,24 @@ def _upload_collection_with_observation(
         if has_files:
             observed.add("registered-file-list")
         volume_page = api.list_collection_upload_session_volumes(collection_id)
-        volumes = _page_items(volume_page, "volumes")
+        volumes = volume_page.volumes
         if volumes:
             observed.add("volume-list")
         for volume in volumes:
-            volume_id = str(volume["volume_id"])
+            volume_id = volume.volume_id
             shown = api.get_collection_upload_session_volume(collection_id, volume_id)
             observed.add("volume-show")
-            units = shown.get("units")
-            if not isinstance(units, list) or not units:
+            if not shown.units:
                 continue
-            unit = int(cast(dict[str, Any], units[0])["unit"])
+            unit = shown.units[0].unit
             readback = api.get_collection_upload_session_unit(
                 collection_id,
                 volume_id,
                 unit,
             )
-            if int(readback.get("unit", -1)) == unit:
+            if readback.unit == unit:
                 observed.add("unit-readback")
-                if readback.get("state") == "committed":
+                if readback.state == "committed":
                     observed.add("committed-unit-readback")
 
     stdout = ""
