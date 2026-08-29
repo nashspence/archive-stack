@@ -58,7 +58,7 @@ def target_schema_bundle() -> dict[str, Any]:
         "semantic_acceptance": {
             "kind": "operation-contract",
             "binding": "OperationContract.intent_semantics",
-            "identity": ["profile_id", "profile_sha256"],
+            "identity": ["id", "profile_sha256"],
             "request_response_relations": "required",
         },
         "schemas": structural_model_catalog(

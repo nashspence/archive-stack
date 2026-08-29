@@ -46,17 +46,23 @@ class SamplerConformanceResult(_SamplerConformanceModel):
     sampler: SamplerDescriptor
     coverage: SamplerConformanceCoverage
     sampling: Literal["exercised", "not-exercised"]
+    request: SamplerRequest | None = None
     sample: SamplerResult | None = None
 
     @model_validator(mode="after")
     def validate_result(self) -> Self:
-        exercised = self.sample is not None
+        exercised = self.request is not None and self.sample is not None
         if (
-            self.coverage.complete != exercised
+            (self.request is None) != (self.sample is None)
+            or self.coverage.exercised != (1 if exercised else 0)
+            or self.coverage.complete != exercised
             or self.status != ("conformant" if exercised else "inspected")
             or self.sampling != ("exercised" if exercised else "not-exercised")
         ):
             raise ValueError("sampler conformance result is inconsistent")
+        if exercised:
+            assert self.request is not None and self.sample is not None
+            validate_result(self.sample, self.request, self.sampler)
         return self
 
 
@@ -92,6 +98,7 @@ def conformance_report(
     )
     result = client.sample(request)
     validate_result(result, request, descriptor)
+    report["request"] = request
     report["sample"] = result
     return SamplerConformanceResult.model_validate(report)
 

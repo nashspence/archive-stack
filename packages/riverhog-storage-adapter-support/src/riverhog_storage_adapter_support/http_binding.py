@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from http_api_contracts import (
     HttpErrorContract,
@@ -418,14 +418,19 @@ def _adapter_errors(
     return tuple(HttpErrorContract(code, _ERROR_STATUS[code]) for code in codes)
 
 
+def _storage_operation(*args: Any, **kwargs: Any) -> HttpOperationContract:
+    kwargs["error_type"] = StorageAdapterError
+    return HttpOperationContract(*args, **kwargs)
+
+
 STORAGE_ADAPTER_HTTP_OPERATIONS = (
-    HttpOperationContract(
+    _storage_operation(
         "GET",
         "/v1/adapter",
         response_type=AdapterDescriptor,
         errors=_adapter_errors(),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/writes/begin",
         WriteStartRequest,
@@ -433,7 +438,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         "json",
         errors=_adapter_errors("request_too_large", "invalid_path"),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/writes/segment",
         WriteSegmentRequest,
@@ -441,7 +446,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         "framed",
         errors=_adapter_errors("length_required", "request_too_large", "invalid_path", "not_found"),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/writes/segments",
         WriteSession,
@@ -449,7 +454,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         "json",
         errors=_adapter_errors("request_too_large", "invalid_path", "not_found"),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/writes/complete",
         WriteCompleteRequest,
@@ -463,7 +468,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             "integrity_failure",
         ),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/writes/completed",
         CompletedWriteLookupRequest,
@@ -477,7 +482,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             "integrity_failure",
         ),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/writes/abort",
         WriteSession,
@@ -487,7 +492,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         (204,),
         _adapter_errors("request_too_large", "invalid_path", "not_found"),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/objects/put",
         SmallObjectWriteRequest,
@@ -501,7 +506,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             "integrity_failure",
         ),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/objects/head",
         ObjectHeadRequest,
@@ -515,7 +520,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             "integrity_failure",
         ),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/objects/read",
         ObjectReadRequest,
@@ -551,7 +556,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             ),
         ),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/objects/delete",
         DeleteObjectRequest,
@@ -561,7 +566,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         (204,),
         _adapter_errors("request_too_large", "invalid_path", "not_found"),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/objects/delete-prefix",
         DeletePrefixRequest,
@@ -569,7 +574,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
         "json",
         errors=_adapter_errors("request_too_large", "invalid_path"),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/reads/prepare",
         ReadPreparationRequest,
@@ -583,7 +588,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             "read_expired",
         ),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/reads/status",
         ReadPreparationRequest,
@@ -597,7 +602,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             "read_expired",
         ),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/reads/cleanup",
         ReadPreparationRequest,
@@ -613,7 +618,7 @@ STORAGE_ADAPTER_HTTP_OPERATIONS = (
             "read_expired",
         ),
     ),
-    HttpOperationContract(
+    _storage_operation(
         "POST",
         "/v1/maintenance/abort-incomplete-writes",
         AbortIncompleteWritesRequest,

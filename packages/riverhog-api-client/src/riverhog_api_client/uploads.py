@@ -6,10 +6,17 @@ import time
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 import httpx
-from riverhog_protocol import CollectionId
+from riverhog_protocol import (
+    CollectionId,
+    CollectionUploadUnitNumber,
+    CollectionUploadUnitWorkDocument,
+    CollectionUploadVolumeId,
+    CollectionUploadVolumeSetDocument,
+    CollectionUploadVolumeWorkDocument,
+)
 from riverhog_protocol.errors import Conflict, ServiceUnavailable
 
 DEFAULT_UPLOAD_CONCURRENCY = 8
@@ -18,7 +25,7 @@ MAX_UPLOAD_CONCURRENCY = 64
 MAX_UPLOAD_WINDOW = 256
 _TRANSIENT_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
-UnitContent = Callable[[Mapping[str, object]], bytes]
+UnitContent = Callable[[CollectionUploadUnitWorkDocument], bytes]
 UploadProgress = Callable[[int], None]
 RetryNotice = Callable[[str], None]
 
@@ -26,24 +33,24 @@ RetryNotice = Callable[[str], None]
 class CollectionUnitApi(Protocol):
     def list_collection_upload_session_volumes(
         self, collection_id: CollectionId
-    ) -> dict[str, Any]: ...
+    ) -> CollectionUploadVolumeSetDocument: ...
 
     def get_collection_upload_session_unit(
         self,
         collection_id: CollectionId,
-        volume_id: str,
-        unit: int,
-    ) -> dict[str, Any]: ...
+        volume_id: CollectionUploadVolumeId,
+        unit: CollectionUploadUnitNumber,
+    ) -> CollectionUploadUnitWorkDocument: ...
 
     def put_collection_upload_session_unit(
         self,
         collection_id: CollectionId,
-        volume_id: str,
-        unit: int,
+        volume_id: CollectionUploadVolumeId,
+        unit: CollectionUploadUnitNumber,
         *,
         plan_sha256: str,
         content: bytes,
-    ) -> dict[str, Any]: ...
+    ) -> CollectionUploadUnitWorkDocument: ...
 
 
 def configured_upload_concurrency(values: Mapping[str, str] | None = None) -> int:
@@ -91,27 +98,19 @@ def configured_upload_window(
 def put_collection_upload_unit(
     api: CollectionUnitApi,
     collection_id: CollectionId,
-    volume: Mapping[str, object],
-    unit: Mapping[str, object],
+    volume: CollectionUploadVolumeWorkDocument,
+    unit: CollectionUploadUnitWorkDocument,
     *,
     content_for_unit: UnitContent,
     retry_notice: RetryNotice | None = None,
     retry_initial_delay_seconds: float = 1.0,
     retry_max_delay_seconds: float = 10.0,
 ) -> int:
-    volume_id = volume.get("volume_id")
-    plan_sha256 = volume.get("plan_sha256")
-    unit_number = unit.get("unit")
-    payload_bytes = unit.get("payload_bytes")
-    if (
-        not isinstance(volume_id, str)
-        or not isinstance(plan_sha256, str)
-        or not isinstance(unit_number, int)
-        or not isinstance(payload_bytes, int)
-        or payload_bytes < 0
-    ):
-        raise RuntimeError("server returned an invalid upload unit identity")
-    if unit.get("state") == "committed":
+    volume_id = volume.volume_id
+    plan_sha256 = volume.plan_sha256
+    unit_number = unit.unit
+    payload_bytes = unit.payload_bytes
+    if unit.state == "committed":
         return 0
     content = content_for_unit(unit)
     if len(content) != payload_bytes:
@@ -126,7 +125,7 @@ def put_collection_upload_unit(
                 plan_sha256=plan_sha256,
                 content=content,
             )
-            if result.get("state") != "committed":
+            if result.state != "committed":
                 raise RuntimeError("server did not commit the complete upload unit")
             return payload_bytes
         except (httpx.TransportError, httpx.HTTPStatusError, Conflict, ServiceUnavailable) as exc:
@@ -139,8 +138,8 @@ def put_collection_upload_unit(
                     unit_number,
                 )
             except (httpx.TransportError, httpx.HTTPStatusError, ServiceUnavailable):
-                current = {}
-            if current.get("state") == "committed":
+                current = None
+            if current is not None and current.state == "committed":
                 return payload_bytes
             if isinstance(exc, Conflict):
                 raise
@@ -174,28 +173,28 @@ def upload_collection_units(
             f"and {MAX_UPLOAD_WINDOW}"
         )
     payload = api.list_collection_upload_session_volumes(collection_id)
-    volumes = _volume_work(payload)
+    volumes = list(payload.volumes)
     if on_resumed is not None:
         on_resumed(
             sum(
                 _unit_payload_bytes(unit)
                 for volume in volumes
-                for unit in _volume_units(volume)
-                if unit.get("state") == "committed"
+                for unit in volume.units
+                if unit.state == "committed"
             )
         )
 
-    initial: list[tuple[dict[str, object], dict[str, object]]] = []
-    deferred: dict[str, list[tuple[dict[str, object], dict[str, object]]]] = {}
+    initial: list[tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument]] = []
+    deferred: dict[
+        str,
+        list[tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument]],
+    ] = {}
     for volume in volumes:
-        units = [unit for unit in _volume_units(volume) if unit.get("state") != "committed"]
+        units = [unit for unit in volume.units if unit.state != "committed"]
         if not units:
             continue
-        volume_id = volume.get("volume_id")
-        if not isinstance(volume_id, str):
-            raise RuntimeError("server returned an invalid upload volume identity")
         initial.append((volume, units[0]))
-        deferred[volume_id] = [(volume, unit) for unit in units[1:]]
+        deferred[volume.volume_id] = [(volume, unit) for unit in units[1:]]
 
     return _upload_work(
         api,
@@ -216,8 +215,11 @@ def _upload_work(
     api: CollectionUnitApi,
     collection_id: CollectionId,
     *,
-    initial: Sequence[tuple[dict[str, object], dict[str, object]]],
-    deferred: dict[str, list[tuple[dict[str, object], dict[str, object]]]],
+    initial: Sequence[tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument]],
+    deferred: dict[
+        str,
+        list[tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument]],
+    ],
     content_for_unit: UnitContent,
     concurrency: int,
     window: int,
@@ -245,7 +247,9 @@ def _upload_work(
             with clients_lock:
                 clients.append(worker_api)
 
-    def upload_one(item: tuple[dict[str, object], dict[str, object]]) -> int:
+    def upload_one(
+        item: tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument],
+    ) -> int:
         if cancel_check is not None:
             cancel_check()
         worker_api = cast(CollectionUnitApi, local.api)
@@ -260,7 +264,10 @@ def _upload_work(
         )
 
     ready = deque(initial)
-    pending: dict[Future[int], tuple[dict[str, object], dict[str, object]]] = {}
+    pending: dict[
+        Future[int],
+        tuple[CollectionUploadVolumeWorkDocument, CollectionUploadUnitWorkDocument],
+    ] = {}
     uploaded = 0
     try:
         with ThreadPoolExecutor(
@@ -282,8 +289,7 @@ def _upload_work(
                         volume, _unit = pending.pop(future)
                         accepted = future.result()
                         uploaded += accepted
-                        volume_id = cast(str, volume["volume_id"])
-                        ready.extend(deferred.pop(volume_id, ()))
+                        ready.extend(deferred.pop(volume.volume_id, ()))
                         if on_committed is not None:
                             on_committed(accepted)
                     fill()
@@ -306,35 +312,8 @@ def _client_factory(api: CollectionUnitApi) -> Callable[[], CollectionUnitApi]:
     return cast(Callable[[], CollectionUnitApi], spawn)
 
 
-def _unit_payload_bytes(unit: Mapping[str, object]) -> int:
-    value = unit.get("payload_bytes")
-    if not isinstance(value, int) or value < 0:
-        raise RuntimeError("upload session returned an invalid unit byte count")
-    return value
-
-
-def _volume_work(payload: Mapping[str, object]) -> list[dict[str, object]]:
-    values = payload.get("volumes")
-    if not isinstance(values, list):
-        raise RuntimeError("upload session returned an invalid volume list")
-    result: list[dict[str, object]] = []
-    for value in values:
-        if not isinstance(value, dict):
-            raise RuntimeError("upload session returned an invalid volume")
-        result.append(dict(value))
-    return result
-
-
-def _volume_units(volume: Mapping[str, object]) -> list[dict[str, object]]:
-    values = volume.get("units")
-    if not isinstance(values, list):
-        raise RuntimeError("upload session returned an invalid volume plan")
-    result: list[dict[str, object]] = []
-    for value in values:
-        if not isinstance(value, dict):
-            raise RuntimeError("upload session returned an invalid volume plan")
-        result.append(dict(value))
-    return result
+def _unit_payload_bytes(unit: CollectionUploadUnitWorkDocument) -> int:
+    return unit.payload_bytes
 
 
 def _is_transient(exc: BaseException) -> bool:

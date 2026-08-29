@@ -34,6 +34,22 @@ class RecordingClient(ApiClient):
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         self.calls.append((method, path, kwargs))
         payload: dict[str, Any] = {"ok": True}
+        if method == "PUT" and "/volumes/" in path and "/units/" in path:
+            content = bytes(kwargs["content"])
+            payload = {
+                "unit": int(path.rsplit("/", 1)[-1]),
+                "payload_bytes": len(content),
+                "plaintext_bytes": len(content),
+                "sources": [
+                    {
+                        "path": "fixture.bin",
+                        "offset": 0,
+                        "bytes": len(content),
+                        "artifact_sha256": "a" * 64,
+                    }
+                ],
+                "state": "committed",
+            }
         if method == "POST" and path.endswith("/files"):
             payload = {
                 "collection_id": int(path.split("/")[-2]),
@@ -57,7 +73,7 @@ class WrongCustodyReceiptClient(RecordingClient):
             sha256=str(row["sha256"]),
             archive_objects=(
                 CollectionUploadCustodyObjectDocument(
-                    volume_id="raw-000000000001",
+                    volume_id="segment-000000000001",
                     sealed_receipt_sha256="b" * 64,
                 ),
             ),
@@ -429,6 +445,46 @@ def test_client_rejects_unknown_restore_policy_before_transport() -> None:
     assert client.calls == []
 
 
+def test_client_rejects_noncanonical_upload_and_retrieval_http_identities() -> None:
+    client = RecordingClient()
+
+    with pytest.raises(BadRequest, match="exact lowercase SHA-256"):
+        client.create_retrieval_job([(42, "document.txt")], plan_etag="A" * 64)
+    with pytest.raises(BadRequest, match="exact lowercase SHA-256"):
+        client.put_collection_upload_session_unit(
+            42,
+            "pack-000000000000",
+            0,
+            plan_sha256="A" * 64,
+            content=b"content",
+        )
+    with pytest.raises(BadRequest):
+        client.put_collection_upload_session_unit(
+            42,
+            "raw-000000000000",  # type: ignore[arg-type]
+            0,
+            plan_sha256="a" * 64,
+            content=b"content",
+        )
+    with pytest.raises(BadRequest):
+        client.put_collection_upload_session_unit(
+            42,
+            "pack-000000000000",
+            -1,
+            plan_sha256="a" * 64,
+            content=b"content",
+        )
+    with pytest.raises(BadRequest, match="exact lowercase SHA-256"):
+        client.put_collection_upload_session_provenance_journal(
+            42,
+            "urn:uuid:12345678-1234-5678-9234-567812345678",
+            content=b"journal",
+            sha256="A" * 64,
+        )
+
+    assert client.calls == []
+
+
 def test_client_rejects_noncanonical_resource_identities_before_transport() -> None:
     client = RecordingClient()
 
@@ -569,6 +625,47 @@ def test_retrieval_file_download_streams_and_verifies_catalog_identity(
 
     assert result == len(content)
     assert output.read_bytes() == content
+
+
+@pytest.mark.parametrize(
+    "etag",
+    (
+        "a" * 64,
+        '"' + "A" * 64 + '"',
+        'W/"' + "a" * 64 + '"',
+    ),
+)
+def test_retrieval_file_download_rejects_noncanonical_response_etags(
+    tmp_path: Path,
+    etag: str,
+) -> None:
+    content = b"retrieved archive object"
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=content,
+            headers={"Content-Length": str(len(content)), "ETag": etag},
+        )
+
+    client = ApiClient(base_url="https://riverhog.test")
+    client._download_client = httpx.Client(
+        base_url=client.base_url,
+        transport=httpx.MockTransport(handle),
+    )
+    try:
+        with pytest.raises(InvalidState, match="invalid SHA-256 ETag"):
+            client.download_retrieval_file(
+                "job-id",
+                collection_id=42,
+                path="docs/document.txt",
+                output=tmp_path / "document.txt",
+                expected_bytes=len(content),
+                expected_sha256=sha256,
+            )
+    finally:
+        client.close()
 
 
 def test_one_application_token_reaches_the_complete_client_surface(monkeypatch) -> None:

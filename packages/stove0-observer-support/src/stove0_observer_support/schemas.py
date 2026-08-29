@@ -56,7 +56,7 @@ def observer_schema_bundle() -> dict[str, Any]:
         "semantic_acceptance": {
             "kind": "profile-registry",
             "binding": "ObserverContract.facts_semantics",
-            "identity": ["profile_id", "profile_sha256"],
+            "identity": ["id", "profile_sha256"],
             "unavailable_profile": "reject",
         },
         "schemas": structural_model_catalog(

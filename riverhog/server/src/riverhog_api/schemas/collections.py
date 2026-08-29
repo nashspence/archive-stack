@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Annotated, Any, Literal, cast
 
 from http_api_contracts import CanonicalVisibleText
@@ -15,9 +14,10 @@ from riverhog_protocol import (
     CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadSort,
     CollectionUploadState,
-    CollectionUploadUnitDocument,
-    CollectionUploadUnitSourceDocument,
-    CollectionUploadVolumeDocument,
+    CollectionUploadUnitWorkDocument,
+    CollectionUploadVolumeSetDocument,
+    CollectionUploadVolumeSummaryDocument,
+    CollectionUploadVolumeWorkDocument,
     FileProvenanceBinding,
     ImmutableFileIdentityDocument,
     ProcessingClaimId,
@@ -315,6 +315,8 @@ def _validate_upload_custody_progress(
         raise ValueError("upload custody progress cannot exceed collection totals")
     if custody.files == 0 and custody.bytes != 0:
         raise ValueError("upload custody bytes require at least one custodied file")
+    if (custody.files, custody.bytes) == (files, bytes):
+        raise ValueError("complete upload custody cannot be represented as pending progress")
 
 
 class CreateOrResumeCollectionUploadSessionRequest(RiverhogModel):
@@ -507,13 +509,14 @@ class CollectionUploadSessionFilesRegistrationOut(RiverhogModel):
                     item,
                     item.custody_receipt,
                 )
+        sequences = [item.sequence for item in self.volumes]
+        identities = [item.volume_id for item in self.volumes]
+        if sequences != sorted(sequences) or len(identities) != len(set(identities)):
+            raise ValueError("registered upload volumes must be unique and ordered")
         return self
 
 
-class CollectionUploadVolumeSummaryOut(RiverhogModel):
-    volume_id: str
-    sequence: int
-    kind: Literal["pack", "segment"]
+CollectionUploadVolumeSummaryOut = CollectionUploadVolumeSummaryDocument
 
 
 class ListCollectionUploadSessionFilesResponse(RiverhogModel):
@@ -769,6 +772,8 @@ class CollectionUploadDiscardPlanOut(RiverhogModel):
             raise ValueError("ready upload discard plan requires a challenge and no blockers")
         if self.status == "blocked" and (self.challenge is not None or not self.blockers):
             raise ValueError("blocked upload discard plan requires blockers and no challenge")
+        if self.status == "ready" and self.state != "orphaned":
+            raise ValueError("ready upload discard plan requires orphaned custody")
         _validate_complete_upload_custody(
             state=self.state,
             custody_mode=None,
@@ -804,20 +809,6 @@ class CollectionUploadDiscardResultOut(RiverhogModel):
         return self
 
 
-class CollectionUploadUnitSourceOut(CollectionUploadUnitSourceDocument):
-    pass
-
-
-class CollectionUploadUnitOut(CollectionUploadUnitDocument):
-    sources: Sequence[CollectionUploadUnitSourceOut]
-    state: Literal["pending", "committed"]
-
-
-class CollectionUploadVolumeOut(CollectionUploadVolumeDocument):
-    state: Literal["planned", "uploading", "sealed", "failed"]
-    units: Sequence[CollectionUploadUnitOut]
-
-
-class ListCollectionUploadVolumesResponse(RiverhogModel):
-    collection_id: CollectionId
-    volumes: list[CollectionUploadVolumeOut]
+CollectionUploadUnitOut = CollectionUploadUnitWorkDocument
+CollectionUploadVolumeOut = CollectionUploadVolumeWorkDocument
+ListCollectionUploadVolumesResponse = CollectionUploadVolumeSetDocument

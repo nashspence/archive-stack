@@ -206,7 +206,7 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
                         "path": "camera/clip.bin",
                         "offset": 0,
                         "bytes": 3,
-                        "sha256": "b" * 64,
+                        "artifact_sha256": "b" * 64,
                     }
                 ],
                 "state": "pending",
@@ -233,7 +233,7 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
                         "path": "camera/clip.bin",
                         "offset": 0,
                         "bytes": 3,
-                        "sha256": "b" * 64,
+                        "artifact_sha256": "b" * 64,
                     }
                 ],
                 "state": "committed",
@@ -263,8 +263,36 @@ def test_collection_upload_unit_accepts_the_documented_binary_body() -> None:
                 content=b"\x00\xff\x80",
             )
 
-        assert response.status_code == 200
-        assert response.json()["state"] == "committed"
-        assert uploads.content == b"\x00\xff\x80"
+            assert response.status_code == 200, response.text
+            assert response.json()["state"] == "committed"
+            assert uploads.content == b"\x00\xff\x80"
+
+            for invalid_if_match in (
+                "a" * 64,
+                '"' + "A" * 64 + '"',
+                'W/"' + "a" * 64 + '"',
+                ' "' + "a" * 64 + '"',
+            ):
+                rejected = await client.put(
+                    "/v1/collection-upload-sessions/42/volumes/pack-000000000000/units/0",
+                    headers={
+                        "Authorization": "Bearer uploader-token",
+                        "Content-Type": "application/octet-stream",
+                        "If-Match": invalid_if_match,
+                    },
+                    content=b"\x00\xff\x80",
+                )
+                assert rejected.status_code == 400
+
+            negative = await client.put(
+                "/v1/collection-upload-sessions/42/volumes/pack-000000000000/units/-1",
+                headers={
+                    "Authorization": "Bearer uploader-token",
+                    "Content-Type": "application/octet-stream",
+                    "If-Match": '"' + "a" * 64 + '"',
+                },
+                content=b"\x00\xff\x80",
+            )
+            assert negative.status_code == 400
 
     anyio.run(exercise)

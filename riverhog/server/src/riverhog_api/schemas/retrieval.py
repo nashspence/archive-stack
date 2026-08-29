@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Self
 
+from http_api_contracts import Sha256Identity
 from pydantic import ConfigDict, Field, model_validator
 from riverhog_protocol import (
     ArchiveStoreName,
@@ -60,7 +61,7 @@ class RetrievalPlanOut(RiverhogModel):
     requires_restore: bool
     files: list[RetrievalPlanFileOut]
     objects: list[RetrievalPlanObjectOut]
-    etag: str
+    etag: Sha256Identity
 
 
 class CreateRetrievalJobRequest(RetrievalPlanRequest):
@@ -99,7 +100,7 @@ class RetrievalJobOut(RiverhogModel):
 
     id: str
     state: Literal["requested", "ready", "completed", "expired", "failed", "canceled"]
-    plan_etag: str
+    plan_etag: Sha256Identity
     created_at: str
     requested_at: str | None
     restore_requested_at: str | None

@@ -968,6 +968,33 @@ def test_retrieval_job_creation_requires_the_sealed_plan_precondition() -> None:
 
     assert if_match["in"] == "header"
     assert if_match["required"] is True
+    assert if_match["schema"]["type"] == "string"
+    assert if_match["schema"]["pattern"] == '^"[0-9a-f]{64}"$'
+
+
+def test_collection_upload_binary_identity_headers_are_exact() -> None:
+    paths = create_riverhog_app().openapi()["paths"]
+    provenance = paths[
+        "/v1/collection-upload-sessions/{collection_id}/provenance/journals/{journal_id}"
+    ]["put"]
+    upload_unit = paths[
+        "/v1/collection-upload-sessions/{collection_id}/volumes/{volume_id}/units/{unit}"
+    ]["put"]
+
+    provenance_identity = next(
+        parameter
+        for parameter in provenance["parameters"]
+        if parameter["name"] == "X-Riverhog-Provenance-SHA256"
+    )
+    assert provenance_identity["required"] is True
+    assert provenance_identity["schema"]["type"] == "string"
+    assert provenance_identity["schema"]["pattern"] == "^[0-9a-f]{64}$"
+    upload_identity = next(
+        parameter for parameter in upload_unit["parameters"] if parameter["name"] == "If-Match"
+    )
+    assert upload_identity["required"] is True
+    assert upload_identity["schema"]["type"] == "string"
+    assert upload_identity["schema"]["pattern"] == '^"[0-9a-f]{64}"$'
 
 
 def test_official_clients_reject_invalid_crud_controls_and_noncanonical_tags() -> None:

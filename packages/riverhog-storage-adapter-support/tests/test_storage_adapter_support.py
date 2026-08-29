@@ -10,6 +10,8 @@ from types import GeneratorType
 
 import httpx
 import pytest
+from http_api_contracts import canonical_json_bytes
+from pydantic import ValidationError
 from riverhog_storage_adapter_protocol import (
     AbortIncompleteWritesRequest,
     AdapterDescriptor,
@@ -701,6 +703,10 @@ def test_binding_enforces_advertised_write_segment_limits() -> None:
 
 def test_schema_and_support_source_remain_provider_and_state_neutral() -> None:
     document = storage_adapter_schema_bundle()
+    repeated = storage_adapter_schema_bundle()
+    assert document == repeated
+    digest = document.pop("bundle_sha256")
+    assert hashlib.sha256(canonical_json_bytes(document)).hexdigest() == digest
     bundle = str(document).casefold()
     assert "retrieval_tier" not in bundle
     assert "hold_days" not in bundle
@@ -709,6 +715,19 @@ def test_schema_and_support_source_remain_provider_and_state_neutral() -> None:
     assert "cloudfront" not in bundle
 
     operations = document["http_binding"]["operations"]
+    referenced = {
+        value
+        for operation in operations
+        for value in (
+            operation["request"]["schema"],
+            operation["response"]["schema"],
+            operation["error_schema"],
+        )
+        if value is not None
+    }
+    assert referenced <= set(document["schemas"])
+    assert "StorageAdapterError" in referenced
+    assert "StorageAdapterConformanceResult" in document["schemas"]
     assert [(item["method"], item["path"]) for item in operations] == [
         (operation.method, operation.path) for operation in STORAGE_ADAPTER_HTTP_OPERATIONS
     ]
@@ -804,7 +823,7 @@ def test_consumer_runnable_conformance_uses_only_the_public_http_contract() -> N
         )
 
         assert isinstance(result, StorageAdapterConformanceResult)
-        assert result.implementation_id == "fixture.storage/v1"
+        assert result.descriptor.implementation_id == "fixture.storage/v1"
         assert result.checks == (
             "descriptor",
             "create-only-retry",
@@ -821,6 +840,10 @@ def test_consumer_runnable_conformance_uses_only_the_public_http_contract() -> N
             "exact-deletion",
             "version-aware-prefix-cleanup",
         )
+        changed = result.model_dump(mode="json")
+        changed["checks"].pop()
+        with pytest.raises(ValidationError, match="exact check set"):
+            type(result).model_validate(changed)
         assert not adapter.objects
     finally:
         continuation_client.close()

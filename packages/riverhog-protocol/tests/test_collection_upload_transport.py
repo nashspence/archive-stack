@@ -10,6 +10,8 @@ from riverhog_protocol import (
     CollectionUploadRegistrationConstraintsDocument,
     CollectionUploadUnitDocument,
     CollectionUploadVolumeDocument,
+    CollectionUploadVolumeSetDocument,
+    CollectionUploadVolumeWorkDocument,
     validate_collection_upload_artifact_custody_receipt,
     validate_collection_upload_batch_against_registration_constraints,
 )
@@ -101,11 +103,11 @@ def test_artifact_custody_receipt_seals_exact_recovering_objects() -> None:
         sha256="a" * 64,
         archive_objects=(
             CollectionUploadCustodyObjectDocument(
-                volume_id="raw-000000000001",
+                volume_id="segment-000000000001",
                 sealed_receipt_sha256="b" * 64,
             ),
             CollectionUploadCustodyObjectDocument(
-                volume_id="raw-000000000002",
+                volume_id="segment-000000000002",
                 sealed_receipt_sha256="c" * 64,
             ),
         ),
@@ -113,8 +115,8 @@ def test_artifact_custody_receipt_seals_exact_recovering_objects() -> None:
 
     assert receipt.path == "video/source/archive.mkv"
     assert [item.volume_id for item in receipt.archive_objects] == [
-        "raw-000000000001",
-        "raw-000000000002",
+        "segment-000000000001",
+        "segment-000000000002",
     ]
     assert (
         CollectionUploadArtifactCustodyReceiptDocument.model_validate_json(
@@ -211,7 +213,7 @@ def test_server_planned_upload_work_uses_protocol_owned_exact_identities() -> No
                         "path": "camera/clip.mp4",
                         "offset": 0,
                         "bytes": 5,
-                        "sha256": "a" * 64,
+                        "artifact_sha256": "a" * 64,
                     }
                 ],
             )
@@ -225,6 +227,71 @@ def test_server_planned_upload_work_uses_protocol_owned_exact_identities() -> No
     changed["units"][0]["payload_bytes"] = 4
     with pytest.raises(ValidationError, match="source bytes"):
         CollectionUploadVolumeDocument.model_validate(changed)
+
+
+def test_complete_upload_work_set_binds_order_and_checkpoint_state() -> None:
+    volume = CollectionUploadVolumeWorkDocument.model_validate(
+        {
+            "volume_id": "pack-000000000000",
+            "sequence": 0,
+            "kind": "pack",
+            "state": "planned",
+            "plan_sha256": "b" * 64,
+            "plaintext_bytes": 5,
+            "source_bytes": 5,
+            "units": [
+                {
+                    "unit": 0,
+                    "payload_bytes": 5,
+                    "plaintext_bytes": 5,
+                    "sources": [
+                        {
+                            "path": "camera/clip.mp4",
+                            "offset": 0,
+                            "bytes": 5,
+                            "artifact_sha256": "a" * 64,
+                        }
+                    ],
+                    "state": "pending",
+                }
+            ],
+        }
+    )
+    complete = CollectionUploadVolumeSetDocument(collection_id=7, volumes=(volume,))
+
+    assert complete.volumes == (volume,)
+    changed = volume.model_dump(mode="python")
+    changed["state"] = "uploading"
+    assert CollectionUploadVolumeWorkDocument.model_validate(changed).state == "uploading"
+    changed["units"][0]["state"] = "committed"
+    changed["state"] = "planned"
+    with pytest.raises(ValidationError, match="cannot contain committed"):
+        CollectionUploadVolumeWorkDocument.model_validate(changed)
+    changed["state"] = "uploading"
+    with pytest.raises(ValidationError, match="pending unit"):
+        CollectionUploadVolumeWorkDocument.model_validate(changed)
+    changed["state"] = "sealed"
+    assert CollectionUploadVolumeWorkDocument.model_validate(changed).state == "sealed"
+    changed["state"] = "failed"
+    with pytest.raises(ValidationError):
+        CollectionUploadVolumeWorkDocument.model_validate(changed)
+
+    repeated = complete.model_dump(mode="python")
+    repeated["volumes"] = [*repeated["volumes"], repeated["volumes"][0]]
+    with pytest.raises(ValidationError, match="consecutive"):
+        CollectionUploadVolumeSetDocument.model_validate(repeated)
+
+
+@pytest.mark.parametrize(
+    "volume_id",
+    ("raw-000000000000", "pack-0", "pack-00000000000A", " pack-000000000000"),
+)
+def test_upload_volume_identity_rejects_noncanonical_forms(volume_id: str) -> None:
+    with pytest.raises(ValidationError):
+        CollectionUploadCustodyObjectDocument(
+            volume_id=volume_id,
+            sealed_receipt_sha256="b" * 64,
+        )
 
 
 @pytest.mark.parametrize("raw_part_bytes", (1, 65535, 65537, 131071))

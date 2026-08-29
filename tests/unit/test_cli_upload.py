@@ -8,6 +8,11 @@ import httpx
 import pytest
 from riverhog_cli import main as riverhog_main
 from riverhog_cli.upload_progress import CollectionUploadProgressState, format_upload_progress_line
+from riverhog_protocol import (
+    CollectionUploadUnitWorkDocument,
+    CollectionUploadVolumeSetDocument,
+    CollectionUploadVolumeWorkDocument,
+)
 from typer.testing import CliRunner
 
 from tests.provenance_observer import native_provenance_observer
@@ -152,13 +157,28 @@ def test_upload_unit_content_concatenates_planned_source_ranges(tmp_path: Path) 
     assert (
         riverhog_main._upload_unit_content(
             root,
-            {
-                "payload_bytes": 7,
-                "sources": [
-                    {"path": "a.bin", "offset": 1, "bytes": 3},
-                    {"path": "b.bin", "offset": 2, "bytes": 4},
-                ],
-            },
+            CollectionUploadUnitWorkDocument.model_validate(
+                {
+                    "unit": 0,
+                    "payload_bytes": 7,
+                    "plaintext_bytes": 7,
+                    "sources": [
+                        {
+                            "path": "a.bin",
+                            "offset": 1,
+                            "bytes": 3,
+                            "artifact_sha256": hashlib.sha256(b"alpha").hexdigest(),
+                        },
+                        {
+                            "path": "b.bin",
+                            "offset": 2,
+                            "bytes": 4,
+                            "artifact_sha256": hashlib.sha256(b"bravox").hexdigest(),
+                        },
+                    ],
+                    "state": "pending",
+                }
+            ),
         )
         == b"lphavox"
     )
@@ -172,29 +192,52 @@ def test_upload_unit_recovers_when_commit_response_is_lost(
     root.mkdir()
     (root / "clip.bin").write_bytes(b"content")
     committed = False
+    unit = CollectionUploadUnitWorkDocument.model_validate(
+        {
+            "unit": 0,
+            "payload_bytes": 7,
+            "plaintext_bytes": 7,
+            "sources": [
+                {
+                    "path": "clip.bin",
+                    "offset": 0,
+                    "bytes": 7,
+                    "artifact_sha256": hashlib.sha256(b"content").hexdigest(),
+                }
+            ],
+            "state": "pending",
+        }
+    )
+    volume = CollectionUploadVolumeWorkDocument(
+        volume_id="pack-000000000000",
+        sequence=0,
+        kind="pack",
+        plan_sha256="a" * 64,
+        plaintext_bytes=7,
+        source_bytes=7,
+        units=(unit,),
+        state="planned",
+    )
 
     class Api:
         def put_collection_upload_session_unit(
             self, *_args: object, **kwargs: object
-        ) -> dict[str, object]:
+        ) -> CollectionUploadUnitWorkDocument:
             nonlocal committed
             assert kwargs["content"] == b"content"
             committed = True
             raise httpx.ReadError("response lost")
 
-        def get_collection_upload_session_unit(self, *_args: object) -> dict[str, object]:
-            return {"state": "committed" if committed else "pending"}
+        def get_collection_upload_session_unit(
+            self, *_args: object
+        ) -> CollectionUploadUnitWorkDocument:
+            return unit.model_copy(update={"state": "committed" if committed else "pending"})
 
     accepted = riverhog_main._put_collection_upload_session_unit(
         Api(),  # type: ignore[arg-type]
         COLLECTION_ID,
-        {"volume_id": "pack-000000000000", "plan_sha256": "a" * 64},
-        {
-            "unit": 0,
-            "payload_bytes": 7,
-            "sources": [{"path": "clip.bin", "offset": 0, "bytes": 7}],
-            "state": "pending",
-        },
+        volume,
+        unit,
         root=root,
     )
 
@@ -272,34 +315,49 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             assert journal_id.startswith("urn:uuid:")
             return {"journal_id": journal_id, "sha256": sha256}
 
-        def list_collection_upload_session_volumes(self, collection_id: int) -> dict[str, object]:
+        def list_collection_upload_session_volumes(
+            self,
+            collection_id: int,
+        ) -> CollectionUploadVolumeSetDocument:
             assert collection_id == COLLECTION_ID
-            return {
-                "collection_id": collection_id,
-                "volumes": [
-                    {
-                        "volume_id": "pack-000000000000",
-                        "sequence": 0,
-                        "kind": "pack",
-                        "state": "sealed" if committed else "planned",
-                        "plan_sha256": "a" * 64,
-                        "plaintext_bytes": 10,
-                        "source_bytes": 10,
-                        "units": [
-                            {
-                                "unit": 0,
-                                "payload_bytes": 10,
-                                "plaintext_bytes": 10,
-                                "sources": [
-                                    {"path": "a.txt", "offset": 0, "bytes": 5},
-                                    {"path": "b.txt", "offset": 0, "bytes": 5},
-                                ],
-                                "state": "committed" if committed else "pending",
-                            }
-                        ],
-                    }
-                ],
-            }
+            return CollectionUploadVolumeSetDocument.model_validate(
+                {
+                    "collection_id": collection_id,
+                    "volumes": [
+                        {
+                            "volume_id": "pack-000000000000",
+                            "sequence": 0,
+                            "kind": "pack",
+                            "state": "sealed" if committed else "planned",
+                            "plan_sha256": "a" * 64,
+                            "plaintext_bytes": 10,
+                            "source_bytes": 10,
+                            "units": [
+                                {
+                                    "unit": 0,
+                                    "payload_bytes": 10,
+                                    "plaintext_bytes": 10,
+                                    "sources": [
+                                        {
+                                            "path": "a.txt",
+                                            "offset": 0,
+                                            "bytes": 5,
+                                            "artifact_sha256": hashlib.sha256(b"alpha").hexdigest(),
+                                        },
+                                        {
+                                            "path": "b.txt",
+                                            "offset": 0,
+                                            "bytes": 5,
+                                            "artifact_sha256": hashlib.sha256(b"bravo").hexdigest(),
+                                        },
+                                    ],
+                                    "state": "committed" if committed else "pending",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
 
         def put_collection_upload_session_unit(
             self,
@@ -309,7 +367,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             *,
             plan_sha256: str,
             content: bytes,
-        ) -> dict[str, object]:
+        ) -> CollectionUploadUnitWorkDocument:
             nonlocal committed
             assert (collection_id, volume_id, unit) == (
                 COLLECTION_ID,
@@ -319,7 +377,7 @@ def test_direct_collection_upload_registers_plans_and_finalizes(
             assert plan_sha256 == "a" * 64
             uploaded.extend(content)
             committed = True
-            return {"unit": unit, "state": "committed"}
+            return self.list_collection_upload_session_volumes(collection_id).volumes[0].units[0]
 
         def get_collection_upload_session(self, collection_id: int) -> dict[str, object]:
             assert collection_id == COLLECTION_ID

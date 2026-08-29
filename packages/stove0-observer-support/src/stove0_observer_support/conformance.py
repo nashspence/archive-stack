@@ -22,6 +22,7 @@ from stove0_observer_protocol import (
     SemanticValidatorProvider,
     accept_observation_result,
     canonical_json_bytes,
+    validate_observation_request,
 )
 
 OBSERVER_CONFORMANCE_RESULT: Literal["stove0-observer-conformance-result/v1"] = (
@@ -46,9 +47,22 @@ class ObserverConformanceCoverage(_ObserverConformanceModel):
 
 
 class ObserverSemanticVectorEvidence(_ObserverConformanceModel):
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    vectors: SemanticFactsConformanceVectors
     accepted_vector_ids: tuple[str, ...]
     rejected_vector_ids: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def validate_outcomes(self) -> Self:
+        accepted = tuple(item.id for item in self.vectors.vectors if item.accepted)
+        rejected = tuple(item.id for item in self.vectors.vectors if not item.accepted)
+        if self.accepted_vector_ids != accepted or self.rejected_vector_ids != rejected:
+            raise ValueError("observer semantic-vector evidence differs from its vectors")
+        return self
+
+
+class ObserverContractConformanceEvidence(_ObserverConformanceModel):
+    request: ObservationRequest
+    observation: ObservationResult
 
 
 class ObserverContractConformance(_ObserverConformanceModel):
@@ -67,6 +81,7 @@ class ObserverContractConformance(_ObserverConformanceModel):
     execution: Literal["not-exercised", "exercised"]
     semantic_conformance: Literal["not-exercised", "schema-only", "exercised"]
     semantic_vectors: ObserverSemanticVectorEvidence | None = None
+    evidence: ObserverContractConformanceEvidence | None = None
 
 
 class ObserverConformanceResult(_ObserverConformanceModel):
@@ -75,7 +90,6 @@ class ObserverConformanceResult(_ObserverConformanceModel):
     descriptor: ObserverDescriptor
     coverage: ObserverConformanceCoverage
     contracts: tuple[ObserverContractConformance, ...]
-    observations: tuple[ObservationResult, ...] = ()
 
     @model_validator(mode="after")
     def validate_result(self) -> Self:
@@ -90,6 +104,72 @@ class ObserverConformanceResult(_ObserverConformanceModel):
             raise ValueError("observer conformance status differs from its coverage")
         if self.coverage.advertised != len(self.contracts):
             raise ValueError("observer conformance coverage differs from its contracts")
+        if len(self.contracts) != len(self.descriptor.contracts):
+            raise ValueError("observer conformance contracts differ from the descriptor")
+        exercised = 0
+        complete = True
+        for report, support in zip(self.contracts, self.descriptor.contracts, strict=True):
+            if (
+                report.contract_id != support.contract_id
+                or report.contract_sha256 != support.contract_sha256
+                or report.options_schema_sha256 != support.options_schema.sha256
+                or report.facts_schema_sha256 != support.facts_schema.sha256
+                or report.facts_semantics_id != support.facts_semantics.id
+                or report.facts_semantics_sha256 != support.facts_semantics.profile_sha256
+                or report.facts_semantics_conformance_vectors_sha256
+                != support.facts_semantics.conformance_vectors_sha256
+                or report.preferred_subject_batch_size != support.preferred_subject_batch_size
+                or report.maximum_result_bytes != support.maximum_result_bytes
+            ):
+                raise ValueError("observer conformance contract differs from the descriptor")
+            has_evidence = report.evidence is not None
+            if report.execution != ("exercised" if has_evidence else "not-exercised"):
+                raise ValueError("observer execution state differs from its evidence")
+            if has_evidence:
+                exercised += 1
+                assert report.evidence is not None
+                request = report.evidence.request
+                result = report.evidence.observation
+                validate_observation_request(request, self.descriptor)
+                if request.observer_contract_id != report.contract_id:
+                    raise ValueError("observer evidence names a different contract")
+                if (
+                    result.request_id != request.request_id
+                    or result.observer_contract_id != support.contract_id
+                    or result.observer_contract_sha256 != support.contract_sha256
+                    or result.observer.descriptor_sha256 != self.descriptor.descriptor_sha256
+                    or result.subjects != request.subjects
+                ):
+                    raise ValueError("observer result does not bind its conformance request")
+                if result.state == "observed":
+                    if result.facts_schema != support.facts_schema or result.facts is None:
+                        raise ValueError("observer result uses an unexpected facts schema")
+                    Draft202012Validator(support.facts_schema.document).validate(result.facts)
+                if (
+                    len(canonical_json_bytes(result.model_dump(mode="json", exclude_none=True)))
+                    > request.maximum_result_bytes
+                ):
+                    raise ValueError("observer result exceeds its conformance request limit")
+
+            profile = support.facts_semantics
+            if profile == JSON_SCHEMA_ONLY_SEMANTIC_PROFILE:
+                if report.semantic_conformance != "schema-only" or report.semantic_vectors:
+                    raise ValueError("schema-only observer semantics have inconsistent evidence")
+            elif report.semantic_vectors is None:
+                if report.semantic_conformance != "not-exercised":
+                    raise ValueError("observer semantic state lacks vector evidence")
+                complete = False
+            else:
+                vectors = report.semantic_vectors.vectors
+                if (
+                    report.semantic_conformance != "exercised"
+                    or vectors.profile_id != profile.id
+                    or vectors.sha256 != profile.conformance_vectors_sha256
+                ):
+                    raise ValueError("observer semantic evidence differs from its profile")
+            complete = complete and has_evidence
+        if self.coverage.exercised != exercised or self.coverage.complete != complete:
+            raise ValueError("observer conformance coverage differs from its evidence")
         return self
 
 
@@ -120,7 +200,6 @@ def conformance_report(
         raise ValueError("observer semantic conformance vectors must have unique identities")
     consumed_vectors: set[tuple[str, str]] = set()
     contract_reports: list[dict[str, Any]] = []
-    observations: list[dict[str, Any]] = []
     for support in descriptor.contracts:
         entry: dict[str, Any] = {
             "contract_id": support.contract_id,
@@ -152,7 +231,10 @@ def conformance_report(
             ):
                 raise RuntimeError("observer result exceeds the invocation limit")
             entry["execution"] = "exercised"
-            observations.append(result.model_dump(mode="json", exclude_none=True))
+            entry["evidence"] = {
+                "request": request,
+                "observation": result,
+            }
 
         profile = support.facts_semantics
         if profile == JSON_SCHEMA_ONLY_SEMANTIC_PROFILE:
@@ -208,7 +290,7 @@ def conformance_report(
                         accepted_ids.append(vector.id)
                 entry["semantic_conformance"] = "exercised"
                 entry["semantic_vectors"] = {
-                    "sha256": vectors.sha256,
+                    "vectors": vectors,
                     "accepted_vector_ids": accepted_ids,
                     "rejected_vector_ids": rejected_ids,
                 }
@@ -240,7 +322,6 @@ def conformance_report(
                 "complete": complete,
             },
             "contracts": contract_reports,
-            "observations": observations,
         }
     )
 

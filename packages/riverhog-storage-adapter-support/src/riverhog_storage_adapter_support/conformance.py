@@ -8,11 +8,12 @@ import json
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from riverhog_storage_adapter_protocol import (
     STORAGE_ADAPTER_PROTOCOL,
+    AdapterDescriptor,
     CompletedWriteLookupRequest,
     DeleteObjectRequest,
     DeletePrefixRequest,
@@ -37,6 +38,31 @@ STORAGE_ADAPTER_CONFORMANCE_RESULT: Literal["riverhog-storage-adapter-conformanc
 )
 
 
+def _expected_checks(descriptor: AdapterDescriptor) -> tuple[str, ...]:
+    checks = [
+        "descriptor",
+        "create-only-retry",
+        "exact-metadata",
+        "exact-range",
+        "identity-conflict",
+    ]
+    if descriptor.maximum_segment_count is None or descriptor.maximum_segment_count >= 2:
+        checks.append("sparse-write-reconciliation")
+    checks.extend(
+        (
+            "write-continuation-replay",
+            "write-reconciliation",
+            "write-completion-recovery",
+            "write-stream",
+            "read-preparation",
+            "write-abort",
+            "exact-deletion",
+            "version-aware-prefix-cleanup",
+        )
+    )
+    return tuple(checks)
+
+
 class StorageAdapterConformanceResult(BaseModel):
     """Stable positive evidence returned after the complete check set passes."""
 
@@ -48,9 +74,14 @@ class StorageAdapterConformanceResult(BaseModel):
     protocol: Literal["riverhog-storage-adapter/v1"] = STORAGE_ADAPTER_PROTOCOL
     status: Literal["conformant"] = "conformant"
     coverage: Literal["complete"] = "complete"
-    implementation_id: str
-    implementation_version: str
+    descriptor: AdapterDescriptor
     checks: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def validate_exact_coverage(self) -> Self:
+        if self.checks != _expected_checks(self.descriptor):
+            raise ValueError("storage-adapter evidence differs from its exact check set")
+        return self
 
 
 def run_storage_adapter_conformance(
@@ -331,8 +362,7 @@ def run_storage_adapter_conformance(
         client.delete_prefix(DeletePrefixRequest(object_prefix=cleanup_prefix))
 
     return StorageAdapterConformanceResult(
-        implementation_id=descriptor.implementation_id,
-        implementation_version=descriptor.implementation_version,
+        descriptor=descriptor,
         checks=tuple(checks),
     )
 

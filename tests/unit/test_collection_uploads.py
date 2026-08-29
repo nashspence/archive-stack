@@ -821,7 +821,7 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
             "path": "document.txt",
             "offset": 0,
             "bytes": len(content),
-            "sha256": sha256,
+            "artifact_sha256": sha256,
         }
     ]
 
@@ -1353,7 +1353,7 @@ def test_raw_upload_units_expose_the_registered_source_identity(tmp_path: Path) 
             "path": "media.bin",
             "offset": 0,
             "bytes": len(content),
-            "sha256": sha256,
+            "artifact_sha256": sha256,
         }
     ]
 

@@ -19,6 +19,7 @@ from stove0_target_client.client import (
 )
 from stove0_target_protocol import (
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
+    AcceptedTargetJob,
     OperationContract,
     SemanticIntentConformanceVectors,
     TargetContract,
@@ -26,6 +27,7 @@ from stove0_target_protocol import (
     TargetJobStatus,
     TargetPreflightRequest,
     TargetPreflightResponse,
+    TargetResultKind,
     validate_declaration_against_operation,
     validate_preflight_response_against_request,
     validate_status_against_request,
@@ -55,7 +57,7 @@ class TargetConformanceCoverage(_TargetConformanceModel):
 class TargetOperationConformance(_TargetConformanceModel):
     operation_id: str
     operation_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    result_kind: Literal["collection", "effect"]
+    result_kind: TargetResultKind
     options_schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     semantic_conformance: Literal["not-exercised", "schema-only", "exercised"]
     intent_semantics_id: str | None = None
@@ -71,14 +73,39 @@ class TargetSemanticConformance(_TargetConformanceModel):
     profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     status: Literal["schema-only", "exercised"]
     conformance_vectors_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    vectors: SemanticIntentConformanceVectors | None = None
     accepted_vector_ids: tuple[str, ...] = ()
     rejected_vector_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_vectors(self) -> Self:
+        if self.status == "schema-only":
+            if (
+                self.conformance_vectors_sha256 is not None
+                or self.vectors is not None
+                or self.accepted_vector_ids
+                or self.rejected_vector_ids
+            ):
+                raise ValueError("schema-only target semantics cannot include vector evidence")
+            return self
+        if self.vectors is None or self.conformance_vectors_sha256 != self.vectors.sha256:
+            raise ValueError("target semantic conformance lacks its exact vectors")
+        if self.profile_id != self.vectors.profile_id:
+            raise ValueError("target semantic vectors name a different profile")
+        accepted = tuple(item.id for item in self.vectors.vectors if item.accepted)
+        rejected = tuple(item.id for item in self.vectors.vectors if not item.accepted)
+        if self.accepted_vector_ids != accepted or self.rejected_vector_ids != rejected:
+            raise ValueError("target semantic-vector evidence differs from its vectors")
+        return self
 
 
 class TargetOperationConformanceEvidence(_TargetConformanceModel):
     operation_id: str
+    operation: OperationContract
     semantic_conformance: TargetSemanticConformance
+    preflight_request: TargetPreflightRequest
     preflight: TargetPreflightResponse
+    accepted_job: AcceptedTargetJob
     submission: TargetJobStatus
     job_status: TargetJobStatus
 
@@ -106,6 +133,80 @@ class TargetConformanceResult(_TargetConformanceModel):
             raise ValueError("target conformance coverage differs from its operations")
         if self.coverage.exercised != len(self.operation_evidence):
             raise ValueError("target conformance evidence differs from its coverage")
+        if len(self.operations) != len(self.target.operations):
+            raise ValueError("target conformance operations differ from its contract")
+        evidence_by_id = {item.operation_id: item for item in self.operation_evidence}
+        if len(evidence_by_id) != len(self.operation_evidence):
+            raise ValueError("target conformance repeats operation evidence")
+        exercised = 0
+        for report, support in zip(self.operations, self.target.operations, strict=True):
+            if (
+                report.operation_id != support.operation_id
+                or report.operation_contract_sha256 != support.operation_contract_sha256
+                or report.result_kind != support.result_kind
+                or report.options_schema_sha256 != support.options_schema.sha256
+            ):
+                raise ValueError("target conformance operation differs from its contract")
+            evidence = evidence_by_id.get(report.operation_id)
+            if evidence is None:
+                if report.semantic_conformance != "not-exercised":
+                    raise ValueError("unexercised target operation claims semantic evidence")
+                continue
+            exercised += 1
+            operation = evidence.operation
+            if (
+                evidence.operation_id != operation.id
+                or operation.id != support.operation_id
+                or operation.contract_sha256 != support.operation_contract_sha256
+                or operation.result_kind != support.result_kind
+                or report.intent_semantics_id != operation.intent_semantics.id
+                or report.intent_semantics_sha256 != operation.intent_semantics.profile_sha256
+                or report.intent_semantics_conformance_vectors_sha256
+                != operation.intent_semantics.conformance_vectors_sha256
+            ):
+                raise ValueError("target conformance evidence differs from its operation")
+            semantic = evidence.semantic_conformance
+            if (
+                semantic.profile_id != operation.intent_semantics.id
+                or semantic.profile_sha256 != operation.intent_semantics.profile_sha256
+                or report.semantic_conformance != semantic.status
+            ):
+                raise ValueError("target semantic evidence differs from its operation")
+            if operation.intent_semantics == JSON_SCHEMA_ONLY_SEMANTIC_PROFILE:
+                if semantic.status != "schema-only":
+                    raise ValueError("schema-only target semantics claim vector evidence")
+            elif (
+                semantic.status != "exercised"
+                or semantic.vectors is None
+                or semantic.vectors.sha256 != operation.intent_semantics.conformance_vectors_sha256
+            ):
+                raise ValueError("target semantic vectors differ from its operation")
+
+            accepted = evidence.accepted_job
+            validate_declaration_against_operation(accepted.declaration.plan, operation)
+            validate_preflight_response_against_request(
+                evidence.preflight,
+                evidence.preflight_request,
+            )
+            if (
+                evidence.preflight.target != self.target
+                or evidence.preflight.plan != accepted.declaration.plan
+            ):
+                raise ValueError("target preflight evidence differs from the accepted job")
+            for status in (evidence.submission, evidence.job_status):
+                validate_status_against_request(status, accepted, operation)
+            if (
+                evidence.submission.job_id,
+                evidence.submission.request_sha256,
+                evidence.submission.plan_sha256,
+            ) != (
+                evidence.job_status.job_id,
+                evidence.job_status.request_sha256,
+                evidence.job_status.plan_sha256,
+            ):
+                raise ValueError("target status evidence differs from its submission")
+        if exercised != self.coverage.exercised:
+            raise ValueError("target conformance coverage differs from its exact evidence")
         return self
 
 
@@ -242,6 +343,7 @@ def _single_operation_report(
             "profile_id": operation.intent_semantics.id,
             "profile_sha256": operation.intent_semantics.profile_sha256,
             "conformance_vectors_sha256": semantic_vectors.sha256,
+            "vectors": semantic_vectors,
             "accepted_vector_ids": accepted_ids,
             "rejected_vector_ids": rejected_ids,
             "status": "exercised",
@@ -284,7 +386,10 @@ def _single_operation_report(
         {
             "status": "conformant",
             "semantic_conformance": semantic_proof,
+            "operation": operation,
+            "preflight_request": preflight_request,
             "preflight": preflight.model_dump(mode="json", exclude_none=True),
+            "accepted_job": job_request.accepted(),
             "submission": second.model_dump(mode="json", exclude_none=True),
             "job_status": observed.model_dump(mode="json", exclude_none=True),
         }
@@ -335,8 +440,11 @@ def conformance_report(
         evidence.append(
             {
                 "operation_id": operation_id,
+                "operation": exercised["operation"],
                 "semantic_conformance": exercised["semantic_conformance"],
+                "preflight_request": exercised["preflight_request"],
                 "preflight": exercised["preflight"],
+                "accepted_job": exercised["accepted_job"],
                 "submission": exercised["submission"],
                 "job_status": exercised["job_status"],
             }
