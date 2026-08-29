@@ -10,7 +10,13 @@ from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
 from typing import cast
 
-from riverhog_protocol import RetirementClaimReferenceDocument
+from http_api_contracts import closed_literal_values
+from riverhog_protocol import (
+    ClaimState,
+    ProcessingClaimSort,
+    RetirementClaimReferenceDocument,
+    SortOrder,
+)
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     CollectionArtifactIdentity,
@@ -69,6 +75,9 @@ _MAX_CONTROLLER_EVIDENCE_BYTES = 16 * 1024 * 1024
 _CAPABILITY_ACTIONS = frozenset({"read-inputs", "write-output"})
 _CAPABILITY_AUDIENCE = re.compile(r"^[a-z0-9][a-z0-9._:/-]{0,299}$", re.ASCII)
 _RETIREMENT_POLICIES = frozenset({"retain", "retire-after-verified-output"})
+_CLAIM_STATES = closed_literal_values(ClaimState)
+_CLAIM_SORT_NAMES = closed_literal_values(ProcessingClaimSort)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 _CLAIM_SORT_FIELDS = {
     "created_at": CollectionProcessingClaimRecord.created_at,
     "updated_at": CollectionProcessingClaimRecord.updated_at,
@@ -219,12 +228,14 @@ class SqlAlchemyCollectionWorkflowService:
     ) -> dict[str, object]:
         if page < 1 or per_page < 1 or per_page > 100:
             raise BadRequest("claim pagination is invalid")
-        if sort not in _CLAIM_SORT_FIELDS or order not in {"asc", "desc"}:
+        if sort not in _CLAIM_SORT_NAMES or order not in _SORT_ORDERS:
             raise BadRequest("claim sorting is invalid")
+        if state is not None and state not in _CLAIM_STATES:
+            raise BadRequest("claim state is invalid")
         filters, statement = _claim_list_statement(
             state=state, sort=sort, order=order, principal=principal
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(
                     select(func.count()).select_from(
@@ -254,8 +265,10 @@ class SqlAlchemyCollectionWorkflowService:
         order: str = "desc",
         principal: ApplicationPrincipal,
     ) -> Iterator[dict[str, object]]:
-        if sort not in _CLAIM_SORT_FIELDS or order not in {"asc", "desc"}:
+        if sort not in _CLAIM_SORT_NAMES or order not in _SORT_ORDERS:
             raise BadRequest("claim sorting is invalid")
+        if state is not None and state not in _CLAIM_STATES:
+            raise BadRequest("claim state is invalid")
         _, statement = _claim_list_statement(
             state=state, sort=sort, order=order, principal=principal
         )
@@ -540,11 +553,12 @@ class SqlAlchemyCollectionWorkflowService:
                 for tag in json.loads(claim.output_tags_json):
                     grants.add(ApplicationAccess(COLLECTIONS_CREATE, tag_resource(str(tag))))
             app = _capability_app(claim, actions)
-            artifact_scope = frozenset(
-                (item.collection_id, item.path)
-                for item in _capability_artifacts(session, capability.id)
+            has_artifact_scope = session.scalar(
+                select(CollectionTransformCapabilityArtifactRecord.capability_id)
+                .where(CollectionTransformCapabilityArtifactRecord.capability_id == capability.id)
+                .limit(1)
             )
-            if "read-inputs" in actions and not artifact_scope:
+            if "read-inputs" in actions and has_artifact_scope is None:
                 return None
             return ApplicationPrincipal(
                 app=app,
@@ -553,7 +567,7 @@ class SqlAlchemyCollectionWorkflowService:
                 # stable across capability refreshes.
                 key_id=claim.consumer_key_id,
                 access=frozenset(grants),
-                artifact_scope=artifact_scope,
+                artifact_scope_capability_id=(capability.id if "read-inputs" in actions else None),
             )
 
     def settle_claim(
@@ -950,7 +964,7 @@ def _claim_list_statement(
         .where(*filters)
         .order_by(
             direction(_CLAIM_SORT_FIELDS[sort]),
-            asc(CollectionProcessingClaimRecord.id),
+            direction(CollectionProcessingClaimRecord.id),
         )
     )
     return filters, statement
@@ -1522,22 +1536,6 @@ def _claim_artifact_identities(
             sha256=item.sha256,
         )
         for item in _claim_artifacts(session, claim_id)
-    )
-
-
-def _capability_artifacts(
-    session: Session,
-    capability_id: str,
-) -> list[CollectionTransformCapabilityArtifactRecord]:
-    return list(
-        session.scalars(
-            select(CollectionTransformCapabilityArtifactRecord)
-            .where(CollectionTransformCapabilityArtifactRecord.capability_id == capability_id)
-            .order_by(
-                CollectionTransformCapabilityArtifactRecord.collection_id,
-                CollectionTransformCapabilityArtifactRecord.path,
-            )
-        )
     )
 
 

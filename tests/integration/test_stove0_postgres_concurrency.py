@@ -93,7 +93,7 @@ def stores() -> Iterator[tuple[SqlAlchemyStateStore, SqlAlchemyStateStore]]:
     bootstrap.dispose()
     scoped_url = str(
         make_url(database_url)
-        .update_query_dict({"options": f"-csearch_path={schema}"})
+        .update_query_dict({"options": f"-csearch_path={schema},public"})
         .render_as_string(hide_password=False)
     )
     assert stove0_state_schema(scoped_url).upgrade().condition == "current"
@@ -131,7 +131,7 @@ def v1_fixture_database_url() -> Iterator[str]:
     bootstrap.dispose()
     scoped_url = str(
         make_url(database_url)
-        .update_query_dict({"options": f"-csearch_path={schema}"})
+        .update_query_dict({"options": f"-csearch_path={schema},public"})
         .render_as_string(hide_password=False)
     )
     try:

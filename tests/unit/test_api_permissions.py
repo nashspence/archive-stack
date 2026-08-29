@@ -96,6 +96,10 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
         ): PROVENANCE_READ,
         (
             "GET",
+            "/v1/collections/{collection_id}/provenance/trace/{path:path}/stream",
+        ): PROVENANCE_READ,
+        (
+            "GET",
             "/v1/collections/{collection_id}/provenance/journals/{journal_id}",
         ): PROVENANCE_EXPORT,
         (

@@ -13,7 +13,7 @@ import threading
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -62,14 +62,17 @@ from stove0_operator_contracts import (
     ArtifactSelectionPage,
     EvaluationPage,
     EvaluationPhase,
+    EvaluationSort,
     EvaluationView,
     RecipeCatalogView,
     RecipeView,
     SchedulerRun,
     SchedulerStatus,
+    SortOrder,
     Stove0EventPage,
     WorkPage,
     WorkPhase,
+    WorkSort,
     WorkView,
 )
 from stove0_protocol import (
@@ -373,8 +376,8 @@ def create_app(
         per_page: int = Query(default=25, ge=1, le=100),
         phase: WorkPhase | None = None,
         q: str | None = None,
-        sort: Literal["updated_at", "phase", "work_id"] = "updated_at",
-        order: Literal["asc", "desc"] = "desc",
+        sort: WorkSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> WorkPage:
         return WorkPage.from_page(
             composition.state.list_work(
@@ -402,8 +405,8 @@ def create_app(
     def stream_work(
         phase: WorkPhase | None = None,
         q: str | None = None,
-        sort: Literal["updated_at", "phase", "work_id"] = "updated_at",
-        order: Literal["asc", "desc"] = "desc",
+        sort: WorkSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> StreamingResponse:
         items = (
             WorkView.from_record(record)
@@ -579,8 +582,8 @@ def create_app(
         per_page: int = Query(default=25, ge=1, le=100),
         phase: EvaluationPhase | None = None,
         q: str | None = None,
-        sort: Literal["updated_at", "phase", "evaluation_id"] = "updated_at",
-        order: Literal["asc", "desc"] = "desc",
+        sort: EvaluationSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> EvaluationPage:
         return EvaluationPage.from_page(
             composition.state.list_evaluations(
@@ -608,8 +611,8 @@ def create_app(
     def stream_evaluations(
         phase: EvaluationPhase | None = None,
         q: str | None = None,
-        sort: Literal["updated_at", "phase", "evaluation_id"] = "updated_at",
-        order: Literal["asc", "desc"] = "desc",
+        sort: EvaluationSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> StreamingResponse:
         items = (
             EvaluationView.from_record(record)

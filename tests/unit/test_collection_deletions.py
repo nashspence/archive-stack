@@ -12,6 +12,7 @@ from riverhog_core.catalog_models import (
     CatalogEventTagRecord,
     CollectionMetadataPublicationRecord,
     CollectionRecord,
+    TagRecord,
 )
 from riverhog_core.services.collection_deletions import SqlAlchemyCollectionDeletionService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
@@ -103,6 +104,8 @@ def test_confirmed_deletion_removes_archive_and_catalog_record(
         assert event.change == "deleted" and event.collection_id == COLLECTION_ID
         snapshot = session.query(CatalogEventTagRecord).one()
         assert (snapshot.phase, snapshot.tag_id) == ("before", "docs")
+        docs = session.get(TagRecord, "docs")
+        assert docs is not None and docs.collection_count == 0
 
 
 def test_deletion_event_belongs_to_the_authenticated_deleter_across_retry(

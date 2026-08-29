@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
+from http_api_contracts import closed_literal_values
+from riverhog_protocol import ArchiveStoreSort, SortOrder
 from riverhog_protocol.errors import BadRequest, NotFound
 from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.orm import Session
+from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import ARCHIVES_READ, ApplicationPrincipal
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
-from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
+from riverhog_core.catalog_db import SessionFactory, make_session_factory
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
@@ -24,14 +27,8 @@ from riverhog_core.ports.download_allowance import DownloadAllowance
 from riverhog_core.runtime_config import RuntimeConfig, StorageAdapterRegistration
 from riverhog_core.services.download_allowances import SqlAlchemyDownloadAllowance
 
-_SORT_FIELDS = {
-    "store",
-    "read_mode",
-    "read_priority",
-    "collections",
-    "objects",
-    "stored_bytes",
-}
+_SORT_FIELDS = closed_literal_values(ArchiveStoreSort)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 
 
 class SqlAlchemyArchiveStoreService:
@@ -64,7 +61,7 @@ class SqlAlchemyArchiveStoreService:
         config = self._config.archive_stores.get(normalized)
         if config is None:
             raise NotFound(f"archive store not found: {normalized}")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             aggregates = _store_aggregates(
                 session,
                 stores=(normalized,),
@@ -93,7 +90,7 @@ class SqlAlchemyArchiveStoreService:
             raise BadRequest("per_page must be at least 1")
         if sort not in _SORT_FIELDS:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
-        if order not in {"asc", "desc"}:
+        if order not in _SORT_ORDERS:
             raise BadRequest("order must be asc or desc")
 
         needle = q.strip().casefold() if q and q.strip() else None
@@ -106,7 +103,7 @@ class SqlAlchemyArchiveStoreService:
                 (current.name, self._archive_stores.require(current.name).store.read_mode())
             ).casefold()
         ]
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             aggregates = _store_aggregates(
                 session,
                 stores=tuple(current.name for current in configs),

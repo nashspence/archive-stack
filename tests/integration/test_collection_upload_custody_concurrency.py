@@ -69,7 +69,7 @@ def database_url() -> Iterator[str]:
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
     scoped = (
         make_url(value)
-        .update_query_dict({"options": f"-csearch_path={schema}"})
+        .update_query_dict({"options": f"-csearch_path={schema},public"})
         .render_as_string(hide_password=False)
     )
     initialize_db(scoped)
@@ -180,6 +180,7 @@ def test_exact_concurrent_registration_is_one_append_only_planner_step(
         )
         assert upload.planner_checkpoint_json is not None
         assert '"next_file_order":1' in upload.planner_checkpoint_json
+        assert (upload.file_count, upload.file_bytes) == (1, 0)
 
 
 def test_heartbeat_and_expiry_serialize_without_losing_resumable_custody(

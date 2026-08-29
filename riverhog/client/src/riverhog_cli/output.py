@@ -717,22 +717,28 @@ def format_file_provenance(payload: Mapping[str, object]) -> str:
 
 
 def format_provenance_trace(payload: Mapping[str, object]) -> str:
-    lines = [format_file_provenance(payload)]
-    journals = _items(payload, "journals")
-    lines.append(f"reachable journals: {len(journals)}")
-    for journal in journals:
-        lines.append(
-            f"- {journal.get('journal_id', 'unknown')}  entries={journal.get('entries', 0)}  "
-            f"current={journal.get('current_state_id', 'unknown')}"
-        )
-    references = _items(payload, "external_state_references")
-    lines.append(f"external state references: {len(references)}")
-    for reference in references:
-        lines.append(
-            f"- {reference.get('from_journal_id', 'unknown')} -> "
-            f"{reference.get('to_journal_id', 'unknown')}  "
-            f"state={reference.get('state_id', 'unknown')}"
-        )
+    lines = []
+    if payload.get("path") is not None:
+        lines.extend(format_file_provenance(payload).splitlines())
+    lines.append(_page_line(payload, "trace items"))
+    for item in _items(payload, "items"):
+        kind = item.get("kind")
+        if kind == "journal":
+            value = item.get("journal")
+            journal = value if isinstance(value, Mapping) else {}
+            lines.append(
+                f"- journal {journal.get('journal_id', 'unknown')}  "
+                f"entries={journal.get('entries', 0)}  "
+                f"current={journal.get('current_state_id', 'unknown')}"
+            )
+        elif kind == "external_state_reference":
+            value = item.get("reference")
+            reference = value if isinstance(value, Mapping) else {}
+            lines.append(
+                f"- reference {reference.get('from_journal_id', 'unknown')} -> "
+                f"{reference.get('to_journal_id', 'unknown')}  "
+                f"state={reference.get('state_id', 'unknown')}"
+            )
     return "\n".join(lines)
 
 

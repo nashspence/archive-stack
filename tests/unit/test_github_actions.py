@@ -268,6 +268,7 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     assert '>> "$GITHUB_ENV"' in locate_evidence["run"]
     assert "OPERATIONS_SUMMARY" in locate_evidence["run"]
     assert "OPERATIONS_TIMINGS" in locate_evidence["run"]
+    assert "DATABASE_SUMMARY" in locate_evidence["run"]
     lifecycle_evidence = next(
         step
         for step in audit["steps"]
@@ -301,6 +302,21 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     assert "cli_human_json_projection.status" in verify_operations["run"]
     assert "bounded_state_access.status" in verify_operations["run"]
     assert "event_cursor_restart_resume.status" in verify_operations["run"]
+    database_evidence = next(
+        step
+        for step in audit["steps"]
+        if step["name"] == "Qualify exact database schemas, selectors, and complete streams"
+    )
+    assert "make database-qualification" in database_evidence["run"]
+    assert 'DATABASE_QUALIFICATION_SOURCE_SHA="$SOURCE_SHA"' in database_evidence["run"]
+    assert 'DATABASE_QUALIFICATION_OUTPUT="$DATABASE_SUMMARY"' in database_evidence["run"]
+    verify_database = next(
+        step for step in audit["steps"] if step["name"] == "Verify exact-SHA database evidence"
+    )
+    assert "riverhog-database-qualification/v1" in verify_database["run"]
+    assert ".cardinalities == [4096, 16384]" in verify_database["run"]
+    assert "peak_application_bytes" in verify_database["run"]
+    assert "cancellation.connection_reusable" in verify_database["run"]
     governance = next(
         step for step in audit["steps"] if step["name"] == "Verify live release governance"
     )
@@ -346,6 +362,7 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     assert "published == false" in text
     assert "riverhog-release-qualification/v1" in text
     assert 'operation_matrix: "passed"' in text
+    assert 'database_contract: "passed"' in text
     assert "Analyze (actions)" in text and "Analyze (python)" in text
     assert "release/v1" in text
     assert "v1\\.[0-9]+\\.[0-9]+" in text

@@ -161,6 +161,7 @@ def test_initialize_db_creates_current_catalog(tmp_path: Path) -> None:
         "created_at",
         "expires_at",
         "revoked_at",
+        "search_text",
         "last_used_at",
     }
     assert {column["name"] for column in inspector.get_columns("lifecycle_events")} == {

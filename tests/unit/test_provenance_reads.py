@@ -29,6 +29,7 @@ from riverhog_provenance import (
 )
 
 from tests.provenance_observer import native_provenance_observer
+from tests.unit.artifact_scope_fixtures import persisted_artifact_scope
 from tests.unit.db_helpers import sqlite_url
 
 NOW = "2026-01-01T00:00:00.000000Z"
@@ -156,6 +157,7 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
                     path=path,
                     bytes=len(content),
                     sha256=sha256,
+                    provenance_status="captured",
                 )
             )
         session.flush()
@@ -172,30 +174,54 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
             )
 
     service = SqlAlchemyProvenanceService(RuntimeConfig(database_url=database_url))
-    traced = service.trace_file(1, "derivative.tar", principal=READER)
+    traced = service.trace_file(1, "derivative.tar", page=1, per_page=100, principal=READER)
 
     derivative_summary = validate_journal(derivative)
     source_ids = {validate_journal(first).journal_id, validate_journal(second).journal_id}
-    assert {item["journal_id"] for item in traced["journals"]} == {
+    assert {
+        item["journal"]["journal_id"] for item in traced["items"] if item["kind"] == "journal"
+    } == {
         derivative_summary.journal_id,
         *source_ids,
     }
-    assert {item["to_journal_id"] for item in traced["external_state_references"]} == source_ids
+    assert {
+        item["reference"]["to_journal_id"]
+        for item in traced["items"]
+        if item["kind"] == "external_state_reference"
+    } == source_ids
     assert validate_journal(unrelated).journal_id not in {
-        item["journal_id"] for item in traced["journals"]
+        item["journal"]["journal_id"] for item in traced["items"] if item["kind"] == "journal"
     }
+    streamed_trace = list(service.iter_trace_file(1, "derivative.tar", principal=READER))
+    assert streamed_trace == traced["items"]
+    bounded_pages = [
+        service.trace_file(
+            1,
+            "derivative.tar",
+            page=page,
+            per_page=2,
+            principal=READER,
+        )
+        for page in range(1, 4)
+    ]
+    assert [item for current in bounded_pages for item in current["items"]] == streamed_trace
+    assert {(current["total"], current["pages"]) for current in bounded_pages} == {(5, 3)}
 
-    scoped = ApplicationPrincipal(
-        app="claim:fixture",
-        key_id="controller",
-        access=frozenset(
-            {
-                ApplicationAccess(CATALOG_READ, "collection:1"),
-                ApplicationAccess(PROVENANCE_READ, "collection:1"),
-                ApplicationAccess(PROVENANCE_EXPORT, "collection:1"),
-            }
+    scoped = persisted_artifact_scope(
+        database_url,
+        access=(
+            ApplicationAccess(CATALOG_READ, "collection:1"),
+            ApplicationAccess(PROVENANCE_READ, "collection:1"),
+            ApplicationAccess(PROVENANCE_EXPORT, "collection:1"),
         ),
-        artifact_scope=frozenset({(1, "derivative.tar")}),
+        artifacts=(
+            (
+                1,
+                "derivative.tar",
+                derivative_path.stat().st_size,
+                hashlib.sha256(derivative_path.read_bytes()).hexdigest(),
+            ),
+        ),
     )
     listed = list(
         service.iter_files(
@@ -208,8 +234,16 @@ def test_trace_reads_only_reachable_validated_lineage_projection(
         )
     )
     assert [item["path"] for item in listed] == ["derivative.tar"]
-    scoped_trace = service.trace_file(1, "derivative.tar", principal=scoped)
-    assert {item["journal_id"] for item in scoped_trace["journals"]} == {
+    scoped_trace = service.trace_file(
+        1,
+        "derivative.tar",
+        page=1,
+        per_page=100,
+        principal=scoped,
+    )
+    assert {
+        item["journal"]["journal_id"] for item in scoped_trace["items"] if item["kind"] == "journal"
+    } == {
         derivative_summary.journal_id,
         *source_ids,
     }

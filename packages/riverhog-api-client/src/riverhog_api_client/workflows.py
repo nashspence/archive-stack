@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
+from http_api_contracts import closed_literal_values
 from pydantic import TypeAdapter, ValidationError
-from riverhog_protocol import CollectionId, ProcessingClaimId
+from riverhog_protocol import (
+    ClaimState,
+    CollectionId,
+    ProcessingClaimId,
+    ProcessingClaimSort,
+    SortOrder,
+)
 from riverhog_protocol.collection_workflow_transport import (
     CapabilityAction,
-    ClaimState,
     CollectionArtifactIdentityDocument,
     CollectionDerivationDocument,
     CollectionDerivationResponseDocument,
@@ -38,12 +44,11 @@ RootInput = CollectionRootIdentityDocument | Mapping[str, Any]
 ArtifactInput = CollectionArtifactIdentityDocument | Mapping[str, Any]
 OutcomeInput = ProcessingOutcomeIdentityDocument | Mapping[str, Any]
 DerivationInput = CollectionDerivationDocument | Mapping[str, Any]
-type _ClaimSort = Literal[
-    "created_at", "updated_at", "expires_at", "state", "work_id", "execution_id"
-]
-type _SortOrder = Literal["asc", "desc"]
 _COLLECTION_ID: TypeAdapter[int] = TypeAdapter(CollectionId)
 _PROCESSING_CLAIM_ID: TypeAdapter[str] = TypeAdapter(ProcessingClaimId)
+_CLAIM_SORTS = closed_literal_values(ProcessingClaimSort)
+_CLAIM_STATES = closed_literal_values(ClaimState)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 
 
 def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
@@ -115,30 +120,21 @@ class CollectionWorkflowMethods:
         page: int = 1,
         per_page: int = 25,
         state: ClaimState | None = None,
-        sort: _ClaimSort = "updated_at",
-        order: _SortOrder = "desc",
+        sort: ProcessingClaimSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> ProcessingClaimPageDocument:
         params: dict[str, Any] = {
             "page": page,
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset(
-                    {
-                        "created_at",
-                        "updated_at",
-                        "expires_at",
-                        "state",
-                        "work_id",
-                        "execution_id",
-                    }
-                ),
+                _CLAIM_SORTS,
                 "processing-claim sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if state:
-            params["state"] = state
+            params["state"] = _one_of(state, _CLAIM_STATES, "processing-claim state")
         return ProcessingClaimPageDocument.model_validate(
             self._json("GET", "/v1/collection-processing-claims", params=params)
         )
@@ -148,20 +144,18 @@ class CollectionWorkflowMethods:
         self,
         *,
         state: ClaimState | None = None,
-        sort: _ClaimSort = "updated_at",
-        order: _SortOrder = "desc",
+        sort: ProcessingClaimSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> Iterator[Iterator[ProcessingClaimDocument]]:
         normalized_sort = _one_of(
             sort,
-            frozenset(
-                {"created_at", "updated_at", "expires_at", "state", "work_id", "execution_id"}
-            ),
+            _CLAIM_SORTS,
             "processing-claim sort",
         )
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         if state:
-            params["state"] = state
+            params["state"] = _one_of(state, _CLAIM_STATES, "processing-claim state")
         with self._stream_json_objects(
             "/v1/collection-processing-claims/stream",
             query={"state": state, "sort": normalized_sort, "order": normalized_order},

@@ -46,7 +46,7 @@ def isolated_database_url() -> Iterator[str]:
     admin_engine = create_catalog_engine(value)
     with admin_engine.begin() as connection:
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
-    url = make_url(value).update_query_dict({"options": f"-csearch_path={schema}"})
+    url = make_url(value).update_query_dict({"options": f"-csearch_path={schema},public"})
     try:
         yield url.render_as_string(hide_password=False)
     finally:

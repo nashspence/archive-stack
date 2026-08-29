@@ -6,6 +6,8 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal
 
+from http_api_contracts import closed_literal_values
+from riverhog_protocol import SortOrder, TagSort
 from riverhog_protocol.errors import BadRequest, Conflict, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_tag
 from sqlalchemy import asc, desc, exists, func, or_, select
@@ -54,8 +56,10 @@ from riverhog_core.services.operation_plans import (
     challenge_has_shape,
     plan_challenge,
 )
+from riverhog_core.services.tag_projections import adjust_tag_collection_counts
 
-_SORT_FIELDS = {"id", "created_at", "collections"}
+_SORT_FIELDS = closed_literal_values(TagSort)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 _DELETE_CHALLENGE_PREFIX = "delete-tag"
 _DEPENDENCY_SAMPLE_LIMIT = 10
 _TAG_DELETE_WARNING = (
@@ -210,7 +214,7 @@ class SqlAlchemyTagService:
             raise BadRequest("page must be greater than or equal to 1")
         if per_page < 1 or per_page > 100:
             raise BadRequest("per_page must be between 1 and 100")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(base.subquery())) or 0)
             statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = [dict(row) for row in session.execute(statement).mappings().all()]
@@ -356,6 +360,11 @@ class SqlAlchemyTagService:
             if current_tags == normalized_tags:
                 return _collection_tags_payload(session, collection)
 
+            adjust_tag_collection_counts(
+                session,
+                added=set(normalized_tags) - set(current_tags),
+                removed=set(current_tags) - set(normalized_tags),
+            )
             session.query(CollectionTagRecord).filter(
                 CollectionTagRecord.collection_id == collection_id
             ).delete(synchronize_session=False)
@@ -425,36 +434,26 @@ def _tag_list_statements(
 ) -> tuple[str | None, Select[Any], Select[Any]]:
     if sort not in _SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
-    if order not in {"asc", "desc"}:
+    if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
     query = q.strip() if q is not None else None
-    collection_counts = (
-        select(CollectionTagRecord.tag_id, func.count().label("collections"))
-        .group_by(CollectionTagRecord.tag_id)
-        .subquery()
-    )
-    collections = func.coalesce(collection_counts.c.collections, 0)
     filters: list[ColumnElement[bool]] = [tag_access_filter(TagRecord.id, principal, CATALOG_READ)]
     if query:
-        filters.append(func.lower(TagRecord.id).like(_like_pattern(query.casefold()), escape="\\"))
-    base = (
-        select(
-            TagRecord.id.label("id"),
-            TagRecord.created_by_app.label("created_by_app"),
-            TagRecord.created_by_key_id.label("created_by_key_id"),
-            TagRecord.created_at.label("created_at"),
-            collections.label("collections"),
-        )
-        .outerjoin(collection_counts, collection_counts.c.tag_id == TagRecord.id)
-        .where(*filters)
-    )
+        filters.append(TagRecord.id.like(_like_pattern(query.casefold()), escape="\\"))
+    base = select(
+        TagRecord.id.label("id"),
+        TagRecord.created_by_app.label("created_by_app"),
+        TagRecord.created_by_key_id.label("created_by_key_id"),
+        TagRecord.created_at.label("created_at"),
+        TagRecord.collection_count.label("collections"),
+    ).where(*filters)
     columns = {
         "id": TagRecord.id,
         "created_at": TagRecord.created_at,
-        "collections": collections,
+        "collections": TagRecord.collection_count,
     }
     direction = desc if order == "desc" else asc
-    return query, base, base.order_by(direction(columns[sort]), asc(TagRecord.id))
+    return query, base, base.order_by(direction(columns[sort]), direction(TagRecord.id))
 
 
 def _tag_deletion_plan(

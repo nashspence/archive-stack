@@ -1,14 +1,14 @@
 -- Exact current Gogurt listener v1 baseline conformance fixture.
 BEGIN TRANSACTION;
 CREATE TABLE listener_meta (
-    key TEXT PRIMARY KEY,
+    key TEXT NOT NULL PRIMARY KEY,
     value TEXT NOT NULL
 );
 INSERT INTO listener_meta VALUES ('schema', '1');
 CREATE TABLE observed_mounts (
-    mount_point TEXT PRIMARY KEY,
+    mount_point TEXT NOT NULL PRIMARY KEY,
     present INTEGER NOT NULL CHECK (present IN (0, 1)),
-    generation INTEGER NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
     marker_identity TEXT
 );
 INSERT INTO observed_mounts VALUES (
@@ -16,16 +16,16 @@ INSERT INTO observed_mounts VALUES (
     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 );
 CREATE TABLE dispatches (
-    dispatch_id TEXT PRIMARY KEY,
+    dispatch_id TEXT NOT NULL PRIMARY KEY,
     mount_point TEXT NOT NULL,
-    generation INTEGER NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
     marker_identity TEXT NOT NULL,
     route TEXT NOT NULL,
-    plan_json TEXT NOT NULL,
+    plan_json TEXT NOT NULL CHECK (json_valid(plan_json)),
     state TEXT NOT NULL CHECK (
         state IN ('queued', 'running', 'retry', 'uncertain', 'completed', 'failed')
     ),
-    attempts INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     observed_at REAL NOT NULL,
     started_at REAL,
     completed_at REAL,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Computed,
     ForeignKeyConstraint,
     Identity,
     Index,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,6 +28,11 @@ class TagRecord(Base):
     created_by_app: Mapped[str] = mapped_column(String)
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String)
+    collection_count: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+    )
 
     assignments: Mapped[list[CollectionTagRecord]] = relationship(
         back_populates="tag",
@@ -33,11 +40,27 @@ class TagRecord(Base):
         passive_deletes=True,
     )
 
+    __table_args__ = (
+        CheckConstraint("collection_count >= 0", name="ck_tags_collection_count"),
+        Index("ix_tags_created_at_id", "created_at", "id"),
+        Index("ix_tags_collection_count_id", "collection_count", "id"),
+        Index(
+            "ix_tags_id_trgm",
+            "id",
+            postgresql_using="gin",
+            postgresql_ops={"id": "gin_trgm_ops"},
+        ),
+    )
+
 
 class CollectionRecord(Base):
     __tablename__ = "collections"
 
     id: Mapped[int] = mapped_column(COLLECTION_ID_TYPE, primary_key=True)
+    search_text: Mapped[str] = mapped_column(
+        String,
+        Computed("CAST(id AS TEXT)"),
+    )
     creation_idempotency_key: Mapped[str] = mapped_column(String)
     creation_identity_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     creation_custody_mode: Mapped[str] = mapped_column(String, nullable=False)
@@ -53,6 +76,8 @@ class CollectionRecord(Base):
     created_by_app: Mapped[str] = mapped_column(String, default="riverhog")
     created_by_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String)
+    file_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
+    file_bytes: Mapped[int] = mapped_column(BigInteger, default=0, server_default=text("0"))
     files: Mapped[list[CollectionFileRecord]] = relationship(
         back_populates="collection",
         cascade="all, delete-orphan",
@@ -82,6 +107,29 @@ class CollectionRecord(Base):
         ),
         Index("ix_collections_encryption_format", "encryption_format", "id"),
         Index("ix_collections_passphrase_id", "passphrase_id", "id"),
+        Index("ix_collections_created_at_id", "created_at", "id"),
+        Index("ix_collections_file_count_id", "file_count", "id"),
+        Index("ix_collections_file_bytes_id", "file_bytes", "id"),
+        Index(
+            "ix_collections_search_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
+        CheckConstraint("file_count >= 0", name="ck_collections_file_count"),
+        CheckConstraint("file_bytes >= 0", name="ck_collections_file_bytes"),
+        CheckConstraint("metadata_revision >= 1", name="ck_collections_metadata_revision"),
+        CheckConstraint(
+            "provenance_mode IN ('captured','mixed','omitted')",
+            name="ck_collections_provenance_mode",
+        ),
+        CheckConstraint(
+            "provenance_mode IN ('captured','mixed') AND provenance_identity IS NOT NULL OR "
+            "provenance_mode = 'omitted' AND provenance_identity IS NULL",
+            name="ck_collections_provenance_identity",
+        ),
+        CheckConstraint("length(content_identity) = 64", name="ck_collections_content_identity"),
+        CheckConstraint("length(record_etag) = 64", name="ck_collections_record_etag"),
     )
 
 
@@ -98,6 +146,12 @@ class CollectionTagRecord(Base):
         ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(["tag_id"], ["tags.id"], ondelete="RESTRICT"),
         Index("ix_collection_tags_tag", "tag_id", "collection_id"),
+        Index(
+            "ix_collection_tags_tag_trgm",
+            "tag_id",
+            postgresql_using="gin",
+            postgresql_ops={"tag_id": "gin_trgm_ops"},
+        ),
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="tags")
@@ -138,12 +192,57 @@ class CollectionFileRecord(Base):
     path: Mapped[str] = mapped_column(String, primary_key=True)
     bytes: Mapped[int] = mapped_column(BigInteger)
     sha256: Mapped[str] = mapped_column(String(64))
+    provenance_status: Mapped[str] = mapped_column(
+        String,
+        default="missing",
+        server_default=text("'missing'"),
+    )
+    search_text: Mapped[str] = mapped_column(
+        String,
+        Computed("CAST(collection_id AS TEXT) || '/' || lower(path)"),
+    )
+    path_search_text: Mapped[str] = mapped_column(
+        String,
+        Computed("lower(path)"),
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
             ["collection_id"],
             ["collections.id"],
             ondelete="CASCADE",
+        ),
+        CheckConstraint("bytes >= 0", name="ck_collection_files_bytes"),
+        CheckConstraint("length(sha256) = 64", name="ck_collection_files_sha256"),
+        CheckConstraint(
+            "provenance_status IN ('captured','omitted','missing')",
+            name="ck_collection_files_provenance_status",
+        ),
+        Index("ix_collection_files_path", "path", "collection_id"),
+        Index("ix_collection_files_bytes", "bytes", "collection_id", "path"),
+        Index(
+            "ix_collection_files_collection_bytes",
+            "collection_id",
+            "bytes",
+            "path",
+        ),
+        Index(
+            "ix_collection_files_collection_provenance",
+            "collection_id",
+            "provenance_status",
+            "path",
+        ),
+        Index(
+            "ix_collection_files_search_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_collection_files_path_search_trgm",
+            "path_search_text",
+            postgresql_using="gin",
+            postgresql_ops={"path_search_text": "gin_trgm_ops"},
         ),
     )
 
@@ -169,6 +268,10 @@ class CollectionProvenanceJournalRecord(Base):
     __table_args__ = (
         ForeignKeyConstraint(["collection_id"], ["collections.id"], ondelete="CASCADE"),
         Index("ix_collection_provenance_journals_sha256", "sha256", "collection_id"),
+        CheckConstraint("bytes >= 0", name="ck_provenance_journals_bytes"),
+        CheckConstraint("entries >= 0", name="ck_provenance_journals_entries"),
+        CheckConstraint("current_bytes >= 0", name="ck_provenance_journals_current_bytes"),
+        CheckConstraint("length(sha256) = 64", name="ck_provenance_journals_sha256"),
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="provenance_journals")
@@ -234,6 +337,16 @@ class CollectionFileProvenanceRecord(Base):
             ondelete="CASCADE",
         ),
         Index("ix_collection_file_provenance_journal", "collection_id", "journal_id"),
+        CheckConstraint(
+            "status IN ('captured','omitted')",
+            name="ck_collection_file_provenance_status",
+        ),
+        CheckConstraint(
+            "status = 'captured' AND journal_id IS NOT NULL AND current_state_id IS NOT NULL "
+            "AND omission_reason IS NULL OR status = 'omitted' AND journal_id IS NULL "
+            "AND current_state_id IS NULL AND omission_reason IS NOT NULL",
+            name="ck_collection_file_provenance_binding",
+        ),
     )
 
 
@@ -287,6 +400,10 @@ class CollectionArchiveCopyRecord(Base):
             ["collections.id"],
             ondelete="CASCADE",
         ),
+        CheckConstraint(
+            "state IN ('pending','uploading','uploaded','retrying','failed')",
+            name="ck_collection_archive_copies_state",
+        ),
     )
 
     collection: Mapped[CollectionRecord] = relationship(back_populates="archive_copies")
@@ -338,6 +455,16 @@ class CollectionMetadataPublicationRecord(Base):
             "collection_id",
             "store",
         ),
+        CheckConstraint("desired_revision >= 1", name="ck_metadata_publications_desired_revision"),
+        CheckConstraint(
+            "published_revision IS NULL OR published_revision >= 1",
+            name="ck_metadata_publications_published_revision",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_metadata_publications_attempt_count"),
+        CheckConstraint(
+            "state IN ('pending','publishing','published','retry_wait')",
+            name="ck_metadata_publications_state",
+        ),
     )
 
     copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="metadata_publication")
@@ -367,6 +494,11 @@ class CollectionProofMaturationRecord(Base):
             "next_attempt_at",
             "collection_id",
             "store",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_proof_maturations_attempt_count"),
+        CheckConstraint(
+            "state IN ('pending','upgrading','waiting','retry_wait','matured')",
+            name="ck_proof_maturations_state",
         ),
     )
 
@@ -398,6 +530,12 @@ class CollectionArchiveAttestationRecord(Base):
             "next_attempt_at",
             "collection_id",
             "store",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_archive_attestations_attempt_count"),
+        CheckConstraint(
+            "state IN ('pending','publishing','publish_retry','upgrading','upgrade_retry',"
+            "'waiting','matured')",
+            name="ck_archive_attestations_state",
         ),
     )
 
@@ -437,6 +575,9 @@ class CollectionArchiveObjectRecord(Base):
             "store",
             "object_order",
         ),
+        CheckConstraint("object_order >= 0", name="ck_collection_archive_objects_order"),
+        CheckConstraint("plaintext_bytes >= 0", name="ck_collection_archive_objects_plaintext"),
+        CheckConstraint("stored_bytes >= 0", name="ck_collection_archive_objects_stored"),
     )
 
     copy: Mapped[CollectionArchiveCopyRecord] = relationship(back_populates="objects")
@@ -481,6 +622,10 @@ class CollectionArchiveFileObjectRecord(Base):
             "store",
             "object_id",
         ),
+        CheckConstraint("sequence >= 0", name="ck_archive_file_objects_sequence"),
+        CheckConstraint("file_offset >= 0", name="ck_archive_file_objects_file_offset"),
+        CheckConstraint("object_offset >= 0", name="ck_archive_file_objects_object_offset"),
+        CheckConstraint("bytes >= 0", name="ck_archive_file_objects_bytes"),
     )
 
     object: Mapped[CollectionArchiveObjectRecord] = relationship(back_populates="placements")
@@ -493,6 +638,10 @@ class ArchiveDownloadUsageRecord(Base):
     month_started_at: Mapped[str] = mapped_column(String)
     accounted_bytes: Mapped[int] = mapped_column(BigInteger)
     updated_at: Mapped[str] = mapped_column(String)
+
+    __table_args__ = (
+        CheckConstraint("accounted_bytes >= 0", name="ck_archive_download_usage_bytes"),
+    )
 
 
 class ArchiveDownloadReservationRecord(Base):
@@ -512,6 +661,7 @@ class ArchiveDownloadReservationRecord(Base):
             ondelete="CASCADE",
         ),
         Index("ix_archive_download_reservations_expiry", "store", "expires_at"),
+        CheckConstraint("reserved_bytes >= 0", name="ck_archive_download_reservations_bytes"),
     )
 
 
@@ -533,6 +683,13 @@ class ArchiveCopyJobRecord(Base):
     next_attempt_at: Mapped[str | None] = mapped_column(String, nullable=True)
     completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
     failure: Mapped[str | None] = mapped_column(String, nullable=True)
+    search_text: Mapped[str] = mapped_column(
+        String,
+        Computed(
+            "lower(CAST(collection_id AS TEXT) || ' ' || source_store || ' ' || "
+            "destination_store || ' ' || state)"
+        ),
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -541,6 +698,21 @@ class ArchiveCopyJobRecord(Base):
             ondelete="CASCADE",
         ),
         Index("ix_archive_copy_jobs_due", "state", "next_attempt_at", "requested_at"),
+        Index("ix_archive_copy_jobs_requested", "requested_at", "collection_id"),
+        Index("ix_archive_copy_jobs_source", "source_store", "collection_id"),
+        Index("ix_archive_copy_jobs_destination", "destination_store", "collection_id"),
+        Index("ix_archive_copy_jobs_state", "state", "collection_id"),
+        Index(
+            "ix_archive_copy_jobs_search_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
+        CheckConstraint(
+            "state IN ('requested','waiting','checking','copying','canceling','completed',"
+            "'failed','canceled')",
+            name="ck_archive_copy_jobs_state",
+        ),
     )
 
 
@@ -566,6 +738,14 @@ class ArchiveCopyObjectUploadRecord(Base):
             ["collection_id", "destination_store"],
             ["archive_copy_jobs.collection_id", "archive_copy_jobs.destination_store"],
             ondelete="CASCADE",
+        ),
+        CheckConstraint("plaintext_bytes >= 0", name="ck_archive_copy_uploads_plaintext"),
+        CheckConstraint("uploaded_bytes >= 0", name="ck_archive_copy_uploads_uploaded_bytes"),
+        CheckConstraint("uploaded_segments >= 0", name="ck_archive_copy_uploads_uploaded_segments"),
+        CheckConstraint("total_segments >= 0", name="ck_archive_copy_uploads_total_segments"),
+        CheckConstraint(
+            "uploaded_segments <= total_segments",
+            name="ck_archive_copy_uploads_segment_progress",
         ),
     )
 
@@ -634,10 +814,53 @@ class AppKeyRecord(Base):
     expires_at: Mapped[str | None] = mapped_column(String, nullable=True)
     revoked_at: Mapped[str | None] = mapped_column(String, nullable=True)
     last_used_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    search_text: Mapped[str] = mapped_column(
+        String,
+        Computed("lower(app || ' ' || id)"),
+    )
 
     __table_args__ = (
         Index("ix_app_keys_app", "app", "id"),
         Index("ux_app_keys_token_sha256", "token_sha256", unique=True),
+        Index("ix_app_keys_app_created", "app", "created_at", "id"),
+        Index("ix_app_keys_app_expires", "app", "expires_at", "id"),
+        Index("ix_app_keys_app_last_used", "app", "last_used_at", "id"),
+        Index(
+            "ix_app_keys_app_active",
+            "app",
+            "revoked_at",
+            "expires_at",
+            "id",
+        ),
+        Index(
+            "ix_app_keys_active",
+            "revoked_at",
+            "expires_at",
+            "id",
+        ),
+        Index(
+            "ix_app_keys_search_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_app_keys_app_trgm",
+            "app",
+            postgresql_using="gin",
+            postgresql_ops={"app": "gin_trgm_ops"},
+        ),
+        Index(
+            "ix_app_keys_id_trgm",
+            "id",
+            postgresql_using="gin",
+            postgresql_ops={"id": "gin_trgm_ops"},
+        ),
+        CheckConstraint(
+            "monthly_download_quota_bytes IS NULL OR monthly_download_quota_bytes >= 0",
+            name="ck_app_keys_download_quota",
+        ),
+        CheckConstraint("length(token_sha256) = 64", name="ck_app_keys_token_sha256"),
     )
 
 
@@ -648,11 +871,28 @@ class AppKeyAccessGrantRecord(Base):
     permission: Mapped[str] = mapped_column(String, primary_key=True)
     resource: Mapped[str] = mapped_column(String, primary_key=True)
     created_at: Mapped[str] = mapped_column(String)
+    search_text: Mapped[str] = mapped_column(
+        String,
+        Computed("lower(permission || ' ' || resource)"),
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(["key_id"], ["app_keys.id"], ondelete="CASCADE"),
         Index("ix_app_key_access_grants_permission", "permission", "resource", "key_id"),
         Index("ix_app_key_access_grants_resource", "resource", "permission", "key_id"),
+        Index(
+            "ix_app_key_access_grants_created",
+            "created_at",
+            "key_id",
+            "permission",
+            "resource",
+        ),
+        Index(
+            "ix_app_key_access_grants_search_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
     )
 
 
@@ -664,7 +904,10 @@ class KeyDownloadUsageRecord(Base):
     accounted_bytes: Mapped[int] = mapped_column(BigInteger)
     updated_at: Mapped[str] = mapped_column(String)
 
-    __table_args__ = (ForeignKeyConstraint(["key_id"], ["app_keys.id"], ondelete="CASCADE"),)
+    __table_args__ = (
+        ForeignKeyConstraint(["key_id"], ["app_keys.id"], ondelete="CASCADE"),
+        CheckConstraint("accounted_bytes >= 0", name="ck_key_download_usage_bytes"),
+    )
 
 
 class KeyDownloadReservationRecord(Base):
@@ -688,6 +931,8 @@ class KeyDownloadReservationRecord(Base):
         ),
         Index("ix_key_download_reservations_job", "job_id", "kind"),
         Index("ix_key_download_reservations_expiry", "expires_at", "key_id"),
+        CheckConstraint("kind IN ('job','stream')", name="ck_key_download_reservations_kind"),
+        CheckConstraint("reserved_bytes >= 0", name="ck_key_download_reservations_bytes"),
     )
 
 
@@ -711,7 +956,14 @@ class RetrievalJobRecord(Base):
     canceled_at: Mapped[str | None] = mapped_column(String, nullable=True)
     failure: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    __table_args__ = (Index("ix_retrieval_jobs_due", "state", "next_poll_at", "id"),)
+    __table_args__ = (
+        Index("ix_retrieval_jobs_due", "state", "next_poll_at", "id"),
+        CheckConstraint(
+            "state IN ('requested','ready','completed','canceled','expired','failed')",
+            name="ck_retrieval_jobs_state",
+        ),
+        CheckConstraint("length(plan_etag) = 64", name="ck_retrieval_jobs_plan_etag"),
+    )
 
     files: Mapped[list[RetrievalJobFileRecord]] = relationship(
         back_populates="job",
@@ -738,6 +990,7 @@ class RetrievalJobFileRecord(Base):
             ["collection_files.collection_id", "collection_files.path"],
         ),
         Index("ix_retrieval_job_files_order", "job_id", "file_order"),
+        CheckConstraint("file_order >= 0", name="ck_retrieval_job_files_order"),
     )
 
     job: Mapped[RetrievalJobRecord] = relationship(back_populates="files")
@@ -764,6 +1017,11 @@ class RetrievalJobObjectRecord(Base):
             ],
         ),
         Index("ix_retrieval_job_objects_order", "job_id", "object_order"),
+        CheckConstraint("object_order >= 0", name="ck_retrieval_job_objects_order"),
+        CheckConstraint(
+            "read_mode IN ('immediate','restore_required','cache')",
+            name="ck_retrieval_job_objects_read_mode",
+        ),
     )
 
     job: Mapped[RetrievalJobRecord] = relationship(back_populates="objects")
@@ -782,6 +1040,10 @@ class RetrievalCacheObjectRecord(Base):
     cached_at: Mapped[str] = mapped_column(String)
     verified_at: Mapped[str] = mapped_column(String)
     state: Mapped[str] = mapped_column(String, default="ready")
+    search_text: Mapped[str] = mapped_column(
+        String,
+        Computed("lower(source_store || ' ' || object_id)"),
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -794,6 +1056,48 @@ class RetrievalCacheObjectRecord(Base):
             ondelete="CASCADE",
         ),
         Index("ix_retrieval_cache_objects_cleanup", "state", "cached_at"),
+        Index(
+            "ix_retrieval_cache_objects_collection", "collection_id", "source_store", "object_id"
+        ),
+        Index(
+            "ix_retrieval_cache_objects_object",
+            "object_id",
+            "collection_id",
+            "source_store",
+        ),
+        Index(
+            "ix_retrieval_cache_objects_bytes",
+            "stored_bytes",
+            "collection_id",
+            "source_store",
+            "object_id",
+        ),
+        Index(
+            "ix_retrieval_cache_objects_cached",
+            "cached_at",
+            "collection_id",
+            "source_store",
+            "object_id",
+        ),
+        Index(
+            "ix_retrieval_cache_objects_verified",
+            "verified_at",
+            "collection_id",
+            "source_store",
+            "object_id",
+        ),
+        Index(
+            "ix_retrieval_cache_objects_search_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
+        CheckConstraint("stored_bytes >= 0", name="ck_retrieval_cache_objects_bytes"),
+        CheckConstraint("length(stored_sha256) = 64", name="ck_retrieval_cache_objects_sha256"),
+        CheckConstraint(
+            "state IN ('ready','delete_pending','deleting')",
+            name="ck_retrieval_cache_objects_state",
+        ),
     )
 
 
@@ -817,6 +1121,14 @@ class RetrievalCacheLeaseRecord(Base):
             ondelete="CASCADE",
         ),
         Index("ix_retrieval_cache_leases_expiry", "expires_at", "owner"),
+        Index(
+            "ix_retrieval_cache_leases_object_expiry",
+            "source_store",
+            "collection_id",
+            "object_id",
+            "expires_at",
+            "owner",
+        ),
     )
 
 
@@ -857,6 +1169,30 @@ class CollectionUploadRecord(Base):
     collection_manifest_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
     collection_manifest_proof_bytes_b64: Mapped[str | None] = mapped_column(String, nullable=True)
     planner_checkpoint_json: Mapped[str] = mapped_column(Text)
+    file_count: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+    )
+    file_bytes: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+    )
+    custodied_file_count: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+    )
+    custodied_file_bytes: Mapped[int] = mapped_column(
+        BigInteger,
+        default=0,
+        server_default=text("0"),
+    )
+    search_text: Mapped[str] = mapped_column(
+        String,
+        Computed("lower(coalesce(ingest_source, ''))"),
+    )
 
     files: Mapped[list[CollectionUploadFileRecord]] = relationship(
         back_populates="upload",
@@ -882,6 +1218,48 @@ class CollectionUploadRecord(Base):
             "idempotency_key",
             unique=True,
         ),
+        Index("ix_collection_uploads_opened_at", "opened_at", "collection_id"),
+        Index("ix_collection_uploads_state", "state", "collection_id"),
+        Index("ix_collection_uploads_file_count", "file_count", "collection_id"),
+        Index("ix_collection_uploads_file_bytes", "file_bytes", "collection_id"),
+        Index(
+            "ix_collection_uploads_search_trgm",
+            "search_text",
+            postgresql_using="gin",
+            postgresql_ops={"search_text": "gin_trgm_ops"},
+        ),
+        CheckConstraint("file_count >= 0", name="ck_collection_uploads_file_count"),
+        CheckConstraint("file_bytes >= 0", name="ck_collection_uploads_file_bytes"),
+        CheckConstraint(
+            "custodied_file_count >= 0 AND custodied_file_count <= file_count",
+            name="ck_collection_uploads_custodied_file_count",
+        ),
+        CheckConstraint(
+            "custodied_file_bytes >= 0 AND custodied_file_bytes <= file_bytes",
+            name="ck_collection_uploads_custodied_file_bytes",
+        ),
+        CheckConstraint(
+            "custodied_file_count > 0 OR custodied_file_bytes = 0",
+            name="ck_collection_uploads_empty_custody",
+        ),
+        CheckConstraint(
+            "state IN ('open','closing','uploading','finalizing','orphaned','discarding')",
+            name="ck_collection_uploads_state",
+        ),
+        CheckConstraint(
+            "custody_mode IN ('producer-retained','custody-transfer')",
+            name="ck_collection_uploads_custody_mode",
+        ),
+        CheckConstraint(
+            "provenance_mode IN ('captured','omitted')",
+            name="ck_collection_uploads_provenance_mode",
+        ),
+        CheckConstraint(
+            "archive_phase IN ('planning','uploading','finalization_queued','finalizing',"
+            "'retry_wait','orphaned','discarding')",
+            name="ck_collection_uploads_archive_phase",
+        ),
+        CheckConstraint("archive_attempt_count >= 0", name="ck_collection_uploads_attempt_count"),
         {"sqlite_autoincrement": True},
     )
 
@@ -900,6 +1278,12 @@ class CollectionUploadTagRecord(Base):
         ),
         ForeignKeyConstraint(["tag_id"], ["tags.id"], ondelete="RESTRICT"),
         Index("ix_collection_upload_tags_tag", "tag_id", "collection_id"),
+        Index(
+            "ix_collection_upload_tags_tag_trgm",
+            "tag_id",
+            postgresql_using="gin",
+            postgresql_ops={"tag_id": "gin_trgm_ops"},
+        ),
     )
 
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="tags")
@@ -935,6 +1319,9 @@ class CollectionUploadFileRecord(Base):
             "file_order",
             unique=True,
         ),
+        CheckConstraint("file_order >= 0", name="ck_collection_upload_files_order"),
+        CheckConstraint("bytes >= 0", name="ck_collection_upload_files_bytes"),
+        CheckConstraint("length(sha256) = 64", name="ck_collection_upload_files_sha256"),
     )
 
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="files")
@@ -959,6 +1346,9 @@ class CollectionUploadProvenanceJournalRecord(Base):
             ["collection_uploads.collection_id"],
             ondelete="CASCADE",
         ),
+        CheckConstraint("bytes >= 0", name="ck_upload_provenance_journals_bytes"),
+        CheckConstraint("current_bytes >= 0", name="ck_upload_provenance_journals_current_bytes"),
+        CheckConstraint("length(sha256) = 64", name="ck_upload_provenance_journals_sha256"),
     )
 
     upload: Mapped[CollectionUploadRecord] = relationship(back_populates="provenance_journals")
@@ -999,6 +1389,21 @@ class CollectionArchiveObjectUploadRecord(Base):
             "collection_id",
             "sequence",
             unique=True,
+        ),
+        CheckConstraint("sequence >= 0", name="ck_archive_object_uploads_sequence"),
+        CheckConstraint("plaintext_bytes >= 0", name="ck_archive_object_uploads_plaintext"),
+        CheckConstraint("source_bytes >= 0", name="ck_archive_object_uploads_source"),
+        CheckConstraint("unit_plaintext_bytes > 0", name="ck_archive_object_uploads_unit"),
+        CheckConstraint(
+            "state IN ('planned','uploading','sealed')",
+            name="ck_archive_object_uploads_state",
+        ),
+        CheckConstraint("uploaded_bytes >= 0", name="ck_archive_object_uploads_uploaded_bytes"),
+        CheckConstraint("uploaded_units >= 0", name="ck_archive_object_uploads_uploaded_units"),
+        CheckConstraint("total_units >= 0", name="ck_archive_object_uploads_total_units"),
+        CheckConstraint(
+            "uploaded_units <= total_units",
+            name="ck_archive_object_uploads_unit_progress",
         ),
     )
 

@@ -143,6 +143,7 @@ jobs:
           printf 'GOVERNANCE_SUMMARY=%s/governance.json\n' "$qualification_dir" >> "$GITHUB_ENV"
           printf 'OPERATIONS_SUMMARY=%s/operations.json\n' "$qualification_dir" >> "$GITHUB_ENV"
           printf 'OPERATIONS_TIMINGS=%s/operation-timings.json\n' "$qualification_dir" >> "$GITHUB_ENV"
+          printf 'DATABASE_SUMMARY=%s/database.json\n' "$qualification_dir" >> "$GITHUB_ENV"
       - name: Exercise disposable operation lifecycles and record timings
         env:
           RIVERHOG_OPERATION_SOURCE_SHA: ${{ env.SOURCE_SHA }}
@@ -201,6 +202,41 @@ jobs:
               "standard-tool/protocol"
             ])
           ' "$OPERATIONS_SUMMARY"
+      - name: Qualify exact database schemas, selectors, and complete streams
+        run: >-
+          make database-qualification
+          DATABASE_QUALIFICATION_SOURCE_SHA="$SOURCE_SHA"
+          DATABASE_QUALIFICATION_OUTPUT="$DATABASE_SUMMARY"
+      - name: Verify exact-SHA database evidence
+        run: |
+          jq --exit-status --arg sha "$SOURCE_SHA" '
+            . as $root
+            | .schema == "riverhog-database-qualification/v1"
+            and .source_sha == $sha
+            and .cardinalities == [4096, 16384]
+            and .selector_contract.applications == ["riverhog", "stove0"]
+            and .selector_contract.operations > 0
+            and .selector_contract.statement_families > 0
+            and .selector_contract.plan_cases > .selector_contract.operations
+            and (.schema_fixtures.riverhog | test("^[0-9a-f]{64}$"))
+            and (.schema_fixtures.stove0 | test("^[0-9a-f]{64}$"))
+            and .qualification == {
+              exact_schemas: "passed",
+              natural_plans: "passed",
+              bounded_pages: "passed",
+              complete_streams: "passed",
+              cancellation: "passed",
+              backpressure: "passed"
+            }
+            and (.measurements | length) == 2
+            and all(.measurements[]; (.plans | length) == $root.selector_contract.plan_cases)
+            and all(.measurements[]; (.streams | length) == $root.selector_contract.statement_families)
+            and all(.measurements[].streams[];
+              .chunk_rows == 100
+              and .peak_application_bytes <= $root.stream_contract.max_peak_application_bytes
+              and .cancellation.cursor_closed
+              and .cancellation.connection_reusable)
+          ' "$DATABASE_SUMMARY"
       - name: Verify live release governance
         run: >-
           make release-governance-check
@@ -234,6 +270,7 @@ jobs:
               version: $version,
               required_checks: "passed",
               operation_matrix: "passed",
+              database_contract: "passed",
               github_governance: "actions-observable-passed",
               release_evidence: "passed",
               published: false

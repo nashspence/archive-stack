@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
+from http_api_contracts import closed_literal_values
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     ForeignKey,
     Index,
     Integer,
@@ -20,7 +22,10 @@ from sqlalchemy import (
     delete,
     desc,
     func,
+    literal,
+    or_,
     select,
+    union_all,
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -30,7 +35,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from sqlalchemy.sql import Select
-from state_schema import StateSchema, assert_schema_matches_metadata, read_snapshot
+from state_schema import StateSchema, assert_schema_matches_metadata, read_snapshot, sqlite_engine
 from stove0_operator_contracts import (
     BRANCH_SET_ADMITTED,
     EVALUATION_CREATED,
@@ -38,8 +43,13 @@ from stove0_operator_contracts import (
     JOIN_ADMITTED,
     WORK_CREATED,
     WORK_UPDATED,
+    EvaluationPhase,
+    EvaluationSort,
+    SortOrder,
     Stove0EventPage,
     Stove0EventType,
+    WorkPhase,
+    WorkSort,
     parse_stove0_event,
     stove0_event,
 )
@@ -65,9 +75,15 @@ from stove0_core.work_state import (
     _preview_target_expectations,
 )
 
-SortOrder = Literal["asc", "desc"]
-WorkSort = Literal["updated_at", "phase", "work_id"]
-EvaluationSort = Literal["updated_at", "phase", "evaluation_id"]
+_SORT_ORDERS = closed_literal_values(SortOrder)
+_WORK_PHASES = closed_literal_values(WorkPhase)
+_WORK_SORTS = closed_literal_values(WorkSort)
+_EVALUATION_PHASES = closed_literal_values(EvaluationPhase)
+_EVALUATION_SORTS = closed_literal_values(EvaluationSort)
+_PRUNE_ROOT_BATCH = 100
+_PRUNE_ORPHAN_BATCH = 100
+_PRUNE_EVENT_BATCH = 1000
+_PRUNE_CURSOR_STREAM = "stove0:operational-prune/v1"
 STATE_VERSION_TABLE = "stove0_state_schema_revision"
 STATE_MIGRATIONS = Path(__file__).with_name("state_migrations")
 
@@ -78,13 +94,87 @@ class _Base(DeclarativeBase):
 
 class _WorkRow(_Base):
     __tablename__ = "stove0_work_records"
-    __table_args__ = (Index("ix_stove0_work_records_phase_work_id", "phase", "work_id"),)
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_stove0_work_records_revision"),
+        CheckConstraint(
+            "phase IN ('eligible','claimed','observing','planning','target_preflight',"
+            "'queued','executing','output_finalizing','verifying','settled',"
+            "'retirement_pending','coordinating','abandon_pending','complete',"
+            "'inapplicable','failed','canceled')",
+            name="ck_stove0_work_records_phase",
+        ),
+        CheckConstraint("length(work_id) = 64", name="ck_stove0_work_records_id"),
+        CheckConstraint("document_bytes >= 0", name="ck_stove0_work_records_document_bytes"),
+        Index("ix_stove0_work_records_phase_work_id", "phase", "work_id"),
+        Index("ix_stove0_work_records_updated_work_id", "updated_at", "work_id"),
+        Index(
+            "ix_stove0_work_records_id_trgm",
+            "work_id",
+            postgresql_using="gin",
+            postgresql_ops={"work_id": "gin_trgm_ops"},
+        ),
+    )
 
     work_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    phase: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    updated_at: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     document_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class _WorkRelationRow(_Base):
+    """Rebuildable undirected-retention edge projected from a work document."""
+
+    __tablename__ = "stove0_work_relations"
+
+    work_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    related_work_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    __table_args__ = (
+        CheckConstraint("work_id <> related_work_id", name="ck_stove0_work_relations_distinct"),
+        Index("ix_stove0_work_relations_related", "related_work_id", "work_id"),
+    )
+
+
+class _WorkEvaluationRow(_Base):
+    """Rebuildable evaluation membership projected from a work document."""
+
+    __tablename__ = "stove0_work_evaluations"
+
+    work_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    evaluation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    __table_args__ = (Index("ix_stove0_work_evaluations_evaluation", "evaluation_id", "work_id"),)
+
+
+class _WorkSelectionReferenceRow(_Base):
+    """Rebuildable artifact-selection reference projected from a work document."""
+
+    __tablename__ = "stove0_work_selection_references"
+
+    work_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_work_records.work_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    selection_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    __table_args__ = (
+        Index(
+            "ix_stove0_work_selection_references_selection",
+            "selection_sha256",
+            "work_id",
+        ),
+    )
 
 
 class _ArtifactSelectionRow(_Base):
@@ -93,6 +183,12 @@ class _ArtifactSelectionRow(_Base):
     selection_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     artifact_count: Mapped[int] = mapped_column(Integer, nullable=False)
     total_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("length(selection_sha256) = 64", name="ck_stove0_selections_id"),
+        CheckConstraint("artifact_count >= 0", name="ck_stove0_selections_count"),
+        CheckConstraint("total_bytes >= 0", name="ck_stove0_selections_bytes"),
+    )
 
 
 class _ArtifactSelectionMemberRow(_Base):
@@ -104,7 +200,13 @@ class _ArtifactSelectionMemberRow(_Base):
         primary_key=True,
     )
     ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     document_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ck_stove0_selection_members_ordinal"),
+        CheckConstraint("document_bytes >= 0", name="ck_stove0_selection_members_document_bytes"),
+    )
 
 
 class _EvaluationRow(_Base):
@@ -112,9 +214,51 @@ class _EvaluationRow(_Base):
 
     evaluation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
-    phase: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    updated_at: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     document_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_stove0_evaluation_records_revision"),
+        CheckConstraint(
+            "phase IN ('planning','running','partially_complete','complete','failed','canceled')",
+            name="ck_stove0_evaluation_records_phase",
+        ),
+        CheckConstraint("length(evaluation_id) = 64", name="ck_stove0_evaluation_records_id"),
+        CheckConstraint("document_bytes >= 0", name="ck_stove0_evaluation_records_document_bytes"),
+        Index(
+            "ix_stove0_evaluation_records_phase_id",
+            "phase",
+            "evaluation_id",
+        ),
+        Index(
+            "ix_stove0_evaluation_records_updated_id",
+            "updated_at",
+            "evaluation_id",
+        ),
+        Index(
+            "ix_stove0_evaluation_records_id_trgm",
+            "evaluation_id",
+            postgresql_using="gin",
+            postgresql_ops={"evaluation_id": "gin_trgm_ops"},
+        ),
+    )
+
+
+class _EvaluationChildRow(_Base):
+    """Rebuildable child membership projected from an evaluation document."""
+
+    __tablename__ = "stove0_evaluation_children"
+
+    evaluation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("stove0_evaluation_records.evaluation_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    work_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    __table_args__ = (Index("ix_stove0_evaluation_children_work", "work_id", "evaluation_id"),)
 
 
 class _CursorRow(_Base):
@@ -125,17 +269,26 @@ class _CursorRow(_Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[str] = mapped_column(String(40), nullable=False)
 
+    __table_args__ = (CheckConstraint("revision >= 1", name="ck_stove0_event_cursors_revision"),)
+
 
 class _EventRow(_Base):
     __tablename__ = "stove0_lifecycle_events"
+    __table_args__ = (
+        CheckConstraint("event_bytes >= 0", name="ck_stove0_lifecycle_events_event_bytes"),
+    )
 
     sequence: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     created_at: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    event_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     event_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 def create_state_engine(database_url: str) -> Engine:
     _prepare_sqlite_parent(database_url)
+    url = make_url(database_url)
+    if url.drivername.startswith("sqlite") and url.database is not None:
+        return sqlite_engine(Path(url.database))
     return create_engine(database_url, pool_pre_ping=True)
 
 
@@ -236,6 +389,7 @@ class SqlAlchemyStateStore:
                         revision=replacement.revision,
                         phase=replacement.phase,
                         updated_at=utc_timestamp_now(),
+                        document_bytes=_encoded_bytes(encoded),
                         document_json=encoded,
                     )
                 ),
@@ -247,6 +401,7 @@ class SqlAlchemyStateStore:
                 raise ConcurrentWorkUpdate(
                     f"stale stove0 work revision: {expected_revision} != {current.revision}"
                 )
+            _replace_work_projections(session, replacement)
             _emit(
                 session,
                 type=WORK_UPDATED,
@@ -333,9 +488,12 @@ class SqlAlchemyStateStore:
             row.revision = replacement.revision
             row.phase = replacement.phase
             row.updated_at = now
-            row.document_json = _encode(
+            replacement_json = _encode(
                 replacement.model_dump(mode="json", by_alias=True, exclude_none=True)
             )
+            row.document_bytes = _encoded_bytes(replacement_json)
+            row.document_json = replacement_json
+            _replace_work_projections(session, replacement)
             _emit(
                 session,
                 type=BRANCH_SET_ADMITTED,
@@ -424,9 +582,12 @@ class SqlAlchemyStateStore:
             row.revision = replacement.revision
             row.phase = replacement.phase
             row.updated_at = now
-            row.document_json = _encode(
+            replacement_json = _encode(
                 replacement.model_dump(mode="json", by_alias=True, exclude_none=True)
             )
+            row.document_bytes = _encoded_bytes(replacement_json)
+            row.document_json = replacement_json
+            _replace_work_projections(session, replacement)
             _emit(
                 session,
                 type=JOIN_ADMITTED,
@@ -501,7 +662,7 @@ class SqlAlchemyStateStore:
     ) -> dict[str, object]:
         _pagination(page, per_page)
         filters, statement = _work_list_statement(phase=phase, query=query, sort=sort, order=order)
-        with self.sessions() as session:
+        with read_snapshot(self.sessions) as session:
             total = int(
                 session.scalar(
                     select(func.count()).select_from(
@@ -569,192 +730,74 @@ class SqlAlchemyStateStore:
         return records, (records[-1].work_id if records else "")
 
     def prune_operational_state(self, *, cutoff: str) -> dict[str, int]:
-        """Atomically prune only complete, expired control-state components."""
+        """Prune bounded batches using rebuildable graph projections and SQL sets."""
 
-        terminal_work = frozenset({"complete", "inapplicable", "failed", "canceled"})
-        terminal_evaluations = frozenset({"complete", "failed", "canceled"})
+        totals = {
+            "work": 0,
+            "work_bytes": 0,
+            "evaluations": 0,
+            "evaluation_bytes": 0,
+            "selections": 0,
+            "selection_bytes": 0,
+            "events": 0,
+            "event_bytes": 0,
+        }
         with self.sessions() as session, session.begin():
-            work_rows = list(
-                session.scalars(select(_WorkRow).order_by(_WorkRow.work_id).with_for_update())
-            )
-            work_records = {
-                row.work_id: WorkRecord.model_validate_json(row.document_json) for row in work_rows
-            }
-            row_by_work = {row.work_id: row for row in work_rows}
-            neighbors: dict[str, set[str]] = {work_id: set() for work_id in work_records}
-            blocked: set[str] = set()
+            if session.get_bind().dialect.name == "postgresql":
+                session.execute(select(func.pg_advisory_xact_lock(0x53544F5630505255)))
+            for work_id in _prune_root_page(session, cutoff=cutoff):
+                removed = _prune_work_component(session, work_id=work_id, cutoff=cutoff)
+                for key, value in removed.items():
+                    totals[key] += value
 
-            def connect(left: str, right: str) -> None:
-                if left not in neighbors or right not in neighbors:
-                    if left in neighbors:
-                        blocked.add(left)
-                    if right in neighbors:
-                        blocked.add(right)
-                    return
-                neighbors[left].add(right)
-                neighbors[right].add(left)
-
-            evaluation_members: dict[str, set[str]] = {}
-            for work_id, record in work_records.items():
-                binding = record.work.fork_join
-                if binding is not None:
-                    connect(work_id, binding.parent_work_id)
-                if record.branch_set_plan is not None:
-                    for branch in record.branch_set_plan.branches:
-                        connect(work_id, branch_work(branch).work_id)
-                if record.join_plan is not None:
-                    connect(work_id, record.join_plan.work.work_id)
-                if record.work.evaluation is not None:
-                    evaluation_members.setdefault(record.work.evaluation.evaluation_id, set()).add(
-                        work_id
-                    )
-
-            evaluation_rows = list(
+            orphan_ids = tuple(
                 session.scalars(
-                    select(_EvaluationRow).order_by(_EvaluationRow.evaluation_id).with_for_update()
-                )
-            )
-            evaluations = {
-                row.evaluation_id: EvaluationRecord.model_validate_json(row.document_json)
-                for row in evaluation_rows
-            }
-            evaluation_row_by_id = {row.evaluation_id: row for row in evaluation_rows}
-            blocked_evaluations: set[str] = set()
-            for evaluation_id, evaluation in evaluations.items():
-                declared = {child.work_id for child in evaluation.children}
-                evaluation_members.setdefault(evaluation_id, set()).update(declared)
-                missing = declared - set(work_records)
-                if missing:
-                    blocked_evaluations.add(evaluation_id)
-                    blocked.update(declared & set(work_records))
-            for evaluation_id, members in evaluation_members.items():
-                present = sorted(members & set(work_records))
-                if evaluation_id not in evaluations:
-                    blocked.update(present)
-                for member in present[1:]:
-                    connect(present[0], member)
-
-            removed_work: set[str] = set()
-            removed_evaluations: set[str] = set()
-            pending = set(work_records)
-            while pending:
-                start = min(pending)
-                component: set[str] = set()
-                frontier = [start]
-                while frontier:
-                    current = frontier.pop()
-                    if current in component:
-                        continue
-                    component.add(current)
-                    frontier.extend(neighbors[current] - component)
-                pending -= component
-                evaluation_ids = {
-                    record.work.evaluation.evaluation_id
-                    for work_id in component
-                    if (record := work_records[work_id]).work.evaluation is not None
-                }
-                if component & blocked or evaluation_ids & blocked_evaluations:
-                    continue
-                if any(
-                    row_by_work[work_id].phase not in terminal_work
-                    or row_by_work[work_id].updated_at > cutoff
-                    for work_id in component
-                ):
-                    continue
-                if any(
-                    evaluation_id not in evaluations
-                    or evaluation_row_by_id[evaluation_id].phase not in terminal_evaluations
-                    or evaluation_row_by_id[evaluation_id].updated_at > cutoff
-                    for evaluation_id in evaluation_ids
-                ):
-                    continue
-                removed_work.update(component)
-                removed_evaluations.update(evaluation_ids)
-
-            work_bytes = sum(
-                len(row_by_work[work_id].document_json.encode("utf-8")) for work_id in removed_work
-            )
-            evaluation_bytes = sum(
-                len(evaluation_row_by_id[evaluation_id].document_json.encode("utf-8"))
-                for evaluation_id in removed_evaluations
-            )
-            if removed_work:
-                session.execute(delete(_WorkRow).where(_WorkRow.work_id.in_(removed_work)))
-            if removed_evaluations:
-                session.execute(
-                    delete(_EvaluationRow).where(
-                        _EvaluationRow.evaluation_id.in_(removed_evaluations)
-                    )
-                )
-
-            remaining = [
-                record for work_id, record in work_records.items() if work_id not in removed_work
-            ]
-            referenced_selections = _selection_references(remaining)
-            selection_rows = list(
-                session.scalars(
-                    select(_ArtifactSelectionRow)
-                    .order_by(_ArtifactSelectionRow.selection_sha256)
-                    .with_for_update()
-                )
-            )
-            removed_selection_ids = {
-                row.selection_sha256
-                for row in selection_rows
-                if row.selection_sha256 not in referenced_selections
-            }
-            removed_selection_members = (
-                list(
-                    session.scalars(
-                        select(_ArtifactSelectionMemberRow).where(
-                            _ArtifactSelectionMemberRow.selection_sha256.in_(removed_selection_ids)
+                    select(_ArtifactSelectionRow.selection_sha256)
+                    .where(
+                        ~select(_WorkSelectionReferenceRow.work_id)
+                        .where(
+                            _WorkSelectionReferenceRow.selection_sha256
+                            == _ArtifactSelectionRow.selection_sha256
                         )
+                        .exists()
                     )
+                    .order_by(_ArtifactSelectionRow.selection_sha256)
+                    .limit(_PRUNE_ORPHAN_BATCH)
                 )
-                if removed_selection_ids
-                else []
             )
-            selection_bytes = sum(
-                len(row.document_json.encode("utf-8")) for row in removed_selection_members
-            )
-            if removed_selection_ids:
-                session.execute(
-                    delete(_ArtifactSelectionMemberRow).where(
-                        _ArtifactSelectionMemberRow.selection_sha256.in_(removed_selection_ids)
-                    )
-                )
-                session.execute(
+            if orphan_ids:
+                selection_count, selection_bytes = session.execute(
+                    select(
+                        func.count(_ArtifactSelectionMemberRow.ordinal),
+                        func.coalesce(func.sum(_ArtifactSelectionMemberRow.document_bytes), 0),
+                    ).where(_ArtifactSelectionMemberRow.selection_sha256.in_(orphan_ids))
+                ).one()
+                del selection_count  # member count is not part of the public retention metric
+                deleted = session.execute(
                     delete(_ArtifactSelectionRow).where(
-                        _ArtifactSelectionRow.selection_sha256.in_(removed_selection_ids)
+                        _ArtifactSelectionRow.selection_sha256.in_(orphan_ids)
                     )
                 )
+                totals["selections"] = int(getattr(deleted, "rowcount", 0) or 0)
+                totals["selection_bytes"] = int(selection_bytes or 0)
 
             event_rows = list(
-                session.scalars(
-                    select(_EventRow)
+                session.execute(
+                    select(_EventRow.sequence, _EventRow.event_bytes)
                     .where(_EventRow.created_at <= cutoff)
                     .order_by(_EventRow.sequence)
-                    .with_for_update()
+                    .limit(_PRUNE_EVENT_BATCH)
                 )
             )
-            event_bytes = sum(len(row.event_json.encode("utf-8")) for row in event_rows)
             if event_rows:
-                session.execute(
-                    delete(_EventRow).where(
-                        _EventRow.sequence.in_(row.sequence for row in event_rows)
-                    )
+                event_ids = tuple(int(row.sequence) for row in event_rows)
+                deleted = session.execute(
+                    delete(_EventRow).where(_EventRow.sequence.in_(event_ids))
                 )
+                totals["events"] = int(getattr(deleted, "rowcount", 0) or 0)
+                totals["event_bytes"] = sum(int(row.event_bytes) for row in event_rows)
 
-        return {
-            "work": len(removed_work),
-            "work_bytes": work_bytes,
-            "evaluations": len(removed_evaluations),
-            "evaluation_bytes": evaluation_bytes,
-            "selections": len(removed_selection_ids),
-            "selection_bytes": selection_bytes,
-            "events": len(event_rows),
-            "event_bytes": event_bytes,
-        }
+        return totals
 
     def load_evaluation(self, evaluation_id: str) -> EvaluationRecord | None:
         with self.sessions() as session:
@@ -775,7 +818,7 @@ class SqlAlchemyStateStore:
         filters, statement = _evaluation_list_statement(
             phase=phase, query=query, sort=sort, order=order
         )
-        with self.sessions() as session:
+        with read_snapshot(self.sessions) as session:
             total = int(
                 session.scalar(
                     select(func.count()).select_from(
@@ -869,6 +912,7 @@ class SqlAlchemyStateStore:
                         revision=replacement.revision,
                         phase=replacement.phase,
                         updated_at=utc_timestamp_now(),
+                        document_bytes=_encoded_bytes(encoded),
                         document_json=encoded,
                     )
                 ),
@@ -880,6 +924,7 @@ class SqlAlchemyStateStore:
                 raise ConcurrentEvaluationUpdate(
                     f"stale evaluation revision: {expected_revision} != {current.revision}"
                 )
+            _replace_evaluation_projection(session, replacement)
             _emit(
                 session,
                 type=EVALUATION_UPDATED,
@@ -987,6 +1032,184 @@ class _EvaluationStoreView:
         )
 
 
+def _prune_root_page(session: Session, *, cutoff: str) -> tuple[str, ...]:
+    """Return one bounded rotating page of terminal retention roots."""
+
+    terminal = ("complete", "inapplicable", "failed", "canceled")
+    cursor = session.get(_CursorRow, _PRUNE_CURSOR_STREAM)
+    after = cursor.cursor if cursor is not None else ""
+
+    def query(value: str) -> tuple[str, ...]:
+        statement = (
+            select(_WorkRow.work_id)
+            .where(_WorkRow.phase.in_(terminal), _WorkRow.updated_at <= cutoff)
+            .order_by(_WorkRow.work_id)
+            .limit(_PRUNE_ROOT_BATCH)
+        )
+        if value:
+            statement = statement.where(_WorkRow.work_id > value)
+        return tuple(session.scalars(statement))
+
+    work_ids = query(after)
+    if not work_ids and after:
+        work_ids = query("")
+    next_cursor = work_ids[-1] if work_ids else ""
+    now = utc_timestamp_now()
+    if cursor is None:
+        session.add(
+            _CursorRow(
+                stream=_PRUNE_CURSOR_STREAM,
+                cursor=next_cursor,
+                revision=1,
+                updated_at=now,
+            )
+        )
+    else:
+        cursor.cursor = next_cursor
+        cursor.revision += 1
+        cursor.updated_at = now
+    return work_ids
+
+
+def _prune_component_ids(work_id: str) -> tuple[Any, Any]:
+    """Build recursive work/evaluation identifiers without loading graph members."""
+
+    def work(value: Any) -> Any:
+        return literal("w:").concat(value)
+
+    def evaluation(value: Any) -> Any:
+        return literal("e:").concat(value)
+
+    edges = union_all(
+        select(
+            work(_WorkRelationRow.work_id).label("source"),
+            work(_WorkRelationRow.related_work_id).label("target"),
+        ),
+        select(
+            work(_WorkRelationRow.related_work_id).label("source"),
+            work(_WorkRelationRow.work_id).label("target"),
+        ),
+        select(
+            work(_WorkEvaluationRow.work_id).label("source"),
+            evaluation(_WorkEvaluationRow.evaluation_id).label("target"),
+        ),
+        select(
+            evaluation(_WorkEvaluationRow.evaluation_id).label("source"),
+            work(_WorkEvaluationRow.work_id).label("target"),
+        ),
+        select(
+            evaluation(_EvaluationChildRow.evaluation_id).label("source"),
+            work(_EvaluationChildRow.work_id).label("target"),
+        ),
+        select(
+            work(_EvaluationChildRow.work_id).label("source"),
+            evaluation(_EvaluationChildRow.evaluation_id).label("target"),
+        ),
+    ).subquery("stove0_retention_edges")
+    component = select(literal(f"w:{work_id}").label("node")).cte(
+        "stove0_retention_component",
+        recursive=True,
+    )
+    component = component.union(select(edges.c.target).where(edges.c.source == component.c.node))
+    work_ids = (
+        select(func.substr(component.c.node, 3).label("work_id"))
+        .where(component.c.node.like("w:%"))
+        .cte("stove0_retention_work_ids")
+    )
+    evaluation_ids = (
+        select(func.substr(component.c.node, 3).label("evaluation_id"))
+        .where(component.c.node.like("e:%"))
+        .cte("stove0_retention_evaluation_ids")
+    )
+    return work_ids, evaluation_ids
+
+
+def _prune_work_component(
+    session: Session,
+    *,
+    work_id: str,
+    cutoff: str,
+) -> dict[str, int]:
+    """Delete one complete expired component with constant application memory."""
+
+    empty = {"work": 0, "work_bytes": 0, "evaluations": 0, "evaluation_bytes": 0}
+    work_ids, evaluation_ids = _prune_component_ids(work_id)
+    missing_work = session.scalar(
+        select(work_ids.c.work_id)
+        .where(~select(_WorkRow.work_id).where(_WorkRow.work_id == work_ids.c.work_id).exists())
+        .limit(1)
+    )
+    blocked_work = session.scalar(
+        select(_WorkRow.work_id)
+        .where(
+            _WorkRow.work_id.in_(select(work_ids.c.work_id)),
+            or_(
+                _WorkRow.phase.not_in(("complete", "inapplicable", "failed", "canceled")),
+                _WorkRow.updated_at > cutoff,
+            ),
+        )
+        .limit(1)
+    )
+    missing_evaluation = session.scalar(
+        select(evaluation_ids.c.evaluation_id)
+        .where(
+            ~select(_EvaluationRow.evaluation_id)
+            .where(_EvaluationRow.evaluation_id == evaluation_ids.c.evaluation_id)
+            .exists()
+        )
+        .limit(1)
+    )
+    blocked_evaluation = session.scalar(
+        select(_EvaluationRow.evaluation_id)
+        .where(
+            _EvaluationRow.evaluation_id.in_(select(evaluation_ids.c.evaluation_id)),
+            or_(
+                _EvaluationRow.phase.not_in(("complete", "failed", "canceled")),
+                _EvaluationRow.updated_at > cutoff,
+            ),
+        )
+        .limit(1)
+    )
+    if any(
+        value is not None
+        for value in (missing_work, blocked_work, missing_evaluation, blocked_evaluation)
+    ):
+        return empty
+
+    work_count, work_bytes = session.execute(
+        select(
+            func.count(_WorkRow.work_id),
+            func.coalesce(func.sum(_WorkRow.document_bytes), 0),
+        ).where(_WorkRow.work_id.in_(select(work_ids.c.work_id)))
+    ).one()
+    if not work_count:
+        return empty
+    evaluation_count, evaluation_bytes = session.execute(
+        select(
+            func.count(_EvaluationRow.evaluation_id),
+            func.coalesce(func.sum(_EvaluationRow.document_bytes), 0),
+        ).where(_EvaluationRow.evaluation_id.in_(select(evaluation_ids.c.evaluation_id)))
+    ).one()
+    deleted_evaluations = session.execute(
+        delete(_EvaluationRow).where(
+            _EvaluationRow.evaluation_id.in_(select(evaluation_ids.c.evaluation_id))
+        )
+    )
+    deleted_work = session.execute(
+        delete(_WorkRow).where(_WorkRow.work_id.in_(select(work_ids.c.work_id)))
+    )
+    actual_work = int(getattr(deleted_work, "rowcount", 0) or 0)
+    actual_evaluations = int(getattr(deleted_evaluations, "rowcount", 0) or 0)
+    if actual_work != int(work_count) or actual_evaluations != int(evaluation_count):
+        raise RuntimeError("stove0 retention component changed during deletion")
+    return {
+        "work": actual_work,
+        "work_bytes": int(work_bytes or 0),
+        "evaluations": actual_evaluations,
+        "evaluation_bytes": int(evaluation_bytes or 0),
+    }
+
+
 def _prepare_sqlite_parent(database_url: str) -> None:
     url = make_url(database_url)
     if not url.drivername.startswith("sqlite") or url.database in {None, "", ":memory:"}:
@@ -1004,10 +1227,12 @@ def _insert_work(session: Session, record: WorkRecord, *, encoded: str, now: str
                     revision=record.revision,
                     phase=record.phase,
                     updated_at=now,
+                    document_bytes=_encoded_bytes(encoded),
                     document_json=encoded,
                 )
             )
             session.flush()
+            _replace_work_projections(session, record)
         return True
     except IntegrityError:
         return False
@@ -1042,13 +1267,7 @@ def _insert_or_verify_selection(
         raise RuntimeError(f"unsupported Stove0 state database dialect: {dialect}")
     if inserted is not None:
         session.add_all(
-            _ArtifactSelectionMemberRow(
-                selection_sha256=selection.selection_sha256,
-                ordinal=ordinal,
-                document_json=_encode(
-                    artifact.model_dump(mode="json", by_alias=True, exclude_none=True)
-                ),
-            )
+            _selection_member_row(selection.selection_sha256, ordinal, artifact)
             for ordinal, artifact in enumerate(selection.artifacts)
         )
         session.flush()
@@ -1069,6 +1288,20 @@ def _selection_ref(row: _ArtifactSelectionRow) -> ArtifactSelectionRef:
         selection_sha256=row.selection_sha256,
         artifact_count=row.artifact_count,
         total_bytes=row.total_bytes,
+    )
+
+
+def _selection_member_row(
+    selection_sha256: str,
+    ordinal: int,
+    artifact: ArtifactSubject,
+) -> _ArtifactSelectionMemberRow:
+    encoded = _encode(artifact.model_dump(mode="json", by_alias=True, exclude_none=True))
+    return _ArtifactSelectionMemberRow(
+        selection_sha256=selection_sha256,
+        ordinal=ordinal,
+        document_bytes=_encoded_bytes(encoded),
+        document_json=encoded,
     )
 
 
@@ -1099,6 +1332,7 @@ def _insert_work_atomically(
         "revision": record.revision,
         "phase": record.phase,
         "updated_at": now,
+        "document_bytes": _encoded_bytes(encoded),
         "document_json": encoded,
     }
     dialect = session.get_bind().dialect.name
@@ -1118,7 +1352,10 @@ def _insert_work_atomically(
         )
     else:
         raise RuntimeError(f"unsupported Stove0 state database dialect: {dialect}")
-    return session.scalar(statement) is not None
+    inserted = session.scalar(statement) is not None
+    if inserted:
+        _replace_work_projections(session, record)
+    return inserted
 
 
 def _insert_evaluation(
@@ -1136,13 +1373,70 @@ def _insert_evaluation(
                     revision=record.revision,
                     phase=record.phase,
                     updated_at=now,
+                    document_bytes=_encoded_bytes(encoded),
                     document_json=encoded,
                 )
             )
             session.flush()
+            _replace_evaluation_projection(session, record)
         return True
     except IntegrityError:
         return False
+
+
+def _replace_work_projections(session: Session, record: WorkRecord) -> None:
+    """Replace rebuildable relational projections for one canonical work document."""
+
+    session.execute(delete(_WorkRelationRow).where(_WorkRelationRow.work_id == record.work_id))
+    session.execute(delete(_WorkEvaluationRow).where(_WorkEvaluationRow.work_id == record.work_id))
+    session.execute(
+        delete(_WorkSelectionReferenceRow).where(
+            _WorkSelectionReferenceRow.work_id == record.work_id
+        )
+    )
+    session.add_all(
+        _WorkRelationRow(work_id=record.work_id, related_work_id=related_work_id)
+        for related_work_id in sorted(_work_relations(record))
+        if related_work_id != record.work_id
+    )
+    if record.work.evaluation is not None:
+        session.add(
+            _WorkEvaluationRow(
+                work_id=record.work_id,
+                evaluation_id=record.work.evaluation.evaluation_id,
+            )
+        )
+    session.add_all(
+        _WorkSelectionReferenceRow(
+            work_id=record.work_id,
+            selection_sha256=selection_sha256,
+        )
+        for selection_sha256 in sorted(_selection_references((record,)))
+    )
+
+
+def _replace_evaluation_projection(session: Session, record: EvaluationRecord) -> None:
+    """Replace rebuildable child membership for one canonical evaluation document."""
+
+    session.execute(
+        delete(_EvaluationChildRow).where(_EvaluationChildRow.evaluation_id == record.evaluation_id)
+    )
+    session.add_all(
+        _EvaluationChildRow(evaluation_id=record.evaluation_id, work_id=child.work_id)
+        for child in record.children
+    )
+
+
+def _work_relations(record: WorkRecord) -> set[str]:
+    related: set[str] = set()
+    binding = record.work.fork_join
+    if binding is not None:
+        related.add(binding.parent_work_id)
+    if record.branch_set_plan is not None:
+        related.update(branch_work(branch).work_id for branch in record.branch_set_plan.branches)
+    if record.join_plan is not None:
+        related.add(record.join_plan.work.work_id)
+    return related
 
 
 def _emit(
@@ -1157,10 +1451,12 @@ def _emit(
         subject=subject,
         data=data,
     )
+    encoded = event.model_dump_json(exclude_none=True)
     session.add(
         _EventRow(
             created_at=event.time,
-            event_json=event.model_dump_json(exclude_none=True),
+            event_bytes=_encoded_bytes(encoded),
+            event_json=encoded,
         )
     )
 
@@ -1198,6 +1494,10 @@ def _encode(payload: object) -> str:
     )
 
 
+def _encoded_bytes(value: str) -> int:
+    return len(value.encode("utf-8"))
+
+
 def _contains_secret_field(value: object) -> bool:
     if isinstance(value, dict):
         for key, current in value.items():
@@ -1223,6 +1523,12 @@ def _work_list_statement(
     sort: WorkSort,
     order: SortOrder,
 ) -> tuple[list[Any], Select[tuple[_WorkRow]]]:
+    if (
+        sort not in _WORK_SORTS
+        or order not in _SORT_ORDERS
+        or (phase is not None and phase not in _WORK_PHASES)
+    ):
+        raise ValueError("stove0 work selectors are invalid")
     columns = {
         "updated_at": _WorkRow.updated_at,
         "phase": _WorkRow.phase,
@@ -1238,7 +1544,7 @@ def _work_list_statement(
         .where(*filters)
         .order_by(
             (desc if order == "desc" else asc)(columns[sort]),
-            asc(_WorkRow.work_id),
+            (desc if order == "desc" else asc)(_WorkRow.work_id),
         )
     )
     return filters, statement
@@ -1251,6 +1557,12 @@ def _evaluation_list_statement(
     sort: EvaluationSort,
     order: SortOrder,
 ) -> tuple[list[Any], Select[tuple[_EvaluationRow]]]:
+    if (
+        sort not in _EVALUATION_SORTS
+        or order not in _SORT_ORDERS
+        or (phase is not None and phase not in _EVALUATION_PHASES)
+    ):
+        raise ValueError("stove0 evaluation selectors are invalid")
     columns = {
         "updated_at": _EvaluationRow.updated_at,
         "phase": _EvaluationRow.phase,
@@ -1266,7 +1578,7 @@ def _evaluation_list_statement(
         .where(*filters)
         .order_by(
             (desc if order == "desc" else asc)(columns[sort]),
-            asc(_EvaluationRow.evaluation_id),
+            (desc if order == "desc" else asc)(_EvaluationRow.evaluation_id),
         )
     )
     return filters, statement

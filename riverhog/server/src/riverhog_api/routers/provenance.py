@@ -21,6 +21,7 @@ from riverhog_api.schemas.provenance import (
     CollectionFileProvenanceTraceOut,
     CollectionProvenanceVerificationOut,
     ListCollectionFileProvenanceResponse,
+    ProvenanceTraceItemOut,
 )
 
 router = APIRouter(tags=["provenance"])
@@ -109,17 +110,52 @@ def get_collection_file_provenance(
 
 
 @router.get(
+    "/collections/{collection_id}/provenance/trace/{path:path}/stream",
+    response_class=CompleteEnumerationResponse,
+    openapi_extra=complete_enumeration_operation(
+        paired_operation_id="trace_collection_file_provenance",
+        item_type=ProvenanceTraceItemOut,
+        schema_id="riverhog.provenance-trace-item/v1",
+    ),
+)
+def stream_collection_file_provenance_trace(
+    collection_id: CollectionIdParameter,
+    path: CanonicalRelPath,
+    principal: ProvenanceReader,
+    container: ContainerDep,
+) -> Response:
+    query = {"collection_id": collection_id, "path": path}
+    return complete_enumeration_response(
+        container.provenance.iter_trace_file(collection_id, path, principal=principal),
+        query=query,
+        item_type=ProvenanceTraceItemOut,
+        schema_id="riverhog.provenance-trace-item/v1",
+    )
+
+
+@router.get(
     "/collections/{collection_id}/provenance/trace/{path:path}",
     response_model=CollectionFileProvenanceTraceOut,
     response_model_exclude_unset=True,
+    openapi_extra=bounded_list_operation(
+        paired_operation_id="stream_collection_file_provenance_trace"
+    ),
 )
 def trace_collection_file_provenance(
     collection_id: CollectionIdParameter,
     path: CanonicalRelPath,
     principal: ProvenanceReader,
     container: ContainerDep,
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> dict[str, Any]:
-    return container.provenance.trace_file(collection_id, path, principal=principal)
+    return container.provenance.trace_file(
+        collection_id,
+        path,
+        page=page,
+        per_page=per_page,
+        principal=principal,
+    )
 
 
 @router.get("/collections/{collection_id}/provenance/journals/{journal_id}")

@@ -224,6 +224,7 @@ def _seed(database_url: str) -> None:
                 id="docs",
                 created_by_app="fixture",
                 created_at="2026-01-01T00:00:00.000000Z",
+                collection_count=1,
             )
         )
         session.add(
@@ -305,6 +306,8 @@ def _seed(database_url: str) -> None:
 
 def _seed_second_input(database_url: str) -> CollectionRootIdentity:
     with session_scope(make_session_factory(database_url)) as session:
+        tag = session.get_one(TagRecord, "docs")
+        tag.collection_count += 1
         session.add(
             CollectionRecord(
                 id=SECOND_COLLECTION_ID,
@@ -512,6 +515,8 @@ def _seed_derived_output(
         ),
     )
     with session_scope(make_session_factory(database_url)) as session:
+        tag = session.get_one(TagRecord, "docs")
+        tag.collection_count += 1
         session.add(
             CollectionRecord(
                 id=output_collection_id,
@@ -623,6 +628,8 @@ def _seed_multi_input_derived_output(
         ),
     )
     with session_scope(make_session_factory(database_url)) as session:
+        tag = session.get_one(TagRecord, "docs")
+        tag.collection_count += 1
         session.add(
             CollectionRecord(
                 id=2,

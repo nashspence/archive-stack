@@ -9,11 +9,9 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
-    from riverhog_cli.local_state import SCHEMA_STATEMENTS  # noqa: PLC0415
+    from riverhog_cli.local_state import LOCAL_STATE_METADATA  # noqa: PLC0415
 
-    connection = op.get_bind()
-    for statement in SCHEMA_STATEMENTS:
-        connection.exec_driver_sql(statement)
+    LOCAL_STATE_METADATA.create_all(op.get_bind())
 
 
 def downgrade() -> None:

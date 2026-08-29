@@ -4,19 +4,23 @@ import math
 from collections.abc import Iterator
 from typing import Any
 
+from http_api_contracts import closed_literal_values
+from riverhog_protocol import SearchSort, SortOrder
 from riverhog_protocol.errors import BadRequest
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import String, and_, asc, cast, desc, false, func, literal, or_, select
+from sqlalchemy import asc, desc, func, select
 from sqlalchemy.sql.elements import ColumnElement
 from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
-from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
+from riverhog_core.artifact_access import artifact_scope_filter
+from riverhog_core.catalog_db import SessionFactory, make_session_factory
 from riverhog_core.catalog_models import CollectionFileRecord
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
 from riverhog_core.runtime_config import RuntimeConfig
 
-_SORT_FIELDS = {"file_ref", "collection_id", "path", "bytes"}
+_SORT_FIELDS = closed_literal_values(SearchSort)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 
 
 def _like_pattern(value: str) -> str:
@@ -37,18 +41,18 @@ def _order_expressions(
     if sort == "collection_id":
         return (
             direction(CollectionFileRecord.collection_id),
-            asc(CollectionFileRecord.path),
+            direction(CollectionFileRecord.path),
         )
     if sort == "path":
         return (
             direction(CollectionFileRecord.path),
-            asc(CollectionFileRecord.collection_id),
+            direction(CollectionFileRecord.collection_id),
         )
     if sort == "bytes":
         return (
             direction(CollectionFileRecord.bytes),
-            asc(CollectionFileRecord.collection_id),
-            asc(CollectionFileRecord.path),
+            direction(CollectionFileRecord.collection_id),
+            direction(CollectionFileRecord.path),
         )
     raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
 
@@ -79,13 +83,17 @@ class SqlAlchemySearchService:
             raise BadRequest("per_page must be between 1 and 100")
         if sort not in _SORT_FIELDS:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
-        if order not in {"asc", "desc"}:
+        if order not in _SORT_ORDERS:
             raise BadRequest("order must be asc or desc")
 
-        normalized_collection, query, filters = _search_filters(
-            q=q, collection=collection, principal=principal
+        normalized_collection, query, filters, stmt = _search_statement(
+            q=q,
+            collection=collection,
+            sort=sort,
+            order=order,
+            principal=principal,
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             if normalized_collection is not None:
                 require_collection_access(
                     session,
@@ -97,16 +105,6 @@ class SqlAlchemySearchService:
                 select(func.count()).select_from(CollectionFileRecord).where(*filters)
             )
             total_count = int(total or 0)
-            stmt = (
-                select(
-                    CollectionFileRecord.collection_id,
-                    CollectionFileRecord.path,
-                    CollectionFileRecord.bytes,
-                    CollectionFileRecord.sha256,
-                )
-                .where(*filters)
-                .order_by(*_order_expressions(sort, order))
-            )
             stmt = stmt.offset((page - 1) * per_page).limit(per_page)
             rows = session.execute(stmt).all()
 
@@ -142,22 +140,16 @@ class SqlAlchemySearchService:
     ) -> Iterator[dict[str, object]]:
         if sort not in _SORT_FIELDS:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
-        if order not in {"asc", "desc"}:
+        if order not in _SORT_ORDERS:
             raise BadRequest("order must be asc or desc")
-        normalized_collection, _query, filters = _search_filters(
-            q=q, collection=collection, principal=principal
+        normalized_collection, _query, _filters, statement = _search_statement(
+            q=q,
+            collection=collection,
+            sort=sort,
+            order=order,
+            principal=principal,
         )
-        statement = (
-            select(
-                CollectionFileRecord.collection_id,
-                CollectionFileRecord.path,
-                CollectionFileRecord.bytes,
-                CollectionFileRecord.sha256,
-            )
-            .where(*filters)
-            .order_by(*_order_expressions(sort, order))
-            .execution_options(yield_per=100)
-        )
+        statement = statement.execution_options(yield_per=100)
         with read_snapshot(self._session_factory) as session:
             if normalized_collection is not None:
                 require_collection_access(session, principal, CATALOG_READ, normalized_collection)
@@ -169,6 +161,32 @@ class SqlAlchemySearchService:
                     "bytes": row.bytes,
                     "sha256": row.sha256,
                 }
+
+
+def _search_statement(
+    *,
+    q: str | None,
+    collection: int | None,
+    sort: str,
+    order: str,
+    principal: ApplicationPrincipal | None,
+) -> tuple[int | None, str | None, list[ColumnElement[bool]], Any]:
+    normalized_collection, query, filters = _search_filters(
+        q=q,
+        collection=collection,
+        principal=principal,
+    )
+    statement = (
+        select(
+            CollectionFileRecord.collection_id,
+            CollectionFileRecord.path,
+            CollectionFileRecord.bytes,
+            CollectionFileRecord.sha256,
+        )
+        .where(*filters)
+        .order_by(*_order_expressions(sort, order))
+    )
+    return normalized_collection, query, filters, statement
 
 
 def _search_filters(
@@ -183,30 +201,24 @@ def _search_filters(
             normalized_collection = normalize_collection_id(collection)
         except PathNormalizationError as exc:
             raise BadRequest(str(exc)) from exc
-    file_ref_expr = (
-        cast(CollectionFileRecord.collection_id, String) + literal("/") + CollectionFileRecord.path
-    )
     filters: list[ColumnElement[bool]] = [
         collection_access_filter(CollectionFileRecord.collection_id, principal, CATALOG_READ)
     ]
-    if principal is not None and principal.artifact_scope is not None:
-        scoped = tuple(sorted(principal.artifact_scope))
-        filters.append(
-            or_(
-                *(
-                    and_(
-                        CollectionFileRecord.collection_id == collection_id,
-                        CollectionFileRecord.path == path,
-                    )
-                    for collection_id, path in scoped
-                )
-            )
-            if scoped
-            else false()
+    filters.append(
+        artifact_scope_filter(
+            CollectionFileRecord.collection_id,
+            CollectionFileRecord.path,
+            principal,
         )
+    )
     query = q.strip() if q is not None else None
     if query:
-        filters.append(func.lower(file_ref_expr).like(_like_pattern(query.casefold()), escape="\\"))
+        filters.append(
+            CollectionFileRecord.search_text.like(
+                _like_pattern(query.casefold()),
+                escape="\\",
+            )
+        )
     if normalized_collection is not None:
         filters.append(CollectionFileRecord.collection_id == normalized_collection)
     return normalized_collection, query, filters

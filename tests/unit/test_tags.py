@@ -22,6 +22,7 @@ from riverhog_core.catalog_models import (
     CollectionMetadataPublicationRecord,
     CollectionUploadRecord,
     CollectionUploadTagRecord,
+    TagRecord,
 )
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.app_keys import SqlAlchemyAppKeyService
@@ -203,6 +204,11 @@ def test_collection_tag_add_and_remove_are_atomic_single_assignment_operations(
     assert added["tags"] == ["docs", "reviewed"]
     removed = tags.remove_collection_tag(COLLECTION_ID, "docs", principal=manager)
     assert removed["tags"] == ["reviewed"]
+    with session_scope(make_session_factory(config.database_url)) as session:
+        docs = session.get(TagRecord, "docs")
+        reviewed = session.get(TagRecord, "reviewed")
+        assert docs is not None and docs.collection_count == 0
+        assert reviewed is not None and reviewed.collection_count == 1
     with pytest.raises(Conflict, match="already has tag"):
         tags.add_collection_tag(COLLECTION_ID, "reviewed", principal=manager)
 

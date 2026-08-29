@@ -5,7 +5,7 @@ import io
 import json
 import re
 import tarfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -13,6 +13,7 @@ from .common import canonical_json, provenance_journal_filename
 from .journal import (
     JournalSummary,
     ProvenanceValidationError,
+    validate_journal,
     validate_journal_set,
     verify_payload_binding,
 )
@@ -63,6 +64,77 @@ class ValidatedProvenanceIndex:
     journals: dict[str, JournalSummary]
     journal_bytes: dict[str, bytes]
     identity: str
+
+
+def reconstruct_provenance_archive_identity(
+    *,
+    bindings: Callable[[], Iterable[FileProvenanceBinding]],
+    journals: Callable[[], Iterable[tuple[str, bytes]]],
+) -> str:
+    """Reconstruct the canonical index identity with bounded working memory.
+
+    The factories are consumed in separate, ordered passes so the canonical
+    top-level JSON order can be hashed without retaining an unbounded file,
+    journal, or bundle-descriptor collection.
+    """
+
+    digest = hashlib.sha256()
+    digest.update(b'{"bundle_format":')
+    digest.update(_canonical_value(PROVENANCE_BUNDLE_FORMAT))
+    digest.update(b',"bundles":[')
+    first = True
+    for sequence, group in enumerate(_journal_groups(journals())):
+        bundle = _build_bundle(sequence, group)
+        first = _update_array_digest(
+            digest,
+            {
+                "id": bundle.bundle_id,
+                "path": bundle.relative_path,
+                "plaintext_bytes": len(bundle.content),
+                "sha256": bundle.sha256,
+                "journals": len(bundle.journal_ids),
+            },
+            first=first,
+        )
+    digest.update(b'],"files":[')
+    first = True
+    previous_path: bytes | None = None
+    file_count = 0
+    for binding in bindings():
+        encoded_path = binding.path.encode("utf-8")
+        if previous_path is not None and encoded_path <= previous_path:
+            raise ProvenanceValidationError("provenance bindings are not in canonical path order")
+        _validate_binding_shape(binding)
+        first = _update_array_digest(digest, _binding_row(binding), first=first)
+        previous_path = encoded_path
+        file_count += 1
+    if file_count == 0:
+        raise ProvenanceValidationError("provenance must account for each file exactly once")
+    digest.update(b'],"journals":[')
+    first = True
+    for sequence, group in enumerate(_journal_groups(journals())):
+        bundle_id = _bundle_id(sequence)
+        for journal_id, content in group:
+            summary = validate_journal(content)
+            if summary.journal_id != journal_id:
+                raise ProvenanceValidationError(
+                    f"provenance journal identity mismatch: {journal_id}"
+                )
+            first = _update_array_digest(
+                digest,
+                {
+                    "journal_id": journal_id,
+                    "bundle_id": bundle_id,
+                    "member": _journal_member(journal_id),
+                    "bytes": len(content),
+                    "sha256": summary.journal_sha256,
+                },
+                first=first,
+            )
+    digest.update(b'],"schema":')
+    digest.update(_canonical_value(PROVENANCE_INDEX_SCHEMA))
+    digest.update(b"}\n")
+    return digest.hexdigest()
 
 
 def canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
@@ -319,13 +391,22 @@ def _validate_bindings(
 
 
 def _build_bundles(journals: Mapping[str, bytes]) -> tuple[ProvenanceBundle, ...]:
-    if not journals:
-        return ()
-    groups: list[list[tuple[str, bytes]]] = []
+    return tuple(
+        _build_bundle(sequence, group)
+        for sequence, group in enumerate(_journal_groups(sorted(journals.items())))
+    )
+
+
+def _journal_groups(
+    journals: Iterable[tuple[str, bytes]],
+) -> Iterable[tuple[tuple[str, bytes], ...]]:
     current: list[tuple[str, bytes]] = []
     current_bytes = 0
-    for journal_id, content in sorted(journals.items()):
+    previous_journal_id: str | None = None
+    for journal_id, content in journals:
         _journal_id(journal_id)
+        if previous_journal_id is not None and journal_id <= previous_journal_id:
+            raise ProvenanceValidationError("provenance journals are not in canonical order")
         contribution = len(content) + 1024
         if contribution > MAX_BUNDLE_PLAINTEXT_BYTES:
             raise ProvenanceValidationError(
@@ -335,31 +416,69 @@ def _build_bundles(journals: Mapping[str, bytes]) -> tuple[ProvenanceBundle, ...
             len(current) >= MAX_BUNDLE_JOURNALS
             or current_bytes + contribution > MAX_BUNDLE_PLAINTEXT_BYTES
         ):
-            groups.append(current)
+            yield tuple(current)
             current = []
             current_bytes = 0
         current.append((journal_id, content))
         current_bytes += contribution
+        previous_journal_id = journal_id
     if current:
-        groups.append(current)
-    result: list[ProvenanceBundle] = []
-    for sequence, group in enumerate(groups):
-        bundle_id = _bundle_id(sequence)
-        content = _tar_bytes(group)
-        if len(content) > MAX_BUNDLE_PLAINTEXT_BYTES:
-            raise ProvenanceValidationError(
-                f"provenance bundle exceeds its canonical limit: {bundle_id}"
-            )
-        result.append(
-            ProvenanceBundle(
-                bundle_id=bundle_id,
-                relative_path=f"provenance/{bundle_id}.tar.age",
-                content=content,
-                sha256=hashlib.sha256(content).hexdigest(),
-                journal_ids=tuple(journal_id for journal_id, _ in group),
-            )
+        yield tuple(current)
+
+
+def _build_bundle(sequence: int, group: Sequence[tuple[str, bytes]]) -> ProvenanceBundle:
+    bundle_id = _bundle_id(sequence)
+    content = _tar_bytes(group)
+    if len(content) > MAX_BUNDLE_PLAINTEXT_BYTES:
+        raise ProvenanceValidationError(
+            f"provenance bundle exceeds its canonical limit: {bundle_id}"
         )
-    return tuple(result)
+    return ProvenanceBundle(
+        bundle_id=bundle_id,
+        relative_path=f"provenance/{bundle_id}.tar.age",
+        content=content,
+        sha256=hashlib.sha256(content).hexdigest(),
+        journal_ids=tuple(journal_id for journal_id, _ in group),
+    )
+
+
+def _validate_binding_shape(item: FileProvenanceBinding) -> None:
+    _relative_path(item.path)
+    _nonnegative_int(item.bytes, "file bytes")
+    _sha256(item.sha256, "file SHA-256")
+    if item.status == "captured":
+        _journal_id(item.journal_id)
+        if item.current_state_id is None or item.omission_reason is not None:
+            raise ProvenanceValidationError("captured provenance binding is incomplete")
+        return
+    if item.status != "omitted":
+        raise ProvenanceValidationError("file provenance status is invalid")
+    if item.journal_id is not None or item.current_state_id is not None:
+        raise ProvenanceValidationError("omitted provenance cannot bind a journal")
+    if not item.omission_reason or item.omission_reason != item.omission_reason.strip():
+        raise ProvenanceValidationError("provenance omission requires a visible reason")
+
+
+def _update_array_digest(
+    digest: Any,
+    value: Mapping[str, Any],
+    *,
+    first: bool,
+) -> bool:
+    if not first:
+        digest.update(b",")
+    digest.update(canonical_json(value))
+    return False
+
+
+def _canonical_value(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 def _tar_bytes(journals: Sequence[tuple[str, bytes]]) -> bytes:

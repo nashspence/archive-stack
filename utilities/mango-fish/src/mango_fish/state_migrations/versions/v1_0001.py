@@ -9,9 +9,9 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
-    op.get_bind().exec_driver_sql(
-        "CREATE TABLE source_cursors (source TEXT PRIMARY KEY, cursor TEXT NOT NULL)"
-    )
+    from mango_fish.schema import MANGO_FISH_STATE_METADATA  # noqa: PLC0415
+
+    MANGO_FISH_STATE_METADATA.create_all(op.get_bind())
 
 
 def downgrade() -> None:

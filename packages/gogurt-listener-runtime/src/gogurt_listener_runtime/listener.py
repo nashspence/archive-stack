@@ -66,6 +66,38 @@ LISTENER_HEARTBEAT_FUTURE_SECONDS = 10.0
 LISTENER_MAX_JSON_INTEGER = (1 << 63) - 1
 LISTENER_MAX_PID = (1 << 32) - 1
 LISTENER_OPERATIONS = ("install", "status", "start", "stop", "restart", "uninstall")
+_LISTENER_STATE_DDL = """
+CREATE TABLE IF NOT EXISTS listener_meta (
+    key TEXT NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS observed_mounts (
+    mount_point TEXT NOT NULL PRIMARY KEY,
+    present INTEGER NOT NULL CHECK (present IN (0, 1)),
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    marker_identity TEXT
+);
+CREATE TABLE IF NOT EXISTS dispatches (
+    dispatch_id TEXT NOT NULL PRIMARY KEY,
+    mount_point TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    marker_identity TEXT NOT NULL,
+    route TEXT NOT NULL,
+    plan_json TEXT NOT NULL CHECK (json_valid(plan_json)),
+    state TEXT NOT NULL CHECK (
+        state IN ('queued', 'running', 'retry', 'uncertain', 'completed', 'failed')
+    ),
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    observed_at REAL NOT NULL,
+    started_at REAL,
+    completed_at REAL,
+    next_retry_at REAL,
+    exit_code INTEGER,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS dispatches_state_idx
+    ON dispatches(state, next_retry_at, observed_at);
+"""
 
 
 class ListenerError(RuntimeError):
@@ -272,6 +304,35 @@ def _secure_listener_state(paths: ListenerRuntimePaths) -> None:
     )
 
 
+def _listener_schema_signature(connection: sqlite3.Connection) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            " ".join(str(row[3]).casefold().split()),
+        )
+        for row in connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema "
+            "WHERE type IN ('table', 'index') AND sql IS NOT NULL "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY type, name"
+        )
+    )
+
+
+def _verify_listener_schema(connection: sqlite3.Connection) -> None:
+    with closing(sqlite3.connect(":memory:")) as expected:
+        expected.executescript(_LISTENER_STATE_DDL)
+        expected_signature = _listener_schema_signature(expected)
+    actual_signature = _listener_schema_signature(connection)
+    if actual_signature != expected_signature:
+        raise ListenerError("Gogurt listener state does not match its exact current schema")
+    if tuple(str(row[0]) for row in connection.execute("PRAGMA quick_check")) != ("ok",):
+        raise ListenerError("Gogurt listener state failed SQLite quick_check")
+    if list(connection.execute("PRAGMA foreign_key_check")):
+        raise ListenerError("Gogurt listener state failed SQLite foreign_key_check")
+
+
 def _require_matching_state(config: ListenerConfig, paths: ListenerRuntimePaths) -> None:
     if config.state_dir != paths.state_dir:
         raise ListenerError("installed Gogurt listener state directory does not match its config")
@@ -315,40 +376,8 @@ class ListenerStore:
                 configured = connection.execute("PRAGMA journal_mode = WAL").fetchone()
                 if configured is None or str(configured[0]).casefold() != "wal":
                     raise ListenerError("Gogurt listener state could not enable WAL journaling")
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS listener_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS observed_mounts (
-                    mount_point TEXT PRIMARY KEY,
-                    present INTEGER NOT NULL CHECK (present IN (0, 1)),
-                    generation INTEGER NOT NULL,
-                    marker_identity TEXT
-                );
-                CREATE TABLE IF NOT EXISTS dispatches (
-                    dispatch_id TEXT PRIMARY KEY,
-                    mount_point TEXT NOT NULL,
-                    generation INTEGER NOT NULL,
-                    marker_identity TEXT NOT NULL,
-                    route TEXT NOT NULL,
-                    plan_json TEXT NOT NULL,
-                    state TEXT NOT NULL CHECK (
-                        state IN ('queued', 'running', 'retry', 'uncertain', 'completed', 'failed')
-                    ),
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    observed_at REAL NOT NULL,
-                    started_at REAL,
-                    completed_at REAL,
-                    next_retry_at REAL,
-                    exit_code INTEGER,
-                    error TEXT
-                );
-                CREATE INDEX IF NOT EXISTS dispatches_state_idx
-                    ON dispatches(state, next_retry_at, observed_at);
-                """
-            )
+            connection.executescript(_LISTENER_STATE_DDL)
+            _verify_listener_schema(connection)
             row = connection.execute(
                 "SELECT value FROM listener_meta WHERE key = 'schema'"
             ).fetchone()

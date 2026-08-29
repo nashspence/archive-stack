@@ -7,6 +7,7 @@ from .archive import (
     ValidatedProvenanceIndex,
     build_portable_provenance_set,
     build_provenance_archive,
+    reconstruct_provenance_archive_identity,
     validate_portable_provenance_set,
     validate_provenance_archive,
 )
@@ -114,6 +115,7 @@ __all__ = [
     "append_replacement_transformation",
     "build_portable_provenance_set",
     "build_provenance_archive",
+    "reconstruct_provenance_archive_identity",
     "canonical_sidecar_path",
     "create_observation_journal",
     "create_derivative_journal",

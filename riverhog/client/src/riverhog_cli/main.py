@@ -25,6 +25,7 @@ from riverhog_api_client.uploads import (
     put_collection_upload_unit,
     upload_collection_units,
 )
+from riverhog_application_access import ApplicationPermission
 from riverhog_cli_support.application_keys import (
     format_app_key_created,
     format_app_key_revoked,
@@ -793,7 +794,7 @@ def app_key_access_list_cmd(
             order=cast(Any, normalized_order),
             app=app_name,
             key_id=key_id,
-            permission=permission,
+            permission=cast(ApplicationPermission | None, permission),
             resource=resource,
             active=active,
         ) as items:
@@ -813,7 +814,7 @@ def app_key_access_list_cmd(
         order=cast(Any, normalized_order),
         app=app_name,
         key_id=key_id,
-        permission=permission,
+        permission=cast(ApplicationPermission | None, permission),
         resource=resource,
         active=active,
     )
@@ -2259,11 +2260,32 @@ def provenance_show_cmd(
 def provenance_trace_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
     path: Annotated[str, typer.Argument(help="Collection-relative file path")],
+    page: Annotated[int, typer.Option("--page", min=1)] = 1,
+    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    all_items: Annotated[
+        bool,
+        typer.Option("--all", help="Return every reachable journal and reference"),
+    ] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
-    """Trace one file lineage through every reachable ancestor journal."""
+    """Trace one file through reachable provenance journals and references."""
 
-    payload = client().trace_collection_file_provenance(collection_id, path)
+    api = client()
+    if all_items:
+        with api.stream_collection_file_provenance_trace(collection_id, path) as items:
+            _emit_complete_enumeration(
+                items,
+                key="items",
+                formatter=format_provenance_trace,
+                json_mode=json_mode,
+            )
+        return
+    payload = api.trace_collection_file_provenance(
+        collection_id,
+        path,
+        page=page,
+        per_page=per_page,
+    )
     emit(payload if json_mode else format_provenance_trace(payload), json_mode=json_mode)
 
 

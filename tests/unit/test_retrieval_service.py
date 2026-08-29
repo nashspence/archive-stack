@@ -30,6 +30,7 @@ from riverhog_protocol.raw_ingress import hash_raw_source
 
 from tests.fixtures.crypto import FixtureProofStamper
 from tests.unit.archive_object_fixtures import MemoryArchiveStore
+from tests.unit.artifact_scope_fixtures import persisted_artifact_scope
 from tests.unit.db_helpers import sqlite_url
 from tests.unit.test_archive_root import MemoryImmutableStore
 from tests.unit.test_pack_upload import MemoryResumableStore
@@ -376,16 +377,20 @@ def test_immediate_retrieval_reads_only_the_selected_pack_member_range(
 def test_retrieval_plan_accepts_the_exact_capability_artifact(tmp_path: Path) -> None:
     files = {"selected.bin": b"selected", "sibling.bin": b"sibling"}
     service, collection_id, _ranges, _store = _seed_collection(tmp_path, files)
-    principal = ApplicationPrincipal(
-        app="claim:fixture",
-        key_id="controller",
-        access=frozenset(
-            {
-                ApplicationAccess(CATALOG_READ, f"collection:{collection_id}"),
-                ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{collection_id}"),
-            }
+    principal = persisted_artifact_scope(
+        sqlite_url(tmp_path / "catalog.sqlite3"),
+        access=(
+            ApplicationAccess(CATALOG_READ, f"collection:{collection_id}"),
+            ApplicationAccess(RETRIEVAL_MANAGE, f"collection:{collection_id}"),
         ),
-        artifact_scope=frozenset({(collection_id, "selected.bin")}),
+        artifacts=(
+            (
+                collection_id,
+                "selected.bin",
+                len(files["selected.bin"]),
+                hashlib.sha256(files["selected.bin"]).hexdigest(),
+            ),
+        ),
     )
 
     plan = service.plan(((collection_id, "selected.bin"),), principal=principal)
@@ -439,6 +444,15 @@ def test_restore_required_job_caches_ciphertext_then_serves_logical_range(
     ready = service.get(app="reader", job_id=str(job["id"]))
     assert ready["state"] == "ready"
     assert store.prepared == [("pack-000000000000",)]
+
+    cached_plan = service.plan(((collection_id, "target.bin"),))
+    assert [current["read_mode"] for current in cached_plan["objects"]] == ["cache"]
+    cached_job = service.create(
+        app="reader",
+        files=((collection_id, "target.bin"),),
+        plan_etag=str(cached_plan["etag"]),
+    )
+    assert cached_job["state"] == "ready"
 
     chunks, _bytes, _sha256 = service.content(
         app="reader",

@@ -8,6 +8,8 @@ from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from http_api_contracts import closed_literal_values
+from riverhog_protocol import DownloadQuotaSort, SortOrder
 from riverhog_protocol.errors import BadRequest, DownloadAllowanceExceeded, NotFound
 from sqlalchemy import and_, asc, case, delete, desc, func, or_, select
 from sqlalchemy.orm import Session
@@ -28,6 +30,8 @@ from riverhog_core.runtime_config import RuntimeConfig, StorageAdapterRegistrati
 
 _RESERVATION_LEASE = timedelta(hours=1)
 _RESERVATION_HEARTBEAT_SECONDS = 5 * 60
+_KEY_QUOTA_SORT_FIELDS = closed_literal_values(DownloadQuotaSort)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 
 
 class SqlAlchemyDownloadAllowance:
@@ -207,7 +211,7 @@ class SqlAlchemyDownloadAllowance:
         now_text, current_month, query, normalized_app, base, statement = _key_quota_statements(
             now=now, q=q, sort=sort, order=order, app=app, active=active
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(base.subquery())) or 0)
             statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = [dict(row) for row in session.execute(statement).mappings().all()]
@@ -780,17 +784,9 @@ def _key_quota_statements(
     app: str | None,
     active: bool | None,
 ) -> tuple[str, str, str | None, str | None, Any, Any]:
-    fields = {
-        "app",
-        "key_id",
-        "monthly_bytes",
-        "accounted_bytes",
-        "reserved_bytes",
-        "remaining_bytes",
-    }
-    if sort not in fields:
-        raise BadRequest(f"sort must be one of {', '.join(sorted(fields))}")
-    if order not in {"asc", "desc"}:
+    if sort not in _KEY_QUOTA_SORT_FIELDS:
+        raise BadRequest(f"sort must be one of {', '.join(sorted(_KEY_QUOTA_SORT_FIELDS))}")
+    if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
     now_text = format_utc_timestamp(now)
     current_month = format_utc_timestamp(_month_start(now))
@@ -848,12 +844,7 @@ def _key_quota_statements(
         filters.append(AppKeyRecord.app == normalized_app)
     if query:
         pattern = _like_pattern(query.casefold())
-        filters.append(
-            or_(
-                func.lower(AppKeyRecord.app).like(pattern, escape="\\"),
-                func.lower(AppKeyRecord.id).like(pattern, escape="\\"),
-            )
-        )
+        filters.append(AppKeyRecord.search_text.like(pattern, escape="\\"))
     active_expression = and_(
         AppKeyRecord.revoked_at.is_(None),
         or_(AppKeyRecord.expires_at.is_(None), AppKeyRecord.expires_at > now_text),
@@ -878,7 +869,7 @@ def _key_quota_statements(
         .where(*filters)
     )
     direction = desc if order == "desc" else asc
-    statement = base.order_by(direction(columns[sort]), asc(AppKeyRecord.id))
+    statement = base.order_by(direction(columns[sort]), direction(AppKeyRecord.id))
     return now_text, current_month, query, normalized_app, base, statement
 
 

@@ -1,7 +1,7 @@
 -- Exact current Mango Fish v1 baseline conformance fixture.
 BEGIN TRANSACTION;
 CREATE TABLE source_cursors (
-    source TEXT PRIMARY KEY,
+    source TEXT NOT NULL PRIMARY KEY,
     cursor TEXT NOT NULL
 );
 INSERT INTO source_cursors VALUES('stove0', '23');

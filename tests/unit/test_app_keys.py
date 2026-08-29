@@ -84,6 +84,7 @@ def seed_tag(
                 created_by_app="bootstrap",
                 created_by_key_id=None,
                 created_at="2026-07-24T00:00:00.000000Z",
+                collection_count=1 if collection_id is not None else 0,
             )
         )
         if collection_id is not None:
@@ -101,6 +102,8 @@ def seed_tag(
                     metadata_updated_at="2026-07-24T00:00:00.000000Z",
                     created_by_app="fixture",
                     created_at="2026-07-24T00:00:00.000000Z",
+                    file_count=0,
+                    file_bytes=0,
                 )
             )
             session.add(

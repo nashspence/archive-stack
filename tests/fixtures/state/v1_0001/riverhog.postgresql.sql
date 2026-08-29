@@ -1,6 +1,5 @@
 -- Exact current Riverhog PostgreSQL v1 baseline conformance fixture.
 
-
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
@@ -11,6 +10,8 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
@@ -19,7 +20,8 @@ CREATE TABLE app_key_access_grants (
     key_id character varying NOT NULL,
     permission character varying NOT NULL,
     resource character varying NOT NULL,
-    created_at character varying NOT NULL
+    created_at character varying NOT NULL,
+    search_text character varying GENERATED ALWAYS AS (lower((((permission)::text || ' '::text) || (resource)::text))) STORED NOT NULL
 );
 
 CREATE TABLE app_keys (
@@ -30,7 +32,10 @@ CREATE TABLE app_keys (
     created_at character varying NOT NULL,
     expires_at character varying,
     revoked_at character varying,
-    last_used_at character varying
+    last_used_at character varying,
+    search_text character varying GENERATED ALWAYS AS (lower((((app)::text || ' '::text) || (id)::text))) STORED NOT NULL,
+    CONSTRAINT ck_app_keys_download_quota CHECK (((monthly_download_quota_bytes IS NULL) OR (monthly_download_quota_bytes >= 0))),
+    CONSTRAINT ck_app_keys_token_sha256 CHECK ((length((token_sha256)::text) = 64))
 );
 
 CREATE TABLE archive_copy_jobs (
@@ -48,7 +53,9 @@ CREATE TABLE archive_copy_jobs (
     expires_at character varying,
     next_attempt_at character varying,
     completed_at character varying,
-    failure character varying
+    failure character varying,
+    search_text character varying GENERATED ALWAYS AS (lower((((((((collection_id)::text || ' '::text) || (source_store)::text) || ' '::text) || (destination_store)::text) || ' '::text) || (state)::text))) STORED NOT NULL,
+    CONSTRAINT ck_archive_copy_jobs_state CHECK (((state)::text = ANY ((ARRAY['requested'::character varying, 'waiting'::character varying, 'checking'::character varying, 'copying'::character varying, 'canceling'::character varying, 'completed'::character varying, 'failed'::character varying, 'canceled'::character varying])::text[])))
 );
 
 CREATE TABLE archive_copy_object_uploads (
@@ -64,7 +71,12 @@ CREATE TABLE archive_copy_object_uploads (
     write_segments_json character varying,
     uploaded_bytes bigint NOT NULL,
     uploaded_segments integer NOT NULL,
-    total_segments integer NOT NULL
+    total_segments integer NOT NULL,
+    CONSTRAINT ck_archive_copy_uploads_plaintext CHECK ((plaintext_bytes >= 0)),
+    CONSTRAINT ck_archive_copy_uploads_segment_progress CHECK ((uploaded_segments <= total_segments)),
+    CONSTRAINT ck_archive_copy_uploads_total_segments CHECK ((total_segments >= 0)),
+    CONSTRAINT ck_archive_copy_uploads_uploaded_bytes CHECK ((uploaded_bytes >= 0)),
+    CONSTRAINT ck_archive_copy_uploads_uploaded_segments CHECK ((uploaded_segments >= 0))
 );
 
 CREATE TABLE archive_copy_retirements (
@@ -81,14 +93,16 @@ CREATE TABLE archive_download_reservations (
     month_started_at character varying NOT NULL,
     reserved_bytes bigint NOT NULL,
     created_at character varying NOT NULL,
-    expires_at character varying NOT NULL
+    expires_at character varying NOT NULL,
+    CONSTRAINT ck_archive_download_reservations_bytes CHECK ((reserved_bytes >= 0))
 );
 
 CREATE TABLE archive_download_usage (
     store character varying NOT NULL,
     month_started_at character varying NOT NULL,
     accounted_bytes bigint NOT NULL,
-    updated_at character varying NOT NULL
+    updated_at character varying NOT NULL,
+    CONSTRAINT ck_archive_download_usage_bytes CHECK ((accounted_bytes >= 0))
 );
 
 CREATE TABLE catalog_event_tags (
@@ -125,7 +139,9 @@ CREATE TABLE collection_archive_attestations (
     last_attempt_at character varying,
     published_at character varying,
     matured_at character varying,
-    failure text
+    failure text,
+    CONSTRAINT ck_archive_attestations_attempt_count CHECK ((attempt_count >= 0)),
+    CONSTRAINT ck_archive_attestations_state CHECK (((state)::text = ANY ((ARRAY['pending'::character varying, 'publishing'::character varying, 'publish_retry'::character varying, 'upgrading'::character varying, 'upgrade_retry'::character varying, 'waiting'::character varying, 'matured'::character varying])::text[])))
 );
 
 CREATE TABLE collection_archive_copies (
@@ -135,7 +151,8 @@ CREATE TABLE collection_archive_copies (
     archive_storage_prefix character varying,
     last_uploaded_at character varying,
     last_verified_at character varying,
-    failure character varying
+    failure character varying,
+    CONSTRAINT ck_collection_archive_copies_state CHECK (((state)::text = ANY ((ARRAY['pending'::character varying, 'uploading'::character varying, 'uploaded'::character varying, 'retrying'::character varying, 'failed'::character varying])::text[])))
 );
 
 CREATE TABLE collection_archive_file_objects (
@@ -147,7 +164,11 @@ CREATE TABLE collection_archive_file_objects (
     file_offset bigint NOT NULL,
     object_offset bigint NOT NULL,
     bytes bigint NOT NULL,
-    member character varying
+    member character varying,
+    CONSTRAINT ck_archive_file_objects_bytes CHECK ((bytes >= 0)),
+    CONSTRAINT ck_archive_file_objects_file_offset CHECK ((file_offset >= 0)),
+    CONSTRAINT ck_archive_file_objects_object_offset CHECK ((object_offset >= 0)),
+    CONSTRAINT ck_archive_file_objects_sequence CHECK ((sequence >= 0))
 );
 
 CREATE TABLE collection_archive_object_uploads (
@@ -170,7 +191,16 @@ CREATE TABLE collection_archive_object_uploads (
     uploaded_units integer NOT NULL,
     total_units integer NOT NULL,
     updated_at character varying NOT NULL,
-    sealed_at character varying
+    sealed_at character varying,
+    CONSTRAINT ck_archive_object_uploads_plaintext CHECK ((plaintext_bytes >= 0)),
+    CONSTRAINT ck_archive_object_uploads_sequence CHECK ((sequence >= 0)),
+    CONSTRAINT ck_archive_object_uploads_source CHECK ((source_bytes >= 0)),
+    CONSTRAINT ck_archive_object_uploads_state CHECK (((state)::text = ANY ((ARRAY['planned'::character varying, 'uploading'::character varying, 'sealed'::character varying])::text[]))),
+    CONSTRAINT ck_archive_object_uploads_total_units CHECK ((total_units >= 0)),
+    CONSTRAINT ck_archive_object_uploads_unit CHECK ((unit_plaintext_bytes > 0)),
+    CONSTRAINT ck_archive_object_uploads_unit_progress CHECK ((uploaded_units <= total_units)),
+    CONSTRAINT ck_archive_object_uploads_uploaded_bytes CHECK ((uploaded_bytes >= 0)),
+    CONSTRAINT ck_archive_object_uploads_uploaded_units CHECK ((uploaded_units >= 0))
 );
 
 CREATE TABLE collection_archive_objects (
@@ -190,7 +220,10 @@ CREATE TABLE collection_archive_objects (
     plan_sha256 character varying(64),
     index_sha256 character varying(64),
     uploaded_at character varying NOT NULL,
-    verified_at character varying
+    verified_at character varying,
+    CONSTRAINT ck_collection_archive_objects_order CHECK ((object_order >= 0)),
+    CONSTRAINT ck_collection_archive_objects_plaintext CHECK ((plaintext_bytes >= 0)),
+    CONSTRAINT ck_collection_archive_objects_stored CHECK ((stored_bytes >= 0))
 );
 
 CREATE TABLE collection_deletions (
@@ -226,14 +259,22 @@ CREATE TABLE collection_file_provenance (
     status character varying NOT NULL,
     journal_id character varying,
     current_state_id character varying,
-    omission_reason text
+    omission_reason text,
+    CONSTRAINT ck_collection_file_provenance_binding CHECK (((((status)::text = 'captured'::text) AND (journal_id IS NOT NULL) AND (current_state_id IS NOT NULL) AND (omission_reason IS NULL)) OR (((status)::text = 'omitted'::text) AND (journal_id IS NULL) AND (current_state_id IS NULL) AND (omission_reason IS NOT NULL)))),
+    CONSTRAINT ck_collection_file_provenance_status CHECK (((status)::text = ANY ((ARRAY['captured'::character varying, 'omitted'::character varying])::text[])))
 );
 
 CREATE TABLE collection_files (
     collection_id bigint NOT NULL,
     path character varying NOT NULL,
     bytes bigint NOT NULL,
-    sha256 character varying(64) NOT NULL
+    sha256 character varying(64) NOT NULL,
+    provenance_status character varying DEFAULT 'missing'::character varying NOT NULL,
+    search_text character varying GENERATED ALWAYS AS ((((collection_id)::text || '/'::text) || lower((path)::text))) STORED NOT NULL,
+    path_search_text character varying GENERATED ALWAYS AS (lower((path)::text)) STORED NOT NULL,
+    CONSTRAINT ck_collection_files_bytes CHECK ((bytes >= 0)),
+    CONSTRAINT ck_collection_files_provenance_status CHECK (((provenance_status)::text = ANY ((ARRAY['captured'::character varying, 'omitted'::character varying, 'missing'::character varying])::text[]))),
+    CONSTRAINT ck_collection_files_sha256 CHECK ((length((sha256)::text) = 64))
 );
 
 CREATE TABLE collection_metadata_publications (
@@ -250,7 +291,11 @@ CREATE TABLE collection_metadata_publications (
     revision character varying,
     stored_bytes bigint,
     stored_sha256 character varying(64),
-    published_at character varying
+    published_at character varying,
+    CONSTRAINT ck_metadata_publications_attempt_count CHECK ((attempt_count >= 0)),
+    CONSTRAINT ck_metadata_publications_desired_revision CHECK ((desired_revision >= 1)),
+    CONSTRAINT ck_metadata_publications_published_revision CHECK (((published_revision IS NULL) OR (published_revision >= 1))),
+    CONSTRAINT ck_metadata_publications_state CHECK (((state)::text = ANY ((ARRAY['pending'::character varying, 'publishing'::character varying, 'published'::character varying, 'retry_wait'::character varying])::text[])))
 );
 
 CREATE TABLE collection_processing_claim_artifacts (
@@ -258,7 +303,9 @@ CREATE TABLE collection_processing_claim_artifacts (
     collection_id bigint NOT NULL,
     path character varying NOT NULL,
     bytes bigint NOT NULL,
-    sha256 character varying(64) NOT NULL
+    sha256 character varying(64) NOT NULL,
+    CONSTRAINT ck_processing_claim_artifacts_bytes CHECK ((bytes >= 0)),
+    CONSTRAINT ck_processing_claim_artifacts_sha256 CHECK ((length((sha256)::text) = 64))
 );
 
 CREATE TABLE collection_processing_claim_inputs (
@@ -266,7 +313,10 @@ CREATE TABLE collection_processing_claim_inputs (
     collection_id bigint NOT NULL,
     collection_order integer NOT NULL,
     archive_root_sha256 character varying(64) NOT NULL,
-    content_identity character varying(64) NOT NULL
+    content_identity character varying(64) NOT NULL,
+    CONSTRAINT ck_claim_inputs_archive_root CHECK ((length((archive_root_sha256)::text) = 64)),
+    CONSTRAINT ck_claim_inputs_content_identity CHECK ((length((content_identity)::text) = 64)),
+    CONSTRAINT ck_processing_claim_inputs_order CHECK ((collection_order >= 0))
 );
 
 CREATE TABLE collection_processing_claims (
@@ -296,9 +346,12 @@ CREATE TABLE collection_processing_claims (
     abandoned_at character varying,
     abandonment_reason text,
     released_at character varying,
+    CONSTRAINT ck_collection_processing_claims_document_sha256 CHECK ((length((work_document_sha256)::text) = 64)),
     CONSTRAINT ck_collection_processing_claims_fence CHECK ((fence >= 1)),
     CONSTRAINT ck_collection_processing_claims_grace CHECK ((retirement_grace_seconds >= 0)),
-    CONSTRAINT ck_collection_processing_claims_state CHECK (((state)::text = ANY ((ARRAY['active'::character varying, 'settled'::character varying, 'retiring'::character varying, 'abandoned'::character varying, 'released'::character varying])::text[])))
+    CONSTRAINT ck_collection_processing_claims_id CHECK ((length((id)::text) = 64)),
+    CONSTRAINT ck_collection_processing_claims_state CHECK (((state)::text = ANY ((ARRAY['active'::character varying, 'settled'::character varying, 'retiring'::character varying, 'abandoned'::character varying, 'released'::character varying])::text[]))),
+    CONSTRAINT ck_collection_processing_claims_work_id CHECK ((length((work_id)::text) = 64))
 );
 
 CREATE TABLE collection_processing_outcomes (
@@ -320,7 +373,9 @@ CREATE TABLE collection_proof_maturations (
     next_attempt_at character varying NOT NULL,
     last_attempt_at character varying,
     matured_at character varying,
-    failure text
+    failure text,
+    CONSTRAINT ck_proof_maturations_attempt_count CHECK ((attempt_count >= 0)),
+    CONSTRAINT ck_proof_maturations_state CHECK (((state)::text = ANY ((ARRAY['pending'::character varying, 'upgrading'::character varying, 'waiting'::character varying, 'retry_wait'::character varying, 'matured'::character varying])::text[])))
 );
 
 CREATE TABLE collection_provenance_entities (
@@ -353,7 +408,11 @@ CREATE TABLE collection_provenance_journals (
     current_state_id character varying NOT NULL,
     current_path character varying NOT NULL,
     current_bytes bigint NOT NULL,
-    current_sha256 character varying(64) NOT NULL
+    current_sha256 character varying(64) NOT NULL,
+    CONSTRAINT ck_provenance_journals_bytes CHECK ((bytes >= 0)),
+    CONSTRAINT ck_provenance_journals_current_bytes CHECK ((current_bytes >= 0)),
+    CONSTRAINT ck_provenance_journals_entries CHECK ((entries >= 0)),
+    CONSTRAINT ck_provenance_journals_sha256 CHECK ((length((sha256)::text) = 64))
 );
 
 CREATE TABLE collection_tags (
@@ -384,7 +443,9 @@ CREATE TABLE collection_transform_capability_artifacts (
     collection_id bigint NOT NULL,
     path character varying NOT NULL,
     bytes bigint NOT NULL,
-    sha256 character varying(64) NOT NULL
+    sha256 character varying(64) NOT NULL,
+    CONSTRAINT ck_capability_artifacts_bytes CHECK ((bytes >= 0)),
+    CONSTRAINT ck_capability_artifacts_sha256 CHECK ((length((sha256)::text) = 64))
 );
 
 CREATE TABLE collection_upload_files (
@@ -400,7 +461,10 @@ CREATE TABLE collection_upload_files (
     provenance_current_state_id character varying,
     provenance_omission_reason text,
     custodied_at character varying,
-    custody_receipt_json text
+    custody_receipt_json text,
+    CONSTRAINT ck_collection_upload_files_bytes CHECK ((bytes >= 0)),
+    CONSTRAINT ck_collection_upload_files_order CHECK ((file_order >= 0)),
+    CONSTRAINT ck_collection_upload_files_sha256 CHECK ((length((sha256)::text) = 64))
 );
 
 CREATE TABLE collection_upload_provenance_journals (
@@ -412,7 +476,10 @@ CREATE TABLE collection_upload_provenance_journals (
     current_state_id character varying NOT NULL,
     current_path character varying NOT NULL,
     current_bytes bigint NOT NULL,
-    current_sha256 character varying(64) NOT NULL
+    current_sha256 character varying(64) NOT NULL,
+    CONSTRAINT ck_upload_provenance_journals_bytes CHECK ((bytes >= 0)),
+    CONSTRAINT ck_upload_provenance_journals_current_bytes CHECK ((current_bytes >= 0)),
+    CONSTRAINT ck_upload_provenance_journals_sha256 CHECK ((length((sha256)::text) = 64))
 );
 
 CREATE TABLE collection_upload_tags (
@@ -450,7 +517,22 @@ CREATE TABLE collection_uploads (
     archive_storage_prefix character varying NOT NULL,
     collection_manifest_bytes_b64 character varying,
     collection_manifest_proof_bytes_b64 character varying,
-    planner_checkpoint_json text NOT NULL
+    planner_checkpoint_json text NOT NULL,
+    file_count bigint DEFAULT 0 NOT NULL,
+    file_bytes bigint DEFAULT 0 NOT NULL,
+    custodied_file_count bigint DEFAULT 0 NOT NULL,
+    custodied_file_bytes bigint DEFAULT 0 NOT NULL,
+    search_text character varying GENERATED ALWAYS AS (lower((COALESCE(ingest_source, ''::character varying))::text)) STORED NOT NULL,
+    CONSTRAINT ck_collection_uploads_archive_phase CHECK (((archive_phase)::text = ANY ((ARRAY['planning'::character varying, 'uploading'::character varying, 'finalization_queued'::character varying, 'finalizing'::character varying, 'retry_wait'::character varying, 'orphaned'::character varying, 'discarding'::character varying])::text[]))),
+    CONSTRAINT ck_collection_uploads_attempt_count CHECK ((archive_attempt_count >= 0)),
+    CONSTRAINT ck_collection_uploads_custodied_file_bytes CHECK (((custodied_file_bytes >= 0) AND (custodied_file_bytes <= file_bytes))),
+    CONSTRAINT ck_collection_uploads_custodied_file_count CHECK (((custodied_file_count >= 0) AND (custodied_file_count <= file_count))),
+    CONSTRAINT ck_collection_uploads_custody_mode CHECK (((custody_mode)::text = ANY ((ARRAY['producer-retained'::character varying, 'custody-transfer'::character varying])::text[]))),
+    CONSTRAINT ck_collection_uploads_empty_custody CHECK (((custodied_file_count > 0) OR (custodied_file_bytes = 0))),
+    CONSTRAINT ck_collection_uploads_file_bytes CHECK ((file_bytes >= 0)),
+    CONSTRAINT ck_collection_uploads_file_count CHECK ((file_count >= 0)),
+    CONSTRAINT ck_collection_uploads_provenance_mode CHECK (((provenance_mode)::text = ANY ((ARRAY['captured'::character varying, 'omitted'::character varying])::text[]))),
+    CONSTRAINT ck_collection_uploads_state CHECK (((state)::text = ANY ((ARRAY['open'::character varying, 'closing'::character varying, 'uploading'::character varying, 'finalizing'::character varying, 'orphaned'::character varying, 'discarding'::character varying])::text[])))
 );
 
 ALTER TABLE collection_uploads ALTER COLUMN collection_id ADD GENERATED BY DEFAULT AS IDENTITY (
@@ -464,6 +546,7 @@ ALTER TABLE collection_uploads ALTER COLUMN collection_id ADD GENERATED BY DEFAU
 
 CREATE TABLE collections (
     id bigint NOT NULL,
+    search_text character varying GENERATED ALWAYS AS ((id)::text) STORED NOT NULL,
     creation_idempotency_key character varying NOT NULL,
     creation_identity_sha256 character varying(64) NOT NULL,
     creation_custody_mode character varying NOT NULL,
@@ -478,7 +561,16 @@ CREATE TABLE collections (
     ingest_source character varying,
     created_by_app character varying NOT NULL,
     created_by_key_id character varying,
-    created_at character varying NOT NULL
+    created_at character varying NOT NULL,
+    file_count bigint DEFAULT 0 NOT NULL,
+    file_bytes bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT ck_collections_content_identity CHECK ((length((content_identity)::text) = 64)),
+    CONSTRAINT ck_collections_file_bytes CHECK ((file_bytes >= 0)),
+    CONSTRAINT ck_collections_file_count CHECK ((file_count >= 0)),
+    CONSTRAINT ck_collections_metadata_revision CHECK ((metadata_revision >= 1)),
+    CONSTRAINT ck_collections_provenance_identity CHECK (((((provenance_mode)::text = ANY ((ARRAY['captured'::character varying, 'mixed'::character varying])::text[])) AND (provenance_identity IS NOT NULL)) OR (((provenance_mode)::text = 'omitted'::text) AND (provenance_identity IS NULL)))),
+    CONSTRAINT ck_collections_provenance_mode CHECK (((provenance_mode)::text = ANY ((ARRAY['captured'::character varying, 'mixed'::character varying, 'omitted'::character varying])::text[]))),
+    CONSTRAINT ck_collections_record_etag CHECK ((length((record_etag)::text) = 64))
 );
 
 CREATE SEQUENCE collections_id_seq
@@ -498,14 +590,17 @@ CREATE TABLE key_download_reservations (
     month_started_at character varying NOT NULL,
     reserved_bytes bigint NOT NULL,
     created_at character varying NOT NULL,
-    expires_at character varying NOT NULL
+    expires_at character varying NOT NULL,
+    CONSTRAINT ck_key_download_reservations_bytes CHECK ((reserved_bytes >= 0)),
+    CONSTRAINT ck_key_download_reservations_kind CHECK (((kind)::text = ANY ((ARRAY['job'::character varying, 'stream'::character varying])::text[])))
 );
 
 CREATE TABLE key_download_usage (
     key_id character varying NOT NULL,
     month_started_at character varying NOT NULL,
     accounted_bytes bigint NOT NULL,
-    updated_at character varying NOT NULL
+    updated_at character varying NOT NULL,
+    CONSTRAINT ck_key_download_usage_bytes CHECK ((accounted_bytes >= 0))
 );
 
 CREATE TABLE lifecycle_events (
@@ -546,14 +641,19 @@ CREATE TABLE retrieval_cache_objects (
     stored_sha256 character varying(64) NOT NULL,
     cached_at character varying NOT NULL,
     verified_at character varying NOT NULL,
-    state character varying NOT NULL
+    state character varying NOT NULL,
+    search_text character varying GENERATED ALWAYS AS (lower((((source_store)::text || ' '::text) || (object_id)::text))) STORED NOT NULL,
+    CONSTRAINT ck_retrieval_cache_objects_bytes CHECK ((stored_bytes >= 0)),
+    CONSTRAINT ck_retrieval_cache_objects_sha256 CHECK ((length((stored_sha256)::text) = 64)),
+    CONSTRAINT ck_retrieval_cache_objects_state CHECK (((state)::text = ANY ((ARRAY['ready'::character varying, 'delete_pending'::character varying, 'deleting'::character varying])::text[])))
 );
 
 CREATE TABLE retrieval_job_files (
     job_id character varying NOT NULL,
     collection_id bigint NOT NULL,
     path character varying NOT NULL,
-    file_order integer NOT NULL
+    file_order integer NOT NULL,
+    CONSTRAINT ck_retrieval_job_files_order CHECK ((file_order >= 0))
 );
 
 CREATE TABLE retrieval_job_objects (
@@ -562,7 +662,9 @@ CREATE TABLE retrieval_job_objects (
     source_store character varying NOT NULL,
     object_id character varying NOT NULL,
     object_order integer NOT NULL,
-    read_mode character varying NOT NULL
+    read_mode character varying NOT NULL,
+    CONSTRAINT ck_retrieval_job_objects_order CHECK ((object_order >= 0)),
+    CONSTRAINT ck_retrieval_job_objects_read_mode CHECK (((read_mode)::text = ANY ((ARRAY['immediate'::character varying, 'restore_required'::character varying, 'cache'::character varying])::text[])))
 );
 
 CREATE TABLE retrieval_jobs (
@@ -581,7 +683,9 @@ CREATE TABLE retrieval_jobs (
     next_poll_at character varying,
     completed_at character varying,
     canceled_at character varying,
-    failure text
+    failure text,
+    CONSTRAINT ck_retrieval_jobs_plan_etag CHECK ((length((plan_etag)::text) = 64)),
+    CONSTRAINT ck_retrieval_jobs_state CHECK (((state)::text = ANY ((ARRAY['requested'::character varying, 'ready'::character varying, 'completed'::character varying, 'canceled'::character varying, 'expired'::character varying, 'failed'::character varying])::text[])))
 );
 
 CREATE TABLE state_schema_revision (
@@ -592,7 +696,9 @@ CREATE TABLE tags (
     id character varying NOT NULL,
     created_by_app character varying NOT NULL,
     created_by_key_id character varying,
-    created_at character varying NOT NULL
+    created_at character varying NOT NULL,
+    collection_count bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT ck_tags_collection_count CHECK ((collection_count >= 0))
 );
 
 ALTER TABLE ONLY catalog_events ALTER COLUMN sequence SET DEFAULT nextval('catalog_events_sequence_seq'::regclass);
@@ -771,13 +877,43 @@ CREATE INDEX idx_collection_archive_objects_order ON collection_archive_objects 
 
 CREATE INDEX idx_collection_upload_files_collection_order ON collection_upload_files USING btree (collection_id, file_order);
 
+CREATE INDEX ix_app_key_access_grants_created ON app_key_access_grants USING btree (created_at, key_id, permission, resource);
+
 CREATE INDEX ix_app_key_access_grants_permission ON app_key_access_grants USING btree (permission, resource, key_id);
 
 CREATE INDEX ix_app_key_access_grants_resource ON app_key_access_grants USING btree (resource, permission, key_id);
 
+CREATE INDEX ix_app_key_access_grants_search_trgm ON app_key_access_grants USING gin (search_text gin_trgm_ops);
+
+CREATE INDEX ix_app_keys_active ON app_keys USING btree (revoked_at, expires_at, id);
+
 CREATE INDEX ix_app_keys_app ON app_keys USING btree (app, id);
 
+CREATE INDEX ix_app_keys_app_active ON app_keys USING btree (app, revoked_at, expires_at, id);
+
+CREATE INDEX ix_app_keys_app_created ON app_keys USING btree (app, created_at, id);
+
+CREATE INDEX ix_app_keys_app_expires ON app_keys USING btree (app, expires_at, id);
+
+CREATE INDEX ix_app_keys_app_last_used ON app_keys USING btree (app, last_used_at, id);
+
+CREATE INDEX ix_app_keys_app_trgm ON app_keys USING gin (app gin_trgm_ops);
+
+CREATE INDEX ix_app_keys_id_trgm ON app_keys USING gin (id gin_trgm_ops);
+
+CREATE INDEX ix_app_keys_search_trgm ON app_keys USING gin (search_text gin_trgm_ops);
+
+CREATE INDEX ix_archive_copy_jobs_destination ON archive_copy_jobs USING btree (destination_store, collection_id);
+
 CREATE INDEX ix_archive_copy_jobs_due ON archive_copy_jobs USING btree (state, next_attempt_at, requested_at);
+
+CREATE INDEX ix_archive_copy_jobs_requested ON archive_copy_jobs USING btree (requested_at, collection_id);
+
+CREATE INDEX ix_archive_copy_jobs_search_trgm ON archive_copy_jobs USING gin (search_text gin_trgm_ops);
+
+CREATE INDEX ix_archive_copy_jobs_source ON archive_copy_jobs USING btree (source_store, collection_id);
+
+CREATE INDEX ix_archive_copy_jobs_state ON archive_copy_jobs USING btree (state, collection_id);
 
 CREATE INDEX ix_archive_download_reservations_expiry ON archive_download_reservations USING btree (store, expires_at);
 
@@ -791,6 +927,18 @@ CREATE INDEX ix_collection_derivations_claim ON collection_derivations USING btr
 
 CREATE INDEX ix_collection_file_provenance_journal ON collection_file_provenance USING btree (collection_id, journal_id);
 
+CREATE INDEX ix_collection_files_bytes ON collection_files USING btree (bytes, collection_id, path);
+
+CREATE INDEX ix_collection_files_collection_bytes ON collection_files USING btree (collection_id, bytes, path);
+
+CREATE INDEX ix_collection_files_collection_provenance ON collection_files USING btree (collection_id, provenance_status, path);
+
+CREATE INDEX ix_collection_files_path ON collection_files USING btree (path, collection_id);
+
+CREATE INDEX ix_collection_files_path_search_trgm ON collection_files USING gin (path_search_text gin_trgm_ops);
+
+CREATE INDEX ix_collection_files_search_trgm ON collection_files USING gin (search_text gin_trgm_ops);
+
 CREATE INDEX ix_collection_metadata_publications_due ON collection_metadata_publications USING btree (state, next_attempt_at, collection_id, store);
 
 CREATE INDEX ix_collection_processing_claim_artifacts_collection ON collection_processing_claim_artifacts USING btree (collection_id, path, claim_id);
@@ -799,7 +947,19 @@ CREATE INDEX ix_collection_processing_claim_inputs_collection ON collection_proc
 
 CREATE INDEX ix_collection_processing_claims_expiry ON collection_processing_claims USING btree (state, expires_at);
 
+CREATE INDEX ix_collection_processing_claims_owner_created ON collection_processing_claims USING btree (consumer_app, created_at, id);
+
+CREATE INDEX ix_collection_processing_claims_owner_execution ON collection_processing_claims USING btree (consumer_app, execution_id, id);
+
+CREATE INDEX ix_collection_processing_claims_owner_expires ON collection_processing_claims USING btree (consumer_app, expires_at, id);
+
 CREATE INDEX ix_collection_processing_claims_owner_state ON collection_processing_claims USING btree (consumer_app, state, updated_at);
+
+CREATE INDEX ix_collection_processing_claims_owner_state_id ON collection_processing_claims USING btree (consumer_app, state, id);
+
+CREATE INDEX ix_collection_processing_claims_owner_updated ON collection_processing_claims USING btree (consumer_app, updated_at, id);
+
+CREATE INDEX ix_collection_processing_claims_owner_work_id ON collection_processing_claims USING btree (consumer_app, work_id, id);
 
 CREATE INDEX ix_collection_processing_claims_work ON collection_processing_claims USING btree (work_id, consumer_app);
 
@@ -815,15 +975,37 @@ CREATE INDEX ix_collection_provenance_journals_sha256 ON collection_provenance_j
 
 CREATE INDEX ix_collection_tags_tag ON collection_tags USING btree (tag_id, collection_id);
 
+CREATE INDEX ix_collection_tags_tag_trgm ON collection_tags USING gin (tag_id gin_trgm_ops);
+
 CREATE INDEX ix_collection_transform_capabilities_claim_state ON collection_transform_capabilities USING btree (claim_id, state, expires_at);
 
 CREATE INDEX ix_collection_transform_capability_artifacts_collection ON collection_transform_capability_artifacts USING btree (collection_id, path, capability_id);
 
 CREATE INDEX ix_collection_upload_tags_tag ON collection_upload_tags USING btree (tag_id, collection_id);
 
+CREATE INDEX ix_collection_upload_tags_tag_trgm ON collection_upload_tags USING gin (tag_id gin_trgm_ops);
+
+CREATE INDEX ix_collection_uploads_file_bytes ON collection_uploads USING btree (file_bytes, collection_id);
+
+CREATE INDEX ix_collection_uploads_file_count ON collection_uploads USING btree (file_count, collection_id);
+
+CREATE INDEX ix_collection_uploads_opened_at ON collection_uploads USING btree (opened_at, collection_id);
+
+CREATE INDEX ix_collection_uploads_search_trgm ON collection_uploads USING gin (search_text gin_trgm_ops);
+
+CREATE INDEX ix_collection_uploads_state ON collection_uploads USING btree (state, collection_id);
+
+CREATE INDEX ix_collections_created_at_id ON collections USING btree (created_at, id);
+
 CREATE INDEX ix_collections_encryption_format ON collections USING btree (encryption_format, id);
 
+CREATE INDEX ix_collections_file_bytes_id ON collections USING btree (file_bytes, id);
+
+CREATE INDEX ix_collections_file_count_id ON collections USING btree (file_count, id);
+
 CREATE INDEX ix_collections_passphrase_id ON collections USING btree (passphrase_id, id);
+
+CREATE INDEX ix_collections_search_trgm ON collections USING gin (search_text gin_trgm_ops);
 
 CREATE INDEX ix_key_download_reservations_expiry ON key_download_reservations USING btree (expires_at, key_id);
 
@@ -839,13 +1021,33 @@ CREATE INDEX ix_lifecycle_events_owner_subject_context ON lifecycle_events USING
 
 CREATE INDEX ix_retrieval_cache_leases_expiry ON retrieval_cache_leases USING btree (expires_at, owner);
 
+CREATE INDEX ix_retrieval_cache_leases_object_expiry ON retrieval_cache_leases USING btree (source_store, collection_id, object_id, expires_at, owner);
+
+CREATE INDEX ix_retrieval_cache_objects_bytes ON retrieval_cache_objects USING btree (stored_bytes, collection_id, source_store, object_id);
+
+CREATE INDEX ix_retrieval_cache_objects_cached ON retrieval_cache_objects USING btree (cached_at, collection_id, source_store, object_id);
+
 CREATE INDEX ix_retrieval_cache_objects_cleanup ON retrieval_cache_objects USING btree (state, cached_at);
+
+CREATE INDEX ix_retrieval_cache_objects_collection ON retrieval_cache_objects USING btree (collection_id, source_store, object_id);
+
+CREATE INDEX ix_retrieval_cache_objects_object ON retrieval_cache_objects USING btree (object_id, collection_id, source_store);
+
+CREATE INDEX ix_retrieval_cache_objects_search_trgm ON retrieval_cache_objects USING gin (search_text gin_trgm_ops);
+
+CREATE INDEX ix_retrieval_cache_objects_verified ON retrieval_cache_objects USING btree (verified_at, collection_id, source_store, object_id);
 
 CREATE INDEX ix_retrieval_job_files_order ON retrieval_job_files USING btree (job_id, file_order);
 
 CREATE INDEX ix_retrieval_job_objects_order ON retrieval_job_objects USING btree (job_id, object_order);
 
 CREATE INDEX ix_retrieval_jobs_due ON retrieval_jobs USING btree (state, next_poll_at, id);
+
+CREATE INDEX ix_tags_collection_count_id ON tags USING btree (collection_count, id);
+
+CREATE INDEX ix_tags_created_at_id ON tags USING btree (created_at, id);
+
+CREATE INDEX ix_tags_id_trgm ON tags USING gin (id gin_trgm_ops);
 
 CREATE UNIQUE INDEX ux_app_keys_token_sha256 ON app_keys USING btree (token_sha256);
 
@@ -986,6 +1188,5 @@ ALTER TABLE ONLY retrieval_job_objects
 
 ALTER TABLE ONLY retrieval_job_objects
     ADD CONSTRAINT retrieval_job_objects_job_id_fkey FOREIGN KEY (job_id) REFERENCES retrieval_jobs(id) ON DELETE CASCADE;
-
 
 INSERT INTO state_schema_revision (version_num) VALUES ('v1_0001');

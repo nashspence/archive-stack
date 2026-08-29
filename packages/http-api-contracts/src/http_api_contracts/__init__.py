@@ -7,7 +7,7 @@ from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from http import HTTPStatus
 from ipaddress import ip_address
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
@@ -82,6 +82,16 @@ def canonical_json_bytes(value: object) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def closed_literal_values(literal_type: object) -> frozenset[str]:
+    """Return the exact string vocabulary owned by a closed ``Literal`` alias."""
+
+    definition = getattr(literal_type, "__value__", literal_type)
+    values = get_args(definition)
+    if not values or not all(isinstance(value, str) for value in values):
+        raise TypeError("closed literal vocabulary must contain only strings")
+    return frozenset(values)
 
 
 def complete_enumeration_schema_identity(

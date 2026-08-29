@@ -832,6 +832,7 @@
         },
         "dependencies": [
           "riverhog-api-client",
+          "riverhog-application-access",
           "riverhog-cli-support",
           "riverhog-protocol",
           "riverhog-provenance",
@@ -4145,7 +4146,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-              "sha256": "c2ecc4c99d0cc01d582965225247118730f8afb7387494bf19ee7ed796beeb2e"
+              "sha256": "d828217590c4d65c6ac81234c3f2ed26a53a2582ee5d0d36ef2b6763b3253da2"
             }
           ],
           "format": "state-schema/postgresql",
@@ -4157,7 +4158,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog-local.sqlite.sql",
-              "sha256": "96a41ca966133b85a3b6cdd862f2651f3b1b71bbf46f4f7b4ae26dd1a27ec5b7"
+              "sha256": "dfdb08c71aff085aaf6916fac224148645887ce723080e83c1ee5f593170f45a"
             }
           ],
           "format": "state-schema/sqlite",
@@ -4169,7 +4170,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/mango-fish.sqlite.sql",
-              "sha256": "6e0e53bdb860793cba6eb97e6c0c083f6791ba3df08fea749521d6e8f69c4567"
+              "sha256": "f1baf4752b190b555de143a53a7b68eb41785895fa1d353c86e90b111fa6bf96"
             }
           ],
           "format": "state-schema/sqlite",
@@ -4181,7 +4182,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/stove0.postgresql.sql",
-              "sha256": "5fa4a552e0cbecda1260e7a03933523c4a156ae2cf8aaae3e618872e68edab62"
+              "sha256": "e4e44e44d5f99606d39158912865cd18c38fe69ce50f4e51a49a9aa2b28d091a"
             }
           ],
           "format": "state-schema/postgresql",
@@ -4193,7 +4194,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/gogurt-listener.sqlite.sql",
-              "sha256": "c54534f113b1d4eb344ac9d23a5ca4cb756ad15f14e295a77a3efa0eb525aadc"
+              "sha256": "49d89dd4bf56a45ca18604a98355df23bd32796646904cc64049439449781f7e"
             }
           ],
           "format": "gogurt-listener-state/v1",
@@ -6718,26 +6719,33 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "external_state_references": {
+                "items": {
                   "items": {
-                    "$ref": "#/components/schemas/ProvenanceExternalStateReferenceOut"
+                    "$ref": "#/components/schemas/ProvenanceTraceItemOut"
                   },
-                  "title": "External State References",
+                  "title": "Items",
                   "type": "array"
                 },
                 "journal": {
                   "$ref": "#/components/schemas/ProvenanceJournalOut"
                 },
-                "journals": {
-                  "items": {
-                    "$ref": "#/components/schemas/ProvenanceJournalOut"
-                  },
-                  "minItems": 1,
-                  "title": "Journals",
-                  "type": "array"
+                "page": {
+                  "minimum": 1.0,
+                  "title": "Page",
+                  "type": "integer"
+                },
+                "pages": {
+                  "minimum": 0.0,
+                  "title": "Pages",
+                  "type": "integer"
                 },
                 "path": {
                   "$ref": "#/components/schemas/CanonicalRelPath"
+                },
+                "per_page": {
+                  "minimum": 1.0,
+                  "title": "Per Page",
+                  "type": "integer"
                 },
                 "provenance": {
                   "$ref": "#/components/schemas/CapturedFileProvenanceBinding"
@@ -6746,17 +6754,25 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "title": "Sha256",
                   "type": "string"
+                },
+                "total": {
+                  "minimum": 0.0,
+                  "title": "Total",
+                  "type": "integer"
                 }
               },
               "required": [
+                "page",
+                "per_page",
+                "total",
+                "pages",
+                "items",
                 "path",
                 "bytes",
                 "sha256",
                 "collection_id",
                 "provenance",
-                "journal",
-                "journals",
-                "external_state_references"
+                "journal"
               ],
               "title": "CapturedCollectionFileProvenanceTraceOut",
               "type": "object"
@@ -12008,28 +12024,34 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "external_state_references": {
+                "items": {
                   "items": {
-                    "$ref": "#/components/schemas/ProvenanceExternalStateReferenceOut"
+                    "$ref": "#/components/schemas/ProvenanceTraceItemOut"
                   },
-                  "maxItems": 0,
-                  "title": "External State References",
+                  "title": "Items",
                   "type": "array"
                 },
                 "journal": {
                   "title": "Journal",
                   "type": "null"
                 },
-                "journals": {
-                  "items": {
-                    "$ref": "#/components/schemas/ProvenanceJournalOut"
-                  },
-                  "maxItems": 0,
-                  "title": "Journals",
-                  "type": "array"
+                "page": {
+                  "minimum": 1.0,
+                  "title": "Page",
+                  "type": "integer"
+                },
+                "pages": {
+                  "minimum": 0.0,
+                  "title": "Pages",
+                  "type": "integer"
                 },
                 "path": {
                   "$ref": "#/components/schemas/CanonicalRelPath"
+                },
+                "per_page": {
+                  "minimum": 1.0,
+                  "title": "Per Page",
+                  "type": "integer"
                 },
                 "provenance": {
                   "$ref": "#/components/schemas/OmittedFileProvenanceBinding"
@@ -12038,9 +12060,19 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "title": "Sha256",
                   "type": "string"
+                },
+                "total": {
+                  "minimum": 0.0,
+                  "title": "Total",
+                  "type": "integer"
                 }
               },
               "required": [
+                "page",
+                "per_page",
+                "total",
+                "pages",
+                "items",
                 "path",
                 "bytes",
                 "sha256",
@@ -12792,12 +12824,7 @@
                   "$ref": "#/components/schemas/ProcessingClaimFiltersDocument"
                 },
                 "order": {
-                  "enum": [
-                    "asc",
-                    "desc"
-                  ],
-                  "title": "Order",
-                  "type": "string"
+                  "$ref": "#/components/schemas/SortOrder"
                 },
                 "page": {
                   "minimum": 1.0,
@@ -12815,16 +12842,7 @@
                   "type": "integer"
                 },
                 "sort": {
-                  "enum": [
-                    "created_at",
-                    "updated_at",
-                    "expires_at",
-                    "state",
-                    "work_id",
-                    "execution_id"
-                  ],
-                  "title": "Sort",
-                  "type": "string"
+                  "$ref": "#/components/schemas/ProcessingClaimSort"
                 },
                 "total": {
                   "minimum": 0.0,
@@ -13095,6 +13113,17 @@
               "title": "ProcessingClaimSettleDocument",
               "type": "object"
             },
+            "ProcessingClaimSort": {
+              "enum": [
+                "created_at",
+                "updated_at",
+                "expires_at",
+                "state",
+                "work_id",
+                "execution_id"
+              ],
+              "type": "string"
+            },
             "ProcessingOutcomeBindingDocument": {
               "additionalProperties": false,
               "properties": {
@@ -13202,13 +13231,6 @@
                   "title": "Agent Ids",
                   "type": "array"
                 },
-                "ancestor_journal_ids": {
-                  "items": {
-                    "$ref": "#/components/schemas/ProvenanceJournalId"
-                  },
-                  "title": "Ancestor Journal Ids",
-                  "type": "array"
-                },
                 "bytes": {
                   "minimum": 0.0,
                   "title": "Bytes",
@@ -13261,7 +13283,6 @@
                 "current_bytes",
                 "current_sha256",
                 "agent_ids",
-                "ancestor_journal_ids",
                 "entity_counts"
               ],
               "title": "ProvenanceJournalOut",
@@ -13285,6 +13306,61 @@
                 "omitted"
               ],
               "type": "string"
+            },
+            "ProvenanceTraceExternalStateReferenceItemOut": {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "external_state_reference",
+                  "title": "Kind",
+                  "type": "string"
+                },
+                "reference": {
+                  "$ref": "#/components/schemas/ProvenanceExternalStateReferenceOut"
+                }
+              },
+              "required": [
+                "kind",
+                "reference"
+              ],
+              "title": "ProvenanceTraceExternalStateReferenceItemOut",
+              "type": "object"
+            },
+            "ProvenanceTraceItemOut": {
+              "discriminator": {
+                "mapping": {
+                  "external_state_reference": "#/components/schemas/ProvenanceTraceExternalStateReferenceItemOut",
+                  "journal": "#/components/schemas/ProvenanceTraceJournalItemOut"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ProvenanceTraceJournalItemOut"
+                },
+                {
+                  "$ref": "#/components/schemas/ProvenanceTraceExternalStateReferenceItemOut"
+                }
+              ]
+            },
+            "ProvenanceTraceJournalItemOut": {
+              "additionalProperties": false,
+              "properties": {
+                "journal": {
+                  "$ref": "#/components/schemas/ProvenanceJournalOut"
+                },
+                "kind": {
+                  "const": "journal",
+                  "title": "Kind",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "journal"
+              ],
+              "title": "ProvenanceTraceJournalItemOut",
+              "type": "object"
             },
             "RecipeIdentityDocument": {
               "additionalProperties": false,
@@ -26333,6 +26409,29 @@
                     "title": "Path",
                     "type": "string"
                   }
+                },
+                {
+                  "in": "query",
+                  "name": "page",
+                  "required": false,
+                  "schema": {
+                    "default": 1,
+                    "minimum": 1,
+                    "title": "Page",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "per_page",
+                  "required": false,
+                  "schema": {
+                    "default": 25,
+                    "maximum": 100,
+                    "minimum": 1,
+                    "title": "Per Page",
+                    "type": "integer"
+                  }
                 }
               ],
               "responses": {
@@ -26440,7 +26539,143 @@
                     "provenance:read"
                   ]
                 }
-              ]
+              ],
+              "x-riverhog-read-collection": {
+                "kind": "bounded-list",
+                "paired_operation_id": "stream_collection_file_provenance_trace"
+              }
+            }
+          },
+          "/v1/collections/{collection_id}/provenance/trace/{path}/stream": {
+            "get": {
+              "operationId": "stream_collection_file_provenance_trace",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                },
+                {
+                  "in": "path",
+                  "name": "path",
+                  "required": true,
+                  "schema": {
+                    "allOf": [
+                      {
+                        "not": {
+                          "pattern": "(?:^|/)\\.{1,2}(?:/|$)"
+                        }
+                      },
+                      {
+                        "not": {
+                          "pattern": "^\\s|\\s$"
+                        }
+                      }
+                    ],
+                    "format": "riverhog-canonical-relpath-v1",
+                    "maxLength": 4096,
+                    "minLength": 1,
+                    "pattern": "^[^/\\\\]+(?:/[^/\\\\]+)*$",
+                    "title": "Path",
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json-seq": {
+                      "schema": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Stream Collection File Provenance Trace",
+              "tags": [
+                "provenance"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "provenance:read"
+                  ]
+                }
+              ],
+              "x-riverhog-read-collection": {
+                "format": "riverhog-complete-enumeration/v1",
+                "item_schema": {
+                  "id": "riverhog.provenance-trace-item/v1",
+                  "sha256": "f4239b405a7d1ccbd9b779ca7812783786b6cccf6c2a261c4a73e88d12bd4df3"
+                },
+                "kind": "complete-enumeration",
+                "media_type": "application/json-seq",
+                "paired_operation_id": "trace_collection_file_provenance"
+              }
             }
           },
           "/v1/collections/{collection_id}/provenance/verify": {
@@ -40314,8 +40549,34 @@
         "operation_id": "trace_collection_file_provenance",
         "path": "/v1/collections/{collection_id}/provenance/trace/{path}",
         "provider_evidence": null,
-        "read_collection": null,
+        "read_collection": {
+          "kind": "bounded-list",
+          "paired_operation_id": "stream_collection_file_provenance_trace"
+        },
         "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection provenance trace"
+        ],
+        "client": "ApiClient",
+        "method": "GET",
+        "operation_id": "stream_collection_file_provenance_trace",
+        "path": "/v1/collections/{collection_id}/provenance/trace/{path}/stream",
+        "provider_evidence": null,
+        "read_collection": {
+          "format": "riverhog-complete-enumeration/v1",
+          "item_schema": {
+            "id": "riverhog.provenance-trace-item/v1",
+            "sha256": "f4239b405a7d1ccbd9b779ca7812783786b6cccf6c2a261c4a73e88d12bd4df3"
+          },
+          "kind": "complete-enumeration",
+          "media_type": "application/json-seq",
+          "paired_operation_id": "trace_collection_file_provenance"
+        },
+        "response_authority": "stream-or-empty"
       },
       {
         "application": "riverhog",
@@ -58734,7 +58995,7 @@
               },
               "list_app_key_access": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationAccessSort' = 'permission', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, key_id: 'ApplicationKeyId | None' = None, permission: 'str | None' = None, resource: 'str | None' = None, active: 'bool | None' = None) -> 'dict[str, Any]'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationAccessSort' = 'permission', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, key_id: 'ApplicationKeyId | None' = None, permission: 'ApplicationPermission | None' = None, resource: 'ApplicationResource | None' = None, active: 'bool | None' = None) -> 'dict[str, Any]'"
               },
               "list_app_keys": {
                 "kind": "method",
@@ -58886,7 +59147,7 @@
               },
               "stream_app_key_access": {
                 "kind": "method",
-                "signature": "(self, *, q: 'str | None' = None, sort: 'ApplicationAccessSort' = 'permission', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, key_id: 'ApplicationKeyId | None' = None, permission: 'str | None' = None, resource: 'str | None' = None, active: 'bool | None' = None) -> 'Iterator[Iterator[dict[str, Any]]]'"
+                "signature": "(self, *, q: 'str | None' = None, sort: 'ApplicationAccessSort' = 'permission', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, key_id: 'ApplicationKeyId | None' = None, permission: 'ApplicationPermission | None' = None, resource: 'ApplicationResource | None' = None, active: 'bool | None' = None) -> 'Iterator[Iterator[dict[str, Any]]]'"
               },
               "stream_app_keys": {
                 "kind": "method",
@@ -58903,6 +59164,10 @@
               "stream_archive_stores": {
                 "kind": "method",
                 "signature": "(self, *, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc') -> 'Iterator[Iterator[dict[str, Any]]]'"
+              },
+              "stream_collection_file_provenance_trace": {
+                "kind": "method",
+                "signature": "(self, collection_id: 'CollectionId', path: 'str') -> 'Iterator[Iterator[dict[str, Any]]]'"
               },
               "stream_collection_provenance": {
                 "kind": "method",
@@ -58942,7 +59207,7 @@
               },
               "trace_collection_file_provenance": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', path: 'str') -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', path: 'str', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
               },
               "verify_collection_provenance": {
                 "kind": "method",
@@ -60809,8 +61074,8 @@
           },
           "ProcessingClaimPageDocument": {
             "kind": "class",
-            "schema_sha256": "2297802a0ef7608849401bec1b5cee259214e83cb243f3b34066eed77d5c24ae",
-            "signature": "(*, page: Annotated[int, Ge(ge=1)], per_page: Annotated[int, Ge(ge=0)], total: Annotated[int, Ge(ge=0)], pages: Annotated[int, Ge(ge=0)], sort: Literal['created_at', 'updated_at', 'expires_at', 'state', 'work_id', 'execution_id'], order: Literal['asc', 'desc'], filters: riverhog_protocol.collection_workflow_transport.ProcessingClaimFiltersDocument, claims: list[riverhog_protocol.collection_workflow_transport.ProcessingClaimDocument]) -> None"
+            "schema_sha256": "2d047227ba8732cc153201edcd8eee1e41b45b2e51e260fc22fdb818f253f723",
+            "signature": "(*, page: Annotated[int, Ge(ge=1)], per_page: Annotated[int, Ge(ge=0)], total: Annotated[int, Ge(ge=0)], pages: Annotated[int, Ge(ge=0)], sort: ProcessingClaimSort, order: SortOrder, filters: riverhog_protocol.collection_workflow_transport.ProcessingClaimFiltersDocument, claims: list[riverhog_protocol.collection_workflow_transport.ProcessingClaimDocument]) -> None"
           },
           "ProcessingClaimPlanSealDocument": {
             "kind": "class",
@@ -60837,6 +61102,10 @@
             "kind": "class",
             "schema_sha256": "00a00f61c2d5cfa28ee90aeb66571ff46e55647cd5d498818d9f659a94bbc23c",
             "signature": "(*, fence: Annotated[int, Ge(ge=1)], output_collection_id: CollectionId, derivation: riverhog_protocol.collection_workflow_transport.CollectionDerivationDocument, outcome: riverhog_protocol.collection_workflow_transport.ProcessingOutcomeBindingDocument | None = None) -> None"
+          },
+          "ProcessingClaimSort": {
+            "kind": "type-alias",
+            "value": "typing.Literal['created_at', 'updated_at', 'expires_at', 'state', 'work_id', 'execution_id']"
           },
           "ProcessingOutcomeBindingDocument": {
             "kind": "class",
@@ -62041,6 +62310,10 @@
           "provenance_journal_filename": {
             "kind": "function",
             "signature": "(journal_id: 'str') -> 'str'"
+          },
+          "reconstruct_provenance_archive_identity": {
+            "kind": "function",
+            "signature": "(*, bindings: 'Callable[[], Iterable[FileProvenanceBinding]]', journals: 'Callable[[], Iterable[tuple[str, bytes]]]') -> 'str'"
           },
           "resolve_provenance_observer": {
             "kind": "function",
@@ -63440,7 +63713,7 @@
               },
               "list_evaluations": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: '_EvaluationSort' = 'updated_at', order: '_SortOrder' = 'desc') -> 'EvaluationPage'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: 'EvaluationSort' = 'updated_at', order: 'SortOrder' = 'desc') -> 'EvaluationPage'"
               },
               "list_events": {
                 "kind": "method",
@@ -63452,7 +63725,7 @@
               },
               "list_work": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'WorkPhase | None' = None, query: 'str | None' = None, sort: '_WorkSort' = 'updated_at', order: '_SortOrder' = 'desc') -> 'WorkPage'"
+                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'WorkPhase | None' = None, query: 'str | None' = None, sort: 'WorkSort' = 'updated_at', order: 'SortOrder' = 'desc') -> 'WorkPage'"
               },
               "preview_workflow": {
                 "kind": "method",
@@ -63492,11 +63765,11 @@
               },
               "stream_evaluations": {
                 "kind": "method",
-                "signature": "(self, *, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: '_EvaluationSort' = 'updated_at', order: '_SortOrder' = 'desc') -> 'Iterator[Iterator[EvaluationView]]'"
+                "signature": "(self, *, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: 'EvaluationSort' = 'updated_at', order: 'SortOrder' = 'desc') -> 'Iterator[Iterator[EvaluationView]]'"
               },
               "stream_work": {
                 "kind": "method",
-                "signature": "(self, *, phase: 'WorkPhase | None' = None, query: 'str | None' = None, sort: '_WorkSort' = 'updated_at', order: '_SortOrder' = 'desc') -> 'Iterator[Iterator[WorkView]]'"
+                "signature": "(self, *, phase: 'WorkPhase | None' = None, query: 'str | None' = None, sort: 'WorkSort' = 'updated_at', order: 'SortOrder' = 'desc') -> 'Iterator[Iterator[WorkView]]'"
               }
             },
             "signature": "(base_url: 'str | None' = None, token: 'str | None' = None, *, allow_insecure_http: 'bool | None' = None, timeout_seconds: 'float | None' = None, http2: 'bool | None' = None) -> 'None'"
@@ -64187,6 +64460,10 @@
             "schema_sha256": "5f6ace515468312142e6d3c1a30f7cec5850a1b90a5a169d4582ad88301f5e14",
             "signature": "(*, variant_id: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], rating: Annotated[int | None, Ge(ge=1), Le(le=5)] = None, note: Annotated[Optional[Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=1, max_length=None, pattern='^\\\\S(?:[\\\\s\\\\S]*\\\\S)?$', ascii_only=None)]], MaxLen(max_length=4000)] = None, updated_by: Annotated[str, MinLen(min_length=1), MaxLen(max_length=160)], updated_at: Annotated[str, MinLen(min_length=1), MaxLen(max_length=40)]) -> None"
           },
+          "EvaluationSort": {
+            "kind": "object",
+            "type": "typing._LiteralGenericAlias"
+          },
           "EvaluationUpdatedEvent": {
             "kind": "class",
             "schema_sha256": "b4bc91ca87029c356c47ff9a7274db3f8f871bfa655b6696c04562571522aabc",
@@ -64306,6 +64583,10 @@
             "schema_sha256": "84e8e1e2198f4b04c8d33af067097705e328f79c575320420d0034fca2160a60",
             "signature": "(*, role: Literal['controller', 'worker', 'combined'], cursor: str, next_cursor: str, progressed: tuple[typing.Annotated[str, StringConstraints(strip_whitespace=None, to_upper=None, to_lower=None, strict=None, min_length=None, max_length=None, pattern='^[0-9a-f]{64}$', ascii_only=None)], ...], failures: tuple[stove0_operator_contracts.SchedulerFailure, ...]) -> None"
           },
+          "SortOrder": {
+            "kind": "object",
+            "type": "typing._LiteralGenericAlias"
+          },
           "Stove0CloudEvent": {
             "kind": "class",
             "members": {
@@ -64403,6 +64684,10 @@
             "signature": "(*, page: Annotated[int, Ge(ge=1)], per_page: Annotated[int, Ge(ge=0)], total: Annotated[int, Ge(ge=0)], pages: Annotated[int, Ge(ge=0)], sort: Literal['updated_at', 'phase', 'work_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], work: tuple[stove0_operator_contracts.WorkView, ...]) -> None"
           },
           "WorkPhase": {
+            "kind": "object",
+            "type": "typing._LiteralGenericAlias"
+          },
+          "WorkSort": {
             "kind": "object",
             "type": "typing._LiteralGenericAlias"
           },

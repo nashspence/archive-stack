@@ -13,6 +13,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
+from http_api_contracts import closed_literal_values
 from riverhog_age import encrypt_age_scrypt
 from riverhog_archive_contracts import CollectionEncryptionBinding
 from riverhog_protocol import (
@@ -23,7 +24,10 @@ from riverhog_protocol import (
     CollectionUploadFileBatchDocument,
     CollectionUploadFileIn,
     CollectionUploadRegistrationConstraintsDocument,
+    CollectionUploadSort,
+    CollectionUploadState,
     OmittedFileProvenanceBinding,
+    SortOrder,
     collection_upload_path_order_key,
     collection_upload_raw_digest_manifest,
     validate_collection_upload_batch_against_registration_constraints,
@@ -148,6 +152,7 @@ from riverhog_core.services.operation_plans import (
     challenge_has_shape,
     plan_challenge,
 )
+from riverhog_core.services.tag_projections import adjust_tag_collection_counts
 from riverhog_core.stores.mirrored_archive_resumable_object_store import (
     MirroredArchiveResumableObjectStore,
 )
@@ -166,6 +171,9 @@ _PROOF_RELATIVE_PATH = "manifest.json.ots.age"
 _PROOF_CONTENT_TYPE = "application/vnd.riverhog.collection-manifest-proof+age"
 _LOG = logging.getLogger("riverhog_core.collection_uploads")
 _DISCARD_CHALLENGE_PREFIX = "discard-upload"
+_UPLOAD_SORT_FIELDS = closed_literal_values(CollectionUploadSort)
+_UPLOAD_STATES = closed_literal_values(CollectionUploadState)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 _CUSTODY_LOSS_WARNING = (
     "This permanently destroys Riverhog-custodied artifacts from an incomplete upload session."
 )
@@ -480,14 +488,22 @@ class SqlAlchemyCollectionUploadService:
                 )
                 for value in batch_document.files
             )
+            requested_paths = tuple(current["path"] for current in normalized_files)
             existing = {
                 row.path: row
                 for row in session.scalars(
                     select(CollectionUploadFileRecord).where(
-                        CollectionUploadFileRecord.collection_id == normalized_id
+                        CollectionUploadFileRecord.collection_id == normalized_id,
+                        CollectionUploadFileRecord.path.in_(requested_paths),
                     )
                 )
             }
+            last_registered = session.scalar(
+                select(CollectionUploadFileRecord)
+                .where(CollectionUploadFileRecord.collection_id == normalized_id)
+                .order_by(CollectionUploadFileRecord.file_order.desc())
+                .limit(1)
+            )
             new_files: list[_RegisteredFile] = []
             for current in normalized_files:
                 row = existing.get(current["path"])
@@ -500,9 +516,7 @@ class SqlAlchemyCollectionUploadService:
                     continue
                 new_files.append(current)
             if new_files:
-                last_path = (
-                    max(existing, key=collection_upload_path_order_key) if existing else None
-                )
+                last_path = last_registered.path if last_registered is not None else None
                 if last_path is not None and collection_upload_path_order_key(
                     new_files[0]["path"]
                 ) <= collection_upload_path_order_key(last_path):
@@ -540,6 +554,8 @@ class SqlAlchemyCollectionUploadService:
                     )
                 )
                 next_order += 1
+            upload.file_count += len(new_files)
+            upload.file_bytes += sum(current["bytes"] for current in new_files)
             batch = advance_incremental_volume_plan(checkpoint, ordered)
             _persist_plan_batch(session, upload=upload, batch=batch)
             upload.planner_checkpoint_json = incremental_volume_planner_checkpoint_bytes(
@@ -745,7 +761,7 @@ class SqlAlchemyCollectionUploadService:
         normalized_id = _collection_id(collection_id)
         if page < 1 or per_page < 1 or per_page > 100:
             raise BadRequest("invalid collection upload file pagination")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             if session.get(CollectionUploadRecord, normalized_id) is None:
                 raise NotFound(f"collection upload session not found: {normalized_id}")
             total = int(
@@ -1022,7 +1038,7 @@ class SqlAlchemyCollectionUploadService:
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
         _validate_upload_list(page=page, per_page=per_page, sort=sort, order=order)
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             statement = _upload_list_statement(
                 q=q, tag=tag, state=state, sort=sort, order=order, principal=principal
             )
@@ -1350,6 +1366,11 @@ class SqlAlchemyCollectionUploadService:
     ) -> None:
         now = utc_timestamp_now()
         with session_scope(self._session_factory) as session:
+            upload = session.scalar(
+                select(CollectionUploadRecord)
+                .where(CollectionUploadRecord.collection_id == collection_id)
+                .with_for_update()
+            )
             record = session.get(
                 CollectionArchiveObjectUploadRecord,
                 (collection_id, receipt.volume_id),
@@ -1365,7 +1386,6 @@ class SqlAlchemyCollectionUploadService:
             record.updated_at = now
             record.uploaded_units = len(receipt.parts)
             record.uploaded_bytes = receipt.stored_bytes
-            upload = session.get(CollectionUploadRecord, collection_id)
             if upload is not None:
                 _touch_upload(upload, config=self._config, now=now)
                 upload.archive_phase_updated_at = now
@@ -1808,6 +1828,8 @@ class SqlAlchemyCollectionUploadService:
                 created_by_app=upload.initiated_by_app,
                 created_by_key_id=upload.initiated_by_key_id,
                 created_at=upload.opened_at or now,
+                file_count=upload.file_count,
+                file_bytes=upload.file_bytes,
             )
             session.add(collection)
             session.flush()
@@ -1817,6 +1839,7 @@ class SqlAlchemyCollectionUploadService:
                     path=row.path,
                     bytes=row.bytes,
                     sha256=row.sha256,
+                    provenance_status=row.provenance_status,
                 )
                 for row in rows
             )
@@ -1872,6 +1895,7 @@ class SqlAlchemyCollectionUploadService:
                 )
                 for tag in tags
             )
+            adjust_tag_collection_counts(session, added=tags)
             store_binding = self._archive_stores.require(upload.archive_store)
             copy = CollectionArchiveCopyRecord(
                 collection_id=collection_id,
@@ -2628,16 +2652,10 @@ def _parse_sealed_raw(content: str) -> SealedRawVolume:
 
 
 def _custody_stats(session: Session, collection_id: int) -> tuple[int, int]:
-    files, byte_count = session.execute(
-        select(
-            func.count(CollectionUploadFileRecord.path),
-            func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0),
-        ).where(
-            CollectionUploadFileRecord.collection_id == collection_id,
-            CollectionUploadFileRecord.custody_receipt_json.is_not(None),
-        )
-    ).one()
-    return int(files), int(byte_count)
+    upload = session.get(CollectionUploadRecord, collection_id)
+    if upload is None:
+        return 0, 0
+    return int(upload.custodied_file_count), int(upload.custodied_file_bytes)
 
 
 def _custody_payload(
@@ -2669,9 +2687,9 @@ def _custody_payload(
 def _validate_upload_list(*, page: int, per_page: int, sort: str, order: str) -> None:
     if page < 1 or per_page < 1 or per_page > 100:
         raise BadRequest("invalid collection upload pagination")
-    if sort not in {"id", "created_at", "state", "bytes", "files"}:
+    if sort not in _UPLOAD_SORT_FIELDS:
         raise BadRequest("invalid collection upload sort")
-    if order not in {"asc", "desc"}:
+    if order not in _SORT_ORDERS:
         raise BadRequest("collection upload order must be asc or desc")
 
 
@@ -2684,21 +2702,21 @@ def _upload_list_statement(
     order: str,
     principal: ApplicationPrincipal,
 ) -> Any:
+    if state is not None and state not in _UPLOAD_STATES:
+        raise BadRequest("invalid collection upload state")
     filters: list[Any] = [_upload_read_filter(principal)]
     if q:
         pattern = f"%{q.casefold()}%"
-        filters.append(
-            or_(
-                func.lower(func.coalesce(CollectionUploadRecord.ingest_source, "")).like(pattern),
-                exists(
-                    select(1).where(
-                        CollectionUploadTagRecord.collection_id
-                        == CollectionUploadRecord.collection_id,
-                        func.lower(CollectionUploadTagRecord.tag_id).like(pattern),
-                    )
-                ),
+        matching_ids = (
+            select(CollectionUploadRecord.collection_id)
+            .where(CollectionUploadRecord.search_text.like(pattern))
+            .union(
+                select(CollectionUploadTagRecord.collection_id).where(
+                    CollectionUploadTagRecord.tag_id.like(pattern)
+                )
             )
         )
+        filters.append(CollectionUploadRecord.collection_id.in_(matching_ids))
     if tag:
         filters.append(
             exists(
@@ -2710,29 +2728,23 @@ def _upload_list_statement(
         )
     if state:
         filters.append(CollectionUploadRecord.state == state)
-    stats = (
-        select(
-            CollectionUploadFileRecord.collection_id.label("collection_id"),
-            func.count(CollectionUploadFileRecord.path).label("files"),
-            func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0).label("bytes"),
-        )
-        .group_by(CollectionUploadFileRecord.collection_id)
-        .subquery()
-    )
-    statement = (
-        select(CollectionUploadRecord, stats.c.files, stats.c.bytes)
-        .outerjoin(stats, stats.c.collection_id == CollectionUploadRecord.collection_id)
-        .where(*filters)
-    )
+    statement = select(
+        CollectionUploadRecord,
+        CollectionUploadRecord.file_count.label("files"),
+        CollectionUploadRecord.file_bytes.label("bytes"),
+    ).where(*filters)
     direction = asc if order == "asc" else desc
     sort_column = {
         "id": CollectionUploadRecord.collection_id,
         "created_at": CollectionUploadRecord.opened_at,
         "state": CollectionUploadRecord.state,
-        "bytes": stats.c.bytes,
-        "files": stats.c.files,
+        "bytes": CollectionUploadRecord.file_bytes,
+        "files": CollectionUploadRecord.file_count,
     }[sort]
-    return statement.order_by(direction(sort_column), asc(CollectionUploadRecord.collection_id))
+    return statement.order_by(
+        direction(sort_column),
+        direction(CollectionUploadRecord.collection_id),
+    )
 
 
 def _upload_list_payload(
@@ -2813,12 +2825,8 @@ def _orphan_discard_plan(
     upload = session.get(CollectionUploadRecord, collection_id)
     if upload is None:
         raise NotFound(f"collection upload session not found: {collection_id}")
-    files, byte_count = session.execute(
-        select(
-            func.count(CollectionUploadFileRecord.path),
-            func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0),
-        ).where(CollectionUploadFileRecord.collection_id == collection_id)
-    ).one()
+    files = upload.file_count
+    byte_count = upload.file_bytes
     custodied_files, custodied_bytes = _custody_stats(session, collection_id)
     archive_objects = int(
         session.scalar(
@@ -2899,6 +2907,8 @@ def _record_artifact_custody_receipts(
     for volume in upload.archive_objects:
         for path in _archive_object_source_paths(volume):
             volumes_by_path.setdefault(path, []).append(volume)
+    newly_custodied_files = 0
+    newly_custodied_bytes = 0
     for artifact in upload.files:
         if artifact.custody_receipt_json is not None:
             continue
@@ -2928,6 +2938,10 @@ def _record_artifact_custody_receipts(
             exclude_none=True,
             by_alias=True,
         )
+        newly_custodied_files += 1
+        newly_custodied_bytes += artifact.bytes
+    upload.custodied_file_count += newly_custodied_files
+    upload.custodied_file_bytes += newly_custodied_bytes
 
 
 def _upload_payload(
@@ -2937,12 +2951,8 @@ def _upload_payload(
     state: str | None = None,
     resumed: bool | None = None,
 ) -> dict[str, object]:
-    files_total, bytes_total = session.execute(
-        select(
-            func.count(CollectionUploadFileRecord.path),
-            func.coalesce(func.sum(CollectionUploadFileRecord.bytes), 0),
-        ).where(CollectionUploadFileRecord.collection_id == upload.collection_id)
-    ).one()
+    files_total = upload.file_count
+    bytes_total = upload.file_bytes
     custodied_files, custodied_bytes = _custody_stats(session, upload.collection_id)
     archive_progress = session.execute(
         select(

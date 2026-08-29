@@ -7,12 +7,14 @@ from collections.abc import Iterator, Sequence
 from datetime import timedelta
 from typing import Any
 
+from http_api_contracts import closed_literal_values
 from riverhog_application_access import (
     validate_application_key_id,
     validate_application_name,
 )
+from riverhog_protocol import ApplicationAccessSort, ApplicationKeySort, ApplicationSort, SortOrder
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, NotFound
-from sqlalchemy import and_, asc, case, delete, desc, func, or_, select
+from sqlalchemy import and_, asc, case, delete, desc, func, or_, select, tuple_
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 from state_schema import read_snapshot
@@ -38,9 +40,10 @@ from riverhog_core.catalog_models import (
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 
-_APP_SORT_FIELDS = {"name", "keys", "active_keys", "last_used_at"}
-_KEY_SORT_FIELDS = {"id", "created_at", "expires_at", "last_used_at"}
-_ACCESS_SORT_FIELDS = {"app", "key_id", "permission", "resource", "created_at"}
+_APP_SORT_FIELDS = closed_literal_values(ApplicationSort)
+_KEY_SORT_FIELDS = closed_literal_values(ApplicationKeySort)
+_ACCESS_SORT_FIELDS = closed_literal_values(ApplicationAccessSort)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 
 
 def _token_sha256(token: str) -> str:
@@ -87,14 +90,16 @@ def _status(record: AppKeyRecord, *, now: str) -> str:
     return "active"
 
 
-def _validate_list(*, page: int, per_page: int, sort: str, order: str, fields: set[str]) -> None:
+def _validate_list(
+    *, page: int, per_page: int, sort: str, order: str, fields: frozenset[str]
+) -> None:
     if page < 1:
         raise BadRequest("page must be greater than or equal to 1")
     if per_page < 1 or per_page > 100:
         raise BadRequest("per_page must be between 1 and 100")
     if sort not in fields:
         raise BadRequest(f"sort must be one of {', '.join(sorted(fields))}")
-    if order not in {"asc", "desc"}:
+    if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
 
 
@@ -416,7 +421,7 @@ class SqlAlchemyAppKeyService:
             active=active,
             now=now,
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(
                     select(func.count())
@@ -481,7 +486,7 @@ class SqlAlchemyAppKeyService:
         query, grouped, statement = _app_list_statement(
             q=q, sort=sort, order=order, active=active, now=now
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(grouped)) or 0)
             statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = session.execute(statement).mappings().all()
@@ -525,7 +530,7 @@ class SqlAlchemyAppKeyService:
             active=active,
             now=now,
         )
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             total = int(
                 session.scalar(select(func.count()).select_from(AppKeyRecord).where(*filters)) or 0
             )
@@ -686,33 +691,71 @@ def _access_list_statement(
         filters.append(active_key_filter(now) if active else ~active_key_filter(now))
     if query:
         pattern = _like_pattern(query.casefold())
+        matching_access = (
+            select(
+                AppKeyAccessGrantRecord.key_id.label("key_id"),
+                AppKeyAccessGrantRecord.permission.label("permission"),
+                AppKeyAccessGrantRecord.resource.label("resource"),
+            )
+            .join(AppKeyRecord, AppKeyRecord.id == AppKeyAccessGrantRecord.key_id)
+            .where(AppKeyRecord.search_text.like(pattern, escape="\\"))
+            .union(
+                select(
+                    AppKeyAccessGrantRecord.key_id,
+                    AppKeyAccessGrantRecord.permission,
+                    AppKeyAccessGrantRecord.resource,
+                ).where(AppKeyAccessGrantRecord.search_text.like(pattern, escape="\\"))
+            )
+            .subquery()
+        )
         filters.append(
-            or_(
-                func.lower(AppKeyRecord.app).like(pattern, escape="\\"),
-                func.lower(AppKeyRecord.id).like(pattern, escape="\\"),
-                func.lower(AppKeyAccessGrantRecord.permission).like(pattern, escape="\\"),
-                func.lower(AppKeyAccessGrantRecord.resource).like(pattern, escape="\\"),
+            tuple_(
+                AppKeyAccessGrantRecord.key_id,
+                AppKeyAccessGrantRecord.permission,
+                AppKeyAccessGrantRecord.resource,
+            ).in_(
+                select(
+                    matching_access.c.key_id,
+                    matching_access.c.permission,
+                    matching_access.c.resource,
+                )
             )
         )
     direction = desc if order == "desc" else asc
-    sort_column = {
-        "app": AppKeyRecord.app,
-        "key_id": AppKeyRecord.id,
-        "permission": AppKeyAccessGrantRecord.permission,
-        "resource": AppKeyAccessGrantRecord.resource,
-        "created_at": AppKeyAccessGrantRecord.created_at,
+    sort_columns = {
+        "app": (
+            AppKeyRecord.app,
+            AppKeyRecord.id,
+            AppKeyAccessGrantRecord.permission,
+            AppKeyAccessGrantRecord.resource,
+        ),
+        "key_id": (
+            AppKeyAccessGrantRecord.key_id,
+            AppKeyAccessGrantRecord.permission,
+            AppKeyAccessGrantRecord.resource,
+        ),
+        "permission": (
+            AppKeyAccessGrantRecord.permission,
+            AppKeyAccessGrantRecord.resource,
+            AppKeyAccessGrantRecord.key_id,
+        ),
+        "resource": (
+            AppKeyAccessGrantRecord.resource,
+            AppKeyAccessGrantRecord.permission,
+            AppKeyAccessGrantRecord.key_id,
+        ),
+        "created_at": (
+            AppKeyAccessGrantRecord.created_at,
+            AppKeyAccessGrantRecord.key_id,
+            AppKeyAccessGrantRecord.permission,
+            AppKeyAccessGrantRecord.resource,
+        ),
     }[sort]
     statement = (
         select(AppKeyRecord, AppKeyAccessGrantRecord)
         .join(AppKeyAccessGrantRecord, AppKeyAccessGrantRecord.key_id == AppKeyRecord.id)
         .where(*filters)
-        .order_by(
-            direction(sort_column),
-            asc(AppKeyRecord.app),
-            asc(AppKeyRecord.id),
-            asc(AppKeyAccessGrantRecord.permission),
-            asc(AppKeyAccessGrantRecord.resource),
-        )
+        .order_by(*(direction(column) for column in sort_columns))
     )
     return (
         query,
@@ -742,15 +785,13 @@ def _app_list_statement(
         func.max(AppKeyRecord.last_used_at).label("last_used_at"),
     )
     if query:
-        summary = summary.where(
-            func.lower(AppKeyRecord.app).like(_like_pattern(query.casefold()), escape="\\")
-        )
+        summary = summary.where(AppKeyRecord.app.like(_like_pattern(query.casefold()), escape="\\"))
     summary = summary.group_by(AppKeyRecord.app)
     if active is not None:
         summary = summary.having(active_count > 0 if active else active_count == 0)
     grouped = summary.subquery()
     direction = desc if order == "desc" else asc
-    statement = select(grouped).order_by(direction(grouped.c[sort]), asc(grouped.c.name))
+    statement = select(grouped).order_by(direction(grouped.c[sort]), direction(grouped.c.name))
     return query, grouped, statement
 
 
@@ -767,15 +808,15 @@ def _key_list_statement(
     query = q.strip() if q is not None else None
     filters: list[ColumnElement[bool]] = [AppKeyRecord.app == normalized_app]
     if query:
-        filters.append(
-            func.lower(AppKeyRecord.id).like(_like_pattern(query.casefold()), escape="\\")
-        )
+        filters.append(AppKeyRecord.id.like(_like_pattern(query.casefold()), escape="\\"))
     if active is not None:
         filters.append(active_key_filter(now) if active else ~active_key_filter(now))
     direction = desc if order == "desc" else asc
     sort_column = getattr(AppKeyRecord, sort)
     statement = (
-        select(AppKeyRecord).where(*filters).order_by(direction(sort_column), asc(AppKeyRecord.id))
+        select(AppKeyRecord)
+        .where(*filters)
+        .order_by(direction(sort_column), direction(AppKeyRecord.id))
     )
     return normalized_app, query, filters, statement
 

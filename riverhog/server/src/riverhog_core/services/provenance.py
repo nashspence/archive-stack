@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
+from itertools import zip_longest
 from typing import Any
 
+from http_api_contracts import closed_literal_values
+from riverhog_protocol import ProvenanceSort, ProvenanceStatus, SortOrder
 from riverhog_protocol.errors import BadRequest, InvalidState, NotFound
 from riverhog_protocol.paths import (
     PathNormalizationError,
@@ -12,10 +15,14 @@ from riverhog_protocol.paths import (
 )
 from riverhog_provenance import (
     FileProvenanceBinding,
-    build_provenance_archive,
+    JournalSummary,
+    ProvenanceValidationError,
+    reconstruct_provenance_archive_identity,
+    validate_journal,
     validate_provenance_archive,
+    verify_payload_binding,
 )
-from sqlalchemy import asc, delete, desc, func, select
+from sqlalchemy import and_, asc, delete, desc, func, select, update
 from sqlalchemy.orm import Session, undefer
 from state_schema import read_snapshot
 
@@ -25,6 +32,7 @@ from riverhog_core.app_permissions import (
     PROVENANCE_READ,
     ApplicationPrincipal,
 )
+from riverhog_core.artifact_access import artifact_scope_filter, require_artifact_scope
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionFileProvenanceRecord,
@@ -40,7 +48,9 @@ from riverhog_core.provenance_projection import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 
-_SORT_FIELDS = {"path", "bytes", "status"}
+_SORT_FIELDS = closed_literal_values(ProvenanceSort)
+_STATUS_VALUES = closed_literal_values(ProvenanceStatus)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 
 
 class SqlAlchemyProvenanceService:
@@ -66,13 +76,12 @@ class SqlAlchemyProvenanceService:
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
         _page_options(page, per_page, sort, order)
-        if status is not None and status not in {"captured", "omitted"}:
-            raise BadRequest("status must be captured or omitted")
-        with session_scope(self._session_factory) as session:
+        if status is not None and status not in _STATUS_VALUES:
+            raise BadRequest(f"status must be one of {', '.join(sorted(_STATUS_VALUES))}")
+        with read_snapshot(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
             joined = _provenance_file_statement(
                 collection_id=collection_id,
-                collection=collection,
                 principal=principal,
                 q=q,
                 status=status,
@@ -109,13 +118,12 @@ class SqlAlchemyProvenanceService:
     ) -> Iterator[dict[str, Any]]:
         collection_id = _collection_id(collection_id)
         _page_options(1, 100, sort, order)
-        if status is not None and status not in {"captured", "omitted"}:
-            raise BadRequest("status must be captured or omitted")
+        if status is not None and status not in _STATUS_VALUES:
+            raise BadRequest(f"status must be one of {', '.join(sorted(_STATUS_VALUES))}")
         with read_snapshot(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
             statement = _provenance_file_statement(
                 collection_id=collection_id,
-                collection=collection,
                 principal=principal,
                 q=q,
                 status=status,
@@ -134,123 +142,82 @@ class SqlAlchemyProvenanceService:
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
         path = _path(path)
-        if not (
-            principal.allows_artifact(CATALOG_READ, collection_id, path)
-            and principal.allows_artifact(PROVENANCE_READ, collection_id, path)
-        ):
-            raise NotFound(f"collection file not found: {collection_id}::{path}")
-        with session_scope(self._session_factory) as session:
-            collection = _authorized_collection(session, collection_id, principal)
-            row = session.execute(
-                select(CollectionFileRecord, CollectionFileProvenanceRecord)
-                .outerjoin(
-                    CollectionFileProvenanceRecord,
-                    (
-                        CollectionFileProvenanceRecord.collection_id
-                        == CollectionFileRecord.collection_id
-                    )
-                    & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
-                )
-                .where(
-                    CollectionFileRecord.collection_id == collection_id,
-                    CollectionFileRecord.path == path,
-                )
-            ).one_or_none()
-            if row is None:
-                raise NotFound(f"collection file not found: {collection_id}::{path}")
-            payload = _file_payload(row[0], row[1], collection)
-            if row[1] is not None and row[1].journal_id is not None:
-                journal = session.get(
-                    CollectionProvenanceJournalRecord,
-                    (collection_id, row[1].journal_id),
-                )
-                if journal is None:
-                    raise InvalidState("captured provenance journal is missing")
-                ancestors = tuple(
-                    session.scalars(
-                        select(
-                            CollectionProvenanceExternalStateReferenceRecord.to_journal_id
-                        ).where(
-                            CollectionProvenanceExternalStateReferenceRecord.collection_id
-                            == collection_id,
-                            CollectionProvenanceExternalStateReferenceRecord.from_journal_id
-                            == row[1].journal_id,
-                        )
-                    )
-                )
-                payload["journal"] = _journal_payload(
-                    journal,
-                    ancestor_journal_ids=ancestors,
-                )
-            return payload
+        with read_snapshot(self._session_factory) as session:
+            return _shown_file(session, collection_id, path, principal)
 
     def trace_file(
         self,
         collection_id: int,
         path: str,
         *,
+        page: int,
+        per_page: int,
         principal: ApplicationPrincipal,
     ) -> dict[str, Any]:
-        shown = self.show_file(collection_id, path, principal=principal)
-        binding = shown["provenance"]
-        if binding["status"] == "omitted":
-            return {**shown, "journals": [], "external_state_references": []}
-        journal_id = str(binding["journal_id"])
-        with session_scope(self._session_factory) as session:
-            _authorized_collection(session, collection_id, principal)
-            reachable = {journal_id}
-            pending = {journal_id}
-            edge_records: list[CollectionProvenanceExternalStateReferenceRecord] = []
-            while pending:
-                current_edges = list(
-                    session.scalars(
-                        select(CollectionProvenanceExternalStateReferenceRecord).where(
-                            CollectionProvenanceExternalStateReferenceRecord.collection_id
-                            == collection_id,
-                            CollectionProvenanceExternalStateReferenceRecord.from_journal_id.in_(
-                                pending
-                            ),
-                        )
-                    )
-                )
-                edge_records.extend(current_edges)
-                discovered = {item.to_journal_id for item in current_edges} - reachable
-                reachable.update(discovered)
-                pending = discovered
-            records = {
-                item.journal_id: item
-                for item in session.scalars(
-                    select(CollectionProvenanceJournalRecord).where(
-                        CollectionProvenanceJournalRecord.collection_id == collection_id,
-                        CollectionProvenanceJournalRecord.journal_id.in_(reachable),
-                    )
-                )
-            }
-            if set(records) != reachable:
-                raise InvalidState("provenance ancestor journal projection is incomplete")
-            ancestors_by_journal: dict[str, set[str]] = {
-                current_id: set() for current_id in reachable
-            }
-            for edge in edge_records:
-                ancestors_by_journal[edge.from_journal_id].add(edge.to_journal_id)
+        collection_id = _collection_id(collection_id)
+        path = _path(path)
+        _trace_page_options(page, per_page)
+        with read_snapshot(self._session_factory) as session:
+            shown = _shown_file(session, collection_id, path, principal)
+            binding = shown["provenance"]
+            if binding["status"] == "omitted":
+                return {
+                    **shown,
+                    "page": page,
+                    "per_page": per_page,
+                    "total": 0,
+                    "pages": 0,
+                    "items": [],
+                }
+            journal_statement, reference_statement = _trace_statements(
+                collection_id,
+                str(binding["journal_id"]),
+            )
+            journal_total = _statement_count(session, journal_statement)
+            reference_total = _statement_count(session, reference_statement)
+            total = journal_total + reference_total
+            items = _trace_page_items(
+                session,
+                journal_statement,
+                reference_statement,
+                journal_total=journal_total,
+                offset=(page - 1) * per_page,
+                limit=per_page,
+            )
             return {
                 **shown,
-                "journals": [
-                    _journal_payload(
-                        records[item],
-                        ancestor_journal_ids=ancestors_by_journal[item],
-                    )
-                    for item in sorted(reachable)
-                ],
-                "external_state_references": sorted(
-                    (_external_state_reference_payload(item) for item in edge_records),
-                    key=lambda item: (
-                        item["from_journal_id"],
-                        item["to_journal_id"],
-                        item["state_id"],
-                    ),
-                ),
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "pages": ((total + per_page - 1) // per_page if total else 0),
+                "items": items,
             }
+
+    def iter_trace_file(
+        self,
+        collection_id: int,
+        path: str,
+        *,
+        principal: ApplicationPrincipal,
+    ) -> Iterator[dict[str, Any]]:
+        collection_id = _collection_id(collection_id)
+        path = _path(path)
+        with read_snapshot(self._session_factory) as session:
+            shown = _shown_file(session, collection_id, path, principal)
+            binding = shown["provenance"]
+            if binding["status"] == "omitted":
+                return
+            journal_statement, reference_statement = _trace_statements(
+                collection_id,
+                str(binding["journal_id"]),
+            )
+            for journal in session.scalars(journal_statement.execution_options(yield_per=100)):
+                yield {"kind": "journal", "journal": _journal_payload(journal)}
+            for reference in session.scalars(reference_statement.execution_options(yield_per=100)):
+                yield {
+                    "kind": "external_state_reference",
+                    "reference": _external_state_reference_payload(reference),
+                }
 
     def export_journal(
         self,
@@ -286,151 +253,169 @@ class SqlAlchemyProvenanceService:
         principal: ApplicationPrincipal,
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
-        if principal.artifact_scope is not None:
+        if principal.has_artifact_scope:
             raise NotFound(f"collection not found: {collection_id}")
-        with session_scope(self._session_factory) as session:
+        with read_snapshot(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
-            files = list(
-                session.scalars(
-                    select(CollectionFileRecord)
+            files = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionFileRecord)
                     .where(CollectionFileRecord.collection_id == collection_id)
-                    .order_by(CollectionFileRecord.path)
                 )
+                or 0
             )
-            bindings = list(
-                session.scalars(
-                    select(CollectionFileProvenanceRecord)
+            bindings = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionFileProvenanceRecord)
                     .where(CollectionFileProvenanceRecord.collection_id == collection_id)
-                    .order_by(CollectionFileProvenanceRecord.path)
                 )
+                or 0
             )
-            journals = list(
-                session.scalars(
-                    select(CollectionProvenanceJournalRecord)
-                    .options(undefer(CollectionProvenanceJournalRecord.journal_bytes))
+            journals = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionProvenanceJournalRecord)
                     .where(CollectionProvenanceJournalRecord.collection_id == collection_id)
-                    .order_by(CollectionProvenanceJournalRecord.journal_id)
                 )
+                or 0
             )
-            entities = list(
-                session.scalars(
-                    select(CollectionProvenanceEntityRecord).where(
-                        CollectionProvenanceEntityRecord.collection_id == collection_id
-                    )
+            entities = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionProvenanceEntityRecord)
+                    .where(CollectionProvenanceEntityRecord.collection_id == collection_id)
                 )
+                or 0
             )
-            external_state_references = list(
-                session.scalars(
-                    select(CollectionProvenanceExternalStateReferenceRecord).where(
+            external_state_references = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(CollectionProvenanceExternalStateReferenceRecord)
+                    .where(
                         CollectionProvenanceExternalStateReferenceRecord.collection_id
                         == collection_id
                     )
                 )
+                or 0
             )
+            mismatched_status = session.scalar(
+                select(CollectionFileRecord.path)
+                .outerjoin(
+                    CollectionFileProvenanceRecord,
+                    (
+                        CollectionFileProvenanceRecord.collection_id
+                        == CollectionFileRecord.collection_id
+                    )
+                    & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
+                )
+                .where(
+                    CollectionFileRecord.collection_id == collection_id,
+                    CollectionFileRecord.provenance_status
+                    != func.coalesce(
+                        CollectionFileProvenanceRecord.status,
+                        "omitted" if collection.provenance_mode == "omitted" else "missing",
+                    ),
+                )
+                .limit(1)
+            )
+            if mismatched_status is not None:
+                raise InvalidState("catalog file provenance status projection differs")
             if collection.provenance_mode == "omitted":
-                if (
-                    journals
-                    or entities
-                    or external_state_references
-                    or any(item.status != "omitted" for item in bindings)
-                ):
+                nonomitted = session.scalar(
+                    select(CollectionFileProvenanceRecord.path)
+                    .where(
+                        CollectionFileProvenanceRecord.collection_id == collection_id,
+                        CollectionFileProvenanceRecord.status != "omitted",
+                    )
+                    .limit(1)
+                )
+                if journals or entities or external_state_references or nonomitted is not None:
                     raise InvalidState("collection-wide provenance omission is inconsistent")
                 return {
                     "collection_id": collection_id,
                     "valid": True,
                     "provenance_mode": "omitted",
                     "provenance_identity": None,
-                    "files": len(files),
+                    "files": files,
                     "journals": 0,
                     "entities": 0,
                 }
-            if len(bindings) != len(files):
+            if bindings != files:
                 raise InvalidState("provenance does not account for every collection file")
-            files_by_path = {item.path: item for item in files}
-            archive = build_provenance_archive(
-                bindings=[
-                    FileProvenanceBinding(
-                        path=item.path,
-                        bytes=files_by_path[item.path].bytes,
-                        sha256=files_by_path[item.path].sha256,
-                        status=item.status,  # type: ignore[arg-type]
-                        journal_id=item.journal_id,
-                        current_state_id=item.current_state_id,
-                        omission_reason=item.omission_reason,
-                    )
-                    for item in bindings
-                ],
-                journals={item.journal_id: item.journal_bytes for item in journals},
-            )
-            if archive.identity != collection.provenance_identity:
+
+            def binding_factory() -> Iterator[FileProvenanceBinding]:
+                return _iter_file_provenance_bindings(session, collection_id)
+
+            def journal_factory() -> Iterator[tuple[str, bytes]]:
+                return _iter_journal_bytes(session, collection_id)
+
+            try:
+                identity = reconstruct_provenance_archive_identity(
+                    bindings=binding_factory,
+                    journals=journal_factory,
+                )
+            except ProvenanceValidationError as exc:
+                raise InvalidState(str(exc)) from exc
+            if identity != collection.provenance_identity:
                 raise InvalidState("catalog provenance identity does not match exact bytes")
-            projections = {
-                item.journal_id: provenance_journal_projection(
-                    collection_id=collection_id,
-                    journal_id=item.journal_id,
-                    summary=archive.journal_summaries[item.journal_id],
-                )
-                for item in journals
-            }
-            expected_entities = {
-                (record.journal_id, record.entity_type, record.entity_id): (
-                    record.entry_id,
-                    record.document_json,
-                )
-                for projection in projections.values()
-                for record in projection.entities
-            }
-            actual_entities = {
-                (item.journal_id, item.entity_type, item.entity_id): (
-                    item.entry_id,
-                    item.document_json,
-                )
-                for item in entities
-            }
-            if actual_entities != expected_entities:
-                raise InvalidState("catalog provenance projection differs from exact journals")
-            expected_edges = {
-                (
-                    record.from_journal_id,
-                    record.to_journal_id,
-                    record.entry_id,
-                    record.state_id,
-                    record.entry_json_sha256,
-                )
-                for projection in projections.values()
-                for record in projection.external_state_references
-            }
-            actual_edges = {
-                (
-                    record.from_journal_id,
-                    record.to_journal_id,
-                    record.entry_id,
-                    record.state_id,
-                    record.entry_json_sha256,
-                )
-                for record in external_state_references
-            }
-            if actual_edges != expected_edges:
-                raise InvalidState("catalog provenance lineage differs from exact journals")
-            for journal in journals:
-                projection = projections[journal.journal_id]
-                if (
-                    journal.entries != len(projection.summary.frames)
-                    or journal.agent_ids_json
-                    != json.dumps(sorted(projection.summary.agent_ids), separators=(",", ":"))
-                    or journal.entity_counts_json != projection.entity_counts_json
-                ):
-                    raise InvalidState(
-                        "catalog provenance journal summary differs from exact bytes"
+            projected_entities = 0
+            for journal_id in _iter_journal_ids(session, collection_id):
+                journal = session.scalar(
+                    select(CollectionProvenanceJournalRecord)
+                    .options(undefer(CollectionProvenanceJournalRecord.journal_bytes))
+                    .where(
+                        CollectionProvenanceJournalRecord.collection_id == collection_id,
+                        CollectionProvenanceJournalRecord.journal_id == journal_id,
                     )
+                )
+                if journal is None:
+                    raise InvalidState("catalog provenance journal disappeared during snapshot")
+                try:
+                    summary = validate_journal(journal.journal_bytes)
+                except ProvenanceValidationError as exc:
+                    raise InvalidState(str(exc)) from exc
+                projection = provenance_journal_projection(
+                    collection_id=collection_id,
+                    journal_id=journal_id,
+                    summary=summary,
+                )
+                _verify_journal_summary(journal, projection)
+                _verify_journal_payload_bindings(
+                    session,
+                    collection_id=collection_id,
+                    journal_id=journal_id,
+                    summary=summary,
+                )
+                _verify_journal_entities(session, collection_id, journal_id, projection)
+                _verify_journal_references(session, collection_id, journal_id, projection)
+                projected_entities += len(projection.entities)
+                session.expunge(journal)
+            if projected_entities != entities:
+                raise InvalidState("catalog provenance projection differs from exact journals")
+            reachable = _reachable_journals(
+                select(CollectionFileProvenanceRecord.journal_id.label("journal_id"))
+                .where(
+                    CollectionFileProvenanceRecord.collection_id == collection_id,
+                    CollectionFileProvenanceRecord.status == "captured",
+                    CollectionFileProvenanceRecord.journal_id.is_not(None),
+                )
+                .distinct(),
+                collection_id=collection_id,
+                name="verify_reachable_journals",
+            )
+            reachable_count = int(session.scalar(select(func.count()).select_from(reachable)) or 0)
+            if reachable_count != journals:
+                raise InvalidState("provenance contains an unreachable journal")
             return {
                 "collection_id": collection_id,
                 "valid": True,
                 "provenance_mode": collection.provenance_mode,
-                "provenance_identity": archive.identity,
-                "files": len(files),
-                "journals": len(journals),
-                "entities": len(entities),
+                "provenance_identity": identity,
+                "files": files,
+                "journals": journals,
+                "entities": entities,
             }
 
     def rebuild_catalog_projection(
@@ -534,6 +519,22 @@ class SqlAlchemyProvenanceService:
                 )
                 for item in validated.bindings
             )
+            session.flush()
+            binding_status = (
+                select(CollectionFileProvenanceRecord.status)
+                .where(
+                    CollectionFileProvenanceRecord.collection_id
+                    == CollectionFileRecord.collection_id,
+                    CollectionFileProvenanceRecord.path == CollectionFileRecord.path,
+                )
+                .correlate(CollectionFileRecord)
+                .scalar_subquery()
+            )
+            session.execute(
+                update(CollectionFileRecord)
+                .where(CollectionFileRecord.collection_id == collection_id)
+                .values(provenance_status=func.coalesce(binding_status, "missing"))
+            )
             for journal_id in sorted(validated.journal_bytes):
                 session.add_all(projections[journal_id].entities)
                 session.add_all(projections[journal_id].external_state_references)
@@ -556,10 +557,211 @@ class SqlAlchemyProvenanceService:
             }
 
 
+def _iter_file_provenance_bindings(
+    session: Session,
+    collection_id: int,
+) -> Iterator[FileProvenanceBinding]:
+    path_order = _canonical_text_order(session, CollectionFileRecord.path)
+    statement = (
+        select(CollectionFileRecord, CollectionFileProvenanceRecord)
+        .join(
+            CollectionFileProvenanceRecord,
+            (CollectionFileProvenanceRecord.collection_id == CollectionFileRecord.collection_id)
+            & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
+        )
+        .where(CollectionFileRecord.collection_id == collection_id)
+        .order_by(path_order)
+        .execution_options(yield_per=100)
+    )
+    for file, binding in session.execute(statement):
+        yield FileProvenanceBinding(
+            path=file.path,
+            bytes=file.bytes,
+            sha256=file.sha256,
+            status=binding.status,
+            journal_id=binding.journal_id,
+            current_state_id=binding.current_state_id,
+            omission_reason=binding.omission_reason,
+        )
+
+
+def _iter_journal_bytes(
+    session: Session,
+    collection_id: int,
+) -> Iterator[tuple[str, bytes]]:
+    statement = (
+        select(
+            CollectionProvenanceJournalRecord.journal_id,
+            CollectionProvenanceJournalRecord.journal_bytes,
+        )
+        .where(CollectionProvenanceJournalRecord.collection_id == collection_id)
+        .order_by(CollectionProvenanceJournalRecord.journal_id)
+        .execution_options(yield_per=1)
+    )
+    for journal_id, content in session.execute(statement):
+        yield str(journal_id), bytes(content)
+
+
+def _iter_journal_ids(session: Session, collection_id: int) -> Iterator[str]:
+    after: str | None = None
+    while True:
+        statement = select(CollectionProvenanceJournalRecord.journal_id).where(
+            CollectionProvenanceJournalRecord.collection_id == collection_id
+        )
+        if after is not None:
+            statement = statement.where(CollectionProvenanceJournalRecord.journal_id > after)
+        batch = list(
+            session.scalars(
+                statement.order_by(CollectionProvenanceJournalRecord.journal_id).limit(100)
+            )
+        )
+        if not batch:
+            return
+        yield from batch
+        after = batch[-1]
+
+
+def _verify_journal_summary(
+    journal: CollectionProvenanceJournalRecord,
+    projection: ProvenanceJournalProjection,
+) -> None:
+    summary = projection.summary
+    if (
+        journal.journal_id != summary.journal_id
+        or journal.bytes != len(journal.journal_bytes)
+        or journal.sha256 != summary.journal_sha256
+        or journal.entries != len(summary.frames)
+        or journal.agent_ids_json != json.dumps(sorted(summary.agent_ids), separators=(",", ":"))
+        or journal.entity_counts_json != projection.entity_counts_json
+        or journal.current_state_id != summary.current_state_id
+        or journal.current_path != summary.current_path
+        or journal.current_bytes != summary.current_bytes
+        or journal.current_sha256 != summary.current_sha256
+    ):
+        raise InvalidState("catalog provenance journal summary differs from exact bytes")
+
+
+def _verify_journal_payload_bindings(
+    session: Session,
+    *,
+    collection_id: int,
+    journal_id: str,
+    summary: JournalSummary,
+) -> None:
+    statement = (
+        select(CollectionFileRecord, CollectionFileProvenanceRecord)
+        .join(
+            CollectionFileProvenanceRecord,
+            (CollectionFileProvenanceRecord.collection_id == CollectionFileRecord.collection_id)
+            & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
+        )
+        .where(
+            CollectionFileRecord.collection_id == collection_id,
+            CollectionFileProvenanceRecord.journal_id == journal_id,
+        )
+        .order_by(_canonical_text_order(session, CollectionFileRecord.path))
+        .execution_options(yield_per=100)
+    )
+    for file, binding in session.execute(statement):
+        if binding.status != "captured" or binding.current_state_id != summary.current_state_id:
+            raise InvalidState("captured provenance binding differs from its exact journal")
+        try:
+            verify_payload_binding(
+                summary,
+                path=file.path,
+                byte_count=file.bytes,
+                sha256=file.sha256,
+            )
+        except ProvenanceValidationError as exc:
+            raise InvalidState(str(exc)) from exc
+
+
+def _verify_journal_entities(
+    session: Session,
+    collection_id: int,
+    journal_id: str,
+    projection: ProvenanceJournalProjection,
+) -> None:
+    actual = session.scalars(
+        select(CollectionProvenanceEntityRecord)
+        .where(
+            CollectionProvenanceEntityRecord.collection_id == collection_id,
+            CollectionProvenanceEntityRecord.journal_id == journal_id,
+        )
+        .order_by(
+            CollectionProvenanceEntityRecord.entity_type,
+            CollectionProvenanceEntityRecord.entity_id,
+        )
+        .execution_options(yield_per=100)
+    )
+    for expected, current in zip_longest(projection.entities, actual):
+        if (
+            expected is None
+            or current is None
+            or (
+                expected.entity_type,
+                expected.entity_id,
+                expected.entry_id,
+                expected.document_json,
+            )
+            != (
+                current.entity_type,
+                current.entity_id,
+                current.entry_id,
+                current.document_json,
+            )
+        ):
+            raise InvalidState("catalog provenance projection differs from exact journals")
+
+
+def _verify_journal_references(
+    session: Session,
+    collection_id: int,
+    journal_id: str,
+    projection: ProvenanceJournalProjection,
+) -> None:
+    actual = session.scalars(
+        select(CollectionProvenanceExternalStateReferenceRecord)
+        .where(
+            CollectionProvenanceExternalStateReferenceRecord.collection_id == collection_id,
+            CollectionProvenanceExternalStateReferenceRecord.from_journal_id == journal_id,
+        )
+        .order_by(
+            CollectionProvenanceExternalStateReferenceRecord.to_journal_id,
+            CollectionProvenanceExternalStateReferenceRecord.entry_id,
+            CollectionProvenanceExternalStateReferenceRecord.state_id,
+            CollectionProvenanceExternalStateReferenceRecord.entry_json_sha256,
+        )
+        .execution_options(yield_per=100)
+    )
+    for expected, current in zip_longest(projection.external_state_references, actual):
+        if (
+            expected is None
+            or current is None
+            or (
+                expected.to_journal_id,
+                expected.entry_id,
+                expected.state_id,
+                expected.entry_json_sha256,
+            )
+            != (
+                current.to_journal_id,
+                current.entry_id,
+                current.state_id,
+                current.entry_json_sha256,
+            )
+        ):
+            raise InvalidState("catalog provenance lineage differs from exact journals")
+
+
+def _canonical_text_order(session: Session, column: Any) -> Any:
+    bind = session.get_bind()
+    return column.collate("C" if bind.dialect.name == "postgresql" else "BINARY")
+
+
 def _provenance_file_statement(
     *,
     collection_id: int,
-    collection: CollectionRecord,
     principal: ApplicationPrincipal,
     q: str | None,
     status: str | None,
@@ -575,21 +777,21 @@ def _provenance_file_statement(
         )
         .where(CollectionFileRecord.collection_id == collection_id)
     )
-    if principal.artifact_scope is not None:
-        paths = sorted(
-            path
-            for scoped_collection_id, path in principal.artifact_scope
-            if scoped_collection_id == collection_id
+    joined = joined.where(
+        artifact_scope_filter(
+            CollectionFileRecord.collection_id,
+            CollectionFileRecord.path,
+            principal,
         )
-        joined = joined.where(CollectionFileRecord.path.in_(paths))
+    )
     if q:
         joined = joined.where(
-            func.lower(CollectionFileRecord.path).like(_like_pattern(q.casefold()), escape="\\")
+            CollectionFileRecord.path_search_text.like(
+                _like_pattern(q.casefold()),
+                escape="\\",
+            )
         )
-    effective_status = func.coalesce(
-        CollectionFileProvenanceRecord.status,
-        "omitted" if collection.provenance_mode == "omitted" else "missing",
-    )
+    effective_status = CollectionFileRecord.provenance_status
     if status is not None:
         joined = joined.where(effective_status == status)
     sort_column = {
@@ -597,8 +799,8 @@ def _provenance_file_statement(
         "bytes": CollectionFileRecord.bytes,
         "status": effective_status,
     }[sort]
-    direction = desc(sort_column) if order == "desc" else asc(sort_column)
-    return joined.order_by(direction, CollectionFileRecord.path.asc())
+    ordering = desc if order == "desc" else asc
+    return joined.order_by(ordering(sort_column), ordering(CollectionFileRecord.path))
 
 
 def _authorized_collection(
@@ -618,51 +820,164 @@ def _authorized_collection(
     return record
 
 
+def _shown_file(
+    session: Session,
+    collection_id: int,
+    path: str,
+    principal: ApplicationPrincipal,
+) -> dict[str, Any]:
+    collection = _authorized_collection(session, collection_id, principal)
+    require_artifact_scope(session, principal, collection_id, path)
+    row = session.execute(
+        select(CollectionFileRecord, CollectionFileProvenanceRecord)
+        .outerjoin(
+            CollectionFileProvenanceRecord,
+            (CollectionFileProvenanceRecord.collection_id == CollectionFileRecord.collection_id)
+            & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
+        )
+        .where(
+            CollectionFileRecord.collection_id == collection_id,
+            CollectionFileRecord.path == path,
+        )
+    ).one_or_none()
+    if row is None:
+        raise NotFound(f"collection file not found: {collection_id}::{path}")
+    payload = _file_payload(row[0], row[1], collection)
+    if row[1] is not None and row[1].journal_id is not None:
+        journal = session.get(
+            CollectionProvenanceJournalRecord,
+            (collection_id, row[1].journal_id),
+        )
+        if journal is None:
+            raise InvalidState("captured provenance journal is missing")
+        payload["journal"] = _journal_payload(journal)
+    return payload
+
+
+def _reachable_journals(
+    seed: Any,
+    *,
+    collection_id: int,
+    name: str,
+) -> Any:
+    reachable = seed.cte(name, recursive=True)
+    references = CollectionProvenanceExternalStateReferenceRecord.__table__.alias(
+        f"{name}_references"
+    )
+    reachable = reachable.union(
+        select(references.c.to_journal_id.label("journal_id")).select_from(
+            references.join(
+                reachable,
+                and_(
+                    references.c.collection_id == collection_id,
+                    references.c.from_journal_id == reachable.c.journal_id,
+                ),
+            )
+        )
+    )
+    return reachable
+
+
+def _trace_statements(collection_id: int, journal_id: str) -> tuple[Any, Any]:
+    reachable = _reachable_journals(
+        select(CollectionProvenanceJournalRecord.journal_id.label("journal_id")).where(
+            CollectionProvenanceJournalRecord.collection_id == collection_id,
+            CollectionProvenanceJournalRecord.journal_id == journal_id,
+        ),
+        collection_id=collection_id,
+        name="trace_reachable_journals",
+    )
+    journals = (
+        select(CollectionProvenanceJournalRecord)
+        .join(
+            reachable,
+            reachable.c.journal_id == CollectionProvenanceJournalRecord.journal_id,
+        )
+        .where(CollectionProvenanceJournalRecord.collection_id == collection_id)
+        .order_by(CollectionProvenanceJournalRecord.journal_id)
+    )
+    references = (
+        select(CollectionProvenanceExternalStateReferenceRecord)
+        .join(
+            reachable,
+            reachable.c.journal_id
+            == CollectionProvenanceExternalStateReferenceRecord.from_journal_id,
+        )
+        .where(CollectionProvenanceExternalStateReferenceRecord.collection_id == collection_id)
+        .order_by(
+            CollectionProvenanceExternalStateReferenceRecord.from_journal_id,
+            CollectionProvenanceExternalStateReferenceRecord.to_journal_id,
+            CollectionProvenanceExternalStateReferenceRecord.state_id,
+            CollectionProvenanceExternalStateReferenceRecord.entry_id,
+        )
+    )
+    return journals, references
+
+
+def _statement_count(session: Session, statement: Any) -> int:
+    return int(
+        session.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0
+    )
+
+
+def _trace_page_items(
+    session: Session,
+    journal_statement: Any,
+    reference_statement: Any,
+    *,
+    journal_total: int,
+    offset: int,
+    limit: int,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if offset < journal_total:
+        journals = session.scalars(journal_statement.offset(offset).limit(limit))
+        items.extend(
+            {"kind": "journal", "journal": _journal_payload(journal)} for journal in journals
+        )
+    remaining = limit - len(items)
+    if remaining > 0:
+        reference_offset = max(0, offset - journal_total)
+        references = session.scalars(reference_statement.offset(reference_offset).limit(remaining))
+        items.extend(
+            {
+                "kind": "external_state_reference",
+                "reference": _external_state_reference_payload(reference),
+            }
+            for reference in references
+        )
+    return items
+
+
 def _journal_is_in_artifact_scope(
     session: Session,
     collection_id: int,
     journal_id: str,
     principal: ApplicationPrincipal,
 ) -> bool:
-    if principal.artifact_scope is None:
+    if not principal.has_artifact_scope:
         return True
-    paths = sorted(
-        path
-        for scoped_collection_id, path in principal.artifact_scope
-        if scoped_collection_id == collection_id
+    reachable = _reachable_journals(
+        select(CollectionFileProvenanceRecord.journal_id.label("journal_id"))
+        .where(
+            CollectionFileProvenanceRecord.collection_id == collection_id,
+            artifact_scope_filter(
+                CollectionFileProvenanceRecord.collection_id,
+                CollectionFileProvenanceRecord.path,
+                principal,
+            ),
+            CollectionFileProvenanceRecord.journal_id.is_not(None),
+        )
+        .distinct(),
+        collection_id=collection_id,
+        name="scope_reachable_journals",
     )
-    if not paths:
-        return False
-    reachable = {
-        item
-        for item in session.scalars(
-            select(CollectionFileProvenanceRecord.journal_id).where(
-                CollectionFileProvenanceRecord.collection_id == collection_id,
-                CollectionFileProvenanceRecord.path.in_(paths),
-                CollectionFileProvenanceRecord.journal_id.is_not(None),
-            )
+    return (
+        session.scalar(
+            select(reachable.c.journal_id).where(reachable.c.journal_id == journal_id).limit(1)
         )
-        if item is not None
-    }
-    pending = set(reachable)
-    while pending:
-        discovered = (
-            set(
-                session.scalars(
-                    select(CollectionProvenanceExternalStateReferenceRecord.to_journal_id).where(
-                        CollectionProvenanceExternalStateReferenceRecord.collection_id
-                        == collection_id,
-                        CollectionProvenanceExternalStateReferenceRecord.from_journal_id.in_(
-                            pending
-                        ),
-                    )
-                )
-            )
-            - reachable
-        )
-        reachable.update(discovered)
-        pending = discovered
-    return journal_id in reachable
+        is not None
+    )
 
 
 def _file_payload(
@@ -670,6 +985,15 @@ def _file_payload(
     binding: CollectionFileProvenanceRecord | None,
     collection: CollectionRecord,
 ) -> dict[str, Any]:
+    effective_status = (
+        binding.status
+        if binding is not None
+        else "omitted"
+        if collection.provenance_mode == "omitted"
+        else "missing"
+    )
+    if file.provenance_status != effective_status:
+        raise InvalidState("catalog file provenance status projection differs")
     if binding is None:
         if collection.provenance_mode != "omitted":
             raise InvalidState(f"collection file provenance is missing: {file.path}")
@@ -699,8 +1023,6 @@ def _file_payload(
 
 def _journal_payload(
     record: CollectionProvenanceJournalRecord,
-    *,
-    ancestor_journal_ids: Iterable[str],
 ) -> dict[str, Any]:
     return {
         "journal_id": record.journal_id,
@@ -712,7 +1034,6 @@ def _journal_payload(
         "current_bytes": record.current_bytes,
         "current_sha256": record.current_sha256,
         "agent_ids": json.loads(record.agent_ids_json),
-        "ancestor_journal_ids": sorted(set(ancestor_journal_ids)),
         "entity_counts": json.loads(record.entity_counts_json),
     }
 
@@ -748,8 +1069,13 @@ def _page_options(page: int, per_page: int, sort: str, order: str) -> None:
         raise BadRequest("page and per_page must be positive")
     if sort not in _SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
-    if order not in {"asc", "desc"}:
+    if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
+
+
+def _trace_page_options(page: int, per_page: int) -> None:
+    if page < 1 or per_page < 1 or per_page > 100:
+        raise BadRequest("trace page and per_page must be between 1 and 100")
 
 
 def _like_pattern(value: str) -> str:
