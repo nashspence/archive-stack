@@ -943,21 +943,29 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                     frozenset({access_indexes[sort]}),
                 )
             )
-    for name, kwargs, index in (
-        ("q", {"q": "provenance"}, "ix_app_key_access_grants_search_trgm"),
-        ("app", {"app": "app-000"}, "ix_app_keys_app"),
-        ("key_id", {"key_id": "f7efa4f864ae9b88"}, "app_key_access_grants_pkey"),
+    for name, kwargs, indexes in (
+        ("q", {"q": "provenance"}, frozenset({"ix_app_key_access_grants_search_trgm"})),
+        (
+            "app",
+            {"app": "app-000"},
+            frozenset({"ix_app_keys_app", "ix_app_keys_app_trgm"}),
+        ),
+        (
+            "key_id",
+            {"key_id": "f7efa4f864ae9b88"},
+            frozenset({"app_key_access_grants_pkey"}),
+        ),
         (
             "permission",
             {"permission": "provenance:read"},
-            "ix_app_key_access_grants_permission",
+            frozenset({"ix_app_key_access_grants_permission"}),
         ),
         (
             "resource",
             {"resource": "tag:tag-000001"},
-            "ix_app_key_access_grants_resource",
+            frozenset({"ix_app_key_access_grants_resource"}),
         ),
-        ("active", {"active": True}, "ix_app_keys_active"),
+        ("active", {"active": True}, frozenset({"ix_app_keys_active"})),
     ):
         statement = _access_list_statement(
             q=str(kwargs["q"]) if "q" in kwargs else None,
@@ -970,7 +978,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             active=bool(kwargs["active"]) if "active" in kwargs else None,
             now=_NOW,
         )[6]
-        cases.append(_PlanCase(f"application-access.filter.{name}", statement, frozenset({index})))
+        cases.append(_PlanCase(f"application-access.filter.{name}", statement, indexes))
 
     for sort in sorted(closed_literal_values(ApplicationSort)):
         for order in ("asc", "desc"):
@@ -1057,7 +1065,7 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
                     app="app-000",
                     active=None,
                 )[5],
-                frozenset({"ix_app_keys_app"}),
+                frozenset({"ix_app_keys_app", "ix_app_keys_app_trgm"}),
             ),
             _PlanCase(
                 "download-quotas.filter.active",
