@@ -146,6 +146,25 @@ def test_maintained_role_openapi_is_derived_from_each_executable_binding() -> No
                 )
 
 
+def test_maintained_role_services_expose_no_unaccounted_query_selectors() -> None:
+    """Freeze selector-free role protocols across every maintained implementation."""
+
+    for app, _contracts, _unadvertised in _applications():
+        selectors = {
+            str(operation["operationId"]): {
+                parameter["name"]
+                for parameter in operation.get("parameters", [])
+                if parameter["in"] == "query"
+            }
+            for path_item in app.openapi()["paths"].values()
+            for method, operation in path_item.items()
+            if method in {"delete", "get", "patch", "post", "put"}
+            if any(parameter["in"] == "query" for parameter in operation.get("parameters", []))
+        }
+
+        assert selectors == {}
+
+
 def test_unadvertised_role_methods_still_receive_runtime_method_rejection() -> None:
     for app, _, (method, path) in _applications():
         with TestClient(app) as client:

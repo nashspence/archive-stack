@@ -25,6 +25,7 @@ from riverhog_api_client.uploads import (
     put_collection_upload_unit,
     upload_collection_units,
 )
+from riverhog_application_access import ApplicationPermission
 from riverhog_cli_support.application_keys import (
     format_app_key_created,
     format_app_key_revoked,
@@ -793,7 +794,7 @@ def app_key_access_list_cmd(
             order=cast(Any, normalized_order),
             app=app_name,
             key_id=key_id,
-            permission=permission,
+            permission=cast(ApplicationPermission | None, permission),
             resource=resource,
             active=active,
         ) as items:
@@ -813,7 +814,7 @@ def app_key_access_list_cmd(
         order=cast(Any, normalized_order),
         app=app_name,
         key_id=key_id,
-        permission=permission,
+        permission=cast(ApplicationPermission | None, permission),
         resource=resource,
         active=active,
     )

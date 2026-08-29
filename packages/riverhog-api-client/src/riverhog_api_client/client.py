@@ -17,6 +17,7 @@ from http_api_contracts import (
     CanonicalVisibleText,
     CompleteEnumerationItemSchema,
     CompleteEnumerationReader,
+    closed_literal_values,
     parse_error_payload,
     safe_http_base_url,
 )
@@ -103,6 +104,8 @@ type CollectionUploadIdempotencyKey = Annotated[
 _PROVENANCE_JOURNAL_ID: TypeAdapter[str] = TypeAdapter(ProvenanceJournalId)
 _APPLICATION_NAME: TypeAdapter[str] = TypeAdapter(ApplicationName)
 _APPLICATION_KEY_ID: TypeAdapter[str] = TypeAdapter(ApplicationKeyId)
+_APPLICATION_PERMISSION: TypeAdapter[str] = TypeAdapter(ApplicationPermission)
+_APPLICATION_RESOURCE: TypeAdapter[str] = TypeAdapter(ApplicationResource)
 _ARCHIVE_STORE_NAME: TypeAdapter[str] = TypeAdapter(ArchiveStoreName)
 _COLLECTION_ID: TypeAdapter[int] = TypeAdapter(CollectionId)
 _CANONICAL_RELPATH: TypeAdapter[str] = TypeAdapter(CanonicalRelPath)
@@ -174,15 +177,24 @@ _STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
         sha256="f48a24af35bddcbeeda930b4744ebfd08dbfa4f50fc8b433d43d4cfa95f903d8",
     ),
 }
-_RETRIEVAL_CACHE_SORTS = {
-    "collection_id",
-    "source_store",
-    "object_id",
-    "stored_bytes",
-    "cached_at",
-    "verified_at",
-    "protected_until",
-}
+_SORT_ORDERS = closed_literal_values(SortOrder)
+_COLLECTION_SORTS = closed_literal_values(CollectionSort)
+_COLLECTION_UPLOAD_SORTS = closed_literal_values(CollectionUploadSort)
+_COLLECTION_UPLOAD_STATES = closed_literal_values(CollectionUploadState)
+_RETRIEVAL_CACHE_SORTS = closed_literal_values(RetrievalCacheSort)
+_RETRIEVAL_CACHE_STATES = closed_literal_values(RetrievalCacheState)
+_RETRIEVAL_CACHE_PROTECTIONS = closed_literal_values(RetrievalCacheProtection)
+_SEARCH_SORTS = closed_literal_values(SearchSort)
+_PROVENANCE_SORTS = closed_literal_values(ProvenanceSort)
+_PROVENANCE_STATUSES = closed_literal_values(ProvenanceStatus)
+_ARCHIVE_STORE_SORTS = closed_literal_values(ArchiveStoreSort)
+_APPLICATION_SORTS = closed_literal_values(ApplicationSort)
+_APPLICATION_KEY_SORTS = closed_literal_values(ApplicationKeySort)
+_APPLICATION_ACCESS_SORTS = closed_literal_values(ApplicationAccessSort)
+_TAG_SORTS = closed_literal_values(TagSort)
+_DOWNLOAD_QUOTA_SORTS = closed_literal_values(DownloadQuotaSort)
+_ARCHIVE_COPY_SORTS = closed_literal_values(ArchiveCopySort)
+_ARCHIVE_COPY_STATES = closed_literal_values(ArchiveCopyState)
 
 _COLLECTION_UPLOAD_IDEMPOTENCY_KEY: TypeAdapter[CollectionUploadIdempotencyKey] = TypeAdapter(
     CollectionUploadIdempotencyKey
@@ -213,6 +225,20 @@ def _application_name(value: str) -> str:
 def _application_key_id(value: str) -> str:
     try:
         return _APPLICATION_KEY_ID.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def _application_permission(value: str) -> str:
+    try:
+        return _APPLICATION_PERMISSION.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(str(exc)) from exc
+
+
+def _application_resource(value: str) -> str:
+    try:
+        return _APPLICATION_RESOURCE.validate_python(value, strict=True)
     except ValidationError as exc:
         raise BadRequest(str(exc)) from exc
 
@@ -840,20 +866,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset(
-                    {
-                        "collection_id",
-                        "source_store",
-                        "object_id",
-                        "stored_bytes",
-                        "cached_at",
-                        "verified_at",
-                        "protected_until",
-                    }
-                ),
+                _RETRIEVAL_CACHE_SORTS,
                 "retrieval-cache sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
@@ -866,13 +882,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if state:
             params["state"] = _one_of(
                 state,
-                frozenset({"ready", "delete_pending", "deleting"}),
+                _RETRIEVAL_CACHE_STATES,
                 "retrieval-cache state",
             )
         if protection:
             params["protection"] = _one_of(
                 protection,
-                frozenset({"protected", "unleased"}),
+                _RETRIEVAL_CACHE_PROTECTIONS,
                 "retrieval-cache protection",
             )
         if expires_before:
@@ -897,8 +913,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         order: SortOrder = "desc",
     ) -> Iterator[Iterator[dict[str, Any]]]:
         params: dict[str, Any] = {
-            "sort": _one_of(sort, frozenset(_RETRIEVAL_CACHE_SORTS), "retrieval-cache sort"),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "sort": _one_of(sort, _RETRIEVAL_CACHE_SORTS, "retrieval-cache sort"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         query: dict[str, object] = {
             "q": q if q else None,
@@ -922,11 +938,11 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             query["source_store"] = params["source_store"] = _archive_store_name(source_store)
         if state:
             query["state"] = params["state"] = _one_of(
-                state, frozenset({"ready", "delete_pending", "deleting"}), "retrieval-cache state"
+                state, _RETRIEVAL_CACHE_STATES, "retrieval-cache state"
             )
         if protection:
             query["protection"] = params["protection"] = _one_of(
-                protection, frozenset({"protected", "unleased"}), "retrieval-cache protection"
+                protection, _RETRIEVAL_CACHE_PROTECTIONS, "retrieval-cache protection"
             )
         if expires_before:
             params["expires_before"] = expires_before
@@ -1265,17 +1281,17 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset({"id", "created_at", "state", "bytes", "files"}),
+                _COLLECTION_UPLOAD_SORTS,
                 "collection-upload sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
         if state:
             params["state"] = _one_of(
                 state,
-                frozenset({"open", "closing", "uploading", "finalizing", "orphaned", "discarding"}),
+                _COLLECTION_UPLOAD_STATES,
                 "collection-upload state",
             )
         if tag is not None:
@@ -1294,10 +1310,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
     ) -> Iterator[Iterator[dict[str, Any]]]:
         normalized_sort = _one_of(
             sort,
-            frozenset({"id", "created_at", "state", "bytes", "files"}),
+            _COLLECTION_UPLOAD_SORTS,
             "collection-upload sort",
         )
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         params: dict[str, Any] = {"sort": normalized_sort, "order": normalized_order}
         query: dict[str, object] = {
             "q": q if q else None,
@@ -1311,7 +1327,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if state:
             query["state"] = params["state"] = _one_of(
                 state,
-                frozenset({"open", "closing", "uploading", "finalizing", "orphaned", "discarding"}),
+                _COLLECTION_UPLOAD_STATES,
                 "collection-upload state",
             )
         if tag is not None:
@@ -1444,10 +1460,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset({"file_ref", "collection_id", "path", "bytes"}),
+                _SEARCH_SORTS,
                 "search sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if query:
             params["q"] = query
@@ -1464,10 +1480,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         order: SortOrder = "asc",
         collection: CollectionId | None = None,
     ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(
-            sort, frozenset({"file_ref", "collection_id", "path", "bytes"}), "search sort"
-        )
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_sort = _one_of(sort, _SEARCH_SORTS, "search sort")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         normalized_collection = _collection_id(collection) if collection is not None else None
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         if query:
@@ -1509,17 +1523,17 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset({"path", "bytes", "status"}),
+                _PROVENANCE_SORTS,
                 "provenance sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
         if status:
             params["status"] = _one_of(
                 status,
-                frozenset({"captured", "omitted"}),
+                _PROVENANCE_STATUSES,
                 "provenance status",
             )
         return self._json(
@@ -1539,12 +1553,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         order: SortOrder = "asc",
     ) -> Iterator[Iterator[dict[str, Any]]]:
         normalized_id = _collection_id(collection_id)
-        normalized_sort = _one_of(sort, frozenset({"path", "bytes", "status"}), "provenance sort")
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_sort = _one_of(sort, _PROVENANCE_SORTS, "provenance sort")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         normalized_status = (
-            _one_of(status, frozenset({"captured", "omitted"}), "provenance status")
-            if status
-            else None
+            _one_of(status, _PROVENANCE_STATUSES, "provenance status") if status else None
         )
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         if q:
@@ -1692,13 +1704,13 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if sort != "id":
             params["sort"] = _one_of(
                 sort,
-                frozenset({"id", "created_at", "bytes", "files"}),
+                _COLLECTION_SORTS,
                 "collection sort",
             )
         if order != "asc":
             params["order"] = _one_of(
                 order,
-                frozenset({"asc", "desc"}),
+                _SORT_ORDERS,
                 "sort order",
             )
         if q:
@@ -1722,10 +1734,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         sort: CollectionSort = "id",
         order: SortOrder = "asc",
     ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(
-            sort, frozenset({"id", "created_at", "bytes", "files"}), "collection sort"
-        )
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_sort = _one_of(sort, _COLLECTION_SORTS, "collection sort")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         normalized_tag = _canonical_tag(tag) if tag is not None else None
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         for key, value in {
@@ -1765,19 +1775,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset(
-                    {
-                        "store",
-                        "read_mode",
-                        "read_priority",
-                        "collections",
-                        "objects",
-                        "stored_bytes",
-                    }
-                ),
+                _ARCHIVE_STORE_SORTS,
                 "archive-store sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
@@ -1791,11 +1792,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         sort: ArchiveStoreSort = "store",
         order: SortOrder = "asc",
     ) -> Iterator[Iterator[dict[str, Any]]]:
-        allowed = frozenset(
-            {"store", "read_mode", "read_priority", "collections", "objects", "stored_bytes"}
-        )
-        normalized_sort = _one_of(sort, allowed, "archive-store sort")
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_sort = _one_of(sort, _ARCHIVE_STORE_SORTS, "archive-store sort")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         if q:
             params["q"] = q
@@ -1825,10 +1823,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset({"name", "keys", "active_keys", "last_used_at"}),
+                _APPLICATION_SORTS,
                 "application sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
@@ -1845,10 +1843,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         order: SortOrder = "asc",
         active: bool | None = None,
     ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(
-            sort, frozenset({"name", "keys", "active_keys", "last_used_at"}), "application sort"
-        )
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_sort = _one_of(sort, _APPLICATION_SORTS, "application sort")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         if q:
             params["q"] = q
@@ -1899,10 +1895,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset({"id", "created_at", "expires_at", "last_used_at"}),
+                _APPLICATION_KEY_SORTS,
                 "application-key sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
@@ -1927,10 +1923,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         normalized_app = _application_name(app)
         normalized_sort = _one_of(
             sort,
-            frozenset({"id", "created_at", "expires_at", "last_used_at"}),
+            _APPLICATION_KEY_SORTS,
             "application-key sort",
         )
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         if q:
             params["q"] = q
@@ -1974,8 +1970,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         order: SortOrder = "asc",
         app: ApplicationName | None = None,
         key_id: ApplicationKeyId | None = None,
-        permission: str | None = None,
-        resource: str | None = None,
+        permission: ApplicationPermission | None = None,
+        resource: ApplicationResource | None = None,
         active: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -1983,10 +1979,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset({"app", "key_id", "permission", "resource", "created_at"}),
+                _APPLICATION_ACCESS_SORTS,
                 "application-access sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
@@ -1995,9 +1991,9 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         if key_id is not None:
             params["key"] = _application_key_id(key_id)
         if permission:
-            params["permission"] = permission
+            params["permission"] = _application_permission(permission)
         if resource:
-            params["resource"] = resource
+            params["resource"] = _application_resource(resource)
         if active is not None:
             params["active"] = str(active).lower()
         return self._json("GET", "/v1/app-key-access", params=params)
@@ -2011,25 +2007,29 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         order: SortOrder = "asc",
         app: ApplicationName | None = None,
         key_id: ApplicationKeyId | None = None,
-        permission: str | None = None,
-        resource: str | None = None,
+        permission: ApplicationPermission | None = None,
+        resource: ApplicationResource | None = None,
         active: bool | None = None,
     ) -> Iterator[Iterator[dict[str, Any]]]:
         normalized_sort = _one_of(
             sort,
-            frozenset({"app", "key_id", "permission", "resource", "created_at"}),
+            _APPLICATION_ACCESS_SORTS,
             "application-access sort",
         )
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         normalized_app = _application_name(app) if app is not None else None
         normalized_key = _application_key_id(key_id) if key_id is not None else None
+        normalized_permission = (
+            _application_permission(permission) if permission is not None else None
+        )
+        normalized_resource = _application_resource(resource) if resource is not None else None
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         for key, value in {
             "q": q if q else None,
             "app": normalized_app,
             "key": normalized_key,
-            "permission": permission if permission else None,
-            "resource": resource if resource else None,
+            "permission": normalized_permission,
+            "resource": normalized_resource,
         }.items():
             if value is not None:
                 params[key] = value
@@ -2043,8 +2043,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
                 "order": normalized_order,
                 "app": normalized_app,
                 "key": normalized_key,
-                "permission": permission if permission else None,
-                "resource": resource if resource else None,
+                "permission": normalized_permission,
+                "resource": normalized_resource,
                 "active": active,
             },
             params=params,
@@ -2116,10 +2116,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset({"id", "created_at", "collections"}),
+                _TAG_SORTS,
                 "tag sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
@@ -2133,8 +2133,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         sort: TagSort = "id",
         order: SortOrder = "asc",
     ) -> Iterator[Iterator[dict[str, Any]]]:
-        normalized_sort = _one_of(sort, frozenset({"id", "created_at", "collections"}), "tag sort")
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_sort = _one_of(sort, _TAG_SORTS, "tag sort")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         if q:
             params["q"] = q
@@ -2250,19 +2250,10 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset(
-                    {
-                        "app",
-                        "key_id",
-                        "monthly_bytes",
-                        "accounted_bytes",
-                        "reserved_bytes",
-                        "remaining_bytes",
-                    }
-                ),
+                _DOWNLOAD_QUOTA_SORTS,
                 "download-quota sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
@@ -2282,18 +2273,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         app: ApplicationName | None = None,
         active: bool | None = None,
     ) -> Iterator[Iterator[dict[str, Any]]]:
-        allowed = frozenset(
-            {
-                "app",
-                "key_id",
-                "monthly_bytes",
-                "accounted_bytes",
-                "reserved_bytes",
-                "remaining_bytes",
-            }
-        )
-        normalized_sort = _one_of(sort, allowed, "download-quota sort")
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_sort = _one_of(sort, _DOWNLOAD_QUOTA_SORTS, "download-quota sort")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         normalized_app = _application_name(app) if app is not None else None
         params: dict[str, object] = {"sort": normalized_sort, "order": normalized_order}
         if q:
@@ -2356,36 +2337,17 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             "per_page": per_page,
             "sort": _one_of(
                 sort,
-                frozenset(
-                    {
-                        "collection_id",
-                        "source_store",
-                        "destination_store",
-                        "state",
-                        "requested_at",
-                    }
-                ),
+                _ARCHIVE_COPY_SORTS,
                 "archive-copy sort",
             ),
-            "order": _one_of(order, frozenset({"asc", "desc"}), "sort order"),
+            "order": _one_of(order, _SORT_ORDERS, "sort order"),
         }
         if q:
             params["q"] = q
         if state:
             params["state"] = _one_of(
                 state,
-                frozenset(
-                    {
-                        "requested",
-                        "waiting",
-                        "checking",
-                        "copying",
-                        "canceling",
-                        "completed",
-                        "failed",
-                        "canceled",
-                    }
-                ),
+                _ARCHIVE_COPY_STATES,
                 "archive-copy state",
             )
         return self._json("GET", "/v1/archive/copies", params=params)
@@ -2399,26 +2361,12 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         sort: ArchiveCopySort = "requested_at",
         order: SortOrder = "desc",
     ) -> Iterator[Iterator[dict[str, Any]]]:
-        allowed_sorts = frozenset(
-            {"collection_id", "source_store", "destination_store", "state", "requested_at"}
-        )
-        normalized_sort = _one_of(sort, allowed_sorts, "archive-copy sort")
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_sort = _one_of(sort, _ARCHIVE_COPY_SORTS, "archive-copy sort")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
         normalized_state = (
             _one_of(
                 state,
-                frozenset(
-                    {
-                        "requested",
-                        "waiting",
-                        "checking",
-                        "copying",
-                        "canceling",
-                        "completed",
-                        "failed",
-                        "canceled",
-                    }
-                ),
+                _ARCHIVE_COPY_STATES,
                 "archive-copy state",
             )
             if state

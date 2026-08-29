@@ -24,6 +24,7 @@ from riverhog_protocol.collection_workflows import (
     canonical_json_bytes,
     canonical_json_sha256,
 )
+from riverhog_protocol.list_controls import ClaimState, ProcessingClaimSort, SortOrder
 from riverhog_protocol.paths import CanonicalRelPath, CanonicalTag, CollectionId, normalize_tag
 
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -33,7 +34,6 @@ SemanticId = Annotated[
     Field(pattern=r"^[a-z0-9](?:[a-z0-9._/-]{0,158}[a-z0-9])?$"),
 ]
 Timestamp = Annotated[str, Field(min_length=1, max_length=64)]
-ClaimState = Literal["active", "settled", "retiring", "abandoned", "released"]
 CapabilityAction = Literal["read-inputs", "write-output"]
 
 WORK_DOCUMENT_MAX_BYTES = 4 * 1024 * 1024
@@ -666,8 +666,8 @@ class ProcessingClaimPageDocument(RiverhogWorkflowDocument):
     per_page: int = Field(ge=0)
     total: int = Field(ge=0)
     pages: int = Field(ge=0)
-    sort: Literal["created_at", "updated_at", "expires_at", "state", "work_id", "execution_id"]
-    order: Literal["asc", "desc"]
+    sort: ProcessingClaimSort
+    order: SortOrder
     filters: ProcessingClaimFiltersDocument
     claims: list[ProcessingClaimDocument]
 

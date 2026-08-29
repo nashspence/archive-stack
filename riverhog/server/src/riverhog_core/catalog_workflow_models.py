@@ -79,6 +79,12 @@ class CollectionProcessingClaimRecord(Base):
             "updated_at",
         ),
         Index(
+            "ix_collection_processing_claims_owner_state_id",
+            "consumer_app",
+            "state",
+            "id",
+        ),
+        Index(
             "ix_collection_processing_claims_expiry",
             "state",
             "expires_at",
@@ -87,6 +93,42 @@ class CollectionProcessingClaimRecord(Base):
             "ix_collection_processing_claims_work",
             "work_id",
             "consumer_app",
+        ),
+        Index(
+            "ix_collection_processing_claims_owner_created",
+            "consumer_app",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_collection_processing_claims_owner_updated",
+            "consumer_app",
+            "updated_at",
+            "id",
+        ),
+        Index(
+            "ix_collection_processing_claims_owner_expires",
+            "consumer_app",
+            "expires_at",
+            "id",
+        ),
+        Index(
+            "ix_collection_processing_claims_owner_work_id",
+            "consumer_app",
+            "work_id",
+            "id",
+        ),
+        Index(
+            "ix_collection_processing_claims_owner_execution",
+            "consumer_app",
+            "execution_id",
+            "id",
+        ),
+        CheckConstraint("length(id) = 64", name="ck_collection_processing_claims_id"),
+        CheckConstraint("length(work_id) = 64", name="ck_collection_processing_claims_work_id"),
+        CheckConstraint(
+            "length(work_document_sha256) = 64",
+            name="ck_collection_processing_claims_document_sha256",
         ),
     )
 
@@ -118,6 +160,9 @@ class CollectionProcessingClaimInputRecord(Base):
             "collection_id",
             "claim_id",
         ),
+        CheckConstraint("collection_order >= 0", name="ck_processing_claim_inputs_order"),
+        CheckConstraint("length(archive_root_sha256) = 64", name="ck_claim_inputs_archive_root"),
+        CheckConstraint("length(content_identity) = 64", name="ck_claim_inputs_content_identity"),
     )
 
 
@@ -145,6 +190,8 @@ class CollectionProcessingClaimArtifactRecord(Base):
             "path",
             "claim_id",
         ),
+        CheckConstraint("bytes >= 0", name="ck_processing_claim_artifacts_bytes"),
+        CheckConstraint("length(sha256) = 64", name="ck_processing_claim_artifacts_sha256"),
     )
 
 
@@ -201,6 +248,8 @@ class CollectionTransformCapabilityArtifactRecord(Base):
             "path",
             "capability_id",
         ),
+        CheckConstraint("bytes >= 0", name="ck_capability_artifacts_bytes"),
+        CheckConstraint("length(sha256) = 64", name="ck_capability_artifacts_sha256"),
     )
 
 

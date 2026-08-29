@@ -6,7 +6,7 @@ import math
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Any, Literal, Self, cast
+from typing import Any, Self, cast
 from urllib.parse import quote
 
 import httpx
@@ -14,6 +14,7 @@ from http_api_contracts import (
     JSON_SEQUENCE_MEDIA_TYPE,
     CompleteEnumerationItemSchema,
     CompleteEnumerationReader,
+    closed_literal_values,
     parse_error_payload,
     safe_http_base_url,
 )
@@ -25,6 +26,7 @@ from stove0_operator_contracts import (
     EvaluationPage,
     EvaluationPhase,
     EvaluationReviewIn,
+    EvaluationSort,
     EvaluationView,
     RecipeCatalogView,
     RecipeView,
@@ -32,11 +34,13 @@ from stove0_operator_contracts import (
     SchedulerRun,
     SchedulerRunIn,
     SchedulerStatus,
+    SortOrder,
     Stove0EventPage,
     WorkCreateIn,
     WorkflowPreviewIn,
     WorkPage,
     WorkPhase,
+    WorkSort,
     WorkView,
 )
 from stove0_protocol import (
@@ -46,9 +50,6 @@ from stove0_protocol import (
     WorkflowPreview,
 )
 
-type _WorkSort = Literal["updated_at", "phase", "work_id"]
-type _EvaluationSort = Literal["updated_at", "phase", "evaluation_id"]
-type _SortOrder = Literal["asc", "desc"]
 _STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
     "stove0.work-view/v1": CompleteEnumerationItemSchema(
         id="stove0.work-view/v1",
@@ -63,6 +64,11 @@ _STREAM_ITEM_SCHEMAS: dict[str, CompleteEnumerationItemSchema] = {
         sha256="e232a8cd82feef9c0182803e046cc2d761c6cc9a66de08fcb1aa58eb275a86c6",
     ),
 }
+_SORT_ORDERS = closed_literal_values(SortOrder)
+_WORK_SORTS = closed_literal_values(WorkSort)
+_WORK_PHASES = closed_literal_values(WorkPhase)
+_EVALUATION_SORTS = closed_literal_values(EvaluationSort)
+_EVALUATION_PHASES = closed_literal_values(EvaluationPhase)
 
 
 def _one_of(value: str, allowed: frozenset[str], label: str) -> str:
@@ -163,8 +169,8 @@ class Stove0ApiClient:
         per_page: int = 25,
         phase: WorkPhase | None = None,
         query: str | None = None,
-        sort: _WorkSort = "updated_at",
-        order: _SortOrder = "desc",
+        sort: WorkSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> WorkPage:
         return WorkPage.model_validate(
             self._json(
@@ -174,16 +180,16 @@ class Stove0ApiClient:
                     **{
                         "page": page,
                         "per_page": per_page,
-                        "phase": phase,
+                        "phase": _one_of(phase, _WORK_PHASES, "work phase") if phase else None,
                         "q": query,
                         "sort": _one_of(
                             sort,
-                            frozenset({"updated_at", "phase", "work_id"}),
+                            _WORK_SORTS,
                             "work sort",
                         ),
                         "order": _one_of(
                             order,
-                            frozenset({"asc", "desc"}),
+                            _SORT_ORDERS,
                             "sort order",
                         ),
                     }
@@ -197,13 +203,14 @@ class Stove0ApiClient:
         *,
         phase: WorkPhase | None = None,
         query: str | None = None,
-        sort: _WorkSort = "updated_at",
-        order: _SortOrder = "desc",
+        sort: WorkSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> Iterator[Iterator[WorkView]]:
-        normalized_sort = _one_of(sort, frozenset({"updated_at", "phase", "work_id"}), "work sort")
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_sort = _one_of(sort, _WORK_SORTS, "work sort")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
+        normalized_phase = _one_of(phase, _WORK_PHASES, "work phase") if phase else None
         expected_query = {
-            "phase": phase,
+            "phase": normalized_phase,
             "q": query,
             "sort": normalized_sort,
             "order": normalized_order,
@@ -323,8 +330,8 @@ class Stove0ApiClient:
         per_page: int = 25,
         phase: EvaluationPhase | None = None,
         query: str | None = None,
-        sort: _EvaluationSort = "updated_at",
-        order: _SortOrder = "desc",
+        sort: EvaluationSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> EvaluationPage:
         return EvaluationPage.model_validate(
             self._json(
@@ -334,16 +341,20 @@ class Stove0ApiClient:
                     **{
                         "page": page,
                         "per_page": per_page,
-                        "phase": phase,
+                        "phase": (
+                            _one_of(phase, _EVALUATION_PHASES, "evaluation phase")
+                            if phase
+                            else None
+                        ),
                         "q": query,
                         "sort": _one_of(
                             sort,
-                            frozenset({"updated_at", "phase", "evaluation_id"}),
+                            _EVALUATION_SORTS,
                             "evaluation sort",
                         ),
                         "order": _one_of(
                             order,
-                            frozenset({"asc", "desc"}),
+                            _SORT_ORDERS,
                             "sort order",
                         ),
                     }
@@ -357,17 +368,18 @@ class Stove0ApiClient:
         *,
         phase: EvaluationPhase | None = None,
         query: str | None = None,
-        sort: _EvaluationSort = "updated_at",
-        order: _SortOrder = "desc",
+        sort: EvaluationSort = "updated_at",
+        order: SortOrder = "desc",
     ) -> Iterator[Iterator[EvaluationView]]:
         normalized_sort = _one_of(
             sort,
-            frozenset({"updated_at", "phase", "evaluation_id"}),
+            _EVALUATION_SORTS,
             "evaluation sort",
         )
-        normalized_order = _one_of(order, frozenset({"asc", "desc"}), "sort order")
+        normalized_order = _one_of(order, _SORT_ORDERS, "sort order")
+        normalized_phase = _one_of(phase, _EVALUATION_PHASES, "evaluation phase") if phase else None
         expected_query = {
-            "phase": phase,
+            "phase": normalized_phase,
             "q": query,
             "sort": normalized_sort,
             "order": normalized_order,

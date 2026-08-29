@@ -881,6 +881,17 @@ def test_listener_store_negotiates_wal_only_during_initialization(
     assert not any("journal_mode" in statement.casefold() for statement in statements)
 
 
+def test_listener_store_rejects_current_revision_schema_drift(tmp_path: Path) -> None:
+    store = ListenerStore(tmp_path / "listener.sqlite3")
+    store.create()
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute("ALTER TABLE dispatches ADD COLUMN untracked TEXT")
+        connection.commit()
+
+    with pytest.raises(ListenerError, match="exact current schema"):
+        store.create()
+
+
 def test_listener_store_does_not_normalize_sqlite_owned_sidecars(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

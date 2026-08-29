@@ -5,6 +5,8 @@ from collections.abc import Iterator
 from itertools import zip_longest
 from typing import Any
 
+from http_api_contracts import closed_literal_values
+from riverhog_protocol import ProvenanceSort, ProvenanceStatus, SortOrder
 from riverhog_protocol.errors import BadRequest, InvalidState, NotFound
 from riverhog_protocol.paths import (
     PathNormalizationError,
@@ -20,7 +22,7 @@ from riverhog_provenance import (
     validate_provenance_archive,
     verify_payload_binding,
 )
-from sqlalchemy import and_, asc, delete, desc, func, select
+from sqlalchemy import and_, asc, delete, desc, func, select, update
 from sqlalchemy.orm import Session, undefer
 from state_schema import read_snapshot
 
@@ -46,7 +48,9 @@ from riverhog_core.provenance_projection import (
 )
 from riverhog_core.runtime_config import RuntimeConfig
 
-_SORT_FIELDS = {"path", "bytes", "status"}
+_SORT_FIELDS = closed_literal_values(ProvenanceSort)
+_STATUS_VALUES = closed_literal_values(ProvenanceStatus)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 
 
 class SqlAlchemyProvenanceService:
@@ -72,13 +76,12 @@ class SqlAlchemyProvenanceService:
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
         _page_options(page, per_page, sort, order)
-        if status is not None and status not in {"captured", "omitted"}:
-            raise BadRequest("status must be captured or omitted")
+        if status is not None and status not in _STATUS_VALUES:
+            raise BadRequest(f"status must be one of {', '.join(sorted(_STATUS_VALUES))}")
         with read_snapshot(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
             joined = _provenance_file_statement(
                 collection_id=collection_id,
-                collection=collection,
                 principal=principal,
                 q=q,
                 status=status,
@@ -115,13 +118,12 @@ class SqlAlchemyProvenanceService:
     ) -> Iterator[dict[str, Any]]:
         collection_id = _collection_id(collection_id)
         _page_options(1, 100, sort, order)
-        if status is not None and status not in {"captured", "omitted"}:
-            raise BadRequest("status must be captured or omitted")
+        if status is not None and status not in _STATUS_VALUES:
+            raise BadRequest(f"status must be one of {', '.join(sorted(_STATUS_VALUES))}")
         with read_snapshot(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
             statement = _provenance_file_statement(
                 collection_id=collection_id,
-                collection=collection,
                 principal=principal,
                 q=q,
                 status=status,
@@ -298,6 +300,28 @@ class SqlAlchemyProvenanceService:
                 )
                 or 0
             )
+            mismatched_status = session.scalar(
+                select(CollectionFileRecord.path)
+                .outerjoin(
+                    CollectionFileProvenanceRecord,
+                    (
+                        CollectionFileProvenanceRecord.collection_id
+                        == CollectionFileRecord.collection_id
+                    )
+                    & (CollectionFileProvenanceRecord.path == CollectionFileRecord.path),
+                )
+                .where(
+                    CollectionFileRecord.collection_id == collection_id,
+                    CollectionFileRecord.provenance_status
+                    != func.coalesce(
+                        CollectionFileProvenanceRecord.status,
+                        "omitted" if collection.provenance_mode == "omitted" else "missing",
+                    ),
+                )
+                .limit(1)
+            )
+            if mismatched_status is not None:
+                raise InvalidState("catalog file provenance status projection differs")
             if collection.provenance_mode == "omitted":
                 nonomitted = session.scalar(
                     select(CollectionFileProvenanceRecord.path)
@@ -494,6 +518,22 @@ class SqlAlchemyProvenanceService:
                     omission_reason=item.omission_reason,
                 )
                 for item in validated.bindings
+            )
+            session.flush()
+            binding_status = (
+                select(CollectionFileProvenanceRecord.status)
+                .where(
+                    CollectionFileProvenanceRecord.collection_id
+                    == CollectionFileRecord.collection_id,
+                    CollectionFileProvenanceRecord.path == CollectionFileRecord.path,
+                )
+                .correlate(CollectionFileRecord)
+                .scalar_subquery()
+            )
+            session.execute(
+                update(CollectionFileRecord)
+                .where(CollectionFileRecord.collection_id == collection_id)
+                .values(provenance_status=func.coalesce(binding_status, "missing"))
             )
             for journal_id in sorted(validated.journal_bytes):
                 session.add_all(projections[journal_id].entities)
@@ -722,7 +762,6 @@ def _canonical_text_order(session: Session, column: Any) -> Any:
 def _provenance_file_statement(
     *,
     collection_id: int,
-    collection: CollectionRecord,
     principal: ApplicationPrincipal,
     q: str | None,
     status: str | None,
@@ -747,12 +786,12 @@ def _provenance_file_statement(
     )
     if q:
         joined = joined.where(
-            func.lower(CollectionFileRecord.path).like(_like_pattern(q.casefold()), escape="\\")
+            CollectionFileRecord.path_search_text.like(
+                _like_pattern(q.casefold()),
+                escape="\\",
+            )
         )
-    effective_status = func.coalesce(
-        CollectionFileProvenanceRecord.status,
-        "omitted" if collection.provenance_mode == "omitted" else "missing",
-    )
+    effective_status = CollectionFileRecord.provenance_status
     if status is not None:
         joined = joined.where(effective_status == status)
     sort_column = {
@@ -760,8 +799,8 @@ def _provenance_file_statement(
         "bytes": CollectionFileRecord.bytes,
         "status": effective_status,
     }[sort]
-    direction = desc(sort_column) if order == "desc" else asc(sort_column)
-    return joined.order_by(direction, CollectionFileRecord.path.asc())
+    ordering = desc if order == "desc" else asc
+    return joined.order_by(ordering(sort_column), ordering(CollectionFileRecord.path))
 
 
 def _authorized_collection(
@@ -946,6 +985,15 @@ def _file_payload(
     binding: CollectionFileProvenanceRecord | None,
     collection: CollectionRecord,
 ) -> dict[str, Any]:
+    effective_status = (
+        binding.status
+        if binding is not None
+        else "omitted"
+        if collection.provenance_mode == "omitted"
+        else "missing"
+    )
+    if file.provenance_status != effective_status:
+        raise InvalidState("catalog file provenance status projection differs")
     if binding is None:
         if collection.provenance_mode != "omitted":
             raise InvalidState(f"collection file provenance is missing: {file.path}")
@@ -1021,7 +1069,7 @@ def _page_options(page: int, per_page: int, sort: str, order: str) -> None:
         raise BadRequest("page and per_page must be positive")
     if sort not in _SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
-    if order not in {"asc", "desc"}:
+    if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
 
 

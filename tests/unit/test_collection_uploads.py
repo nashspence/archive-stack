@@ -24,9 +24,11 @@ from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
     CollectionArchiveObjectUploadRecord,
     CollectionFileProvenanceRecord,
+    CollectionFileRecord,
     CollectionProvenanceEntityRecord,
     CollectionProvenanceExternalStateReferenceRecord,
     CollectionProvenanceJournalRecord,
+    CollectionRecord,
     CollectionUploadRecord,
     RetrievalCacheLeaseRecord,
     RetrievalCacheObjectRecord,
@@ -798,6 +800,10 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         ({"path": "document.txt", "bytes": len(content), "sha256": sha256},),
     )
     assert registered["volumes"] == []
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        assert (upload.file_count, upload.file_bytes) == (1, len(content))
 
     closed = service.complete(
         collection_id,
@@ -842,6 +848,14 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
     assert finalized["custody_mode"] == custody_mode
 
     with session_scope(make_session_factory(config.database_url)) as session:
+        collection = session.get(CollectionRecord, collection_id)
+        assert collection is not None
+        assert (collection.file_count, collection.file_bytes) == (1, len(content))
+        file = session.get(CollectionFileRecord, (collection_id, "document.txt"))
+        assert file is not None and file.provenance_status == "omitted"
+        docs = session.get(TagRecord, "docs")
+        assert docs is not None
+        assert docs.collection_count == (1 if tags else 0)
         objects = list(
             session.query(CollectionArchiveObjectRecord)
             .filter(CollectionArchiveObjectRecord.collection_id == collection_id)
@@ -1063,6 +1077,11 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
         "files": 1,
         "bytes": 5,
     }
+    with session_scope(make_session_factory(config.database_url)) as session:
+        upload = session.get(CollectionUploadRecord, collection_id)
+        assert upload is not None
+        assert (upload.file_count, upload.file_bytes) == (2, 11)
+        assert (upload.custodied_file_count, upload.custodied_file_bytes) == (1, 5)
 
     service.require_read_access(collection_id, _DELETER)
     service.require_read_access(collection_id, _DOCS_DELETER)

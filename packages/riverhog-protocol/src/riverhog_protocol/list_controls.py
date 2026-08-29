@@ -52,6 +52,10 @@ type ArchiveCopyState = Literal[
 type ArchiveCopySort = Literal[
     "collection_id", "source_store", "destination_store", "state", "requested_at"
 ]
+ClaimState = Literal["active", "settled", "retiring", "abandoned", "released"]
+type ProcessingClaimSort = Literal[
+    "created_at", "updated_at", "expires_at", "state", "work_id", "execution_id"
+]
 
 __all__ = [
     "ApplicationAccessSort",
@@ -60,12 +64,14 @@ __all__ = [
     "ArchiveCopySort",
     "ArchiveCopyState",
     "ArchiveStoreSort",
+    "ClaimState",
     "CollectionSort",
     "CollectionUploadSort",
     "CollectionUploadState",
     "DownloadQuotaSort",
     "ProvenanceSort",
     "ProvenanceStatus",
+    "ProcessingClaimSort",
     "RetrievalCacheProtection",
     "RetrievalCacheSort",
     "RetrievalCacheState",

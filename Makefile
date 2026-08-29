@@ -5,7 +5,7 @@ MISE_BIN ?= mise
 FILES ?= .
 TESTS ?= companions packages reference riverhog tests/unit utilities
 SPEC_TESTS ?= tests/harness/test_spec_harness.py
-POSTGRES_TESTS ?= tests/integration/test_catalog_schema_postgres.py tests/integration/test_collection_deletion_concurrency.py tests/integration/test_collection_upload_custody_concurrency.py tests/integration/test_complete_enumeration_concurrency.py tests/integration/test_download_allowance_concurrency.py tests/integration/test_stove0_postgres_concurrency.py
+POSTGRES_TESTS ?= tests/integration/test_catalog_schema_postgres.py tests/integration/test_collection_deletion_concurrency.py tests/integration/test_collection_upload_custody_concurrency.py tests/integration/test_complete_enumeration_concurrency.py tests/integration/test_download_allowance_concurrency.py tests/integration/test_public_selector_plans_postgres.py tests/integration/test_stove0_postgres_concurrency.py
 PYTHON_PATHS ?= companions packages reference riverhog scripts tests utilities
 RELEASE_VERSION ?= 1.0.0
 RELEASE_OUTPUT ?=
@@ -98,7 +98,7 @@ MYPY_SOURCES = \
 	utilities/mango-fish/src
 args ?=
 
-.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification contract-freeze contract-freeze-update provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke stove0-scale-qualification mango-fish-smoke transfer-profile stop-spec dist dist-smoke build build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-exiftool-observer build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-materialize-target build-stove0-review-rclone-effect-target build-mango-fish build-test bootstrap-garage down test
+.PHONY: help license ruff ruff-fix format format-check fix mypy lint compile unit spec dependency-readiness operation-qualification database-qualification contract-freeze contract-freeze-update provider-qualification installation-qualification release-check release-plan release-dry-run release-governance-check release-evidence release-verify c2sp-vectors postgres-concurrency compose-smoke stove0-scale-qualification mango-fish-smoke transfer-profile stop-spec dist dist-smoke build build-riverhog build-riverhog-ftp-adapter build-riverhog-storage-adapter-aws build-riverhog-storage-adapter-backblaze build-stove0 build-stove0-exiftool-observer build-stove0-ffprobe-sampling-observer build-stove0-nvenc-av1-opus-target build-stove0-opus-target build-stove0-review-materialize-target build-stove0-review-rclone-effect-target build-mango-fish build-test bootstrap-garage down test
 
 define UV_CMD
 	@if ! command -v "$(MISE_BIN)" >/dev/null 2>&1; then \
@@ -136,6 +136,7 @@ help:
 		'  make spec              Run the fixture-backed spec harness locally.' \
 		'  make dependency-readiness Verify the live uv graph and Dependabot release gate.' \
 		'  make operation-qualification Verify or emit the generated operation matrix.' \
+		'  make database-qualification Record exact-SHA database scale evidence.' \
 		'  make contract-freeze   Verify the checked-in v1 boundary and external contract.' \
 		'  make contract-freeze-update Regenerate that contract for semantic review.' \
 		'  make provider-qualification Run the operator/provider qualification command.' \
@@ -227,6 +228,11 @@ dependency-readiness:
 
 operation-qualification:
 	$(call UV_CMD,python scripts/operation_qualification.py $(args))
+
+database-qualification:
+	@DATABASE_QUALIFICATION_OUTPUT="$(DATABASE_QUALIFICATION_OUTPUT)" \
+		DATABASE_QUALIFICATION_SOURCE_SHA="$(DATABASE_QUALIFICATION_SOURCE_SHA)" \
+		./scripts/test_database_qualification.sh
 
 contract-freeze:
 	$(call UV_CMD,python scripts/contract_freeze.py check)

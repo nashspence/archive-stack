@@ -15,6 +15,8 @@ def upgrade() -> None:
     from riverhog_core.catalog_base import Base  # noqa: PLC0415
 
     _ = (catalog_models, catalog_workflow_models)
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
     Base.metadata.create_all(op.get_bind())
 
 

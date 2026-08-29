@@ -52,7 +52,6 @@ from riverhog_protocol.collection_upload_transport import (
 )
 from riverhog_protocol.collection_workflow_transport import (
     CapabilityAction,
-    ClaimState,
     CollectionArtifactIdentityDocument,
     CollectionDerivationDocument,
     CollectionDerivationResponseDocument,
@@ -109,10 +108,12 @@ from riverhog_protocol.list_controls import (
     ArchiveCopySort,
     ArchiveCopyState,
     ArchiveStoreSort,
+    ClaimState,
     CollectionSort,
     CollectionUploadSort,
     CollectionUploadState,
     DownloadQuotaSort,
+    ProcessingClaimSort,
     ProvenanceSort,
     ProvenanceStatus,
     RetrievalCacheProtection,
@@ -171,6 +172,7 @@ __all__ += [
     "OmittedFileProvenanceBinding",
     "PRODUCER_EVIDENCE_PATH",
     "ProducerEvidence",
+    "ProcessingClaimSort",
     "RecipeIdentity",
     "RetrievalFileReferenceDocument",
     "RetrievalFileReferenceSetDocument",

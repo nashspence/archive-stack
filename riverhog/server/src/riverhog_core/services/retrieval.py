@@ -8,10 +8,18 @@ from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-from riverhog_protocol import PortableCollectionRecord, RetrievalFileReferenceSetDocument
+from http_api_contracts import closed_literal_values
+from riverhog_protocol import (
+    PortableCollectionRecord,
+    RetrievalCacheProtection,
+    RetrievalCacheSort,
+    RetrievalCacheState,
+    RetrievalFileReferenceSetDocument,
+    SortOrder,
+)
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import case, delete, desc, exists, func, or_, select, update
+from sqlalchemy import asc, case, delete, desc, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, parse_utc_timestamp, utc_now
@@ -70,17 +78,10 @@ from riverhog_core.throughput import (
 )
 
 _DATA_KINDS = {"pack", "segment"}
-_CACHE_SORT_FIELDS = {
-    "collection_id",
-    "source_store",
-    "object_id",
-    "stored_bytes",
-    "cached_at",
-    "verified_at",
-    "protected_until",
-}
-_CACHE_STATES = {"ready", "delete_pending", "deleting"}
-_CACHE_PROTECTION_FILTERS = {"protected", "unleased"}
+_CACHE_SORT_FIELDS = closed_literal_values(RetrievalCacheSort)
+_CACHE_STATES = closed_literal_values(RetrievalCacheState)
+_CACHE_PROTECTION_FILTERS = closed_literal_values(RetrievalCacheProtection)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 
 
 class SqlAlchemyRetrievalService:
@@ -342,120 +343,20 @@ class SqlAlchemyRetrievalService:
     ) -> dict[str, object]:
         if page < 1 or per_page < 1 or per_page > 100:
             raise BadRequest("retrieval cache page and page size are invalid")
-        if sort not in _CACHE_SORT_FIELDS:
-            raise BadRequest(f"sort must be one of {', '.join(sorted(_CACHE_SORT_FIELDS))}")
-        if order not in {"asc", "desc"}:
-            raise BadRequest("order must be asc or desc")
-        normalized_collection_id = (
-            _normalize_collection_id_or_raise(collection_id) if collection_id is not None else None
-        )
-        normalized_store = (
-            source_store.strip().casefold() if source_store and source_store.strip() else None
-        )
-        normalized_state = state.strip().casefold() if state and state.strip() else None
-        if normalized_state is not None and normalized_state not in _CACHE_STATES:
-            raise BadRequest(f"state must be one of {', '.join(sorted(_CACHE_STATES))}")
-        normalized_protection = (
-            protection.strip().casefold() if protection and protection.strip() else None
-        )
-        if (
-            normalized_protection is not None
-            and normalized_protection not in _CACHE_PROTECTION_FILTERS
-        ):
-            raise BadRequest(
-                f"protection must be one of {', '.join(sorted(_CACHE_PROTECTION_FILTERS))}"
-            )
-        normalized_expires_before = _normalize_cache_expiry(
-            expires_before,
-            name="expires_before",
-        )
-        normalized_expires_after = _normalize_cache_expiry(
-            expires_after,
-            name="expires_after",
-        )
-        if (
-            normalized_expires_before is not None
-            and normalized_expires_after is not None
-            and normalized_expires_after > normalized_expires_before
-        ):
-            raise BadRequest("expires_after must not be later than expires_before")
-        normalized_tag = tag.strip().casefold() if tag and tag.strip() else None
-        needle = q.strip().casefold() if q and q.strip() else None
         now = format_utc_timestamp(utc_now())
-        lease_summary = _active_cache_lease_summary(now).subquery()
-        statement = (
-            select(
-                RetrievalCacheObjectRecord,
-                lease_summary.c.protected_until,
-                lease_summary.c.new_archive_expires_at,
-                lease_summary.c.retrieval_job_leases,
-            )
-            .outerjoin(
-                lease_summary,
-                (lease_summary.c.source_store == RetrievalCacheObjectRecord.source_store)
-                & (lease_summary.c.collection_id == RetrievalCacheObjectRecord.collection_id)
-                & (lease_summary.c.object_id == RetrievalCacheObjectRecord.object_id),
-            )
-            .where(
-                collection_access_filter(
-                    RetrievalCacheObjectRecord.collection_id,
-                    principal,
-                    CATALOG_READ,
-                ),
-            )
-        )
-        if normalized_collection_id is not None:
-            statement = statement.where(
-                RetrievalCacheObjectRecord.collection_id == normalized_collection_id
-            )
-        if normalized_store is not None:
-            statement = statement.where(RetrievalCacheObjectRecord.source_store == normalized_store)
-        if normalized_state is not None:
-            statement = statement.where(RetrievalCacheObjectRecord.state == normalized_state)
-        if normalized_protection == "protected":
-            statement = statement.where(lease_summary.c.protected_until.is_not(None))
-        elif normalized_protection == "unleased":
-            statement = statement.where(lease_summary.c.protected_until.is_(None))
-        if normalized_expires_before is not None:
-            statement = statement.where(
-                lease_summary.c.protected_until <= normalized_expires_before
-            )
-        if normalized_expires_after is not None:
-            statement = statement.where(lease_summary.c.protected_until >= normalized_expires_after)
-        if normalized_tag is not None:
-            statement = statement.where(
-                exists(
-                    select(1).where(
-                        CollectionTagRecord.collection_id
-                        == RetrievalCacheObjectRecord.collection_id,
-                        CollectionTagRecord.tag_id == normalized_tag,
-                    )
-                )
-            )
-        if needle is not None:
-            filters = [
-                func.lower(RetrievalCacheObjectRecord.source_store).contains(needle),
-                func.lower(RetrievalCacheObjectRecord.object_id).contains(needle),
-            ]
-            if needle.isdigit():
-                filters.append(RetrievalCacheObjectRecord.collection_id == int(needle))
-            statement = statement.where(or_(*filters))
-        sort_expressions = {
-            "collection_id": RetrievalCacheObjectRecord.collection_id,
-            "source_store": RetrievalCacheObjectRecord.source_store,
-            "object_id": RetrievalCacheObjectRecord.object_id,
-            "stored_bytes": RetrievalCacheObjectRecord.stored_bytes,
-            "cached_at": RetrievalCacheObjectRecord.cached_at,
-            "verified_at": RetrievalCacheObjectRecord.verified_at,
-            "protected_until": lease_summary.c.protected_until,
-        }
-        expression = sort_expressions[sort]
-        ordered = desc(expression) if order == "desc" else expression.asc()
-        statement = statement.order_by(
-            ordered,
-            RetrievalCacheObjectRecord.collection_id,
-            RetrievalCacheObjectRecord.source_store,
-            RetrievalCacheObjectRecord.object_id,
+        statement, normalized_filters, needle = _cache_list_statement(
+            q=q,
+            tag=tag,
+            collection_id=collection_id,
+            source_store=source_store,
+            state=state,
+            protection=protection,
+            expires_before=expires_before,
+            expires_after=expires_after,
+            sort=sort,
+            order=order,
+            principal=principal,
+            now=now,
         )
         with read_snapshot(self._session_factory) as session:
             total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
@@ -473,15 +374,7 @@ class SqlAlchemyRetrievalService:
             "sort": sort,
             "order": order,
             "query": needle,
-            "filters": {
-                "tag": normalized_tag,
-                "collection_id": normalized_collection_id,
-                "source_store": normalized_store,
-                "state": normalized_state,
-                "protection": normalized_protection,
-                "expires_before": normalized_expires_before,
-                "expires_after": normalized_expires_after,
-            },
+            "filters": normalized_filters,
             "objects": [
                 _cache_object_payload(
                     current,
@@ -1890,7 +1783,7 @@ def _cache_list_statement(
 ) -> tuple[Any, dict[str, object], str | None]:
     if sort not in _CACHE_SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_CACHE_SORT_FIELDS))}")
-    if order not in {"asc", "desc"}:
+    if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
     normalized_collection_id = (
         _normalize_collection_id_or_raise(collection_id) if collection_id is not None else None
@@ -1918,25 +1811,14 @@ def _cache_list_statement(
         raise BadRequest("expires_after must not be later than expires_before")
     normalized_tag = tag.strip().casefold() if tag and tag.strip() else None
     needle = q.strip().casefold() if q and q.strip() else None
-    lease_summary = _active_cache_lease_summary(now).subquery()
-    statement = (
-        select(
-            RetrievalCacheObjectRecord,
-            lease_summary.c.protected_until,
-            lease_summary.c.new_archive_expires_at,
-            lease_summary.c.retrieval_job_leases,
-        )
-        .outerjoin(
-            lease_summary,
-            (lease_summary.c.source_store == RetrievalCacheObjectRecord.source_store)
-            & (lease_summary.c.collection_id == RetrievalCacheObjectRecord.collection_id)
-            & (lease_summary.c.object_id == RetrievalCacheObjectRecord.object_id),
-        )
-        .where(
-            collection_access_filter(
-                RetrievalCacheObjectRecord.collection_id, principal, CATALOG_READ
-            )
-        )
+    protected_until, new_archive_expires_at, retrieval_job_leases = _cache_lease_projections(now)
+    statement = select(
+        RetrievalCacheObjectRecord,
+        protected_until.label("protected_until"),
+        new_archive_expires_at.label("new_archive_expires_at"),
+        retrieval_job_leases.label("retrieval_job_leases"),
+    ).where(
+        collection_access_filter(RetrievalCacheObjectRecord.collection_id, principal, CATALOG_READ)
     )
     if normalized_collection_id is not None:
         statement = statement.where(
@@ -1947,13 +1829,13 @@ def _cache_list_statement(
     if normalized_state is not None:
         statement = statement.where(RetrievalCacheObjectRecord.state == normalized_state)
     if normalized_protection == "protected":
-        statement = statement.where(lease_summary.c.protected_until.is_not(None))
+        statement = statement.where(protected_until.is_not(None))
     elif normalized_protection == "unleased":
-        statement = statement.where(lease_summary.c.protected_until.is_(None))
+        statement = statement.where(protected_until.is_(None))
     if normalized_expires_before is not None:
-        statement = statement.where(lease_summary.c.protected_until <= normalized_expires_before)
+        statement = statement.where(protected_until <= normalized_expires_before)
     if normalized_expires_after is not None:
-        statement = statement.where(lease_summary.c.protected_until >= normalized_expires_after)
+        statement = statement.where(protected_until >= normalized_expires_after)
     if normalized_tag is not None:
         statement = statement.where(
             exists(
@@ -1964,13 +1846,13 @@ def _cache_list_statement(
             )
         )
     if needle is not None:
-        filters = [
-            func.lower(RetrievalCacheObjectRecord.source_store).contains(needle),
-            func.lower(RetrievalCacheObjectRecord.object_id).contains(needle),
+        escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        search_filters: list[Any] = [
+            RetrievalCacheObjectRecord.search_text.like(f"%{escaped}%", escape="\\")
         ]
         if needle.isdigit():
-            filters.append(RetrievalCacheObjectRecord.collection_id == int(needle))
-        statement = statement.where(or_(*filters))
+            search_filters.append(RetrievalCacheObjectRecord.collection_id == int(needle))
+        statement = statement.where(or_(*search_filters))
     sort_expressions = {
         "collection_id": RetrievalCacheObjectRecord.collection_id,
         "source_store": RetrievalCacheObjectRecord.source_store,
@@ -1978,15 +1860,15 @@ def _cache_list_statement(
         "stored_bytes": RetrievalCacheObjectRecord.stored_bytes,
         "cached_at": RetrievalCacheObjectRecord.cached_at,
         "verified_at": RetrievalCacheObjectRecord.verified_at,
-        "protected_until": lease_summary.c.protected_until,
+        "protected_until": protected_until,
     }
     expression = sort_expressions[sort]
-    ordered = desc(expression) if order == "desc" else expression.asc()
+    ordering = desc if order == "desc" else asc
     statement = statement.order_by(
-        ordered,
-        RetrievalCacheObjectRecord.collection_id,
-        RetrievalCacheObjectRecord.source_store,
-        RetrievalCacheObjectRecord.object_id,
+        ordering(expression),
+        ordering(RetrievalCacheObjectRecord.collection_id),
+        ordering(RetrievalCacheObjectRecord.source_store),
+        ordering(RetrievalCacheObjectRecord.object_id),
     )
     normalized_filters: dict[str, object] = {
         "tag": normalized_tag,
@@ -1998,6 +1880,35 @@ def _cache_list_statement(
         "expires_after": normalized_expires_after,
     }
     return statement, normalized_filters, needle
+
+
+def _cache_lease_projections(now: str) -> tuple[Any, Any, Any]:
+    matches_object = (
+        (RetrievalCacheLeaseRecord.source_store == RetrievalCacheObjectRecord.source_store)
+        & (RetrievalCacheLeaseRecord.collection_id == RetrievalCacheObjectRecord.collection_id)
+        & (RetrievalCacheLeaseRecord.object_id == RetrievalCacheObjectRecord.object_id)
+        & (RetrievalCacheLeaseRecord.expires_at > now)
+    )
+    protected_until = (
+        select(func.max(RetrievalCacheLeaseRecord.expires_at))
+        .where(matches_object)
+        .correlate(RetrievalCacheObjectRecord)
+        .scalar_subquery()
+    )
+    new_archive_expires_at = (
+        select(func.max(RetrievalCacheLeaseRecord.expires_at))
+        .where(matches_object, RetrievalCacheLeaseRecord.owner == "new-archive")
+        .correlate(RetrievalCacheObjectRecord)
+        .scalar_subquery()
+    )
+    retrieval_job_leases = (
+        select(func.count())
+        .select_from(RetrievalCacheLeaseRecord)
+        .where(matches_object, RetrievalCacheLeaseRecord.owner.startswith("job:"))
+        .correlate(RetrievalCacheObjectRecord)
+        .scalar_subquery()
+    )
+    return protected_until, new_archive_expires_at, retrieval_job_leases
 
 
 def _active_cache_lease_summary(now: str) -> Any:

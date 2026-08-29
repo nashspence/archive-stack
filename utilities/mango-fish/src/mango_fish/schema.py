@@ -2,35 +2,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sqlalchemy import Column, MetaData, Table, Text
 from state_schema import (
     StateConnection,
     StateEngine,
     StateSchema,
     StateStatus,
+    assert_schema_matches_metadata,
     sqlite_engine,
 )
 
 STATE_VERSION_TABLE = "state_schema_revision"
 STATE_MIGRATIONS = Path(__file__).with_name("state_migrations")
+MANGO_FISH_STATE_METADATA = MetaData()
+Table(
+    "source_cursors",
+    MANGO_FISH_STATE_METADATA,
+    Column("source", Text, primary_key=True),
+    Column("cursor", Text, nullable=False),
+)
 
 
 def _verify(connection: StateConnection) -> None:
-    tables = {
-        str(row[0])
-        for row in connection.exec_driver_sql(
-            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-        )
-        if str(row[0]) != STATE_VERSION_TABLE
-    }
-    if tables != {"source_cursors"}:
-        raise RuntimeError(f"Mango Fish state tables do not match the current schema: {tables}")
-    columns = tuple(
-        str(row[1]) for row in connection.exec_driver_sql("PRAGMA table_info(source_cursors)")
+    assert_schema_matches_metadata(
+        connection,
+        MANGO_FISH_STATE_METADATA,
+        version_table=STATE_VERSION_TABLE,
     )
-    if columns != ("source", "cursor"):
-        raise RuntimeError(
-            f"Mango Fish source_cursors has columns {columns}, expected ('source', 'cursor')"
-        )
 
 
 def state_schema(database: Path) -> StateSchema:

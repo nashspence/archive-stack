@@ -90,14 +90,14 @@ def test_every_public_riverhog_operation_declares_one_known_permission() -> None
             "GET",
             "/v1/collections/{collection_id}/provenance/files/{path:path}",
         ): PROVENANCE_READ,
-            (
-                "GET",
-                "/v1/collections/{collection_id}/provenance/trace/{path:path}",
-            ): PROVENANCE_READ,
-            (
-                "GET",
-                "/v1/collections/{collection_id}/provenance/trace/{path:path}/stream",
-            ): PROVENANCE_READ,
+        (
+            "GET",
+            "/v1/collections/{collection_id}/provenance/trace/{path:path}",
+        ): PROVENANCE_READ,
+        (
+            "GET",
+            "/v1/collections/{collection_id}/provenance/trace/{path:path}/stream",
+        ): PROVENANCE_READ,
         (
             "GET",
             "/v1/collections/{collection_id}/provenance/journals/{journal_id}",

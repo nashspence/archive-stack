@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 import pytest
 from http_api_contracts import (
     CompleteEnumerationReader,
+    closed_literal_values,
     complete_enumeration_schema_identity,
     iter_complete_enumeration,
 )
@@ -15,6 +17,15 @@ class _Item(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: int
+
+
+type _ModernControl = Literal["alpha", "beta"]
+_ConventionalControl = Literal["alpha", "beta"]
+
+
+@pytest.mark.parametrize("control", (_ModernControl, _ConventionalControl))
+def test_closed_literal_values_supports_both_public_alias_styles(control: object) -> None:
+    assert closed_literal_values(control) == {"alpha", "beta"}
 
 
 def _stream(*, chunk_bytes: int = 7) -> tuple[list[bytes], dict[str, object], object]:

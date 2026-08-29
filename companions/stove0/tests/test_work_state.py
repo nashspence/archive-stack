@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from riverhog_protocol.collection_workflows import (
@@ -953,6 +954,41 @@ def test_sql_operational_retention_prunes_only_complete_expired_components(
     assert pruned["events"] > 0
     assert store.list_work()["total"] == 0
     assert store.load_selection(selection.selection_sha256) is None
+
+
+def test_sql_operational_retention_scans_bounded_pages_without_parsing_all_work(
+    tmp_path: Path,
+) -> None:
+    from stove0_core import SqlAlchemyStateStore
+
+    store = SqlAlchemyStateStore(f"sqlite+pysqlite:///{tmp_path / 'bounded-retention.sqlite3'}")
+    for ordinal in range(250):
+        work = WorkIdentity.seal(
+            WorkPayload(
+                recipe=RecipeRef(id="fixture.recipe/v1", revision=1, sha256=_sha("3")),
+                inputs=(_root(),),
+                effective_intent={"ordinal": ordinal},
+            )
+        )
+        store.create(WorkRecord(work=work, phase="canceled"))
+    old = "2000-01-01T00:00:00.000000Z"
+    cutoff = "2001-01-01T00:00:00.000000Z"
+    with store.engine.begin() as connection:
+        connection.execute(text("UPDATE stove0_work_records SET updated_at = :old"), {"old": old})
+
+    removed: list[int] = []
+    with patch.object(
+        WorkRecord,
+        "model_validate_json",
+        side_effect=AssertionError("retention must use relational projections"),
+    ):
+        for _ in range(3):
+            result = store.prune_operational_state(cutoff=cutoff)
+            assert result["work"] <= 100
+            removed.append(result["work"])
+
+    assert removed == [100, 100, 50]
+    assert store.list_work()["total"] == 0
 
 
 def test_sql_branch_set_admission_is_restart_safe_and_exposes_exact_children(

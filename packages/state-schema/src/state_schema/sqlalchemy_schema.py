@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from contextlib import nullcontext
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Integer, MetaData, UniqueConstraint, inspect
+from sqlalchemy import CheckConstraint, Integer, MetaData, UniqueConstraint, inspect, text
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.schema import CreateIndex
 
 
 def _type_name(value: Any, bind: Connection | Engine) -> str:
@@ -34,7 +36,7 @@ def _sql(value: object | None) -> str | None:
 
 
 def _server_default(column: Any, bind: Connection | Engine) -> str | None:
-    if column.identity is not None:
+    if column.identity is not None or column.computed is not None:
         return None
     default = column.server_default
     if default is None:
@@ -43,6 +45,20 @@ def _server_default(column: Any, bind: Connection | Engine) -> str | None:
     if isinstance(argument, str):
         return _sql(argument)
     return _sql(argument.compile(dialect=bind.dialect, compile_kwargs={"literal_binds": True}))
+
+
+def _default_expression(value: object | None) -> str | None:
+    """Normalize only dialect-added scalar casts in reflected defaults."""
+
+    expression = _sql(value)
+    if expression is None:
+        return None
+    return re.sub(
+        r"::(?:character varying|text|bigint|integer|boolean)$",
+        "",
+        expression,
+        flags=re.IGNORECASE,
+    )
 
 
 def _uses_postgresql_implicit_sequence(column: Any, bind: Connection | Engine) -> bool:
@@ -67,8 +83,30 @@ def _check_expression(value: object | None) -> str:
         r"\1 in (\2)",
         expression,
     )
+    expression = re.sub(
+        r"\(([a-z_][a-z0-9_]*\s+in\s*\([^()]*\))\)",
+        r"\1",
+        expression,
+    )
+    expression = re.sub(r"\s*\|\|\s*", "||", expression)
     expression = re.sub(r"\s*([(),>=])\s*", r"\1", expression)
     return " ".join(expression.split())
+
+
+def _computed_expression(value: object | None) -> str:
+    """Normalize dialect deparsing without erasing the expression's token identity."""
+
+    expression = _check_expression(value)
+    expression = re.sub(
+        r"cast\(([a-z_][a-z0-9_]*) as (?:text|bigint|integer)\)",
+        r"\1",
+        expression,
+    )
+    # PostgreSQL's catalog deparser adds redundant grouping around operands and
+    # associative concatenations.  Parentheses are not expression tokens for
+    # the narrow generated projections we support; function/operator/literal
+    # identity and order remain exact.
+    return expression.replace("(", "").replace(")", "")
 
 
 def _foreign_key_signature(constraint: Any) -> tuple[object, ...]:
@@ -95,6 +133,92 @@ def _inspected_foreign_key_signature(constraint: Mapping[str, Any]) -> tuple[obj
         bool(options.get("deferrable")),
         str(options.get("initially") or "").upper(),
     )
+
+
+def _index_definition(value: object, *, dialect: str) -> str:
+    definition = " ".join(str(value).strip().casefold().replace('"', "").split())
+    if dialect == "postgresql":
+        definition = re.sub(r"(\bon\s+)[a-z_][a-z0-9_]*\.", r"\1", definition)
+        definition = re.sub(
+            r"(\bon\s+[a-z_][a-z0-9_]*)(\s*\()",
+            r"\1 using btree\2",
+            definition,
+        )
+    return definition
+
+
+def _database_index_definitions(
+    bind: Connection | Engine,
+    *,
+    table_name: str,
+) -> dict[str, str] | None:
+    dialect = bind.dialect.name
+    if dialect not in {"postgresql", "sqlite"}:
+        return None
+    context = bind.connect() if isinstance(bind, Engine) else nullcontext(bind)
+    with context as connection:
+        if dialect == "postgresql":
+            rows = connection.execute(
+                text(
+                    "SELECT indexname, indexdef FROM pg_indexes "
+                    "WHERE schemaname = current_schema() AND tablename = :table_name"
+                ),
+                {"table_name": table_name},
+            )
+        else:
+            rows = connection.execute(
+                text(
+                    "SELECT name, sql FROM sqlite_master "
+                    "WHERE type = 'index' AND tbl_name = :table_name AND sql IS NOT NULL"
+                ),
+                {"table_name": table_name},
+            )
+        return {
+            str(name): _index_definition(definition, dialect=dialect) for name, definition in rows
+        }
+
+
+def _sqlite_foreign_keys(
+    bind: Connection | Engine,
+    *,
+    table_name: str,
+) -> set[tuple[object, ...]]:
+    context = bind.connect() if isinstance(bind, Engine) else nullcontext(bind)
+    with context as connection:
+        rows = list(connection.exec_driver_sql(f'PRAGMA foreign_key_list("{table_name}")'))
+    grouped: dict[int, list[Any]] = {}
+    for row in rows:
+        grouped.setdefault(int(row[0]), []).append(row)
+    return {
+        (
+            tuple(str(row[3]) for row in sorted(group, key=lambda row: int(row[1]))),
+            str(group[0][2]),
+            tuple(str(row[4]) for row in sorted(group, key=lambda row: int(row[1]))),
+            str(group[0][6]).upper() if str(group[0][6]).upper() != "NO ACTION" else "",
+            str(group[0][5]).upper() if str(group[0][5]).upper() != "NO ACTION" else "",
+            False,
+            "",
+        )
+        for group in grouped.values()
+    }
+
+
+def _sqlite_unique_constraints(
+    bind: Connection | Engine,
+    *,
+    table_name: str,
+) -> set[tuple[str, ...]]:
+    context = bind.connect() if isinstance(bind, Engine) else nullcontext(bind)
+    with context as connection:
+        indexes = list(connection.exec_driver_sql(f'PRAGMA index_list("{table_name}")'))
+        return {
+            tuple(
+                str(row[2])
+                for row in connection.exec_driver_sql(f'PRAGMA index_info("{index[1]}")')
+            )
+            for index in indexes
+            if bool(index[2]) and str(index[3]) == "u"
+        }
 
 
 def assert_schema_matches_metadata(
@@ -145,18 +269,26 @@ def assert_schema_matches_metadata(
                     f"expected {expected_type}"
                 )
             if bool(actual_column["nullable"]) != bool(expected_column.nullable):
-                differences.append(
-                    f"column {table_name}.{column_name} has nullable="
-                    f"{bool(actual_column['nullable'])}, expected {bool(expected_column.nullable)}"
+                sqlite_rowid_primary_key = (
+                    bind.dialect.name == "sqlite"
+                    and expected_column.primary_key
+                    and isinstance(expected_column.type, Integer)
+                    and len(table.primary_key.columns) == 1
                 )
-            actual_default = _sql(actual_column.get("default"))
+                if not sqlite_rowid_primary_key:
+                    differences.append(
+                        f"column {table_name}.{column_name} has nullable="
+                        f"{bool(actual_column['nullable'])}, "
+                        f"expected {bool(expected_column.nullable)}"
+                    )
+            actual_default = _default_expression(actual_column.get("default"))
             expected_default: str | None
             if _uses_postgresql_implicit_sequence(expected_column, bind):
                 expected_default = "postgresql implicit sequence"
                 if actual_default is not None and actual_default.startswith("nextval('"):
                     actual_default = expected_default
             else:
-                expected_default = _server_default(expected_column, bind)
+                expected_default = _default_expression(_server_default(expected_column, bind))
             if actual_default != expected_default:
                 differences.append(
                     f"column {table_name}.{column_name} has default {actual_default!r}, "
@@ -178,6 +310,19 @@ def assert_schema_matches_metadata(
             expected_computed = expected_column.computed
             if (actual_computed is None) != (expected_computed is None):
                 differences.append(f"column {table_name}.{column_name} computed value differs")
+            elif actual_computed is not None and expected_computed is not None:
+                expected_expression = _computed_expression(
+                    expected_computed.sqltext.compile(
+                        dialect=bind.dialect,
+                        compile_kwargs={"literal_binds": True},
+                    )
+                )
+                actual_expression = _computed_expression(actual_computed.get("sqltext"))
+                if actual_expression != expected_expression:
+                    differences.append(
+                        f"column {table_name}.{column_name} computed expression is "
+                        f"{actual_expression!r}, expected {expected_expression!r}"
+                    )
 
         expected_primary_key = tuple(str(column.name) for column in table.primary_key.columns)
         actual_primary_key = tuple(
@@ -193,10 +338,14 @@ def assert_schema_matches_metadata(
         expected_foreign_keys = {
             _foreign_key_signature(constraint) for constraint in table.foreign_key_constraints
         }
-        actual_foreign_keys = {
-            _inspected_foreign_key_signature(constraint)
-            for constraint in inspector.get_foreign_keys(table_name)
-        }
+        actual_foreign_keys = (
+            _sqlite_foreign_keys(bind, table_name=table_name)
+            if bind.dialect.name == "sqlite"
+            else {
+                _inspected_foreign_key_signature(constraint)
+                for constraint in inspector.get_foreign_keys(table_name)
+            }
+        )
         differences.extend(
             f"unexpected foreign key on {table_name}: {signature}"
             for signature in sorted(actual_foreign_keys - expected_foreign_keys)
@@ -211,10 +360,14 @@ def assert_schema_matches_metadata(
             for constraint in table.constraints
             if isinstance(constraint, UniqueConstraint)
         }
-        actual_unique_constraints = {
-            tuple(str(name) for name in constraint["column_names"])
-            for constraint in inspector.get_unique_constraints(table_name)
-        }
+        actual_unique_constraints = (
+            _sqlite_unique_constraints(bind, table_name=table_name)
+            if bind.dialect.name == "sqlite"
+            else {
+                tuple(str(name) for name in constraint["column_names"])
+                for constraint in inspector.get_unique_constraints(table_name)
+            }
+        )
         if actual_unique_constraints != expected_unique_constraints:
             differences.append(
                 f"table {table_name} unique constraints are {actual_unique_constraints}, "
@@ -240,6 +393,25 @@ def assert_schema_matches_metadata(
             differences.append(
                 f"table {table_name} indexes are {actual_indexes}, expected {expected_indexes}"
             )
+        actual_index_definitions = _database_index_definitions(bind, table_name=table_name)
+        if actual_index_definitions is not None:
+            expected_index_definitions = {
+                str(index.name): _index_definition(
+                    CreateIndex(index).compile(dialect=bind.dialect),
+                    dialect=bind.dialect.name,
+                )
+                for index in table.indexes
+            }
+            actual_index_definitions = {
+                name: definition
+                for name, definition in actual_index_definitions.items()
+                if name in expected_index_definitions
+            }
+            if actual_index_definitions != expected_index_definitions:
+                differences.append(
+                    f"table {table_name} index definitions are {actual_index_definitions}, "
+                    f"expected {expected_index_definitions}"
+                )
 
         expected_checks = {
             str(constraint.name): _check_expression(

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Query, Response
 from http_api_contracts import operation_interface
-from riverhog_protocol import CollectionIdParameter, ProcessingClaimId
+from riverhog_protocol import (
+    CollectionIdParameter,
+    ProcessingClaimId,
+    ProcessingClaimSort,
+    SortOrder,
+)
 from riverhog_protocol.collection_workflow_transport import ClaimState
 from riverhog_protocol.collection_workflows import (
     CollectionArtifactIdentity,
@@ -87,15 +92,8 @@ def list_processing_claims(
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 25,
     state: ClaimState | None = None,
-    sort: Literal[
-        "created_at",
-        "updated_at",
-        "expires_at",
-        "state",
-        "work_id",
-        "execution_id",
-    ] = "updated_at",
-    order: Literal["asc", "desc"] = "desc",
+    sort: ProcessingClaimSort = "updated_at",
+    order: SortOrder = "desc",
 ) -> ProcessingClaimPageOut:
     return ProcessingClaimPageOut.model_validate(
         container.collection_workflows.list_claims(
@@ -125,15 +123,8 @@ def stream_processing_claims(
     container: ContainerDep,
     principal: CollectionTransformController,
     state: ClaimState | None = None,
-    sort: Literal[
-        "created_at",
-        "updated_at",
-        "expires_at",
-        "state",
-        "work_id",
-        "execution_id",
-    ] = "updated_at",
-    order: Literal["asc", "desc"] = "desc",
+    sort: ProcessingClaimSort = "updated_at",
+    order: SortOrder = "desc",
 ) -> Response:
     return complete_enumeration_response(
         container.collection_workflows.iter_claims(

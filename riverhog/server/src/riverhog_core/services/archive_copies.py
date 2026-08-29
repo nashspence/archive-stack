@@ -11,10 +11,12 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from typing import Any
 
+from http_api_contracts import closed_literal_values
 from riverhog_age import UploadState
+from riverhog_protocol import ArchiveCopySort, SortOrder
 from riverhog_protocol.errors import BadRequest, Conflict, InvalidState, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id
-from sqlalchemy import String, cast, delete, func, or_, select
+from sqlalchemy import asc, delete, desc, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 from state_schema import read_snapshot
 from time_formats import format_utc_timestamp, utc_now
@@ -77,13 +79,8 @@ from riverhog_core.throughput import (
 from riverhog_core.write_segments import WriteSegmentPlan, plan_write_segments
 
 _LOG = logging.getLogger(__name__)
-_SORT_FIELDS = {
-    "collection_id",
-    "source_store",
-    "destination_store",
-    "state",
-    "requested_at",
-}
+_SORT_FIELDS = closed_literal_values(ArchiveCopySort)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 _COPY_OBJECT_KINDS = frozenset(
     {
         "pack",
@@ -362,7 +359,7 @@ class SqlAlchemyArchiveCopyService:
             raise BadRequest("per_page must be at least 1")
         if sort not in _SORT_FIELDS:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
-        if order not in {"asc", "desc"}:
+        if order not in _SORT_ORDERS:
             raise BadRequest("order must be asc or desc")
         query, normalized_state, filters, statement = _archive_copy_list_statement(
             q=q,
@@ -1666,7 +1663,7 @@ def _archive_copy_list_statement(
 ) -> tuple[str | None, str | None, list[Any], Any]:
     if sort not in _SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
-    if order not in {"asc", "desc"}:
+    if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
     query = q.strip().casefold() if q and q.strip() else None
     normalized_state = state.strip().casefold() if state and state.strip() else None
@@ -1684,14 +1681,7 @@ def _archive_copy_list_statement(
     if query is not None:
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{escaped}%"
-        filters.append(
-            or_(
-                cast(ArchiveCopyJobRecord.collection_id, String).like(pattern, escape="\\"),
-                func.lower(ArchiveCopyJobRecord.source_store).like(pattern, escape="\\"),
-                func.lower(ArchiveCopyJobRecord.destination_store).like(pattern, escape="\\"),
-                func.lower(ArchiveCopyJobRecord.state).like(pattern, escape="\\"),
-            )
-        )
+        filters.append(ArchiveCopyJobRecord.search_text.like(pattern, escape="\\"))
     sort_columns = {
         "collection_id": ArchiveCopyJobRecord.collection_id,
         "source_store": ArchiveCopyJobRecord.source_store,
@@ -1699,14 +1689,14 @@ def _archive_copy_list_statement(
         "state": ArchiveCopyJobRecord.state,
         "requested_at": ArchiveCopyJobRecord.requested_at,
     }
-    direction = sort_columns[sort].desc() if order == "desc" else sort_columns[sort].asc()
+    ordering = desc if order == "desc" else asc
     statement = (
         select(ArchiveCopyJobRecord)
         .where(*filters)
         .order_by(
-            direction,
-            ArchiveCopyJobRecord.collection_id.asc(),
-            ArchiveCopyJobRecord.destination_store.asc(),
+            ordering(sort_columns[sort]),
+            ordering(ArchiveCopyJobRecord.collection_id),
+            ordering(ArchiveCopyJobRecord.destination_store),
         )
     )
     return query, normalized_state, filters, statement

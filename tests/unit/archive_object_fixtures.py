@@ -496,6 +496,7 @@ def seed_archive_copy(
                 id="docs",
                 created_by_app="fixture",
                 created_at=UPLOADED_AT,
+                collection_count=1,
             )
         )
         collection = CollectionRecord(
@@ -513,6 +514,8 @@ def seed_archive_copy(
             metadata_updated_at=UPLOADED_AT,
             created_by_app="fixture",
             created_at=UPLOADED_AT,
+            file_count=len(file_rows),
+            file_bytes=sum(item[1] for item in file_rows),
         )
         session.add(collection)
         session.add(

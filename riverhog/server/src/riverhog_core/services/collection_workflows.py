@@ -10,7 +10,13 @@ from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
 from typing import cast
 
-from riverhog_protocol import RetirementClaimReferenceDocument
+from http_api_contracts import closed_literal_values
+from riverhog_protocol import (
+    ClaimState,
+    ProcessingClaimSort,
+    RetirementClaimReferenceDocument,
+    SortOrder,
+)
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
     CollectionArtifactIdentity,
@@ -69,6 +75,9 @@ _MAX_CONTROLLER_EVIDENCE_BYTES = 16 * 1024 * 1024
 _CAPABILITY_ACTIONS = frozenset({"read-inputs", "write-output"})
 _CAPABILITY_AUDIENCE = re.compile(r"^[a-z0-9][a-z0-9._:/-]{0,299}$", re.ASCII)
 _RETIREMENT_POLICIES = frozenset({"retain", "retire-after-verified-output"})
+_CLAIM_STATES = closed_literal_values(ClaimState)
+_CLAIM_SORT_NAMES = closed_literal_values(ProcessingClaimSort)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 _CLAIM_SORT_FIELDS = {
     "created_at": CollectionProcessingClaimRecord.created_at,
     "updated_at": CollectionProcessingClaimRecord.updated_at,
@@ -219,8 +228,10 @@ class SqlAlchemyCollectionWorkflowService:
     ) -> dict[str, object]:
         if page < 1 or per_page < 1 or per_page > 100:
             raise BadRequest("claim pagination is invalid")
-        if sort not in _CLAIM_SORT_FIELDS or order not in {"asc", "desc"}:
+        if sort not in _CLAIM_SORT_NAMES or order not in _SORT_ORDERS:
             raise BadRequest("claim sorting is invalid")
+        if state is not None and state not in _CLAIM_STATES:
+            raise BadRequest("claim state is invalid")
         filters, statement = _claim_list_statement(
             state=state, sort=sort, order=order, principal=principal
         )
@@ -254,8 +265,10 @@ class SqlAlchemyCollectionWorkflowService:
         order: str = "desc",
         principal: ApplicationPrincipal,
     ) -> Iterator[dict[str, object]]:
-        if sort not in _CLAIM_SORT_FIELDS or order not in {"asc", "desc"}:
+        if sort not in _CLAIM_SORT_NAMES or order not in _SORT_ORDERS:
             raise BadRequest("claim sorting is invalid")
+        if state is not None and state not in _CLAIM_STATES:
+            raise BadRequest("claim state is invalid")
         _, statement = _claim_list_statement(
             state=state, sort=sort, order=order, principal=principal
         )
@@ -951,7 +964,7 @@ def _claim_list_statement(
         .where(*filters)
         .order_by(
             direction(_CLAIM_SORT_FIELDS[sort]),
-            asc(CollectionProcessingClaimRecord.id),
+            direction(CollectionProcessingClaimRecord.id),
         )
     )
     return filters, statement

@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any
 
+from http_api_contracts import closed_literal_values
 from riverhog_archive_contracts import normalize_passphrase_id
+from riverhog_protocol import CollectionSort, SortOrder
 from riverhog_protocol.errors import BadRequest, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_collection_id, normalize_tag
-from sqlalchemy import String, cast, exists, func, or_, select
+from sqlalchemy import asc, desc, exists, func, select
 from sqlalchemy.orm import selectinload
 from state_schema import read_snapshot
 
@@ -15,7 +17,6 @@ from riverhog_core.catalog_db import SessionFactory, make_session_factory, sessi
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
     CollectionArchiveObjectRecord,
-    CollectionFileRecord,
     CollectionRecord,
     CollectionTagRecord,
 )
@@ -34,7 +35,8 @@ from riverhog_core.services.archive_records import (
     archive_copy_aggregates,
 )
 
-_COLLECTION_SORT_FIELDS = {"id", "created_at", "bytes", "files"}
+_COLLECTION_SORT_FIELDS = closed_literal_values(CollectionSort)
+_SORT_ORDERS = closed_literal_values(SortOrder)
 
 
 class SqlAlchemyCollectionService:
@@ -88,8 +90,8 @@ class SqlAlchemyCollectionService:
         order: str = "asc",
         principal: ApplicationPrincipal | None = None,
     ) -> CollectionListPage:
-        filters, normalized_tag, normalized_format, normalized_passphrase_id = (
-            _collection_list_filters(
+        filters, normalized_tag, normalized_format, normalized_passphrase_id, statement = (
+            _collection_list_statement(
                 q=q,
                 tag=tag,
                 encryption_format=encryption_format,
@@ -107,13 +109,6 @@ class SqlAlchemyCollectionService:
             total = int(
                 session.scalar(select(func.count()).select_from(CollectionRecord).where(*filters))
                 or 0
-            )
-            statement, sort_columns = _collection_summary_query()
-            sort_column = sort_columns[sort]
-            direction = sort_column.desc() if order == "desc" else sort_column.asc()
-            statement = statement.where(*filters).order_by(
-                direction,
-                CollectionRecord.id.asc(),
             )
             statement = statement.offset((page - 1) * per_page).limit(per_page)
             rows = session.execute(statement).all()
@@ -146,7 +141,7 @@ class SqlAlchemyCollectionService:
         order: str = "asc",
         principal: ApplicationPrincipal | None = None,
     ) -> Iterator[CollectionSummary]:
-        filters, _, _, _ = _collection_list_filters(
+        _, _, _, _, statement = _collection_list_statement(
             q=q,
             tag=tag,
             encryption_format=encryption_format,
@@ -155,10 +150,6 @@ class SqlAlchemyCollectionService:
             order=order,
             principal=principal,
         )
-        statement, sort_columns = _collection_summary_query()
-        sort_column = sort_columns[sort]
-        direction = sort_column.desc() if order == "desc" else sort_column.asc()
-        statement = statement.where(*filters).order_by(direction, CollectionRecord.id.asc())
         with read_snapshot(self._session_factory) as session:
             rows = session.execute(statement.execution_options(yield_per=100))
             for partition in rows.partitions():
@@ -168,6 +159,39 @@ class SqlAlchemyCollectionService:
                 )
                 for row in partition:
                     yield _collection_summary(row, aggregates=aggregates)
+
+
+def _collection_list_statement(
+    *,
+    q: str | None,
+    tag: str | None,
+    encryption_format: str | None,
+    passphrase_id: str | None,
+    sort: str,
+    order: str,
+    principal: ApplicationPrincipal | None,
+) -> tuple[list[Any], str | None, str | None, str | None, Any]:
+    filters, normalized_tag, normalized_format, normalized_passphrase_id = _collection_list_filters(
+        q=q,
+        tag=tag,
+        encryption_format=encryption_format,
+        passphrase_id=passphrase_id,
+        sort=sort,
+        order=order,
+        principal=principal,
+    )
+    statement, sort_columns = _collection_summary_query()
+    ordering = desc if order == "desc" else asc
+    return (
+        filters,
+        normalized_tag,
+        normalized_format,
+        normalized_passphrase_id,
+        statement.where(*filters).order_by(
+            ordering(sort_columns[sort]),
+            ordering(CollectionRecord.id),
+        ),
+    )
 
 
 def _collection_list_filters(
@@ -182,7 +206,7 @@ def _collection_list_filters(
 ) -> tuple[list[Any], str | None, str | None, str | None]:
     if sort not in _COLLECTION_SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_COLLECTION_SORT_FIELDS))}")
-    if order not in {"asc", "desc"}:
+    if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
     normalized_tag = _normalize_tag(tag) if tag is not None else None
     normalized_format = _normalize_filter(encryption_format, name="encryption_format")
@@ -195,20 +219,17 @@ def _collection_list_filters(
             raise BadRequest(str(exc)) from exc
     filters = [collection_access_filter(CollectionRecord.id, principal, CATALOG_READ)]
     if q is not None:
-        filters.append(
-            or_(
-                cast(CollectionRecord.id, String).like(_like_pattern(q.casefold()), escape="\\"),
-                exists(
-                    select(1).where(
-                        CollectionTagRecord.collection_id == CollectionRecord.id,
-                        func.lower(CollectionTagRecord.tag_id).like(
-                            _like_pattern(q.casefold()),
-                            escape="\\",
-                        ),
-                    )
-                ),
+        pattern = _like_pattern(q.casefold())
+        matching_ids = (
+            select(CollectionRecord.id)
+            .where(CollectionRecord.search_text.like(pattern, escape="\\"))
+            .union(
+                select(CollectionTagRecord.collection_id).where(
+                    CollectionTagRecord.tag_id.like(pattern, escape="\\")
+                )
             )
         )
+        filters.append(CollectionRecord.id.in_(matching_ids))
     if normalized_tag is not None:
         filters.append(
             exists(
@@ -226,37 +247,24 @@ def _collection_list_filters(
 
 
 def _collection_summary_query() -> tuple[Any, dict[str, Any]]:
-    file_stats = (
-        select(
-            CollectionFileRecord.collection_id.label("collection_id"),
-            func.count(CollectionFileRecord.path).label("files"),
-            func.coalesce(func.sum(CollectionFileRecord.bytes), 0).label("bytes"),
-        )
-        .group_by(CollectionFileRecord.collection_id)
-        .subquery()
-    )
-    files = func.coalesce(file_stats.c.files, 0)
-    byte_count = func.coalesce(file_stats.c.bytes, 0)
     return (
         select(
             CollectionRecord,
-            files.label("files"),
-            byte_count.label("bytes"),
-        )
-        .options(
+            CollectionRecord.file_count.label("files"),
+            CollectionRecord.file_bytes.label("bytes"),
+        ).options(
             selectinload(CollectionRecord.archive_copies).selectinload(
                 CollectionArchiveCopyRecord.objects.and_(
                     CollectionArchiveObjectRecord.object_id.in_(("manifest", "proof"))
                 )
             ),
             selectinload(CollectionRecord.tags),
-        )
-        .outerjoin(file_stats, file_stats.c.collection_id == CollectionRecord.id),
+        ),
         {
             "id": CollectionRecord.id,
             "created_at": CollectionRecord.created_at,
-            "bytes": byte_count,
-            "files": files,
+            "bytes": CollectionRecord.file_bytes,
+            "files": CollectionRecord.file_count,
         },
     )
 

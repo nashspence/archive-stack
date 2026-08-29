@@ -72,6 +72,9 @@ EvaluationChildState = Literal[
     "failed",
     "canceled",
 ]
+SortOrder = Literal["asc", "desc"]
+WorkSort = Literal["updated_at", "phase", "work_id"]
+EvaluationSort = Literal["updated_at", "phase", "evaluation_id"]
 SchedulerRole = Literal["controller", "worker", "combined"]
 
 
@@ -532,8 +535,8 @@ class WorkPage(OperatorModel):
     per_page: int = Field(ge=0)
     total: int = Field(ge=0)
     pages: int = Field(ge=0)
-    sort: Literal["updated_at", "phase", "work_id"]
-    order: Literal["asc", "desc"]
+    sort: WorkSort
+    order: SortOrder
     filters: dict[str, JsonValue]
     work: tuple[WorkView, ...]
 
@@ -603,8 +606,8 @@ class EvaluationPage(OperatorModel):
     per_page: int = Field(ge=0)
     total: int = Field(ge=0)
     pages: int = Field(ge=0)
-    sort: Literal["updated_at", "phase", "evaluation_id"]
-    order: Literal["asc", "desc"]
+    sort: EvaluationSort
+    order: SortOrder
     filters: dict[str, JsonValue]
     evaluations: tuple[EvaluationView, ...]
 
@@ -719,6 +722,7 @@ __all__ = [
     "EvaluationCreatedEvent",
     "EvaluationCreatedEventData",
     "EvaluationPhase",
+    "EvaluationSort",
     "EvaluationPage",
     "EvaluationReviewIn",
     "EvaluationReviewView",
@@ -740,6 +744,7 @@ __all__ = [
     "SchedulerWorkBatch",
     "STOVE0_EVENT_SOURCE",
     "STOVE0_EVENT_TYPES",
+    "SortOrder",
     "Stove0CloudEvent",
     "Stove0EventData",
     "Stove0EventPage",
@@ -755,6 +760,7 @@ __all__ = [
     "WorkInapplicableView",
     "WorkPage",
     "WorkPhase",
+    "WorkSort",
     "WorkUpdatedEvent",
     "WorkUpdatedEventData",
     "WorkView",

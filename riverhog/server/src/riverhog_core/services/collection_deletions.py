@@ -55,6 +55,7 @@ from riverhog_core.services.operation_plans import (
     challenge_has_shape,
     plan_challenge,
 )
+from riverhog_core.services.tag_projections import adjust_tag_collection_counts
 
 _CHALLENGE_PREFIX = "delete"
 _ACTIVE_RETRIEVAL_STATES = {"requested", "ready"}
@@ -312,6 +313,7 @@ class SqlAlchemyCollectionDeletionService:
                     before_tags=before_tags,
                     after_tags=(),
                 )
+                adjust_tag_collection_counts(session, removed=before_tags)
                 session.delete(collection)
             session.delete(active)
         return _deletion_result(plan, status="deleted")

@@ -25,6 +25,7 @@ def _seed(path: Path) -> None:
                 id="docs",
                 created_by_app="fixture",
                 created_at="2026-01-01T00:00:00.000000Z",
+                collection_count=1,
             )
         )
         session.add(
@@ -41,6 +42,8 @@ def _seed(path: Path) -> None:
                 metadata_updated_at="2026-01-01T00:00:00.000000Z",
                 created_by_app="fixture",
                 created_at="2026-01-01T00:00:00.000000Z",
+                file_count=3,
+                file_bytes=68,
             )
         )
         session.add(

@@ -13,6 +13,8 @@ def upgrade() -> None:
     # There is no pre-v1 schema compatibility contract.
     from stove0_core.persistence import _Base  # noqa: PLC0415
 
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
     _Base.metadata.create_all(op.get_bind())
 
 

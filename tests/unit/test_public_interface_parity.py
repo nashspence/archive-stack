@@ -8,12 +8,25 @@ from typing import Any
 import pytest
 import riverhog_api_client
 import riverhog_api_client.client as riverhog_client_module
+import riverhog_core.services.app_keys as app_key_service_module
+import riverhog_core.services.archive_copies as archive_copy_service_module
+import riverhog_core.services.archive_stores as archive_store_service_module
+import riverhog_core.services.collection_uploads as upload_service_module
+import riverhog_core.services.collection_workflows as workflow_service_module
+import riverhog_core.services.collections as collection_service_module
+import riverhog_core.services.download_allowances as quota_service_module
+import riverhog_core.services.provenance as provenance_service_module
+import riverhog_core.services.retrieval as retrieval_service_module
+import riverhog_core.services.search as search_service_module
+import riverhog_core.services.tags as tag_service_module
 import stove0_api_client.client as stove0_client_module
+import stove0_core.persistence as stove0_persistence_module
 from fastapi import FastAPI
 from http_api_contracts import (
     COMPLETE_ENUMERATION_FORMAT,
     ERROR_STATUS_BY_CODE,
     JSON_SEQUENCE_MEDIA_TYPE,
+    closed_literal_values,
     safe_http_base_url,
 )
 from http_api_contracts import (
@@ -32,6 +45,7 @@ from riverhog_api_client import (
     upload_collection_units,
 )
 from riverhog_api_client import producer as riverhog_producer
+from riverhog_api_client import workflows as riverhog_workflow_client_module
 from riverhog_api_client.client import ApiClient
 from riverhog_application_access import (
     ApplicationPermission as CanonicalApplicationPermission,
@@ -49,14 +63,43 @@ from riverhog_ftp_adapter_api_client import (
     RiverhogFtpAdapterClient,
 )
 from riverhog_protocol import (
+    ApplicationAccessSort,
+    ApplicationKeySort,
+    ApplicationSort,
+    ArchiveCopySort,
+    ArchiveCopyState,
+    ArchiveStoreSort,
+    ClaimState,
     CollectionRootIdentity,
     CollectionRootIdentityDocument,
+    CollectionSort,
+    CollectionUploadSort,
+    CollectionUploadState,
+    DownloadQuotaSort,
+    ProcessingClaimSort,
+    ProvenanceSort,
+    ProvenanceStatus,
+    RetrievalCacheProtection,
+    RetrievalCacheSort,
+    RetrievalCacheState,
     RetrievalFileReferenceDocument,
+    SearchSort,
+    SortOrder,
+    TagSort,
 )
 from riverhog_protocol.errors import BadRequest
 from stove0_api.error_contracts import STOVE0_OPERATION_ERROR_CODES
 from stove0_api_client import HealthResponse as Stove0HealthResponse
 from stove0_api_client import Stove0ApiClient
+from stove0_operator_contracts import (
+    EvaluationPhase,
+    EvaluationSort,
+    WorkPhase,
+    WorkSort,
+)
+from stove0_operator_contracts import (
+    SortOrder as Stove0SortOrder,
+)
 from stove0_protocol import CollectionRootRef
 from stove0_target_protocol import OutputCollectionRef
 
@@ -517,6 +560,70 @@ PUBLIC_QUERY_SELECTORS = {
     "riverhog-ftp-adapter": {},
 }
 
+NAMED_ENUM_QUERY_SELECTOR_TYPES = {
+    "ApplicationAccessSort": ApplicationAccessSort,
+    "ApplicationKeySort": ApplicationKeySort,
+    "ApplicationPermission": CanonicalApplicationPermission,
+    "ApplicationSort": ApplicationSort,
+    "ArchiveCopySort": ArchiveCopySort,
+    "ArchiveCopyState": ArchiveCopyState,
+    "ArchiveStoreSort": ArchiveStoreSort,
+    "CollectionSort": CollectionSort,
+    "CollectionUploadSort": CollectionUploadSort,
+    "CollectionUploadState": CollectionUploadState,
+    "DownloadQuotaSort": DownloadQuotaSort,
+    "ProvenanceStatus": ProvenanceStatus,
+    "RetrievalCacheProtection": RetrievalCacheProtection,
+    "RetrievalCacheSort": RetrievalCacheSort,
+    "RetrievalCacheState": RetrievalCacheState,
+    "SearchSort": SearchSort,
+    "SortOrder": SortOrder,
+    "TagSort": TagSort,
+}
+INLINE_ENUM_QUERY_SELECTOR_TYPES = {
+    **{
+        ("riverhog", operation_id, "sort"): ProvenanceSort
+        for operation_id in ("list_collection_provenance", "stream_collection_provenance")
+    },
+    **{
+        ("riverhog", operation_id, "order"): SortOrder
+        for operation_id in ("list_collection_provenance", "stream_collection_provenance")
+    },
+    **{
+        ("riverhog", operation_id, "state"): ClaimState
+        for operation_id in ("list_processing_claims", "stream_processing_claims")
+    },
+    **{
+        ("riverhog", operation_id, "sort"): ProcessingClaimSort
+        for operation_id in ("list_processing_claims", "stream_processing_claims")
+    },
+    **{
+        ("riverhog", operation_id, "order"): SortOrder
+        for operation_id in ("list_processing_claims", "stream_processing_claims")
+    },
+    **{
+        ("stove0", operation_id, "phase"): WorkPhase
+        for operation_id in ("list_work", "stream_work")
+    },
+    **{("stove0", operation_id, "sort"): WorkSort for operation_id in ("list_work", "stream_work")},
+    **{
+        ("stove0", operation_id, "order"): Stove0SortOrder
+        for operation_id in ("list_work", "stream_work")
+    },
+    **{
+        ("stove0", operation_id, "phase"): EvaluationPhase
+        for operation_id in ("list_evaluations", "stream_evaluations")
+    },
+    **{
+        ("stove0", operation_id, "sort"): EvaluationSort
+        for operation_id in ("list_evaluations", "stream_evaluations")
+    },
+    **{
+        ("stove0", operation_id, "order"): Stove0SortOrder
+        for operation_id in ("list_evaluations", "stream_evaluations")
+    },
+}
+
 
 def _http_operations(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
@@ -644,6 +751,154 @@ def test_every_public_query_selector_is_intentionally_frozen(
     assert actual == PUBLIC_QUERY_SELECTORS[application]
 
 
+@pytest.mark.parametrize(
+    ("application", "app_factory"),
+    (
+        ("riverhog", create_riverhog_app),
+        ("stove0", create_stove0_contract_app),
+        ("riverhog-ftp-adapter", create_adapter_contract_app),
+    ),
+)
+def test_every_closed_query_selector_has_one_exact_public_vocabulary(
+    application: str,
+    app_factory: Callable[[], FastAPI],
+) -> None:
+    schema = app_factory().openapi()
+    components = schema["components"]["schemas"]
+    observed_inline: set[tuple[str, str, str]] = set()
+    observed_named: set[str] = set()
+    for operation_id, operation in _http_operations(schema).items():
+        for parameter in operation.get("parameters", []):
+            if parameter["in"] != "query":
+                continue
+            parameter_schema = parameter["schema"]
+            candidate = parameter_schema
+            if "anyOf" in candidate:
+                candidate = next(
+                    (
+                        option
+                        for option in candidate["anyOf"]
+                        if "$ref" in option or "enum" in option
+                    ),
+                    {},
+                )
+            reference = candidate.get("$ref")
+            if reference is not None:
+                component = str(reference).rsplit("/", 1)[-1]
+                values = _parameter_enum(candidate, components)
+                if not values:
+                    continue
+                assert component in NAMED_ENUM_QUERY_SELECTOR_TYPES, (
+                    application,
+                    operation_id,
+                    parameter["name"],
+                )
+                observed_named.add(component)
+                assert values == closed_literal_values(NAMED_ENUM_QUERY_SELECTOR_TYPES[component])
+                continue
+            values = _parameter_enum(candidate, components)
+            if not values:
+                continue
+            key = (application, operation_id, parameter["name"])
+            assert key in INLINE_ENUM_QUERY_SELECTOR_TYPES
+            observed_inline.add(key)
+            assert values == closed_literal_values(INLINE_ENUM_QUERY_SELECTOR_TYPES[key])
+
+    assert observed_inline == {
+        key for key in INLINE_ENUM_QUERY_SELECTOR_TYPES if key[0] == application
+    }
+    if application == "riverhog":
+        assert observed_named == set(NAMED_ENUM_QUERY_SELECTOR_TYPES)
+    else:
+        assert observed_named == set()
+
+
+def test_official_client_selector_validation_projects_public_vocabularies() -> None:
+    riverhog_controls = {
+        "_APPLICATION_ACCESS_SORTS": ApplicationAccessSort,
+        "_APPLICATION_KEY_SORTS": ApplicationKeySort,
+        "_APPLICATION_SORTS": ApplicationSort,
+        "_ARCHIVE_COPY_SORTS": ArchiveCopySort,
+        "_ARCHIVE_COPY_STATES": ArchiveCopyState,
+        "_ARCHIVE_STORE_SORTS": ArchiveStoreSort,
+        "_COLLECTION_SORTS": CollectionSort,
+        "_COLLECTION_UPLOAD_SORTS": CollectionUploadSort,
+        "_COLLECTION_UPLOAD_STATES": CollectionUploadState,
+        "_DOWNLOAD_QUOTA_SORTS": DownloadQuotaSort,
+        "_PROVENANCE_SORTS": ProvenanceSort,
+        "_PROVENANCE_STATUSES": ProvenanceStatus,
+        "_RETRIEVAL_CACHE_PROTECTIONS": RetrievalCacheProtection,
+        "_RETRIEVAL_CACHE_SORTS": RetrievalCacheSort,
+        "_RETRIEVAL_CACHE_STATES": RetrievalCacheState,
+        "_SEARCH_SORTS": SearchSort,
+        "_SORT_ORDERS": SortOrder,
+        "_TAG_SORTS": TagSort,
+    }
+    for attribute, vocabulary in riverhog_controls.items():
+        assert getattr(riverhog_client_module, attribute) == closed_literal_values(vocabulary)
+    for attribute, vocabulary in {
+        "_CLAIM_SORTS": ProcessingClaimSort,
+        "_CLAIM_STATES": ClaimState,
+        "_SORT_ORDERS": SortOrder,
+    }.items():
+        assert getattr(riverhog_workflow_client_module, attribute) == closed_literal_values(
+            vocabulary
+        )
+    for attribute, vocabulary in {
+        "_EVALUATION_PHASES": EvaluationPhase,
+        "_EVALUATION_SORTS": EvaluationSort,
+        "_SORT_ORDERS": Stove0SortOrder,
+        "_WORK_PHASES": WorkPhase,
+        "_WORK_SORTS": WorkSort,
+    }.items():
+        assert getattr(stove0_client_module, attribute) == closed_literal_values(vocabulary)
+
+
+def test_service_selector_validation_projects_public_vocabularies() -> None:
+    projections = (
+        (collection_service_module, "_COLLECTION_SORT_FIELDS", CollectionSort),
+        (collection_service_module, "_SORT_ORDERS", SortOrder),
+        (upload_service_module, "_UPLOAD_SORT_FIELDS", CollectionUploadSort),
+        (upload_service_module, "_UPLOAD_STATES", CollectionUploadState),
+        (upload_service_module, "_SORT_ORDERS", SortOrder),
+        (retrieval_service_module, "_CACHE_SORT_FIELDS", RetrievalCacheSort),
+        (retrieval_service_module, "_CACHE_STATES", RetrievalCacheState),
+        (
+            retrieval_service_module,
+            "_CACHE_PROTECTION_FILTERS",
+            RetrievalCacheProtection,
+        ),
+        (retrieval_service_module, "_SORT_ORDERS", SortOrder),
+        (search_service_module, "_SORT_FIELDS", SearchSort),
+        (search_service_module, "_SORT_ORDERS", SortOrder),
+        (provenance_service_module, "_SORT_FIELDS", ProvenanceSort),
+        (provenance_service_module, "_STATUS_VALUES", ProvenanceStatus),
+        (provenance_service_module, "_SORT_ORDERS", SortOrder),
+        (archive_copy_service_module, "_SORT_FIELDS", ArchiveCopySort),
+        (archive_copy_service_module, "_SORT_ORDERS", SortOrder),
+        (archive_store_service_module, "_SORT_FIELDS", ArchiveStoreSort),
+        (archive_store_service_module, "_SORT_ORDERS", SortOrder),
+        (app_key_service_module, "_APP_SORT_FIELDS", ApplicationSort),
+        (app_key_service_module, "_KEY_SORT_FIELDS", ApplicationKeySort),
+        (app_key_service_module, "_ACCESS_SORT_FIELDS", ApplicationAccessSort),
+        (app_key_service_module, "_SORT_ORDERS", SortOrder),
+        (tag_service_module, "_SORT_FIELDS", TagSort),
+        (tag_service_module, "_SORT_ORDERS", SortOrder),
+        (quota_service_module, "_KEY_QUOTA_SORT_FIELDS", DownloadQuotaSort),
+        (quota_service_module, "_SORT_ORDERS", SortOrder),
+        (workflow_service_module, "_CLAIM_SORT_NAMES", ProcessingClaimSort),
+        (workflow_service_module, "_CLAIM_STATES", ClaimState),
+        (workflow_service_module, "_SORT_ORDERS", SortOrder),
+        (stove0_persistence_module, "_WORK_PHASES", WorkPhase),
+        (stove0_persistence_module, "_WORK_SORTS", WorkSort),
+        (stove0_persistence_module, "_EVALUATION_PHASES", EvaluationPhase),
+        (stove0_persistence_module, "_EVALUATION_SORTS", EvaluationSort),
+        (stove0_persistence_module, "_SORT_ORDERS", Stove0SortOrder),
+    )
+    for module, attribute, vocabulary in projections:
+        assert getattr(module, attribute) == closed_literal_values(vocabulary)
+
+
 def test_non_cli_python_interfaces_do_not_reintroduce_an_all_selector() -> None:
     roots = (
         REPO_ROOT / "packages",
@@ -721,6 +976,12 @@ def test_official_clients_reject_invalid_crud_controls_and_noncanonical_tags() -
     try:
         with pytest.raises(BadRequest, match="collection sort must be one of"):
             riverhog.list_collections(sort="newest")  # type: ignore[arg-type]
+        with pytest.raises(BadRequest):
+            riverhog.list_app_key_access(permission="unknown")  # type: ignore[arg-type]
+        with pytest.raises(BadRequest):
+            riverhog.list_app_key_access(resource="provider:internal")  # type: ignore[arg-type]
+        with pytest.raises(BadRequest, match="processing-claim state must be one of"):
+            riverhog.list_processing_claims(state="unknown")  # type: ignore[arg-type]
         with pytest.raises(BadRequest, match="tag must be canonical"):
             riverhog.create_tag("Not Canonical")
         with pytest.raises(BadRequest, match="does not accept a scoped resource"):
@@ -734,6 +995,8 @@ def test_official_clients_reject_invalid_crud_controls_and_noncanonical_tags() -
             riverhog.get_processing_claim("not-a-claim")  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="evaluation sort must be one of"):
             stove0.list_evaluations(sort="newest")  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="work phase must be one of"):
+            stove0.list_work(phase="unknown")  # type: ignore[arg-type]
     finally:
         riverhog.close()
         stove0.close()
