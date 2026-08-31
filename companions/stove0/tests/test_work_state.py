@@ -249,19 +249,21 @@ def _target_plan(
     target: TargetContract,
     *,
     observation_result_sha256s: tuple[str, ...] = (),
+    selection: ArtifactSelection | None = None,
 ) -> TransformPlan:
-    selection = ArtifactSelection.seal(
-        (
-            ArtifactSubject(
-                id="source",
-                role="fixture.source/v1",
-                collection=_root(),
-                path="source/input.bin",
-                bytes=12,
-                sha256=_sha("4"),
-            ),
+    if selection is None:
+        selection = ArtifactSelection.seal(
+            (
+                ArtifactSubject(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=_root(),
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256=_sha("4"),
+                ),
+            )
         )
-    )
     return TransformPlan.seal(
         TransformPlanPayload(
             target_implementation_id=target.implementation_id,
@@ -276,21 +278,25 @@ def _target_plan(
     )
 
 
-def _branch_decision(work: WorkIdentity) -> BranchSetDecision:
+def _branch_decision(
+    work: WorkIdentity,
+    selection: ArtifactSelection | None = None,
+) -> BranchSetDecision:
     operation = _operation()
     target = _target(operation)
-    selection = ArtifactSelection.seal(
-        (
-            ArtifactSubject(
-                id="source",
-                role="fixture.source/v1",
-                collection=_root(),
-                path="source/input.bin",
-                bytes=12,
-                sha256=_sha("4"),
-            ),
+    if selection is None:
+        selection = ArtifactSelection.seal(
+            (
+                ArtifactSubject(
+                    id="source",
+                    role="fixture.source/v1",
+                    collection=_root(),
+                    path="source/input.bin",
+                    bytes=12,
+                    sha256=_sha("4"),
+                ),
+            )
         )
-    )
     branch = BranchPlan.build(
         parent_work=work,
         branch_id="fixture",
@@ -317,7 +323,9 @@ def _branch_decision(work: WorkIdentity) -> BranchSetDecision:
     )
 
 
-def _queued_target_callback_execution() -> tuple[
+def _queued_target_callback_execution(
+    selection: ArtifactSelection | None = None,
+) -> tuple[
     InMemoryWorkStore,
     Stove0WorkService,
     WorkRecord,
@@ -339,7 +347,7 @@ def _queued_target_callback_execution() -> tuple[
         parent.work_id,
         expected_revision=parent_record.revision,
     )
-    decision = _branch_decision(parent)
+    decision = _branch_decision(parent, selection)
     service.admit_branch_set(
         parent.work_id,
         decision,
@@ -361,7 +369,7 @@ def _queued_target_callback_execution() -> tuple[
     record = service.seal_target_plan(
         child_id,
         target=target,
-        plan=_target_plan(operation, target),
+        plan=_target_plan(operation, target, selection=decision.selections[0]),
         expected_revision=record.revision,
     )
 
@@ -454,6 +462,61 @@ def test_target_callback_authority_seals_exact_production_and_is_idempotent() ->
     assert sealed.outputs == OutputArtifactSetIdentity.seal((output,))
     assert sealed.disposition_count == 1
     assert sealed.source_edge_count == 1
+
+
+def test_target_callback_dispositions_cover_multi_input_selection_by_identity() -> None:
+    selection = ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="a-request-first",
+                role="fixture.source/v1",
+                collection=_root(),
+                path="z-collection-last.bin",
+                bytes=1,
+                sha256=_sha("4"),
+            ),
+            ArtifactSubject(
+                id="z-request-last",
+                role="fixture.source/v1",
+                collection=_root(),
+                path="a-collection-first.bin",
+                bytes=1,
+                sha256=_sha("5"),
+            ),
+        )
+    )
+    _store, _service, record, _operation, callbacks, access = _queued_target_callback_execution(
+        selection
+    )
+    assert record.controller_evidence is not None
+    job_id = record.controller_evidence.execution_envelope.execution_envelope_sha256
+    output = OutputArtifact(
+        id="output",
+        role="fixture.output/v1",
+        path="output/result.bin",
+        bytes=2,
+        sha256=_sha("6"),
+    )
+    callbacks.declare_output(access.token, job_id=job_id, output=output)
+    for source in reversed(selection.artifacts):
+        callbacks.declare_disposition(
+            access.token,
+            job_id=job_id,
+            disposition=InputDispositionDeclaration(
+                input_id=source.id,
+                status="transformed",
+            ),
+        )
+        callbacks.declare_source_edge(
+            access.token,
+            job_id=job_id,
+            edge=OutputSourceEdge(output_id=output.id, input_id=source.id),
+        )
+
+    sealed = callbacks.seal_production(access.token, job_id=job_id).production
+
+    assert sealed.disposition_count == 2
+    assert sealed.source_edge_count == 2
 
 
 def test_target_callback_authority_rejects_unpermitted_disposition_and_stale_fence() -> None:
@@ -1280,6 +1343,38 @@ def test_sql_branch_set_admission_is_restart_safe_and_exposes_exact_children(
     restarted = SqlAlchemyStateStore(f"sqlite+pysqlite:///{path}")
     assert restarted.load(work.work_id) == admitted
     assert restarted.load(child.work_id) == child
+    assert restarted.load_selection(selection.selection_sha256) == selection
+
+
+def test_sql_selection_restart_preserves_canonical_artifact_order(tmp_path: Path) -> None:
+    from stove0_core import SqlAlchemyStateStore
+
+    path = tmp_path / "private" / "stove0.sqlite3"
+    selection = ArtifactSelection.seal(
+        (
+            ArtifactSubject(
+                id="a-request-first",
+                role="fixture.source/v1",
+                collection=_root(),
+                path="z-collection-last.bin",
+                bytes=1,
+                sha256=_sha("4"),
+            ),
+            ArtifactSubject(
+                id="z-request-last",
+                role="fixture.source/v1",
+                collection=_root(),
+                path="a-collection-first.bin",
+                bytes=1,
+                sha256=_sha("5"),
+            ),
+        )
+    )
+    store = SqlAlchemyStateStore(f"sqlite+pysqlite:///{path}")
+    store.retain_selection(selection)
+
+    restarted = SqlAlchemyStateStore(f"sqlite+pysqlite:///{path}")
+
     assert restarted.load_selection(selection.selection_sha256) == selection
 
 

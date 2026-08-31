@@ -34,6 +34,7 @@ from riverhog_protocol.collection_workflows import (
 )
 from riverhog_protocol.errors import BadRequest, Conflict, Forbidden, InvalidState, NotFound
 from sqlalchemy import and_, asc, delete, desc, func, literal, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
@@ -194,8 +195,32 @@ class SqlAlchemyCollectionWorkflowService:
                 created_at=now,
                 updated_at=now,
             )
-            session.add(claim)
-            session.flush()
+            try:
+                with session.begin_nested():
+                    session.add(claim)
+                    session.flush()
+            except IntegrityError:
+                claim = session.scalar(
+                    select(CollectionProcessingClaimRecord)
+                    .where(CollectionProcessingClaimRecord.id == claim_id)
+                    .with_for_update()
+                )
+                if claim is None:
+                    raise
+                _require_same_claim(
+                    session,
+                    claim,
+                    work_id=normalized_work_id,
+                    purpose=normalized_purpose,
+                    work_document_json=encoded_work.decode("utf-8"),
+                    work_document_sha256=normalized_work_sha256,
+                    principal=principal,
+                )
+                if claim.state == "active" and parse_utc_timestamp(
+                    expires_at
+                ) > parse_utc_timestamp(claim.expires_at):
+                    claim.expires_at = expires_at
+                    claim.updated_at = now
             return _claim_payload(session, claim)
 
     def append_claim_inputs(
@@ -1087,6 +1112,8 @@ class SqlAlchemyCollectionWorkflowService:
             additions = 0
             new_outputs = 0
             newly_mapped_inputs = 0
+            batch_output_paths: set[str] = set()
+            batch_input_keys: set[tuple[int, str]] = set()
             for item in values:
                 _require_disposition_output(session, claim, item)
                 existing = session.get(
@@ -1129,8 +1156,13 @@ class SqlAlchemyCollectionWorkflowService:
                     )
                 )
                 additions += 1
-                new_outputs += int(output_exists is None)
-                newly_mapped_inputs += int(source_exists is None)
+                if output_exists is None and item.output_path not in batch_output_paths:
+                    new_outputs += 1
+                input_key = (item.input_collection_id, item.input_path)
+                if source_exists is None and input_key not in batch_input_keys:
+                    newly_mapped_inputs += 1
+                batch_output_paths.add(item.output_path)
+                batch_input_keys.add(input_key)
             if additions:
                 disposition_set.output_edge_count += additions
                 disposition_set.output_artifact_count += new_outputs

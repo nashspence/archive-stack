@@ -18,7 +18,10 @@ from riverhog_core.catalog_models import (
     CollectionUploadRecord,
     TagRecord,
 )
-from riverhog_core.catalog_workflow_models import CollectionProcessingClaimRecord
+from riverhog_core.catalog_workflow_models import (
+    CollectionProcessingClaimRecord,
+    CollectionProcessingDispositionSetRecord,
+)
 from riverhog_core.services.collection_workflows import (
     SqlAlchemyCollectionWorkflowService,
     processing_claim_blockers,
@@ -335,6 +338,64 @@ def _issue_capability(
         principal=_principal(),
     )
     return capability
+
+
+def test_disposition_batch_counts_shared_sources_once(
+    tmp_path: Path,
+    request: FixtureRequest,
+) -> None:
+    factory = _session_factory(tmp_path, request)
+    root = _setup(factory)
+    service = SqlAlchemyCollectionWorkflowService(
+        cast(Any, object()),
+        session_factory=factory,
+    )
+    claim = _create_claim(
+        service,
+        work_id=WORK_ID,
+        work_document=_work_document(root),
+        root=root,
+    )
+    claim_id = str(claim["id"])
+    _seal_plan(service, claim_id)
+    disposition = ArtifactDisposition(
+        input_collection_id=root.collection_id,
+        input_archive_root_sha256=root.archive_root_sha256,
+        input_path="camera/input.mov",
+        status="transformed",
+    )
+    service.record_dispositions(
+        claim_id,
+        fence=1,
+        dispositions=(disposition,),
+        principal=_principal(),
+    )
+    state = service.record_disposition_outputs(
+        claim_id,
+        fence=1,
+        outputs=tuple(
+            ArtifactDispositionOutput(
+                input_collection_id=root.collection_id,
+                input_archive_root_sha256=root.archive_root_sha256,
+                input_path="camera/input.mov",
+                output_path=path,
+            )
+            for path in ("video/archive.mkv", "video/archive.mkv.xmp")
+        ),
+        principal=_principal(),
+    )
+
+    assert state["output_edge_count"] == 2
+    assert state["output_artifact_count"] == 2
+    with factory() as session:
+        counters = session.get_one(CollectionProcessingDispositionSetRecord, claim_id)
+        assert counters.transformed_count == 1
+        assert counters.transformed_with_outputs_count == 1
+    sealed = service.seal_disposition_set(claim_id, fence=1, principal=_principal())
+    while sealed["state"] == "sealing":
+        assert service.process_due_disposition_sets() == 1
+        sealed = service.get_disposition_set(claim_id, principal=_principal())
+    assert sealed["state"] == "sealed"
 
 
 def test_claim_plan_capabilities_settlement_and_deletion_blocker(

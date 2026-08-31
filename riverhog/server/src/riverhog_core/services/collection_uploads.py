@@ -712,7 +712,7 @@ class SqlAlchemyCollectionUploadService:
                     new_files[0]["path"]
                 ) <= collection_upload_path_order_key(last_path):
                     raise Conflict("collection upload file registration is not append-only")
-                _require_transform_output_edges(session, upload, new_files)
+                _require_transform_control_paths(upload, new_files)
             ordered: list[OrderedArchiveFile] = []
             next_order = checkpoint.next_file_order
             for current in new_files:
@@ -1107,6 +1107,7 @@ class SqlAlchemyCollectionUploadService:
             )
             if incomplete_provenance is not None:
                 raise Conflict(f"provenance journal is not sealed: {incomplete_provenance}")
+            _require_transform_output_authority(session, upload)
             actual_etag = collection_content_identity_ordered(
                 (row.path, row.bytes, row.sha256)
                 for batch in _upload_file_batches(session, normalized_id)
@@ -3785,11 +3786,31 @@ def _require_transform_output_intent(
         raise Forbidden("collection upload differs from the sealed transform output intent")
 
 
-def _require_transform_output_edges(
-    session: Session,
+def _require_transform_control_paths(
     upload: CollectionUploadRecord,
     files: Sequence[_RegisteredFile],
 ) -> None:
+    if not upload.initiated_by_app.startswith("transform:"):
+        return
+    control_paths = {
+        str(item["path"]) for item in files if str(item["path"]).startswith("riverhog/")
+    }
+    if control_paths - {PRODUCER_EVIDENCE_PATH, DERIVATION_EVIDENCE_PATH}:
+        raise Conflict("transform output contains an unsupported Riverhog control file")
+
+
+def _require_transform_output_authority(
+    session: Session,
+    upload: CollectionUploadRecord,
+) -> None:
+    """Bind every staged transform payload to the sealed generic authority.
+
+    Target artifacts enter Riverhog custody incrementally before the producer
+    can seal its complete production and disposition authorities.  Completion
+    is the first boundary where Riverhog can require the exact bijection; file
+    registration deliberately remains resumable construction state.
+    """
+
     prefix = "transform:"
     if not upload.initiated_by_app.startswith(prefix):
         return
@@ -3802,31 +3823,37 @@ def _require_transform_output_edges(
     if claim is None:
         raise Conflict("transform output claim is unavailable")
     disposition_set = session.get(CollectionProcessingDispositionSetRecord, claim.id)
-    payload_paths = tuple(
-        str(item["path"]) for item in files if not str(item["path"]).startswith("riverhog/")
-    )
-    if payload_paths:
-        found = set(
-            session.scalars(
-                select(CollectionProcessingDispositionOutputRecord.output_path)
-                .where(
-                    CollectionProcessingDispositionOutputRecord.claim_id == claim.id,
-                    CollectionProcessingDispositionOutputRecord.output_path.in_(payload_paths),
-                )
-                .distinct()
-            )
+    if disposition_set is None or disposition_set.state != "sealed":
+        raise Conflict("transform completion requires a sealed disposition set")
+    missing_edge = session.scalar(
+        select(CollectionUploadFileRecord.path)
+        .where(
+            CollectionUploadFileRecord.collection_id == upload.collection_id,
+            ~CollectionUploadFileRecord.path.startswith("riverhog/"),
+            ~exists().where(
+                CollectionProcessingDispositionOutputRecord.claim_id == claim.id,
+                CollectionProcessingDispositionOutputRecord.output_path
+                == CollectionUploadFileRecord.path,
+            ),
         )
-        if found != set(payload_paths):
-            raise Conflict("transform output file has no exact disposition edge")
-    control_paths = {
-        str(item["path"]) for item in files if str(item["path"]).startswith("riverhog/")
-    }
-    if control_paths - {PRODUCER_EVIDENCE_PATH, DERIVATION_EVIDENCE_PATH}:
-        raise Conflict("transform output contains an unsupported Riverhog control file")
-    if DERIVATION_EVIDENCE_PATH in control_paths and (
-        disposition_set is None or disposition_set.state != "sealed"
-    ):
-        raise Conflict("transform derivation evidence requires a sealed disposition set")
+        .limit(1)
+    )
+    if missing_edge is not None:
+        raise Conflict(f"transform output file has no exact disposition edge: {missing_edge}")
+    missing_file = session.scalar(
+        select(CollectionProcessingDispositionOutputRecord.output_path)
+        .where(
+            CollectionProcessingDispositionOutputRecord.claim_id == claim.id,
+            ~exists().where(
+                CollectionUploadFileRecord.collection_id == upload.collection_id,
+                CollectionUploadFileRecord.path
+                == CollectionProcessingDispositionOutputRecord.output_path,
+            ),
+        )
+        .limit(1)
+    )
+    if missing_file is not None:
+        raise Conflict(f"transform disposition output file is absent: {missing_file}")
 
 
 def _require_tags(session: Session, tags: Sequence[str]) -> None:

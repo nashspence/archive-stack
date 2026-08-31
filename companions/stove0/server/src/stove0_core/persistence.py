@@ -214,12 +214,20 @@ class _ArtifactSelectionMemberRow(_Base):
         primary_key=True,
     )
     artifact_id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    artifact_order: Mapped[int] = mapped_column(Integer, nullable=False)
     continuation_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     document_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     document_json: Mapped[str] = mapped_column(Text, nullable=False)
 
     __table_args__ = (
         CheckConstraint("length(artifact_id) >= 1", name="ck_stove0_selection_members_artifact_id"),
+        CheckConstraint("artifact_order >= 0", name="ck_stove0_selection_members_order"),
+        Index(
+            "ix_stove0_selection_members_order",
+            "selection_sha256",
+            "artifact_order",
+            unique=True,
+        ),
         CheckConstraint(
             "length(continuation_sha256) = 64",
             name="ck_stove0_selection_members_continuation",
@@ -709,7 +717,7 @@ class SqlAlchemyStateStore:
             members = session.scalars(
                 select(_ArtifactSelectionMemberRow)
                 .where(_ArtifactSelectionMemberRow.selection_sha256 == selection_sha256)
-                .order_by(_ArtifactSelectionMemberRow.artifact_id)
+                .order_by(_ArtifactSelectionMemberRow.artifact_order)
             )
             return _selection_from_rows(row, members)
 
@@ -873,7 +881,7 @@ class SqlAlchemyStateStore:
         if limit < 1 or limit > 1000:
             raise ValueError("artifact selection page is invalid")
         with self.sessions() as session:
-            after = ""
+            after = -1
             if continuation is not None:
                 prior = session.scalar(
                     select(_ArtifactSelectionMemberRow).where(
@@ -883,14 +891,14 @@ class SqlAlchemyStateStore:
                 )
                 if prior is None:
                     raise ValueError("artifact selection continuation is invalid")
-                after = prior.artifact_id
+                after = prior.artifact_order
             rows = session.scalars(
                 select(_ArtifactSelectionMemberRow)
                 .where(
                     _ArtifactSelectionMemberRow.selection_sha256 == selection_sha256,
-                    _ArtifactSelectionMemberRow.artifact_id > after,
+                    _ArtifactSelectionMemberRow.artifact_order > after,
                 )
-                .order_by(_ArtifactSelectionMemberRow.artifact_id)
+                .order_by(_ArtifactSelectionMemberRow.artifact_order)
                 .limit(limit + 1)
             )
             selected = list(rows)
@@ -907,7 +915,7 @@ class SqlAlchemyStateStore:
         statement = (
             select(_ArtifactSelectionMemberRow)
             .where(_ArtifactSelectionMemberRow.selection_sha256 == selection_sha256)
-            .order_by(_ArtifactSelectionMemberRow.artifact_id)
+            .order_by(_ArtifactSelectionMemberRow.artifact_order)
             .execution_options(yield_per=100)
         )
         with read_snapshot(self.sessions) as session:
@@ -1531,8 +1539,8 @@ def _insert_or_verify_selection(
         raise RuntimeError(f"unsupported Stove0 state database dialect: {dialect}")
     if inserted is not None:
         session.add_all(
-            _selection_member_row(selection.selection_sha256, artifact)
-            for artifact in selection.artifacts
+            _selection_member_row(selection.selection_sha256, ordinal, artifact)
+            for ordinal, artifact in enumerate(selection.artifacts)
         )
         session.flush()
     existing = session.get(_ArtifactSelectionRow, selection.selection_sha256)
@@ -1541,7 +1549,7 @@ def _insert_or_verify_selection(
     members = session.scalars(
         select(_ArtifactSelectionMemberRow)
         .where(_ArtifactSelectionMemberRow.selection_sha256 == selection.selection_sha256)
-        .order_by(_ArtifactSelectionMemberRow.artifact_id)
+        .order_by(_ArtifactSelectionMemberRow.artifact_order)
     )
     if _selection_from_rows(existing, members) != selection:
         raise ConcurrentWorkUpdate("artifact selection identity was reused")
@@ -1557,12 +1565,14 @@ def _selection_ref(row: _ArtifactSelectionRow) -> ArtifactSelectionRef:
 
 def _selection_member_row(
     selection_sha256: str,
+    artifact_order: int,
     artifact: ArtifactSubject,
 ) -> _ArtifactSelectionMemberRow:
     encoded = _encode(artifact.model_dump(mode="json", by_alias=True, exclude_none=True))
     return _ArtifactSelectionMemberRow(
         selection_sha256=selection_sha256,
         artifact_id=artifact.id,
+        artifact_order=artifact_order,
         continuation_sha256=hashlib.sha256(
             b"stove0-artifact-selection-continuation/v1\x00"
             + selection_sha256.encode("ascii")

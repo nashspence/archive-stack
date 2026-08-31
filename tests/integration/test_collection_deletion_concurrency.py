@@ -50,7 +50,10 @@ from riverhog_core.services.collection_workflows import SqlAlchemyCollectionWork
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
 from riverhog_protocol.collection_workflows import (
     DERIVATION_EVIDENCE_PATH,
+    PRODUCER_EVIDENCE_PATH,
     ArtifactDisposition,
+    ArtifactDispositionOutput,
+    ArtifactDispositionSetIdentity,
     CollectionArtifactIdentity,
     CollectionDerivation,
     CollectionProcessingOutcomeIdentity,
@@ -234,6 +237,7 @@ def _seed(database_url: str) -> None:
                 creation_identity_sha256="e" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="0" * 64,
+                tag_set_identity=tag_set_identity(["docs"]),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="0" * 64,
@@ -314,6 +318,7 @@ def _seed_second_input(database_url: str) -> CollectionRootIdentity:
                 creation_identity_sha256="d" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="1" * 64,
+                tag_set_identity=tag_set_identity(["docs"]),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="1" * 64,
@@ -423,13 +428,69 @@ def _workflow_claim(
 ) -> tuple[CollectionRootIdentity, dict[str, object]]:
     root = CollectionRootIdentity(COLLECTION_ID, "b" * 64, "0" * 64)
     work = {"format": "fixture-processing-work/v1", "work_id": work_id, "inputs": [root.as_dict()]}
-    return root, service.create_or_resume_claim(
+    claim = service.create_or_resume_claim(
         work_id=work_id,
         work_document=work,
         work_document_sha256=canonical_json_sha256(work),
-        inputs=(root,),
         principal=WORKFLOW_PRINCIPAL,
     )
+    _stage_claim_inputs(service, claim, (root,))
+    return root, claim
+
+
+def _stage_claim_inputs(
+    service: SqlAlchemyCollectionWorkflowService,
+    claim: dict[str, object],
+    inputs: Sequence[CollectionRootIdentity],
+) -> None:
+    claim_id = str(claim["id"])
+    fence = int(cast(int, claim["fence"]))
+    service.append_claim_inputs(
+        claim_id,
+        fence=fence,
+        start_ordinal=0,
+        inputs=tuple(inputs),
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    service.seal_claim_inputs(
+        claim_id,
+        fence=fence,
+        principal=WORKFLOW_PRINCIPAL,
+    )
+
+
+def _issue_capability(
+    service: SqlAlchemyCollectionWorkflowService,
+    claim_id: str,
+    *,
+    audience: str,
+    actions: Sequence[str],
+    artifacts: Sequence[CollectionArtifactIdentity],
+) -> dict[str, object]:
+    capability = service.issue_capability(
+        claim_id,
+        fence=1,
+        audience=audience,
+        actions=tuple(actions),
+        ttl_seconds=600,
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    capability_id = str(capability["id"])
+    service.append_capability_artifacts(
+        claim_id,
+        capability_id,
+        fence=1,
+        start_ordinal=0,
+        artifacts=tuple(sorted(artifacts)),
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    service.seal_capability_artifacts(
+        claim_id,
+        capability_id,
+        fence=1,
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    return capability
 
 
 def _seal_workflow_claim(
@@ -441,6 +502,23 @@ def _seal_workflow_claim(
     input_artifacts: Sequence[CollectionArtifactIdentity] | None = None,
 ) -> dict[str, object]:
     root = CollectionRootIdentity(COLLECTION_ID, "b" * 64, "0" * 64)
+    artifacts = tuple(sorted(input_artifacts or (_workflow_artifact(root),)))
+    service.append_claim_artifacts(
+        claim_id,
+        fence=1,
+        start_ordinal=0,
+        artifacts=artifacts,
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    service.seal_claim_artifacts(claim_id, fence=1, principal=WORKFLOW_PRINCIPAL)
+    service.append_claim_output_tags(
+        claim_id,
+        fence=1,
+        start_ordinal=0,
+        tags=("docs",),
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    service.seal_claim_output_tags(claim_id, fence=1, principal=WORKFLOW_PRINCIPAL)
     controller_evidence: dict[str, JsonValue] = {
         "format": "stove0-controller-evidence/v1",
         "execution_envelope": {"execution_envelope_sha256": execution_id},
@@ -453,8 +531,6 @@ def _seal_workflow_claim(
         controller_evidence_sha256=canonical_json_sha256(controller_evidence),
         operation_id=OPERATION.id,
         operation_sha256=OPERATION.sha256,
-        input_artifacts=tuple(input_artifacts or (_workflow_artifact(root),)),
-        output_tags=("docs",),
         retirement_policy=retirement_policy,
         retirement_grace_seconds=0,
         principal=WORKFLOW_PRINCIPAL,
@@ -476,6 +552,59 @@ def _upload_service(database_url: str) -> SqlAlchemyCollectionUploadService:
     )
 
 
+def _seal_disposition_set(
+    service: SqlAlchemyCollectionWorkflowService,
+    claim_id: str,
+    dispositions: Sequence[ArtifactDisposition],
+    outputs: Sequence[ArtifactDispositionOutput],
+) -> ArtifactDispositionSetIdentity:
+    service.record_dispositions(
+        claim_id,
+        fence=1,
+        dispositions=tuple(dispositions),
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    service.record_disposition_outputs(
+        claim_id,
+        fence=1,
+        outputs=tuple(outputs),
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    state = service.seal_disposition_set(
+        claim_id,
+        fence=1,
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    while state["state"] != "sealed":
+        assert state["state"] == "sealing"
+        assert service.process_due_disposition_sets() == 1
+        state = service.get_disposition_set(claim_id, principal=WORKFLOW_PRINCIPAL)
+    return ArtifactDispositionSetIdentity.from_mapping(cast(dict[str, object], state["identity"]))
+
+
+def _settle_outcomes(
+    service: SqlAlchemyCollectionWorkflowService,
+    claim_id: str,
+) -> dict[str, object]:
+    settled = service.settle_claim_outcomes(
+        claim_id,
+        fence=1,
+        retirement_policy="retain",
+        retirement_grace_seconds=0,
+        principal=WORKFLOW_PRINCIPAL,
+    )
+    while settled["state"] == "active":
+        assert service.process_due_outcome_sets() == 1
+        settled = service.settle_claim_outcomes(
+            claim_id,
+            fence=1,
+            retirement_policy="retain",
+            retirement_grace_seconds=0,
+            principal=WORKFLOW_PRINCIPAL,
+        )
+    return settled
+
+
 def _seed_derived_output(
     database_url: str,
     *,
@@ -489,27 +618,36 @@ def _seed_derived_output(
         "format": "stove0-controller-evidence/v1",
         "execution_envelope": {"execution_envelope_sha256": execution_id},
     }
+    service = SqlAlchemyCollectionWorkflowService(RuntimeConfig(database_url=database_url))
+    disposition = ArtifactDisposition(
+        input_collection_id=COLLECTION_ID,
+        input_archive_root_sha256=root.archive_root_sha256,
+        input_path=FILE_PATH,
+        status="transformed",
+    )
+    output = ArtifactDispositionOutput(
+        input_collection_id=COLLECTION_ID,
+        input_archive_root_sha256=root.archive_root_sha256,
+        input_path=FILE_PATH,
+        output_path=output_path,
+    )
+    disposition_set = _seal_disposition_set(service, claim_id, (disposition,), (output,))
+    claim = service.get_claim(claim_id, principal=WORKFLOW_PRINCIPAL)
+    plan = cast(dict[str, object], claim["plan"])
     derivation = CollectionDerivation(
         execution_id=execution_id,
         claim_id=claim_id,
         fence=1,
         recipe=RecipeIdentity("fixture.recipe/v1", 1, "6" * 64),
         operation=OPERATION,
-        inputs=(root,),
-        output_tags=("docs",),
+        input_set_sha256=str(cast(dict[str, object], plan["inputs"])["sha256"]),
+        artifact_set_sha256=str(cast(dict[str, object], plan["artifacts"])["sha256"]),
+        output_tag_set_sha256=str(cast(dict[str, object], plan["output_tags"])["sha256"]),
         execution_envelope_sha256=execution_id,
         execution_sha256="5" * 64,
         controller_evidence=controller_evidence,
         controller_evidence_sha256=canonical_json_sha256(controller_evidence),
-        dispositions=(
-            ArtifactDisposition(
-                input_collection_id=COLLECTION_ID,
-                input_archive_root_sha256=root.archive_root_sha256,
-                input_path=FILE_PATH,
-                status="transformed",
-                outputs=(output_path,),
-            ),
-        ),
+        disposition_set=disposition_set,
     )
     with session_scope(make_session_factory(database_url)) as session:
         tag = session.get_one(TagRecord, "docs")
@@ -521,6 +659,7 @@ def _seed_derived_output(
                 creation_identity_sha256=("c" if output_collection_id == 2 else "b") * 64,
                 creation_custody_mode="producer-retained",
                 content_identity=("4" if output_collection_id == 2 else "5") * 64,
+                tag_set_identity=tag_set_identity(["docs"]),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity=("3" if output_collection_id == 2 else "4") * 64,
@@ -530,6 +669,8 @@ def _seed_derived_output(
                 created_by_app=f"transform:{execution_id}",
                 created_by_key_id=f"transform:{execution_id}",
                 created_at="2026-01-01T00:00:00.000000Z",
+                file_count=3,
+                file_bytes=len(CONTENT) + len(derivation.to_json_bytes()) + 2,
             )
         )
         session.add(
@@ -553,6 +694,12 @@ def _seed_derived_output(
                     path=DERIVATION_EVIDENCE_PATH,
                     bytes=len(derivation.to_json_bytes()),
                     sha256=derivation.sha256,
+                ),
+                CollectionFileRecord(
+                    collection_id=output_collection_id,
+                    path=PRODUCER_EVIDENCE_PATH,
+                    bytes=2,
+                    sha256=hashlib.sha256(b"{}").hexdigest(),
                 ),
             )
         )
@@ -595,34 +742,52 @@ def _seed_multi_input_derived_output(
         "format": "stove0-controller-evidence/v1",
         "execution_envelope": {"execution_envelope_sha256": EXECUTION_ID},
     }
+    service = SqlAlchemyCollectionWorkflowService(RuntimeConfig(database_url=database_url))
+    dispositions = (
+        ArtifactDisposition(
+            input_collection_id=COLLECTION_ID,
+            input_archive_root_sha256=roots[0].archive_root_sha256,
+            input_path=FILE_PATH,
+            status="transformed",
+        ),
+        ArtifactDisposition(
+            input_collection_id=SECOND_COLLECTION_ID,
+            input_archive_root_sha256=roots[1].archive_root_sha256,
+            input_path=SECOND_FILE_PATH,
+            status="transformed",
+        ),
+    )
+    outputs = (
+        ArtifactDispositionOutput(
+            input_collection_id=COLLECTION_ID,
+            input_archive_root_sha256=roots[0].archive_root_sha256,
+            input_path=FILE_PATH,
+            output_path="derived/document.txt",
+        ),
+        ArtifactDispositionOutput(
+            input_collection_id=SECOND_COLLECTION_ID,
+            input_archive_root_sha256=roots[1].archive_root_sha256,
+            input_path=SECOND_FILE_PATH,
+            output_path="derived/second.txt",
+        ),
+    )
+    disposition_set = _seal_disposition_set(service, claim_id, dispositions, outputs)
+    claim = service.get_claim(claim_id, principal=WORKFLOW_PRINCIPAL)
+    plan = cast(dict[str, object], claim["plan"])
     derivation = CollectionDerivation(
         execution_id=EXECUTION_ID,
         claim_id=claim_id,
         fence=1,
         recipe=RecipeIdentity("fixture.multi-input/v1", 1, "6" * 64),
         operation=OPERATION,
-        inputs=roots,
-        output_tags=("docs",),
+        input_set_sha256=str(cast(dict[str, object], plan["inputs"])["sha256"]),
+        artifact_set_sha256=str(cast(dict[str, object], plan["artifacts"])["sha256"]),
+        output_tag_set_sha256=str(cast(dict[str, object], plan["output_tags"])["sha256"]),
         execution_envelope_sha256=EXECUTION_ID,
         execution_sha256="5" * 64,
         controller_evidence=controller_evidence,
         controller_evidence_sha256=canonical_json_sha256(controller_evidence),
-        dispositions=(
-            ArtifactDisposition(
-                input_collection_id=COLLECTION_ID,
-                input_archive_root_sha256=roots[0].archive_root_sha256,
-                input_path=FILE_PATH,
-                status="transformed",
-                outputs=("derived/document.txt",),
-            ),
-            ArtifactDisposition(
-                input_collection_id=SECOND_COLLECTION_ID,
-                input_archive_root_sha256=roots[1].archive_root_sha256,
-                input_path=SECOND_FILE_PATH,
-                status="transformed",
-                outputs=("derived/second.txt",),
-            ),
-        ),
+        disposition_set=disposition_set,
     )
     with session_scope(make_session_factory(database_url)) as session:
         tag = session.get_one(TagRecord, "docs")
@@ -634,6 +799,7 @@ def _seed_multi_input_derived_output(
                 creation_identity_sha256="c" * 64,
                 creation_custody_mode="producer-retained",
                 content_identity="4" * 64,
+                tag_set_identity=tag_set_identity(["docs"]),
                 encryption_format="age-v1-scrypt",
                 passphrase_id="fixture-archive-key-v1",
                 inventory_identity="3" * 64,
@@ -643,6 +809,10 @@ def _seed_multi_input_derived_output(
                 created_by_app=f"transform:{EXECUTION_ID}",
                 created_by_key_id=f"transform:{EXECUTION_ID}",
                 created_at="2026-01-01T00:00:00.000000Z",
+                file_count=4,
+                file_bytes=(
+                    len(CONTENT) + len(SECOND_CONTENT) + len(derivation.to_json_bytes()) + 2
+                ),
             )
         )
         session.add(
@@ -672,6 +842,12 @@ def _seed_multi_input_derived_output(
                     path=DERIVATION_EVIDENCE_PATH,
                     bytes=len(derivation.to_json_bytes()),
                     sha256=derivation.sha256,
+                ),
+                CollectionFileRecord(
+                    collection_id=2,
+                    path=PRODUCER_EVIDENCE_PATH,
+                    bytes=2,
+                    sha256=hashlib.sha256(b"{}").hexdigest(),
                 ),
             )
         )
@@ -828,17 +1004,17 @@ def test_deletion_marker_rejects_processing_claim_started_during_remote_delete(
     assert store.delete_started.wait(10)
     try:
         with pytest.raises(Conflict, match="collection deletion is active"):
-            claim_service.create_or_resume_claim(
+            claim = claim_service.create_or_resume_claim(
                 work_id=work_id,
                 work_document=work,
                 work_document_sha256=work_id,
-                inputs=(root,),
                 principal=ApplicationPrincipal(
                     app="stove0",
                     key_id="controller",
                     access=frozenset(),
                 ),
             )
+            _stage_claim_inputs(claim_service, claim, (root,))
     finally:
         store.allow_delete.set()
         thread.join(10)
@@ -869,7 +1045,6 @@ def test_postgres_claim_acquisition_renewal_restart_and_capability_revocation_co
                     work_id=WORK_ID,
                     work_document=work,
                     work_document_sha256=canonical_json_sha256(work),
-                    inputs=(root,),
                     principal=WORKFLOW_PRINCIPAL,
                 )
             )
@@ -885,6 +1060,7 @@ def test_postgres_claim_acquisition_renewal_restart_and_capability_revocation_co
     assert len(acquired) == 2
     assert acquired[0]["id"] == acquired[1]["id"]
     claim_id = str(acquired[0]["id"])
+    _stage_claim_inputs(services[0], acquired[0], (root,))
 
     renewed = [
         service.renew_claim(
@@ -896,14 +1072,12 @@ def test_postgres_claim_acquisition_renewal_restart_and_capability_revocation_co
         for service in services
     ]
     assert {cast(int, item["fence"]) for item in renewed} == {1}
-    capability = services[0].issue_capability(
+    capability = _issue_capability(
+        services[0],
         claim_id,
-        fence=1,
         audience="fixture.observer/v1",
         actions=("read-inputs",),
         artifacts=(_workflow_artifact(root),),
-        ttl_seconds=600,
-        principal=WORKFLOW_PRINCIPAL,
     )
     assert services[1].authenticate_capability(str(capability["token"])) is not None
 
@@ -944,14 +1118,12 @@ def test_postgres_exact_output_intent_creation_resumes_one_upload(
     root, claim = _workflow_claim(workflows)
     claim_id = str(claim["id"])
     _seal_workflow_claim(workflows, claim_id)
-    capability = workflows.issue_capability(
+    capability = _issue_capability(
+        workflows,
         claim_id,
-        fence=1,
         audience="fixture.target/v1",
         actions=("read-inputs", "write-output"),
         artifacts=(_workflow_artifact(root),),
-        ttl_seconds=600,
-        principal=WORKFLOW_PRINCIPAL,
     )
     transform = workflows.authenticate_capability(str(capability["token"]))
     assert transform is not None
@@ -1059,9 +1231,9 @@ def test_postgres_concurrent_outcome_attachments_are_complete_and_exact(
         work_id="a" * 64,
         work_document=parent_document,
         work_document_sha256=canonical_json_sha256(parent_document),
-        inputs=(root,),
         principal=WORKFLOW_PRINCIPAL,
     )
+    _stage_claim_inputs(services[0], parent, (root,))
     parent_id = str(parent["id"])
     children: list[tuple[str, int, CollectionDerivation, str]] = []
     for work_id, execution_id, output_id, outcome_id in (
@@ -1118,23 +1290,20 @@ def test_postgres_concurrent_outcome_attachments_are_complete_and_exact(
 
     assert failures == []
     assert len(settlements) == 2
-    payload = services[0].get_claim(parent_id, principal=WORKFLOW_PRINCIPAL)
+    settled = _settle_outcomes(services[1], parent_id)
+    authority = cast(dict[str, object], cast(dict[str, object], settled["outcomes"])["authority"])
+    page = services[0].list_claim_outcomes(
+        parent_id,
+        authority_sha256=str(authority["sha256"]),
+        start_ordinal=0,
+        principal=WORKFLOW_PRINCIPAL,
+    )
     outcomes = tuple(
         CollectionProcessingOutcomeIdentity.from_mapping(item)
-        for item in cast(list[dict[str, object]], payload["outcomes"])
+        for item in cast(list[dict[str, object]], page["outcomes"])
     )
     assert [item.outcome_id for item in outcomes] == ["first-output", "second-output"]
-    assert (
-        services[1].settle_claim_outcomes(
-            parent_id,
-            fence=1,
-            outcomes=outcomes,
-            retirement_policy="retain",
-            retirement_grace_seconds=0,
-            principal=WORKFLOW_PRINCIPAL,
-        )["state"]
-        == "settled"
-    )
+    assert settled["state"] == "settled"
 
 
 def test_postgres_last_outcome_attachment_and_claim_closure_converge(
@@ -1154,9 +1323,9 @@ def test_postgres_last_outcome_attachment_and_claim_closure_converge(
         work_id="a" * 64,
         work_document=parent_document,
         work_document_sha256=canonical_json_sha256(parent_document),
-        inputs=(root,),
         principal=WORKFLOW_PRINCIPAL,
     )
+    _stage_claim_inputs(services[0], parent, (root,))
     parent_id = str(parent["id"])
     children: list[tuple[str, int, CollectionDerivation, str]] = []
     for work_id, execution_id, output_id, outcome_id in (
@@ -1237,7 +1406,6 @@ def test_postgres_last_outcome_attachment_and_claim_closure_converge(
                 services[1].settle_claim_outcomes(
                     parent_id,
                     fence=1,
-                    outcomes=expected,
                     retirement_policy="retain",
                     retirement_grace_seconds=0,
                     principal=WORKFLOW_PRINCIPAL,
@@ -1252,18 +1420,27 @@ def test_postgres_last_outcome_attachment_and_claim_closure_converge(
     for thread in threads:
         thread.join(10)
 
-    assert attachment_failures == []
     assert len(closure_results) + len(closure_conflicts) == 1
-    settled = services[1].settle_claim_outcomes(
+    assert len(attachment_failures) <= 1
+    if attachment_failures:
+        assert isinstance(attachment_failures[0], Conflict)
+    settled = _settle_outcomes(services[1], parent_id)
+    authority = cast(dict[str, object], cast(dict[str, object], settled["outcomes"])["authority"])
+    page = services[0].list_claim_outcomes(
         parent_id,
-        fence=1,
-        outcomes=expected,
-        retirement_policy="retain",
-        retirement_grace_seconds=0,
+        authority_sha256=str(authority["sha256"]),
+        start_ordinal=0,
         principal=WORKFLOW_PRINCIPAL,
     )
     assert settled["state"] == "settled"
-    assert settled["outcomes"] == [item.as_dict() for item in expected]
+    actual = tuple(
+        CollectionProcessingOutcomeIdentity.from_mapping(item)
+        for item in cast(list[dict[str, object]], page["outcomes"])
+    )
+    if attachment_failures:
+        assert actual == expected[:1]
+    else:
+        assert actual == expected
 
 
 def test_postgres_multi_input_retirement_resumes_after_first_source_deletion(
@@ -1279,9 +1456,9 @@ def test_postgres_multi_input_retirement_resumes_after_first_source_deletion(
         work_id=WORK_ID,
         work_document=work,
         work_document_sha256=canonical_json_sha256(work),
-        inputs=roots,
         principal=WORKFLOW_PRINCIPAL,
     )
+    _stage_claim_inputs(workflows, claim, roots)
     claim_id = str(claim["id"])
     _seal_workflow_claim(
         workflows,

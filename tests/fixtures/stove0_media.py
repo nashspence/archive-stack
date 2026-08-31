@@ -1,12 +1,9 @@
 """Exact public media evidence fixtures shared by maintained target tests."""
 
 from stove0_media_archive_target_contracts import (
-    AUDIO_ARCHIVE_OPERATION,
     SOURCE_ROLE,
     XMP_SOURCE_ROLE,
-    MediaProjectionPolicy,
 )
-from stove0_media_archive_target_support import resolve_media_archive_projection
 from stove0_media_metadata_observer_contracts import (
     MEDIA_METADATA_FACTS_SCHEMA,
     MEDIA_METADATA_OBSERVER_CONTRACT,
@@ -145,25 +142,12 @@ def media_preflight_request(
             facts_sha256=canonical_json_sha256(facts),
         )
     )
-    archive_directory, archive_suffix = (
-        ("audio", ".opus") if operation.id == AUDIO_ARCHIVE_OPERATION.id else ("video", ".mkv")
-    )
-    projection = resolve_media_archive_projection(
-        inputs=inputs,
-        observations=(ObservationEvidence(request=request, result=result),),
-        policy=MediaProjectionPolicy.model_validate(intent["metadata_projection"]),
-        archive_directory=archive_directory,
-        archive_suffix=archive_suffix,
-    )
     return TargetPreflightRequest(
         operation_id=operation.id,
         operation_contract_sha256=operation.contract_sha256,
         inputs=TargetInputAuthority.from_selection(ArtifactSelection.seal(subjects)),
         intent=intent,
-        target_options={
-            **(target_options or {}),
-            "media_projection": projection.model_dump(mode="json"),
-        },
+        target_options=dict(target_options or {}),
         observations=(ObservationEvidence(request=request, result=result),),
     )
 

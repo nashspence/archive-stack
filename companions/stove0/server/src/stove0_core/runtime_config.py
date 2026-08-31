@@ -39,6 +39,7 @@ class Stove0RuntimeConfig:
     targets: dict[str, EndpointRegistration]
     target_callback_base_url: str
     target_callback_allow_insecure_http: bool
+    target_callback_signing_key: str
     workspace_assurance: Literal["encrypted", "ephemeral"]
     claim_lease_seconds: int
     capability_ttl_seconds: int
@@ -75,6 +76,11 @@ class Stove0RuntimeConfig:
             raise ValueError(
                 "STOVE0_TARGET_CALLBACK_BASE_URL is required when targets are configured"
             )
+        callback_signing_key = _secret(
+            values,
+            "STOVE0_TARGET_CALLBACK_SIGNING_KEY",
+            required=bool(targets),
+        )
         return cls(
             database_url=database_url,
             api_token=api_token,
@@ -97,6 +103,11 @@ class Stove0RuntimeConfig:
                 values,
                 "STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP",
                 False,
+            ),
+            target_callback_signing_key=(
+                callback_signing_key
+                if callback_signing_key is not None
+                else "unused-target-callback-signing-key"
             ),
             workspace_assurance=cast(
                 Literal["encrypted", "ephemeral"],

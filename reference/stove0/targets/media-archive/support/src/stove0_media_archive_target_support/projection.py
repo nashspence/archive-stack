@@ -29,8 +29,12 @@ from stove0_observer_protocol import (
     canonical_json_bytes,
     canonical_json_sha256,
 )
-from stove0_protocol import ArtifactSubject
-from stove0_target_protocol import InputArtifact
+from stove0_protocol import ArtifactSelection, ArtifactSubject
+from stove0_target_protocol import (
+    InputArtifact,
+    TargetInputAuthority,
+    TargetPreflightRequest,
+)
 
 MEDIA_PROJECTION_FORMAT: Literal["stove0-media-archive-projection/v1"] = (
     "stove0-media-archive-projection/v1"
@@ -309,6 +313,56 @@ def resolve_media_archive_projection(
             items=tuple(sorted(items, key=lambda item: item.input_artifact_id)),
             retained_xmp_sidecars=retained,
         )
+    )
+
+
+def resolve_media_archive_preflight_projection(
+    request: TargetPreflightRequest,
+    *,
+    policy: MediaProjectionPolicy,
+    archive_directory: str,
+    archive_suffix: str,
+) -> MediaArchiveProjection:
+    """Derive target-owned projection from exact neutral preflight evidence.
+
+    Stove0 supplies only its sealed input authority and immutable observer
+    evidence.  The media target owns the bridge from that evidence to its
+    operation-specific execution plan and proves that the observed subjects
+    are exactly the target inputs before sealing the projection.
+    """
+
+    subjects: dict[str, ArtifactSubject] = {}
+    for evidence in request.observations:
+        if evidence.request.observer_contract_id != MEDIA_METADATA_OBSERVATION_ID:
+            continue
+        for subject in evidence.request.subjects:
+            if subject.id in subjects:
+                raise ValueError("media preflight evidence repeats an exact input")
+            subjects[subject.id] = subject
+    ordered_subjects = tuple(subjects[key] for key in sorted(subjects))
+    if not ordered_subjects:
+        raise ValueError("media preflight requires exact media observation evidence")
+    selection = ArtifactSelection.seal(ordered_subjects)
+    if TargetInputAuthority.from_selection(selection) != request.inputs:
+        raise ValueError("media preflight evidence differs from the exact input authority")
+    inputs = tuple(
+        InputArtifact(
+            id=subject.id,
+            role=subject.role,
+            collection=subject.collection,
+            path=subject.path,
+            bytes=subject.bytes,
+            sha256=subject.sha256,
+            media_type=subject.media_type,
+        )
+        for subject in ordered_subjects
+    )
+    return resolve_media_archive_projection(
+        inputs=inputs,
+        observations=request.observations,
+        policy=policy,
+        archive_directory=archive_directory,
+        archive_suffix=archive_suffix,
     )
 
 
@@ -597,5 +651,6 @@ __all__ = [
     "RetainedXmpSidecar",
     "ffmpeg_container_metadata_args",
     "render_projection_xmp",
+    "resolve_media_archive_preflight_projection",
     "resolve_media_archive_projection",
 ]

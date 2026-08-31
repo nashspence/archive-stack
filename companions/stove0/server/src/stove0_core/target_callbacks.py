@@ -86,9 +86,11 @@ class TargetCallbackAuthority:
         if ttl_seconds < 30:
             raise ValueError("target callback capability TTL must be at least 30 seconds")
         self.store = store
-        self._key = hashlib.sha256(
-            b"stove0-target-callback-signing-key/v1\x00" + signing_key.encode("utf-8")
-        ).digest()
+        self._key = hmac.digest(
+            signing_key.encode("utf-8"),
+            b"stove0-target-callback-signing-key/v1",
+            "sha256",
+        )
         self.base_url = base_url.rstrip("/")
         self.allow_insecure_http = allow_insecure_http
         self.ttl_seconds = ttl_seconds
@@ -227,15 +229,16 @@ class TargetCallbackAuthority:
         operation: OperationContract,
     ) -> tuple[int, str]:
         assert record.target_plan is not None
-        inputs = self.store.iter_selection_artifacts(
-            record.target_plan.inputs.selection.selection_sha256
-        )
         declarations = self.store.iter_target_dispositions(record.work_id)
         contracts = {item.role: item for item in operation.inputs}
         digest = hashlib.sha256()
         count = 0
-        for subject, declaration in zip_longest(inputs, declarations):
-            if subject is None or declaration is None or subject.id != declaration.input_id:
+        for declaration in declarations:
+            subject = self.store.load_selection_artifact(
+                record.target_plan.inputs.selection.selection_sha256,
+                declaration.input_id,
+            )
+            if subject is None:
                 raise ValueError("target dispositions must cover the exact input authority")
             allowed = contracts[subject.role].allowed_dispositions
             if allowed is None or declaration.status not in allowed:
@@ -248,8 +251,8 @@ class TargetCallbackAuthority:
                 disposition=declaration,
             )
             count += 1
-        if count == 0:
-            raise ValueError("target production has no input dispositions")
+        if count != record.target_plan.inputs.selection.artifact_count:
+            raise ValueError("target dispositions must cover the exact input authority")
         return count, digest.hexdigest()
 
     def _validate_edges(

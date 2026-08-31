@@ -173,8 +173,6 @@ class Stove0Composition:
             targets=targets,
         )
         work = Stove0WorkService(state)
-        if config.api_token is None:
-            raise ValueError("STOVE0_API_TOKEN is required by the stove0 server")
         authority = Stove0RiverhogClient(
             riverhog_api,
             claim_lease_seconds=config.claim_lease_seconds,
@@ -183,7 +181,7 @@ class Stove0Composition:
         )
         target_callbacks = TargetCallbackAuthority(
             state,
-            signing_key=config.api_token,
+            signing_key=config.target_callback_signing_key,
             base_url=config.target_callback_base_url,
             allow_insecure_http=config.target_callback_allow_insecure_http,
             ttl_seconds=config.capability_ttl_seconds,

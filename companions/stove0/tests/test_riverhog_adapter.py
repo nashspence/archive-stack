@@ -818,6 +818,47 @@ def test_synchronous_observation_must_fit_claim_and_capability_lifetime() -> Non
         )
 
 
+def test_observation_capability_projects_subjects_into_riverhog_artifact_order() -> None:
+    work, _workflow, _target_plan, _evidence = _authorities()
+    api = FixtureApi()
+    client = Stove0RiverhogClient(api)
+    request = ObservationRequest.seal(
+        ObservationRequestPayload(
+            work_id=work.work_id,
+            observer_registration_id="fixture-observer",
+            observer_descriptor_sha256=_sha("c"),
+            observer_contract_id="fixture.observe/v1",
+            observer_contract_sha256=_sha("d"),
+            subjects=(
+                ArtifactSubject(
+                    id="a-request-id",
+                    role="fixture.source/v1",
+                    collection=work.inputs[0],
+                    path="source/z.bin",
+                    bytes=12,
+                    sha256=_sha("e"),
+                ),
+                ArtifactSubject(
+                    id="z-request-id",
+                    role="fixture.source/v1",
+                    collection=work.inputs[0],
+                    path="source/a.bin",
+                    bytes=13,
+                    sha256=_sha("f"),
+                ),
+            ),
+        )
+    )
+
+    client.observation_authority(ClaimBinding(claim_id=_claim_id(), fence=1), request)
+
+    capability = next(payload for name, payload in api.calls if name == "capability")
+    assert [item["path"] for item in capability["artifacts"]] == [
+        "source/a.bin",
+        "source/z.bin",
+    ]
+
+
 def test_preview_claim_is_separate_read_only_authority_and_is_abandoned() -> None:
     work, _workflow, _target_plan, _evidence = _authorities()
     api = FixtureApi()

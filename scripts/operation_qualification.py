@@ -98,6 +98,7 @@ def create_stove0_contract_app() -> FastAPI:
                 targets={},
                 target_callback_base_url="https://stove0.invalid",
                 target_callback_allow_insecure_http=False,
+                target_callback_signing_key="operation-qualification-callback-key",
                 workspace_assurance="ephemeral",
                 claim_lease_seconds=1800,
                 capability_ttl_seconds=900,

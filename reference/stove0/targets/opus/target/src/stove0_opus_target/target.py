@@ -23,6 +23,7 @@ from stove0_media_archive_target_support import (
     MediaArchiveProjection,
     ffmpeg_container_metadata_args,
     render_projection_xmp,
+    resolve_media_archive_preflight_projection,
 )
 from stove0_protocol import JsonSchemaDocument
 from stove0_target_support import (
@@ -116,14 +117,19 @@ class OpusTargetService(PersistentTargetService):
 
     def preflight(self, request: TargetPreflightRequest) -> TargetPreflightResponse:
         try:
-            AudioArchiveIntent.model_validate(request.intent)
-            supplied = request.target_options.get("media_projection")
-            if supplied is None:
-                raise ValueError("media projection is required from Stove0 planning")
-            projection = MediaArchiveProjection.model_validate(supplied)
-            projection.validate_plan_evidence(
-                tuple(sorted(item.result.result_sha256 for item in request.observations))
+            intent = AudioArchiveIntent.model_validate(request.intent)
+            projection = resolve_media_archive_preflight_projection(
+                request,
+                policy=intent.metadata_projection,
+                archive_directory="audio",
+                archive_suffix=".opus",
             )
+            supplied = request.target_options.get("media_projection")
+            if (
+                supplied is not None
+                and MediaArchiveProjection.model_validate(supplied) != projection
+            ):
+                raise ValueError("supplied media projection differs from target preflight")
         except (KeyError, ValueError) as exc:
             raise TargetServiceError(400, "invalid_target_request", str(exc)) from exc
         effective = request.model_copy(

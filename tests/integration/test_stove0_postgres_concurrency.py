@@ -9,12 +9,13 @@ from typing import cast
 
 import pytest
 from riverhog_protocol.collection_workflows import (
-    ArtifactDisposition,
+    ArtifactDispositionSetIdentity,
     CollectionDerivation,
 )
 from riverhog_protocol.collection_workflows import (
     canonical_json_sha256 as riverhog_canonical_json_sha256,
 )
+from riverhog_protocol.paths import tag_set_identity
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from stove0_core import (
@@ -50,6 +51,13 @@ from stove0_protocol import (
     WorkPayload,
     resolve_join_plan,
 )
+from stove0_target_protocol import (
+    OutputArtifactSetIdentity,
+    TargetCallbackAccess,
+    TargetInputAuthority,
+    TargetProductionAuthority,
+    TargetProductionAuthorityPayload,
+)
 from stove0_target_support import (
     EFFECT_TARGET_PROTOCOL,
     JSON_SCHEMA_ONLY_SEMANTIC_PROFILE,
@@ -57,7 +65,6 @@ from stove0_target_support import (
     EffectPlanPayload,
     ExternalEffectReceipt,
     ExternalEffectReceiptPayload,
-    InputArtifact,
     InputArtifactContract,
     OperationContract,
     OperationContractPayload,
@@ -242,15 +249,19 @@ def _target_contracts() -> tuple[OperationContract, TargetContract, TransformPla
             target_contract_sha256=target.contract_sha256,
             operation_id=operation.id,
             operation_contract_sha256=operation.contract_sha256,
-            inputs=(
-                InputArtifact(
-                    id="source",
-                    role="fixture.source/v1",
-                    collection=_work().inputs[0],
-                    path="source/input.bin",
-                    bytes=12,
-                    sha256="d" * 64,
-                ),
+            inputs=TargetInputAuthority.from_selection(
+                ArtifactSelection.seal(
+                    (
+                        ArtifactSubject(
+                            id="source",
+                            role="fixture.source/v1",
+                            collection=_work().inputs[0],
+                            path="source/input.bin",
+                            bytes=12,
+                            sha256="d" * 64,
+                        ),
+                    )
+                )
             ),
             intent={"suffix": ".copy"},
             target_options={},
@@ -308,6 +319,10 @@ def _active_target_work(
             riverhog_base_url="https://riverhog.invalid",
             capability_token="fixture-secret",
         ),
+        TargetCallbackAccess(
+            stove0_base_url="https://stove0.invalid",
+            token="fixture-callback-secret",
+        ),
     )
     record = service.bind_target_request(
         work.work_id,
@@ -342,7 +357,12 @@ def _active_target_work(
         path="output/result.bin",
         bytes=12,
         sha256="5" * 64,
-        derived_from=("source",),
+    )
+    disposition_set = ArtifactDispositionSetIdentity(
+        disposition_count=1,
+        output_edge_count=1,
+        output_artifact_count=1,
+        sha256="8" * 64,
     )
     derivation = CollectionDerivation(
         execution_id=declaration.job_id,
@@ -350,8 +370,9 @@ def _active_target_work(
         fence=declaration.fence,
         recipe=workflow.work.recipe.to_identity(),
         operation=workflow.operation.to_identity(),
-        inputs=tuple(item.to_identity() for item in workflow.work.inputs),
-        output_tags=workflow.output_tags,
+        input_set_sha256="a" * 64,
+        artifact_set_sha256="b" * 64,
+        output_tag_set_sha256=tag_set_identity(workflow.output_tags),
         execution_envelope_sha256=declaration.job_id,
         execution_sha256="8" * 64,
         controller_evidence=record.controller_evidence.model_dump(
@@ -366,21 +387,25 @@ def _active_target_work(
                 exclude_none=True,
             )
         ),
-        dispositions=(
-            ArtifactDisposition(
-                input_collection_id=work.inputs[0].collection_id,
-                input_archive_root_sha256=work.inputs[0].archive_root_sha256,
-                input_path="source/input.bin",
-                status="transformed",
-                outputs=(output.path,),
-            ),
-        ),
+        disposition_set=disposition_set,
     )
     output_collection = OutputCollectionRef(
         collection_id=7,
         archive_root_sha256="6" * 64,
         content_identity="7" * 64,
         derivation_sha256=derivation.sha256,
+    )
+    production = TargetProductionAuthority.seal(
+        TargetProductionAuthorityPayload(
+            job_id=declaration.job_id,
+            plan_sha256=plan.plan_sha256,
+            outputs=OutputArtifactSetIdentity.seal((output,)),
+            disposition_count=1,
+            disposition_sha256="c" * 64,
+            source_edge_count=1,
+            source_edge_sha256="d" * 64,
+            riverhog_disposition_set=disposition_set,
+        )
     )
     succeeded = TargetJobStatus(
         job_id=declaration.job_id,
@@ -389,7 +414,7 @@ def _active_target_work(
         request_sha256=request.request_sha256,
         plan_sha256=plan.plan_sha256,
         progress=TargetProgress(phase="done", completed=1, total=1, unit="artifacts"),
-        outputs=(output,),
+        production=production,
         output_collection=output_collection,
         execution_evidence=TargetExecutionEvidence(
             target_contract_sha256=target.contract_sha256,
@@ -458,15 +483,19 @@ def _active_effect_work(
             target_contract_sha256=target.contract_sha256,
             operation_id=operation.id,
             operation_contract_sha256=operation.contract_sha256,
-            inputs=(
-                InputArtifact(
-                    id="source",
-                    role="fixture.source/v1",
-                    collection=work.inputs[0],
-                    path="source/input.bin",
-                    bytes=12,
-                    sha256="d" * 64,
-                ),
+            inputs=TargetInputAuthority.from_selection(
+                ArtifactSelection.seal(
+                    (
+                        ArtifactSubject(
+                            id="source",
+                            role="fixture.source/v1",
+                            collection=work.inputs[0],
+                            path="source/input.bin",
+                            bytes=12,
+                            sha256="d" * 64,
+                        ),
+                    )
+                )
             ),
             intent={},
             target_options={},
@@ -514,6 +543,10 @@ def _active_effect_work(
         TargetRuntimeAuthority(
             riverhog_base_url="https://riverhog.invalid",
             capability_token="fixture-secret",
+        ),
+        TargetCallbackAccess(
+            stove0_base_url="https://stove0.invalid",
+            token="fixture-callback-secret",
         ),
     )
     record = service.bind_target_request(
@@ -667,6 +700,7 @@ def _resolved_join(
             BranchSettlement.seal(
                 branch=branch,
                 derivation_sha256=f"{(offset + 6) % 16:x}" * 64,
+                producer_settlement_sha256=f"{(offset + 7) % 16:x}" * 64,
                 output_collection=root,
                 output_selection=output,
             )

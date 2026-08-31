@@ -48,6 +48,7 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
             ),
             "STOVE0_TARGET_CALLBACK_BASE_URL": "http://stove0.internal:8080",
             "STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP": "true",
+            "STOVE0_TARGET_CALLBACK_SIGNING_KEY": "target-callback-signing-key",
         }
     )
 
@@ -65,6 +66,7 @@ def test_runtime_configuration_connects_every_control_plane_setting(tmp_path: Pa
     assert config.targets["target"].semantic_validator_providers == ()
     assert config.target_callback_base_url == "http://stove0.internal:8080"
     assert config.target_callback_allow_insecure_http is True
+    assert config.target_callback_signing_key == "target-callback-signing-key"
     assert config.workspace_assurance == "ephemeral"
     assert config.claim_lease_seconds == 240
     assert config.capability_ttl_seconds == 120
@@ -93,6 +95,23 @@ def test_runtime_secrets_accept_exactly_one_direct_or_file_source(tmp_path: Path
 def test_operator_api_configuration_requires_its_bearer_secret(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="STOVE0_API_TOKEN or STOVE0_API_TOKEN_FILE is required"):
         Stove0RuntimeConfig.from_environment(_environment(tmp_path / "recipes.yaml"))
+
+
+def test_configured_targets_require_an_independent_callback_signing_secret(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path / "recipes.yaml")
+    environment["STOVE0_TARGETS_JSON"] = '{"target":{"base_url":"https://target.invalid"}}'
+    environment["STOVE0_TARGET_CALLBACK_BASE_URL"] = "https://stove0.invalid"
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "STOVE0_TARGET_CALLBACK_SIGNING_KEY or "
+            "STOVE0_TARGET_CALLBACK_SIGNING_KEY_FILE is required"
+        ),
+    ):
+        Stove0RuntimeConfig.from_environment(environment, require_api_token=False)
 
 
 def test_runtime_database_is_postgresql_only(tmp_path: Path) -> None:

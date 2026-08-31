@@ -75,12 +75,17 @@ def _root_key(root: CollectionRootRef) -> tuple[int, str, str]:
     return root.collection_id, root.archive_root_sha256, root.content_identity
 
 
-def _artifact_key(artifact: ArtifactSubject) -> tuple[str, int, str, str]:
+def _artifact_key(artifact: ArtifactSubject) -> tuple[int, str, str, str, int, str, str]:
+    """Order selections by their generic Riverhog artifact identity first."""
+
     return (
-        artifact.id,
         artifact.collection.collection_id,
+        artifact.collection.archive_root_sha256,
+        artifact.collection.content_identity,
         artifact.path,
+        artifact.bytes,
         artifact.sha256,
+        artifact.id,
     )
 
 

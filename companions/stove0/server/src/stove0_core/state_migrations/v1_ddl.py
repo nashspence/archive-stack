@@ -94,11 +94,13 @@ CREATE INDEX ix_stove0_work_records_updated_work_id ON stove0_work_records (upda
 CREATE TABLE stove0_artifact_selection_members (
 	selection_sha256 VARCHAR(64) NOT NULL,
 	artifact_id VARCHAR(160) NOT NULL,
+	artifact_order INTEGER NOT NULL,
 	continuation_sha256 VARCHAR(64) NOT NULL,
 	document_bytes BIGINT NOT NULL,
 	document_json TEXT NOT NULL,
 	PRIMARY KEY (selection_sha256, artifact_id),
 	CONSTRAINT ck_stove0_selection_members_artifact_id CHECK (length(artifact_id) >= 1),
+	CONSTRAINT ck_stove0_selection_members_order CHECK (artifact_order >= 0),
 	CONSTRAINT ck_stove0_selection_members_continuation CHECK (length(continuation_sha256) = 64),
 	CONSTRAINT ck_stove0_selection_members_document_bytes CHECK (document_bytes >= 0),
 	FOREIGN KEY(selection_sha256) REFERENCES stove0_artifact_selections (selection_sha256) ON DELETE CASCADE,
@@ -108,6 +110,9 @@ CREATE TABLE stove0_artifact_selection_members (
     """.strip(),
     """
 CREATE UNIQUE INDEX ix_stove0_selection_members_continuation ON stove0_artifact_selection_members (selection_sha256, continuation_sha256)
+    """.strip(),
+    """
+CREATE UNIQUE INDEX ix_stove0_selection_members_order ON stove0_artifact_selection_members (selection_sha256, artifact_order)
     """.strip(),
     """
 CREATE TABLE stove0_evaluation_children (
@@ -299,11 +304,13 @@ CREATE INDEX ix_stove0_work_records_updated_work_id ON stove0_work_records (upda
 CREATE TABLE stove0_artifact_selection_members (
 	selection_sha256 VARCHAR(64) NOT NULL,
 	artifact_id VARCHAR(160) NOT NULL,
+	artifact_order INTEGER NOT NULL,
 	continuation_sha256 VARCHAR(64) NOT NULL,
 	document_bytes BIGINT NOT NULL,
 	document_json TEXT NOT NULL,
 	PRIMARY KEY (selection_sha256, artifact_id),
 	CONSTRAINT ck_stove0_selection_members_artifact_id CHECK (length(artifact_id) >= 1),
+	CONSTRAINT ck_stove0_selection_members_order CHECK (artifact_order >= 0),
 	CONSTRAINT ck_stove0_selection_members_continuation CHECK (length(continuation_sha256) = 64),
 	CONSTRAINT ck_stove0_selection_members_document_bytes CHECK (document_bytes >= 0),
 	FOREIGN KEY(selection_sha256) REFERENCES stove0_artifact_selections (selection_sha256) ON DELETE CASCADE,
@@ -313,6 +320,9 @@ CREATE TABLE stove0_artifact_selection_members (
     """.strip(),
     """
 CREATE UNIQUE INDEX ix_stove0_selection_members_continuation ON stove0_artifact_selection_members (selection_sha256, continuation_sha256)
+    """.strip(),
+    """
+CREATE UNIQUE INDEX ix_stove0_selection_members_order ON stove0_artifact_selection_members (selection_sha256, artifact_order)
     """.strip(),
     """
 CREATE TABLE stove0_evaluation_children (

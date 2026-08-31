@@ -1879,10 +1879,10 @@ class CollectionArchiveObjectUploadRecord(Base):
         CheckConstraint("plaintext_bytes >= 0", name="ck_archive_object_uploads_plaintext"),
         CheckConstraint("source_bytes >= 0", name="ck_archive_object_uploads_source"),
         CheckConstraint(
-            "(kind = 'pack' AND source_path IS NULL AND source_first_part IS NULL "
-            "AND source_part_count IS NULL) OR "
-            "(kind = 'segment' AND source_path IS NOT NULL AND source_first_part >= 0 "
-            "AND source_part_count > 0)",
+            "kind = 'pack' AND source_path IS NULL AND source_first_part IS NULL "
+            "AND source_part_count IS NULL OR "
+            "kind = 'segment' AND source_path IS NOT NULL AND source_first_part >= 0 "
+            "AND source_part_count > 0",
             name="ck_archive_object_uploads_source_parts",
         ),
         CheckConstraint("unit_plaintext_bytes > 0", name="ck_archive_object_uploads_unit"),

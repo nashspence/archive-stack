@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from riverhog_protocol import CollectionArtifactIdentity, CollectionRootIdentity
 from stove0_protocol import (
     ArtifactSelection,
     ArtifactSelectionRef,
@@ -65,6 +66,39 @@ def artifact(
         bytes=byte_count,
         sha256=digest(f"artifact:{collection.collection_id}:{path}:{byte_count}"),
     )
+
+
+def test_selection_order_projects_directly_to_riverhog_artifact_order() -> None:
+    first = root(1)
+    second = root(2)
+    selection = ArtifactSelection.seal(
+        (
+            artifact("a-id-sorts-first", second, "a.bin"),
+            artifact("z-id-sorts-last", first, "z.bin"),
+            artifact("middle-id", first, "a.bin"),
+        )
+    )
+
+    projected = tuple(
+        CollectionArtifactIdentity(
+            collection=CollectionRootIdentity(
+                collection_id=item.collection.collection_id,
+                archive_root_sha256=item.collection.archive_root_sha256,
+                content_identity=item.collection.content_identity,
+            ),
+            path=item.path,
+            bytes=item.bytes,
+            sha256=item.sha256,
+        )
+        for item in selection.artifacts
+    )
+
+    assert projected == tuple(sorted(projected))
+    assert [item.id for item in selection.artifacts] == [
+        "middle-id",
+        "z-id-sorts-last",
+        "a-id-sorts-first",
+    ]
 
 
 def recipe(label: str = "parent") -> RecipeRef:

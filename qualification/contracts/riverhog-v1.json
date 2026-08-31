@@ -4011,6 +4011,15 @@
       },
       {
         "acceptance_expressions": [
+          "_secret(values, 'STOVE0_TARGET_CALLBACK_SIGNING_KEY', required=bool(targets))"
+        ],
+        "consumers": [
+          "stove0-server"
+        ],
+        "name": "STOVE0_TARGET_CALLBACK_SIGNING_KEY"
+      },
+      {
+        "acceptance_expressions": [
           "values.get(TARGET_TERMINAL_STATE_RETENTION_ENV, str(DEFAULT_TERMINAL_STATE_RETENTION_SECONDS))"
         ],
         "consumers": [
@@ -4065,7 +4074,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-              "sha256": "6504c615da20a5dc8796ed5e87606c2a8a9de55f67e1ffae6ae12a3ff77e4f09"
+              "sha256": "29f1663f5323633d43d0e924025e0a1c0054095be463a2a04fdbe95a164878c6"
             }
           ],
           "format": "state-schema/postgresql",
@@ -4101,7 +4110,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/stove0.postgresql.sql",
-              "sha256": "c7f6a0e43e0233a8bd0d7a964e503553264fd99ac0d13c0f2d6386c9d77959e9"
+              "sha256": "01c9d4dfcd2263bd4a0a715715853a98d65b1402f52d1fe46efeb786d12ebfac"
             }
           ],
           "format": "state-schema/postgresql",

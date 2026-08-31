@@ -74,6 +74,7 @@ class RetrievalApi:
         self.sha256 = hashlib.sha256(self.data).hexdigest()
         self.acknowledged: list[str] = []
         self.canceled: list[str] = []
+        self.inventory_requests = 0
 
     def get_collection(self, collection_id: int) -> dict[str, Any]:
         return {
@@ -103,6 +104,7 @@ class RetrievalApi:
     def get_portable_collection_inventory(
         self, collection_id: int, **kwargs: Any
     ) -> PortableCollectionInventoryPage:
+        self.inventory_requests += 1
         assert collection_id == 1
         assert kwargs["cursor"] is None
         files = [
@@ -322,6 +324,7 @@ def test_observation_runtime_exposes_only_exact_requested_artifacts(tmp_path: Pa
         workspace.release()
 
     assert api.acknowledged == ["observer-retrieval", "observer-retrieval"]
+    assert api.inventory_requests == 0
 
 
 class FixtureObserverClient:

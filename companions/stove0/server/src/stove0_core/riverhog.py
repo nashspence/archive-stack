@@ -496,7 +496,10 @@ class Stove0RiverhogClient:
             claim,
             audience=audience,
             actions=("read-inputs",),
-            artifacts=tuple(_artifact_identity(item) for item in request.subjects),
+            # Observation subjects are semantically ordered by their request-scoped
+            # IDs.  Capability scope is a different, generic Riverhog authority and
+            # must be projected into immutable collection-artifact order.
+            artifacts=tuple(sorted(_artifact_identity(item) for item in request.subjects)),
         )
         return ObserverRuntimeAuthority(
             riverhog_base_url=self.api.base_url,
