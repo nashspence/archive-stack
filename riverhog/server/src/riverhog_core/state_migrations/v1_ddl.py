@@ -276,6 +276,39 @@ CREATE INDEX ix_lifecycle_events_owner_sequence ON lifecycle_events (owner_app, 
 CREATE INDEX ix_lifecycle_events_owner_subject_context ON lifecycle_events (owner_app, subject, context_expires_at)
     """.strip(),
     """
+CREATE TABLE retrieval_cache_populations (
+	source_store VARCHAR NOT NULL,
+	collection_id INTEGER NOT NULL,
+	object_id VARCHAR NOT NULL,
+	cache_store VARCHAR,
+	object_path VARCHAR,
+	write_token VARCHAR,
+	expected_bytes BIGINT NOT NULL,
+	state VARCHAR NOT NULL,
+	initiated_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	failure TEXT,
+	PRIMARY KEY (source_store, collection_id, object_id),
+	CONSTRAINT ck_retrieval_cache_populations_expected_bytes CHECK (expected_bytes >= 1),
+	CONSTRAINT ck_retrieval_cache_populations_state CHECK (state IN ('waiting','admitting','admitted','writing','abandoning')),
+	CONSTRAINT ck_retrieval_cache_populations_session CHECK (cache_store IS NULL AND object_path IS NULL AND write_token IS NULL AND state IN ('waiting','abandoning') OR cache_store IS NOT NULL AND object_path IS NOT NULL AND (write_token IS NULL AND state = 'admitting' OR write_token IS NOT NULL AND state IN ('admitted','writing') OR state = 'abandoning'))
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_cache_populations_store_state ON retrieval_cache_populations (cache_store, state, updated_at, collection_id, source_store, object_id)
+    """.strip(),
+    """
+CREATE TABLE retrieval_cache_store_accounting (
+	cache_store VARCHAR NOT NULL,
+	reserved_bytes BIGINT DEFAULT 0 NOT NULL,
+	committed_bytes BIGINT DEFAULT 0 NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	PRIMARY KEY (cache_store),
+	CONSTRAINT ck_retrieval_cache_store_accounting_reserved CHECK (reserved_bytes >= 0),
+	CONSTRAINT ck_retrieval_cache_store_accounting_committed CHECK (committed_bytes >= 0)
+)
+    """.strip(),
+    """
 CREATE TABLE retrieval_jobs (
 	id VARCHAR NOT NULL,
 	app VARCHAR NOT NULL,
@@ -787,6 +820,20 @@ CREATE TABLE key_download_usage (
 	FOREIGN KEY(key_id) REFERENCES app_keys (id) ON DELETE CASCADE,
 	CONSTRAINT ck_key_download_usage_bytes CHECK (accounted_bytes >= 0)
 )
+    """.strip(),
+    """
+CREATE TABLE retrieval_cache_population_claims (
+	owner VARCHAR NOT NULL,
+	source_store VARCHAR NOT NULL,
+	collection_id INTEGER NOT NULL,
+	object_id VARCHAR NOT NULL,
+	created_at VARCHAR NOT NULL,
+	PRIMARY KEY (owner, source_store, collection_id, object_id),
+	FOREIGN KEY(source_store, collection_id, object_id) REFERENCES retrieval_cache_populations (source_store, collection_id, object_id) ON DELETE CASCADE
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_cache_population_claims_object ON retrieval_cache_population_claims (source_store, collection_id, object_id, owner)
     """.strip(),
     """
 CREATE TABLE archive_copy_jobs (
@@ -1389,20 +1436,21 @@ CREATE TABLE retrieval_cache_objects (
 	source_store VARCHAR NOT NULL,
 	collection_id INTEGER NOT NULL,
 	object_id VARCHAR NOT NULL,
+	cache_store VARCHAR NOT NULL,
 	object_path VARCHAR NOT NULL,
 	revision VARCHAR,
 	stored_bytes BIGINT NOT NULL,
-	stored_sha256 VARCHAR(64) NOT NULL,
+	stored_sha256 VARCHAR(64),
 	cached_at VARCHAR NOT NULL,
 	verified_at VARCHAR NOT NULL,
 	state VARCHAR NOT NULL,
-	search_text VARCHAR NOT NULL GENERATED ALWAYS AS (lower(source_store || ' ' || object_id)),
+	search_text VARCHAR NOT NULL GENERATED ALWAYS AS (lower(source_store || ' ' || cache_store || ' ' || object_id)),
 	PRIMARY KEY (source_store, collection_id, object_id),
 	FOREIGN KEY(collection_id, source_store, object_id) REFERENCES collection_archive_objects (collection_id, store, object_id) ON DELETE CASCADE,
 	CONSTRAINT ck_retrieval_cache_objects_bytes CHECK (stored_bytes >= 0),
-	CONSTRAINT ck_retrieval_cache_objects_sha256 CHECK (length(stored_sha256) = 64),
+	CONSTRAINT ck_retrieval_cache_objects_sha256 CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64),
 	CONSTRAINT ck_retrieval_cache_objects_state CHECK (state IN ('ready','delete_pending','deleting')),
-	CONSTRAINT ck_retrieval_cache_objects_stored_sha256_hex CHECK (length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_retrieval_cache_objects_stored_sha256_hex CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
@@ -1424,6 +1472,9 @@ CREATE INDEX ix_retrieval_cache_objects_object ON retrieval_cache_objects (objec
 CREATE INDEX ix_retrieval_cache_objects_search_trgm ON retrieval_cache_objects (search_text)
     """.strip(),
     """
+CREATE INDEX ix_retrieval_cache_objects_store_cleanup ON retrieval_cache_objects (cache_store, state, cached_at, collection_id, source_store, object_id)
+    """.strip(),
+    """
 CREATE INDEX ix_retrieval_cache_objects_verified ON retrieval_cache_objects (verified_at, collection_id, source_store, object_id)
     """.strip(),
     """
@@ -1434,6 +1485,7 @@ CREATE TABLE retrieval_job_objects (
 	object_id VARCHAR NOT NULL,
 	object_order INTEGER NOT NULL,
 	read_mode VARCHAR NOT NULL,
+	cache_store VARCHAR,
 	PRIMARY KEY (job_id, collection_id, source_store, object_id),
 	FOREIGN KEY(job_id) REFERENCES retrieval_jobs (id) ON DELETE CASCADE,
 	FOREIGN KEY(collection_id, source_store, object_id) REFERENCES collection_archive_objects (collection_id, store, object_id),
@@ -1768,6 +1820,39 @@ CREATE INDEX ix_lifecycle_events_owner_sequence ON lifecycle_events (owner_app, 
     """.strip(),
     """
 CREATE INDEX ix_lifecycle_events_owner_subject_context ON lifecycle_events (owner_app, subject, context_expires_at)
+    """.strip(),
+    """
+CREATE TABLE retrieval_cache_populations (
+	source_store VARCHAR NOT NULL,
+	collection_id BIGINT NOT NULL,
+	object_id VARCHAR NOT NULL,
+	cache_store VARCHAR,
+	object_path VARCHAR,
+	write_token VARCHAR,
+	expected_bytes BIGINT NOT NULL,
+	state VARCHAR NOT NULL,
+	initiated_at VARCHAR NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	failure TEXT,
+	PRIMARY KEY (source_store, collection_id, object_id),
+	CONSTRAINT ck_retrieval_cache_populations_expected_bytes CHECK (expected_bytes >= 1),
+	CONSTRAINT ck_retrieval_cache_populations_state CHECK (state IN ('waiting','admitting','admitted','writing','abandoning')),
+	CONSTRAINT ck_retrieval_cache_populations_session CHECK (cache_store IS NULL AND object_path IS NULL AND write_token IS NULL AND state IN ('waiting','abandoning') OR cache_store IS NOT NULL AND object_path IS NOT NULL AND (write_token IS NULL AND state = 'admitting' OR write_token IS NOT NULL AND state IN ('admitted','writing') OR state = 'abandoning'))
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_cache_populations_store_state ON retrieval_cache_populations (cache_store, state, updated_at, collection_id, source_store, object_id)
+    """.strip(),
+    """
+CREATE TABLE retrieval_cache_store_accounting (
+	cache_store VARCHAR NOT NULL,
+	reserved_bytes BIGINT DEFAULT 0 NOT NULL,
+	committed_bytes BIGINT DEFAULT 0 NOT NULL,
+	updated_at VARCHAR NOT NULL,
+	PRIMARY KEY (cache_store),
+	CONSTRAINT ck_retrieval_cache_store_accounting_reserved CHECK (reserved_bytes >= 0),
+	CONSTRAINT ck_retrieval_cache_store_accounting_committed CHECK (committed_bytes >= 0)
+)
     """.strip(),
     """
 CREATE TABLE retrieval_jobs (
@@ -2281,6 +2366,20 @@ CREATE TABLE key_download_usage (
 	FOREIGN KEY(key_id) REFERENCES app_keys (id) ON DELETE CASCADE,
 	CONSTRAINT ck_key_download_usage_bytes CHECK (accounted_bytes >= 0)
 )
+    """.strip(),
+    """
+CREATE TABLE retrieval_cache_population_claims (
+	owner VARCHAR NOT NULL,
+	source_store VARCHAR NOT NULL,
+	collection_id BIGINT NOT NULL,
+	object_id VARCHAR NOT NULL,
+	created_at VARCHAR NOT NULL,
+	PRIMARY KEY (owner, source_store, collection_id, object_id),
+	FOREIGN KEY(source_store, collection_id, object_id) REFERENCES retrieval_cache_populations (source_store, collection_id, object_id) ON DELETE CASCADE
+)
+    """.strip(),
+    """
+CREATE INDEX ix_retrieval_cache_population_claims_object ON retrieval_cache_population_claims (source_store, collection_id, object_id, owner)
     """.strip(),
     """
 CREATE TABLE archive_copy_jobs (
@@ -2883,20 +2982,21 @@ CREATE TABLE retrieval_cache_objects (
 	source_store VARCHAR NOT NULL,
 	collection_id BIGINT NOT NULL,
 	object_id VARCHAR NOT NULL,
+	cache_store VARCHAR NOT NULL,
 	object_path VARCHAR NOT NULL,
 	revision VARCHAR,
 	stored_bytes BIGINT NOT NULL,
-	stored_sha256 VARCHAR(64) NOT NULL,
+	stored_sha256 VARCHAR(64),
 	cached_at VARCHAR NOT NULL,
 	verified_at VARCHAR NOT NULL,
 	state VARCHAR NOT NULL,
-	search_text VARCHAR GENERATED ALWAYS AS (lower(source_store || ' ' || object_id)) STORED NOT NULL,
+	search_text VARCHAR GENERATED ALWAYS AS (lower(source_store || ' ' || cache_store || ' ' || object_id)) STORED NOT NULL,
 	PRIMARY KEY (source_store, collection_id, object_id),
 	FOREIGN KEY(collection_id, source_store, object_id) REFERENCES collection_archive_objects (collection_id, store, object_id) ON DELETE CASCADE,
 	CONSTRAINT ck_retrieval_cache_objects_bytes CHECK (stored_bytes >= 0),
-	CONSTRAINT ck_retrieval_cache_objects_sha256 CHECK (length(stored_sha256) = 64),
+	CONSTRAINT ck_retrieval_cache_objects_sha256 CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64),
 	CONSTRAINT ck_retrieval_cache_objects_state CHECK (state IN ('ready','delete_pending','deleting')),
-	CONSTRAINT ck_retrieval_cache_objects_stored_sha256_hex CHECK (length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
+	CONSTRAINT ck_retrieval_cache_objects_stored_sha256_hex CHECK (stored_sha256 IS NULL OR length(stored_sha256) = 64 AND lower(stored_sha256) = stored_sha256 AND replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(stored_sha256, '0', ''), '1', ''), '2', ''), '3', ''), '4', ''), '5', ''), '6', ''), '7', ''), '8', ''), '9', ''), 'a', ''), 'b', ''), 'c', ''), 'd', ''), 'e', ''), 'f', '') = '')
 )
     """.strip(),
     """
@@ -2918,6 +3018,9 @@ CREATE INDEX ix_retrieval_cache_objects_object ON retrieval_cache_objects (objec
 CREATE INDEX ix_retrieval_cache_objects_search_trgm ON retrieval_cache_objects USING gin (search_text gin_trgm_ops)
     """.strip(),
     """
+CREATE INDEX ix_retrieval_cache_objects_store_cleanup ON retrieval_cache_objects (cache_store, state, cached_at, collection_id, source_store, object_id)
+    """.strip(),
+    """
 CREATE INDEX ix_retrieval_cache_objects_verified ON retrieval_cache_objects (verified_at, collection_id, source_store, object_id)
     """.strip(),
     """
@@ -2928,6 +3031,7 @@ CREATE TABLE retrieval_job_objects (
 	object_id VARCHAR NOT NULL,
 	object_order INTEGER NOT NULL,
 	read_mode VARCHAR NOT NULL,
+	cache_store VARCHAR,
 	PRIMARY KEY (job_id, collection_id, source_store, object_id),
 	FOREIGN KEY(job_id) REFERENCES retrieval_jobs (id) ON DELETE CASCADE,
 	FOREIGN KEY(collection_id, source_store, object_id) REFERENCES collection_archive_objects (collection_id, store, object_id),

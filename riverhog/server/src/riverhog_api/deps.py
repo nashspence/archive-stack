@@ -58,6 +58,7 @@ from riverhog_core.services.interfaces import (
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
 from riverhog_core.services.provenance import SqlAlchemyProvenanceService
 from riverhog_core.services.retrieval import SqlAlchemyRetrievalService
+from riverhog_core.services.retrieval_cache import SqlAlchemyRetrievalCache
 from riverhog_core.services.search import SqlAlchemySearchService
 from riverhog_core.services.tags import SqlAlchemyTagService
 from riverhog_core.stores.storage_adapter_archive_objects import (
@@ -157,20 +158,27 @@ def _build_default_container(
         adapters[name] = client
     for client in adapters.values():
         client.check_readiness()
-    cache_client = (
-        _adapter_client(config.retrieval_cache) if config.retrieval_cache is not None else None
-    )
-    if cache_client is not None:
-        startup_cleanup.callback(cache_client.close)
-        cache_client.check_readiness()
-    retrieval_cache = (
-        StorageAdapterRetrievalCache(
-            cache_client,
+    cache_clients: dict[str, StorageAdapterClient] = {}
+    cache_stores: dict[str, StorageAdapterRetrievalCache] = {}
+    for name, registration in config.retrieval_cache_stores.items():
+        client = _adapter_client(registration.adapter)
+        startup_cleanup.callback(client.close)
+        client.check_readiness()
+        cache_clients[name] = client
+        cache_stores[name] = StorageAdapterRetrievalCache(
+            name,
+            client,
             write_segment_bytes=config.retrieval_cache_write_segment_bytes,
             throughput_tuning=throughput_tuning,
             transfer_resources=transfer_resources,
         )
-        if cache_client is not None
+    retrieval_cache = (
+        SqlAlchemyRetrievalCache(
+            cache_stores,
+            config.retrieval_cache_stores,
+            session_factory=session_factory,
+        )
+        if cache_stores
         else None
     )
     restore_required = [
@@ -258,9 +266,7 @@ def _build_default_container(
         ),
         download_quotas=download_allowance,
         session_factory=session_factory,
-        storage_adapter_clients=tuple(
-            [*adapters.values(), *([cache_client] if cache_client is not None else [])]
-        ),
+        storage_adapter_clients=tuple([*adapters.values(), *cache_clients.values()]),
     )
 
 

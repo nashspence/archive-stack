@@ -511,6 +511,7 @@ PUBLIC_QUERY_SELECTORS = {
             "per_page",
         },
         "list_retrieval_cache_objects": {
+            "cache_store",
             "collection_id",
             "expires_after",
             "expires_before",

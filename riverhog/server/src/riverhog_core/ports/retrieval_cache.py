@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol
 
@@ -9,9 +10,21 @@ from riverhog_core.domain.retrieval_cache import RetrievalCacheReceipt as Retrie
 if TYPE_CHECKING:
     from riverhog_core.ports.archive_objects import (
         ArchiveResumableObjectStore,
-        CompletedObjectReceipt,
-        WriteSegmentReceipt,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalCacheAdmission:
+    owner: str
+    cache_store: str
+    source_store: str
+    collection_id: int
+    object_id: str
+    object_path: str
+    expected_bytes: int
+    write_token: str | None
+    admitted_at: str
+    completed: RetrievalCacheReceipt | None = None
 
 
 class RetrievalCache(Protocol):
@@ -21,19 +34,33 @@ class RetrievalCache(Protocol):
         initiated_before: datetime,
     ) -> int: ...
 
-    def put(
+    def admit(
         self,
         *,
+        owner: str,
         source_store: str,
         collection_id: int,
         object_id: str,
+        expected_bytes: int,
+    ) -> RetrievalCacheAdmission | None: ...
+
+    def release(self, *, owner: str) -> int: ...
+
+    def is_current(self, *, admission: RetrievalCacheAdmission) -> bool: ...
+
+    def reap_abandoned_populations(self, *, limit: int = 100) -> int: ...
+
+    def put(
+        self,
+        *,
+        admission: RetrievalCacheAdmission,
         content: Iterable[bytes],
-        content_length: int,
     ) -> RetrievalCacheReceipt: ...
 
     def iter_object(
         self,
         *,
+        cache_store: str,
         object_path: str,
         revision: str | None,
         expected_bytes: int,
@@ -43,6 +70,7 @@ class RetrievalCache(Protocol):
     def iter_object_range(
         self,
         *,
+        cache_store: str,
         object_path: str,
         revision: str | None,
         expected_bytes: int,
@@ -50,19 +78,16 @@ class RetrievalCache(Protocol):
         size: int,
     ) -> Iterator[bytes]: ...
 
-    def delete(self, *, object_path: str, revision: str | None) -> None: ...
+    def delete(
+        self,
+        *,
+        cache_store: str,
+        object_path: str,
+        revision: str | None,
+    ) -> None: ...
 
     def resumable_object_store(
         self,
         *,
-        source_store: str,
-        collection_id: int,
-        object_id: str,
+        admission: RetrievalCacheAdmission,
     ) -> ArchiveResumableObjectStore: ...
-
-    def verify_resumable_object(
-        self,
-        *,
-        completed: CompletedObjectReceipt,
-        segments: tuple[WriteSegmentReceipt, ...] = (),
-    ) -> RetrievalCacheReceipt: ...

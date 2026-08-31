@@ -41,6 +41,7 @@ StorageAdapterErrorCode = Literal[
     "method_not_allowed",
     "length_required",
     "request_too_large",
+    "insufficient_storage",
     "identity_conflict",
     "invalid_path",
     "invalid_range",
@@ -143,6 +144,13 @@ class ObjectLocator(StorageAdapterModel):
 
 class WriteSession(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
+    expected_bytes: int = Field(
+        ge=1,
+        description=(
+            "Exact immutable-object byte length admitted by this write session. The value "
+            "remains fixed until the write becomes terminal."
+        ),
+    )
     write_token: str = Field(
         min_length=1,
         max_length=4000,
@@ -162,6 +170,7 @@ class WriteSession(StorageAdapterModel):
 
 class WriteStartRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
+    expected_bytes: int = Field(ge=1)
     content_type: str = Field(min_length=1, max_length=255)
     required_identity_assertions: RequiredIdentityAssertions
     placement: ObjectPlacement
@@ -260,6 +269,7 @@ class WriteCompleteRequest(StorageAdapterModel):
 
 class CompletedWriteLookupRequest(StorageAdapterModel):
     object_path: str = Field(min_length=1, max_length=4096)
+    expected_bytes: int = Field(ge=1)
     expected_content_type: str = Field(min_length=1, max_length=255)
     required_identity_assertions: RequiredIdentityAssertions
     expected_placement: ObjectPlacement
@@ -565,8 +575,24 @@ def validate_write_session_response(
     request: WriteStartRequest,
     response: WriteSession,
 ) -> None:
-    if response.object_path != request.object_path:
+    if (
+        response.object_path != request.object_path
+        or response.expected_bytes != request.expected_bytes
+    ):
         raise ValueError("adapter write session differs from its request")
+
+
+def validate_write_start_request(
+    request: WriteStartRequest,
+    descriptor: AdapterDescriptor,
+) -> None:
+    if (
+        descriptor.maximum_segment_bytes is not None
+        and descriptor.maximum_segment_count is not None
+        and request.expected_bytes
+        > descriptor.maximum_segment_bytes * descriptor.maximum_segment_count
+    ):
+        raise ValueError("write exceeds the adapter's advertised segmentation limits")
 
 
 def validate_write_segment_response(
@@ -653,10 +679,7 @@ def validate_completed_write_response(
         raise ValueError("adapter completed-object content type differs from its request")
     if response.verified_placement != request.expected_placement:
         raise ValueError("adapter completed-object placement differs from its request")
-    if (
-        isinstance(request, WriteCompleteRequest)
-        and response.stored_bytes != request.expected_bytes
-    ):
+    if response.stored_bytes != request.expected_bytes:
         raise ValueError("adapter completed-object bytes differ from their request")
 
 
@@ -837,6 +860,7 @@ class ValidatedStorageAdapterPort:
         return self._descriptor
 
     def begin_write(self, request: WriteStartRequest) -> WriteSession:
+        validate_write_start_request(request, self.descriptor())
         response = _response(self._adapter.begin_write(request), WriteSession, "write session")
         validate_write_session_response(request, response)
         return response
@@ -1067,6 +1091,7 @@ __all__ = [
     "validate_write_segment_request",
     "validate_write_segment_set_response",
     "validate_write_completion_request",
+    "validate_write_start_request",
     "validate_write_session_response",
     "validated_storage_adapter",
 ]

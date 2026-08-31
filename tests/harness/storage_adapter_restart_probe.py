@@ -57,16 +57,18 @@ def _write_state(path: Path, payload: dict[str, object]) -> None:
 def prepare(path: Path) -> None:
     client = _client()
     prefix = f"adapter-restart-probe/{uuid.uuid4().hex}"
+    descriptor = client.descriptor()
+    first_content = b"a" * descriptor.minimum_nonfinal_segment_bytes
+    expected_bytes = len(first_content) + len(_SECOND_SEGMENT)
     request = WriteStartRequest(
         object_path=f"{prefix}/continued.bin",
+        expected_bytes=expected_bytes,
         content_type="application/octet-stream",
         required_identity_assertions={"riverhog-conformance": "restart-continuation/v1"},
         placement="immediate",
     )
     abort_request = request.model_copy(update={"object_path": f"{prefix}/aborted.bin"})
     try:
-        descriptor = client.descriptor()
-        first_content = b"a" * descriptor.minimum_nonfinal_segment_bytes
         session = client.begin_write(request)
         first_segment = client.write_segment(
             session=session,
@@ -146,6 +148,7 @@ def resume(path: Path) -> dict[str, object]:
         recovered = client.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=request.object_path,
+                expected_bytes=completion.expected_bytes,
                 expected_content_type=request.content_type,
                 required_identity_assertions=request.required_identity_assertions,
                 expected_placement=request.placement,

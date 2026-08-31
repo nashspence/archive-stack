@@ -46,6 +46,7 @@ from riverhog_storage_adapter_protocol import (
     validate_write_segment_response,
     validate_write_segment_set_response,
     validate_write_session_response,
+    validate_write_start_request,
 )
 
 from riverhog_storage_adapter_support.framing import (
@@ -140,6 +141,7 @@ class StorageAdapterClient:
         self._require_success(self._request("GET", "/health/ready"))
 
     def begin_write(self, request: WriteStartRequest) -> WriteSession:
+        self._validate_request(validate_write_start_request, request, self.descriptor())
         response = self._model("POST", "/v1/writes/begin", WriteSession, request)
         self._validate(validate_write_session_response, request, response)
         return response

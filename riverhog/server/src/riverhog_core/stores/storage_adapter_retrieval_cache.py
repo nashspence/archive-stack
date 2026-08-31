@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from collections.abc import Iterable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -14,7 +13,6 @@ from riverhog_storage_adapter_protocol import (
     DeleteObjectRequest,
     ObjectLocator,
     ObjectReadRequest,
-    SmallObjectWriteRequest,
     StorageAdapterPort,
     StorageAdapterRejection,
     WriteCompleteRequest,
@@ -27,9 +25,7 @@ from riverhog_storage_adapter_protocol import (
 from riverhog_storage_adapter_protocol import (
     WriteSegmentReceipt as AdapterWriteSegmentReceipt,
 )
-from riverhog_storage_adapter_protocol import (
-    WriteSession as AdapterWriteSession,
-)
+from riverhog_storage_adapter_protocol import WriteSession as AdapterWriteSession
 from time_formats import format_utc_timestamp, utc_now
 
 from riverhog_core.ports.archive_objects import (
@@ -52,16 +48,19 @@ _CACHE_FORMAT = "encrypted-archive-object-v1"
 
 
 class StorageAdapterRetrievalCache:
-    """Riverhog retrieval-cache semantics over one immediate-read adapter."""
+    """One named immediate-read adapter used as a cache-placement candidate."""
 
     def __init__(
         self,
+        name: str,
         adapter: StorageAdapterPort,
         *,
         write_segment_bytes: int,
         throughput_tuning: ArchiveThroughputTuning,
         transfer_resources: ArchiveTransferResources,
     ) -> None:
+        if not name.strip():
+            raise ValueError("retrieval cache store name is required")
         validated_adapter = validated_storage_adapter(adapter)
         descriptor = validated_adapter.descriptor()
         if descriptor.read_mode != "immediate":
@@ -71,6 +70,7 @@ class StorageAdapterRetrievalCache:
             and write_segment_bytes > descriptor.maximum_segment_bytes
         ):
             raise ValueError("retrieval cache write segment size is outside adapter limits")
+        self.name = name
         self._adapter = validated_adapter
         self._descriptor = descriptor
         self._segment_bytes = write_segment_bytes
@@ -78,16 +78,19 @@ class StorageAdapterRetrievalCache:
         self._resources = transfer_resources
 
     @staticmethod
-    def _object_path(source_store: str, collection_id: int, object_id: str) -> str:
+    def object_path(source_store: str, collection_id: int, object_id: str) -> str:
         identity = f"{source_store}\0{collection_id}\0{object_id}".encode()
         digest = hashlib.sha256(identity).hexdigest()
         return f"objects/{digest[:2]}/{digest}"
 
-    def abort_incomplete_writes(
-        self,
-        *,
-        initiated_before: datetime,
-    ) -> int:
+    def write_constraints(self) -> ResumableWriteConstraints:
+        return ResumableWriteConstraints(
+            minimum_nonfinal_segment_bytes=self._descriptor.minimum_nonfinal_segment_bytes,
+            maximum_segment_bytes=self._descriptor.maximum_segment_bytes,
+            maximum_segment_count=self._descriptor.maximum_segment_count,
+        )
+
+    def abort_incomplete_writes(self, *, initiated_before: datetime) -> int:
         if initiated_before.tzinfo is None:
             raise ValueError("retrieval cache write cutoff must be timezone-aware")
         return self._adapter.abort_incomplete_writes(
@@ -97,197 +100,106 @@ class StorageAdapterRetrievalCache:
             )
         )
 
-    def resumable_object_store(
+    def begin_population(
         self,
         *,
         source_store: str,
         collection_id: int,
         object_id: str,
-    ) -> ArchiveResumableObjectStore:
-        return _StorageAdapterRetrievalCacheResumableObjectStore(
-            adapter=self._adapter,
-            object_path=self._object_path(source_store, collection_id, object_id),
-            metadata=_cache_identity(source_store, collection_id, object_id),
-        )
-
-    def verify_resumable_object(
-        self,
-        *,
-        completed: CompletedObjectReceipt,
-        segments: tuple[WriteSegmentReceipt, ...] = (),
-    ) -> RetrievalCacheReceipt:
-        content = self._adapter.read_object(
-            ObjectReadRequest(
-                object=ObjectLocator(
-                    object_path=completed.object_path,
-                    revision=completed.revision,
+        expected_bytes: int,
+    ) -> WriteSession:
+        session = self._adapter.begin_write(
+            WriteStartRequest(
+                object_path=self.object_path(source_store, collection_id, object_id),
+                expected_bytes=expected_bytes,
+                content_type="application/octet-stream",
+                required_identity_assertions=_cache_identity(
+                    source_store,
+                    collection_id,
+                    object_id,
                 ),
-                expected_bytes=completed.bytes,
+                placement="immediate",
             )
-        ).content
-        digest = hashlib.sha256()
-        size = 0
-        expected_segments = tuple(sorted(segments, key=lambda current: current.number))
-        _validate_integrity_segments(expected_segments, expected_bytes=completed.bytes)
-        segment_index = 0
-        segment_size = 0
-        segment_digest = hashlib.sha256()
-        for chunk in content:
-            digest.update(chunk)
-            size += len(chunk)
-            remaining = memoryview(chunk)
-            while remaining and segment_index < len(expected_segments):
-                expected = expected_segments[segment_index]
-                accepted = min(len(remaining), expected.bytes - segment_size)
-                segment_digest.update(remaining[:accepted])
-                segment_size += accepted
-                remaining = remaining[accepted:]
-                if segment_size == expected.bytes:
-                    if expected.sha256 is None or segment_digest.hexdigest() != expected.sha256:
-                        raise RuntimeError(
-                            "retrieval cache write segment failed integrity verification"
-                        )
-                    segment_index += 1
-                    segment_size = 0
-                    segment_digest = hashlib.sha256()
-            if remaining and expected_segments:
-                raise RuntimeError("retrieval cache object exceeds its write receipts")
-        if size != completed.bytes or (
-            expected_segments and (segment_index != len(expected_segments) or segment_size != 0)
-        ):
-            raise RuntimeError("retrieval cache resumable object length mismatch")
-        verified_at = format_utc_timestamp(utc_now())
-        return RetrievalCacheReceipt(
-            object_path=completed.object_path,
-            revision=completed.revision,
-            stored_bytes=size,
-            stored_sha256=digest.hexdigest(),
-            cached_at=completed.completed_at,
-            verified_at=verified_at,
         )
+        return _write_session(session)
 
-    def put(
+    def find_completed_population(
         self,
         *,
+        source_store: str,
+        collection_id: int,
+        object_id: str,
+        expected_bytes: int,
+    ) -> CompletedObjectReceipt | None:
+        request = CompletedWriteLookupRequest(
+            object_path=self.object_path(source_store, collection_id, object_id),
+            expected_bytes=expected_bytes,
+            expected_content_type="application/octet-stream",
+            required_identity_assertions=_cache_identity(
+                source_store,
+                collection_id,
+                object_id,
+            ),
+            expected_placement="immediate",
+        )
+        try:
+            receipt = self._adapter.find_completed_write(request)
+        except StorageAdapterRejection as exc:
+            if exc.code == "identity_conflict":
+                raise ArchiveObjectIdentityConflict(str(exc)) from exc
+            raise
+        return None if receipt is None else _completed(receipt)
+
+    def populate(
+        self,
+        *,
+        session: WriteSession,
         source_store: str,
         collection_id: int,
         object_id: str,
         content: Iterable[bytes],
-        content_length: int,
     ) -> RetrievalCacheReceipt:
-        if content_length < 0:
-            raise ValueError("retrieval cache content length must be non-negative")
-        if (
-            self._descriptor.maximum_segment_bytes is not None
-            and self._descriptor.maximum_segment_count is not None
-            and content_length
-            > self._descriptor.maximum_segment_bytes * self._descriptor.maximum_segment_count
-        ):
-            raise ValueError("retrieval cache object exceeds adapter write limits")
-        object_path = self._object_path(source_store, collection_id, object_id)
-        metadata = _cache_identity(source_store, collection_id, object_id)
+        if session.expected_bytes < 1:
+            raise ValueError("retrieval cache content length must be positive")
         started = time.perf_counter()
         digest = hashlib.sha256()
-        written = 0
-        queue_wait_seconds = 0.0
-        source_seconds = 0.0
-        integrity_seconds = 0.0
-        remote_seconds = 0.0
-
-        if content_length < self._descriptor.minimum_nonfinal_segment_bytes:
-            body = bytearray()
-            if content_length:
-                queue_wait_seconds += self._resources.upload_bytes.acquire(content_length)
-            try:
-                with self._resources.retrieval_requests.reserve() as retrieval_wait:
-                    queue_wait_seconds += retrieval_wait
-                    chunks = iter(content)
-                    while True:
-                        source_started = time.perf_counter()
-                        try:
-                            chunk = bytes(next(chunks))
-                        except StopIteration:
-                            source_seconds += time.perf_counter() - source_started
-                            break
-                        source_seconds += time.perf_counter() - source_started
-                        body.extend(chunk)
-                        integrity_started = time.perf_counter()
-                        digest.update(chunk)
-                        integrity_seconds += time.perf_counter() - integrity_started
-                        written += len(chunk)
-                if written != content_length:
-                    raise ValueError("retrieval cache stream length changed")
-                with self._resources.upload_requests.reserve() as upload_wait:
-                    queue_wait_seconds += upload_wait
-                    remote_started = time.perf_counter()
-                    small_request = SmallObjectWriteRequest(
-                        object_path=object_path,
-                        content_type="application/octet-stream",
-                        required_identity_assertions=metadata,
-                        placement="immediate",
-                        mode="replace_current",
-                        stored_bytes=written,
-                        stored_sha256=digest.hexdigest(),
-                    )
-                    receipt = self._adapter.put_small_object(small_request, bytes(body))
-                    remote_seconds += time.perf_counter() - remote_started
-            finally:
-                if content_length:
-                    self._resources.upload_bytes.release(content_length)
-            revision = receipt.revision
-            cached_at = receipt.completed_at
-        else:
-            remote_started = time.perf_counter()
-            session = self._adapter.begin_write(
-                WriteStartRequest(
-                    object_path=object_path,
-                    content_type="application/octet-stream",
-                    required_identity_assertions=metadata,
-                    placement="immediate",
-                )
+        existing = self._adapter.list_segments(_adapter_session(session)).segments
+        (
+            segments,
+            written,
+            queue_wait_seconds,
+            source_seconds,
+            integrity_seconds,
+            remote_seconds,
+        ) = self._write_segmented_content(
+            session=_adapter_session(session),
+            content=content,
+            digest=digest,
+            existing=existing,
+        )
+        if written != session.expected_bytes:
+            raise ValueError("retrieval cache stream length changed")
+        remote_started = time.perf_counter()
+        completed = self._adapter.complete_write(
+            WriteCompleteRequest(
+                session=_adapter_session(session),
+                segments=segments,
+                expected_bytes=session.expected_bytes,
+                expected_content_type="application/octet-stream",
+                required_identity_assertions=_cache_identity(
+                    source_store,
+                    collection_id,
+                    object_id,
+                ),
+                expected_placement="immediate",
             )
-            remote_seconds += time.perf_counter() - remote_started
-            try:
-                (
-                    segments,
-                    written,
-                    segment_queue_seconds,
-                    segment_source_seconds,
-                    segment_integrity_seconds,
-                    segment_remote_seconds,
-                ) = self._write_segmented_content(
-                    session=session,
-                    content=content,
-                    digest=digest,
-                )
-                queue_wait_seconds += segment_queue_seconds
-                source_seconds += segment_source_seconds
-                integrity_seconds += segment_integrity_seconds
-                remote_seconds += segment_remote_seconds
-                if written != content_length:
-                    raise ValueError("retrieval cache stream length changed")
-                remote_started = time.perf_counter()
-                completion_request = WriteCompleteRequest(
-                    session=session,
-                    segments=segments,
-                    expected_bytes=written,
-                    expected_content_type="application/octet-stream",
-                    required_identity_assertions=metadata,
-                    expected_placement="immediate",
-                )
-                completed = self._adapter.complete_write(completion_request)
-                remote_seconds += time.perf_counter() - remote_started
-            except Exception:
-                self._adapter.abort_write(session)
-                raise
-            revision = completed.revision
-            cached_at = completed.completed_at
-
+        )
+        remote_seconds += time.perf_counter() - remote_started
         log_transfer_timing(
             TransferTiming(
                 operation="retrieval_cache_hydration",
-                identity=object_path,
-                plaintext_bytes=content_length,
+                identity=session.object_path,
+                plaintext_bytes=session.expected_bytes,
                 stored_bytes=written,
                 queue_wait_seconds=queue_wait_seconds,
                 source_seconds=source_seconds,
@@ -299,14 +211,61 @@ class StorageAdapterRetrievalCache:
                 elapsed_seconds=time.perf_counter() - started,
             )
         )
-        current = format_utc_timestamp(utc_now())
+        return self.receipt(completed=_completed(completed), stored_sha256=digest.hexdigest())
+
+    def receipt(
+        self,
+        *,
+        completed: CompletedObjectReceipt,
+        stored_sha256: str | None,
+    ) -> RetrievalCacheReceipt:
         return RetrievalCacheReceipt(
-            object_path=object_path,
-            revision=revision,
-            stored_bytes=written,
-            stored_sha256=digest.hexdigest(),
-            cached_at=cached_at,
-            verified_at=current,
+            cache_store=self.name,
+            object_path=completed.object_path,
+            revision=completed.revision,
+            stored_bytes=completed.bytes,
+            stored_sha256=stored_sha256,
+            cached_at=completed.completed_at,
+            verified_at=format_utc_timestamp(utc_now()),
+        )
+
+    def resumable_object_store(
+        self,
+        *,
+        source_store: str,
+        collection_id: int,
+        object_id: str,
+    ) -> ArchiveResumableObjectStore:
+        return _StorageAdapterRetrievalCacheResumableObjectStore(
+            cache=self,
+            object_path=self.object_path(source_store, collection_id, object_id),
+            metadata=_cache_identity(source_store, collection_id, object_id),
+        )
+
+    def iter_object_range(
+        self,
+        *,
+        object_path: str,
+        revision: str | None,
+        expected_bytes: int,
+        offset: int,
+        size: int,
+    ) -> Iterator[bytes]:
+        return self._adapter.read_object(
+            ObjectReadRequest(
+                object=ObjectLocator(object_path=object_path, revision=revision),
+                expected_bytes=expected_bytes,
+                offset=offset,
+                size=size,
+            )
+        ).content
+
+    def delete(self, *, object_path: str, revision: str | None) -> None:
+        self._adapter.delete_object(
+            DeleteObjectRequest(
+                object=ObjectLocator(object_path=object_path, revision=revision),
+                mode="exact_revision" if revision is not None else "current",
+            )
         )
 
     def _write_segmented_content(
@@ -315,6 +274,7 @@ class StorageAdapterRetrievalCache:
         session: AdapterWriteSession,
         content: Iterable[bytes],
         digest: Any,
+        existing: tuple[AdapterWriteSegmentReceipt, ...],
     ) -> tuple[
         tuple[AdapterWriteSegmentReceipt, ...],
         int,
@@ -325,6 +285,7 @@ class StorageAdapterRetrievalCache:
     ]:
         worker_count = self._throughput.write_concurrency
         window = worker_count * 2
+        existing_by_number = {current.number: current for current in existing}
         chunks = iter(content)
         buffer = bytearray()
         source_done = False
@@ -382,29 +343,41 @@ class StorageAdapterRetrievalCache:
                             and next_segment_number > self._descriptor.maximum_segment_count
                         ):
                             raise ValueError("retrieval cache object exceeds adapter segment count")
+                        current_number = next_segment_number
+                        next_segment_number += 1
+                        prior = existing_by_number.get(current_number)
+                        if prior is not None:
+                            if prior.stored_bytes != len(body) or (
+                                prior.stored_sha256 is not None
+                                and prior.stored_sha256 != hashlib.sha256(body).hexdigest()
+                            ):
+                                raise RuntimeError(
+                                    "retrieval cache resumed segment differs from its source"
+                                )
+                            completed[current_number] = prior
+                            continue
                         reserved = len(body)
                         queue_wait_seconds += self._resources.upload_bytes.acquire(reserved)
-                        segment_number = next_segment_number
-                        next_segment_number += 1
                         try:
                             future = executor.submit(
                                 self._write_segment,
                                 session=session,
-                                segment_number=segment_number,
+                                segment_number=current_number,
                                 body=body,
                             )
                         except BaseException:
                             self._resources.upload_bytes.release(reserved)
                             raise
 
-                        def release_buffer(
+                        def release_reserved_bytes(
                             _future: Future[tuple[AdapterWriteSegmentReceipt, float, float]],
+                            *,
                             amount: int = reserved,
                         ) -> None:
                             self._resources.upload_bytes.release(amount)
 
-                        future.add_done_callback(release_buffer)
-                        pending[future] = segment_number
+                        future.add_done_callback(release_reserved_bytes)
+                        pending[future] = current_number
 
                 fill()
                 while pending:
@@ -417,6 +390,8 @@ class StorageAdapterRetrievalCache:
                         remote_seconds += write_seconds
                     fill()
 
+        if set(existing_by_number) - set(completed):
+            raise RuntimeError("retrieval cache write contains unexpected resumed segments")
         return (
             tuple(completed[number] for number in sorted(completed)),
             written,
@@ -444,92 +419,42 @@ class StorageAdapterRetrievalCache:
             remote_seconds = time.perf_counter() - remote_started
         return receipt, write_wait, remote_seconds
 
-    def iter_object(
-        self,
-        *,
-        object_path: str,
-        revision: str | None,
-        expected_bytes: int,
-        expected_sha256: str,
-    ) -> Iterator[bytes]:
-        digest = hashlib.sha256()
-        size = 0
-        for chunk in self._adapter.read_object(
-            ObjectReadRequest(
-                object=ObjectLocator(object_path=object_path, revision=revision),
-                expected_bytes=expected_bytes,
-            )
-        ).content:
-            digest.update(chunk)
-            size += len(chunk)
-            yield chunk
-        if size != expected_bytes or digest.hexdigest() != expected_sha256:
-            raise RuntimeError("retrieval cache object does not match its verified record")
-
-    def iter_object_range(
-        self,
-        *,
-        object_path: str,
-        revision: str | None,
-        expected_bytes: int,
-        offset: int,
-        size: int,
-    ) -> Iterator[bytes]:
-        return self._adapter.read_object(
-            ObjectReadRequest(
-                object=ObjectLocator(object_path=object_path, revision=revision),
-                expected_bytes=expected_bytes,
-                offset=offset,
-                size=size,
-            )
-        ).content
-
-    def delete(self, *, object_path: str, revision: str | None) -> None:
-        self._adapter.delete_object(
-            DeleteObjectRequest(
-                object=ObjectLocator(object_path=object_path, revision=revision),
-                mode="exact_revision" if revision is not None else "current",
-            )
-        )
-
 
 class _StorageAdapterRetrievalCacheResumableObjectStore:
     def __init__(
         self,
         *,
-        adapter: StorageAdapterPort,
+        cache: StorageAdapterRetrievalCache,
         object_path: str,
         metadata: dict[str, str],
     ) -> None:
-        self._adapter = validated_storage_adapter(adapter)
+        self._cache = cache
+        self._adapter = cache._adapter
         self._object_path = object_path
         self._metadata = metadata
 
     def write_constraints(self) -> ResumableWriteConstraints:
-        descriptor = self._adapter.descriptor()
-        return ResumableWriteConstraints(
-            minimum_nonfinal_segment_bytes=descriptor.minimum_nonfinal_segment_bytes,
-            maximum_segment_bytes=descriptor.maximum_segment_bytes,
-            maximum_segment_count=descriptor.maximum_segment_count,
-        )
+        return self._cache.write_constraints()
 
     def begin_write(
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         content_type: str,
         metadata: dict[str, str],
     ) -> WriteSession:
-        _ = object_path
+        _ = object_path, content_type, metadata
         session = self._adapter.begin_write(
             WriteStartRequest(
                 object_path=self._object_path,
-                content_type=content_type,
-                required_identity_assertions=self._cache_metadata(metadata),
+                expected_bytes=expected_bytes,
+                content_type="application/octet-stream",
+                required_identity_assertions=self._metadata,
                 placement="immediate",
             )
         )
-        return WriteSession(session.object_path, session.write_token)
+        return _write_session(session)
 
     def write_segment(
         self,
@@ -538,38 +463,21 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
         number: int,
         content: bytes,
     ) -> WriteSegmentReceipt:
-        self._require_path(session.object_path)
-        receipt = self._adapter.write_segment(
-            session=AdapterWriteSession(
-                object_path=session.object_path,
-                write_token=session.write_token,
-            ),
-            number=number,
-            stored_bytes=len(content),
-            content=content,
-        )
-        return WriteSegmentReceipt(
-            receipt.number,
-            receipt.segment_token,
-            receipt.stored_bytes,
-            receipt.stored_sha256,
+        self._require_session(session)
+        return _write_segment(
+            self._adapter.write_segment(
+                session=_adapter_session(session),
+                number=number,
+                stored_bytes=len(content),
+                content=content,
+            )
         )
 
     def list_segments(self, *, session: WriteSession) -> tuple[WriteSegmentReceipt, ...]:
-        self._require_path(session.object_path)
+        self._require_session(session)
         return tuple(
-            WriteSegmentReceipt(
-                current.number,
-                current.segment_token,
-                current.stored_bytes,
-                current.stored_sha256,
-            )
-            for current in self._adapter.list_segments(
-                AdapterWriteSession(
-                    object_path=session.object_path,
-                    write_token=session.write_token,
-                )
-            ).segments
+            _write_segment(current)
+            for current in self._adapter.list_segments(_adapter_session(session)).segments
         )
 
     def complete_write(
@@ -581,74 +489,63 @@ class _StorageAdapterRetrievalCacheResumableObjectStore:
         expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt:
-        self._require_path(session.object_path)
-        request = WriteCompleteRequest(
-            session=AdapterWriteSession(
-                object_path=session.object_path,
-                write_token=session.write_token,
-            ),
-            segments=tuple(
-                AdapterWriteSegmentReceipt(
-                    number=current.number,
-                    segment_token=current.segment_token,
-                    stored_bytes=current.bytes,
-                    stored_sha256=current.sha256,
-                )
-                for current in segments
-            ),
-            expected_bytes=expected_bytes,
-            expected_content_type=expected_content_type,
-            required_identity_assertions=self._cache_metadata(expected_metadata),
-            expected_placement="immediate",
+        self._require_session(session)
+        _ = expected_content_type, expected_metadata
+        if expected_bytes != session.expected_bytes:
+            raise ValueError("retrieval cache admitted byte length changed")
+        receipt = self._adapter.complete_write(
+            WriteCompleteRequest(
+                session=_adapter_session(session),
+                segments=tuple(_adapter_segment(current) for current in segments),
+                expected_bytes=expected_bytes,
+                expected_content_type="application/octet-stream",
+                required_identity_assertions=self._metadata,
+                expected_placement="immediate",
+            )
         )
-        receipt = self._adapter.complete_write(request)
-        return _completed(receipt)
+        return self._completed_with_cache(_completed(receipt))
 
     def find_completed_write(
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
-        _ = object_path
+        _ = object_path, expected_content_type, expected_metadata
         request = CompletedWriteLookupRequest(
             object_path=self._object_path,
-            expected_content_type=expected_content_type,
-            required_identity_assertions=self._cache_metadata(expected_metadata),
+            expected_bytes=expected_bytes,
+            expected_content_type="application/octet-stream",
+            required_identity_assertions=self._metadata,
             expected_placement="immediate",
         )
         try:
             receipt = self._adapter.find_completed_write(request)
-        except StorageAdapterRejection as exc:
-            if exc.code == "identity_conflict":
+        except Exception as exc:
+            if getattr(exc, "code", None) == "identity_conflict":
                 raise ArchiveObjectIdentityConflict(str(exc)) from exc
             raise
-        if receipt is None:
-            return None
-        return _completed(receipt)
+        return None if receipt is None else self._completed_with_cache(_completed(receipt))
 
     def abort_write(self, *, session: WriteSession) -> None:
-        self._require_path(session.object_path)
-        self._adapter.abort_write(
-            AdapterWriteSession(
-                object_path=session.object_path,
-                write_token=session.write_token,
-            )
+        self._require_session(session)
+        self._adapter.abort_write(_adapter_session(session))
+
+    def _completed_with_cache(self, completed: CompletedObjectReceipt) -> CompletedObjectReceipt:
+        return CompletedObjectReceipt(
+            object_path=completed.object_path,
+            revision=completed.revision,
+            entity_token=completed.entity_token,
+            bytes=completed.bytes,
+            completed_at=completed.completed_at,
+            retrieval_cache=self._cache.receipt(completed=completed, stored_sha256=None),
         )
 
-    def _require_path(self, object_path: str) -> None:
-        if object_path != self._object_path:
+    def _require_session(self, session: WriteSession) -> None:
+        if session.object_path != self._object_path:
             raise ValueError("retrieval cache resumable object path changed")
-
-    def _cache_metadata(self, source_metadata: dict[str, str]) -> dict[str, str]:
-        if not source_metadata:
-            return dict(self._metadata)
-        normalized = {str(key).casefold(): str(value) for key, value in source_metadata.items()}
-        source_identity = hashlib.sha256(
-            json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        return {**self._metadata, "riverhog-source-metadata-sha256": source_identity}
 
 
 def _cache_identity(source_store: str, collection_id: int, object_id: str) -> dict[str, str]:
@@ -661,6 +558,36 @@ def _cache_identity(source_store: str, collection_id: int, object_id: str) -> di
     }
 
 
+def _adapter_session(session: WriteSession) -> AdapterWriteSession:
+    return AdapterWriteSession(
+        object_path=session.object_path,
+        expected_bytes=session.expected_bytes,
+        write_token=session.write_token,
+    )
+
+
+def _write_session(session: AdapterWriteSession) -> WriteSession:
+    return WriteSession(session.object_path, session.write_token, session.expected_bytes)
+
+
+def _adapter_segment(segment: WriteSegmentReceipt) -> AdapterWriteSegmentReceipt:
+    return AdapterWriteSegmentReceipt(
+        number=segment.number,
+        segment_token=segment.segment_token,
+        stored_bytes=segment.bytes,
+        stored_sha256=segment.sha256,
+    )
+
+
+def _write_segment(segment: AdapterWriteSegmentReceipt) -> WriteSegmentReceipt:
+    return WriteSegmentReceipt(
+        segment.number,
+        segment.segment_token,
+        segment.stored_bytes,
+        segment.stored_sha256,
+    )
+
+
 def _completed(receipt: AdapterCompletedObjectReceipt) -> CompletedObjectReceipt:
     return CompletedObjectReceipt(
         object_path=receipt.object_path,
@@ -669,21 +596,6 @@ def _completed(receipt: AdapterCompletedObjectReceipt) -> CompletedObjectReceipt
         bytes=receipt.stored_bytes,
         completed_at=receipt.completed_at,
     )
-
-
-def _validate_integrity_segments(
-    segments: tuple[WriteSegmentReceipt, ...],
-    *,
-    expected_bytes: int,
-) -> None:
-    if not segments:
-        return
-    if (
-        tuple(current.number for current in segments) != tuple(range(1, len(segments) + 1))
-        or sum(current.bytes for current in segments) != expected_bytes
-        or any(current.sha256 is None or len(current.sha256) != 64 for current in segments)
-    ):
-        raise ValueError("retrieval cache write integrity receipts are invalid")
 
 
 __all__ = ["StorageAdapterRetrievalCache"]

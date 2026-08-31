@@ -898,6 +898,7 @@ class MemoryArchiveStore:
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         content_type: str,
         metadata: dict[str, str],
     ) -> WriteSession:
@@ -905,7 +906,11 @@ class MemoryArchiveStore:
         write_token = f"write-{self._next_write}"
         self._next_write += 1
         self._writes[write_token] = (object_path, content_type, dict(metadata), {})
-        return WriteSession(object_path=object_path, write_token=write_token)
+        return WriteSession(
+            object_path=object_path,
+            write_token=write_token,
+            expected_bytes=expected_bytes,
+        )
 
     def write_segment(
         self,
@@ -962,12 +967,15 @@ class MemoryArchiveStore:
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         content = self.objects.get(object_path)
         if content is None:
             return None
+        if len(content) != expected_bytes:
+            raise ArchiveObjectIdentityConflict(object_path)
         if self.object_metadata.get(object_path) != expected_metadata:
             raise ArchiveObjectIdentityConflict(object_path)
         if self.object_content_types.get(object_path) != expected_content_type:

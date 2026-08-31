@@ -87,6 +87,7 @@ class MemoryAdapter:
         session = WriteSession(
             object_path=request.object_path,
             write_token=f"upload-{len(self.created) + 1}",
+            expected_bytes=request.expected_bytes,
         )
         self.created[session.write_token] = request
         return session
@@ -333,6 +334,7 @@ def test_client_preserves_write_segment_receipts_and_declares_body_lengths() -> 
         created = client.begin_write(
             WriteStartRequest(
                 object_path="archives/id/volumes/pack.tar.age",
+                expected_bytes=11,
                 content_type="application/octet-stream",
                 required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
                 placement="archive",
@@ -355,6 +357,7 @@ def test_client_preserves_write_segment_receipts_and_declares_body_lengths() -> 
         recovered = client.find_completed_write(
             CompletedWriteLookupRequest(
                 object_path=created.object_path,
+                expected_bytes=11,
                 expected_content_type="application/octet-stream",
                 required_identity_assertions={"riverhog-format": "riverhog-pack-volume/v1"},
                 expected_placement="archive",
@@ -384,7 +387,9 @@ def test_client_preserves_write_segment_receipts_and_declares_body_lengths() -> 
 
 def test_named_framing_parses_split_declaration_and_streams_exact_payload() -> None:
     request = WriteSegmentRequest(
-        session=WriteSession(object_path="archives/id/object", write_token="upload-1"),
+        session=WriteSession(
+            object_path="archives/id/object", write_token="upload-1", expected_bytes=9
+        ),
         number=1,
         stored_bytes=9,
     )
@@ -405,7 +410,9 @@ def test_named_framing_parses_split_declaration_and_streams_exact_payload() -> N
 
 def test_named_framing_rejects_a_body_length_different_from_its_declaration() -> None:
     request = WriteSegmentRequest(
-        session=WriteSession(object_path="archives/id/object", write_token="upload-1"),
+        session=WriteSession(
+            object_path="archives/id/object", write_token="upload-1", expected_bytes=3
+        ),
         number=1,
         stored_bytes=3,
     )
@@ -421,7 +428,9 @@ def test_named_framing_rejects_a_body_length_different_from_its_declaration() ->
 
 def test_named_framing_rejects_truncated_and_trailing_content() -> None:
     request = WriteSegmentRequest(
-        session=WriteSession(object_path="archives/id/object", write_token="upload-1"),
+        session=WriteSession(
+            object_path="archives/id/object", write_token="upload-1", expected_bytes=3
+        ),
         number=1,
         stored_bytes=3,
     )
@@ -464,7 +473,9 @@ def test_framed_binding_requires_length_and_reports_trailing_input_as_invalid() 
     adapter = MemoryAdapter()
     binding = StorageAdapterHttpBinding(adapter)
     request = WriteSegmentRequest(
-        session=WriteSession(object_path="archives/id/object", write_token="upload-1"),
+        session=WriteSession(
+            object_path="archives/id/object", write_token="upload-1", expected_bytes=3
+        ),
         number=1,
         stored_bytes=3,
     )
@@ -495,6 +506,7 @@ def test_client_streams_declared_segment_chunks_without_transfer_encoding() -> N
         session = client.begin_write(
             WriteStartRequest(
                 object_path="archives/id/object",
+                expected_bytes=9,
                 content_type="application/octet-stream",
                 required_identity_assertions={"riverhog-format": "fixture/v1"},
                 placement="archive",
@@ -653,6 +665,7 @@ def test_adapter_implementation_value_error_is_a_server_fault() -> None:
 
     request = WriteStartRequest(
         object_path="archives/id/object",
+        expected_bytes=1,
         content_type="application/octet-stream",
         required_identity_assertions={"riverhog-format": "fixture/v1"},
         placement="archive",
@@ -687,6 +700,7 @@ def test_binding_enforces_advertised_write_segment_limits() -> None:
         upload = client.begin_write(
             WriteStartRequest(
                 object_path="archives/id/object",
+                expected_bytes=10,
                 content_type="application/octet-stream",
                 required_identity_assertions={"riverhog-format": "fixture/v1"},
                 placement="archive",

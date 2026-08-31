@@ -150,6 +150,7 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
     cached = {
         "collection_id": 42,
         "source_store": "deep",
+        "cache_store": "local",
         "object_id": "pack-000000000000",
         "state": "ready",
         "stored_bytes": 2048,
@@ -174,6 +175,7 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
             "tag": "photos",
             "collection_id": "42",
             "source_store": "deep",
+            "cache_store": "local",
             "state": "ready",
             "protection": "protected",
             "expires_before": None,
@@ -193,6 +195,16 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
                 "stored_bytes": 2048,
                 "protected_objects": 1,
                 "unleased_objects": 0,
+                "stores": [
+                    {
+                        "cache_store": "local",
+                        "priority": 1,
+                        "admission_enabled": True,
+                        "admission_budget_bytes": None,
+                        "reserved_bytes": 0,
+                        "committed_bytes": 2048,
+                    }
+                ],
                 "policy": {
                     "new_archive_lease_seconds": 3600,
                     "retrieval_default_lease_seconds": 7200,
@@ -228,6 +240,8 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         "42",
         "--source-store",
         "deep",
+        "--cache-store",
+        "local",
         "--state",
         "ready",
         "--protection",
@@ -249,14 +263,17 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
 
     assert human_list.exit_code == 0
     assert "state=ready" in human_list.stdout
+    assert "cache=local" in human_list.stdout
     assert "protected-until=2026-08-14T00:00:00.000000Z" in human_list.stdout
     assert json.loads(json_list.stdout) == page
     assert human_show.exit_code == 0
     assert "state: ready" in human_show.stdout
+    assert "cache store: local" in human_show.stdout
     assert "tags: 1" in human_show.stdout
     assert json.loads(json_show.stdout) == cached
     assert human_status.exit_code == json_status.exit_code == 0
     assert "retrieval cache" in human_status.stdout
+    assert "budget=adapter-decided" in human_status.stdout
     assert json.loads(json_status.stdout)["configured"] is True
     assert calls == [
         (
@@ -268,6 +285,7 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
                 "tag": "photos",
                 "collection_id": 42,
                 "source_store": "deep",
+                "cache_store": "local",
                 "state": "ready",
                 "protection": "protected",
                 "expires_before": None,
@@ -285,6 +303,7 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
                 "tag": "photos",
                 "collection_id": 42,
                 "source_store": "deep",
+                "cache_store": "local",
                 "state": "ready",
                 "protection": "protected",
                 "expires_before": None,

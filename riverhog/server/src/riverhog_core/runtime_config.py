@@ -37,6 +37,16 @@ ARCHIVE_STORE_ENVIRONMENT_SETTINGS = (
     "MONTHLY_DOWNLOAD_ALLOWANCE_BYTES",
     "DOWNLOAD_SAFETY_BUFFER_BYTES",
 )
+RETRIEVAL_CACHE_STORE_ENVIRONMENT_TEMPLATE = "RIVERHOG_RETRIEVAL_CACHE_{store}_{setting}"
+RETRIEVAL_CACHE_STORE_ENVIRONMENT_SETTINGS = (
+    "ADAPTER_URL",
+    "ADAPTER_TOKEN_FILE",
+    "ADAPTER_ALLOW_INSECURE_HTTP",
+    "ADAPTER_MAX_CONNECTIONS",
+    "ADAPTER_TIMEOUT_SECONDS",
+    "ADMISSION_ENABLED",
+    "ADMISSION_BUDGET_BYTES",
+)
 
 
 def _parse_bool(value: str) -> bool:
@@ -129,6 +139,14 @@ class StorageAdapterRegistration:
 
 
 @dataclass(frozen=True, slots=True)
+class RetrievalCacheStoreRegistration:
+    name: str
+    adapter: StorageAdapterRegistration
+    admission_enabled: bool = True
+    admission_budget_bytes: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     database_url: str = ""
     log_level: str = DEFAULT_LOG_LEVEL
@@ -148,7 +166,9 @@ class RuntimeConfig:
     archive_incomplete_write_sweep_interval: timedelta = field(
         default_factory=lambda: timedelta(hours=6)
     )
-    retrieval_cache: StorageAdapterRegistration | None = None
+    retrieval_cache_stores: Mapping[str, RetrievalCacheStoreRegistration] = field(
+        default_factory=dict
+    )
     retrieval_cache_new_archive_enabled: bool = True
     retrieval_cache_new_archive_lease: timedelta = field(
         default_factory=lambda: timedelta(hours=72)
@@ -276,31 +296,41 @@ class RuntimeConfig:
             (*read_order, *[name for name in normalized_archive_stores if name not in read_order]),
         )
         object.__setattr__(self, "archive_stores", normalized_archive_stores)
-        if self.retrieval_cache is not None:
+        normalized_cache_stores: dict[str, RetrievalCacheStoreRegistration] = {}
+        for raw_name, registration in self.retrieval_cache_stores.items():
+            name = _normalize_archive_store_name(raw_name)
+            if registration.name != name or registration.adapter.name != name:
+                raise ValueError(
+                    f"retrieval cache store mapping key must match its name: {raw_name!r}"
+                )
             cache = replace(
-                self.retrieval_cache,
+                registration.adapter,
                 base_url=safe_http_base_url(
-                    self.retrieval_cache.base_url,
-                    setting="retrieval cache adapter URL",
-                    allow_insecure_http=self.retrieval_cache.allow_insecure_http,
+                    registration.adapter.base_url,
+                    setting=f"retrieval cache store {name} adapter URL",
+                    allow_insecure_http=registration.adapter.allow_insecure_http,
                 ),
             )
-            if cache.name != "retrieval-cache":
-                raise ValueError(
-                    "retrieval cache adapter registration name must be retrieval-cache"
-                )
             if str(cache.token_file) == ".":
-                raise ValueError("retrieval cache adapter token file must be set")
+                raise ValueError(f"retrieval cache store {name} adapter token file must be set")
             if cache.maximum_connections < 1:
-                raise ValueError("retrieval cache adapter maximum connections must be positive")
+                raise ValueError(
+                    f"retrieval cache store {name} adapter maximum connections must be positive"
+                )
             if cache.timeout_seconds <= 0:
-                raise ValueError("retrieval cache adapter timeout must be positive")
+                raise ValueError(f"retrieval cache store {name} adapter timeout must be positive")
             if (
                 cache.monthly_download_allowance_bytes is not None
                 or cache.download_safety_buffer_bytes != 0
             ):
-                raise ValueError("retrieval cache adapter does not accept archive allowances")
-            object.__setattr__(self, "retrieval_cache", cache)
+                raise ValueError(f"retrieval cache store {name} does not accept archive allowances")
+            if (
+                registration.admission_budget_bytes is not None
+                and registration.admission_budget_bytes < 1
+            ):
+                raise ValueError(f"retrieval cache store {name} admission budget must be positive")
+            normalized_cache_stores[name] = replace(registration, adapter=cache)
+        object.__setattr__(self, "retrieval_cache_stores", normalized_cache_stores)
         if self.retrieval_cache_write_segment_bytes < 1:
             raise ValueError("RIVERHOG_RETRIEVAL_CACHE_WRITE_SEGMENT_BYTES must be >= 1")
         if self.archive_incomplete_write_max_age.total_seconds() <= 0.0:
@@ -468,6 +498,77 @@ def _parse_archive_stores(
     return write_store, read_order, stores
 
 
+def _retrieval_cache_store_environment_name(name: str, setting: str) -> str:
+    if setting not in RETRIEVAL_CACHE_STORE_ENVIRONMENT_SETTINGS:
+        raise ValueError(f"unknown retrieval-cache environment setting: {setting}")
+    return RETRIEVAL_CACHE_STORE_ENVIRONMENT_TEMPLATE.format(
+        store=_archive_store_env_suffix(name),
+        setting=setting,
+    )
+
+
+def _parse_retrieval_cache_stores(
+    values: Mapping[str, str],
+) -> dict[str, RetrievalCacheStoreRegistration]:
+    names = tuple(
+        dict.fromkeys(
+            _normalize_archive_store_name(raw)
+            for raw in values.get("RIVERHOG_RETRIEVAL_CACHE_STORES", "").split(",")
+            if raw.strip()
+        )
+    )
+    stores: dict[str, RetrievalCacheStoreRegistration] = {}
+    for name in names:
+        environment_names = {
+            setting: _retrieval_cache_store_environment_name(name, setting)
+            for setting in RETRIEVAL_CACHE_STORE_ENVIRONMENT_SETTINGS
+        }
+        adapter_url = values.get(environment_names["ADAPTER_URL"], "").strip().rstrip("/")
+        token_file = values.get(environment_names["ADAPTER_TOKEN_FILE"], "").strip()
+        if not adapter_url or not token_file:
+            raise ValueError(f"retrieval cache store {name} adapter connection is incomplete")
+        budget_raw = values.get(environment_names["ADMISSION_BUDGET_BYTES"], "").strip()
+        stores[name] = RetrievalCacheStoreRegistration(
+            name=name,
+            adapter=StorageAdapterRegistration(
+                name=name,
+                base_url=adapter_url,
+                token_file=Path(token_file),
+                allow_insecure_http=_parse_bool(
+                    values.get(environment_names["ADAPTER_ALLOW_INSECURE_HTTP"], "false")
+                ),
+                maximum_connections=_parse_int(
+                    values.get(
+                        environment_names["ADAPTER_MAX_CONNECTIONS"],
+                        str(DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS),
+                    ),
+                    name=environment_names["ADAPTER_MAX_CONNECTIONS"],
+                    minimum=1,
+                ),
+                timeout_seconds=_parse_float(
+                    values.get(
+                        environment_names["ADAPTER_TIMEOUT_SECONDS"],
+                        str(DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS),
+                    ),
+                    name=environment_names["ADAPTER_TIMEOUT_SECONDS"],
+                ),
+            ),
+            admission_enabled=_parse_bool(
+                values.get(environment_names["ADMISSION_ENABLED"], "true")
+            ),
+            admission_budget_bytes=(
+                _parse_bytes(
+                    budget_raw,
+                    name=environment_names["ADMISSION_BUDGET_BYTES"],
+                    minimum=1,
+                )
+                if budget_raw
+                else None
+            ),
+        )
+    return stores
+
+
 def load_runtime_config() -> RuntimeConfig:
     database_url_raw = os.getenv("RIVERHOG_DATABASE_URL", "").strip()
     log_level = os.getenv("RIVERHOG_LOG_LEVEL", DEFAULT_LOG_LEVEL).strip() or DEFAULT_LOG_LEVEL
@@ -496,40 +597,7 @@ def load_runtime_config() -> RuntimeConfig:
         os.getenv("RIVERHOG_RETRIEVAL_ESTIMATED_LATENCY", "48h")
     )
     archive_write_store, archive_read_order, archive_stores = _parse_archive_stores(os.environ)
-    cache_values = {
-        "base_url": os.getenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL", "").strip().rstrip("/"),
-        "token_file": os.getenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TOKEN_FILE", "").strip(),
-    }
-    configured_cache_fields = [name for name, value in cache_values.items() if value]
-    if configured_cache_fields and len(configured_cache_fields) != len(cache_values):
-        raise ValueError("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_* configuration is incomplete")
-    retrieval_cache = (
-        StorageAdapterRegistration(
-            name="retrieval-cache",
-            base_url=cache_values["base_url"],
-            token_file=Path(cache_values["token_file"]),
-            allow_insecure_http=_parse_bool(
-                os.getenv("RIVERHOG_RETRIEVAL_CACHE_ADAPTER_ALLOW_INSECURE_HTTP", "false")
-            ),
-            maximum_connections=_parse_int(
-                os.getenv(
-                    "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS",
-                    str(DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS),
-                ),
-                name="RIVERHOG_RETRIEVAL_CACHE_ADAPTER_MAX_CONNECTIONS",
-                minimum=1,
-            ),
-            timeout_seconds=_parse_float(
-                os.getenv(
-                    "RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS",
-                    str(DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS),
-                ),
-                name="RIVERHOG_RETRIEVAL_CACHE_ADAPTER_TIMEOUT_SECONDS",
-            ),
-        )
-        if configured_cache_fields
-        else None
-    )
+    retrieval_cache_stores = _parse_retrieval_cache_stores(os.environ)
     public_base_url = os.getenv("RIVERHOG_PUBLIC_BASE_URL", "").strip() or None
     configured_archive_passphrases = os.getenv("RIVERHOG_ARCHIVE_PASSPHRASES_JSON", "").strip()
     archive_passphrases_supplied = bool(configured_archive_passphrases)
@@ -580,7 +648,7 @@ def load_runtime_config() -> RuntimeConfig:
         retrieval_cache_write_segment_bytes=retrieval_cache_write_segment_bytes,
         archive_incomplete_write_max_age=archive_incomplete_write_max_age,
         archive_incomplete_write_sweep_interval=archive_incomplete_write_sweep_interval,
-        retrieval_cache=retrieval_cache,
+        retrieval_cache_stores=retrieval_cache_stores,
         retrieval_cache_new_archive_enabled=_parse_bool(
             os.getenv("RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED", "true")
         ),

@@ -7,7 +7,13 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 
-from riverhog_age import CHUNK_SIZE, AgeAlignedUnitPlan, ResumableAgeScryptSession, UploadState
+from riverhog_age import (
+    CHUNK_SIZE,
+    AgeAlignedUnitPlan,
+    ResumableAgeScryptSession,
+    UploadState,
+    age_ciphertext_len_for_plaintext_len,
+)
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
 
@@ -346,6 +352,7 @@ class RawVolumeUploader:
             if checkpoint.completed is None:
                 completed = self._object_store.find_completed_write(
                     object_path=object_path,
+                    expected_bytes=_stored_bytes_for_state(checkpoint.age_state_json),
                     expected_content_type=RAW_VOLUME_CONTENT_TYPE,
                     expected_metadata=_metadata(plan, checkpoint.age_state_json),
                 )
@@ -354,13 +361,6 @@ class RawVolumeUploader:
                 self._reconcile_recorded_parts(checkpoint)
             return checkpoint
 
-        completed = self._object_store.find_completed_write(
-            object_path=object_path,
-            expected_content_type=RAW_VOLUME_CONTENT_TYPE,
-            expected_metadata=_metadata(plan),
-        )
-        if completed is not None:
-            raise RuntimeError("completed raw object exists without its durable checkpoint")
         with self._derivation_gate.reserve() as derivation_wait_seconds:
             crypto_started = time.perf_counter()
             session = ResumableAgeScryptSession.create(
@@ -382,9 +382,22 @@ class RawVolumeUploader:
             .decode("utf-8")
         )
         self._session_cache.remember(age_state_json, session)
+        expected_stored_bytes = age_ciphertext_len_for_plaintext_len(
+            plan.plaintext_bytes,
+            age_prefix_len=len(session.age_prefix),
+        )
+        completed = self._object_store.find_completed_write(
+            object_path=object_path,
+            expected_bytes=expected_stored_bytes,
+            expected_content_type=RAW_VOLUME_CONTENT_TYPE,
+            expected_metadata=_metadata(plan),
+        )
+        if completed is not None:
+            raise RuntimeError("completed raw object exists without its durable checkpoint")
         remote_started = time.perf_counter()
         write_session = self._object_store.begin_write(
             object_path=object_path,
+            expected_bytes=expected_stored_bytes,
             content_type=RAW_VOLUME_CONTENT_TYPE,
             metadata=_metadata(plan, age_state_json),
         )
@@ -507,7 +520,11 @@ class RawVolumeUploader:
         if checkpoint.completed is not None:
             raise ValueError("cannot abort a completed raw object")
         self._object_store.abort_write(
-            session=WriteSession(checkpoint.object_path, checkpoint.write_token)
+            session=WriteSession(
+                checkpoint.object_path,
+                checkpoint.write_token,
+                _stored_bytes_for_state(checkpoint.age_state_json),
+            )
         )
         self._checkpoint_store.delete_raw_upload_checkpoint(
             collection_id=checkpoint.collection_id,
@@ -573,7 +590,11 @@ class RawVolumeUploader:
                     ]
                     remote_started = time.perf_counter()
                     remote = self._object_store.write_segment(
-                        session=WriteSession(checkpoint.object_path, checkpoint.write_token),
+                        session=WriteSession(
+                            checkpoint.object_path,
+                            checkpoint.write_token,
+                            _stored_bytes_for_state(checkpoint.age_state_json),
+                        ),
                         number=segment_plan.number,
                         content=content,
                     )
@@ -634,7 +655,11 @@ class RawVolumeUploader:
         ):
             raise RuntimeError("cannot complete a raw volume with pending parts")
         completed = self._object_store.complete_write(
-            session=WriteSession(checkpoint.object_path, checkpoint.write_token),
+            session=WriteSession(
+                checkpoint.object_path,
+                checkpoint.write_token,
+                _stored_bytes_for_state(checkpoint.age_state_json),
+            ),
             segments=tuple(sorted(checkpoint.write_segments, key=lambda current: current.number)),
             expected_bytes=sum(current.stored_bytes for current in parts),
             expected_content_type=RAW_VOLUME_CONTENT_TYPE,
@@ -731,7 +756,11 @@ class RawVolumeUploader:
         remote = {
             current.number: current
             for current in self._object_store.list_segments(
-                session=WriteSession(checkpoint.object_path, checkpoint.write_token)
+                session=WriteSession(
+                    checkpoint.object_path,
+                    checkpoint.write_token,
+                    _stored_bytes_for_state(checkpoint.age_state_json),
+                )
             )
         }
         for current in checkpoint.write_segments:
@@ -1030,6 +1059,16 @@ def _sha(value: object, label: str) -> str:
     if _SHA256_RE.fullmatch(candidate) is None:
         raise ValueError(f"{label} sha256 is invalid")
     return candidate
+
+
+def _stored_bytes_for_state(value: str) -> int:
+    state = UploadState.from_json_bytes(value)
+    if state.plaintext_size is None:
+        raise ValueError("raw upload plaintext size is missing")
+    return age_ciphertext_len_for_plaintext_len(
+        state.plaintext_size,
+        age_prefix_len=len(state.header) + len(state.payload_nonce),
+    )
 
 
 def _uint(value: object, label: str) -> int:

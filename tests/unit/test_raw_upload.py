@@ -66,6 +66,7 @@ class MemoryResumableStore:
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         content_type: str,
         metadata: dict[str, str],
     ) -> WriteSession:
@@ -78,7 +79,7 @@ class MemoryResumableStore:
             {},
             {},
         )
-        return WriteSession(object_path, write_token)
+        return WriteSession(object_path, write_token, expected_bytes)
 
     def write_segment(
         self,
@@ -129,11 +130,14 @@ class MemoryResumableStore:
         self,
         *,
         object_path: str,
+        expected_bytes: int,
         expected_content_type: str,
         expected_metadata: dict[str, str],
     ) -> CompletedObjectReceipt | None:
         found = self.objects.get(object_path)
         if found is None:
+            return None
+        if found[3].bytes != expected_bytes:
             return None
         if found[1] != expected_content_type or any(
             found[2].get(key) != value for key, value in expected_metadata.items()

@@ -31,7 +31,7 @@ from riverhog_storage_adapter_protocol import (
 class _Adapter:
     def __init__(self) -> None:
         self.created: WriteStartRequest | None = None
-        self.upload = WriteSession(object_path="archives/id/volume.age", write_token="upload-1")
+        self.upload: WriteSession | None = None
         self.parts: dict[int, bytes] = {}
         self.small: SmallObjectWriteRequest | None = None
         self.objects = {
@@ -49,6 +49,11 @@ class _Adapter:
 
     def begin_write(self, request: WriteStartRequest) -> WriteSession:
         self.created = request
+        self.upload = WriteSession(
+            object_path=request.object_path,
+            write_token="upload-1",
+            expected_bytes=request.expected_bytes,
+        )
         return self.upload
 
     def write_segment(
@@ -59,6 +64,7 @@ class _Adapter:
         stored_bytes: int,
         content: bytes,
     ) -> WriteSegmentReceipt:
+        assert self.upload is not None
         assert session == self.upload
         assert len(content) == stored_bytes
         self.parts[number] = content
@@ -70,6 +76,7 @@ class _Adapter:
         )
 
     def list_segments(self, session: WriteSession) -> WriteSegmentSet:
+        assert self.upload is not None
         assert session == self.upload
         return WriteSegmentSet(
             session=session,
@@ -100,6 +107,7 @@ class _Adapter:
         return self._completed(request)
 
     def abort_write(self, session: WriteSession) -> None:
+        assert self.upload is not None
         assert session == self.upload
 
     def put_small_object(
@@ -159,6 +167,7 @@ def test_existing_object_ports_preserve_adapter_receipts_and_generic_placement()
     store = StorageAdapterArchiveResumableObjectStore(adapter)  # type: ignore[arg-type]
     session = store.begin_write(
         object_path="archives/id/volume.age",
+        expected_bytes=11,
         content_type="application/octet-stream",
         metadata={"riverhog-format": "volume/v1"},
     )
@@ -181,6 +190,7 @@ def test_existing_object_ports_preserve_adapter_receipts_and_generic_placement()
     assert (
         store.find_completed_write(
             object_path=session.object_path,
+            expected_bytes=11,
             expected_content_type="application/octet-stream",
             expected_metadata={"riverhog-format": "volume/v1"},
         )
@@ -234,6 +244,7 @@ def test_identity_conflicts_keep_the_existing_internal_exception() -> None:
     with pytest.raises(ArchiveObjectIdentityConflict, match="different object"):
         store.find_completed_write(
             object_path="archives/id/volume.age",
+            expected_bytes=11,
             expected_content_type="application/octet-stream",
             expected_metadata={"riverhog-format": "volume/v1"},
         )
@@ -252,6 +263,7 @@ def test_completed_receipts_must_attest_the_exact_requested_storage_predicates()
     )
     session = store.begin_write(
         object_path="archives/id/volume.age",
+        expected_bytes=11,
         content_type="application/octet-stream",
         metadata={"riverhog-format": "volume/v1"},
     )

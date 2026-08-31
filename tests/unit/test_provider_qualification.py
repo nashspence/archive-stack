@@ -92,6 +92,70 @@ def test_provider_lifecycle_contracts_bound_run_state() -> None:
     }
 
 
+def test_provider_cache_proof_binds_named_placement_and_exact_accounting() -> None:
+    module = load_script()
+    cached = {
+        "collection_id": 42,
+        "source_store": "aws-deep-archive",
+        "cache_store": "b2-cache",
+        "object_id": "volume-0",
+        "lease_categories": ["retrieval_job"],
+    }
+
+    class _Api:
+        def retrieval_cache_status(self) -> dict[str, object]:
+            return {
+                "configured": True,
+                "new_archive_enabled": True,
+                "objects": 1,
+                "stored_bytes": 123,
+                "protected_objects": 1,
+                "stores": [
+                    {
+                        "cache_store": "b2-cache",
+                        "priority": 1,
+                        "admission_enabled": True,
+                        "admission_budget_bytes": None,
+                        "reserved_bytes": 0,
+                        "committed_bytes": 123,
+                    }
+                ],
+                "policy": {
+                    "new_archive_lease_seconds": 3600,
+                    "retrieval_default_lease_seconds": 3 * 24 * 60 * 60,
+                    "retrieval_max_lease_seconds": 3 * 24 * 60 * 60,
+                    "pending_timeout_seconds": 72 * 60 * 60,
+                    "sweep_interval_seconds": 30,
+                    "restore_poll_interval_seconds": 60,
+                },
+            }
+
+        def list_retrieval_cache_objects(self, **kwargs: object) -> dict[str, object]:
+            assert kwargs["cache_store"] == "b2-cache"
+            return {"objects": [cached], "pages": 1}
+
+        def get_retrieval_cache_object(
+            self,
+            collection_id: int,
+            source_store: str,
+            object_id: str,
+        ) -> dict[str, object]:
+            assert (collection_id, source_store, object_id) == (
+                42,
+                "aws-deep-archive",
+                "volume-0",
+            )
+            return cached
+
+    assert module._assert_retrieval_cache_surface(
+        _Api(),
+        collection_id=42,
+        source_store="aws-deep-archive",
+        expected_lease_category="retrieval_job",
+        expected_retrieval_lease_seconds=3 * 24 * 60 * 60,
+    ) == ("volume-0",)
+
+
 def test_provider_multipart_cleanup_outlasts_the_continuation_window(tmp_path: Path) -> None:
     module = load_script()
     invalid = tmp_path / "provider.toml"
@@ -537,6 +601,8 @@ def test_checkpoint_is_restartable_tamper_evident_and_emits_bounded_evidence(
         "corpus_bytes": 0,
     }
     assert evidence["retrieval_cache"] == {
+        "qualified_store": "b2-cache",
+        "placement_accounting": "exact-reserved-and-committed-bytes",
         "new_archive_insertion": True,
         "new_archive_lease_seconds": 3600,
         "retrieval_default_lease_seconds": 3 * 24 * 60 * 60,
@@ -942,7 +1008,11 @@ def test_runtime_environment_uses_scoped_credentials_and_cloudfront(
         'RIVERHOG_ARCHIVE_STORE_B2_ARCHIVE_ADAPTER_URL="http://b2-archive-adapter:8080"'
     ) in text
     assert 'RIVERHOG_ARCHIVE_STORE_AWS_DEEP_ARCHIVE_MONTHLY_DOWNLOAD_ALLOWANCE_BYTES="1TB"' in text
-    assert 'RIVERHOG_RETRIEVAL_CACHE_ADAPTER_URL="http://b2-retrieval-cache-adapter:8080"' in text
+    assert 'RIVERHOG_RETRIEVAL_CACHE_STORES="b2-cache"' in text
+    assert (
+        'RIVERHOG_RETRIEVAL_CACHE_B2_CACHE_ADAPTER_URL="http://b2-retrieval-cache-adapter:8080"'
+        in text
+    )
     assert 'RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_ENABLED="true"' in text
     assert 'RIVERHOG_RETRIEVAL_CACHE_NEW_ARCHIVE_LEASE="1h"' in text
     assert 'RIVERHOG_RETRIEVAL_CACHE_SWEEP_INTERVAL="30s"' in text

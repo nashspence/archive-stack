@@ -13,6 +13,7 @@ from riverhog_age import (
     AgeAlignedUnitPlan,
     ResumableAgeScryptSession,
     UploadState,
+    age_ciphertext_len_for_plaintext_len,
 )
 from riverhog_protocol.pack_ingress import canonical_json_bytes
 from riverhog_protocol.paths import normalize_relpath
@@ -315,6 +316,7 @@ class PackVolumeUploader:
             if checkpoint.completed is None:
                 completed = self._object_store.find_completed_write(
                     object_path=object_path,
+                    expected_bytes=_stored_bytes_for_state(checkpoint.age_state_json),
                     expected_content_type=PACK_VOLUME_CONTENT_TYPE,
                     expected_metadata=_object_metadata(plan, checkpoint.age_state_json),
                 )
@@ -323,16 +325,6 @@ class PackVolumeUploader:
                 self._reconcile_recorded_parts(checkpoint)
             return checkpoint
 
-        completed = self._object_store.find_completed_write(
-            object_path=object_path,
-            expected_content_type=PACK_VOLUME_CONTENT_TYPE,
-            expected_metadata=_object_metadata(plan),
-        )
-        if completed is not None:
-            raise RuntimeError(
-                "completed pack object exists without a checkpoint; retain the upload receipt "
-                "transaction before discarding checkpoint state"
-            )
         with self._derivation_gate.reserve() as derivation_wait_seconds:
             crypto_started = time.perf_counter()
             session = ResumableAgeScryptSession.create(
@@ -347,9 +339,25 @@ class PackVolumeUploader:
             .decode("utf-8")
         )
         self._session_cache.remember(age_state_json, session)
+        expected_stored_bytes = age_ciphertext_len_for_plaintext_len(
+            plan.plaintext_bytes,
+            age_prefix_len=len(session.age_prefix),
+        )
+        completed = self._object_store.find_completed_write(
+            object_path=object_path,
+            expected_bytes=expected_stored_bytes,
+            expected_content_type=PACK_VOLUME_CONTENT_TYPE,
+            expected_metadata=_object_metadata(plan),
+        )
+        if completed is not None:
+            raise RuntimeError(
+                "completed pack object exists without a checkpoint; retain the upload receipt "
+                "transaction before discarding checkpoint state"
+            )
         remote_started = time.perf_counter()
         write_session = self._object_store.begin_write(
             object_path=object_path,
+            expected_bytes=expected_stored_bytes,
             content_type=PACK_VOLUME_CONTENT_TYPE,
             metadata=_object_metadata(plan, age_state_json),
         )
@@ -480,6 +488,7 @@ class PackVolumeUploader:
             session=WriteSession(
                 object_path=checkpoint.object_path,
                 write_token=checkpoint.write_token,
+                expected_bytes=_stored_bytes_for_state(checkpoint.age_state_json),
             )
         )
         self._checkpoint_store.delete_pack_upload_checkpoint(
@@ -551,6 +560,7 @@ class PackVolumeUploader:
                         session=WriteSession(
                             object_path=checkpoint.object_path,
                             write_token=checkpoint.write_token,
+                            expected_bytes=_stored_bytes_for_state(checkpoint.age_state_json),
                         ),
                         number=segment_plan.number,
                         content=content,
@@ -626,7 +636,11 @@ class PackVolumeUploader:
         parts = tuple(sorted(checkpoint.archive_parts, key=lambda current: current.number))
         if tuple(current.number for current in parts) != expected_numbers:
             raise RuntimeError("cannot complete a pack with pending upload units")
-        session = WriteSession(checkpoint.object_path, checkpoint.write_token)
+        session = WriteSession(
+            checkpoint.object_path,
+            checkpoint.write_token,
+            _stored_bytes_for_state(checkpoint.age_state_json),
+        )
         completed = self._object_store.complete_write(
             session=session,
             segments=tuple(sorted(checkpoint.write_segments, key=lambda current: current.number)),
@@ -720,7 +734,11 @@ class PackVolumeUploader:
         remote = {
             current.number: current
             for current in self._object_store.list_segments(
-                session=WriteSession(checkpoint.object_path, checkpoint.write_token)
+                session=WriteSession(
+                    checkpoint.object_path,
+                    checkpoint.write_token,
+                    _stored_bytes_for_state(checkpoint.age_state_json),
+                )
             )
         }
         for current in checkpoint.write_segments:
@@ -1036,6 +1054,16 @@ def _required_sha256(value: object, *, label: str) -> str:
     if len(candidate) != 64 or any(ch not in "0123456789abcdef" for ch in candidate):
         raise ValueError(f"{label} sha256 is invalid")
     return candidate
+
+
+def _stored_bytes_for_state(value: str) -> int:
+    state = UploadState.from_json_bytes(value)
+    if state.plaintext_size is None:
+        raise ValueError("pack upload plaintext size is missing")
+    return age_ciphertext_len_for_plaintext_len(
+        state.plaintext_size,
+        age_prefix_len=len(state.header) + len(state.payload_nonce),
+    )
 
 
 def _canonical_positive_int(value: object, *, label: str) -> int:

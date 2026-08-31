@@ -70,6 +70,7 @@ from riverhog_protocol import (
     RetrievalCacheProtection,
     RetrievalCacheSort,
     RetrievalCacheState,
+    RetrievalCacheStoreName,
     RetrievalFileReferenceSetDocument,
     SearchSort,
     SortOrder,
@@ -117,6 +118,7 @@ _APPLICATION_KEY_ID: TypeAdapter[str] = TypeAdapter(ApplicationKeyId)
 _APPLICATION_PERMISSION: TypeAdapter[str] = TypeAdapter(ApplicationPermission)
 _APPLICATION_RESOURCE: TypeAdapter[str] = TypeAdapter(ApplicationResource)
 _ARCHIVE_STORE_NAME: TypeAdapter[str] = TypeAdapter(ArchiveStoreName)
+_RETRIEVAL_CACHE_STORE_NAME: TypeAdapter[str] = TypeAdapter(RetrievalCacheStoreName)
 _COLLECTION_ID: TypeAdapter[int] = TypeAdapter(CollectionId)
 _CANONICAL_RELPATH: TypeAdapter[str] = TypeAdapter(CanonicalRelPath)
 _MONTHLY_DOWNLOAD_QUOTA_BYTES: TypeAdapter[int] = TypeAdapter(MonthlyDownloadQuotaBytes)
@@ -240,6 +242,15 @@ def _archive_store_name(value: str) -> str:
     except ValidationError as exc:
         raise BadRequest(
             "archive store name must use lowercase letters, digits, and single dashes"
+        ) from exc
+
+
+def _retrieval_cache_store_name(value: str) -> str:
+    try:
+        return _RETRIEVAL_CACHE_STORE_NAME.validate_python(value, strict=True)
+    except ValidationError as exc:
+        raise BadRequest(
+            "retrieval cache store name must use lowercase letters, digits, and single dashes"
         ) from exc
 
 
@@ -873,6 +884,7 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
         tag: str | None = None,
         collection_id: CollectionId | None = None,
         source_store: ArchiveStoreName | None = None,
+        cache_store: RetrievalCacheStoreName | None = None,
         state: RetrievalCacheState | None = None,
         protection: RetrievalCacheProtection | None = None,
         expires_before: str | None = None,
@@ -898,6 +910,8 @@ class ApiClient(CollectionWorkflowMethods, _HttpApiClient):
             params["collection_id"] = _collection_id(collection_id)
         if source_store is not None:
             params["source_store"] = _archive_store_name(source_store)
+        if cache_store is not None:
+            params["cache_store"] = _retrieval_cache_store_name(cache_store)
         if state:
             params["state"] = _one_of(
                 state,

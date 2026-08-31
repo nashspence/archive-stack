@@ -20,12 +20,11 @@ from riverhog_core.catalog_models import (
     RetrievalCacheObjectRecord,
 )
 from riverhog_core.ports.archive_objects import (
-    CompletedObjectReceipt,
     WriteSegmentReceipt,
     WriteSession,
 )
 from riverhog_core.ports.archive_store import ArchiveObjectIdentity, ArchiveReadStatus
-from riverhog_core.ports.retrieval_cache import RetrievalCacheReceipt
+from riverhog_core.ports.retrieval_cache import RetrievalCacheAdmission
 from riverhog_core.runtime_config import RuntimeConfig
 from riverhog_core.services.archive_copies import SqlAlchemyArchiveCopyService
 from riverhog_core.services.lifecycle_events import SqlAlchemyLifecycleEventService
@@ -56,25 +55,48 @@ class _ArchiveCopyCache:
     def __init__(self) -> None:
         self.store = MemoryArchiveStore(new_archive_prefix="archives/cache/new-copy")
 
+    def admit(
+        self,
+        *,
+        owner: str,
+        source_store: str,
+        collection_id: int,
+        object_id: str,
+        expected_bytes: int,
+    ) -> RetrievalCacheAdmission:
+        path = f"cache/{source_store}/{collection_id}/{object_id}"
+        session = self.store.begin_write(
+            object_path=path,
+            expected_bytes=expected_bytes,
+            content_type="application/octet-stream",
+            metadata={},
+        )
+        return RetrievalCacheAdmission(
+            owner=owner,
+            cache_store="memory",
+            source_store=source_store,
+            collection_id=collection_id,
+            object_id=object_id,
+            object_path=path,
+            expected_bytes=expected_bytes,
+            write_token=session.write_token,
+            admitted_at="2026-08-08T00:00:00.000000Z",
+        )
+
     def resumable_object_store(self, **_: object) -> MemoryArchiveStore:
         return self.store
 
-    def verify_resumable_object(
-        self,
-        *,
-        completed: CompletedObjectReceipt,
-        segments: tuple[WriteSegmentReceipt, ...] = (),
-    ) -> RetrievalCacheReceipt:
-        assert segments
-        content = self.store.objects[completed.object_path]
-        return RetrievalCacheReceipt(
-            object_path=completed.object_path,
-            revision=completed.revision,
-            stored_bytes=len(content),
-            stored_sha256=hashlib.sha256(content).hexdigest(),
-            cached_at=completed.completed_at,
-            verified_at=completed.completed_at,
-        )
+    def release(self, *, owner: str) -> int:
+        _ = owner
+        return 0
+
+    def is_current(self, *, admission: RetrievalCacheAdmission) -> bool:
+        _ = admission
+        return True
+
+    def reap_abandoned_populations(self, *, limit: int = 100) -> int:
+        _ = limit
+        return 0
 
 
 def _multiple_archive_parts(files: dict[str, bytes], *, parts: int = 4) -> FixtureArchive:
@@ -422,7 +444,7 @@ def test_archive_copy_to_restore_required_store_writes_final_custody(
         "archives/deep/new-copy/recovery.json",
     }
     pack_path = f"archives/deep/new-copy/volumes/{archive.pack_plan.volume_id}.tar.age"
-    assert cache.store.objects[pack_path] == destination.objects[pack_path]
+    assert cache.store.objects[cached.object_path] == destination.objects[pack_path]
 
 
 def test_restore_required_copy_uses_archive_only_when_new_archive_cache_is_disabled(

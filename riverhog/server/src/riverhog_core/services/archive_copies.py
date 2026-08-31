@@ -39,7 +39,6 @@ from riverhog_core.catalog_models import (
     CollectionMetadataPublicationRecord,
     CollectionRecord,
     RetrievalCacheLeaseRecord,
-    RetrievalCacheObjectRecord,
 )
 from riverhog_core.collection_access import collection_access_filter
 from riverhog_core.pack_upload import PACK_VOLUME_CONTENT_TYPE
@@ -66,6 +65,7 @@ from riverhog_core.services.lifecycle_events import (
     SqlAlchemyLifecycleEventService,
     event_context_json,
 )
+from riverhog_core.services.retrieval_cache import register_cache_ready
 from riverhog_core.stores.mirrored_archive_resumable_object_store import (
     MirroredArchiveResumableObjectStore,
 )
@@ -848,6 +848,7 @@ class SqlAlchemyArchiveCopyService:
         )
         completed = destination_object_store.find_completed_write(
             object_path=destination_path,
+            expected_bytes=source.stored_bytes,
             expected_content_type=content_type,
             expected_metadata=metadata,
         )
@@ -871,13 +872,14 @@ class SqlAlchemyArchiveCopyService:
             if checkpoint is None:
                 raise Conflict("archive copy upload checkpoint disappeared")
             write_session = (
-                WriteSession(destination_path, checkpoint.write_token)
+                WriteSession(destination_path, checkpoint.write_token, source.stored_bytes)
                 if checkpoint.write_token
                 else None
             )
         if write_session is None:
             write_session = destination_object_store.begin_write(
                 object_path=destination_path,
+                expected_bytes=source.stored_bytes,
                 content_type=content_type,
                 metadata=metadata,
             )
@@ -950,6 +952,7 @@ class SqlAlchemyArchiveCopyService:
             source_store=store_name,
             collection_id=collection_id,
             object_id=object_id,
+            owner=f"archive-copy:{collection_id}:{store_name}:{object_id}",
         )
 
     def _copy_volume_parts(
@@ -1312,17 +1315,6 @@ class SqlAlchemyArchiveCopyService:
         source: CollectionArchiveObjectRecord,
         receipt: _CopiedObject,
     ) -> None:
-        destination_binding = self._archive_stores.require(destination_store)
-        cache_required = (
-            self._config.retrieval_cache_new_archive_enabled
-            and self._retrieval_cache is not None
-            and destination_binding.store.read_mode() == "restore_required"
-        )
-        if source.kind in {"pack", "segment"} and cache_required:
-            if receipt.retrieval_cache is None:
-                raise RuntimeError(
-                    "restore-required archive copy is missing its retrieval cache receipt"
-                )
         with session_scope(self._session_factory) as session:
             existing = session.get(
                 CollectionArchiveObjectRecord,
@@ -1378,26 +1370,19 @@ class SqlAlchemyArchiveCopyService:
             session.flush()
             if receipt.retrieval_cache is not None:
                 cache_receipt = receipt.retrieval_cache
-                if (
-                    cache_receipt.stored_bytes != copied_record.stored_bytes
-                    or len(cache_receipt.stored_sha256) != 64
+                if cache_receipt.stored_bytes != copied_record.stored_bytes or (
+                    cache_receipt.stored_sha256 is not None
+                    and len(cache_receipt.stored_sha256) != 64
                 ):
                     raise RuntimeError(
                         "retrieval cache receipt does not match its copied archive volume"
                     )
-                session.merge(
-                    RetrievalCacheObjectRecord(
-                        source_store=destination_store,
-                        collection_id=collection_id,
-                        object_id=copied_record.object_id,
-                        object_path=cache_receipt.object_path,
-                        revision=cache_receipt.revision,
-                        stored_bytes=cache_receipt.stored_bytes,
-                        stored_sha256=cache_receipt.stored_sha256,
-                        cached_at=cache_receipt.cached_at,
-                        verified_at=cache_receipt.verified_at,
-                        state="ready",
-                    )
+                register_cache_ready(
+                    session,
+                    source_store=destination_store,
+                    collection_id=collection_id,
+                    object_id=copied_record.object_id,
+                    receipt=cache_receipt,
                 )
                 session.flush()
                 session.merge(

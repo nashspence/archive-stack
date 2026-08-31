@@ -538,24 +538,37 @@ def format_archive_stores(payload: Mapping[str, object]) -> str:
 def format_retrieval_cache_status(payload: Mapping[str, object]) -> str:
     policy = payload.get("policy")
     values = policy if isinstance(policy, Mapping) else {}
-    return "\n".join(
-        [
-            "retrieval cache",
-            f"configured: {'yes' if payload.get('configured') else 'no'}",
-            "new archive insertion: "
-            f"{'enabled' if payload.get('new_archive_enabled') else 'disabled'}",
-            f"objects: {payload.get('objects', 0)}",
-            f"stored: {_bytes(payload.get('stored_bytes'))}",
-            f"protected: {payload.get('protected_objects', 0)}",
-            f"unleased: {payload.get('unleased_objects', 0)}",
-            f"new archive lease: {values.get('new_archive_lease_seconds', 0)}s",
-            f"retrieval lease: {values.get('retrieval_default_lease_seconds', 0)}s default, "
-            f"{values.get('retrieval_max_lease_seconds', 0)}s maximum",
-            f"pending timeout: {values.get('pending_timeout_seconds', 0)}s",
-            f"sweep interval: {values.get('sweep_interval_seconds', 0)}s",
-            f"restore poll interval: {values.get('restore_poll_interval_seconds', 0)}s",
-        ]
-    )
+    lines = [
+        "retrieval cache",
+        f"configured: {'yes' if payload.get('configured') else 'no'}",
+        f"new archive insertion: {'enabled' if payload.get('new_archive_enabled') else 'disabled'}",
+        f"objects: {payload.get('objects', 0)}",
+        f"stored: {_bytes(payload.get('stored_bytes'))}",
+        f"protected: {payload.get('protected_objects', 0)}",
+        f"unleased: {payload.get('unleased_objects', 0)}",
+        f"new archive lease: {values.get('new_archive_lease_seconds', 0)}s",
+        f"retrieval lease: {values.get('retrieval_default_lease_seconds', 0)}s default, "
+        f"{values.get('retrieval_max_lease_seconds', 0)}s maximum",
+        f"pending timeout: {values.get('pending_timeout_seconds', 0)}s",
+        f"sweep interval: {values.get('sweep_interval_seconds', 0)}s",
+        f"restore poll interval: {values.get('restore_poll_interval_seconds', 0)}s",
+    ]
+    stores = payload.get("stores")
+    if isinstance(stores, Sequence) and not isinstance(stores, (str, bytes)):
+        lines.append("stores:")
+        for store in stores:
+            if not isinstance(store, Mapping):
+                continue
+            budget = store.get("admission_budget_bytes")
+            lines.append(
+                f"- {store.get('cache_store', 'unknown')}  "
+                f"priority={store.get('priority', 'unknown')}  "
+                f"admission={'enabled' if store.get('admission_enabled') else 'disabled'}  "
+                f"budget={_bytes(budget) if budget is not None else 'adapter-decided'}  "
+                f"reserved={_bytes(store.get('reserved_bytes'))}  "
+                f"committed={_bytes(store.get('committed_bytes'))}"
+            )
+    return "\n".join(lines)
 
 
 def format_retrieval_cache_objects(payload: Mapping[str, object]) -> str:
@@ -571,6 +584,7 @@ def format_retrieval_cache_objects(payload: Mapping[str, object]) -> str:
             f"- {current.get('collection_id', 'unknown')}::"
             f"{current.get('source_store', 'unknown')}::"
             f"{current.get('object_id', 'unknown')}  "
+            f"cache={current.get('cache_store', 'unknown')}  "
             f"state={current.get('state', 'unknown')}  "
             f"stored={_bytes(current.get('stored_bytes'))}  "
             f"cached={current.get('cached_at', 'unknown')}  "
@@ -604,6 +618,7 @@ def format_retrieval_cache_object(payload: Mapping[str, object]) -> str:
             f"{payload.get('object_id', 'unknown')}",
             f"stored: {_bytes(payload.get('stored_bytes'))}",
             f"state: {payload.get('state', 'unknown')}",
+            f"cache store: {payload.get('cache_store', 'unknown')}",
             f"stored sha256: {payload.get('stored_sha256', 'unknown')}",
             f"cached: {payload.get('cached_at', 'unknown')}",
             f"verified: {payload.get('verified_at', 'unknown')}",
