@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Query
-from http_api_contracts import bounded_list_operation
+from http_api_contracts import mutable_browse_operation
 from riverhog_core.app_permissions import ARCHIVES_MANAGE
 from riverhog_protocol import (
     ArchiveCopySort,
@@ -15,6 +15,7 @@ from riverhog_protocol import (
 )
 
 from riverhog_api.auth import ArchiveManager, ArchiveReader
+from riverhog_api.browse import canonical_selectors, page_payload, page_position
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_archive_store, map_archive_store_list
 from riverhog_api.schemas.archive import (
@@ -52,27 +53,41 @@ def create_or_resume_archive_copy(
 @router.get(
     "/archive/copies",
     response_model=ArchiveCopyJobListOut,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_archive_copy_jobs(
     container: ContainerDep,
     principal: ArchiveManager,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None),
     q: str | None = Query(None),
     state: Annotated[ArchiveCopyState | None, Query()] = None,
     sort: Annotated[ArchiveCopySort, Query()] = "requested_at",
     order: Annotated[SortOrder, Query()] = "desc",
 ) -> ArchiveCopyJobListOut:
+    selectors = canonical_selectors(q=q, state=state, sort=sort, order=order)
+    position = page_position(
+        container,
+        principal=principal,
+        operation="list_archive_copy_jobs",
+        page_token=page_token,
+        selectors=selectors,
+    )
     return ArchiveCopyJobListOut.model_validate(
-        container.archive_copies.list(
-            page=page,
-            per_page=per_page,
-            q=q,
-            state=state,
-            sort=sort,
-            order=order,
+        page_payload(
+            container.archive_copies.list(
+                page_size=page_size,
+                position=position,
+                q=q,
+                state=state,
+                sort=sort,
+                order=order,
+                principal=principal,
+            ),
+            container=container,
             principal=principal,
+            operation="list_archive_copy_jobs",
+            selectors=selectors,
         )
     )
 
@@ -157,26 +172,44 @@ def retire_archive_copy(
 @router.get(
     "/archive/stores",
     response_model=ArchiveStoreListOut,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_archive_stores(
     container: ContainerDep,
     principal: ArchiveReader,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None),
     q: str | None = Query(None),
     sort: Annotated[ArchiveStoreSort, Query()] = "store",
     order: Annotated[SortOrder, Query()] = "asc",
 ) -> ArchiveStoreListOut:
-    payload = container.archive_stores.list(
-        page=page,
-        per_page=per_page,
-        q=q,
-        sort=sort,
-        order=order,
+    selectors = canonical_selectors(q=q, sort=sort, order=order)
+    position = page_position(
+        container,
         principal=principal,
+        operation="list_archive_stores",
+        page_token=page_token,
+        selectors=selectors,
     )
-    return ArchiveStoreListOut.model_validate(map_archive_store_list(payload))
+    payload = map_archive_store_list(
+        container.archive_stores.list(
+            page_size=page_size,
+            position=position,
+            q=q,
+            sort=sort,
+            order=order,
+            principal=principal,
+        )
+    )
+    return ArchiveStoreListOut.model_validate(
+        page_payload(
+            payload,
+            container=container,
+            principal=principal,
+            operation="list_archive_stores",
+            selectors=selectors,
+        )
+    )
 
 
 @router.get("/archive/stores/{store}", response_model=ArchiveStoreOut)

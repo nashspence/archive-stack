@@ -166,8 +166,8 @@ class RiverhogApi(Protocol):
         self,
         collection_id: int,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
     ) -> dict[str, Any]: ...
 
     def get_collection_derivation(
@@ -188,8 +188,7 @@ class RiverhogApi(Protocol):
         claim_id: str,
         *,
         authority_sha256: str,
-        page: int = 1,
-        per_page: int = 100,
+        start_ordinal: int = 0,
     ) -> ArtifactDispositionPageDocument: ...
 
     def list_processing_claim_disposition_outputs(
@@ -197,8 +196,7 @@ class RiverhogApi(Protocol):
         claim_id: str,
         *,
         authority_sha256: str,
-        page: int = 1,
-        per_page: int = 100,
+        start_ordinal: int = 0,
     ) -> ArtifactDispositionOutputPageDocument: ...
 
     def record_processing_claim_dispositions(
@@ -300,15 +298,18 @@ def _portable_payload_files(
 
 
 def _collection_tags(api: RiverhogApi, collection_id: int) -> tuple[str, ...]:
-    page = 1
-    authority: tuple[int, str, int] | None = None
+    page_token: str | None = None
+    authority: tuple[int, str] | None = None
     tags: list[str] = []
     while True:
-        payload = api.get_collection_tags(collection_id, page=page, per_page=100)
+        payload = api.get_collection_tags(
+            collection_id,
+            page_size=100,
+            page_token=page_token,
+        )
         current = (
             int(payload.get("metadata_revision") or 0),
             str(payload.get("inventory_identity") or ""),
-            int(payload.get("tag_count") or 0),
         )
         if authority is None:
             authority = current
@@ -318,11 +319,14 @@ def _collection_tags(api: RiverhogApi, collection_id: int) -> tuple[str, ...]:
         if not isinstance(raw_tags, list):
             raise RuntimeError("Riverhog returned invalid collection tags")
         tags.extend(str(tag) for tag in raw_tags)
-        if page >= int(payload.get("pages") or 0):
+        next_page_token = payload.get("next_page_token")
+        if next_page_token is None:
             break
-        page += 1
-    if authority is None or len(tags) != authority[2] or tags != sorted(set(tags)):
-        raise RuntimeError("Riverhog collection tag traversal is incomplete")
+        if not isinstance(next_page_token, str) or not next_page_token:
+            raise RuntimeError("Riverhog returned an invalid collection-tag page token")
+        page_token = next_page_token
+    if authority is None or tags != sorted(set(tags)):
+        raise RuntimeError("Riverhog collection tag traversal is invalid")
     return tuple(tags)
 
 

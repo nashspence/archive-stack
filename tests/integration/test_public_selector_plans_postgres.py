@@ -15,6 +15,7 @@ from riverhog_core.app_permissions import (
     ApplicationAccess,
     ApplicationPrincipal,
 )
+from riverhog_core.browse import keyset_statement
 from riverhog_core.catalog_db import create_catalog_engine, initialize_db
 from riverhog_core.services.app_keys import (
     _access_list_statement,
@@ -29,7 +30,7 @@ from riverhog_core.services.download_allowances import _key_quota_statements
 from riverhog_core.services.provenance import _provenance_file_statement
 from riverhog_core.services.retrieval import _cache_list_statement
 from riverhog_core.services.search import _search_statement
-from riverhog_core.services.tags import _tag_list_statements
+from riverhog_core.services.tags import _tag_list_statement
 from riverhog_protocol import (
     ApplicationAccessSort,
     ApplicationKeySort,
@@ -51,6 +52,7 @@ from stove0_core.persistence import (
     _work_list_statement,
     stove0_state_schema,
 )
+from stove0_core.persistence import _keyset_statement as _stove0_keyset_statement
 from stove0_operator_contracts import EvaluationSort, WorkSort
 from time_formats import parse_utc_timestamp
 
@@ -72,6 +74,33 @@ _READER = ApplicationPrincipal(
         }
     ),
 )
+
+
+def _riverhog_plan_statement(
+    parts: tuple[object, ...],
+    *,
+    order: str,
+    statement_index: int = -2,
+    key_columns_index: int = -1,
+) -> object:
+    return keyset_statement(
+        parts[statement_index],  # type: ignore[arg-type]
+        columns=parts[key_columns_index],  # type: ignore[arg-type]
+        position=None,
+        order=order,
+        page_size=100,
+    )
+
+
+def _stove0_plan_statement(parts: tuple[object, ...], *, order: str) -> object:
+    return _stove0_keyset_statement(
+        parts[-2],  # type: ignore[arg-type]
+        columns=parts[-1],  # type: ignore[arg-type]
+        position=None,
+        order=order,
+        page_size=100,
+    )
+
 
 # Every database-backed public selector maps to one semantic statement family.
 # Page bounds, exact-resource lookups, cursor feeds, and bounded configured-store
@@ -123,20 +152,24 @@ _NON_PLAN_QUERY_OPERATIONS = {
     ("riverhog", "acquire_collection_upload_session_work"): {"limit"},
     ("riverhog", "download_retrieval_file"): {"collection_id", "path"},
     ("riverhog", "get_portable_collection_inventory"): {"cursor", "limit"},
-    ("riverhog", "list_archive_stores"): {"order", "page", "per_page", "q", "sort"},
+    ("riverhog", "list_archive_stores"): {
+        "order",
+        "page_size",
+        "page_token",
+        "q",
+        "sort",
+    },
     ("riverhog", "list_processing_claim_artifacts"): {
         "authority_sha256",
         "start_ordinal",
     },
     ("riverhog", "list_processing_claim_disposition_outputs"): {
         "authority_sha256",
-        "page",
-        "per_page",
+        "start_ordinal",
     },
     ("riverhog", "list_processing_claim_dispositions"): {
         "authority_sha256",
-        "page",
-        "per_page",
+        "start_ordinal",
     },
     ("riverhog", "list_processing_claim_inputs"): {
         "authority_sha256",
@@ -150,15 +183,18 @@ _NON_PLAN_QUERY_OPERATIONS = {
         "authority_sha256",
         "start_ordinal",
     },
-    ("riverhog", "list_collection_upload_session_files"): {"page", "per_page"},
-    ("riverhog", "list_collection_upload_session_tags"): {"page", "per_page"},
-    ("riverhog", "list_collection_archive_copies"): {"page", "per_page"},
-    ("riverhog", "list_collection_provenance_journal_agents"): {"page", "per_page"},
-    ("riverhog", "get_collection_tags"): {"page", "per_page"},
+    ("riverhog", "list_collection_upload_session_files"): {"page_size", "page_token"},
+    ("riverhog", "list_collection_upload_session_tags"): {"page_size", "page_token"},
+    ("riverhog", "list_collection_archive_copies"): {"page_size", "page_token"},
+    ("riverhog", "list_collection_provenance_journal_agents"): {
+        "page_size",
+        "page_token",
+    },
+    ("riverhog", "get_collection_tags"): {"page_size", "page_token"},
     ("riverhog", "list_lifecycle_events"): {"after", "limit"},
     ("riverhog", "plan_collection_deletion"): {"retirement_claim_id"},
     ("riverhog", "resourcesync_change_list"): {"after"},
-    ("riverhog", "trace_collection_file_provenance"): {"page", "per_page"},
+    ("riverhog", "trace_collection_file_provenance"): {"page_size", "page_token"},
     ("stove0", "get_artifact_selection"): {"continuation"},
     ("stove0", "get_recipe"): {"revision"},
     ("stove0", "get_target_execution_inputs"): {"continuation"},
@@ -496,15 +532,18 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(CollectionSort)):
         for order in ("asc", "desc"):
-            statement = _collection_list_statement(
-                q=None,
-                tag=None,
-                encryption_format=None,
-                passphrase_id=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _collection_list_statement(
+                    q=None,
+                    tag=None,
+                    encryption_format=None,
+                    passphrase_id=None,
+                    sort=sort,
+                    order=order,
+                    principal=None,
+                ),
                 order=order,
-                principal=None,
-            )[4]
+            )
             cases.append(
                 _PlanCase(
                     f"collections.sort.{sort}.{order}",
@@ -526,17 +565,20 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             "ix_collections_passphrase_id",
         ),
     ):
-        statement = _collection_list_statement(
-            q=str(kwargs["q"]) if "q" in kwargs else None,
-            tag=str(kwargs["tag"]) if "tag" in kwargs else None,
-            encryption_format=(
-                str(kwargs["encryption_format"]) if "encryption_format" in kwargs else None
+        statement = _riverhog_plan_statement(
+            _collection_list_statement(
+                q=str(kwargs["q"]) if "q" in kwargs else None,
+                tag=str(kwargs["tag"]) if "tag" in kwargs else None,
+                encryption_format=(
+                    str(kwargs["encryption_format"]) if "encryption_format" in kwargs else None
+                ),
+                passphrase_id=(str(kwargs["passphrase_id"]) if "passphrase_id" in kwargs else None),
+                sort="id",
+                order="asc",
+                principal=None,
             ),
-            passphrase_id=(str(kwargs["passphrase_id"]) if "passphrase_id" in kwargs else None),
-            sort="id",
             order="asc",
-            principal=None,
-        )[4]
+        )
         cases.append(_PlanCase(f"collections.filter.{name}", statement, frozenset({index})))
 
     search_indexes = {
@@ -547,13 +589,16 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(SearchSort)):
         for order in ("asc", "desc"):
-            statement = _search_statement(
-                q=None,
-                collection=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _search_statement(
+                    q=None,
+                    collection=None,
+                    sort=sort,
+                    order=order,
+                    principal=None,
+                ),
                 order=order,
-                principal=None,
-            )[3]
+            )
             cases.append(
                 _PlanCase(
                     f"search.sort.{sort}.{order}",
@@ -565,24 +610,30 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             _PlanCase(
                 "search.filter.q",
-                _search_statement(
-                    q="file-065536",
-                    collection=None,
-                    sort="file_ref",
+                _riverhog_plan_statement(
+                    _search_statement(
+                        q="file-065536",
+                        collection=None,
+                        sort="file_ref",
+                        order="asc",
+                        principal=None,
+                    ),
                     order="asc",
-                    principal=None,
-                )[3],
+                ),
                 frozenset({"ix_collection_files_search_trgm"}),
             ),
             _PlanCase(
                 "search.filter.collection",
-                _search_statement(
-                    q=None,
-                    collection=1,
-                    sort="file_ref",
+                _riverhog_plan_statement(
+                    _search_statement(
+                        q=None,
+                        collection=1,
+                        sort="file_ref",
+                        order="asc",
+                        principal=None,
+                    ),
                     order="asc",
-                    principal=None,
-                )[3],
+                ),
                 frozenset({"ix_collection_files_collection_path"}),
             ),
         )
@@ -595,12 +646,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(TagSort)):
         for order in ("asc", "desc"):
-            statement = _tag_list_statements(
-                q=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _tag_list_statement(
+                    q=None,
+                    sort=sort,
+                    order=order,
+                    principal=_READER,
+                ),
                 order=order,
-                principal=_READER,
-            )[2]
+            )
             cases.append(
                 _PlanCase(
                     f"tags.sort.{sort}.{order}",
@@ -611,7 +665,10 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     cases.append(
         _PlanCase(
             "tags.filter.q",
-            _tag_list_statements(q="065536", sort="id", order="asc", principal=_READER)[2],
+            _riverhog_plan_statement(
+                _tag_list_statement(q="065536", sort="id", order="asc", principal=_READER),
+                order="asc",
+            ),
             frozenset({"ix_tags_id_trgm"}),
         )
     )
@@ -625,13 +682,16 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(CollectionUploadSort)):
         for order in ("asc", "desc"):
-            statement = _upload_list_statement(
-                q=None,
-                tag=None,
-                state=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _upload_list_statement(
+                    q=None,
+                    tag=None,
+                    state=None,
+                    sort=sort,
+                    order=order,
+                    principal=_READER,
+                ),
                 order=order,
-                principal=_READER,
             )
             cases.append(
                 _PlanCase(
@@ -645,13 +705,16 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         ("tag", {"tag": "tag-004096"}, "ix_collection_upload_tags_tag"),
         ("state", {"state": "open"}, "ix_collection_uploads_state"),
     ):
-        statement = _upload_list_statement(
-            q=str(kwargs["q"]) if "q" in kwargs else None,
-            tag=str(kwargs["tag"]) if "tag" in kwargs else None,
-            state=str(kwargs["state"]) if "state" in kwargs else None,
-            sort="id",
+        statement = _riverhog_plan_statement(
+            _upload_list_statement(
+                q=str(kwargs["q"]) if "q" in kwargs else None,
+                tag=str(kwargs["tag"]) if "tag" in kwargs else None,
+                state=str(kwargs["state"]) if "state" in kwargs else None,
+                sort="id",
+                order="asc",
+                principal=_READER,
+            ),
             order="asc",
-            principal=_READER,
         )
         cases.append(_PlanCase(f"uploads.filter.{name}", statement, frozenset({index})))
 
@@ -662,12 +725,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(ProvenanceSort)):
         for order in ("asc", "desc"):
-            statement = _provenance_file_statement(
-                collection_id=1,
-                principal=_READER,
-                q=None,
-                status=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _provenance_file_statement(
+                    collection_id=1,
+                    principal=_READER,
+                    q=None,
+                    status=None,
+                    sort=sort,
+                    order=order,
+                ),
                 order=order,
             )
             cases.append(
@@ -681,24 +747,30 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             _PlanCase(
                 "provenance.filter.q",
-                _provenance_file_statement(
-                    collection_id=1,
-                    principal=_READER,
-                    q="member-297ce0b3c836ae307023d7c2c3a7b1ec",
-                    status=None,
-                    sort="path",
+                _riverhog_plan_statement(
+                    _provenance_file_statement(
+                        collection_id=1,
+                        principal=_READER,
+                        q="member-297ce0b3c836ae307023d7c2c3a7b1ec",
+                        status=None,
+                        sort="path",
+                        order="asc",
+                    ),
                     order="asc",
                 ),
                 frozenset({"ix_collection_files_path_search_trgm"}),
             ),
             _PlanCase(
                 "provenance.filter.status",
-                _provenance_file_statement(
-                    collection_id=1,
-                    principal=_READER,
-                    q=None,
-                    status="omitted",
-                    sort="path",
+                _riverhog_plan_statement(
+                    _provenance_file_statement(
+                        collection_id=1,
+                        principal=_READER,
+                        q=None,
+                        status="omitted",
+                        sort="path",
+                        order="asc",
+                    ),
                     order="asc",
                 ),
                 frozenset({"ix_collection_files_collection_provenance"}),
@@ -715,13 +787,16 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(ArchiveCopySort)):
         for order in ("asc", "desc"):
-            statement = _archive_copy_list_statement(
-                q=None,
-                state=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _archive_copy_list_statement(
+                    q=None,
+                    state=None,
+                    sort=sort,
+                    order=order,
+                    principal=None,
+                ),
                 order=order,
-                principal=None,
-            )[3]
+            )
             cases.append(
                 _PlanCase(
                     f"archive-copies.sort.{sort}.{order}",
@@ -733,24 +808,30 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             _PlanCase(
                 "archive-copies.filter.q",
-                _archive_copy_list_statement(
-                    q="65536",
-                    state=None,
-                    sort="collection_id",
+                _riverhog_plan_statement(
+                    _archive_copy_list_statement(
+                        q="65536",
+                        state=None,
+                        sort="collection_id",
+                        order="asc",
+                        principal=None,
+                    ),
                     order="asc",
-                    principal=None,
-                )[3],
+                ),
                 frozenset({"ix_archive_copy_jobs_search_trgm"}),
             ),
             _PlanCase(
                 "archive-copies.filter.state",
-                _archive_copy_list_statement(
-                    q=None,
-                    state="requested",
-                    sort="collection_id",
+                _riverhog_plan_statement(
+                    _archive_copy_list_statement(
+                        q=None,
+                        state="requested",
+                        sort="collection_id",
+                        order="asc",
+                        principal=None,
+                    ),
                     order="asc",
-                    principal=None,
-                )[3],
+                ),
                 frozenset({"ix_archive_copy_jobs_state"}),
             ),
         )
@@ -766,21 +847,26 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(RetrievalCacheSort)):
         for order in ("asc", "desc"):
-            statement = _cache_list_statement(
-                q=None,
-                tag=None,
-                collection_id=None,
-                source_store=None,
-                cache_store=None,
-                state=None,
-                protection=None,
-                expires_before=None,
-                expires_after=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _cache_list_statement(
+                    q=None,
+                    tag=None,
+                    collection_id=None,
+                    source_store=None,
+                    cache_store=None,
+                    state=None,
+                    protection=None,
+                    expires_before=None,
+                    expires_after=None,
+                    sort=sort,
+                    order=order,
+                    principal=None,
+                    now=_NOW,
+                ),
                 order=order,
-                principal=None,
-                now=_NOW,
-            )[0]
+                statement_index=0,
+                key_columns_index=1,
+            )
             if sort == "protected_until":
                 cases.append(
                     _PlanCase(
@@ -823,7 +909,10 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             "cache_store",
             {"cache_store": "local"},
-            "ix_retrieval_cache_objects_store_cleanup",
+            (
+                "ix_retrieval_cache_objects_store_cleanup",
+                "ix_retrieval_cache_objects_collection",
+            ),
             None,
         ),
         ("state", {"state": "delete_pending"}, "ix_retrieval_cache_objects_cleanup", None),
@@ -843,21 +932,28 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         ),
     )
     for name, kwargs, index, node in cache_filters:
-        statement = _cache_list_statement(
-            q=str(kwargs["q"]) if "q" in kwargs else None,
-            tag=str(kwargs["tag"]) if "tag" in kwargs else None,
-            collection_id=(int(kwargs["collection_id"]) if "collection_id" in kwargs else None),
-            source_store=(str(kwargs["source_store"]) if "source_store" in kwargs else None),
-            cache_store=(str(kwargs["cache_store"]) if "cache_store" in kwargs else None),
-            state=str(kwargs["state"]) if "state" in kwargs else None,
-            protection=str(kwargs["protection"]) if "protection" in kwargs else None,
-            expires_before=(str(kwargs["expires_before"]) if "expires_before" in kwargs else None),
-            expires_after=str(kwargs["expires_after"]) if "expires_after" in kwargs else None,
-            sort="collection_id",
+        statement = _riverhog_plan_statement(
+            _cache_list_statement(
+                q=str(kwargs["q"]) if "q" in kwargs else None,
+                tag=str(kwargs["tag"]) if "tag" in kwargs else None,
+                collection_id=(int(kwargs["collection_id"]) if "collection_id" in kwargs else None),
+                source_store=(str(kwargs["source_store"]) if "source_store" in kwargs else None),
+                cache_store=(str(kwargs["cache_store"]) if "cache_store" in kwargs else None),
+                state=str(kwargs["state"]) if "state" in kwargs else None,
+                protection=(str(kwargs["protection"]) if "protection" in kwargs else None),
+                expires_before=(
+                    str(kwargs["expires_before"]) if "expires_before" in kwargs else None
+                ),
+                expires_after=(str(kwargs["expires_after"]) if "expires_after" in kwargs else None),
+                sort="collection_id",
+                order="asc",
+                principal=None,
+                now=_NOW,
+            ),
             order="asc",
-            principal=None,
-            now=_NOW,
-        )[0]
+            statement_index=0,
+            key_columns_index=1,
+        )
         cases.append(
             _PlanCase(
                 f"retrieval-cache.filter.{name}",
@@ -883,12 +979,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(ProcessingClaimSort)):
         for order in ("asc", "desc"):
-            statement = _claim_list_statement(
-                state=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _claim_list_statement(
+                    state=None,
+                    sort=sort,
+                    order=order,
+                    principal=_READER,
+                ),
                 order=order,
-                principal=_READER,
-            )[1]
+            )
             cases.append(
                 _PlanCase(
                     f"processing-claims.sort.{sort}.{order}",
@@ -899,12 +998,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     cases.append(
         _PlanCase(
             "processing-claims.filter.state",
-            _claim_list_statement(
-                state="active",
-                sort="updated_at",
+            _riverhog_plan_statement(
+                _claim_list_statement(
+                    state="active",
+                    sort="updated_at",
+                    order="asc",
+                    principal=_READER,
+                ),
                 order="asc",
-                principal=_READER,
-            )[1],
+            ),
             frozenset(
                 {
                     "ix_collection_processing_claims_owner_state",
@@ -922,14 +1024,17 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(ApplicationKeySort)):
         for order in ("asc", "desc"):
-            statement = _key_list_statement(
-                app="app-000",
-                q=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _key_list_statement(
+                    app="app-000",
+                    q=None,
+                    sort=sort,
+                    order=order,
+                    active=None,
+                    now=_NOW,
+                ),
                 order=order,
-                active=None,
-                now=_NOW,
-            )[3]
+            )
             cases.append(
                 _PlanCase(
                     f"application-keys.sort.{sort}.{order}",
@@ -945,26 +1050,32 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             _PlanCase(
                 "application-keys.filter.q",
-                _key_list_statement(
-                    app="app-000",
-                    q="297ce0b3c836ae30",
-                    sort="id",
+                _riverhog_plan_statement(
+                    _key_list_statement(
+                        app="app-000",
+                        q="297ce0b3c836ae30",
+                        sort="id",
+                        order="asc",
+                        active=None,
+                        now=_NOW,
+                    ),
                     order="asc",
-                    active=None,
-                    now=_NOW,
-                )[3],
+                ),
                 frozenset({"ix_app_keys_id_trgm"}),
             ),
             _PlanCase(
                 "application-keys.filter.active",
-                _key_list_statement(
-                    app="app-000",
-                    q=None,
-                    sort="id",
+                _riverhog_plan_statement(
+                    _key_list_statement(
+                        app="app-000",
+                        q=None,
+                        sort="id",
+                        order="asc",
+                        active=True,
+                        now=_NOW,
+                    ),
                     order="asc",
-                    active=True,
-                    now=_NOW,
-                )[3],
+                ),
                 frozenset({"ix_app_keys_app_active", "ix_app_keys_active"}),
             ),
         )
@@ -979,17 +1090,20 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(ApplicationAccessSort)):
         for order in ("asc", "desc"):
-            statement = _access_list_statement(
-                q=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _access_list_statement(
+                    q=None,
+                    sort=sort,
+                    order=order,
+                    app=None,
+                    key_id=None,
+                    permission=None,
+                    resource=None,
+                    active=None,
+                    now=_NOW,
+                ),
                 order=order,
-                app=None,
-                key_id=None,
-                permission=None,
-                resource=None,
-                active=None,
-                now=_NOW,
-            )[6]
+            )
             cases.append(
                 _PlanCase(
                     f"application-access.sort.{sort}.{order}",
@@ -1021,28 +1135,34 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         ),
         ("active", {"active": True}, frozenset({"ix_app_keys_active"})),
     ):
-        statement = _access_list_statement(
-            q=str(kwargs["q"]) if "q" in kwargs else None,
-            sort="key_id",
+        statement = _riverhog_plan_statement(
+            _access_list_statement(
+                q=str(kwargs["q"]) if "q" in kwargs else None,
+                sort="key_id",
+                order="asc",
+                app=str(kwargs["app"]) if "app" in kwargs else None,
+                key_id=str(kwargs["key_id"]) if "key_id" in kwargs else None,
+                permission=(str(kwargs["permission"]) if "permission" in kwargs else None),
+                resource=str(kwargs["resource"]) if "resource" in kwargs else None,
+                active=bool(kwargs["active"]) if "active" in kwargs else None,
+                now=_NOW,
+            ),
             order="asc",
-            app=str(kwargs["app"]) if "app" in kwargs else None,
-            key_id=str(kwargs["key_id"]) if "key_id" in kwargs else None,
-            permission=str(kwargs["permission"]) if "permission" in kwargs else None,
-            resource=str(kwargs["resource"]) if "resource" in kwargs else None,
-            active=bool(kwargs["active"]) if "active" in kwargs else None,
-            now=_NOW,
-        )[6]
+        )
         cases.append(_PlanCase(f"application-access.filter.{name}", statement, indexes))
 
     for sort in sorted(closed_literal_values(ApplicationSort)):
         for order in ("asc", "desc"):
-            statement = _app_list_statement(
-                q=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _app_list_statement(
+                    q=None,
+                    sort=sort,
+                    order=order,
+                    active=None,
+                    now=_NOW,
+                ),
                 order=order,
-                active=None,
-                now=_NOW,
-            )[2]
+            )
             cases.append(
                 _PlanCase(
                     f"applications.sort.{sort}.{order}",
@@ -1054,24 +1174,30 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             _PlanCase(
                 "applications.filter.q",
-                _app_list_statement(
-                    q="app-065536",
-                    sort="name",
+                _riverhog_plan_statement(
+                    _app_list_statement(
+                        q="app-065536",
+                        sort="name",
+                        order="asc",
+                        active=None,
+                        now=_NOW,
+                    ),
                     order="asc",
-                    active=None,
-                    now=_NOW,
-                )[2],
+                ),
                 frozenset({"ix_app_keys_app_trgm"}),
             ),
             _PlanCase(
                 "applications.filter.active",
-                _app_list_statement(
-                    q=None,
-                    sort="name",
+                _riverhog_plan_statement(
+                    _app_list_statement(
+                        q=None,
+                        sort="name",
+                        order="asc",
+                        active=True,
+                        now=_NOW,
+                    ),
                     order="asc",
-                    active=True,
-                    now=_NOW,
-                )[2],
+                ),
                 expected_nodes=frozenset({"Aggregate"}),
             ),
         )
@@ -1080,14 +1206,17 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     qualification_now = parse_utc_timestamp(_NOW)
     for sort in sorted(closed_literal_values(DownloadQuotaSort)):
         for order in ("asc", "desc"):
-            statement = _key_quota_statements(
-                now=qualification_now,
-                q=None,
-                sort=sort,
+            statement = _riverhog_plan_statement(
+                _key_quota_statements(
+                    now=qualification_now,
+                    q=None,
+                    sort=sort,
+                    order=order,
+                    app=None,
+                    active=None,
+                ),
                 order=order,
-                app=None,
-                active=None,
-            )[5]
+            )
             cases.append(
                 _PlanCase(
                     f"download-quotas.sort.{sort}.{order}",
@@ -1099,38 +1228,47 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             _PlanCase(
                 "download-quotas.filter.q",
-                _key_quota_statements(
-                    now=qualification_now,
-                    q="297ce0b3c836ae30",
-                    sort="key_id",
+                _riverhog_plan_statement(
+                    _key_quota_statements(
+                        now=qualification_now,
+                        q="297ce0b3c836ae30",
+                        sort="key_id",
+                        order="asc",
+                        app=None,
+                        active=None,
+                    ),
                     order="asc",
-                    app=None,
-                    active=None,
-                )[5],
+                ),
                 frozenset({"ix_app_keys_search_trgm"}),
             ),
             _PlanCase(
                 "download-quotas.filter.app",
-                _key_quota_statements(
-                    now=qualification_now,
-                    q=None,
-                    sort="key_id",
+                _riverhog_plan_statement(
+                    _key_quota_statements(
+                        now=qualification_now,
+                        q=None,
+                        sort="key_id",
+                        order="asc",
+                        app="app-000",
+                        active=None,
+                    ),
                     order="asc",
-                    app="app-000",
-                    active=None,
-                )[5],
+                ),
                 frozenset({"ix_app_keys_app", "ix_app_keys_app_trgm"}),
             ),
             _PlanCase(
                 "download-quotas.filter.active",
-                _key_quota_statements(
-                    now=qualification_now,
-                    q=None,
-                    sort="key_id",
+                _riverhog_plan_statement(
+                    _key_quota_statements(
+                        now=qualification_now,
+                        q=None,
+                        sort="key_id",
+                        order="asc",
+                        app=None,
+                        active=True,
+                    ),
                     order="asc",
-                    app=None,
-                    active=True,
-                )[5],
+                ),
                 expected_nodes=frozenset({"Aggregate"}),
             ),
         )
@@ -1143,12 +1281,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(WorkSort)):
         for order in ("asc", "desc"):
-            statement = _work_list_statement(
-                phase=None,
-                query=None,
-                sort=sort,
+            statement = _stove0_plan_statement(
+                _work_list_statement(
+                    phase=None,
+                    query=None,
+                    sort=sort,
+                    order=order,
+                ),
                 order=order,
-            )[1]
+            )
             cases.append(
                 _PlanCase(
                     f"stove0-work.sort.{sort}.{order}",
@@ -1161,12 +1302,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             _PlanCase(
                 "stove0-work.filter.q",
-                _work_list_statement(
-                    phase=None,
-                    query="19c611b455303958a1ca8f4c6c382fd4",
-                    sort="work_id",
+                _stove0_plan_statement(
+                    _work_list_statement(
+                        phase=None,
+                        query="19c611b455303958a1ca8f4c6c382fd4",
+                        sort="work_id",
+                        order="asc",
+                    ),
                     order="asc",
-                )[1],
+                ),
                 frozenset(
                     {
                         "ix_stove0_work_records_id_trgm",
@@ -1177,12 +1321,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             ),
             _PlanCase(
                 "stove0-work.filter.phase",
-                _work_list_statement(
-                    phase="eligible",
-                    query=None,
-                    sort="work_id",
+                _stove0_plan_statement(
+                    _work_list_statement(
+                        phase="eligible",
+                        query=None,
+                        sort="work_id",
+                        order="asc",
+                    ),
                     order="asc",
-                )[1],
+                ),
                 frozenset({"ix_stove0_work_records_phase_work_id"}),
                 database="stove0",
             ),
@@ -1196,12 +1343,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
     }
     for sort in sorted(closed_literal_values(EvaluationSort)):
         for order in ("asc", "desc"):
-            statement = _evaluation_list_statement(
-                phase=None,
-                query=None,
-                sort=sort,
+            statement = _stove0_plan_statement(
+                _evaluation_list_statement(
+                    phase=None,
+                    query=None,
+                    sort=sort,
+                    order=order,
+                ),
                 order=order,
-            )[1]
+            )
             cases.append(
                 _PlanCase(
                     f"stove0-evaluations.sort.{sort}.{order}",
@@ -1214,12 +1364,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
         (
             _PlanCase(
                 "stove0-evaluations.filter.q",
-                _evaluation_list_statement(
-                    phase=None,
-                    query="bccb92b0182c48d41e4dbf870ccd6009",
-                    sort="evaluation_id",
+                _stove0_plan_statement(
+                    _evaluation_list_statement(
+                        phase=None,
+                        query="bccb92b0182c48d41e4dbf870ccd6009",
+                        sort="evaluation_id",
+                        order="asc",
+                    ),
                     order="asc",
-                )[1],
+                ),
                 frozenset(
                     {
                         "ix_stove0_evaluation_records_id_trgm",
@@ -1230,12 +1383,15 @@ def _plan_cases() -> tuple[_PlanCase, ...]:
             ),
             _PlanCase(
                 "stove0-evaluations.filter.phase",
-                _evaluation_list_statement(
-                    phase="planning",
-                    query=None,
-                    sort="evaluation_id",
+                _stove0_plan_statement(
+                    _evaluation_list_statement(
+                        phase="planning",
+                        query=None,
+                        sort="evaluation_id",
+                        order="asc",
+                    ),
                     order="asc",
-                )[1],
+                ),
                 frozenset({"ix_stove0_evaluation_records_phase_id"}),
                 database="stove0",
             ),
@@ -1382,8 +1538,8 @@ def test_every_repo_query_selector_is_classified_and_every_database_selector_is_
     for key, prefix in _DATABASE_PLAN_OPERATIONS.items():
         selectors = observed[key]
         expected_selectors = _DATABASE_FILTER_SELECTORS[prefix] | {"order", "sort"}
-        if "page" in selectors or "per_page" in selectors:
-            expected_selectors |= {"page", "per_page"}
+        if "page_size" in selectors or "page_token" in selectors:
+            expected_selectors |= {"page_size", "page_token"}
         assert selectors == expected_selectors, key
         representatives.setdefault(prefix, key)
 

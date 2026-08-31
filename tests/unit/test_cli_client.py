@@ -169,8 +169,7 @@ def test_search_uses_current_collection_filters() -> None:
             "/v1/search",
             {
                 "params": {
-                    "page": 1,
-                    "per_page": 25,
+                    "page_size": 25,
                     "sort": "path",
                     "order": "desc",
                     "q": "tax",
@@ -535,8 +534,7 @@ def test_retrieval_cache_reads_use_list_and_composite_identity_routes() -> None:
             "/v1/retrieval-cache/objects",
             {
                 "params": {
-                    "page": 1,
-                    "per_page": 25,
+                    "page_size": 25,
                     "sort": "stored_bytes",
                     "order": "asc",
                     "q": "pack",
@@ -704,8 +702,7 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
             "/v1/apps",
             {
                 "params": {
-                    "page": 1,
-                    "per_page": 25,
+                    "page_size": 25,
                     "sort": "name",
                     "order": "asc",
                     "q": "local",
@@ -731,8 +728,7 @@ def test_client_manages_application_keys_with_explicit_access() -> None:
             "/v1/apps/local/keys",
             {
                 "params": {
-                    "page": 1,
-                    "per_page": 25,
+                    "page_size": 25,
                     "sort": "created_at",
                     "order": "desc",
                     "active": "false",
@@ -760,8 +756,7 @@ def test_client_manages_explicit_tags() -> None:
             "/v1/tags",
             {
                 "params": {
-                    "page": 1,
-                    "per_page": 25,
+                    "page_size": 25,
                     "sort": "id",
                     "order": "asc",
                     "q": "photo",
@@ -820,8 +815,7 @@ def test_provenance_client_methods_use_the_collection_scoped_contract() -> None:
             "/v1/collections/42/provenance/files",
             {
                 "params": {
-                    "page": 1,
-                    "per_page": 25,
+                    "page_size": 25,
                     "sort": "bytes",
                     "order": "desc",
                     "q": "movie",
@@ -833,7 +827,7 @@ def test_provenance_client_methods_use_the_collection_scoped_contract() -> None:
         (
             "GET",
             "/v1/collections/42/provenance/trace/media/movie.mov",
-            {"params": {"page": 1, "per_page": 25}},
+            {"params": {"page_size": 25}},
         ),
         ("POST", "/v1/collections/42/provenance/verification", {}),
         ("GET", "/v1/collections/42/provenance/verification", {}),

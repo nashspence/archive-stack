@@ -132,7 +132,7 @@ def test_provider_cache_proof_binds_named_placement_and_exact_accounting() -> No
 
         def list_retrieval_cache_objects(self, **kwargs: object) -> dict[str, object]:
             assert kwargs["cache_store"] == "b2-cache"
-            return {"objects": [cached], "pages": 1}
+            return {"objects": [cached], "page_size": 100, "next_page_token": None}
 
         def get_retrieval_cache_object(
             self,
@@ -1184,8 +1184,8 @@ def test_official_upload_client_writes_directly_and_resumes_after_interruption(
         def list_collection_upload_sessions(self, **_kwargs):  # type: ignore[no-untyped-def]
             return {
                 "uploads": [{"collection_id": 42, "ingest_source": resolved_root}],
-                "page": 1,
-                "pages": 1,
+                "page_size": 100,
+                "next_page_token": None,
                 "total": 1,
             }
 
@@ -1197,8 +1197,8 @@ def test_official_upload_client_writes_directly_and_resumes_after_interruption(
         ) -> dict[str, object]:
             return {
                 "files": [{"path": "file.txt"}],
-                "page": 1,
-                "pages": 1,
+                "page_size": 100,
+                "next_page_token": None,
                 "total": 1,
             }
 

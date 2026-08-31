@@ -27,6 +27,7 @@ DEFAULT_STORAGE_ADAPTER_MAX_CONNECTIONS = 32
 DEFAULT_STORAGE_ADAPTER_TIMEOUT_SECONDS = 300.0
 DEFAULT_ARCHIVE_SCRYPT_WORK_FACTOR = 18
 DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_BROWSE_TOKEN_SIGNING_KEY = "riverhog-development-browse-token-signing-key-v1"
 ARCHIVE_STORE_ENVIRONMENT_TEMPLATE = "RIVERHOG_ARCHIVE_STORE_{store}_{setting}"
 ARCHIVE_STORE_ENVIRONMENT_SETTINGS = (
     "ADAPTER_URL",
@@ -190,8 +191,14 @@ class RuntimeConfig:
     public_base_url: str | None = None
     event_source: str = "urn:riverhog"
     event_context_retention: timedelta = field(default_factory=lambda: timedelta(days=30))
+    browse_token_signing_key: str = DEFAULT_BROWSE_TOKEN_SIGNING_KEY
+    browse_token_lifetime: timedelta = field(default_factory=lambda: timedelta(hours=24))
 
     def __post_init__(self) -> None:
+        if len(self.browse_token_signing_key.encode("utf-8")) < 32:
+            raise ValueError("RIVERHOG_BROWSE_TOKEN_SIGNING_KEY must contain at least 32 bytes")
+        if self.browse_token_lifetime.total_seconds() < 1:
+            raise ValueError("RIVERHOG_BROWSE_TOKEN_LIFETIME must be positive")
         if not self.event_source.strip():
             raise ValueError("RIVERHOG_EVENT_SOURCE must not be blank")
         if self.event_context_retention.total_seconds() <= 0:
@@ -640,6 +647,11 @@ def load_runtime_config() -> RuntimeConfig:
         event_context_retention=parse_duration(
             os.getenv("RIVERHOG_EVENT_CONTEXT_RETENTION", "30d")
         ),
+        browse_token_signing_key=os.getenv(
+            "RIVERHOG_BROWSE_TOKEN_SIGNING_KEY",
+            DEFAULT_BROWSE_TOKEN_SIGNING_KEY,
+        ).strip(),
+        browse_token_lifetime=parse_duration(os.getenv("RIVERHOG_BROWSE_TOKEN_LIFETIME", "24h")),
         database_url=database_url,
         log_level=log_level,
         archive_write_store=archive_write_store,

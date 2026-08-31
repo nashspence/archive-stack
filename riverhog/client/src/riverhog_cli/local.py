@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any, cast
 
 import typer
+from http_api_contracts import BrowseTokenCodec, BrowseTokenError
 from riverhog_api_client.client import ApiClient, RestorePolicy
 from riverhog_api_client.downloads import (
     RetrievalDownload,
@@ -42,6 +43,7 @@ local_app.add_typer(local_state_app, name="state")
 local_app.add_typer(local_provenance_observer_app, name="provenance-observer")
 
 LOCAL_LIST_PAGE_SIZE_MAX = 100
+LOCAL_LIST_TOKEN_LIFETIME_SECONDS = 24 * 60 * 60
 LOCAL_LIST_SORT_FIELDS = {
     "bytes": "bytes",
     "collection_id": "collection_id",
@@ -353,11 +355,15 @@ def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: i
         int(summary["bytes"]),
     ):
         raise InvalidState("local collection inventory is incomplete")
-    page = 1
+    page_token: str | None = None
     authority: tuple[int, str, int] | None = None
     tags: list[dict[str, Any]] = []
     while True:
-        payload = api.get_collection_tags(collection_id, page=page, per_page=100)
+        payload = api.get_collection_tags(
+            collection_id,
+            page_size=100,
+            page_token=page_token,
+        )
         current = (
             int(payload.get("metadata_revision") or 0),
             str(payload.get("inventory_identity") or ""),
@@ -371,9 +377,12 @@ def _refresh_collection(db: sqlite3.Connection, api: ApiClient, collection_id: i
         if not isinstance(raw_tags, list):
             raise InvalidState("Riverhog returned invalid collection tags")
         tags.extend({"tag": str(tag)} for tag in raw_tags)
-        if page >= int(payload.get("pages") or 0):
+        next_page_token = payload.get("next_page_token")
+        if next_page_token is None:
             break
-        page += 1
+        if not isinstance(next_page_token, str) or not next_page_token:
+            raise InvalidState("Riverhog returned an invalid collection-tag page token")
+        page_token = next_page_token
     if authority is None or len(tags) != authority[2]:
         raise InvalidState("collection tag traversal is incomplete")
     _replace_local_tags(db, collection_id, iter(tags))
@@ -896,11 +905,11 @@ def remove_collection(
 
 @local_app.command("list")
 def list_collections(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[
+    page_size: Annotated[
         int,
-        typer.Option("--per-page", min=1, max=LOCAL_LIST_PAGE_SIZE_MAX),
+        typer.Option("--page-size", min=1, max=LOCAL_LIST_PAGE_SIZE_MAX),
     ] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "collection_id",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
@@ -923,10 +932,33 @@ def list_collections(
         raise typer.BadParameter("--order must be asc or desc")
 
     target = _target()
+    normalized_query = (query or "").strip() or None
+    selectors = {
+        "order": normalized_order,
+        "query": normalized_query,
+        "sort": sort,
+    }
+    database = _database(target)
+    token_codec = BrowseTokenCodec(
+        hashlib.sha256(
+            b"riverhog-local-list-token/v1\x00" + str(database).encode("utf-8")
+        ).digest(),
+        lifetime_seconds=LOCAL_LIST_TOKEN_LIFETIME_SECONDS,
+    )
+    try:
+        position = token_codec.verify(
+            page_token,
+            operation="local.list_collections",
+            principal=str(database),
+            selectors=selectors,
+        )
+    except BrowseTokenError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--page-token") from exc
+    if position is not None and len(position) != 2:
+        raise typer.BadParameter("page token position is invalid", param_hint="--page-token")
     with closing(_connect(target)) as db:
         filters = ""
         params: list[object] = []
-        normalized_query = (query or "").strip() or None
         if normalized_query:
             filters = (
                 "WHERE CAST(collection_id AS TEXT) LIKE ? "
@@ -956,28 +988,44 @@ def list_collections(
                 {filters}
                 """
         order_column = LOCAL_LIST_SORT_FIELDS[sort]
-        total = int(
-            db.execute(
-                f"SELECT COUNT(*) FROM ({base_query})",
-                params,
-            ).fetchone()[0]
-        )
-        offset = (page - 1) * per_page
+        order_column = LOCAL_LIST_SORT_FIELDS[sort]
+        continuation = ""
+        if position is not None:
+            sort_value, collection_id = position
+            if not isinstance(collection_id, int) or isinstance(collection_id, bool):
+                raise typer.BadParameter(
+                    "page token position is invalid", param_hint="--page-token"
+                )
+            comparison = ">" if normalized_order == "asc" else "<"
+            continuation = (
+                f"WHERE ({order_column} {comparison} ? "
+                f"OR ({order_column} = ? AND collection_id > ?))"
+            )
+            params.extend((sort_value, sort_value, collection_id))
         rows = db.execute(
             f"""
-            {base_query}
+            SELECT * FROM ({base_query})
+            {continuation}
             ORDER BY {order_column} {normalized_order.upper()}, collection_id ASC
-            LIMIT ? OFFSET ?
+            LIMIT ?
             """,
-            (*params, per_page, offset),
+            (*params, page_size + 1),
+        ).fetchall()
+        has_more = len(rows) > page_size
+        page_rows = rows[:page_size]
+        collections = [_local_collection_list_item(row) for row in page_rows]
+    next_page_token = None
+    if has_more and page_rows:
+        last = page_rows[-1]
+        next_page_token = token_codec.issue(
+            operation="local.list_collections",
+            principal=str(database),
+            selectors=selectors,
+            position=(last[order_column], int(last["collection_id"])),
         )
-        collections = [_local_collection_list_item(row) for row in rows]
-    pages = (total + per_page - 1) // per_page if total else 0
     payload = {
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "pages": pages,
+        "page_size": page_size,
+        "next_page_token": next_page_token,
         "sort": sort,
         "order": normalized_order,
         "query": normalized_query,

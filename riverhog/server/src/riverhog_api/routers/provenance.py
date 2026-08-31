@@ -5,7 +5,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, Query, Request, Response
 from http_api_contracts import (
-    bounded_list_operation,
+    mutable_browse_operation,
     operation_interface,
     parse_quoted_sha256_identity,
 )
@@ -16,6 +16,7 @@ from riverhog_provenance_contracts import ProvenanceJournalId
 from starlette.responses import StreamingResponse
 
 from riverhog_api.auth import ProvenanceExporter, ProvenanceReader
+from riverhog_api.browse import canonical_selectors, page_payload, page_position
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.provenance import (
     CollectionFileProvenanceDetailOut,
@@ -71,28 +72,44 @@ _PROVENANCE_JOURNAL_RESPONSE: dict[int | str, dict[str, Any]] = {
 @router.get(
     "/collections/{collection_id}/provenance/files",
     response_model=ListCollectionFileProvenanceResponse,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_collection_provenance(
     collection_id: CollectionIdParameter,
     principal: ProvenanceReader,
     container: ContainerDep,
-    page: Annotated[int, Query(ge=1)] = 1,
-    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
+    page_token: str | None = None,
     q: str | None = None,
     status: ProvenanceStatus | None = None,
     sort: ProvenanceSort = "path",
     order: SortOrder = "asc",
 ) -> dict[str, Any]:
-    return container.provenance.list_files(
-        collection_id,
-        page=page,
-        per_page=per_page,
-        q=q,
-        status=status,
-        sort=sort,
-        order=order,
+    selectors = canonical_selectors(
+        collection_id=collection_id, q=q, status=status, sort=sort, order=order
+    )
+    position = page_position(
+        container,
         principal=principal,
+        operation="list_collection_provenance",
+        page_token=page_token,
+        selectors=selectors,
+    )
+    return page_payload(
+        container.provenance.list_files(
+            collection_id,
+            page_size=page_size,
+            position=position,
+            q=q,
+            status=status,
+            sort=sort,
+            order=order,
+            principal=principal,
+        ),
+        container=container,
+        principal=principal,
+        operation="list_collection_provenance",
+        selectors=selectors,
     )
 
 
@@ -114,22 +131,36 @@ def get_collection_file_provenance(
     "/collections/{collection_id}/provenance/trace/{path:path}",
     response_model=CollectionFileProvenanceTraceOut,
     response_model_exclude_unset=True,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def trace_collection_file_provenance(
     collection_id: CollectionIdParameter,
     path: CanonicalRelPath,
     principal: ProvenanceReader,
     container: ContainerDep,
-    page: Annotated[int, Query(ge=1)] = 1,
-    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
+    page_token: str | None = None,
 ) -> dict[str, Any]:
-    return container.provenance.trace_file(
-        collection_id,
-        path,
-        page=page,
-        per_page=per_page,
+    selectors = canonical_selectors(collection_id=collection_id, path=path)
+    position = page_position(
+        container,
         principal=principal,
+        operation="trace_collection_file_provenance",
+        page_token=page_token,
+        selectors=selectors,
+    )
+    return page_payload(
+        container.provenance.trace_file(
+            collection_id,
+            path,
+            page_size=page_size,
+            position=position,
+            principal=principal,
+        ),
+        container=container,
+        principal=principal,
+        operation="trace_collection_file_provenance",
+        selectors=selectors,
     )
 
 
@@ -233,22 +264,36 @@ def _parse_range(value: str | None, total_bytes: int) -> tuple[int, int]:
 @router.get(
     "/collections/{collection_id}/provenance/journals/{journal_id}/agents",
     response_model=ListProvenanceJournalAgentsResponse,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_collection_provenance_journal_agents(
     collection_id: CollectionIdParameter,
     journal_id: ProvenanceJournalId,
     principal: ProvenanceReader,
     container: ContainerDep,
-    page: Annotated[int, Query(ge=1)] = 1,
-    per_page: Annotated[int, Query(ge=1, le=100)] = 25,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
+    page_token: str | None = None,
 ) -> dict[str, Any]:
-    return container.provenance.list_journal_agents(
-        collection_id,
-        journal_id,
-        page=page,
-        per_page=per_page,
+    selectors = canonical_selectors(collection_id=collection_id, journal_id=journal_id)
+    position = page_position(
+        container,
         principal=principal,
+        operation="list_collection_provenance_journal_agents",
+        page_token=page_token,
+        selectors=selectors,
+    )
+    return page_payload(
+        container.provenance.list_journal_agents(
+            collection_id,
+            journal_id,
+            page_size=page_size,
+            position=position,
+            principal=principal,
+        ),
+        container=container,
+        principal=principal,
+        operation="list_collection_provenance_journal_agents",
+        selectors=selectors,
     )
 
 

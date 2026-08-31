@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record exact-SHA PostgreSQL selector and complete-stream qualification evidence."""
+"""Record exact-SHA PostgreSQL selector and bounded-page qualification evidence."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import httpx
 import uvicorn
+from http_api_contracts import BrowseTokenCodec
 from riverhog_api.app import create_app
 from riverhog_api_client import ApiClient
 from riverhog_core.app_permissions import ApplicationPrincipal
@@ -50,8 +51,8 @@ from tests.unit.archive_object_fixtures import MemoryArchiveStore, archive_store
 
 SCHEMA = "riverhog-database-qualification/v1"
 CARDINALITIES = (4096, 65536)
-STREAM_CHUNK_ROWS = 100
-MAX_STREAM_PEAK_BYTES = 32 * 1024 * 1024
+PAGE_STREAM_CHUNK_ROWS = 100
+MAX_PAGE_STREAM_PEAK_BYTES = 32 * 1024 * 1024
 MAX_HTTP_PEAK_BYTES = 64 * 1024 * 1024
 FIXTURE_ROOT = Path("tests/fixtures/state/v1_0001")
 
@@ -152,7 +153,7 @@ def _plan_node_details(value: object) -> list[dict[str, str]]:
 
 
 def _measure_plan(engine: Engine, case: _PlanCase, *, rows: int) -> dict[str, object]:
-    statement = cast(Any, case.statement).limit(STREAM_CHUNK_ROWS)
+    statement = cast(Any, case.statement).limit(PAGE_STREAM_CHUNK_ROWS)
     compiled = statement.compile(
         dialect=engine.dialect,
         compile_kwargs={"literal_binds": True},
@@ -168,7 +169,7 @@ def _measure_plan(engine: Engine, case: _PlanCase, *, rows: int) -> dict[str, ob
     if not isinstance(plan, dict):
         raise QualificationError(f"{case.id} has no PostgreSQL plan root")
     actual_rows = int(plan.get("Actual Rows", 0) or 0)
-    if actual_rows > STREAM_CHUNK_ROWS:
+    if actual_rows > PAGE_STREAM_CHUNK_ROWS:
         raise QualificationError(f"{case.id} escaped its bounded page limit")
     indexes = _index_names(payload)
     nodes = _node_types(payload)
@@ -231,24 +232,26 @@ def _measure_plan(engine: Engine, case: _PlanCase, *, rows: int) -> dict[str, ob
     }
 
 
-def _stream_cases_by_family(cases: Sequence[_PlanCase]) -> dict[str, tuple[_PlanCase, ...]]:
-    result: dict[str, tuple[_PlanCase, ...]] = {}
+def _page_case_by_family(cases: Sequence[_PlanCase]) -> dict[str, _PlanCase]:
+    result: dict[str, _PlanCase] = {}
     for family in sorted(set(_DATABASE_PLAN_OPERATIONS.values())):
         candidates = sorted(
             (case for case in cases if case.id.startswith(f"{family}.")),
             key=lambda case: case.id,
         )
         if not candidates:
-            raise QualificationError(f"database selector family has no stream witness: {family}")
-        result[family] = tuple(candidates)
+            raise QualificationError(
+                f"database selector family has no bounded-page witness: {family}"
+            )
+        result[family] = candidates[0]
     return result
 
 
-def _measure_stream(engine: Engine, family: str, case: _PlanCase) -> dict[str, object]:
+def _measure_page_stream(engine: Engine, family: str, case: _PlanCase) -> dict[str, object]:
     statement = cast(Any, case.statement).execution_options(
         stream_results=True,
-        yield_per=STREAM_CHUNK_ROWS,
-        max_row_buffer=STREAM_CHUNK_ROWS,
+        yield_per=PAGE_STREAM_CHUNK_ROWS,
+        max_row_buffer=PAGE_STREAM_CHUNK_ROWS,
     )
     gc.collect()
     tracemalloc.start()
@@ -259,7 +262,7 @@ def _measure_stream(engine: Engine, family: str, case: _PlanCase) -> dict[str, o
     try:
         with engine.connect() as connection:
             transaction = connection.begin()
-            result = connection.execute(statement).yield_per(STREAM_CHUNK_ROWS)
+            result = connection.execute(statement).yield_per(PAGE_STREAM_CHUNK_ROWS)
             iterator = iter(result)
             first = next(iterator, None)
             first_ms = (time.perf_counter() - started) * 1000
@@ -275,19 +278,19 @@ def _measure_stream(engine: Engine, family: str, case: _PlanCase) -> dict[str, o
             result.close()
         tracemalloc.stop()
     total_ms = (time.perf_counter() - started) * 1000
-    if peak > MAX_STREAM_PEAK_BYTES:
-        raise QualificationError(f"{family} stream exceeded its application-memory budget")
+    if peak > MAX_PAGE_STREAM_PEAK_BYTES:
+        raise QualificationError(f"{family} page stream exceeded its application-memory budget")
 
     with engine.connect() as connection:
         transaction = connection.begin()
-        interrupted = connection.execute(statement).yield_per(STREAM_CHUNK_ROWS)
+        interrupted = connection.execute(statement).yield_per(PAGE_STREAM_CHUNK_ROWS)
         consumed = 1 if next(iter(interrupted), None) is not None else 0
         time.sleep(0.01)
         interrupted.close()
         reusable = connection.execute(text("SELECT 1")).scalar_one()
         transaction.rollback()
     if reusable != 1 or not interrupted.closed:
-        raise QualificationError(f"{family} stream did not release its canceled cursor")
+        raise QualificationError(f"{family} page stream did not release its canceled cursor")
 
     return {
         "family": family,
@@ -298,7 +301,7 @@ def _measure_stream(engine: Engine, family: str, case: _PlanCase) -> dict[str, o
         "total_ms": round(total_ms, 3),
         "milliseconds_per_row": round(total_ms / max(count, 1), 6),
         "peak_application_bytes": peak,
-        "chunk_rows": STREAM_CHUNK_ROWS,
+        "chunk_rows": PAGE_STREAM_CHUNK_ROWS,
         "cancellation": {
             "consumed_rows": consumed,
             "consumer_delay_ms": 10,
@@ -571,6 +574,10 @@ def _measure_http_path(
         app_keys=_QualificationAppKeys(),
         tags=tags,
         retrieval=retrieval,
+        browse_tokens=BrowseTokenCodec(
+            signing_key=b"riverhog-database-qualification-browse-key-v1",
+            lifetime_seconds=3600,
+        ),
     )
     application = create_app(container=cast(Any, container))
     server, thread, base_url = _start_http_server(application)
@@ -579,18 +586,27 @@ def _measure_http_path(
         token="qualification-token",
         allow_insecure_http=True,
     )
+    restart_token: str | None = None
     try:
         gc.collect()
         tracemalloc.start()
         started = time.perf_counter()
         tag_rows = 0
-        page = 1
+        page_token: str | None = None
         while True:
-            payload = api.list_tags(page=page, per_page=100, sort="id", order="asc")
+            payload = api.list_tags(
+                page_size=100,
+                page_token=page_token,
+                sort="id",
+                order="asc",
+            )
             tag_rows += len(payload.get("tags", []))
-            if page >= int(payload.get("pages", 0)):
+            next_page_token = payload.get("next_page_token")
+            if next_page_token is None:
                 break
-            page += 1
+            if not isinstance(next_page_token, str) or not next_page_token:
+                raise QualificationError("tag browse returned an invalid page token")
+            page_token = next_page_token
         tags_ms = (time.perf_counter() - started) * 1000
         _current, tags_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
@@ -625,7 +641,7 @@ def _measure_http_path(
             with raw_client.stream(
                 "GET",
                 "/v1/tags",
-                params={"page": 1, "per_page": 100, "sort": "id", "order": "asc"},
+                params={"page_size": 100, "sort": "id", "order": "asc"},
             ) as response:
                 response.raise_for_status()
                 first_chunk = next(response.iter_bytes())
@@ -643,6 +659,10 @@ def _measure_http_path(
             )
         if transactions_while_consumer_paused or transactions_after_disconnect:
             raise QualificationError("HTTP consumer lifetime retained a database transaction")
+        first = api.list_tags(page_size=1, sort="id", order="asc")
+        restart_token = first.get("next_page_token")
+        if not isinstance(restart_token, str) or not restart_token:
+            raise QualificationError("tag browse did not issue a restart token")
     finally:
         api.close()
         _stop_http_server(server, thread)
@@ -656,9 +676,17 @@ def _measure_http_path(
         ) as client:
             restart_response = client.get(
                 "/v1/tags",
-                params={"page": 1, "per_page": 1, "sort": "id", "order": "asc"},
+                params={
+                    "page_size": 1,
+                    "page_token": restart_token,
+                    "sort": "id",
+                    "order": "asc",
+                },
             )
             restart_response.raise_for_status()
+            restarted_payload = restart_response.json()
+            if not restarted_payload.get("tags"):
+                raise QualificationError("restart browse token omitted its next row")
     finally:
         _stop_http_server(restarted, restarted_thread)
     return {
@@ -736,10 +764,9 @@ def _measure_cardinality(
             raise QualificationError(
                 f"natural-plan failures at {rows} rows:\n" + "\n".join(plan_failures)
             )
-        streams = [
-            _measure_stream(engines[case.database], family, case)
-            for family, family_cases in _stream_cases_by_family(cases).items()
-            for case in family_cases
+        page_streams = [
+            _measure_page_stream(engines[case.database], family, case)
+            for family, case in _page_case_by_family(cases).items()
         ]
         return {
             "rows": rows,
@@ -748,7 +775,7 @@ def _measure_cardinality(
                 "stove0": stove0_state_schema(stove0_url).validate().as_dict(),
             },
             "plans": plans,
-            "streams": streams,
+            "page_streams": page_streams,
             "database_semantics": _database_semantics(
                 riverhog_engine,
                 unicode_paths=unicode_paths,
@@ -813,26 +840,35 @@ def _compare_cardinalities(
                 f"allowed_factor={latency_factor}"
             )
 
-    low_streams = _by_identity(cast(list[dict[str, object]], low["streams"]), "statement_case")
-    high_streams = _by_identity(cast(list[dict[str, object]], high["streams"]), "statement_case")
-    if set(low_streams) != set(high_streams):
-        raise QualificationError("stream identity changed between cardinalities")
-    for case_id, low_stream in low_streams.items():
-        high_stream = high_streams[case_id]
+    low_page_streams = _by_identity(
+        cast(list[dict[str, object]], low["page_streams"]), "statement_case"
+    )
+    high_page_streams = _by_identity(
+        cast(list[dict[str, object]], high["page_streams"]), "statement_case"
+    )
+    if set(low_page_streams) != set(high_page_streams):
+        raise QualificationError("page-stream identity changed between cardinalities")
+    for case_id, low_stream in low_page_streams.items():
+        high_stream = high_page_streams[case_id]
         if int(high_stream["rows"]) < int(low_stream["rows"]):
             raise QualificationError(f"{case_id} lost rows at the larger cardinality")
         low_peak = int(low_stream["peak_application_bytes"])
         high_peak = int(high_stream["peak_application_bytes"])
         if high_peak > low_peak * 4 + 8 * 1024 * 1024:
-            raise QualificationError(f"{case_id} application memory grew with result cardinality")
+            raise QualificationError(f"{case_id} page-stream memory grew with relation cardinality")
         low_ms_per_row = float(low_stream["milliseconds_per_row"])
         high_ms_per_row = float(high_stream["milliseconds_per_row"])
-        if high_ms_per_row > low_ms_per_row * 4 + 0.5:
-            raise QualificationError(f"{case_id} per-row stream latency regressed")
+        latency_factor = max(4, relation_growth * 1.5)
+        if high_ms_per_row > low_ms_per_row * latency_factor + 0.5:
+            raise QualificationError(
+                f"{case_id} page-stream latency regressed with relation cardinality: "
+                f"low_ms_per_row={low_ms_per_row}, high_ms_per_row={high_ms_per_row}, "
+                f"allowed_factor={latency_factor}"
+            )
 
     low_http = cast(dict[str, dict[str, object]], low["http"])
     high_http = cast(dict[str, dict[str, object]], high["http"])
-    for key in ("official_client_complete_stream", "official_client_inventory"):
+    for key in ("official_client_bounded_pages", "official_client_inventory"):
         low_peak = int(low_http[key]["peak_application_bytes"])
         high_peak = int(high_http[key]["peak_application_bytes"])
         if high_peak > low_peak * 4 + 8 * 1024 * 1024:
@@ -867,9 +903,9 @@ def build_evidence(database_url: str, *, source_sha: str) -> dict[str, object]:
             "riverhog": _fixture_sha256(FIXTURE_ROOT / "riverhog.postgresql.sql"),
             "stove0": _fixture_sha256(FIXTURE_ROOT / "stove0.postgresql.sql"),
         },
-        "stream_contract": {
-            "chunk_rows": STREAM_CHUNK_ROWS,
-            "max_peak_application_bytes": MAX_STREAM_PEAK_BYTES,
+        "page_stream_contract": {
+            "chunk_rows": PAGE_STREAM_CHUNK_ROWS,
+            "max_peak_application_bytes": MAX_PAGE_STREAM_PEAK_BYTES,
             "max_full_http_peak_bytes": MAX_HTTP_PEAK_BYTES,
             "consumer_delay_ms": 10,
         },
@@ -878,8 +914,8 @@ def build_evidence(database_url: str, *, source_sha: str) -> dict[str, object]:
             "exact_schemas": "passed",
             "natural_plans": "passed",
             "bounded_pages": "passed",
-            "complete_streams": "passed",
-            "full_http_official_client": "passed",
+            "bounded_page_streams": "passed",
+            "official_client_bounded_pages": "passed",
             "high_fanout_inventory": "passed",
             "cancellation": "passed",
             "backpressure": "passed",

@@ -117,8 +117,8 @@ def validate_recipe_catalog(
 @work_app.command("list")
 def list_work(
     context: typer.Context,
-    page: int = typer.Option(1, min=1),
-    per_page: int = typer.Option(25, min=1, max=100),
+    page_size: int = typer.Option(25, min=1, max=100),
+    page_token: str | None = typer.Option(None),
     phase: str | None = typer.Option(None),
     query: str | None = typer.Option(None, "--query", "-q"),
     sort: str = typer.Option("updated_at"),
@@ -128,8 +128,8 @@ def list_work(
     _call(
         state,
         lambda: state.client.list_work(
-            page=page,
-            per_page=per_page,
+            page_size=page_size,
+            page_token=page_token,
             phase=cast(Any, phase),
             query=query,
             sort=cast(Any, sort),
@@ -237,8 +237,8 @@ def preview(
 @evaluation_app.command("list")
 def list_evaluations(
     context: typer.Context,
-    page: int = typer.Option(1, min=1),
-    per_page: int = typer.Option(25, min=1, max=100),
+    page_size: int = typer.Option(25, min=1, max=100),
+    page_token: str | None = typer.Option(None),
     phase: str | None = typer.Option(None),
     query: str | None = typer.Option(None, "--query", "-q"),
     sort: str = typer.Option("updated_at"),
@@ -248,8 +248,8 @@ def list_evaluations(
     _call(
         state,
         lambda: state.client.list_evaluations(
-            page=page,
-            per_page=per_page,
+            page_size=page_size,
+            page_token=page_token,
             phase=cast(Any, phase),
             query=query,
             sort=cast(Any, sort),
@@ -404,6 +404,8 @@ def _render(
                 continue
             rendered.add_row(*(_table_value(item, column) for column in table[1]))
         console.print(rendered)
+        if "next_page_token" in payload:
+            console.print(f"Next page token: {payload.get('next_page_token') or '-'}")
         return
     console.print(Pretty(payload, expand_all=False))
 

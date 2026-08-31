@@ -18,9 +18,11 @@ class _Riverhog:
     def close(self) -> None:
         pass
 
-    def list_archive_stores(self, *, per_page: int) -> dict[str, object]:
-        assert per_page == 1
-        return {"items": []}
+    def list_archive_stores(
+        self, *, page_size: int, page_token: str | None = None
+    ) -> dict[str, object]:
+        assert (page_size, page_token) == (1, None)
+        return {"stores": [], "page_size": 1, "next_page_token": None}
 
 
 class _Adapter:

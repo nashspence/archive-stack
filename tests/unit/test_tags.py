@@ -86,8 +86,8 @@ def test_tag_list_uses_catalog_scoping_and_standard_page_projection(tmp_path: Pa
     assert reader is not None
 
     page = tags.list(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q="cam",
         sort="id",
         order="asc",

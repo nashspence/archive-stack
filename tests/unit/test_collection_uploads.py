@@ -807,8 +807,8 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     provenance_service = SqlAlchemyProvenanceService(config)
     listed = provenance_service.list_files(
         collection_id,
-        page=1,
-        per_page=100,
+        page_size=100,
+        position=None,
         q=None,
         status=None,
         sort="path",
@@ -825,8 +825,8 @@ def test_captured_and_omitted_file_provenance_is_one_immutable_mixed_archive(
     traced = provenance_service.trace_file(
         collection_id,
         "captured.bin",
-        page=1,
-        per_page=100,
+        page_size=100,
+        position=None,
         principal=reader,
     )
     assert [
@@ -909,9 +909,9 @@ def test_small_collection_moves_directly_from_source_unit_to_final_custody(
         custody_mode=custody_mode,
     )
     assert opened["tag_count"] == len(tags)
-    assert service.list_tags(int(opened["collection_id"]), page=1, per_page=100)["tags"] == [
-        {"tag": tag} for tag in tags
-    ]
+    assert service.list_tags(int(opened["collection_id"]), page_size=100, position=None)[
+        "tags"
+    ] == [{"tag": tag} for tag in tags]
     assert opened["custody_mode"] == custody_mode
     assert (opened["upload_state_expires_at"] is not None) == (custody_mode == "custody-transfer")
     collection_id = int(opened["collection_id"])
@@ -1231,7 +1231,7 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
         plan_sha256=str(volume["plan_sha256"]),
         content=b"".join(contents[str(source["path"])] for source in unit["sources"]),
     )
-    files = service.list_files(collection_id, page=1, per_page=100)["files"]
+    files = service.list_files(collection_id, page_size=100, position=None)["files"]
     by_path = {str(item["path"]): item for item in files}
     assert by_path["a.txt"]["custody_receipt"] is not None
     assert by_path["b.txt"]["custody_receipt"] is None
@@ -1255,42 +1255,48 @@ def test_custody_transfer_receipt_orphan_resume_and_guarded_discard(
     with pytest.raises(NotFound):
         service.require_discard_access(collection_id, _OTHER_DELETER)
     assert (
-        service.list(
-            page=1,
-            per_page=100,
-            q=None,
-            tag=None,
-            state=None,
-            sort="id",
-            order="asc",
-            principal=_DELETER,
-        )["total"]
+        len(
+            service.list(
+                page_size=100,
+                position=None,
+                q=None,
+                tag=None,
+                state=None,
+                sort="id",
+                order="asc",
+                principal=_DELETER,
+            )["uploads"]
+        )
         == 1
     )
     assert (
-        service.list(
-            page=1,
-            per_page=100,
-            q=None,
-            tag=None,
-            state=None,
-            sort="id",
-            order="asc",
-            principal=_DOCS_DELETER,
-        )["total"]
+        len(
+            service.list(
+                page_size=100,
+                position=None,
+                q=None,
+                tag=None,
+                state=None,
+                sort="id",
+                order="asc",
+                principal=_DOCS_DELETER,
+            )["uploads"]
+        )
         == 1
     )
     assert (
-        service.list(
-            page=1,
-            per_page=100,
-            q=None,
-            tag=None,
-            state=None,
-            sort="id",
-            order="asc",
-            principal=_OTHER_DELETER,
-        )["total"]
+        len(
+            service.list(
+                page_size=100,
+                position=None,
+                q=None,
+                tag=None,
+                state=None,
+                sort="id",
+                order="asc",
+                principal=_OTHER_DELETER,
+            )["uploads"]
+        )
         == 0
     )
 

@@ -394,18 +394,17 @@ class _LineageRiverhog:
         }
 
     def get_collection_tags(
-        self, collection_id: int, *, page: int, per_page: int
+        self, collection_id: int, *, page_size: int, page_token: str | None
     ) -> dict[str, object]:
-        assert (page, per_page) == (1, 100)
+        assert (page_size, page_token) == (100, None)
         self.tag_stream_reads.append(collection_id)
         return {
             "collection_id": collection_id,
             "metadata_revision": 1,
             "inventory_identity": f"{collection_id % 16:x}" * 64,
             "tag_count": 1,
-            "page": 1,
-            "pages": 1,
-            "total": 1,
+            "page_size": page_size,
+            "next_page_token": None,
             "tags": ["fixture"],
         }
 
@@ -421,10 +420,9 @@ class _LineageRiverhog:
         claim_id: str,
         *,
         authority_sha256: str,
-        page: int,
-        per_page: int,
+        start_ordinal: int,
     ) -> ArtifactDispositionPageDocument:
-        assert (page, per_page) == (1, 100)
+        assert start_ordinal == 0
         input_collection_id = self.disposition_inputs[claim_id]
         character = f"{input_collection_id % 16:x}"
         identity = ArtifactDispositionSetIdentity(
@@ -437,10 +435,8 @@ class _LineageRiverhog:
         return ArtifactDispositionPageDocument.model_validate(
             {
                 "authority": identity.as_dict(),
-                "page": 1,
-                "per_page": 100,
-                "total": 1,
-                "pages": 1,
+                "start_ordinal": 0,
+                "next_ordinal": None,
                 "dispositions": [
                     ArtifactDisposition(
                         input_collection_id=input_collection_id,

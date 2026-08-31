@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 import tomllib
@@ -14,6 +15,7 @@ QUALIFICATION_WORKFLOW = REPO_ROOT / ".github/workflows/release-qualification.ym
 PROVIDER_QUALIFICATION_WORKFLOW = REPO_ROOT / ".github/workflows/provider-qualification.yml"
 PROVIDER_QUALIFICATION_COMPOSE = REPO_ROOT / "tests/harness/provider-qualification.compose.yaml"
 MISE_LOCK = REPO_ROOT / "mise.lock"
+DATABASE_QUALIFICATION_SCRIPT = REPO_ROOT / "scripts/database_qualification.py"
 
 
 def test_every_buildx_setup_uses_the_pinned_docker_engine() -> None:
@@ -305,7 +307,7 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     database_evidence = next(
         step
         for step in audit["steps"]
-        if step["name"] == "Qualify exact database schemas, selectors, and complete streams"
+        if step["name"] == "Qualify exact database schemas, selectors, and bounded pages"
     )
     assert "make database-qualification" in database_evidence["run"]
     assert 'DATABASE_QUALIFICATION_SOURCE_SHA="$SOURCE_SHA"' in database_evidence["run"]
@@ -313,8 +315,23 @@ def test_release_qualification_reuses_ci_and_publishes_only_sha_bound_summaries(
     verify_database = next(
         step for step in audit["steps"] if step["name"] == "Verify exact-SHA database evidence"
     )
+    database_module = ast.parse(
+        DATABASE_QUALIFICATION_SCRIPT.read_text(encoding="utf-8"),
+        filename=str(DATABASE_QUALIFICATION_SCRIPT),
+    )
+    cardinalities = next(
+        ast.literal_eval(node.value)
+        for node in database_module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "CARDINALITIES" for target in node.targets
+        )
+    )
     assert "riverhog-database-qualification/v1" in verify_database["run"]
-    assert ".cardinalities == [4096, 16384]" in verify_database["run"]
+    assert f".cardinalities == {json.dumps(list(cardinalities))}" in verify_database["run"]
+    assert "bounded_page_streams" in verify_database["run"]
+    assert "official_client_bounded_pages" in verify_database["run"]
+    assert ".page_streams" in verify_database["run"]
     assert "peak_application_bytes" in verify_database["run"]
     assert "cancellation.connection_reusable" in verify_database["run"]
     governance = next(

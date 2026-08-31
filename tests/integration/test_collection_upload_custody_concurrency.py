@@ -217,7 +217,10 @@ def test_heartbeat_and_expiry_serialize_without_losing_resumable_custody(
         )
         assert resumed["collection_id"] == collection_id
         assert resumed["state"] == "open"
-    assert first.list_files(collection_id, page=1, per_page=100)["total"] == 1
+    page = first.list_files(collection_id, page_size=100, position=None)
+    files = page["files"]
+    assert isinstance(files, list)
+    assert len(files) == 1
 
 
 def test_completion_and_expiry_have_one_serial_terminal_intent(

@@ -12,7 +12,7 @@ from datetime import timedelta
 from itertools import zip_longest
 from typing import Any, Literal, TypedDict, cast
 
-from http_api_contracts import closed_literal_values
+from http_api_contracts import BrowseScalar, closed_literal_values
 from riverhog_archive_contracts import (
     CollectionArchiveTerminalDocument,
     CollectionArchiveVolumeDocument,
@@ -115,6 +115,7 @@ from riverhog_core.archive_root import (
     SealedArchiveVolumeMetadata,
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
+from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import (
     begin_catalog_event,
@@ -502,31 +503,34 @@ class SqlAlchemyCollectionUploadService:
         self,
         collection_id: int,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
     ) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
-        if page < 1 or per_page < 1 or per_page > 100:
-            raise BadRequest("invalid collection upload tag pagination")
         with read_snapshot(self._session_factory) as session:
             if session.get(CollectionUploadRecord, normalized_id) is None:
                 raise NotFound(f"collection upload session not found: {normalized_id}")
-            total = _upload_tag_count(session, normalized_id)
-            rows = list(
-                session.scalars(
-                    select(CollectionUploadTagRecord.tag_id)
-                    .where(CollectionUploadTagRecord.collection_id == normalized_id)
-                    .order_by(CollectionUploadTagRecord.tag_id)
-                    .offset((page - 1) * per_page)
-                    .limit(per_page)
-                )
+            rows, next_position = bounded_page(
+                list(
+                    session.scalars(
+                        keyset_statement(
+                            select(CollectionUploadTagRecord.tag_id).where(
+                                CollectionUploadTagRecord.collection_id == normalized_id
+                            ),
+                            columns=(CollectionUploadTagRecord.tag_id,),
+                            position=position,
+                            order="asc",
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda value: (value,),
             )
             return {
                 "collection_id": normalized_id,
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": (total + per_page - 1) // per_page,
+                "page_size": page_size,
+                "_next_position": next_position,
                 "tags": [{"tag": value} for value in rows],
             }
 
@@ -1175,36 +1179,56 @@ class SqlAlchemyCollectionUploadService:
         self,
         collection_id: int,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
     ) -> dict[str, object]:
         normalized_id = _collection_id(collection_id)
-        if page < 1 or per_page < 1 or per_page > 100:
-            raise BadRequest("invalid collection upload file pagination")
         with read_snapshot(self._session_factory) as session:
             if session.get(CollectionUploadRecord, normalized_id) is None:
                 raise NotFound(f"collection upload session not found: {normalized_id}")
-            total = int(
-                session.scalar(
-                    select(func.count(CollectionUploadFileRecord.path)).where(
+            if position is None:
+                frontier = session.scalar(
+                    select(func.max(CollectionUploadFileRecord.file_order)).where(
                         CollectionUploadFileRecord.collection_id == normalized_id
                     )
                 )
-                or 0
+                after: tuple[str | int | bool | bytes | None, ...] | None = None
+            else:
+                if (
+                    len(position) != 2
+                    or not isinstance(position[0], int)
+                    or not isinstance(position[1], int)
+                ):
+                    raise ValueError("upload registration page token is invalid")
+                after = (position[0],)
+                frontier = position[1]
+            statement = select(CollectionUploadFileRecord).where(
+                CollectionUploadFileRecord.collection_id == normalized_id,
+                CollectionUploadFileRecord.file_order <= (frontier if frontier is not None else -1),
             )
-            statement = (
-                select(CollectionUploadFileRecord)
-                .where(CollectionUploadFileRecord.collection_id == normalized_id)
-                .order_by(CollectionUploadFileRecord.file_order)
+            rows, next_position = bounded_page(
+                list(
+                    session.scalars(
+                        keyset_statement(
+                            statement,
+                            columns=(CollectionUploadFileRecord.file_order,),
+                            position=after,
+                            order="asc",
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda row: (row.file_order,),
             )
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            rows = list(session.scalars(statement))
             return {
                 "collection_id": normalized_id,
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": (total + per_page - 1) // per_page,
+                "page_size": page_size,
+                "_next_position": (
+                    (*next_position, frontier)
+                    if next_position is not None and frontier is not None
+                    else None
+                ),
                 "files": [_file_payload(row) for row in rows],
             }
 
@@ -1509,8 +1533,8 @@ class SqlAlchemyCollectionUploadService:
     def list(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         tag: str | None,
         state: str | None,
@@ -1518,19 +1542,29 @@ class SqlAlchemyCollectionUploadService:
         order: str,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
-        _validate_upload_list(page=page, per_page=per_page, sort=sort, order=order)
+        _validate_upload_list(page_size=page_size, sort=sort, order=order)
         with read_snapshot(self._session_factory) as session:
-            statement = _upload_list_statement(
+            statement, key_columns = _upload_list_statement(
                 q=q, tag=tag, state=state, sort=sort, order=order, principal=principal
             )
-            total = int(session.scalar(select(func.count()).select_from(statement.subquery())) or 0)
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            rows = list(session.execute(statement))
+            rows, next_position = bounded_page(
+                list(
+                    session.execute(
+                        keyset_statement(
+                            statement,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda row: _upload_list_position(row[0], sort=sort),
+            )
             return {
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": (total + per_page - 1) // per_page,
+                "page_size": page_size,
+                "_next_position": next_position,
                 "sort": sort,
                 "order": order,
                 "query": q,
@@ -1556,9 +1590,13 @@ class SqlAlchemyCollectionUploadService:
         order: str,
         principal: ApplicationPrincipal,
     ) -> Iterator[dict[str, object]]:
-        _validate_upload_list(page=1, per_page=100, sort=sort, order=order)
-        statement = _upload_list_statement(
+        _validate_upload_list(page_size=100, sort=sort, order=order)
+        statement, key_columns = _upload_list_statement(
             q=q, tag=tag, state=state, sort=sort, order=order, principal=principal
+        )
+        direction = asc if order == "asc" else desc
+        statement = statement.order_by(
+            *(direction(column) for column in key_columns)
         ).execution_options(yield_per=100)
         with read_snapshot(self._session_factory) as session:
             for upload, files, byte_count in session.execute(statement):
@@ -5843,9 +5881,8 @@ def _custody_payload(
     }
 
 
-def _validate_upload_list(*, page: int, per_page: int, sort: str, order: str) -> None:
-    if page < 1 or per_page < 1 or per_page > 100:
-        raise BadRequest("invalid collection upload pagination")
+def _validate_upload_list(*, page_size: int, sort: str, order: str) -> None:
+    validate_page_size(page_size)
     if sort not in _UPLOAD_SORT_FIELDS:
         raise BadRequest("invalid collection upload sort")
     if order not in _SORT_ORDERS:
@@ -5860,7 +5897,7 @@ def _upload_list_statement(
     sort: str,
     order: str,
     principal: ApplicationPrincipal,
-) -> Any:
+) -> tuple[Any, tuple[Any, ...]]:
     if state is not None and state not in _UPLOAD_STATES:
         raise BadRequest("invalid collection upload state")
     filters: list[Any] = [_upload_read_filter(principal)]
@@ -5900,10 +5937,30 @@ def _upload_list_statement(
         "bytes": CollectionUploadRecord.file_bytes,
         "files": CollectionUploadRecord.file_count,
     }[sort]
-    return statement.order_by(
-        direction(sort_column),
-        direction(CollectionUploadRecord.collection_id),
+    del direction
+    return statement, (
+        (CollectionUploadRecord.collection_id,)
+        if sort == "id"
+        else (sort_column, CollectionUploadRecord.collection_id)
     )
+
+
+def _upload_list_position(
+    upload: CollectionUploadRecord,
+    *,
+    sort: str,
+) -> tuple[BrowseScalar, ...]:
+    if sort == "id":
+        value: BrowseScalar = upload.collection_id
+    elif sort == "created_at":
+        value = upload.opened_at or ""
+    elif sort == "state":
+        value = upload.state
+    elif sort == "bytes":
+        value = upload.file_bytes
+    else:
+        value = upload.file_count
+    return (value,) if sort == "id" else (value, upload.collection_id)
 
 
 def _upload_list_payload(

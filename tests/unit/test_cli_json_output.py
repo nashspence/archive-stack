@@ -13,10 +13,10 @@ def test_collection_list_json_emits_the_api_response_without_a_second_model(
     monkeypatch,
 ) -> None:
     payload = {
-        "page": 1,
-        "per_page": 25,
+        "page_size": 25,
+        "page_token": None,
         "total": 1,
-        "pages": 1,
+        "next_page_token": None,
         "sort": "id",
         "order": "asc",
         "query": None,
@@ -105,10 +105,10 @@ def test_archive_store_views_project_the_same_api_models_in_human_and_json(
         "download_allowance": None,
     }
     page = {
-        "page": 1,
-        "per_page": 25,
+        "page_size": 25,
+        "page_token": None,
         "total": 1,
-        "pages": 1,
+        "next_page_token": None,
         "sort": "store",
         "order": "asc",
         "query": None,
@@ -164,10 +164,10 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         "tag_count": 1,
     }
     page = {
-        "page": 1,
-        "per_page": 25,
+        "page_size": 25,
+        "page_token": None,
         "total": 1,
-        "pages": 1,
+        "next_page_token": None,
         "sort": "cached_at",
         "order": "desc",
         "query": None,
@@ -279,8 +279,8 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         (
             "list",
             {
-                "page": 1,
-                "per_page": 25,
+                "page_size": 25,
+                "page_token": None,
                 "q": None,
                 "tag": "photos",
                 "collection_id": 42,
@@ -297,8 +297,8 @@ def test_retrieval_cache_views_project_the_same_api_models_in_human_and_json(
         (
             "list",
             {
-                "page": 1,
-                "per_page": 25,
+                "page_size": 25,
+                "page_token": None,
                 "q": None,
                 "tag": "photos",
                 "collection_id": 42,

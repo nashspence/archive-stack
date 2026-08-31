@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Annotated
 
 from fastapi import Depends
+from http_api_contracts.browse import BrowseTokenCodec
 from riverhog_archive_contracts import ARCHIVE_ENCRYPTION_FORMAT
 from riverhog_core.archive_store_registry import ArchiveStoreBinding, ArchiveStoreRegistry
 from riverhog_core.catalog_db import (
@@ -93,6 +94,12 @@ class ServiceContainer:
     lifecycle_events: LifecycleEventService
     download_quotas: DownloadAllowance
     session_factory: SessionFactory
+    browse_tokens: BrowseTokenCodec = field(
+        default_factory=lambda: BrowseTokenCodec(
+            "riverhog-development-browse-token-signing-key-v1",
+            lifetime_seconds=24 * 60 * 60,
+        )
+    )
     storage_adapter_clients: tuple[StorageAdapterClient, ...] = ()
 
     def close(self) -> None:
@@ -266,6 +273,10 @@ def _build_default_container(
         ),
         download_quotas=download_allowance,
         session_factory=session_factory,
+        browse_tokens=BrowseTokenCodec(
+            config.browse_token_signing_key,
+            lifetime_seconds=int(config.browse_token_lifetime.total_seconds()),
+        ),
         storage_adapter_clients=tuple([*adapters.values(), *cache_clients.values()]),
     )
 

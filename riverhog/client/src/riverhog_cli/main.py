@@ -329,8 +329,8 @@ def _retrieval_cache_selector(value: str) -> tuple[int, str, str]:
 
 @application_app.command("list")
 def app_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "name",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
@@ -351,8 +351,8 @@ def app_list_cmd(
     normalized_order = _list_order(sort, order, fields=_APP_SORT_FIELDS)
     api = client()
     payload = api.list_apps(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         sort=cast(Any, sort),
         order=cast(Any, normalized_order),
@@ -388,8 +388,8 @@ def tag_show_cmd(
 
 @tag_app.command("list")
 def tag_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
@@ -406,8 +406,8 @@ def tag_list_cmd(
     normalized_order = _list_order(sort, order, fields=_TAG_SORT_FIELDS)
     api = client()
     payload = api.list_tags(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         sort=cast(Any, sort),
         order=cast(Any, normalized_order),
@@ -470,8 +470,8 @@ def tag_delete_cmd(
 @collection_tag_app.command("list")
 def collection_tag_list_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     ids: Annotated[bool, typer.Option("--ids", help="Emit one tag id per line")] = False,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
@@ -479,7 +479,9 @@ def collection_tag_list_cmd(
 
     if ids and json_mode:
         raise typer.BadParameter("--ids and --json cannot be used together")
-    payload = client().get_collection_tags(collection_id, page=page, per_page=per_page)
+    payload = client().get_collection_tags(
+        collection_id, page_size=page_size, page_token=page_token
+    )
     if ids:
         tags = cast(list[str], payload["tags"])
         emit("\n".join(tags), json_mode=False)
@@ -566,8 +568,8 @@ def app_key_create_cmd(
 @app_key_app.command("list")
 def app_key_list_cmd(
     app_name: Annotated[str, typer.Argument(help="Application name")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
     query: Annotated[
@@ -589,8 +591,8 @@ def app_key_list_cmd(
     api = client()
     payload = api.list_app_keys(
         app_name,
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         sort=cast(Any, sort),
         order=cast(Any, normalized_order),
@@ -628,8 +630,8 @@ def app_key_rotate_cmd(
 
 @app_key_access_app.command("list")
 def app_key_access_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "permission",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
@@ -669,8 +671,8 @@ def app_key_access_list_cmd(
     normalized_order = _list_order(sort, order, fields=_APP_KEY_ACCESS_SORT_FIELDS)
     api = client()
     payload = api.list_app_key_access(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         sort=cast(Any, sort),
         order=cast(Any, normalized_order),
@@ -780,8 +782,8 @@ def app_key_quota_set_cmd(
 
 @app_key_quota_app.command("list")
 def app_key_quota_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "app",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
@@ -808,8 +810,8 @@ def app_key_quota_list_cmd(
     normalized_order = _list_order(sort, order, fields=_APP_KEY_QUOTA_SORT_FIELDS)
     api = client()
     payload = api.list_download_quotas(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         sort=cast(Any, sort),
         order=cast(Any, normalized_order),
@@ -1191,19 +1193,13 @@ def _hash_collection_source(
 
 def _server_manifest(api: ApiClient, collection_id: int) -> list[CollectionManifestEntry]:
     result: list[CollectionManifestEntry] = []
-    page = 1
-    expected_total: int | None = None
+    page_token: str | None = None
     while True:
         payload = api.list_collection_upload_session_files(
             collection_id,
-            page=page,
-            per_page=100,
+            page_size=100,
+            page_token=page_token,
         )
-        total = int(payload.get("total") or 0)
-        if expected_total is None:
-            expected_total = total
-        elif expected_total != total:
-            raise RuntimeError("upload manifest changed during bounded reconciliation")
         values = payload.get("files")
         if not isinstance(values, list):
             raise RuntimeError("upload session returned an invalid file page")
@@ -1228,11 +1224,12 @@ def _server_manifest(api: ApiClient, collection_id: int) -> list[CollectionManif
                     "provenance": dict(provenance),
                 }
             )
-        if page >= int(payload.get("pages") or 0):
+        next_page_token = payload.get("next_page_token")
+        if next_page_token is None:
             break
-        page += 1
-    if len(result) != expected_total:
-        raise RuntimeError("upload manifest reconciliation is incomplete")
+        if not isinstance(next_page_token, str) or not next_page_token:
+            raise RuntimeError("upload session returned an invalid next page token")
+        page_token = next_page_token
     return result
 
 
@@ -1537,8 +1534,8 @@ _FIND_SORT_FIELDS = {
 
 @collection_app.command("list")
 def collection_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "id",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
@@ -1570,8 +1567,8 @@ def collection_list_cmd(
     normalized_order = _list_order(sort, order, fields=_COLLECTION_SORT_FIELDS)
     api = client()
     payload = api.list_collections(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         tag=tag,
         encryption_format=encryption_format,
@@ -1588,8 +1585,8 @@ def collection_list_cmd(
 @collection_app.command("archive-copies")
 def collection_archive_copies_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List the durable archive copies of one collection."""
@@ -1597,8 +1594,8 @@ def collection_archive_copies_cmd(
     api = client()
     payload = api.list_collection_archive_copies(
         collection_id,
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
     )
     emit(
         payload if json_mode else format_collection_archive_copies(payload),
@@ -1748,8 +1745,8 @@ _COLLECTION_UPLOAD_SORT_FIELDS = {"id", "created_at", "state", "bytes", "files"}
 
 @collection_upload_app.command("list")
 def upload_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "created_at",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
     query: Annotated[
@@ -1777,8 +1774,8 @@ def upload_list_cmd(
     normalized_order = _list_order(sort, order, fields=_COLLECTION_UPLOAD_SORT_FIELDS)
     api = client()
     payload = api.list_collection_upload_sessions(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         tag=tag,
         state=cast(Any, state),
@@ -1808,8 +1805,8 @@ def upload_show_cmd(
 @collection_upload_app.command("files")
 def upload_files_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection upload session id")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List exact registered artifacts and their Riverhog custody state."""
@@ -1817,8 +1814,8 @@ def upload_files_cmd(
     api = client()
     payload = api.list_collection_upload_session_files(
         collection_id,
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
     )
     emit(payload if json_mode else format_collection_upload_files(payload), json_mode=json_mode)
 
@@ -1914,8 +1911,8 @@ def find_cmd(
         str | None,
         typer.Option("--query", "-q", help="Substring match over collection file references"),
     ] = None,
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "file_ref",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     collection: Annotated[
@@ -1943,8 +1940,8 @@ def find_cmd(
     api = client()
     payload = api.search(
         query,
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         sort=cast(Any, sort),
         order=cast(Any, normalized_order),
         collection=collection,
@@ -1972,8 +1969,8 @@ _PROVENANCE_SORT_FIELDS = {"path", "bytes", "status"}
 @collection_provenance_app.command("list")
 def provenance_list_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "path",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
@@ -2000,8 +1997,8 @@ def provenance_list_cmd(
     api = client()
     payload = api.list_collection_provenance(
         collection_id,
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         status=cast(Any, status),
         sort=cast(Any, sort),
@@ -2029,8 +2026,8 @@ def provenance_show_cmd(
 def provenance_trace_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
     path: Annotated[str, typer.Argument(help="Collection-relative file path")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """Trace one file through reachable provenance journals and references."""
@@ -2039,8 +2036,8 @@ def provenance_trace_cmd(
     payload = api.trace_collection_file_provenance(
         collection_id,
         path,
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
     )
     emit(payload if json_mode else format_provenance_trace(payload), json_mode=json_mode)
 
@@ -2049,8 +2046,8 @@ def provenance_trace_cmd(
 def provenance_agents_cmd(
     collection_id: Annotated[int, typer.Argument(help="Collection id")],
     journal_id: Annotated[str, typer.Argument(help="Exact provenance journal id")],
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     json_mode: Annotated[bool, typer.Option("--json", help="Emit JSON")] = False,
 ) -> None:
     """List agents asserted by one exact provenance journal."""
@@ -2059,8 +2056,8 @@ def provenance_agents_cmd(
     payload = api.list_collection_provenance_journal_agents(
         collection_id,
         journal_id,
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
     )
     emit(payload if json_mode else format_provenance_journal_agents(payload), json_mode=json_mode)
 
@@ -2169,8 +2166,8 @@ def retrieval_cache_status_cmd(
 
 @retrieval_cache_app.command("list")
 def retrieval_cache_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "cached_at",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
     query: Annotated[
@@ -2222,8 +2219,8 @@ def retrieval_cache_list_cmd(
     normalized_order = _list_order(sort, order, fields=_RETRIEVAL_CACHE_SORT_FIELDS)
     api = client()
     payload = api.list_retrieval_cache_objects(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         tag=tag,
         collection_id=collection_id,
@@ -2259,8 +2256,8 @@ def retrieval_cache_show_cmd(
 
 @archive_store_app.command("list")
 def archive_store_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "store",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "asc",
     query: Annotated[
@@ -2280,8 +2277,8 @@ def archive_store_list_cmd(
     normalized_order = _list_order(sort, order, fields=_ARCHIVE_STORE_SORT_FIELDS)
     api = client()
     payload = api.list_archive_stores(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         sort=cast(Any, sort),
         order=cast(Any, normalized_order),
@@ -2395,8 +2392,8 @@ _ARCHIVE_COPY_SORT_FIELDS = {
 
 @archive_copy_app.command("list")
 def archive_copy_list_cmd(
-    page: Annotated[int, typer.Option("--page", min=1)] = 1,
-    per_page: Annotated[int, typer.Option("--per-page", min=1, max=100)] = 25,
+    page_size: Annotated[int, typer.Option("--page-size", min=1, max=100)] = 25,
+    page_token: Annotated[str | None, typer.Option("--page-token")] = None,
     sort: Annotated[str, typer.Option("--sort", help="Sort field")] = "requested_at",
     order: Annotated[str, typer.Option("--order", help="Sort order")] = "desc",
     query: Annotated[
@@ -2423,8 +2420,8 @@ def archive_copy_list_cmd(
     normalized_order = _list_order(sort, order, fields=_ARCHIVE_COPY_SORT_FIELDS)
     api = client()
     payload = api.list_archive_copy_jobs(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        page_token=page_token,
         q=query,
         state=cast(Any, state),
         sort=cast(Any, sort),

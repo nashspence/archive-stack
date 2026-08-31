@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from collections.abc import Iterator
 from typing import Any
 
@@ -13,6 +12,7 @@ from sqlalchemy import asc, desc, exists, func, select
 from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
+from riverhog_core.browse import bounded_page, keyset_statement
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveCopyRecord,
@@ -169,8 +169,8 @@ class SqlAlchemyCollectionService:
     def list(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         tag: str | None = None,
         encryption_format: str | None = None,
@@ -179,33 +179,39 @@ class SqlAlchemyCollectionService:
         order: str = "asc",
         principal: ApplicationPrincipal | None = None,
     ) -> CollectionListPage:
-        filters, normalized_tag, normalized_format, normalized_passphrase_id, statement = (
-            _collection_list_statement(
-                q=q,
-                tag=tag,
-                encryption_format=encryption_format,
-                passphrase_id=passphrase_id,
-                sort=sort,
-                order=order,
-                principal=principal,
-            )
+        (
+            _,
+            normalized_tag,
+            normalized_format,
+            normalized_passphrase_id,
+            statement,
+            key_columns,
+        ) = _collection_list_statement(
+            q=q,
+            tag=tag,
+            encryption_format=encryption_format,
+            passphrase_id=passphrase_id,
+            sort=sort,
+            order=order,
+            principal=principal,
         )
-        if page < 1:
-            raise BadRequest("page must be at least 1")
-        if per_page < 1:
-            raise BadRequest("per_page must be at least 1")
         with read_snapshot(self._session_factory) as session:
-            total = int(
-                session.scalar(select(func.count()).select_from(CollectionRecord).where(*filters))
-                or 0
+            rows, next_position = bounded_page(
+                session.execute(
+                    keyset_statement(
+                        statement,
+                        columns=key_columns,
+                        position=position,
+                        order=order,
+                        page_size=page_size,
+                    )
+                ).all(),
+                page_size=page_size,
+                position_of=lambda row: _collection_position(row, sort=sort),
             )
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            rows = session.execute(statement).all()
             return CollectionListPage(
-                page=page,
-                per_page=per_page,
-                total=total,
-                pages=((total + per_page - 1) // per_page if total else 0),
+                page_size=page_size,
+                next_position=next_position,
                 sort=sort,
                 order=order,
                 query=q,
@@ -226,7 +232,7 @@ class SqlAlchemyCollectionService:
         order: str = "asc",
         principal: ApplicationPrincipal | None = None,
     ) -> Iterator[CollectionSummary]:
-        _, _, _, _, statement = _collection_list_statement(
+        _, _, _, _, statement, key_columns = _collection_list_statement(
             q=q,
             tag=tag,
             encryption_format=encryption_format,
@@ -235,6 +241,8 @@ class SqlAlchemyCollectionService:
             order=order,
             principal=principal,
         )
+        ordering = desc if order == "desc" else asc
+        statement = statement.order_by(*(ordering(column) for column in key_columns))
         with read_snapshot(self._session_factory) as session:
             rows = session.execute(statement.execution_options(yield_per=100))
             for partition in rows.partitions():
@@ -245,13 +253,11 @@ class SqlAlchemyCollectionService:
         self,
         collection_id: int,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
         normalized = _normalize_collection_id(collection_id)
-        if page < 1 or per_page < 1 or per_page > 100:
-            raise BadRequest("invalid collection archive-copy pagination")
         with read_snapshot(self._session_factory) as session:
             collection = session.get(CollectionRecord, normalized)
             if collection is None or not collection.is_published:
@@ -268,25 +274,23 @@ class SqlAlchemyCollectionService:
                 is None
             ):
                 raise NotFound(f"collection not found: {normalized}")
-            total = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CollectionArchiveCopyRecord)
-                    .where(CollectionArchiveCopyRecord.collection_id == normalized)
-                )
-                or 0
-            )
-            rows = session.execute(
-                _collection_archive_copy_statement(normalized)
-                .offset((page - 1) * per_page)
-                .limit(per_page)
+            rows, next_position = bounded_page(
+                session.execute(
+                    keyset_statement(
+                        _collection_archive_copy_statement(normalized).order_by(None),
+                        columns=(CollectionArchiveCopyRecord.store,),
+                        position=position,
+                        order="asc",
+                        page_size=page_size,
+                    )
+                ).all(),
+                page_size=page_size,
+                position_of=lambda row: (row[0].store,),
             )
             return {
                 "collection_id": normalized,
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": math.ceil(total / per_page) if total else 0,
+                "page_size": page_size,
+                "_next_position": next_position,
                 "copies": [_collection_archive_copy_payload(row) for row in rows],
             }
 
@@ -325,7 +329,7 @@ def _collection_list_statement(
     sort: str,
     order: str,
     principal: ApplicationPrincipal | None,
-) -> tuple[list[Any], str | None, str | None, str | None, Any]:
+) -> tuple[list[Any], str | None, str | None, str | None, Any, tuple[Any, ...]]:
     filters, normalized_tag, normalized_format, normalized_passphrase_id = _collection_list_filters(
         q=q,
         tag=tag,
@@ -336,17 +340,27 @@ def _collection_list_statement(
         principal=principal,
     )
     statement, sort_columns = _collection_summary_query()
-    ordering = desc if order == "desc" else asc
+    sort_column = sort_columns[sort]
+    key_columns = (CollectionRecord.id,) if sort == "id" else (sort_column, CollectionRecord.id)
     return (
         filters,
         normalized_tag,
         normalized_format,
         normalized_passphrase_id,
-        statement.where(*filters).order_by(
-            ordering(sort_columns[sort]),
-            ordering(CollectionRecord.id),
-        ),
+        statement.where(*filters),
+        key_columns,
     )
+
+
+def _collection_position(row: Any, *, sort: str) -> tuple[str | int, ...]:
+    collection = row[0]
+    value = {
+        "id": collection.id,
+        "created_at": collection.created_at,
+        "bytes": collection.file_bytes,
+        "files": collection.file_count,
+    }[sort]
+    return (value,) if sort == "id" else (value, collection.id)
 
 
 def _collection_list_filters(

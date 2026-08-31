@@ -142,8 +142,8 @@ class Stove0ApiClient:
     def list_work(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         phase: WorkPhase | None = None,
         query: str | None = None,
         sort: WorkSort = "updated_at",
@@ -155,8 +155,8 @@ class Stove0ApiClient:
                 "/v1/work",
                 params=_params(
                     **{
-                        "page": page,
-                        "per_page": per_page,
+                        "page_size": page_size,
+                        "page_token": page_token,
                         "phase": _one_of(phase, _WORK_PHASES, "work phase") if phase else None,
                         "q": query,
                         "sort": _one_of(
@@ -263,8 +263,8 @@ class Stove0ApiClient:
     def list_evaluations(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        page_token: str | None = None,
         phase: EvaluationPhase | None = None,
         query: str | None = None,
         sort: EvaluationSort = "updated_at",
@@ -276,8 +276,8 @@ class Stove0ApiClient:
                 "/v1/evaluations",
                 params=_params(
                     **{
-                        "page": page,
-                        "per_page": per_page,
+                        "page_size": page_size,
+                        "page_token": page_token,
                         "phase": (
                             _one_of(phase, _EVALUATION_PHASES, "evaluation phase")
                             if phase

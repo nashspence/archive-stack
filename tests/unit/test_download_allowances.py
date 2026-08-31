@@ -380,15 +380,14 @@ def test_key_quota_release_and_database_list_projection(tmp_path: Path) -> None:
     service.release_retrieval(job_id="job-2")
 
     payload = service.list_key_quotas(
-        page=1,
-        per_page=1,
+        page_size=1,
+        position=None,
         q=None,
         sort="app",
         order="asc",
         active=True,
     )
-    assert payload["total"] == 2
-    assert payload["pages"] == 2
+    assert payload["_next_position"] is not None
     assert payload["quotas"][0]["app"] == "alpha"
     assert payload["quotas"][0]["reserved_bytes"] == 0
     unlimited = service.get_key_quota(key_id=str(beta["id"]))
@@ -415,8 +414,8 @@ def test_key_quota_list_accounts_expired_streams_without_loading_or_reaping_them
     clock.value += timedelta(hours=2)
 
     payload = service.list_key_quotas(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q=None,
         sort="key_id",
         order="asc",

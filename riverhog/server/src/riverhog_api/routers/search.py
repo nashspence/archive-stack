@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Query
-from http_api_contracts import bounded_list_operation
+from http_api_contracts import mutable_browse_operation
 from riverhog_protocol import CollectionIdParameter, SearchSort, SortOrder
 
 from riverhog_api.auth import CatalogReader
+from riverhog_api.browse import canonical_selectors, page_payload, page_position
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.search import SearchFileOut, SearchResponse
 
@@ -16,26 +17,40 @@ router = APIRouter(tags=["search"])
 @router.get(
     "/search",
     response_model=SearchResponse,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def search(
     container: ContainerDep,
     principal: CatalogReader,
     q: str | None = Query(None, min_length=1),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None),
     sort: Annotated[SearchSort, Query()] = "file_ref",
     order: Annotated[SortOrder, Query()] = "asc",
     collection: Annotated[CollectionIdParameter | None, Query()] = None,
 ) -> SearchResponse:
-    payload = container.search.search(
-        q=q,
-        page=page,
-        per_page=per_page,
-        sort=sort,
-        order=order,
-        collection=collection,
+    selectors = canonical_selectors(q=q, sort=sort, order=order, collection=collection)
+    position = page_position(
+        container,
         principal=principal,
+        operation="search",
+        page_token=page_token,
+        selectors=selectors,
+    )
+    payload = page_payload(
+        container.search.search(
+            q=q,
+            page_size=page_size,
+            position=position,
+            sort=sort,
+            order=order,
+            collection=collection,
+            principal=principal,
+        ),
+        container=container,
+        principal=principal,
+        operation="search",
+        selectors=selectors,
     )
     files = cast(list[dict[str, object]], payload["files"])
     return SearchResponse.model_validate(

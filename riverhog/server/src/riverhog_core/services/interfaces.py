@@ -20,6 +20,7 @@ from riverhog_core.domain.models import (
 )
 
 JsonObject = dict[str, object]
+BrowsePosition = tuple[str | int | bool | bytes | None, ...] | None
 
 
 class CollectionService(Protocol):
@@ -32,8 +33,8 @@ class CollectionService(Protocol):
     def list(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         q: str | None,
         tag: str | None = None,
         encryption_format: str | None = None,
@@ -57,8 +58,8 @@ class CollectionService(Protocol):
         self,
         collection_id: int,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         principal: ApplicationPrincipal | None = None,
     ) -> JsonObject: ...
     def iter_archive_copies(
@@ -74,8 +75,8 @@ class ProvenanceService(Protocol):
         self,
         collection_id: int,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         q: str | None,
         status: str | None,
         sort: str,
@@ -104,8 +105,8 @@ class ProvenanceService(Protocol):
         collection_id: int,
         path: str,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
     def iter_trace_file(
@@ -143,8 +144,8 @@ class ProvenanceService(Protocol):
         collection_id: int,
         journal_id: str,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
     def iter_journal_agents(
@@ -194,8 +195,8 @@ class TagService(Protocol):
     def list(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         q: str | None,
         sort: str,
         order: str,
@@ -213,8 +214,8 @@ class TagService(Protocol):
         self,
         collection_id: int,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         principal: ApplicationPrincipal,
     ) -> JsonObject: ...
     def iter_collection_tags(
@@ -227,6 +228,14 @@ class TagService(Protocol):
         self,
         collection_id: int,
         tag: str,
+        *,
+        principal: ApplicationPrincipal,
+        event_context: dict[str, object] | None = None,
+    ) -> JsonObject: ...
+    def replace_collection_tags(
+        self,
+        collection_id: int,
+        tags: Sequence[str],
         *,
         principal: ApplicationPrincipal,
         event_context: dict[str, object] | None = None,
@@ -316,8 +325,8 @@ class RetrievalService(Protocol):
     def list_cache_objects(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         q: str | None,
         tag: str | None,
         collection_id: int | None = None,
@@ -465,8 +474,8 @@ class AppKeyService(Protocol):
     def list_access(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         q: str | None,
         sort: str,
         order: str,
@@ -491,8 +500,8 @@ class AppKeyService(Protocol):
     def list_apps(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         q: str | None,
         sort: str,
         order: str,
@@ -510,8 +519,8 @@ class AppKeyService(Protocol):
         self,
         *,
         app: str,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         q: str | None,
         sort: str,
         order: str,
@@ -543,8 +552,8 @@ class SearchService(Protocol):
         self,
         *,
         q: str | None,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         sort: str,
         order: str,
         collection: int | None = None,
@@ -599,8 +608,8 @@ class ArchiveCopyService(Protocol):
     def list(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         q: str | None,
         sort: str,
         order: str,
@@ -634,8 +643,8 @@ class ArchiveStoreService(Protocol):
     def list(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: BrowsePosition,
         q: str | None,
         sort: str,
         order: str,

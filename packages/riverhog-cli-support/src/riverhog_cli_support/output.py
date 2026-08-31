@@ -59,10 +59,15 @@ def mapping_items(
 
 
 def page_line(payload: Mapping[str, object], noun: str) -> str:
-    return (
-        f"{noun}: {payload.get('total', 0)} "
-        f"(page {payload.get('page', 1)}/{payload.get('pages', 0)})"
+    count = next(
+        (
+            len(value)
+            for value in payload.values()
+            if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+        ),
+        0,
     )
+    return f"{noun}: {count} in this page; next page token: {payload.get('next_page_token') or '-'}"
 
 
 def format_list_ids(

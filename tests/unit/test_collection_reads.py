@@ -108,7 +108,7 @@ def test_collection_list_query_count_is_independent_of_page_rows(tmp_path: Path)
         if statement.lstrip().upper().startswith("SELECT"):
             select_count += 1
 
-    service.list(page=1, per_page=1, q=None)
+    service.list(page_size=1, position=None, q=None)
     one_row_selects = select_count
     select_count = 0
 
@@ -119,7 +119,7 @@ def test_collection_list_query_count_is_independent_of_page_rows(tmp_path: Path)
 
     event.listen(CollectionArchiveObjectRecord, "load", record_loaded_object)
     try:
-        page = service.list(page=1, per_page=12, q=None)
+        page = service.list(page_size=12, position=None, q=None)
     finally:
         event.remove(CollectionArchiveObjectRecord, "load", record_loaded_object)
     twelve_row_selects = select_count
@@ -141,16 +141,16 @@ def test_collection_encryption_filters_preserve_catalog_authorization(tmp_path: 
     )
 
     visible = service.list(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q=None,
         encryption_format="age-v1-scrypt",
         passphrase_id="fixture-archive-key-v2",
         principal=principal,
     )
     hidden = service.list(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q=None,
         passphrase_id="fixture-archive-key-v1",
         principal=principal,
@@ -161,6 +161,6 @@ def test_collection_encryption_filters_preserve_catalog_authorization(tmp_path: 
     assert visible.passphrase_id == "fixture-archive-key-v2"
     assert visible.collections[0].encryption_format == "age-v1-scrypt"
     assert visible.collections[0].passphrase_id == "fixture-archive-key-v2"
-    assert hidden.total == 0
     assert hidden.collections == []
+    assert hidden.next_position is None
     engine.dispose()

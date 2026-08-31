@@ -160,28 +160,29 @@ def test_archive_store_list_is_bounded_filterable_and_sorted(tmp_path: Path) -> 
 
     service = SqlAlchemyArchiveStoreService(config, _stores(include_b2=True))
     page = service.list(
-        page=1,
-        per_page=1,
+        page_size=1,
+        position=None,
         q=None,
         sort="stored_bytes",
         order="desc",
     )
     filtered = service.list(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q="immediate",
         sort="store",
         order="asc",
     )
     by_read_priority = service.list(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q=None,
         sort="read_priority",
         order="asc",
     )
 
-    assert (page.total, page.pages, [store.store for store in page.stores]) == (2, 2, ["deep"])
+    assert page.next_position is not None
+    assert [store.store for store in page.stores] == ["deep"]
     assert [store.store for store in filtered.stores] == ["b2"]
     assert [(store.store, store.read_priority) for store in by_read_priority.stores] == [
         ("deep", 1),

@@ -54,10 +54,8 @@ class ArchiveStoreSummary:
 
 @dataclass(frozen=True)
 class ArchiveStoreListPage:
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int
+    next_position: tuple[str | int | bool | bytes | None, ...] | None
     sort: str
     order: str
     query: str | None
@@ -82,10 +80,8 @@ class CollectionSummary:
 
 @dataclass(frozen=True)
 class CollectionListPage:
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int
+    next_position: tuple[str | int | bool | bytes | None, ...] | None
     sort: str
     order: str
     query: str | None

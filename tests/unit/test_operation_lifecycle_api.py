@@ -258,9 +258,19 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         access=[{"permission": "catalog:read", "resource": "*"}],
     )
     delegated_id = str(delegated["id"])
-    assert operator.list_apps(q="qualification", page=1, per_page=100)["total"] == 2
-    assert operator.list_app_keys("qualification-reader", page=1, per_page=100)["total"] == 1
-    assert operator.list_app_key_access(key_id=delegated_id, page=1, per_page=100)["total"] == 1
+    assert len(operator.list_apps(q="qualification", page_size=100, page_token=None)["apps"]) == 2
+    assert (
+        len(operator.list_app_keys("qualification-reader", page_size=100, page_token=None)["keys"])
+        == 1
+    )
+    assert (
+        len(
+            operator.list_app_key_access(key_id=delegated_id, page_size=100, page_token=None)[
+                "access"
+            ]
+        )
+        == 1
+    )
     operator.replace_app_key_access(
         "qualification-reader",
         delegated_id,
@@ -284,9 +294,9 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         monthly_bytes=1024,
     )
     assert (
-        operator.list_download_quotas(app="qualification-reader", page=1, per_page=100)["quotas"][
-            0
-        ]["monthly_bytes"]
+        operator.list_download_quotas(app="qualification-reader", page_size=100, page_token=None)[
+            "quotas"
+        ][0]["monthly_bytes"]
         == 1024
     )
     assert operator.get_download_quota()["app"] == "qualification-operator"
@@ -296,7 +306,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     operator.create_tag("docs")
     operator.create_tag("temporary")
     assert operator.get_tag("docs")["id"] == "docs"
-    assert operator.list_tags(q="doc", page=1, per_page=100)["total"] == 1
+    assert len(operator.list_tags(q="doc", page_size=100, page_token=None)["tags"]) == 1
     tag_plan = operator.plan_tag_deletion("temporary")
     operator.delete_tag("temporary", challenge=str(tag_plan["challenge"]))
 
@@ -333,7 +343,10 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     operator.create_tag("staged")
     operator.add_collection_upload_session_tag(collection_id, "staged")
     operator.remove_collection_upload_session_tag(collection_id, "staged")
-    assert operator.list_collection_upload_sessions(page=1, per_page=100)["total"] == 1
+    assert (
+        len(operator.list_collection_upload_sessions(page_size=100, page_token=None)["uploads"])
+        == 1
+    )
     staged = operator.upload_collection_upload_session_provenance_journal(
         collection_id,
         journal_summary.journal_id,
@@ -366,7 +379,11 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         registration_constraints=opened["registration_constraints"],
     )
     assert (
-        operator.list_collection_upload_session_files(collection_id, page=1, per_page=100)["total"]
+        len(
+            operator.list_collection_upload_session_files(
+                collection_id, page_size=100, page_token=None
+            )["files"]
+        )
         == 1
     )
     operator.complete_collection_upload_session(
@@ -386,25 +403,56 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
                 content=_unit_content(source_root, assignment.unit),
             )
     assert (
-        operator.list_collection_upload_session_files(collection_id, page=1, per_page=100)["total"]
+        len(
+            operator.list_collection_upload_session_files(
+                collection_id, page_size=100, page_token=None
+            )["files"]
+        )
         == 1
     )
     _finalize_upload(container, operator, collection_id)
     assert operator.get_collection_upload_session(collection_id)["state"] == "finalized"
     assert operator.get_collection(collection_id)["id"] == collection_id
-    assert operator.get_collection_tags(collection_id, page=1, per_page=100)["tag_count"] == 1
     assert (
-        operator.list_collection_archive_copies(collection_id, page=1, per_page=100)["total"] == 1
+        len(operator.get_collection_tags(collection_id, page_size=100, page_token=None)["tags"])
+        == 1
     )
-    assert operator.list_collections(tag="docs", page=1, per_page=100)["total"] == 1
-    assert operator.search("document", collection=collection_id, page=1, per_page=100)["total"] == 1
-    assert operator.get_collection_tags(collection_id, page=1, per_page=100)["tags"] == ["docs"]
+    assert (
+        len(
+            operator.list_collection_archive_copies(collection_id, page_size=100, page_token=None)[
+                "copies"
+            ]
+        )
+        == 1
+    )
+    assert (
+        len(operator.list_collections(tag="docs", page_size=100, page_token=None)["collections"])
+        == 1
+    )
+    assert (
+        len(
+            operator.search("document", collection=collection_id, page_size=100, page_token=None)[
+                "files"
+            ]
+        )
+        == 1
+    )
+    assert operator.get_collection_tags(collection_id, page_size=100, page_token=None)["tags"] == [
+        "docs"
+    ]
     operator.create_tag("reviewed")
     operator.add_collection_tag(collection_id, "reviewed")
     operator.remove_collection_tag(collection_id, "docs")
     operator.replace_collection_tags(collection_id, ["docs", "reviewed"])
 
-    assert operator.list_collection_provenance(collection_id, page=1, per_page=100)["total"] == 1
+    assert (
+        len(
+            operator.list_collection_provenance(collection_id, page_size=100, page_token=None)[
+                "files"
+            ]
+        )
+        == 1
+    )
     assert (
         operator.get_collection_file_provenance(collection_id, "document.txt")["journal"][
             "journal_id"
@@ -413,12 +461,14 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     )
     assert operator.trace_collection_file_provenance(collection_id, "document.txt")["items"]
     assert (
-        operator.list_collection_provenance_journal_agents(
-            collection_id,
-            journal_summary.journal_id,
-            page=1,
-            per_page=100,
-        )["total"]
+        len(
+            operator.list_collection_provenance_journal_agents(
+                collection_id,
+                journal_summary.journal_id,
+                page_size=100,
+                page_token=None,
+            )["agents"]
+        )
         >= 1
     )
     with operator.stream_collection_provenance_journal(
@@ -464,11 +514,12 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     assert inventory.complete is True
 
     assert {
-        item["store"] for item in operator.list_archive_stores(page=1, per_page=100)["stores"]
+        item["store"]
+        for item in operator.list_archive_stores(page_size=100, page_token=None)["stores"]
     } == {"primary", "secondary"}
     assert operator.get_archive_store("primary")["store"] == "primary"
     assert operator.retrieval_cache_status()["configured"] is False
-    assert operator.list_retrieval_cache_objects(page=1, per_page=100)["objects"] == []
+    assert operator.list_retrieval_cache_objects(page_size=100, page_token=None)["objects"] == []
 
     plan = operator.plan_retrieval([(collection_id, "document.txt")], restore_policy="never")
     job = operator.create_retrieval_job(
@@ -549,7 +600,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         operator.get_archive_copy_job(collection_id, destination_store="secondary")["state"]
         == "requested"
     )
-    assert operator.list_archive_copy_jobs(page=1, per_page=100)["total"] == 1
+    assert len(operator.list_archive_copy_jobs(page_size=100, page_token=None)["copies"]) == 1
     assert (
         operator.cancel_archive_copy_job(collection_id, destination_store="secondary")["state"]
         == "canceled"
@@ -660,7 +711,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
     claim_id = str(claim["id"])
     claim_fence = int(claim["fence"])
     assert operator.get_processing_claim(claim_id)["work_id"] == work_id
-    assert operator.list_processing_claims(page=1, per_page=100).total == 3
+    assert len(operator.list_processing_claims(page_size=100, page_token=None).claims) == 3
     assert (
         operator.renew_processing_claim(
             claim_id,
@@ -762,17 +813,21 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         disposition_state.identity.model_dump(mode="json")
     )
     assert (
-        operator.list_processing_claim_dispositions(
-            claim_id,
-            authority_sha256=disposition_identity.sha256,
-        ).total
+        len(
+            operator.list_processing_claim_dispositions(
+                claim_id,
+                authority_sha256=disposition_identity.sha256,
+            ).dispositions
+        )
         == 1
     )
     assert (
-        operator.list_processing_claim_disposition_outputs(
-            claim_id,
-            authority_sha256=disposition_identity.sha256,
-        ).total
+        len(
+            operator.list_processing_claim_disposition_outputs(
+                claim_id,
+                authority_sha256=disposition_identity.sha256,
+            ).outputs
+        )
         == 1
     )
     plan = sealed["plan"]
@@ -837,7 +892,14 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         output_journal_summary.journal_id: output_journal,
     }
     target = _api(transport, str(output_capability["token"]), observer=observer)
-    assert target.list_collection_provenance(collection_id, page=1, per_page=100)["total"] == 1
+    assert (
+        len(
+            target.list_collection_provenance(collection_id, page_size=100, page_token=None)[
+                "files"
+            ]
+        )
+        == 1
+    )
     with target.stream_collection_provenance_journal(
         collection_id,
         journal_summary.journal_id,
@@ -1074,7 +1136,7 @@ def test_riverhog_official_client_positive_disposable_lifecycle(
         for item in operator.trace_collection_file_provenance(
             output_collection_id,
             output_relative_path,
-            per_page=100,
+            page_size=100,
         )["items"]
         if item["kind"] == "journal"
     } == {

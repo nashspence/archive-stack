@@ -431,19 +431,18 @@ class FixtureApi:
         )
 
     def get_collection_tags(
-        self, collection_id: int, *, page: int, per_page: int
+        self, collection_id: int, *, page_size: int, page_token: str | None
     ) -> dict[str, Any]:
         assert self.derivation is not None
-        assert (page, per_page) == (1, 100)
+        assert (page_size, page_token) == (100, None)
         self.calls.append(("get-tags", {"collection_id": collection_id}))
         return {
             "collection_id": collection_id,
             "metadata_revision": 1,
             "inventory_identity": _sha("6"),
             "tag_count": len(self.derivation.output_tags),
-            "page": 1,
-            "pages": 1,
-            "total": len(self.derivation.output_tags),
+            "page_size": page_size,
+            "next_page_token": None,
             "tags": list(self.derivation.output_tags),
         }
 

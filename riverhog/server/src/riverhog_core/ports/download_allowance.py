@@ -47,8 +47,8 @@ class DownloadAllowance(Protocol):
     def list_key_quotas(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         sort: str,
         order: str,

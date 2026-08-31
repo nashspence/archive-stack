@@ -4,6 +4,7 @@ import hashlib
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
@@ -146,8 +147,8 @@ def test_app_key_plaintext_is_returned_once_and_only_its_digest_is_stored(
 
     listed = service.list_keys(
         app="review-station",
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q=None,
         sort="created_at",
         order="desc",
@@ -190,6 +191,59 @@ def test_app_keys_rotate_revoke_expire_and_authenticate_without_restart(tmp_path
         assert record is not None
         record.expires_at = "2000-01-01T00:00:00.000000Z"
     assert service.authenticate(str(second["token"])) is None
+
+
+def test_key_browsing_crosses_nullable_sort_positions_without_omission(
+    tmp_path: Path,
+) -> None:
+    service, config = app_keys(tmp_path)
+    created = [create_key(service, app="nullable") for _ in range(3)]
+    factory = make_session_factory(config.database_url)
+    expiry_by_id = {
+        str(created[0]["id"]): "2026-01-01T00:00:00.000000Z",
+        str(created[1]["id"]): "2027-01-01T00:00:00.000000Z",
+        str(created[2]["id"]): None,
+    }
+    with session_scope(factory) as session:
+        for key_id, expires_at in expiry_by_id.items():
+            record = session.get(AppKeyRecord, key_id)
+            assert record is not None
+            record.expires_at = expires_at
+
+    def browse(order: str) -> list[str]:
+        position: tuple[str | int | bool | bytes | None, ...] | None = None
+        ids: list[str] = []
+        while True:
+            page = service.list_keys(
+                app="nullable",
+                page_size=1,
+                position=position,
+                q=None,
+                sort="expires_at",
+                order=order,
+            )
+            keys = page["keys"]
+            assert isinstance(keys, list)
+            for item in keys:
+                assert isinstance(item, dict)
+                ids.append(str(item["id"]))
+            position = cast(
+                tuple[str | int | bool | bytes | None, ...] | None,
+                page["_next_position"],
+            )
+            if position is None:
+                return ids
+
+    ascending = sorted(
+        expiry_by_id,
+        key=lambda key_id: (
+            expiry_by_id[key_id] is None,
+            expiry_by_id[key_id] or "",
+            key_id,
+        ),
+    )
+    assert browse("asc") == ascending
+    assert browse("desc") == list(reversed(ascending))
 
 
 def test_key_delegation_cannot_exceed_permission_or_resource(tmp_path: Path) -> None:
@@ -350,15 +404,14 @@ def test_app_list_aggregates_and_filters_in_the_database(tmp_path: Path) -> None
     create_key(service, app="beta")
     service.revoke(app="alpha", key_id=str(alpha_first["id"]))
     payload = service.list_apps(
-        page=1,
-        per_page=1,
+        page_size=1,
+        position=None,
         q="a",
         sort="keys",
         order="desc",
         active=True,
     )
-    assert payload["total"] == 2
-    assert payload["pages"] == 2
+    assert payload["_next_position"] is not None
     assert payload["apps"][0]["name"] == "alpha"
     assert payload["apps"][0]["active_keys"] == 1
 

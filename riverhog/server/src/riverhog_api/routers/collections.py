@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Body, Header, HTTPException, Query, Request
 from http_api_contracts import (
     QuotedSha256Identity,
-    bounded_list_operation,
+    mutable_browse_operation,
     operation_interface,
     parse_quoted_sha256_identity,
 )
@@ -34,6 +34,7 @@ from riverhog_api.auth import (
     CollectionDeleter,
     CollectionUploadReader,
 )
+from riverhog_api.browse import canonical_selectors, page_payload, page_position
 from riverhog_api.deps import ContainerDep
 from riverhog_api.mappers import map_collection, map_collection_list_page
 from riverhog_api.schemas.collections import (
@@ -104,13 +105,13 @@ _CLIENT_PROVENANCE_BINARY_OPERATION = {
 @router.get(
     "/collections",
     response_model=ListCollectionsResponse,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_collections(
     container: ContainerDep,
     principal: CatalogReader,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None, max_length=8192),
     q: str | None = Query(None),
     sort: Annotated[CollectionSort, Query()] = "id",
     order: Annotated[SortOrder, Query()] = "asc",
@@ -118,9 +119,23 @@ def list_collections(
     encryption_format: str | None = Query(None),
     passphrase_id: str | None = Query(None),
 ) -> ListCollectionsResponse:
+    selectors = canonical_selectors(
+        q=q,
+        sort=sort,
+        order=order,
+        tag=tag,
+        encryption_format=encryption_format,
+        passphrase_id=passphrase_id,
+    )
     summary = container.collections.list(
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        position=page_position(
+            container,
+            principal,
+            operation="list_collections",
+            page_token=page_token,
+            selectors=selectors,
+        ),
         q=q,
         tag=tag,
         encryption_format=encryption_format,
@@ -129,27 +144,49 @@ def list_collections(
         order=order,
         principal=principal,
     )
-    return ListCollectionsResponse.model_validate(map_collection_list_page(summary))
+    return ListCollectionsResponse.model_validate(
+        page_payload(
+            map_collection_list_page(summary),
+            container=container,
+            principal=principal,
+            operation="list_collections",
+            selectors=selectors,
+        )
+    )
 
 
 @router.get(
     "/collections/{collection_id}/archive-copies",
     response_model=CollectionArchiveCopyListOut,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_collection_archive_copies(
     collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CatalogReader,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None, max_length=8192),
 ) -> CollectionArchiveCopyListOut:
+    selectors = canonical_selectors(collection_id=collection_id)
+    payload = container.collections.list_archive_copies(
+        collection_id,
+        page_size=page_size,
+        position=page_position(
+            container,
+            principal,
+            operation="list_collection_archive_copies",
+            page_token=page_token,
+            selectors=selectors,
+        ),
+        principal=principal,
+    )
     return CollectionArchiveCopyListOut.model_validate(
-        container.collections.list_archive_copies(
-            collection_id,
-            page=page,
-            per_page=per_page,
+        page_payload(
+            payload,
+            container=container,
             principal=principal,
+            operation="list_collection_archive_copies",
+            selectors=selectors,
         )
     )
 
@@ -157,29 +194,43 @@ def list_collection_archive_copies(
 @router.get(
     "/collection-upload-sessions",
     response_model=ListCollectionUploadSessionsResponse,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_collection_upload_sessions(
     container: ContainerDep,
     principal: CollectionUploadReader,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None, max_length=8192),
     q: str | None = Query(None),
     tag: Annotated[CanonicalTag | None, Query()] = None,
     state: Annotated[CollectionUploadState | None, Query()] = None,
     sort: Annotated[CollectionUploadSort, Query()] = "created_at",
     order: Annotated[SortOrder, Query()] = "desc",
 ) -> ListCollectionUploadSessionsResponse:
+    selectors = canonical_selectors(q=q, tag=tag, state=state, sort=sort, order=order)
+    payload = container.collection_uploads.list(
+        page_size=page_size,
+        position=page_position(
+            container,
+            principal,
+            operation="list_collection_upload_sessions",
+            page_token=page_token,
+            selectors=selectors,
+        ),
+        q=q,
+        tag=tag,
+        state=state,
+        sort=sort,
+        order=order,
+        principal=principal,
+    )
     return ListCollectionUploadSessionsResponse.model_validate(
-        container.collection_uploads.list(
-            page=page,
-            per_page=per_page,
-            q=q,
-            tag=tag,
-            state=state,
-            sort=sort,
-            order=order,
+        page_payload(
+            payload,
+            container=container,
             principal=principal,
+            operation="list_collection_upload_sessions",
+            selectors=selectors,
         )
     )
 
@@ -213,7 +264,7 @@ def create_or_resume_collection_upload_session(
     "/collection-upload-sessions/{collection_id}/tags",
     response_model=ListCollectionUploadSessionTagsResponse,
     openapi_extra={
-        **bounded_list_operation(),
+        **mutable_browse_operation(),
         **operation_interface("client-only-primitive"),
     },
 )
@@ -221,15 +272,29 @@ def list_collection_upload_session_tags(
     collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CollectionCreator,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None, max_length=8192),
 ) -> ListCollectionUploadSessionTagsResponse:
     container.collection_uploads.require_access(collection_id, principal)
+    selectors = canonical_selectors(collection_id=collection_id)
+    payload = container.collection_uploads.list_tags(
+        collection_id,
+        page_size=page_size,
+        position=page_position(
+            container,
+            principal,
+            operation="list_collection_upload_session_tags",
+            page_token=page_token,
+            selectors=selectors,
+        ),
+    )
     return ListCollectionUploadSessionTagsResponse.model_validate(
-        container.collection_uploads.list_tags(
-            collection_id,
-            page=page,
-            per_page=per_page,
+        page_payload(
+            payload,
+            container=container,
+            principal=principal,
+            operation="list_collection_upload_session_tags",
+            selectors=selectors,
         )
     )
 
@@ -400,22 +465,37 @@ def get_collection_upload_session_provenance_journal(
 @router.get(
     "/collection-upload-sessions/{collection_id}/files",
     response_model=ListCollectionUploadSessionFilesResponse,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_collection_upload_session_files(
     collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CollectionUploadReader,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None, max_length=8192),
 ) -> ListCollectionUploadSessionFilesResponse:
     container.collection_uploads.require_read_access(collection_id, principal)
+    selectors = canonical_selectors(collection_id=collection_id)
     payload = container.collection_uploads.list_files(
         collection_id,
-        page=page,
-        per_page=per_page,
+        page_size=page_size,
+        position=page_position(
+            container,
+            principal,
+            operation="list_collection_upload_session_files",
+            page_token=page_token,
+            selectors=selectors,
+        ),
     )
-    return ListCollectionUploadSessionFilesResponse.model_validate(payload)
+    return ListCollectionUploadSessionFilesResponse.model_validate(
+        page_payload(
+            payload,
+            container=container,
+            principal=principal,
+            operation="list_collection_upload_session_files",
+            selectors=selectors,
+        )
+    )
 
 
 @router.post(

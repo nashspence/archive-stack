@@ -537,10 +537,8 @@ def test_collection_upload_control_commands_have_human_json_parity(
     class Api:
         def list_collection_upload_sessions(self, **_kwargs: object) -> dict[str, object]:
             return {
-                "page": 1,
-                "pages": 1,
-                "per_page": 25,
-                "total": 1,
+                "page_size": 25,
+                "next_page_token": None,
                 "uploads": [upload()],
             }
 
@@ -606,10 +604,8 @@ def test_collection_upload_custody_files_and_guarded_discard_have_human_json_par
         ) -> dict[str, object]:
             assert collection_id == COLLECTION_ID
             return {
-                "page": 1,
-                "pages": 1,
-                "per_page": 1,
-                "total": 1,
+                "page_size": 1,
+                "next_page_token": None,
                 "files": [file_payload],
             }
 

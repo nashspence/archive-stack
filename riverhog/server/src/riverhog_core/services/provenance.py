@@ -5,7 +5,7 @@ import json
 from collections.abc import Iterator
 from typing import Any, cast
 
-from http_api_contracts import closed_literal_values
+from http_api_contracts import BrowseScalar, closed_literal_values
 from riverhog_protocol import (
     DERIVATION_EVIDENCE_PATH,
     ProvenanceSort,
@@ -53,6 +53,7 @@ from riverhog_core.app_permissions import (
     ApplicationPrincipal,
 )
 from riverhog_core.artifact_access import artifact_scope_filter, require_artifact_scope
+from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionFileProvenanceRecord,
@@ -101,8 +102,8 @@ class SqlAlchemyProvenanceService:
         self,
         collection_id: int,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         status: str | None,
         sort: str,
@@ -110,12 +111,12 @@ class SqlAlchemyProvenanceService:
         principal: ApplicationPrincipal,
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
-        _page_options(page, per_page, sort, order)
+        _page_options(page_size, sort, order)
         if status is not None and status not in _STATUS_VALUES:
             raise BadRequest(f"status must be one of {', '.join(sorted(_STATUS_VALUES))}")
         with read_snapshot(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
-            joined = _provenance_file_statement(
+            joined, key_columns = _provenance_file_statement(
                 collection_id=collection_id,
                 principal=principal,
                 q=q,
@@ -123,14 +124,24 @@ class SqlAlchemyProvenanceService:
                 sort=sort,
                 order=order,
             )
-            total = int(session.scalar(select(func.count()).select_from(joined.subquery())) or 0)
-            joined = joined.offset((page - 1) * per_page).limit(per_page)
-            rows = session.execute(joined).all()
+            rows, next_position = bounded_page(
+                list(
+                    session.execute(
+                        keyset_statement(
+                            joined,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda row: _provenance_file_position(row[0], sort=sort),
+            )
             return {
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": ((total + per_page - 1) // per_page if total else 0),
+                "page_size": page_size,
+                "_next_position": next_position,
                 "sort": sort,
                 "order": order,
                 "query": q,
@@ -152,19 +163,22 @@ class SqlAlchemyProvenanceService:
         principal: ApplicationPrincipal,
     ) -> Iterator[dict[str, Any]]:
         collection_id = _collection_id(collection_id)
-        _page_options(1, 100, sort, order)
+        _page_options(100, sort, order)
         if status is not None and status not in _STATUS_VALUES:
             raise BadRequest(f"status must be one of {', '.join(sorted(_STATUS_VALUES))}")
         with read_snapshot(self._session_factory) as session:
             collection = _authorized_collection(session, collection_id, principal)
-            statement = _provenance_file_statement(
+            statement, key_columns = _provenance_file_statement(
                 collection_id=collection_id,
                 principal=principal,
                 q=q,
                 status=status,
                 sort=sort,
                 order=order,
-            ).execution_options(yield_per=100)
+            )
+            direction = desc if order == "desc" else asc
+            statement = statement.order_by(*(direction(column) for column in key_columns))
+            statement = statement.execution_options(yield_per=100)
             for file, binding in session.execute(statement):
                 yield _file_payload(file, binding, collection)
 
@@ -185,46 +199,38 @@ class SqlAlchemyProvenanceService:
         collection_id: int,
         path: str,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         principal: ApplicationPrincipal,
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
         path = _path(path)
-        _trace_page_options(page, per_page)
+        validate_page_size(page_size)
         with read_snapshot(self._session_factory) as session:
             shown = _shown_file(session, collection_id, path, principal)
             binding = shown["provenance"]
             if binding["status"] == "omitted":
                 return {
                     **shown,
-                    "page": page,
-                    "per_page": per_page,
-                    "total": 0,
-                    "pages": 0,
+                    "page_size": page_size,
+                    "_next_position": None,
                     "items": [],
                 }
             journal_statement, reference_statement = _trace_statements(
                 collection_id,
                 str(binding["journal_id"]),
             )
-            journal_total = _statement_count(session, journal_statement)
-            reference_total = _statement_count(session, reference_statement)
-            total = journal_total + reference_total
-            items = _trace_page_items(
+            items, next_position = _trace_page_items(
                 session,
                 journal_statement,
                 reference_statement,
-                journal_total=journal_total,
-                offset=(page - 1) * per_page,
-                limit=per_page,
+                position=position,
+                page_size=page_size,
             )
             return {
                 **shown,
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": ((total + per_page - 1) // per_page if total else 0),
+                "page_size": page_size,
+                "_next_position": next_position,
                 "items": items,
             }
 
@@ -360,41 +366,40 @@ class SqlAlchemyProvenanceService:
         collection_id: int,
         journal_id: str,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         principal: ApplicationPrincipal,
     ) -> dict[str, Any]:
         collection_id = _collection_id(collection_id)
-        if page < 1 or per_page < 1 or per_page > 100:
-            raise BadRequest("invalid provenance journal agent pagination")
+        validate_page_size(page_size)
         with read_snapshot(self._session_factory) as session:
             _require_readable_journal(session, collection_id, journal_id, principal)
             predicate = (
                 CollectionProvenanceJournalAgentRecord.collection_id == collection_id,
                 CollectionProvenanceJournalAgentRecord.journal_id == journal_id,
             )
-            total = int(
-                session.scalar(
-                    select(func.count())
-                    .select_from(CollectionProvenanceJournalAgentRecord)
-                    .where(*predicate)
-                )
-                or 0
-            )
-            rows = session.scalars(
-                select(CollectionProvenanceJournalAgentRecord.agent_id)
-                .where(*predicate)
-                .order_by(CollectionProvenanceJournalAgentRecord.agent_id)
-                .offset((page - 1) * per_page)
-                .limit(per_page)
+            rows, next_position = bounded_page(
+                list(
+                    session.scalars(
+                        keyset_statement(
+                            select(CollectionProvenanceJournalAgentRecord.agent_id).where(
+                                *predicate
+                            ),
+                            columns=(CollectionProvenanceJournalAgentRecord.agent_id,),
+                            position=position,
+                            order="asc",
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda agent_id: (agent_id,),
             )
             return {
                 "collection_id": collection_id,
                 "journal_id": journal_id,
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": (total + per_page - 1) // per_page if total else 0,
+                "page_size": page_size,
+                "_next_position": next_position,
                 "agents": [{"agent_id": agent_id} for agent_id in rows],
             }
 
@@ -1907,7 +1912,7 @@ def _provenance_file_statement(
     status: str | None,
     sort: str,
     order: str,
-) -> Any:
+) -> tuple[Any, tuple[Any, ...]]:
     joined = (
         select(CollectionFileRecord, CollectionFileProvenanceRecord)
         .outerjoin(
@@ -1939,11 +1944,22 @@ def _provenance_file_statement(
         "bytes": CollectionFileRecord.bytes,
         "status": effective_status,
     }[sort]
-    ordering = desc if order == "desc" else asc
-    return joined.order_by(
-        ordering(sort_column),
-        ordering(CollectionFileRecord.path_sort_key),
-    )
+    key_columns = tuple(dict.fromkeys((sort_column, CollectionFileRecord.path_sort_key)))
+    return joined, key_columns
+
+
+def _provenance_file_position(
+    file: CollectionFileRecord,
+    *,
+    sort: str,
+) -> tuple[BrowseScalar, ...]:
+    if sort == "path":
+        value: BrowseScalar = file.path_sort_key
+    elif sort == "bytes":
+        value = file.bytes
+    else:
+        value = str(file.provenance_status)
+    return (value,) if sort == "path" else (value, file.path_sort_key)
 
 
 def _authorized_collection(
@@ -2058,31 +2074,51 @@ def _trace_statements(collection_id: int, journal_id: str) -> tuple[Any, Any]:
     return journals, references
 
 
-def _statement_count(session: Session, statement: Any) -> int:
-    return int(
-        session.scalar(select(func.count()).select_from(statement.order_by(None).subquery())) or 0
-    )
-
-
 def _trace_page_items(
     session: Session,
     journal_statement: Any,
     reference_statement: Any,
     *,
-    journal_total: int,
-    offset: int,
-    limit: int,
-) -> list[dict[str, Any]]:
+    position: tuple[str | int | bool | bytes | None, ...] | None,
+    page_size: int,
+) -> tuple[list[dict[str, Any]], tuple[str | int | bool | bytes | None, ...] | None]:
+    if position is not None and (not position or position[0] not in {"journal", "reference"}):
+        raise BadRequest("page token position is invalid")
+    budget = page_size + 1
     items: list[dict[str, Any]] = []
-    if offset < journal_total:
-        journals = session.scalars(journal_statement.offset(offset).limit(limit))
+    if position is None or position[0] == "journal":
+        after_journal = None if position is None else position[1:]
+        journals = session.scalars(
+            keyset_statement(
+                journal_statement.order_by(None),
+                columns=(CollectionProvenanceJournalRecord.journal_id,),
+                position=after_journal,
+                order="asc",
+                page_size=budget - 1,
+            ).limit(budget)
+        )
         items.extend(
             {"kind": "journal", "journal": _journal_payload(journal)} for journal in journals
         )
-    remaining = limit - len(items)
+    remaining = budget - len(items)
     if remaining > 0:
-        reference_offset = max(0, offset - journal_total)
-        references = session.scalars(reference_statement.offset(reference_offset).limit(remaining))
+        after_reference = (
+            position[1:] if position is not None and position[0] == "reference" else None
+        )
+        references = session.scalars(
+            keyset_statement(
+                reference_statement.order_by(None),
+                columns=(
+                    CollectionProvenanceExternalStateReferenceRecord.from_journal_id,
+                    CollectionProvenanceExternalStateReferenceRecord.to_journal_id,
+                    CollectionProvenanceExternalStateReferenceRecord.state_id,
+                    CollectionProvenanceExternalStateReferenceRecord.entry_id,
+                ),
+                position=after_reference,
+                order="asc",
+                page_size=max(1, remaining - 1),
+            ).limit(remaining)
+        )
         items.extend(
             {
                 "kind": "external_state_reference",
@@ -2090,7 +2126,20 @@ def _trace_page_items(
             }
             for reference in references
         )
-    return items
+    return bounded_page(items, page_size=page_size, position_of=_trace_item_position)
+
+
+def _trace_item_position(item: dict[str, Any]) -> tuple[str, ...]:
+    if item["kind"] == "journal":
+        return "journal", str(item["journal"]["journal_id"])
+    reference = item["reference"]
+    return (
+        "reference",
+        str(reference["from_journal_id"]),
+        str(reference["to_journal_id"]),
+        str(reference["state_id"]),
+        str(reference["entry_id"]),
+    )
 
 
 def _require_readable_journal(
@@ -2235,18 +2284,12 @@ def _path(value: str) -> str:
         raise BadRequest(str(exc)) from exc
 
 
-def _page_options(page: int, per_page: int, sort: str, order: str) -> None:
-    if page < 1 or per_page < 1:
-        raise BadRequest("page and per_page must be positive")
+def _page_options(page_size: int, sort: str, order: str) -> None:
+    validate_page_size(page_size)
     if sort not in _SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
     if order not in _SORT_ORDERS:
         raise BadRequest("order must be asc or desc")
-
-
-def _trace_page_options(page: int, per_page: int) -> None:
-    if page < 1 or per_page < 1 or per_page > 100:
-        raise BadRequest("trace page and per_page must be between 1 and 100")
 
 
 def _like_pattern(value: str) -> str:

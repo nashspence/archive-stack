@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Query
-from http_api_contracts import bounded_list_operation
+from http_api_contracts import mutable_browse_operation
 from riverhog_protocol import CollectionIdParameter, SortOrder, TagSort
 from riverhog_protocol.paths import CanonicalTag
 
 from riverhog_api.auth import CatalogReader, CollectionTagManager, TagCreator, TagDeleter
+from riverhog_api.browse import canonical_selectors, page_payload, page_position
 from riverhog_api.deps import ContainerDep
 from riverhog_api.schemas.tags import (
     CollectionTagSetOut,
@@ -15,6 +16,7 @@ from riverhog_api.schemas.tags import (
     CreateTagRequest,
     DeleteTagRequest,
     MutateCollectionTagRequest,
+    ReplaceCollectionTagsRequest,
     TagDeletionPlanOut,
     TagDeletionResultOut,
     TagListOut,
@@ -36,25 +38,39 @@ def create_tag(
 @router.get(
     "/tags",
     response_model=TagListOut,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def list_tags(
     container: ContainerDep,
     principal: CatalogReader,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None),
     q: str | None = Query(None),
     sort: Annotated[TagSort, Query()] = "id",
     order: Annotated[SortOrder, Query()] = "asc",
 ) -> TagListOut:
+    selectors = canonical_selectors(q=q, sort=sort, order=order)
+    position = page_position(
+        container,
+        principal=principal,
+        operation="list_tags",
+        page_token=page_token,
+        selectors=selectors,
+    )
     return TagListOut.model_validate(
-        container.tags.list(
-            page=page,
-            per_page=per_page,
-            q=q,
-            sort=sort,
-            order=order,
+        page_payload(
+            container.tags.list(
+                page_size=page_size,
+                position=position,
+                q=q,
+                sort=sort,
+                order=order,
+                principal=principal,
+            ),
+            container=container,
             principal=principal,
+            operation="list_tags",
+            selectors=selectors,
         )
     )
 
@@ -92,21 +108,35 @@ def delete_tag(
 @router.get(
     "/collections/{collection_id}/tags",
     response_model=CollectionTagsOut,
-    openapi_extra=bounded_list_operation(),
+    openapi_extra=mutable_browse_operation(),
 )
 def get_collection_tags(
     collection_id: CollectionIdParameter,
     container: ContainerDep,
     principal: CatalogReader,
-    page: int = Query(1, ge=1),
-    per_page: int = Query(25, ge=1, le=100),
+    page_size: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None),
 ) -> CollectionTagsOut:
+    selectors = canonical_selectors(collection_id=collection_id)
+    position = page_position(
+        container,
+        principal=principal,
+        operation="get_collection_tags",
+        page_token=page_token,
+        selectors=selectors,
+    )
     return CollectionTagsOut.model_validate(
-        container.tags.list_collection_tags(
-            collection_id,
-            page=page,
-            per_page=per_page,
+        page_payload(
+            container.tags.list_collection_tags(
+                collection_id,
+                page_size=page_size,
+                position=position,
+                principal=principal,
+            ),
+            container=container,
             principal=principal,
+            operation="get_collection_tags",
+            selectors=selectors,
         )
     )
 
@@ -123,6 +153,23 @@ def add_collection_tag(
         container.tags.add_collection_tag(
             collection_id,
             tag,
+            principal=principal,
+            event_context=request.event_context,
+        )
+    )
+
+
+@router.put("/collections/{collection_id}/tags", response_model=CollectionTagSetOut)
+def replace_collection_tags(
+    collection_id: CollectionIdParameter,
+    request: ReplaceCollectionTagsRequest,
+    container: ContainerDep,
+    principal: CollectionTagManager,
+) -> CollectionTagSetOut:
+    return CollectionTagSetOut.model_validate(
+        container.tags.replace_collection_tags(
+            collection_id,
+            request.tags,
             principal=principal,
             event_context=request.event_context,
         )

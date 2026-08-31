@@ -173,7 +173,7 @@ def create_app(composition: FtpAdapterComposition | None = None) -> FastAPI:
     )
     def health_ready() -> HealthResponse:
         try:
-            resolved.api.list_archive_stores(per_page=1)
+            resolved.api.list_archive_stores(page_size=1)
         except Exception as exc:
             raise FtpAdapterHttpError(
                 503,

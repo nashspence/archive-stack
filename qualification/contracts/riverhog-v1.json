@@ -827,6 +827,7 @@
           "riverhog": "riverhog_cli.main:main"
         },
         "dependencies": [
+          "http-api-contracts",
           "riverhog-api-client",
           "riverhog-application-access",
           "riverhog-cli-support",
@@ -3197,6 +3198,24 @@
       },
       {
         "acceptance_expressions": [
+          "os.getenv('RIVERHOG_BROWSE_TOKEN_LIFETIME', '24h')"
+        ],
+        "consumers": [
+          "riverhog-server"
+        ],
+        "name": "RIVERHOG_BROWSE_TOKEN_LIFETIME"
+      },
+      {
+        "acceptance_expressions": [
+          "os.getenv('RIVERHOG_BROWSE_TOKEN_SIGNING_KEY', DEFAULT_BROWSE_TOKEN_SIGNING_KEY)"
+        ],
+        "consumers": [
+          "riverhog-server"
+        ],
+        "name": "RIVERHOG_BROWSE_TOKEN_SIGNING_KEY"
+      },
+      {
+        "acceptance_expressions": [
           "plain_output_requested('RIVERHOG_CLI_PLAIN')"
         ],
         "consumers": [
@@ -3698,6 +3717,24 @@
       },
       {
         "acceptance_expressions": [
+          "_integer(values, 'STOVE0_BROWSE_TOKEN_LIFETIME_SECONDS', 24 * 60 * 60, minimum=1)"
+        ],
+        "consumers": [
+          "stove0-server"
+        ],
+        "name": "STOVE0_BROWSE_TOKEN_LIFETIME_SECONDS"
+      },
+      {
+        "acceptance_expressions": [
+          "_secret(values, 'STOVE0_BROWSE_TOKEN_SIGNING_KEY', required=require_api_token)"
+        ],
+        "consumers": [
+          "stove0-server"
+        ],
+        "name": "STOVE0_BROWSE_TOKEN_SIGNING_KEY"
+      },
+      {
+        "acceptance_expressions": [
           "_integer(values, 'STOVE0_CAPABILITY_TTL_SECONDS', 900, minimum=30)"
         ],
         "consumers": [
@@ -4036,7 +4073,7 @@
           "fixtures": [
             {
               "path": "tests/fixtures/state/v1_0001/riverhog.postgresql.sql",
-              "sha256": "67fe8d892d5e6d0e29137c9c9bbe0c338c94a577a58eba2ef89fda96b45c27d8"
+              "sha256": "2b637705ca1d3bbee6b21e6833618a83325e8333dad98fef29890d7c0883d11a"
             }
           ],
           "format": "state-schema/postgresql",
@@ -4346,19 +4383,24 @@
                 "filters": {
                   "$ref": "#/components/schemas/AppAccessListFiltersOut"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -4374,17 +4416,11 @@
                 },
                 "sort": {
                   "$ref": "#/components/schemas/ApplicationAccessSort"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -4568,19 +4604,24 @@
                   "title": "Keys",
                   "type": "array"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -4596,17 +4637,11 @@
                 },
                 "sort": {
                   "$ref": "#/components/schemas/ApplicationKeySort"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -4762,19 +4797,24 @@
                   "title": "Apps",
                   "type": "array"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -4790,17 +4830,11 @@
                 },
                 "sort": {
                   "$ref": "#/components/schemas/ApplicationSort"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -5461,19 +5495,24 @@
                 "filters": {
                   "$ref": "#/components/schemas/ArchiveCopyJobListFiltersOut"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -5489,17 +5528,11 @@
                 },
                 "sort": {
                   "$ref": "#/components/schemas/ArchiveCopySort"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -6144,19 +6177,24 @@
             "ArchiveStoreListOut": {
               "additionalProperties": false,
               "properties": {
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -6179,17 +6217,11 @@
                   },
                   "title": "Stores",
                   "type": "array"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -6456,42 +6488,35 @@
                 "authority": {
                   "$ref": "#/components/schemas/ArtifactDispositionSetIdentityDocument"
                 },
+                "next_ordinal": {
+                  "anyOf": [
+                    {
+                      "minimum": 1.0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Ordinal"
+                },
                 "outputs": {
                   "items": {
                     "$ref": "#/components/schemas/ArtifactDispositionOutputDocument"
                   },
-                  "maxItems": 100,
+                  "maxItems": 128,
                   "title": "Outputs",
                   "type": "array"
                 },
-                "page": {
-                  "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "minimum": 1.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "maximum": 100.0,
-                  "minimum": 1.0,
-                  "title": "Per Page",
-                  "type": "integer"
-                },
-                "total": {
-                  "minimum": 1.0,
-                  "title": "Total",
+                "start_ordinal": {
+                  "minimum": 0.0,
+                  "title": "Start Ordinal",
                   "type": "integer"
                 }
               },
               "required": [
                 "authority",
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "start_ordinal",
                 "outputs"
               ],
               "title": "ArtifactDispositionOutputPageDocument",
@@ -6507,38 +6532,31 @@
                   "items": {
                     "$ref": "#/components/schemas/ArtifactDispositionDocument"
                   },
-                  "maxItems": 100,
+                  "maxItems": 128,
                   "title": "Dispositions",
                   "type": "array"
                 },
-                "page": {
-                  "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
+                "next_ordinal": {
+                  "anyOf": [
+                    {
+                      "minimum": 1.0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Ordinal"
                 },
-                "pages": {
-                  "minimum": 1.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "maximum": 100.0,
-                  "minimum": 1.0,
-                  "title": "Per Page",
-                  "type": "integer"
-                },
-                "total": {
-                  "minimum": 1.0,
-                  "title": "Total",
+                "start_ordinal": {
+                  "minimum": 0.0,
+                  "title": "Start Ordinal",
                   "type": "integer"
                 }
               },
               "required": [
                 "authority",
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "start_ordinal",
                 "dispositions"
               ],
               "title": "ArtifactDispositionPageDocument",
@@ -6819,22 +6837,24 @@
                   "title": "Files",
                   "type": "array"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
+                "page_size": {
+                  "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "minimum": 0.0,
-                  "title": "Per Page",
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "provenance_identity": {
@@ -6870,18 +6890,11 @@
                       "type": "null"
                     }
                   ]
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -6915,23 +6928,25 @@
                 "journal": {
                   "$ref": "#/components/schemas/ProvenanceJournalOut"
                 },
-                "page": {
-                  "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
                 },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "path": {
                   "$ref": "#/components/schemas/CanonicalRelPath"
-                },
-                "per_page": {
-                  "minimum": 1.0,
-                  "title": "Per Page",
-                  "type": "integer"
                 },
                 "provenance": {
                   "$ref": "#/components/schemas/CapturedFileProvenanceBinding"
@@ -6940,18 +6955,11 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "title": "Sha256",
                   "type": "string"
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "items",
                 "path",
                 "bytes",
@@ -7072,34 +7080,28 @@
                   "title": "Copies",
                   "type": "array"
                 },
-                "page": {
-                  "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
                 },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
+                "page_size": {
                   "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Per Page",
-                  "type": "integer"
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
+                  "title": "Page Size",
                   "type": "integer"
                 }
               },
               "required": [
                 "collection_id",
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "copies"
               ],
               "title": "CollectionArchiveCopyListOut",
@@ -8258,25 +8260,21 @@
                   "title": "Metadata Revision",
                   "type": "integer"
                 },
-                "page": {
-                  "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
                 },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
+                "page_size": {
                   "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Per Page",
-                  "type": "integer"
-                },
-                "tag_count": {
-                  "minimum": 0.0,
-                  "title": "Tag Count",
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "tags": {
@@ -8291,10 +8289,8 @@
                 "collection_id",
                 "metadata_revision",
                 "inventory_identity",
-                "tag_count",
-                "page",
-                "per_page",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "tags"
               ],
               "title": "CollectionTagsOut",
@@ -11958,19 +11954,24 @@
                     }
                   ]
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -11993,17 +11994,11 @@
                 },
                 "sort": {
                   "$ref": "#/components/schemas/DownloadQuotaSort"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -12127,29 +12122,28 @@
                   "title": "Files",
                   "type": "array"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
                 },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
-                  "type": "integer"
-                },
-                "total": {
-                  "title": "Total",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 }
               },
               "required": [
                 "collection_id",
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "files"
               ],
               "title": "ListCollectionUploadSessionFilesResponse",
@@ -12161,20 +12155,21 @@
                 "collection_id": {
                   "$ref": "#/components/schemas/CollectionId"
                 },
-                "page": {
-                  "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
                 },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
+                "page_size": {
                   "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Per Page",
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "tags": {
@@ -12183,19 +12178,12 @@
                   },
                   "title": "Tags",
                   "type": "array"
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
                 "collection_id",
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "tags"
               ],
               "title": "ListCollectionUploadSessionTagsResponse",
@@ -12207,19 +12195,24 @@
                 "filters": {
                   "$ref": "#/components/schemas/CollectionUploadListFiltersOut"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -12236,10 +12229,6 @@
                 "sort": {
                   "$ref": "#/components/schemas/CollectionUploadSort"
                 },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
-                },
                 "uploads": {
                   "items": {
                     "$ref": "#/components/schemas/CollectionUploadListItemOut"
@@ -12249,10 +12238,8 @@
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -12283,15 +12270,24 @@
                   ],
                   "title": "Encryption Format"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "passphrase_id": {
@@ -12304,10 +12300,6 @@
                     }
                   ],
                   "title": "Passphrase Id"
-                },
-                "per_page": {
-                  "title": "Per Page",
-                  "type": "integer"
                 },
                 "query": {
                   "anyOf": [
@@ -12332,17 +12324,11 @@
                       "type": "null"
                     }
                   ]
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -12370,34 +12356,29 @@
                 "journal_id": {
                   "$ref": "#/components/schemas/ProvenanceJournalId"
                 },
-                "page": {
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
+                "page_size": {
+                  "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "minimum": 1.0,
-                  "title": "Per Page",
-                  "type": "integer"
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
+                  "title": "Page Size",
                   "type": "integer"
                 }
               },
               "required": [
                 "collection_id",
                 "journal_id",
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "agents"
               ],
               "title": "ListProvenanceJournalAgentsResponse",
@@ -12416,22 +12397,24 @@
                   "title": "Files",
                   "type": "array"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
+                "page_size": {
+                  "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "minimum": 0.0,
-                  "title": "Per Page",
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "provenance_identity": {
@@ -12467,18 +12450,11 @@
                       "type": "null"
                     }
                   ]
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -12692,22 +12668,24 @@
                   "title": "Files",
                   "type": "array"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
+                "page_size": {
+                  "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "minimum": 0.0,
-                  "title": "Per Page",
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "provenance_identity": {
@@ -12742,18 +12720,11 @@
                       "type": "null"
                     }
                   ]
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -12788,23 +12759,25 @@
                   "title": "Journal",
                   "type": "null"
                 },
-                "page": {
-                  "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
                 },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "path": {
                   "$ref": "#/components/schemas/CanonicalRelPath"
-                },
-                "per_page": {
-                  "minimum": 1.0,
-                  "title": "Per Page",
-                  "type": "integer"
                 },
                 "provenance": {
                   "$ref": "#/components/schemas/OmittedFileProvenanceBinding"
@@ -12813,18 +12786,11 @@
                   "pattern": "^[0-9a-f]{64}$",
                   "title": "Sha256",
                   "type": "string"
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "items",
                 "path",
                 "bytes",
@@ -13750,38 +13716,32 @@
                 "filters": {
                   "$ref": "#/components/schemas/ProcessingClaimFiltersDocument"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
+                "page_size": {
+                  "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "minimum": 0.0,
-                  "title": "Per Page",
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "sort": {
                   "$ref": "#/components/schemas/ProcessingClaimSort"
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
                 "sort",
                 "order",
                 "filters",
@@ -14421,6 +14381,35 @@
               "title": "ReplaceAppAccessRequest",
               "type": "object"
             },
+            "ReplaceCollectionTagsRequest": {
+              "additionalProperties": false,
+              "properties": {
+                "event_context": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Event Context"
+                },
+                "tags": {
+                  "items": {
+                    "$ref": "#/components/schemas/CanonicalTag"
+                  },
+                  "title": "Tags",
+                  "type": "array"
+                }
+              },
+              "required": [
+                "tags"
+              ],
+              "title": "ReplaceCollectionTagsRequest",
+              "type": "object"
+            },
             "RetireArchiveCopyRequest": {
               "additionalProperties": false,
               "properties": {
@@ -14644,6 +14633,17 @@
                 "filters": {
                   "$ref": "#/components/schemas/RetrievalCacheObjectListFiltersOut"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "objects": {
                   "items": {
                     "$ref": "#/components/schemas/RetrievalCacheObjectOut"
@@ -14654,16 +14654,10 @@
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -14679,17 +14673,11 @@
                 },
                 "sort": {
                   "$ref": "#/components/schemas/RetrievalCacheSort"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -17020,19 +17008,24 @@
                   "title": "Files",
                   "type": "array"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -17048,19 +17041,13 @@
                 },
                 "sort": {
                   "$ref": "#/components/schemas/SearchSort"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
                 "query",
                 "collection",
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "files"
@@ -17266,19 +17253,24 @@
             "TagListOut": {
               "additionalProperties": false,
               "properties": {
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "$ref": "#/components/schemas/SortOrder"
                 },
-                "page": {
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "title": "Per Page",
+                "page_size": {
+                  "maximum": 100.0,
+                  "minimum": 1.0,
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "query": {
@@ -17301,17 +17293,11 @@
                   },
                   "title": "Tags",
                   "type": "array"
-                },
-                "total": {
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
+                "next_page_token",
                 "sort",
                 "order",
                 "query",
@@ -18150,25 +18136,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -18367,7 +18358,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -18377,25 +18373,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -18530,7 +18531,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -18550,25 +18556,30 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -18703,7 +18714,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             },
             "post": {
@@ -19613,25 +19629,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -19766,7 +19787,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             },
             "post": {
@@ -20403,25 +20429,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -20540,7 +20571,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -20860,25 +20896,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -21032,7 +21073,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             },
             "post": {
@@ -21924,24 +21970,12 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
+                  "name": "start_ordinal",
                   "required": false,
                   "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
-                  "required": false,
-                  "schema": {
-                    "default": 100,
-                    "maximum": 100,
-                    "minimum": 1,
-                    "title": "Per Page",
+                    "default": 0,
+                    "minimum": 0,
+                    "title": "Start Ordinal",
                     "type": "integer"
                   }
                 }
@@ -22054,7 +22088,11 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "authority": "processing-claim-dispositions",
+                "authority_parameter": "authority_sha256",
+                "cursor_parameter": "start_ordinal",
+                "fixed_limit": 128,
+                "kind": "exact-authority-page"
               }
             },
             "put": {
@@ -22218,24 +22256,12 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
+                  "name": "start_ordinal",
                   "required": false,
                   "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
-                  "required": false,
-                  "schema": {
-                    "default": 100,
-                    "maximum": 100,
-                    "minimum": 1,
-                    "title": "Per Page",
+                    "default": 0,
+                    "minimum": 0,
+                    "title": "Start Ordinal",
                     "type": "integer"
                   }
                 }
@@ -22348,7 +22374,11 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "authority": "processing-claim-disposition-outputs",
+                "authority_parameter": "authority_sha256",
+                "cursor_parameter": "start_ordinal",
+                "fixed_limit": 128,
+                "kind": "exact-authority-page"
               }
             },
             "put": {
@@ -24723,25 +24753,31 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "maxLength": 8192,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -24893,7 +24929,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             },
             "post": {
@@ -25592,25 +25633,31 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "maxLength": 8192,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 }
               ],
@@ -25709,7 +25756,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             },
             "post": {
@@ -26641,25 +26693,31 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "maxLength": 8192,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 }
               ],
@@ -26745,7 +26803,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -27413,25 +27476,31 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "maxLength": 8192,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -27598,7 +27667,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -27728,25 +27802,31 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "maxLength": 8192,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 }
               ],
@@ -27831,7 +27911,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -28237,25 +28322,30 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -28427,7 +28517,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -28849,25 +28944,30 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 }
               ],
@@ -28965,7 +29065,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -29011,25 +29116,30 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 }
               ],
@@ -29140,7 +29250,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -29486,25 +29601,30 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 }
               ],
@@ -29602,8 +29722,118 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
+            },
+            "put": {
+              "operationId": "replace_collection_tags",
+              "parameters": [
+                {
+                  "in": "path",
+                  "name": "collection_id",
+                  "required": true,
+                  "schema": {
+                    "minimum": 1,
+                    "title": "Collection Id",
+                    "type": "integer"
+                  }
+                }
+              ],
+              "requestBody": {
+                "content": {
+                  "application/json": {
+                    "schema": {
+                      "$ref": "#/components/schemas/ReplaceCollectionTagsRequest"
+                    }
+                  }
+                },
+                "required": true
+              },
+              "responses": {
+                "200": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/CollectionTagSetOut"
+                      }
+                    }
+                  },
+                  "description": "Successful Response"
+                },
+                "400": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Bad Request",
+                  "x-riverhog-error-codes": [
+                    "bad_request"
+                  ]
+                },
+                "401": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Unauthorized",
+                  "x-riverhog-error-codes": [
+                    "unauthorized"
+                  ]
+                },
+                "403": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Forbidden",
+                  "x-riverhog-error-codes": [
+                    "forbidden"
+                  ]
+                },
+                "500": {
+                  "content": {
+                    "application/json": {
+                      "schema": {
+                        "$ref": "#/components/schemas/ErrorResponse"
+                      }
+                    }
+                  },
+                  "description": "Internal Server Error",
+                  "x-riverhog-error-codes": [
+                    "internal_error"
+                  ]
+                }
+              },
+              "security": [
+                {
+                  "HTTPBearer": []
+                }
+              ],
+              "summary": "Replace Collection Tags",
+              "tags": [
+                "tags"
+              ],
+              "x-riverhog-permission-requirements": [
+                {
+                  "any_of": [
+                    "collection-tags:manage"
+                  ]
+                }
+              ]
             }
           },
           "/v1/collections/{collection_id}/tags/{tag}": {
@@ -30009,25 +30239,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -30178,7 +30413,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -30393,25 +30633,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -30658,7 +30903,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -31749,25 +31999,30 @@
                 },
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -31886,7 +32141,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             }
           },
@@ -31896,25 +32156,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -32033,7 +32298,12 @@
                 }
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             },
             "post": {
@@ -34427,6 +34697,17 @@
                   "title": "Filters",
                   "type": "object"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "enum": [
                     "asc",
@@ -34435,19 +34716,10 @@
                   "title": "Order",
                   "type": "string"
                 },
-                "page": {
+                "page_size": {
+                  "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "minimum": 0.0,
-                  "title": "Per Page",
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "sort": {
@@ -34458,18 +34730,10 @@
                   ],
                   "title": "Sort",
                   "type": "string"
-                },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
-                  "type": "integer"
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
                 "sort",
                 "order",
                 "filters",
@@ -38141,6 +38405,17 @@
                   "title": "Filters",
                   "type": "object"
                 },
+                "next_page_token": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Next Page Token"
+                },
                 "order": {
                   "enum": [
                     "asc",
@@ -38149,19 +38424,10 @@
                   "title": "Order",
                   "type": "string"
                 },
-                "page": {
+                "page_size": {
+                  "maximum": 100.0,
                   "minimum": 1.0,
-                  "title": "Page",
-                  "type": "integer"
-                },
-                "pages": {
-                  "minimum": 0.0,
-                  "title": "Pages",
-                  "type": "integer"
-                },
-                "per_page": {
-                  "minimum": 0.0,
-                  "title": "Per Page",
+                  "title": "Page Size",
                   "type": "integer"
                 },
                 "sort": {
@@ -38173,11 +38439,6 @@
                   "title": "Sort",
                   "type": "string"
                 },
-                "total": {
-                  "minimum": 0.0,
-                  "title": "Total",
-                  "type": "integer"
-                },
                 "work": {
                   "items": {
                     "$ref": "#/components/schemas/WorkView"
@@ -38187,10 +38448,7 @@
                 }
               },
               "required": [
-                "page",
-                "per_page",
-                "total",
-                "pages",
+                "page_size",
                 "sort",
                 "order",
                 "filters",
@@ -39252,25 +39510,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -39412,7 +39675,12 @@
                 "evaluations"
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             },
             "post": {
@@ -40901,25 +41169,30 @@
               "parameters": [
                 {
                   "in": "query",
-                  "name": "page",
-                  "required": false,
-                  "schema": {
-                    "default": 1,
-                    "minimum": 1,
-                    "title": "Page",
-                    "type": "integer"
-                  }
-                },
-                {
-                  "in": "query",
-                  "name": "per_page",
+                  "name": "page_size",
                   "required": false,
                   "schema": {
                     "default": 25,
                     "maximum": 100,
                     "minimum": 1,
-                    "title": "Per Page",
+                    "title": "Page Size",
                     "type": "integer"
+                  }
+                },
+                {
+                  "in": "query",
+                  "name": "page_token",
+                  "required": false,
+                  "schema": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Page Token"
                   }
                 },
                 {
@@ -41072,7 +41345,12 @@
                 "work"
               ],
               "x-riverhog-read-collection": {
-                "kind": "bounded-list"
+                "default_page_size": 25,
+                "kind": "mutable-browse",
+                "maximum_page_size": 100,
+                "next_page_token_field": "next_page_token",
+                "page_size_parameter": "page_size",
+                "page_token_parameter": "page_token"
               }
             },
             "post": {
@@ -41907,7 +42185,12 @@
         "path": "/v1/app-key-access",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -41923,7 +42206,12 @@
         "path": "/v1/apps",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -41939,7 +42227,12 @@
         "path": "/v1/apps/{app}/keys",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -42053,7 +42346,12 @@
         "path": "/v1/archive/copies",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -42140,7 +42438,12 @@
         "path": "/v1/archive/stores",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -42190,7 +42493,12 @@
         "path": "/v1/collection-processing-claims",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "canonical-document"
       },
@@ -42288,7 +42596,11 @@
         "path": "/v1/collection-processing-claims/{claim_id}/derivation/dispositions",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "authority": "processing-claim-dispositions",
+          "authority_parameter": "authority_sha256",
+          "cursor_parameter": "start_ordinal",
+          "fixed_limit": 128,
+          "kind": "exact-authority-page"
         },
         "response_authority": "canonical-document"
       },
@@ -42314,7 +42626,11 @@
         "path": "/v1/collection-processing-claims/{claim_id}/derivation/output-edges",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "authority": "processing-claim-disposition-outputs",
+          "authority_parameter": "authority_sha256",
+          "cursor_parameter": "start_ordinal",
+          "fixed_limit": 128,
+          "kind": "exact-authority-page"
         },
         "response_authority": "canonical-document"
       },
@@ -42582,7 +42898,12 @@
         "path": "/v1/collection-upload-sessions",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -42685,7 +43006,12 @@
         "path": "/v1/collection-upload-sessions/{collection_id}/files",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -42780,25 +43106,26 @@
       {
         "application": "riverhog",
         "classification": "client-only-primitive",
-        "cli_commands": [
-          "collection upload start"
-        ],
+        "cli_commands": [],
         "client": "ApiClient",
         "method": "GET",
         "operation_id": "list_collection_upload_session_tags",
         "path": "/v1/collection-upload-sessions/{collection_id}/tags",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
       {
         "application": "riverhog",
         "classification": "client-only-primitive",
-        "cli_commands": [
-          "collection upload start"
-        ],
+        "cli_commands": [],
         "client": "ApiClient",
         "method": "DELETE",
         "operation_id": "remove_collection_upload_session_tag",
@@ -42875,7 +43202,12 @@
         "path": "/v1/collections",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -42908,7 +43240,12 @@
         "path": "/v1/collections/{collection_id}/archive-copies",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -42964,7 +43301,12 @@
         "path": "/v1/collections/{collection_id}/provenance/files",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -43020,7 +43362,12 @@
         "path": "/v1/collections/{collection_id}/provenance/journals/{journal_id}/agents",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -43036,7 +43383,12 @@
         "path": "/v1/collections/{collection_id}/provenance/trace/{path}",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -43088,7 +43440,6 @@
         "classification": "human-cli+json",
         "cli_commands": [
           "collection tag list",
-          "collection tag replace",
           "local add",
           "local repair",
           "local sync"
@@ -43099,7 +43450,12 @@
         "path": "/v1/collections/{collection_id}/tags",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -43107,8 +43463,21 @@
         "application": "riverhog",
         "classification": "human-cli+json",
         "cli_commands": [
-          "collection tag remove",
           "collection tag replace"
+        ],
+        "client": "ApiClient",
+        "method": "PUT",
+        "operation_id": "replace_collection_tags",
+        "path": "/v1/collections/{collection_id}/tags",
+        "provider_evidence": null,
+        "read_collection": null,
+        "response_authority": "http-json"
+      },
+      {
+        "application": "riverhog",
+        "classification": "human-cli+json",
+        "cli_commands": [
+          "collection tag remove"
         ],
         "client": "ApiClient",
         "method": "DELETE",
@@ -43122,8 +43491,7 @@
         "application": "riverhog",
         "classification": "human-cli+json",
         "cli_commands": [
-          "collection tag add",
-          "collection tag replace"
+          "collection tag add"
         ],
         "client": "ApiClient",
         "method": "POST",
@@ -43159,7 +43527,12 @@
         "path": "/v1/download-quotas",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -43207,7 +43580,12 @@
         "path": "/v1/retrieval-cache/objects",
         "provider_evidence": "provider-qualification:#442",
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -43356,7 +43734,12 @@
         "path": "/v1/search",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -43372,7 +43755,12 @@
         "path": "/v1/tags",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "http-json"
       },
@@ -43586,7 +43974,12 @@
         "path": "/v1/evaluations",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "operator-projection"
       },
@@ -43797,7 +44190,12 @@
         "path": "/v1/work",
         "provider_evidence": null,
         "read_collection": {
-          "kind": "bounded-list"
+          "default_page_size": 25,
+          "kind": "mutable-browse",
+          "maximum_page_size": 100,
+          "next_page_token_field": "next_page_token",
+          "page_size_parameter": "page_size",
+          "page_token_parameter": "page_token"
         },
         "response_authority": "operator-projection"
       },
@@ -62736,6 +63134,28 @@
       {
         "distribution": "http-api-contracts",
         "exports": {
+          "BrowseScalar": {
+            "kind": "type-alias",
+            "value": "str | int | bool | bytes | None"
+          },
+          "BrowseTokenCodec": {
+            "kind": "class",
+            "members": {
+              "issue": {
+                "kind": "method",
+                "signature": "(self, *, operation: 'str', principal: 'object', selectors: 'Mapping[str, object]', position: 'Sequence[BrowseScalar]') -> 'str'"
+              },
+              "verify": {
+                "kind": "method",
+                "signature": "(self, token: 'str | None', *, operation: 'str', principal: 'object', selectors: 'Mapping[str, object]') -> 'tuple[BrowseScalar, ...] | None'"
+              }
+            },
+            "signature": "(signing_key: 'str | bytes', *, lifetime_seconds: 'int', clock: 'Callable[[], float]' = <built-in function time>) -> 'None'"
+          },
+          "BrowseTokenError": {
+            "kind": "class",
+            "signature": "unavailable"
+          },
           "CANONICAL_VISIBLE_TEXT_PATTERN": {
             "kind": "constant",
             "value": "^\\S(?:[\\s\\S]*\\S)?$"
@@ -62983,10 +63403,6 @@
             "kind": "function",
             "signature": "(schema: 'dict[str, Any]', *, operation_error_codes: 'Mapping[str, Collection[str]] | None' = None) -> 'dict[str, Any]'"
           },
-          "bounded_list_operation": {
-            "kind": "function",
-            "signature": "() -> 'dict[str, Any]'"
-          },
           "canonical_json_bytes": {
             "kind": "function",
             "signature": "(value: 'object') -> 'bytes'"
@@ -63030,6 +63446,10 @@
           "iter_json_sequence_records": {
             "kind": "function",
             "signature": "(chunks: 'Iterable[bytes]') -> 'Iterator[dict[str, Any]]'"
+          },
+          "mutable_browse_operation": {
+            "kind": "function",
+            "signature": "(*, default_page_size: 'int' = 25, maximum_page_size: 'int' = 100) -> 'dict[str, Any]'"
           },
           "operation_interface": {
             "kind": "function",
@@ -63520,7 +63940,7 @@
               },
               "get_collection_tags": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', *, page_size: 'int' = 25, page_token: 'str | None' = None) -> 'dict[str, Any]'"
               },
               "get_collection_upload_session": {
                 "kind": "method",
@@ -63560,55 +63980,55 @@
               },
               "list_app_key_access": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationAccessSort' = 'permission', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, key_id: 'ApplicationKeyId | None' = None, permission: 'ApplicationPermission | None' = None, resource: 'ApplicationResource | None' = None, active: 'bool | None' = None) -> 'dict[str, Any]'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, sort: 'ApplicationAccessSort' = 'permission', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, key_id: 'ApplicationKeyId | None' = None, permission: 'ApplicationPermission | None' = None, resource: 'ApplicationResource | None' = None, active: 'bool | None' = None) -> 'dict[str, Any]'"
               },
               "list_app_keys": {
                 "kind": "method",
-                "signature": "(self, app: 'ApplicationName', *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationKeySort' = 'created_at', order: 'SortOrder' = 'desc', active: 'bool | None' = None) -> 'dict[str, Any]'"
+                "signature": "(self, app: 'ApplicationName', *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, sort: 'ApplicationKeySort' = 'created_at', order: 'SortOrder' = 'desc', active: 'bool | None' = None) -> 'dict[str, Any]'"
               },
               "list_apps": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ApplicationSort' = 'name', order: 'SortOrder' = 'asc', active: 'bool | None' = None) -> 'dict[str, Any]'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, sort: 'ApplicationSort' = 'name', order: 'SortOrder' = 'asc', active: 'bool | None' = None) -> 'dict[str, Any]'"
               },
               "list_archive_copy_jobs": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, state: 'ArchiveCopyState | None' = None, sort: 'ArchiveCopySort' = 'requested_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, state: 'ArchiveCopyState | None' = None, sort: 'ArchiveCopySort' = 'requested_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
               },
               "list_archive_stores": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, sort: 'ArchiveStoreSort' = 'store', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
               "list_collection_archive_copies": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', *, page_size: 'int' = 25, page_token: 'str | None' = None) -> 'dict[str, Any]'"
               },
               "list_collection_provenance": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, status: 'ProvenanceStatus | None' = None, sort: 'ProvenanceSort' = 'path', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, status: 'ProvenanceStatus | None' = None, sort: 'ProvenanceSort' = 'path', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
               "list_collection_provenance_journal_agents": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', journal_id: 'ProvenanceJournalId', *, page_size: 'int' = 25, page_token: 'str | None' = None) -> 'dict[str, Any]'"
               },
               "list_collection_upload_session_files": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', *, page_size: 'int' = 25, page_token: 'str | None' = None) -> 'dict[str, Any]'"
               },
               "list_collection_upload_session_tags": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', *, page_size: 'int' = 25, page_token: 'str | None' = None) -> 'dict[str, Any]'"
               },
               "list_collection_upload_sessions": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, state: 'CollectionUploadState | None' = None, tag: 'str | None' = None, sort: 'CollectionUploadSort' = 'created_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, state: 'CollectionUploadState | None' = None, tag: 'str | None' = None, sort: 'CollectionUploadSort' = 'created_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
               },
               "list_collections": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, tag: 'str | None' = None, encryption_format: 'str | None' = None, passphrase_id: 'str | None' = None, sort: 'CollectionSort' = 'id', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, tag: 'str | None' = None, encryption_format: 'str | None' = None, passphrase_id: 'str | None' = None, sort: 'CollectionSort' = 'id', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
               "list_download_quotas": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'DownloadQuotaSort' = 'app', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, active: 'bool | None' = None) -> 'dict[str, Any]'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, sort: 'DownloadQuotaSort' = 'app', order: 'SortOrder' = 'asc', app: 'ApplicationName | None' = None, active: 'bool | None' = None) -> 'dict[str, Any]'"
               },
               "list_lifecycle_events": {
                 "kind": "method",
@@ -63616,11 +64036,11 @@
               },
               "list_retrieval_cache_objects": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, tag: 'str | None' = None, collection_id: 'CollectionId | None' = None, source_store: 'ArchiveStoreName | None' = None, cache_store: 'RetrievalCacheStoreName | None' = None, state: 'RetrievalCacheState | None' = None, protection: 'RetrievalCacheProtection | None' = None, expires_before: 'str | None' = None, expires_after: 'str | None' = None, sort: 'RetrievalCacheSort' = 'cached_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, tag: 'str | None' = None, collection_id: 'CollectionId | None' = None, source_store: 'ArchiveStoreName | None' = None, cache_store: 'RetrievalCacheStoreName | None' = None, state: 'RetrievalCacheState | None' = None, protection: 'RetrievalCacheProtection | None' = None, expires_before: 'str | None' = None, expires_after: 'str | None' = None, sort: 'RetrievalCacheSort' = 'cached_at', order: 'SortOrder' = 'desc') -> 'dict[str, Any]'"
               },
               "list_tags": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, q: 'str | None' = None, sort: 'TagSort' = 'id', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, q: 'str | None' = None, sort: 'TagSort' = 'id', order: 'SortOrder' = 'asc') -> 'dict[str, Any]'"
               },
               "plan_archive_copy_retirement": {
                 "kind": "method",
@@ -63720,7 +64140,7 @@
               },
               "search": {
                 "kind": "method",
-                "signature": "(self, query: 'str | None' = None, *, page: 'int' = 1, per_page: 'int' = 25, sort: 'SearchSort' = 'file_ref', order: 'SortOrder' = 'asc', collection: 'CollectionId | None' = None) -> 'dict[str, Any]'"
+                "signature": "(self, query: 'str | None' = None, *, page_size: 'int' = 25, page_token: 'str | None' = None, sort: 'SearchSort' = 'file_ref', order: 'SortOrder' = 'asc', collection: 'CollectionId | None' = None) -> 'dict[str, Any]'"
               },
               "set_app_key_download_quota": {
                 "kind": "method",
@@ -63740,7 +64160,7 @@
               },
               "trace_collection_file_provenance": {
                 "kind": "method",
-                "signature": "(self, collection_id: 'CollectionId', path: 'str', *, page: 'int' = 1, per_page: 'int' = 25) -> 'dict[str, Any]'"
+                "signature": "(self, collection_id: 'CollectionId', path: 'str', *, page_size: 'int' = 25, page_token: 'str | None' = None) -> 'dict[str, Any]'"
               },
               "upload_collection_upload_session_provenance_journal": {
                 "kind": "method",
@@ -65814,8 +66234,8 @@
           },
           "ProcessingClaimPageDocument": {
             "kind": "class",
-            "schema_sha256": "eb59f2b52e02bc200f35eef777ac858dce7f284717b6fdb2b0311cc2282a8f97",
-            "signature": "(*, page: Annotated[int, Ge(ge=1)], per_page: Annotated[int, Ge(ge=0)], total: Annotated[int, Ge(ge=0)], pages: Annotated[int, Ge(ge=0)], sort: ProcessingClaimSort, order: SortOrder, filters: riverhog_protocol.collection_workflow_transport.ProcessingClaimFiltersDocument, claims: list[riverhog_protocol.collection_workflow_transport.ProcessingClaimDocument]) -> None"
+            "schema_sha256": "34f3a94acf66d68917de0693339d0cf317d66d3ef2e42121feb4e672e5201b19",
+            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: str | None = None, sort: ProcessingClaimSort, order: SortOrder, filters: riverhog_protocol.collection_workflow_transport.ProcessingClaimFiltersDocument, claims: list[riverhog_protocol.collection_workflow_transport.ProcessingClaimDocument]) -> None"
           },
           "ProcessingClaimPlanSealDocument": {
             "kind": "class",
@@ -68781,7 +69201,7 @@
               },
               "list_evaluations": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: 'EvaluationSort' = 'updated_at', order: 'SortOrder' = 'desc') -> 'EvaluationPage'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, phase: 'EvaluationPhase | None' = None, query: 'str | None' = None, sort: 'EvaluationSort' = 'updated_at', order: 'SortOrder' = 'desc') -> 'EvaluationPage'"
               },
               "list_events": {
                 "kind": "method",
@@ -68793,7 +69213,7 @@
               },
               "list_work": {
                 "kind": "method",
-                "signature": "(self, *, page: 'int' = 1, per_page: 'int' = 25, phase: 'WorkPhase | None' = None, query: 'str | None' = None, sort: 'WorkSort' = 'updated_at', order: 'SortOrder' = 'desc') -> 'WorkPage'"
+                "signature": "(self, *, page_size: 'int' = 25, page_token: 'str | None' = None, phase: 'WorkPhase | None' = None, query: 'str | None' = None, sort: 'WorkSort' = 'updated_at', order: 'SortOrder' = 'desc') -> 'WorkPage'"
               },
               "preview_workflow": {
                 "kind": "method",
@@ -69493,8 +69913,8 @@
                 "signature": "(cls, page: 'Mapping[str, Any]') -> 'EvaluationPage'"
               }
             },
-            "schema_sha256": "1149c426098b3f7a0deee8e3e41a70511b866107eae38dfff49e157c2a34a02d",
-            "signature": "(*, page: Annotated[int, Ge(ge=1)], per_page: Annotated[int, Ge(ge=0)], total: Annotated[int, Ge(ge=0)], pages: Annotated[int, Ge(ge=0)], sort: Literal['updated_at', 'phase', 'evaluation_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], evaluations: tuple[stove0_operator_contracts.EvaluationView, ...]) -> None"
+            "schema_sha256": "fc9e1853e05a7be560605cfc480cccfb137c892756121a1f88d08008e38410a2",
+            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: str | None = None, sort: Literal['updated_at', 'phase', 'evaluation_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], evaluations: tuple[stove0_operator_contracts.EvaluationView, ...]) -> None"
           },
           "EvaluationPhase": {
             "kind": "object",
@@ -69742,8 +70162,8 @@
                 "signature": "(cls, page: 'Mapping[str, Any]') -> 'WorkPage'"
               }
             },
-            "schema_sha256": "ab376782f499464bdd9c495a464e84ae33f48ea456e204919706184bbf4fb1d0",
-            "signature": "(*, page: Annotated[int, Ge(ge=1)], per_page: Annotated[int, Ge(ge=0)], total: Annotated[int, Ge(ge=0)], pages: Annotated[int, Ge(ge=0)], sort: Literal['updated_at', 'phase', 'work_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], work: tuple[stove0_operator_contracts.WorkView, ...]) -> None"
+            "schema_sha256": "3d5d11a78dc49111dfa6a867ae6c953075afea5425b42559011698c04585a54b",
+            "signature": "(*, page_size: Annotated[int, Ge(ge=1), Le(le=100)], next_page_token: str | None = None, sort: Literal['updated_at', 'phase', 'work_id'], order: Literal['asc', 'desc'], filters: dict[str, JsonValue], work: tuple[stove0_operator_contracts.WorkView, ...]) -> None"
           },
           "WorkPhase": {
             "kind": "object",

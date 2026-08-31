@@ -45,6 +45,8 @@ class Stove0RuntimeConfig:
     capability_ttl_seconds: int
     scheduler_interval_seconds: float
     operational_state_retention_seconds: int
+    browse_token_signing_key: str = "stove0-development-browse-token-signing-key-v1"
+    browse_token_lifetime_seconds: int = 24 * 60 * 60
 
     @classmethod
     def from_environment(
@@ -81,6 +83,11 @@ class Stove0RuntimeConfig:
             "STOVE0_TARGET_CALLBACK_SIGNING_KEY",
             required=bool(targets),
         )
+        browse_token_signing_key = _secret(
+            values,
+            "STOVE0_BROWSE_TOKEN_SIGNING_KEY",
+            required=require_api_token,
+        )
         return cls(
             database_url=database_url,
             api_token=api_token,
@@ -108,6 +115,17 @@ class Stove0RuntimeConfig:
                 callback_signing_key
                 if callback_signing_key is not None
                 else "unused-target-callback-signing-key"
+            ),
+            browse_token_signing_key=(
+                browse_token_signing_key
+                if browse_token_signing_key is not None
+                else "stove0-unused-browse-token-signing-key-v1"
+            ),
+            browse_token_lifetime_seconds=_integer(
+                values,
+                "STOVE0_BROWSE_TOKEN_LIFETIME_SECONDS",
+                24 * 60 * 60,
+                minimum=1,
             ),
             workspace_assurance=cast(
                 Literal["encrypted", "ephemeral"],

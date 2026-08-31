@@ -8,7 +8,7 @@ import re
 import secrets
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
-from typing import cast
+from typing import Any, cast
 
 from http_api_contracts import closed_literal_values
 from riverhog_protocol import (
@@ -52,6 +52,7 @@ from riverhog_core.app_permissions import (
     ApplicationPrincipal,
     collection_resource,
 )
+from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     CollectionArchiveObjectRecord,
@@ -588,38 +589,40 @@ class SqlAlchemyCollectionWorkflowService:
     def list_claims(
         self,
         *,
-        page: int = 1,
-        per_page: int = 25,
+        page_size: int = 25,
+        position: tuple[str | int | bool | bytes | None, ...] | None = None,
         state: str | None = None,
         sort: str = "updated_at",
         order: str = "desc",
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
-        if page < 1 or per_page < 1 or per_page > 100:
-            raise BadRequest("claim pagination is invalid")
+        validate_page_size(page_size)
         if sort not in _CLAIM_SORT_NAMES or order not in _SORT_ORDERS:
             raise BadRequest("claim sorting is invalid")
         if state is not None and state not in _CLAIM_STATES:
             raise BadRequest("claim state is invalid")
-        filters, statement = _claim_list_statement(
+        _, statement, key_columns = _claim_list_statement(
             state=state, sort=sort, order=order, principal=principal
         )
         with read_snapshot(self._session_factory) as session:
-            total = int(
-                session.scalar(
-                    select(func.count()).select_from(
-                        select(CollectionProcessingClaimRecord.id).where(*filters).subquery()
+            rows, next_position = bounded_page(
+                list(
+                    session.scalars(
+                        keyset_statement(
+                            statement,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
                     )
-                )
-                or 0
+                ),
+                page_size=page_size,
+                position_of=lambda claim: _claim_list_position(claim, sort=sort),
             )
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            rows = list(session.scalars(statement))
             return {
-                "page": page,
-                "per_page": per_page,
-                "total": total,
-                "pages": (total + per_page - 1) // per_page,
+                "page_size": page_size,
+                "_next_position": next_position,
                 "sort": sort,
                 "order": order,
                 "filters": {"state": state},
@@ -638,9 +641,11 @@ class SqlAlchemyCollectionWorkflowService:
             raise BadRequest("claim sorting is invalid")
         if state is not None and state not in _CLAIM_STATES:
             raise BadRequest("claim state is invalid")
-        _, statement = _claim_list_statement(
+        _, statement, key_columns = _claim_list_statement(
             state=state, sort=sort, order=order, principal=principal
         )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         with read_snapshot(self._session_factory) as session:
             for claim in session.scalars(statement.execution_options(yield_per=100)):
                 yield _claim_payload(session, claim)
@@ -1232,11 +1237,10 @@ class SqlAlchemyCollectionWorkflowService:
         claim_id: str,
         *,
         authority_sha256: str,
-        page: int,
-        per_page: int,
+        start_ordinal: int,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
-        _page_args(page, per_page)
+        start = _page_start(start_ordinal)
         expected = _sha256(authority_sha256, "disposition set identity")
         with read_snapshot(self._session_factory) as session:
             claim = _claim_actor(session, claim_id, principal)
@@ -1244,21 +1248,21 @@ class SqlAlchemyCollectionWorkflowService:
             rows = list(
                 session.scalars(
                     select(CollectionProcessingDispositionRecord)
-                    .where(CollectionProcessingDispositionRecord.claim_id == claim.id)
-                    .order_by(
-                        CollectionProcessingDispositionRecord.collection_id,
-                        CollectionProcessingDispositionRecord.path,
+                    .where(
+                        CollectionProcessingDispositionRecord.claim_id == claim.id,
+                        CollectionProcessingDispositionRecord.disposition_order >= start,
                     )
-                    .offset((page - 1) * per_page)
-                    .limit(per_page)
+                    .order_by(CollectionProcessingDispositionRecord.disposition_order)
+                    .limit(_DISPOSITION_BATCH_MAX)
                 )
             )
+            next_ordinal = start + len(rows)
             return {
                 "authority": _disposition_set_identity(disposition_set).as_dict(),
-                "page": page,
-                "per_page": per_page,
-                "total": int(disposition_set.disposition_count),
-                "pages": (int(disposition_set.disposition_count) + per_page - 1) // per_page,
+                "start_ordinal": start,
+                "next_ordinal": (
+                    next_ordinal if next_ordinal < int(disposition_set.disposition_count) else None
+                ),
                 "dispositions": [
                     _disposition_record_identity(session, claim, row).as_dict() for row in rows
                 ],
@@ -1269,11 +1273,10 @@ class SqlAlchemyCollectionWorkflowService:
         claim_id: str,
         *,
         authority_sha256: str,
-        page: int,
-        per_page: int,
+        start_ordinal: int,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
-        _page_args(page, per_page)
+        start = _page_start(start_ordinal)
         expected = _sha256(authority_sha256, "disposition set identity")
         with read_snapshot(self._session_factory) as session:
             claim = _owned_claim(session, claim_id, principal)
@@ -1281,22 +1284,21 @@ class SqlAlchemyCollectionWorkflowService:
             rows = list(
                 session.scalars(
                     select(CollectionProcessingDispositionOutputRecord)
-                    .where(CollectionProcessingDispositionOutputRecord.claim_id == claim.id)
-                    .order_by(
-                        CollectionProcessingDispositionOutputRecord.output_path,
-                        CollectionProcessingDispositionOutputRecord.input_collection_id,
-                        CollectionProcessingDispositionOutputRecord.input_path,
+                    .where(
+                        CollectionProcessingDispositionOutputRecord.claim_id == claim.id,
+                        CollectionProcessingDispositionOutputRecord.output_order >= start,
                     )
-                    .offset((page - 1) * per_page)
-                    .limit(per_page)
+                    .order_by(CollectionProcessingDispositionOutputRecord.output_order)
+                    .limit(_DISPOSITION_BATCH_MAX)
                 )
             )
+            next_ordinal = start + len(rows)
             return {
                 "authority": _disposition_set_identity(disposition_set).as_dict(),
-                "page": page,
-                "per_page": per_page,
-                "total": int(disposition_set.output_edge_count),
-                "pages": (int(disposition_set.output_edge_count) + per_page - 1) // per_page,
+                "start_ordinal": start,
+                "next_ordinal": (
+                    next_ordinal if next_ordinal < int(disposition_set.output_edge_count) else None
+                ),
                 "outputs": [
                     _disposition_output_record_identity(session, claim, row).as_dict()
                     for row in rows
@@ -1829,22 +1831,28 @@ def _claim_list_statement(
 ) -> tuple[
     list[ColumnElement[bool]],
     Select[tuple[CollectionProcessingClaimRecord]],
+    tuple[Any, ...],
 ]:
     filters: list[ColumnElement[bool]] = [
         CollectionProcessingClaimRecord.consumer_app == principal.app
     ]
     if state:
         filters.append(CollectionProcessingClaimRecord.state == state)
-    direction = desc if order == "desc" else asc
-    statement = (
-        select(CollectionProcessingClaimRecord)
-        .where(*filters)
-        .order_by(
-            direction(_CLAIM_SORT_FIELDS[sort]),
-            direction(CollectionProcessingClaimRecord.id),
-        )
+    key_columns = tuple(
+        dict.fromkeys((_CLAIM_SORT_FIELDS[sort], CollectionProcessingClaimRecord.id))
     )
-    return filters, statement
+    return filters, select(CollectionProcessingClaimRecord).where(*filters), key_columns
+
+
+def _claim_list_position(
+    claim: CollectionProcessingClaimRecord,
+    *,
+    sort: str,
+) -> tuple[str, ...]:
+    value = getattr(claim, sort)
+    if not isinstance(value, str):
+        raise RuntimeError("processing-claim browse position has an invalid value")
+    return value, claim.id
 
 
 def _canonical_roots(
@@ -2485,11 +2493,6 @@ def _disposition_set_payload(
     }
 
 
-def _page_args(page: int, per_page: int) -> None:
-    if page < 1 or per_page < 1 or per_page > 100:
-        raise BadRequest("disposition pagination is invalid")
-
-
 def _disposition_set_identity(
     record: CollectionProcessingDispositionSetRecord,
 ) -> ArtifactDispositionSetIdentity:
@@ -2551,7 +2554,20 @@ def _advance_disposition_hash(
     if not rows:
         return False
     digest = CheckpointSHA256.from_state(disposition_set.disposition_hash_state)
-    for row in rows:
+    next_ordinal = (
+        int(
+            session.scalar(
+                select(
+                    func.coalesce(
+                        func.max(CollectionProcessingDispositionRecord.disposition_order), -1
+                    )
+                ).where(CollectionProcessingDispositionRecord.claim_id == disposition_set.claim_id)
+            )
+        )
+        + 1
+    )
+    for ordinal, row in enumerate(rows, start=next_ordinal):
+        row.disposition_order = ordinal
         identity = _disposition_record_identity(session, claim, row)
         digest.update(canonical_json_bytes(identity.as_dict()) + b"\n")
         disposition_set.validation_collection_id = row.collection_id
@@ -2606,7 +2622,22 @@ def _advance_disposition_output_hash(
     if not rows:
         return False
     digest = CheckpointSHA256.from_state(disposition_set.output_hash_state)
-    for row in rows:
+    next_ordinal = (
+        int(
+            session.scalar(
+                select(
+                    func.coalesce(
+                        func.max(CollectionProcessingDispositionOutputRecord.output_order), -1
+                    )
+                ).where(
+                    CollectionProcessingDispositionOutputRecord.claim_id == disposition_set.claim_id
+                )
+            )
+        )
+        + 1
+    )
+    for ordinal, row in enumerate(rows, start=next_ordinal):
+        row.output_order = ordinal
         identity = _disposition_output_record_identity(session, claim, row)
         digest.update(canonical_json_bytes(identity.as_dict()) + b"\n")
         disposition_set.validation_output_path = row.output_path

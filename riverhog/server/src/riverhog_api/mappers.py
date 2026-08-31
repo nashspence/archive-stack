@@ -71,10 +71,8 @@ def map_archive_store(summary: ArchiveStoreSummary) -> dict[str, object]:
 
 def map_archive_store_list(summary: ArchiveStoreListPage) -> dict[str, object]:
     return {
-        "page": summary.page,
-        "per_page": summary.per_page,
-        "total": summary.total,
-        "pages": summary.pages,
+        "page_size": summary.page_size,
+        "_next_position": summary.next_position,
         "sort": summary.sort,
         "order": summary.order,
         "query": summary.query,
@@ -101,10 +99,8 @@ def map_collection(summary: CollectionSummary) -> dict[str, object]:
 
 def map_collection_list_page(summary: CollectionListPage) -> dict[str, object]:
     return {
-        "page": summary.page,
-        "per_page": summary.per_page,
-        "total": summary.total,
-        "pages": summary.pages,
+        "page_size": summary.page_size,
+        "_next_position": summary.next_position,
         "sort": summary.sort,
         "order": summary.order,
         "query": summary.query,

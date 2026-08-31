@@ -21,13 +21,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from http_api_contracts import (
     apply_openapi_error_contract,
-    bounded_list_operation,
     cursor_feed_operation,
     error_code_for_status,
     error_payload,
     exact_authority_page_operation,
+    mutable_browse_operation,
     operation_interface,
 )
+from http_api_contracts.browse import BrowseTokenCodec, BrowseTokenError
 from pydantic import ValidationError
 from riverhog_api_client import ApiClient
 from sqlalchemy import text
@@ -132,6 +133,7 @@ class Stove0Composition:
     evaluations: EvaluationService
     scheduler: Stove0Scheduler
     target_callbacks: TargetCallbackAuthority | None = None
+    browse_tokens: BrowseTokenCodec | None = None
 
     @classmethod
     def build(cls, config: Stove0RuntimeConfig) -> Stove0Composition:
@@ -219,6 +221,10 @@ class Stove0Composition:
                 operational_state_retention_seconds=(config.operational_state_retention_seconds),
             ),
             target_callbacks=target_callbacks,
+            browse_tokens=BrowseTokenCodec(
+                config.browse_token_signing_key,
+                lifetime_seconds=config.browse_token_lifetime_seconds,
+            ),
         )
 
 
@@ -266,6 +272,54 @@ def create_app(
                 detail="valid stove0 bearer credentials are required",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+    browse_tokens = composition.browse_tokens or BrowseTokenCodec(
+        composition.config.browse_token_signing_key,
+        lifetime_seconds=composition.config.browse_token_lifetime_seconds,
+    )
+    # The bearer credential authenticates this single operator principal.  A
+    # credential rotation does not create a new principal, and authorization is
+    # still reevaluated above for every bounded page request.
+    operator_principal = {"principal": "stove0-operator/v1"}
+
+    def browse_position(
+        *,
+        operation: str,
+        page_token: str | None,
+        selectors: dict[str, object],
+    ) -> tuple[str | int | bool | bytes | None, ...] | None:
+        try:
+            return browse_tokens.verify(
+                page_token,
+                operation=operation,
+                principal=operator_principal,
+                selectors=selectors,
+            )
+        except BrowseTokenError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    def browse_page(
+        payload: dict[str, object],
+        *,
+        operation: str,
+        selectors: dict[str, object],
+    ) -> dict[str, object]:
+        position = payload.pop("_next_position", None)
+        if position is not None and (
+            isinstance(position, (str, bytes)) or not isinstance(position, Sequence)
+        ):
+            raise RuntimeError("stove0 browse service returned an invalid continuation")
+        payload["next_page_token"] = (
+            None
+            if position is None
+            else browse_tokens.issue(
+                operation=operation,
+                principal=operator_principal,
+                selectors=selectors,
+                position=position,
+            )
+        )
+        return payload
 
     @app.get(
         "/v1/target-executions/{job_id}/inputs",
@@ -491,24 +545,38 @@ def create_app(
         dependencies=[Depends(authorize)],
         operation_id="list_work",
         tags=["work"],
-        openapi_extra=bounded_list_operation(),
+        openapi_extra=mutable_browse_operation(),
     )
     def list_work(
-        page: int = Query(default=1, ge=1),
-        per_page: int = Query(default=25, ge=1, le=100),
+        page_size: int = Query(default=25, ge=1, le=100),
+        page_token: str | None = None,
         phase: WorkPhase | None = None,
         q: str | None = None,
         sort: WorkSort = "updated_at",
         order: SortOrder = "desc",
     ) -> WorkPage:
+        normalized_query = q.strip().casefold() if q is not None else None
+        selectors: dict[str, object] = {
+            "phase": phase,
+            "q": normalized_query,
+            "sort": sort,
+            "order": order,
+        }
+        position = browse_position(
+            operation="list_work", page_token=page_token, selectors=selectors
+        )
         return WorkPage.from_page(
-            composition.state.list_work(
-                page=page,
-                per_page=per_page,
-                phase=phase,
-                query=q,
-                sort=sort,
-                order=order,
+            browse_page(
+                composition.state.list_work(
+                    page_size=page_size,
+                    position=position,
+                    phase=phase,
+                    query=normalized_query,
+                    sort=sort,
+                    order=order,
+                ),
+                operation="list_work",
+                selectors=selectors,
             )
         )
 
@@ -643,24 +711,38 @@ def create_app(
         dependencies=[Depends(authorize)],
         operation_id="list_evaluations",
         tags=["evaluations"],
-        openapi_extra=bounded_list_operation(),
+        openapi_extra=mutable_browse_operation(),
     )
     def list_evaluations(
-        page: int = Query(default=1, ge=1),
-        per_page: int = Query(default=25, ge=1, le=100),
+        page_size: int = Query(default=25, ge=1, le=100),
+        page_token: str | None = None,
         phase: EvaluationPhase | None = None,
         q: str | None = None,
         sort: EvaluationSort = "updated_at",
         order: SortOrder = "desc",
     ) -> EvaluationPage:
+        normalized_query = q.strip().casefold() if q is not None else None
+        selectors: dict[str, object] = {
+            "phase": phase,
+            "q": normalized_query,
+            "sort": sort,
+            "order": order,
+        }
+        position = browse_position(
+            operation="list_evaluations", page_token=page_token, selectors=selectors
+        )
         return EvaluationPage.from_page(
-            composition.state.list_evaluations(
-                page=page,
-                per_page=per_page,
-                phase=phase,
-                query=q,
-                sort=sort,
-                order=order,
+            browse_page(
+                composition.state.list_evaluations(
+                    page_size=page_size,
+                    position=position,
+                    phase=phase,
+                    query=normalized_query,
+                    sort=sort,
+                    order=order,
+                ),
+                operation="list_evaluations",
+                selectors=selectors,
             )
         )
 

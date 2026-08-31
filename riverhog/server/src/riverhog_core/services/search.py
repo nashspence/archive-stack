@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import math
 from collections.abc import Iterator
 from typing import Any
 
-from http_api_contracts import closed_literal_values
+from http_api_contracts import BrowseScalar, closed_literal_values
 from riverhog_protocol import SearchSort, SortOrder
 from riverhog_protocol.errors import BadRequest
 from riverhog_protocol.paths import (
@@ -12,12 +11,13 @@ from riverhog_protocol.paths import (
     normalize_collection_id,
     text_search_key,
 )
-from sqlalchemy import asc, desc, func, select
+from sqlalchemy import asc, desc, select
 from sqlalchemy.sql.elements import ColumnElement
 from state_schema import read_snapshot
 
 from riverhog_core.app_permissions import CATALOG_READ, ApplicationPrincipal
 from riverhog_core.artifact_access import artifact_scope_filter
+from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory
 from riverhog_core.catalog_models import CollectionFileRecord
 from riverhog_core.collection_access import collection_access_filter, require_collection_access
@@ -30,35 +30,6 @@ _SORT_ORDERS = closed_literal_values(SortOrder)
 def _like_pattern(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
-
-
-def _order_expressions(
-    sort: str,
-    order: str,
-) -> tuple[ColumnElement[Any], ...]:
-    direction = desc if order == "desc" else asc
-    if sort == "file_ref":
-        return (
-            direction(CollectionFileRecord.collection_id),
-            direction(CollectionFileRecord.path_sort_key),
-        )
-    if sort == "collection_id":
-        return (
-            direction(CollectionFileRecord.collection_id),
-            direction(CollectionFileRecord.path_sort_key),
-        )
-    if sort == "path":
-        return (
-            direction(CollectionFileRecord.path_sort_key),
-            direction(CollectionFileRecord.collection_id),
-        )
-    if sort == "bytes":
-        return (
-            direction(CollectionFileRecord.bytes),
-            direction(CollectionFileRecord.collection_id),
-            direction(CollectionFileRecord.path_sort_key),
-        )
-    raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
 
 
 class SqlAlchemySearchService:
@@ -74,23 +45,20 @@ class SqlAlchemySearchService:
         self,
         *,
         q: str | None,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         sort: str,
         order: str,
         collection: int | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
-        if page < 1:
-            raise BadRequest("page must be greater than or equal to 1")
-        if per_page < 1 or per_page > 100:
-            raise BadRequest("per_page must be between 1 and 100")
+        validate_page_size(page_size)
         if sort not in _SORT_FIELDS:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
         if order not in _SORT_ORDERS:
             raise BadRequest("order must be asc or desc")
 
-        normalized_collection, query, filters, stmt = _search_statement(
+        normalized_collection, query, _, stmt, key_columns = _search_statement(
             q=q,
             collection=collection,
             sort=sort,
@@ -105,20 +73,27 @@ class SqlAlchemySearchService:
                     CATALOG_READ,
                     normalized_collection,
                 )
-            total = session.scalar(
-                select(func.count()).select_from(CollectionFileRecord).where(*filters)
+            rows, next_position = bounded_page(
+                list(
+                    session.execute(
+                        keyset_statement(
+                            stmt,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda row: _search_position(row, sort=sort),
             )
-            total_count = int(total or 0)
-            stmt = stmt.offset((page - 1) * per_page).limit(per_page)
-            rows = session.execute(stmt).all()
 
         return {
             "query": query,
             "collection": normalized_collection,
-            "page": page,
-            "per_page": per_page,
-            "total": total_count,
-            "pages": math.ceil(total_count / per_page) if total_count else 0,
+            "page_size": page_size,
+            "_next_position": next_position,
             "sort": sort,
             "order": order,
             "files": [
@@ -146,13 +121,15 @@ class SqlAlchemySearchService:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
         if order not in _SORT_ORDERS:
             raise BadRequest("order must be asc or desc")
-        normalized_collection, _query, _filters, statement = _search_statement(
+        normalized_collection, _query, _filters, statement, key_columns = _search_statement(
             q=q,
             collection=collection,
             sort=sort,
             order=order,
             principal=principal,
         )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         statement = statement.execution_options(yield_per=100)
         with read_snapshot(self._session_factory) as session:
             if normalized_collection is not None:
@@ -174,23 +151,42 @@ def _search_statement(
     sort: str,
     order: str,
     principal: ApplicationPrincipal | None,
-) -> tuple[int | None, str | None, list[ColumnElement[bool]], Any]:
+) -> tuple[int | None, str | None, list[ColumnElement[bool]], Any, tuple[Any, ...]]:
     normalized_collection, query, filters = _search_filters(
         q=q,
         collection=collection,
         principal=principal,
     )
-    statement = (
-        select(
-            CollectionFileRecord.collection_id,
-            CollectionFileRecord.path,
+    statement = select(
+        CollectionFileRecord.collection_id,
+        CollectionFileRecord.path,
+        CollectionFileRecord.path_sort_key,
+        CollectionFileRecord.bytes,
+        CollectionFileRecord.sha256,
+    ).where(*filters)
+    return normalized_collection, query, filters, statement, _key_columns(sort)
+
+
+def _key_columns(sort: str) -> tuple[Any, ...]:
+    if sort in {"file_ref", "collection_id"}:
+        return CollectionFileRecord.collection_id, CollectionFileRecord.path_sort_key
+    if sort == "path":
+        return CollectionFileRecord.path_sort_key, CollectionFileRecord.collection_id
+    if sort == "bytes":
+        return (
             CollectionFileRecord.bytes,
-            CollectionFileRecord.sha256,
+            CollectionFileRecord.collection_id,
+            CollectionFileRecord.path_sort_key,
         )
-        .where(*filters)
-        .order_by(*_order_expressions(sort, order))
-    )
-    return normalized_collection, query, filters, statement
+    raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
+
+
+def _search_position(row: Any, *, sort: str) -> tuple[BrowseScalar, ...]:
+    if sort in {"file_ref", "collection_id"}:
+        return row.collection_id, row.path_sort_key
+    if sort == "path":
+        return row.path_sort_key, row.collection_id
+    return row.bytes, row.collection_id, row.path_sort_key
 
 
 def _search_filters(

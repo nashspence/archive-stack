@@ -44,10 +44,8 @@ class ProvenanceJournalAgentOut(RiverhogModel):
 class ListProvenanceJournalAgentsResponse(RiverhogModel):
     collection_id: CollectionId
     journal_id: ProvenanceJournalId
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=1)
-    total: int = Field(ge=0)
-    pages: int = Field(ge=0)
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     agents: list[ProvenanceJournalAgentOut]
 
 
@@ -107,10 +105,8 @@ type ProvenanceTraceItemOut = Annotated[
 
 
 class _CollectionFileProvenanceTracePage(RiverhogModel):
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=1)
-    total: int = Field(ge=0)
-    pages: int = Field(ge=0)
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     items: list[ProvenanceTraceItemOut]
 
 
@@ -135,10 +131,8 @@ class CollectionFileProvenanceTraceOut(
 
 
 class _CollectionFileProvenancePage(RiverhogModel):
-    page: int = Field(ge=1)
-    per_page: int = Field(ge=0)
-    total: int = Field(ge=0)
-    pages: int = Field(ge=0)
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: ProvenanceSort
     order: SortOrder
     query: str | None

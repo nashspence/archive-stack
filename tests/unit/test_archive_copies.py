@@ -223,8 +223,8 @@ def test_archive_copy_preserves_the_independent_object_manifest(
         assert job.completed_at is not None
     shown = service.get(COLLECTION_ID, destination_store="b2")
     listed = service.list(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q="b2",
         sort="requested_at",
         order="desc",
@@ -604,8 +604,8 @@ def test_archive_copy_cancellation_closes_waiting_job_and_discards_prefix(
     ]
     assert destination.discarded_uploads == ["archives/b2/new-copy"]
     filtered = service.list(
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         q=None,
         state="canceled",
         sort="requested_at",

@@ -22,10 +22,8 @@ class TagOut(RiverhogModel):
 
 
 class TagListOut(RiverhogModel):
-    page: int
-    per_page: int
-    total: int
-    pages: int
+    page_size: int = Field(ge=1, le=100)
+    next_page_token: str | None
     sort: TagSort
     order: SortOrder
     query: str | None
@@ -43,10 +41,12 @@ class CollectionTagMembershipOut(RiverhogModel):
     tag: CanonicalTag
 
 
-class CollectionTagsOut(CollectionTagSetOut):
-    page: int = Field(ge=1, strict=True)
-    per_page: int = Field(ge=1, le=100, strict=True)
-    pages: int = Field(ge=0, strict=True)
+class CollectionTagsOut(RiverhogModel):
+    collection_id: CollectionId
+    metadata_revision: int = Field(ge=1, strict=True)
+    inventory_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
+    page_size: int = Field(ge=1, le=100, strict=True)
+    next_page_token: str | None
     tags: list[CanonicalTag]
 
 
@@ -114,3 +114,13 @@ class TagDeletionResultOut(RiverhogModel):
 
 class MutateCollectionTagRequest(RiverhogModel):
     event_context: dict[str, Any] | None = None
+
+
+class ReplaceCollectionTagsRequest(MutateCollectionTagRequest):
+    tags: list[CanonicalTag]
+
+    @model_validator(mode="after")
+    def canonical_set(self) -> ReplaceCollectionTagsRequest:
+        if self.tags != sorted(set(self.tags)):
+            raise ValueError("collection tags must be unique and canonically ordered")
+        return self

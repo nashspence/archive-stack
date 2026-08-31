@@ -202,7 +202,7 @@ jobs:
               "standard-tool/protocol"
             ])
           ' "$OPERATIONS_SUMMARY"
-      - name: Qualify exact database schemas, selectors, and complete streams
+      - name: Qualify exact database schemas, selectors, and bounded pages
         run: >-
           make database-qualification
           DATABASE_QUALIFICATION_SOURCE_SHA="$SOURCE_SHA"
@@ -213,7 +213,7 @@ jobs:
             . as $root
             | .schema == "riverhog-database-qualification/v1"
             and .source_sha == $sha
-            and .cardinalities == [4096, 16384]
+            and .cardinalities == [4096, 65536]
             and .selector_contract.applications == ["riverhog", "stove0"]
             and .selector_contract.operations > 0
             and .selector_contract.statement_families > 0
@@ -224,16 +224,25 @@ jobs:
               exact_schemas: "passed",
               natural_plans: "passed",
               bounded_pages: "passed",
-              complete_streams: "passed",
+              bounded_page_streams: "passed",
+              official_client_bounded_pages: "passed",
+              high_fanout_inventory: "passed",
               cancellation: "passed",
-              backpressure: "passed"
+              backpressure: "passed",
+              restart: "passed",
+              digest_invariants: "passed",
+              unicode_semantics: "passed",
+              postgresql_capabilities: "passed"
             }
             and (.measurements | length) == 2
             and all(.measurements[]; (.plans | length) == $root.selector_contract.plan_cases)
-            and all(.measurements[]; (.streams | length) == $root.selector_contract.statement_families)
-            and all(.measurements[].streams[];
+            and all(.measurements[];
+              (.page_streams | length) == $root.selector_contract.statement_families)
+            and all(.measurements[].page_streams[];
               .chunk_rows == 100
-              and .peak_application_bytes <= $root.stream_contract.max_peak_application_bytes
+              and .rows <= (.chunk_rows + 1)
+              and .peak_application_bytes
+                <= $root.page_stream_contract.max_peak_application_bytes
               and .cancellation.cursor_closed
               and .cancellation.connection_reusable)
           ' "$DATABASE_SUMMARY"

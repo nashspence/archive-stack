@@ -85,13 +85,13 @@ def test_catalog_search_and_archive_store_share_current_identity(harness: Harnes
     collection = harness.collections.get(COLLECTION_ID)
     copies = harness.collections.list_archive_copies(
         COLLECTION_ID,
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
     )
     search = harness.search.search(
         q="readme",
-        page=1,
-        per_page=25,
+        page_size=25,
+        position=None,
         sort="file_ref",
         order="asc",
     )

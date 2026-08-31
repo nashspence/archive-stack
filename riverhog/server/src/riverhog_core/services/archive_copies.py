@@ -29,6 +29,7 @@ from riverhog_core.archive_formats import (
     archive_object_storage_format,
 )
 from riverhog_core.archive_store_registry import ArchiveStoreRegistry
+from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_models import (
     ArchiveCopyJobRecord,
@@ -355,23 +356,20 @@ class SqlAlchemyArchiveCopyService:
     def list(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         sort: str,
         order: str,
         state: str | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> dict[str, object]:
-        if page < 1:
-            raise BadRequest("page must be at least 1")
-        if per_page < 1:
-            raise BadRequest("per_page must be at least 1")
+        validate_page_size(page_size)
         if sort not in _SORT_FIELDS:
             raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
         if order not in _SORT_ORDERS:
             raise BadRequest("order must be asc or desc")
-        query, normalized_state, filters, statement = _archive_copy_list_statement(
+        query, normalized_state, _, statement, key_columns = _archive_copy_list_statement(
             q=q,
             state=state,
             sort=sort,
@@ -379,24 +377,29 @@ class SqlAlchemyArchiveCopyService:
             principal=principal,
         )
         with read_snapshot(self._session_factory) as session:
-            total = int(
-                session.scalar(
-                    select(func.count()).select_from(ArchiveCopyJobRecord).where(*filters)
-                )
-                or 0
+            records, next_position = bounded_page(
+                list(
+                    session.scalars(
+                        keyset_statement(
+                            statement,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda job: _archive_copy_list_position(job, sort=sort),
             )
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            jobs = [_job_payload(job) for job in session.scalars(statement)]
         return {
-            "page": page,
-            "per_page": per_page,
-            "total": total,
-            "pages": ((total + per_page - 1) // per_page if total else 0),
+            "page_size": page_size,
+            "_next_position": next_position,
             "sort": sort,
             "order": order,
             "query": query,
             "filters": ({"state": normalized_state} if normalized_state is not None else {}),
-            "copies": jobs,
+            "copies": [_job_payload(job) for job in records],
         }
 
     def iter_jobs(
@@ -408,13 +411,15 @@ class SqlAlchemyArchiveCopyService:
         state: str | None = None,
         principal: ApplicationPrincipal | None = None,
     ) -> Iterator[dict[str, object]]:
-        _, _, _, statement = _archive_copy_list_statement(
+        _, _, _, statement, key_columns = _archive_copy_list_statement(
             q=q,
             state=state,
             sort=sort,
             order=order,
             principal=principal,
         )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         with read_snapshot(self._session_factory) as session:
             for job in session.scalars(statement.execution_options(yield_per=100)):
                 yield _job_payload(job)
@@ -1935,7 +1940,7 @@ def _archive_copy_list_statement(
     sort: str,
     order: str,
     principal: ApplicationPrincipal | None,
-) -> tuple[str | None, str | None, list[Any], Any]:
+) -> tuple[str | None, str | None, list[Any], Any, tuple[Any, ...]]:
     if sort not in _SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
     if order not in _SORT_ORDERS:
@@ -1964,17 +1969,42 @@ def _archive_copy_list_statement(
         "state": ArchiveCopyJobRecord.state,
         "requested_at": ArchiveCopyJobRecord.requested_at,
     }
-    ordering = desc if order == "desc" else asc
-    statement = (
-        select(ArchiveCopyJobRecord)
-        .where(*filters)
-        .order_by(
-            ordering(sort_columns[sort]),
-            ordering(ArchiveCopyJobRecord.collection_id),
-            ordering(ArchiveCopyJobRecord.destination_store),
+    key_columns = tuple(
+        dict.fromkeys(
+            (
+                sort_columns[sort],
+                ArchiveCopyJobRecord.collection_id,
+                ArchiveCopyJobRecord.destination_store,
+            )
         )
     )
-    return query, normalized_state, filters, statement
+    return (
+        query,
+        normalized_state,
+        filters,
+        select(ArchiveCopyJobRecord).where(*filters),
+        key_columns,
+    )
+
+
+def _archive_copy_list_position(
+    job: ArchiveCopyJobRecord,
+    *,
+    sort: str,
+) -> tuple[str | int, ...]:
+    values: dict[str, str | int] = {
+        "collection_id": job.collection_id,
+        "source_store": job.source_store,
+        "destination_store": job.destination_store,
+        "state": job.state,
+        "requested_at": job.requested_at,
+    }
+    keys = [sort]
+    if sort != "collection_id":
+        keys.append("collection_id")
+    if sort != "destination_store":
+        keys.append("destination_store")
+    return tuple(values[key] for key in keys)
 
 
 def _job_payload(job: ArchiveCopyJobRecord) -> dict[str, object]:

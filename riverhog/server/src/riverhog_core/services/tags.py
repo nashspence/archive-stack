@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import secrets
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import datetime
@@ -10,7 +9,7 @@ from http_api_contracts import closed_literal_values
 from riverhog_protocol import SortOrder, TagSort
 from riverhog_protocol.errors import BadRequest, Conflict, NotFound
 from riverhog_protocol.paths import PathNormalizationError, normalize_tag
-from sqlalchemy import asc, desc, exists, func, insert, literal, or_, select, update
+from sqlalchemy import asc, delete, desc, exists, func, insert, literal, or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import ColumnElement
@@ -25,6 +24,7 @@ from riverhog_core.app_permissions import (
     ApplicationPrincipal,
     tag_resource,
 )
+from riverhog_core.browse import bounded_page, keyset_statement, validate_page_size
 from riverhog_core.catalog_db import SessionFactory, make_session_factory, session_scope
 from riverhog_core.catalog_events import (
     begin_catalog_event,
@@ -201,33 +201,40 @@ class SqlAlchemyTagService:
     def list(
         self,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         q: str | None,
         sort: str,
         order: str,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
-        query, base, statement = _tag_list_statements(
+        validate_page_size(page_size)
+        query, statement, key_columns = _tag_list_statement(
             q=q, sort=sort, order=order, principal=principal
         )
-        if page < 1:
-            raise BadRequest("page must be greater than or equal to 1")
-        if per_page < 1 or per_page > 100:
-            raise BadRequest("per_page must be between 1 and 100")
         with read_snapshot(self._session_factory) as session:
-            total = int(session.scalar(select(func.count()).select_from(base.subquery())) or 0)
-            statement = statement.offset((page - 1) * per_page).limit(per_page)
-            rows = [dict(row) for row in session.execute(statement).mappings().all()]
+            rows, next_position = bounded_page(
+                list(
+                    session.execute(
+                        keyset_statement(
+                            statement,
+                            columns=key_columns,
+                            position=position,
+                            order=order,
+                            page_size=page_size,
+                        )
+                    ).mappings()
+                ),
+                page_size=page_size,
+                position_of=lambda row: _tag_list_position(row, sort=sort),
+            )
         return {
-            "page": page,
-            "per_page": per_page,
-            "total": total,
-            "pages": math.ceil(total / per_page) if total else 0,
+            "page_size": page_size,
+            "_next_position": next_position,
             "sort": sort,
             "order": order,
             "query": query,
-            "tags": rows,
+            "tags": [dict(row) for row in rows],
         }
 
     def iter_tags(
@@ -238,7 +245,11 @@ class SqlAlchemyTagService:
         order: str,
         principal: ApplicationPrincipal,
     ) -> Iterator[dict[str, object]]:
-        _, _, statement = _tag_list_statements(q=q, sort=sort, order=order, principal=principal)
+        _, statement, key_columns = _tag_list_statement(
+            q=q, sort=sort, order=order, principal=principal
+        )
+        direction = desc if order == "desc" else asc
+        statement = statement.order_by(*(direction(column) for column in key_columns))
         with read_snapshot(self._session_factory) as session:
             rows = session.execute(statement.execution_options(yield_per=100)).mappings()
             for row in rows:
@@ -248,32 +259,55 @@ class SqlAlchemyTagService:
         self,
         collection_id: int,
         *,
-        page: int,
-        per_page: int,
+        page_size: int,
+        position: tuple[str | int | bool | bytes | None, ...] | None,
         principal: ApplicationPrincipal,
     ) -> dict[str, object]:
-        if page < 1 or per_page < 1 or per_page > 100:
-            raise BadRequest("invalid collection-tag pagination")
+        validate_page_size(page_size)
         with read_snapshot(self._session_factory) as session:
             collection = session.get(CollectionRecord, collection_id)
             if collection is None:
                 raise NotFound(f"collection not found: {collection_id}")
             require_collection_access(session, principal, CATALOG_READ, collection_id)
-            total = _collection_tag_count(session, collection_id)
-            tags = list(
-                session.scalars(
-                    select(CollectionTagRecord.tag_id)
-                    .where(CollectionTagRecord.collection_id == collection_id)
-                    .order_by(CollectionTagRecord.tag_id)
-                    .offset((page - 1) * per_page)
-                    .limit(per_page)
-                )
+            if position is None:
+                after: tuple[str | int | bool | bytes | None, ...] | None = None
+            else:
+                if (
+                    len(position) != 2
+                    or not isinstance(position[0], str)
+                    or not isinstance(position[1], int)
+                ):
+                    raise BadRequest("collection-tag page token is invalid")
+                if position[1] != collection.metadata_revision:
+                    raise Conflict("collection tags changed during bounded traversal")
+                after = (position[0],)
+            tags, next_position = bounded_page(
+                list(
+                    session.scalars(
+                        keyset_statement(
+                            select(CollectionTagRecord.tag_id).where(
+                                CollectionTagRecord.collection_id == collection_id
+                            ),
+                            columns=(CollectionTagRecord.tag_id,),
+                            position=after,
+                            order="asc",
+                            page_size=page_size,
+                        )
+                    )
+                ),
+                page_size=page_size,
+                position_of=lambda tag: (tag,),
             )
             return {
-                **_collection_tag_set_payload(collection, tag_count=total),
-                "page": page,
-                "per_page": per_page,
-                "pages": math.ceil(total / per_page) if total else 0,
+                "collection_id": collection.id,
+                "metadata_revision": collection.metadata_revision,
+                "inventory_identity": collection.inventory_identity,
+                "page_size": page_size,
+                "_next_position": (
+                    (*next_position, collection.metadata_revision)
+                    if next_position is not None
+                    else None
+                ),
                 "tags": tags,
             }
 
@@ -328,6 +362,86 @@ class SqlAlchemyTagService:
             add=False,
             tag=canonical_tag(tag),
         )
+
+    def replace_collection_tags(
+        self,
+        collection_id: int,
+        tags: Sequence[str],
+        *,
+        principal: ApplicationPrincipal,
+        event_context: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        desired = tuple(canonical_tag(tag) for tag in tags)
+        if desired != tuple(sorted(set(desired))):
+            raise BadRequest("collection tags must be unique and canonically ordered")
+        normalized_context_json = event_context_json(event_context)
+        with session_scope(self._session_factory) as session:
+            collection = session.scalar(
+                select(CollectionRecord)
+                .where(CollectionRecord.id == collection_id)
+                .with_for_update()
+            )
+            if collection is None:
+                raise NotFound(f"collection not found: {collection_id}")
+            require_collection_access(session, principal, COLLECTION_TAGS_MANAGE, collection_id)
+            require_collection_mutation_allowed(session, collection_id)
+            _require_tags(session, desired)
+            current = tuple(
+                session.scalars(
+                    select(CollectionTagRecord.tag_id)
+                    .where(CollectionTagRecord.collection_id == collection_id)
+                    .order_by(CollectionTagRecord.tag_id)
+                )
+            )
+            if current == desired:
+                return _collection_tag_set_payload(collection, tag_count=len(current))
+            now = format_utc_timestamp(utc_now())
+            event = begin_catalog_event(
+                session,
+                change="updated",
+                collection_id=collection_id,
+                occurred_at=now,
+                inventory_identity=collection.inventory_identity,
+            )
+            snapshot_catalog_event_collection_tags(
+                session, event=event, phase="before", collection_id=collection_id
+            )
+            removed = tuple(sorted(set(current) - set(desired)))
+            added = tuple(sorted(set(desired) - set(current)))
+            if removed:
+                session.execute(
+                    delete(CollectionTagRecord).where(
+                        CollectionTagRecord.collection_id == collection_id,
+                        CollectionTagRecord.tag_id.in_(removed),
+                    )
+                )
+            session.add_all(
+                CollectionTagRecord(
+                    collection_id=collection_id,
+                    tag_id=tag,
+                    assigned_by_app=principal.app,
+                    assigned_by_key_id=principal.key_id,
+                    assigned_at=now,
+                )
+                for tag in added
+            )
+            adjust_tag_collection_counts(session, added=added, removed=removed)
+            session.flush()
+            collection.metadata_revision += 1
+            collection.metadata_updated_at = now
+            _schedule_metadata_publications(session, collection)
+            snapshot_catalog_event_collection_tags(
+                session, event=event, phase="after", collection_id=collection_id
+            )
+            self._lifecycle_events.emit_collection(
+                type="collection.tags_changed",
+                collection_id=collection_id,
+                terminal=True,
+                initiator=principal,
+                event_context_json=normalized_context_json,
+                session=session,
+            )
+            return _collection_tag_set_payload(collection, tag_count=len(desired))
 
     def _mutate_collection_tags(
         self,
@@ -415,13 +529,13 @@ class SqlAlchemyTagService:
             )
 
 
-def _tag_list_statements(
+def _tag_list_statement(
     *,
     q: str | None,
     sort: str,
     order: str,
     principal: ApplicationPrincipal,
-) -> tuple[str | None, Select[Any], Select[Any]]:
+) -> tuple[str | None, Select[Any], tuple[Any, ...]]:
     if sort not in _SORT_FIELDS:
         raise BadRequest(f"sort must be one of {', '.join(sorted(_SORT_FIELDS))}")
     if order not in _SORT_ORDERS:
@@ -442,8 +556,18 @@ def _tag_list_statements(
         "created_at": TagRecord.created_at,
         "collections": TagRecord.collection_count,
     }
-    direction = desc if order == "desc" else asc
-    return query, base, base.order_by(direction(columns[sort]), direction(TagRecord.id))
+    key_columns = (TagRecord.id,) if sort == "id" else (columns[sort], TagRecord.id)
+    return query, base, key_columns
+
+
+def _tag_list_position(row: Any, *, sort: str) -> tuple[str | int, ...]:
+    value = row[{"id": "id", "created_at": "created_at", "collections": "collections"}[sort]]
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        raise RuntimeError("tag browse position has an invalid value")
+    identifier = row["id"]
+    if not isinstance(identifier, str):
+        raise RuntimeError("tag browse position has an invalid identifier")
+    return (value,) if sort == "id" else (value, identifier)
 
 
 def _tag_deletion_plan(

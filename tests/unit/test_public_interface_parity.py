@@ -124,7 +124,6 @@ SUPPORTED_CLIENT_HELPERS = {
         "resourcesync_discovery",
         "resourcesync_resource_pages",
         "resourcesync_resources",
-        "replace_collection_tags",
         "spawn",
         "stream_retrieval_file",
         "upload_collection_upload_session_provenance_journal",
@@ -379,7 +378,7 @@ def test_riverhog_client_exports_the_canonical_public_access_types() -> None:
 
 READ_COLLECTION_OPERATIONS = {
     "riverhog": {
-        "bounded-list": {
+        "mutable-browse": {
             "list_app_key_access",
             "list_app_keys",
             "list_apps",
@@ -395,8 +394,6 @@ READ_COLLECTION_OPERATIONS = {
             "list_collections",
             "list_download_quotas",
             "list_processing_claims",
-            "list_processing_claim_disposition_outputs",
-            "list_processing_claim_dispositions",
             "list_retrieval_cache_objects",
             "list_tags",
             "search",
@@ -406,13 +403,15 @@ READ_COLLECTION_OPERATIONS = {
         "exact-set-page": {"get_portable_collection_inventory"},
         "exact-authority-page": {
             "list_processing_claim_artifacts",
+            "list_processing_claim_disposition_outputs",
+            "list_processing_claim_dispositions",
             "list_processing_claim_inputs",
             "list_processing_claim_outcomes",
             "list_processing_claim_output_tags",
         },
     },
     "stove0": {
-        "bounded-list": {
+        "mutable-browse": {
             "list_evaluations",
             "list_work",
         },
@@ -445,35 +444,35 @@ PUBLIC_QUERY_SELECTORS = {
             "app",
             "key",
             "order",
-            "page",
-            "per_page",
+            "page_size",
+            "page_token",
             "permission",
             "q",
             "resource",
             "sort",
         },
-        "list_app_keys": {"active", "order", "page", "per_page", "q", "sort"},
-        "list_apps": {"active", "order", "page", "per_page", "q", "sort"},
-        "list_archive_copy_jobs": {"order", "page", "per_page", "q", "sort", "state"},
-        "list_archive_stores": {"order", "page", "per_page", "q", "sort"},
+        "list_app_keys": {"active", "order", "page_size", "page_token", "q", "sort"},
+        "list_apps": {"active", "order", "page_size", "page_token", "q", "sort"},
+        "list_archive_copy_jobs": {"order", "page_size", "page_token", "q", "sort", "state"},
+        "list_archive_stores": {"order", "page_size", "page_token", "q", "sort"},
         "list_collection_provenance": {
             "order",
-            "page",
-            "per_page",
+            "page_size",
+            "page_token",
             "q",
             "sort",
             "status",
         },
-        "list_collection_provenance_journal_agents": {"page", "per_page"},
-        "list_collection_archive_copies": {"page", "per_page"},
-        "get_collection_tags": {"page", "per_page"},
+        "list_collection_provenance_journal_agents": {"page_size", "page_token"},
+        "list_collection_archive_copies": {"page_size", "page_token"},
+        "get_collection_tags": {"page_size", "page_token"},
         "get_portable_collection_inventory": {"cursor", "limit"},
-        "list_collection_upload_session_tags": {"page", "per_page"},
-        "list_collection_upload_session_files": {"page", "per_page"},
+        "list_collection_upload_session_tags": {"page_size", "page_token"},
+        "list_collection_upload_session_files": {"page_size", "page_token"},
         "list_collection_upload_sessions": {
             "order",
-            "page",
-            "per_page",
+            "page_size",
+            "page_token",
             "q",
             "sort",
             "state",
@@ -482,9 +481,9 @@ PUBLIC_QUERY_SELECTORS = {
         "list_collections": {
             "encryption_format",
             "order",
-            "page",
+            "page_size",
             "passphrase_id",
-            "per_page",
+            "page_token",
             "q",
             "sort",
             "tag",
@@ -493,22 +492,21 @@ PUBLIC_QUERY_SELECTORS = {
             "active",
             "app",
             "order",
-            "page",
-            "per_page",
+            "page_size",
+            "page_token",
             "q",
             "sort",
         },
         "list_lifecycle_events": {"after", "limit"},
-        "list_processing_claims": {"order", "page", "per_page", "sort", "state"},
+        "list_processing_claims": {"order", "page_size", "page_token", "sort", "state"},
         "list_processing_claim_artifacts": {"authority_sha256", "start_ordinal"},
         "list_processing_claim_inputs": {"authority_sha256", "start_ordinal"},
         "list_processing_claim_outcomes": {"authority_sha256", "start_ordinal"},
         "list_processing_claim_output_tags": {"authority_sha256", "start_ordinal"},
-        "list_processing_claim_dispositions": {"authority_sha256", "page", "per_page"},
+        "list_processing_claim_dispositions": {"authority_sha256", "start_ordinal"},
         "list_processing_claim_disposition_outputs": {
             "authority_sha256",
-            "page",
-            "per_page",
+            "start_ordinal",
         },
         "list_retrieval_cache_objects": {
             "cache_store",
@@ -516,8 +514,8 @@ PUBLIC_QUERY_SELECTORS = {
             "expires_after",
             "expires_before",
             "order",
-            "page",
-            "per_page",
+            "page_size",
+            "page_token",
             "protection",
             "q",
             "sort",
@@ -525,19 +523,19 @@ PUBLIC_QUERY_SELECTORS = {
             "state",
             "tag",
         },
-        "list_tags": {"order", "page", "per_page", "q", "sort"},
+        "list_tags": {"order", "page_size", "page_token", "q", "sort"},
         "plan_collection_deletion": {"retirement_claim_id"},
         "resourcesync_change_list": {"after"},
-        "search": {"collection", "order", "page", "per_page", "q", "sort"},
-        "trace_collection_file_provenance": {"page", "per_page"},
+        "search": {"collection", "order", "page_size", "page_token", "q", "sort"},
+        "trace_collection_file_provenance": {"page_size", "page_token"},
     },
     "stove0": {
         "get_artifact_selection": {"continuation"},
         "get_target_execution_inputs": {"continuation"},
         "get_recipe": {"revision"},
-        "list_evaluations": {"order", "page", "per_page", "phase", "q", "sort"},
+        "list_evaluations": {"order", "page_size", "page_token", "phase", "q", "sort"},
         "list_events": {"after", "limit"},
-        "list_work": {"order", "page", "per_page", "phase", "q", "sort"},
+        "list_work": {"order", "page_size", "page_token", "phase", "q", "sort"},
     },
     "riverhog-ftp-adapter": {},
 }
@@ -609,7 +607,7 @@ def test_public_read_collection_selectors_are_bounded_and_frozen(
     schema = app_factory().openapi()
     operations = _http_operations(schema)
     classified: dict[str, set[str]] = {
-        "bounded-list": set(),
+        "mutable-browse": set(),
         "cursor-feed": set(),
         "exact-set-page": set(),
         "exact-authority-page": set(),
@@ -621,7 +619,7 @@ def test_public_read_collection_selectors_are_bounded_and_frozen(
         assert "all" not in parameter_names, operation_id
         classification = operation.get("x-riverhog-read-collection")
         if classification is None:
-            assert not {"page", "per_page"} <= parameter_names, operation_id
+            assert not {"page_size", "page_token"} <= parameter_names, operation_id
             assert "after" not in parameter_names, operation_id
             success_media = set(operation.get("responses", {}).get("200", {}).get("content", {}))
             if operation_id.startswith("stream_") and JSON_SEQUENCE_MEDIA_TYPE in success_media:
@@ -663,10 +661,12 @@ def test_public_read_collection_selectors_are_bounded_and_frozen(
                 assert limit["schema"]["maximum"] >= 1
             assert classification["authority"]
             continue
-        if kind == "bounded-list":
-            assert {"page", "per_page"} <= parameter_names
-            per_page = next(item for item in operation["parameters"] if item["name"] == "per_page")
-            assert per_page["schema"]["maximum"] >= 1
+        if kind == "mutable-browse":
+            assert {"page_size", "page_token"} <= parameter_names
+            page_size = next(
+                item for item in operation["parameters"] if item["name"] == "page_size"
+            )
+            assert page_size["schema"]["maximum"] >= 1
             continue
         raise AssertionError(f"unsupported read-collection classification: {kind}")
 
@@ -684,6 +684,44 @@ def test_no_public_http_operation_exposes_an_all_selector() -> None:
             assert "all" not in {
                 parameter["name"] for parameter in operation.get("parameters", [])
             }, operation_id
+
+
+def test_sql_offsets_are_confined_to_the_resourcesync_page_binding() -> None:
+    modules = (
+        app_key_service_module,
+        archive_copy_service_module,
+        archive_store_service_module,
+        upload_service_module,
+        workflow_service_module,
+        collection_service_module,
+        quota_service_module,
+        provenance_service_module,
+        retrieval_service_module,
+        search_service_module,
+        tag_service_module,
+        stove0_persistence_module,
+    )
+    observed: set[tuple[str, str]] = set()
+    for module in modules:
+        path = Path(module.__file__ or "")
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for class_node in (node for node in tree.body if isinstance(node, ast.ClassDef)):
+            for function in (
+                node
+                for node in class_node.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ):
+                if any(
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "offset"
+                    for node in ast.walk(function)
+                ):
+                    observed.add((module.__name__, f"{class_node.name}.{function.name}"))
+
+    assert observed == {
+        ("riverhog_core.services.retrieval", "SqlAlchemyRetrievalService.resource_list_page")
+    }
 
 
 @pytest.mark.parametrize(

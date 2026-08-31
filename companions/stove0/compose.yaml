@@ -23,6 +23,7 @@ x-stove0-environment: &stove0-environment
   STOVE0_TARGET_CALLBACK_BASE_URL: http://api:8080
   STOVE0_TARGET_CALLBACK_ALLOW_INSECURE_HTTP: "true"
   STOVE0_TARGET_CALLBACK_SIGNING_KEY_FILE: /run/secrets/stove0_target_callback_signing_key
+  STOVE0_BROWSE_TOKEN_SIGNING_KEY_FILE: /run/secrets/stove0_browse_token_signing_key
   STOVE0_FFPROBE_SAMPLING_OBSERVER_TOKEN_FILE: /run/secrets/stove0_ffprobe_sampling_observer_token
   STOVE0_EXIFTOOL_OBSERVER_TOKEN_FILE: /run/secrets/stove0_exiftool_observer_token
   STOVE0_NVENC_AV1_OPUS_TARGET_TOKEN_FILE: /run/secrets/stove0_nvenc_av1_opus_target_token
@@ -72,6 +73,7 @@ services:
     secrets:
       - stove0_database_url
       - stove0_target_callback_signing_key
+      - stove0_browse_token_signing_key
       - stove0_ffprobe_sampling_observer_token
       - stove0_exiftool_observer_token
       - stove0_nvenc_av1_opus_target_token
@@ -108,6 +110,7 @@ services:
     secrets:
       - stove0_database_url
       - stove0_target_callback_signing_key
+      - stove0_browse_token_signing_key
       - stove0_ffprobe_sampling_observer_token
       - stove0_exiftool_observer_token
       - stove0_nvenc_av1_opus_target_token
@@ -128,6 +131,7 @@ services:
     secrets:
       - stove0_database_url
       - stove0_target_callback_signing_key
+      - stove0_browse_token_signing_key
       - stove0_ffprobe_sampling_observer_token
       - stove0_exiftool_observer_token
       - stove0_nvenc_av1_opus_target_token
@@ -371,6 +375,8 @@ secrets:
     file: ${STOVE0_DATABASE_URL_FILE:?STOVE0_DATABASE_URL_FILE is required}
   stove0_target_callback_signing_key:
     file: ${STOVE0_TARGET_CALLBACK_SIGNING_KEY_FILE:?STOVE0_TARGET_CALLBACK_SIGNING_KEY_FILE is required}
+  stove0_browse_token_signing_key:
+    file: ${STOVE0_BROWSE_TOKEN_SIGNING_KEY_FILE:?STOVE0_BROWSE_TOKEN_SIGNING_KEY_FILE is required}
   stove0_api_token:
     file: ${STOVE0_API_TOKEN_FILE:?STOVE0_API_TOKEN_FILE is required}
   stove0_api_riverhog_token:
